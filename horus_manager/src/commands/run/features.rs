@@ -1,10 +1,18 @@
-use crate::config::HORUS_YAML;
-use anyhow::Result;
-use std::fs;
+use crate::manifest::{DriverValue, HorusManifest, IgnoreConfig, HORUS_TOML};
 use std::path::Path;
 
+impl From<IgnoreConfig> for IgnorePatterns {
+    fn from(cfg: IgnoreConfig) -> Self {
+        Self {
+            files: cfg.files,
+            directories: cfg.directories,
+            packages: cfg.packages,
+        }
+    }
+}
+
 /// Resolve driver alias names to their constituent driver IDs.
-/// Used when parsing `drivers:` section in horus.yaml.
+/// Used when parsing `[drivers]` section in horus.toml.
 pub(crate) fn resolve_driver_alias(alias: &str) -> Option<Vec<&'static str>> {
     match alias {
         "vision" => Some(vec!["camera", "depth-camera"]),
@@ -16,7 +24,7 @@ pub(crate) fn resolve_driver_alias(alias: &str) -> Option<Vec<&'static str>> {
     }
 }
 
-/// Ignore patterns from horus.yaml
+/// Ignore patterns from horus.toml
 #[derive(Debug, Clone, Default)]
 pub struct IgnorePatterns {
     pub files: Vec<String>,
@@ -101,56 +109,7 @@ pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     }
 }
 
-/// Parse ignore section from horus.yaml
-pub fn parse_horus_yaml_ignore(path: &str) -> Result<IgnorePatterns> {
-    let content = fs::read_to_string(path)?;
-
-    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
-        Ok(yaml) => {
-            let mut ignore = IgnorePatterns::default();
-
-            if let Some(serde_yaml::Value::Mapping(ignore_map)) = yaml.get("ignore") {
-                // Parse files
-                if let Some(serde_yaml::Value::Sequence(files)) =
-                    ignore_map.get(serde_yaml::Value::String("files".to_string()))
-                {
-                    for file in files {
-                        if let serde_yaml::Value::String(pattern) = file {
-                            ignore.files.push(pattern.clone());
-                        }
-                    }
-                }
-
-                // Parse directories
-                if let Some(serde_yaml::Value::Sequence(dirs)) =
-                    ignore_map.get(serde_yaml::Value::String("directories".to_string()))
-                {
-                    for dir in dirs {
-                        if let serde_yaml::Value::String(pattern) = dir {
-                            ignore.directories.push(pattern.clone());
-                        }
-                    }
-                }
-
-                // Parse packages
-                if let Some(serde_yaml::Value::Sequence(pkgs)) =
-                    ignore_map.get(serde_yaml::Value::String("packages".to_string()))
-                {
-                    for pkg in pkgs {
-                        if let serde_yaml::Value::String(package) = pkg {
-                            ignore.packages.push(package.clone());
-                        }
-                    }
-                }
-            }
-
-            Ok(ignore)
-        }
-        Err(_) => Ok(IgnorePatterns::default()),
-    }
-}
-
-/// Driver configuration from horus.yaml
+/// Driver configuration from horus.toml `[drivers]` section
 #[derive(Debug, Clone, Default)]
 pub struct DriverConfig {
     /// List of drivers to enable (e.g., ["camera", "lidar", "imu"])
@@ -159,81 +118,31 @@ pub struct DriverConfig {
     pub backends: std::collections::HashMap<String, String>,
 }
 
-/// Parse drivers section from horus.yaml
-///
-/// Supports two formats:
-/// ```yaml
-/// # Simple list format
-/// drivers:
-///   - camera
-///   - lidar
-///   - imu
-///
-/// # Or with backend overrides
-/// drivers:
-///   camera: opencv
-///   lidar: rplidar-a2
-///   imu: mpu6050
-/// ```
-pub fn parse_horus_yaml_drivers(path: &str) -> Result<DriverConfig> {
-    let content = fs::read_to_string(path)?;
-
-    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
-        Ok(yaml) => {
-            let mut config = DriverConfig::default();
-
-            if let Some(drivers_value) = yaml.get("drivers") {
-                match drivers_value {
-                    // List format: drivers: [camera, lidar, imu]
-                    serde_yaml::Value::Sequence(list) => {
-                        for item in list {
-                            if let serde_yaml::Value::String(driver) = item {
-                                // Resolve aliases (e.g., "vision" -> ["camera", "depth-camera"])
-                                if let Some(expanded) = resolve_driver_alias(driver) {
-                                    for d in expanded {
-                                        config.drivers.push(d.to_string());
-                                    }
-                                } else {
-                                    config.drivers.push(driver.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    // Map format: drivers: { camera: opencv, lidar: rplidar-a2 }
-                    serde_yaml::Value::Mapping(map) => {
-                        for (key, value) in map {
-                            if let serde_yaml::Value::String(driver_name) = key {
-                                // Add to drivers list
-                                if let Some(expanded) = resolve_driver_alias(driver_name) {
-                                    for d in expanded {
-                                        config.drivers.push(d.to_string());
-                                    }
-                                } else {
-                                    config.drivers.push(driver_name.clone());
-                                }
-
-                                // Store backend override if specified
-                                if let serde_yaml::Value::String(backend) = value {
-                                    config.backends.insert(driver_name.clone(), backend.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    _ => {}
+impl DriverConfig {
+    /// Build from manifest's `[drivers]` section.
+    pub fn from_manifest(manifest: &HorusManifest) -> Self {
+        let mut config = Self::default();
+        for (name, value) in &manifest.drivers {
+            // Resolve aliases
+            if let Some(expanded) = resolve_driver_alias(name) {
+                for d in expanded {
+                    config.drivers.push(d.to_string());
                 }
+            } else {
+                config.drivers.push(name.clone());
             }
-
-            Ok(config)
+            // Store backend override if specified
+            if let DriverValue::Backend(backend) = value {
+                config.backends.insert(name.clone(), backend.clone());
+            }
         }
-        Err(_) => Ok(DriverConfig::default()),
+        config
     }
 }
 
-/// Get active drivers - combines CLI override, horus.yaml config, and HORUS_DRIVERS env var
+/// Get active drivers - combines HORUS_DRIVERS env var and horus.toml
 pub fn get_active_drivers() -> DriverConfig {
-    // Priority: HORUS_DRIVERS env var > CLI --drivers > horus.yaml
+    // Priority: HORUS_DRIVERS env var > horus.toml
     if let Ok(env_drivers) = std::env::var("HORUS_DRIVERS") {
         let drivers: Vec<String> = env_drivers
             .split(',')
@@ -249,12 +158,10 @@ pub fn get_active_drivers() -> DriverConfig {
         }
     }
 
-    // Fall back to horus.yaml
-    if std::path::Path::new(HORUS_YAML).exists() {
-        parse_horus_yaml_drivers(HORUS_YAML).unwrap_or_default()
-    } else {
-        DriverConfig::default()
-    }
+    // Fall back to horus.toml
+    load_manifest()
+        .map(|m| DriverConfig::from_manifest(&m))
+        .unwrap_or_default()
 }
 
 /// Get Cargo features to enable based on driver configuration
@@ -295,7 +202,7 @@ pub fn get_cargo_features_from_drivers(config: &DriverConfig) -> Vec<String> {
 // Enable Capabilities Configuration
 // ============================================================================
 
-/// Enable configuration from horus.yaml or CLI --enable flag
+/// Enable configuration from horus.toml or CLI --enable flag
 #[derive(Debug, Clone, Default)]
 pub struct EnableConfig {
     /// List of capabilities to enable (e.g., ["cuda", "editor", "python"])
@@ -373,39 +280,9 @@ pub fn get_cargo_features_from_enable(config: &EnableConfig) -> Vec<String> {
     features
 }
 
-/// Parse enable section from horus.yaml
-///
-/// Supports list format:
-/// ```yaml
-/// enable:
-///   - cuda
-///   - editor
-///   - python
-/// ```
-pub fn parse_horus_yaml_enable(path: &str) -> Result<EnableConfig> {
-    let content = fs::read_to_string(path)?;
-
-    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
-        Ok(yaml) => {
-            let mut config = EnableConfig::default();
-
-            if let Some(serde_yaml::Value::Sequence(list)) = yaml.get("enable") {
-                for item in list {
-                    if let serde_yaml::Value::String(capability) = item {
-                        config.capabilities.push(capability.clone());
-                    }
-                }
-            }
-
-            Ok(config)
-        }
-        Err(_) => Ok(EnableConfig::default()),
-    }
-}
-
-/// Get active enable config - combines CLI override, horus.yaml config, and HORUS_ENABLE env var
+/// Get active enable config - combines HORUS_ENABLE env var and horus.toml
 pub fn get_active_enable() -> EnableConfig {
-    // Priority: HORUS_ENABLE env var > horus.yaml
+    // Priority: HORUS_ENABLE env var > horus.toml
     if let Ok(env_enable) = std::env::var("HORUS_ENABLE") {
         let capabilities: Vec<String> = env_enable
             .split(',')
@@ -418,12 +295,12 @@ pub fn get_active_enable() -> EnableConfig {
         }
     }
 
-    // Fall back to horus.yaml
-    if std::path::Path::new(HORUS_YAML).exists() {
-        parse_horus_yaml_enable(HORUS_YAML).unwrap_or_default()
-    } else {
-        EnableConfig::default()
-    }
+    // Fall back to horus.toml
+    load_manifest()
+        .map(|m| EnableConfig {
+            capabilities: m.enable,
+        })
+        .unwrap_or_default()
 }
 
 /// Get combined features string from both drivers and enable config
@@ -451,5 +328,15 @@ pub fn get_all_cargo_features() -> Option<String> {
         None
     } else {
         Some(all_features.join(","))
+    }
+}
+
+/// Load manifest from horus.toml if it exists.
+fn load_manifest() -> Option<HorusManifest> {
+    let path = Path::new(HORUS_TOML);
+    if path.exists() {
+        HorusManifest::load_from(path).ok().map(|(m, _)| m)
+    } else {
+        None
     }
 }

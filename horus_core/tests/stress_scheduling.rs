@@ -44,7 +44,7 @@ impl Node for RtCounterNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(10))
     }
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {

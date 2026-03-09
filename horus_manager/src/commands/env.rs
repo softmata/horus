@@ -4,7 +4,8 @@ use crate::cli_output;
 use crate::commands::check::{
     check_system_package_exists, prompt_missing_system_package, MissingSystemChoice,
 };
-use crate::{registry, workspace, yaml_utils};
+use crate::manifest::{DependencyValue, HORUS_TOML};
+use crate::{registry, workspace};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::fs;
@@ -23,9 +24,9 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     // Save to local file
-    let freeze_file = output.unwrap_or_else(|| PathBuf::from("horus-freeze.yaml"));
-    let yaml = serde_yaml::to_string(&manifest).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-    fs::write(&freeze_file, yaml).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let freeze_file = output.unwrap_or_else(|| PathBuf::from("horus-freeze.toml"));
+    let toml_str = toml::to_string_pretty(&manifest).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    fs::write(&freeze_file, toml_str).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!("  Environment frozen to {}", freeze_file.display());
     println!("   ID: {}", manifest.horus_id);
@@ -88,17 +89,17 @@ pub fn run_restore(source: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
 
     // Check if source is a file path or environment ID
-    if source.ends_with(".yaml") || source.ends_with(".yml") || PathBuf::from(&source).exists() {
+    if source.ends_with(".toml") || source.ends_with(".yaml") || source.ends_with(".yml") || PathBuf::from(&source).exists() {
         // It's a file path
         let content = fs::read_to_string(&source)
             .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to read freeze file: {}", e))))?;
 
-        let manifest: registry::EnvironmentManifest = serde_yaml::from_str(&content)
+        let manifest: registry::EnvironmentManifest = toml::from_str(&content)
             .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse freeze file: {}", e))))?;
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
-        // Get workspace path for horus.yaml updates
+        // Get workspace path for horus.toml updates
         let workspace_path = workspace::find_workspace_root();
 
         // Install each package from the manifest
@@ -132,7 +133,7 @@ pub fn run_restore(source: String) -> HorusResult<()> {
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
-        // Get workspace path for horus.yaml updates
+        // Get workspace path for horus.toml updates
         let workspace_path = workspace::find_workspace_root();
 
         // Install each package
@@ -216,7 +217,7 @@ fn restore_packages(
                     "Note:".dimmed()
                 );
                 println!(
-                    "    {} Please update horus.yaml with the correct path if needed.",
+                    "    {} Please update horus.toml with the correct path if needed.",
                     "Tip:".dimmed()
                 );
                 // Don't try to install - user must fix path manually
@@ -231,14 +232,17 @@ fn restore_packages(
             }
         }
 
-        // Update horus.yaml if in a workspace
+        // Update horus.toml if in a workspace
         if let Some(ref ws_path) = workspace_path {
-            let yaml_path = ws_path.join("horus.yaml");
-            if yaml_path.exists() {
-                if let Err(e) =
-                    yaml_utils::add_dependency_to_horus_yaml(&yaml_path, &pkg.name, &pkg.version)
-                {
-                    log::warn!("Failed to update horus.yaml: {}", e);
+            let toml_path = ws_path.join(HORUS_TOML);
+            if toml_path.exists() {
+                if let Err(e) = crate::manifest::add_dependency_to_file(
+                    &toml_path,
+                    &pkg.name,
+                    &DependencyValue::Simple(pkg.version.clone()),
+                    "dependencies",
+                ) {
+                    log::warn!("Failed to update horus.toml: {}", e);
                 }
             }
         }

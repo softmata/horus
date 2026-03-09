@@ -1,9 +1,10 @@
-//! Check command - validate horus.yaml, source files, or entire workspace
+//! Check command - validate horus.toml, source files, or entire workspace
 
 use crate::cli_output;
-use crate::commands::run::{check_hardware_requirements, parse_horus_yaml_dependencies_v2};
-use crate::config::{CARGO_TOML, HORUS_YAML};
+use crate::commands::run::check_hardware_requirements;
+use crate::config::CARGO_TOML;
 use crate::dependency_resolver::DependencySource;
+use crate::manifest::{HorusManifest, HORUS_TOML};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::has_native_shm;
@@ -84,7 +85,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     let mut total_errors = 0;
     let mut total_warnings = 0;
     let mut files_checked = 0;
-    let mut horus_yamls: Vec<PathBuf> = Vec::new();
+    let mut horus_manifests: Vec<PathBuf> = Vec::new();
     let mut rust_files: Vec<PathBuf> = Vec::new();
     let mut python_files: Vec<PathBuf> = Vec::new();
 
@@ -106,8 +107,8 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let ext = path.extension().and_then(|e| e.to_str());
 
-            if filename == HORUS_YAML {
-                horus_yamls.push(path.to_path_buf());
+            if filename == HORUS_TOML {
+                horus_manifests.push(path.to_path_buf());
             } else if ext == Some("rs") && filename != "build.rs" {
                 rust_files.push(path.to_path_buf());
             } else if ext == Some("py") {
@@ -116,7 +117,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
         }
     }
 
-    println!("  Found {} horus.yaml file(s)", horus_yamls.len());
+    println!("  Found {} horus.toml file(s)", horus_manifests.len());
     println!("  Found {} Rust file(s)", rust_files.len());
     println!("  Found {} Python file(s)\n", python_files.len());
 
@@ -138,97 +139,90 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 1: Validate horus.yaml manifests
+    // PHASE 1: Validate horus.toml manifests
     // ═══════════════════════════════════════════════════════════
-    if !horus_yamls.is_empty() {
+    if !horus_manifests.is_empty() {
         println!("{}", "━".repeat(60).dimmed());
         println!(
-            "{} Phase 1: Validating horus.yaml manifests...\n",
+            "{} Phase 1: Validating horus.toml manifests...\n",
             cli_output::ICON_INFO.cyan().bold()
         );
 
-        for yaml_path in &horus_yamls {
-            let rel_path = yaml_path.strip_prefix(target_path).unwrap_or(yaml_path);
+        for toml_path in &horus_manifests {
+            let rel_path = toml_path.strip_prefix(target_path).unwrap_or(toml_path);
             println!("  {} {}", "▸".cyan(), rel_path.display());
 
-            match fs::read_to_string(yaml_path) {
-                Ok(content) => {
-                    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                        Ok(yaml) => {
-                            let mut file_errors: Vec<String> = Vec::new();
-                            let base_dir = yaml_path.parent().unwrap_or(Path::new("."));
+            match HorusManifest::load_from(toml_path) {
+                Ok((manifest, _)) => {
+                    let mut file_errors: Vec<String> = Vec::new();
+                    let base_dir = toml_path.parent().unwrap_or(Path::new("."));
 
-                            // Required fields
-                            if yaml.get("name").is_none() {
-                                file_errors.push("missing 'name' field".to_string());
-                            }
-                            let language = yaml.get("language").and_then(|l| l.as_str());
-                            if language.is_none() {
-                                file_errors.push("missing 'language' field".to_string());
-                            }
-
-                            // Check main file exists
-                            if let Some(lang) = language {
-                                let main_exists = match lang {
-                                    "rust" => {
-                                        base_dir.join("main.rs").exists()
-                                            || base_dir.join("src/main.rs").exists()
-                                            || base_dir.join(CARGO_TOML).exists()
-                                    }
-                                    "python" => base_dir.join("main.py").exists(),
-                                    _ => true,
-                                };
-                                if !main_exists {
-                                    file_errors.push(format!("main file not found for '{}'", lang));
-                                }
-                            }
-
-                            // Validate path dependencies exist
-                            if let Ok(deps) =
-                                parse_horus_yaml_dependencies_v2(yaml_path.to_str().unwrap_or(""))
-                            {
-                                for dep in &deps {
-                                    if let DependencySource::Path(path_str) = &dep.source {
-                                        let dep_path = if Path::new(path_str).is_absolute() {
-                                            PathBuf::from(path_str)
-                                        } else {
-                                            base_dir.join(path_str)
-                                        };
-                                        if !dep_path.exists() {
-                                            file_errors.push(format!(
-                                                "dependency '{}' path not found: {}",
-                                                dep.name,
-                                                dep_path.display()
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-
-                            if file_errors.is_empty() {
-                                println!(
-                                    "      {} manifest valid",
-                                    cli_output::ICON_SUCCESS.green()
-                                );
-                            } else {
-                                for err in &file_errors {
-                                    println!("      {} {}", cli_output::ICON_ERROR.red(), err);
-                                }
-                                total_errors += file_errors.len();
+                    // Run manifest validation
+                    match manifest.validate() {
+                        Ok(warnings) => {
+                            for w in &warnings {
+                                println!("      {} {}", "⚠".yellow(), w);
                             }
                         }
                         Err(e) => {
-                            println!(
-                                "      {} YAML parse error: {}",
-                                cli_output::ICON_ERROR.red(),
-                                e
-                            );
-                            total_errors += 1;
+                            file_errors.push(e.to_string());
                         }
+                    }
+
+                    // Check main file exists based on language
+                    if let Some(ref lang) = manifest.package.language {
+                        let main_exists = match lang.as_str() {
+                            "rust" => {
+                                base_dir.join("main.rs").exists()
+                                    || base_dir.join("src/main.rs").exists()
+                                    || base_dir.join(CARGO_TOML).exists()
+                            }
+                            "python" => base_dir.join("main.py").exists(),
+                            _ => true,
+                        };
+                        if !main_exists {
+                            file_errors.push(format!("main file not found for '{}'", lang));
+                        }
+                    }
+
+                    // Validate path dependencies exist
+                    if let Ok(deps) = manifest.dependencies_as_specs() {
+                        for dep in &deps {
+                            if let DependencySource::Path(path_str) = &dep.source {
+                                let dep_path = if Path::new(path_str).is_absolute() {
+                                    PathBuf::from(path_str)
+                                } else {
+                                    base_dir.join(path_str)
+                                };
+                                if !dep_path.exists() {
+                                    file_errors.push(format!(
+                                        "dependency '{}' path not found: {}",
+                                        dep.name,
+                                        dep_path.display()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    if file_errors.is_empty() {
+                        println!(
+                            "      {} manifest valid",
+                            cli_output::ICON_SUCCESS.green()
+                        );
+                    } else {
+                        for err in &file_errors {
+                            println!("      {} {}", cli_output::ICON_ERROR.red(), err);
+                        }
+                        total_errors += file_errors.len();
                     }
                 }
                 Err(e) => {
-                    println!("      {} Read error: {}", cli_output::ICON_ERROR.red(), e);
+                    println!(
+                        "      {} TOML parse error: {}",
+                        cli_output::ICON_ERROR.red(),
+                        e
+                    );
                     total_errors += 1;
                 }
             }
@@ -428,14 +422,15 @@ except ImportError as e:
     Ok(())
 }
 
-/// Check a single file (horus.yaml, .rs, or .py)
-fn check_single_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
-    let extension = horus_yaml_path.extension().and_then(|s| s.to_str());
+/// Check a single file (horus.toml, .rs, or .py)
+fn check_single_file(file_path: &Path, quiet: bool) -> HorusResult<()> {
+    let extension = file_path.extension().and_then(|s| s.to_str());
 
     match extension {
-        Some("rs") => check_rust_file(horus_yaml_path),
-        Some("py") => check_python_file(horus_yaml_path),
-        _ => check_yaml_file(horus_yaml_path, quiet),
+        Some("rs") => check_rust_file(file_path),
+        Some("py") => check_python_file(file_path),
+        Some("toml") => check_manifest_file(file_path, quiet),
+        _ => check_manifest_file(file_path, quiet),
     }
 }
 
@@ -520,83 +515,62 @@ fn check_python_file(path: &Path) -> HorusResult<()> {
     Ok(())
 }
 
-/// Check a horus.yaml manifest file
-fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
+/// Check a horus.toml manifest file
+fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     println!(
         "{} Checking {}...\n",
         cli_output::ICON_INFO.cyan(),
-        horus_yaml_path.display()
+        manifest_path.display()
     );
 
     let mut errors = Vec::new();
     let mut warn_msgs = Vec::new();
-    let base_dir = horus_yaml_path.parent().unwrap_or(Path::new("."));
+    let base_dir = manifest_path.parent().unwrap_or(Path::new("."));
 
-    // 1. YAML Syntax Validation
-    print!("  {} Validating YAML syntax... ", "▸".cyan());
-    let yaml_content = match fs::read_to_string(horus_yaml_path) {
-        Ok(content) => {
+    // 1. TOML Syntax Validation
+    print!("  {} Validating TOML syntax... ", "▸".cyan());
+    let manifest = match HorusManifest::load_from(manifest_path) {
+        Ok((m, _)) => {
             println!("{}", cli_output::ICON_SUCCESS.green());
-            content
+            Some(m)
         }
         Err(e) => {
             println!("{}", cli_output::ICON_ERROR.red());
-            errors.push(format!("Cannot read file: {}", e));
-            String::new()
+            errors.push(format!("Failed to parse manifest: {}", e));
+            None
         }
     };
 
-    let yaml_value: Option<serde_yaml::Value> = if !yaml_content.is_empty() {
-        match serde_yaml::from_str(&yaml_content) {
-            Ok(val) => Some(val),
-            Err(e) => {
-                errors.push(format!("Invalid YAML syntax: {}", e));
-                None
+    if let Some(ref manifest) = manifest {
+        // 2. Manifest Validation (name, version, etc.)
+        print!("  {} Validating manifest fields... ", "▸".cyan());
+        match manifest.validate() {
+            Ok(warnings) => {
+                println!("{}", cli_output::ICON_SUCCESS.green());
+                for w in warnings {
+                    warn_msgs.push(w);
+                }
             }
-        }
-    } else {
-        errors.push(
-            "Empty horus.yaml file — must contain at least 'name' and 'version' fields".to_string(),
-        );
-        None
-    };
-
-    // 2. Required Fields Check
-    if let Some(ref yaml) = yaml_value {
-        print!("  {} Checking required fields... ", "▸".cyan());
-        let mut missing_fields = Vec::new();
-
-        if yaml.get("name").is_none() {
-            missing_fields.push("name");
-        }
-        if yaml.get("version").is_none() {
-            missing_fields.push("version");
-        }
-
-        if missing_fields.is_empty() {
-            println!("{}", cli_output::ICON_SUCCESS.green());
-        } else {
-            println!("{}", cli_output::ICON_ERROR.red());
-            errors.push(format!(
-                "Missing required fields: {}",
-                missing_fields.join(", ")
-            ));
+            Err(e) => {
+                println!("{}", cli_output::ICON_ERROR.red());
+                errors.push(e.to_string());
+            }
         }
 
         // Optional fields warning
         if !quiet {
-            if yaml.get("description").is_none() {
+            if manifest.package.description.is_none() {
                 warn_msgs.push("Optional field missing: description".to_string());
             }
-            if yaml.get("author").is_none() {
-                warn_msgs.push("Optional field missing: author".to_string());
+            if manifest.package.authors.is_empty() {
+                warn_msgs.push("Optional field missing: authors".to_string());
             }
         }
 
         // License warning
         print!("  {} Checking license field... ", "▸".cyan());
         let missing_license_warning = "No license specified. Consider adding a license field (e.g., Apache-2.0, BSD-3-Clause).";
-        if let Some(license) = yaml.get("license").and_then(|l| l.as_str()) {
+        if let Some(ref license) = manifest.package.license {
             if license.trim().is_empty() {
                 println!("{}", "[WARNING]".yellow());
                 warn_msgs.push(missing_license_warning.to_string());
@@ -614,7 +588,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
         // Language validation
         print!("  {} Validating language field... ", "▸".cyan());
-        if let Some(language) = yaml.get("language").and_then(|l| l.as_str()) {
+        if let Some(ref language) = manifest.package.language {
             if language == "rust" || language == "python" {
                 println!("{}", cli_output::ICON_SUCCESS.green());
             } else {
@@ -627,67 +601,13 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
         } else {
             println!("{}", cli_output::ICON_ERROR.red());
             errors
-                .push("Missing or invalid 'language' field - must be: rust or python".to_string());
-        }
-
-        // Version format validation
-        print!("  {} Validating version format... ", "▸".cyan());
-        if let Some(version_str) = yaml.get("version").and_then(|v| v.as_str()) {
-            use semver::Version;
-            match Version::parse(version_str) {
-                Ok(_) => println!("{}", cli_output::ICON_SUCCESS.green()),
-                Err(e) => {
-                    println!("{}", cli_output::ICON_ERROR.red());
-                    errors.push(format!(
-                        "Invalid version format '{}': {} (must be valid semver like 0.1.0)",
-                        version_str, e
-                    ));
-                }
-            }
-        } else if yaml.get("version").is_some() {
-            println!("{}", cli_output::ICON_ERROR.red());
-            errors.push("Version field must be a string".to_string());
-        }
-
-        // Project name validation
-        print!("  {} Validating project name... ", "▸".cyan());
-        if let Some(name) = yaml.get("name").and_then(|n| n.as_str()) {
-            let mut name_issues = Vec::new();
-
-            if name.is_empty() {
-                name_issues.push("name cannot be empty");
-            }
-            if name.contains(' ') {
-                name_issues.push("name cannot contain spaces");
-            }
-            if name
-                .chars()
-                .any(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
-            {
-                name_issues
-                    .push("name can only contain letters, numbers, hyphens, and underscores");
-            }
-
-            if name_issues.is_empty() {
-                println!("{}", cli_output::ICON_SUCCESS.green());
-                if !quiet && name.chars().any(|c| c.is_uppercase()) {
-                    warn_msgs.push(format!(
-                        "Project name '{}' contains uppercase - consider using lowercase",
-                        name
-                    ));
-                }
-            } else {
-                println!("{}", cli_output::ICON_ERROR.red());
-                for issue in name_issues {
-                    errors.push(format!("Invalid project name: {}", issue));
-                }
-            }
+                .push("Missing 'language' field - must be: rust or python".to_string());
         }
 
         // Main file existence check
         print!("  {} Checking for main file... ", "▸".cyan());
-        if let Some(language) = yaml.get("language").and_then(|l| l.as_str()) {
-            let main_files = match language {
+        if let Some(ref language) = manifest.package.language {
+            let main_files = match language.as_str() {
                 "rust" => vec!["main.rs", "src/main.rs"],
                 "python" => vec!["main.py"],
                 _ => vec![],
@@ -719,16 +639,20 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
     // 3. Parse Dependencies
     print!("  {} Parsing dependencies... ", "▸".cyan());
-    let dep_specs = match parse_horus_yaml_dependencies_v2(&horus_yaml_path.to_string_lossy()) {
-        Ok(specs) => {
-            println!("{}", cli_output::ICON_SUCCESS.green());
-            specs
+    let dep_specs = if let Some(ref manifest) = manifest {
+        match manifest.dependencies_as_specs() {
+            Ok(specs) => {
+                println!("{}", cli_output::ICON_SUCCESS.green());
+                specs
+            }
+            Err(e) => {
+                println!("{}", cli_output::ICON_ERROR.red());
+                errors.push(format!("Failed to parse dependencies: {}", e));
+                Vec::new()
+            }
         }
-        Err(e) => {
-            println!("{}", cli_output::ICON_ERROR.red());
-            errors.push(format!("Failed to parse dependencies: {}", e));
-            Vec::new()
-        }
+    } else {
+        Vec::new()
     };
 
     // 4. Check for Duplicates
@@ -817,31 +741,30 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                 base_dir.join(path)
             };
 
-            let target_yaml = resolved_path.join(HORUS_YAML);
-            if target_yaml.exists() {
-                if let Ok(target_deps) =
-                    parse_horus_yaml_dependencies_v2(&target_yaml.to_string_lossy())
-                {
-                    let our_name = yaml_value
-                        .as_ref()
-                        .and_then(|y| y.get("name"))
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("");
+            let target_toml = resolved_path.join(HORUS_TOML);
+            if target_toml.exists() {
+                if let Ok((target_manifest, _)) = HorusManifest::load_from(&target_toml) {
+                    if let Ok(target_deps) = target_manifest.dependencies_as_specs() {
+                        let our_name = manifest
+                            .as_ref()
+                            .map(|m| m.package.name.as_str())
+                            .unwrap_or("");
 
-                    for target_dep in target_deps {
-                        if target_dep.name == our_name {
-                            if let DependencySource::Path(_) = target_dep.source {
-                                circular_found = true;
-                                errors.push(format!(
-                                    "Circular dependency detected: {} -> {} -> {}",
-                                    our_name, spec.name, our_name
-                                ));
-                                println!(
-                                    "    {} Circular: {} <-> {}",
-                                    cli_output::ICON_ERROR.red(),
-                                    our_name,
-                                    spec.name
-                                );
+                        for target_dep in target_deps {
+                            if target_dep.name == our_name {
+                                if let DependencySource::Path(_) = target_dep.source {
+                                    circular_found = true;
+                                    errors.push(format!(
+                                        "Circular dependency detected: {} -> {} -> {}",
+                                        our_name, spec.name, our_name
+                                    ));
+                                    println!(
+                                        "    {} Circular: {} <-> {}",
+                                        cli_output::ICON_ERROR.red(),
+                                        our_name,
+                                        spec.name
+                                    );
+                                }
                             }
                         }
                     }
@@ -873,7 +796,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
     // 8. Workspace Structure Check
     print!("\n  {} Checking workspace structure... ", "▸".cyan());
-    let base_dir = horus_yaml_path.parent().unwrap_or_else(|| Path::new("."));
+    let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let horus_dir = base_dir.join(".horus");
 
     if horus_dir.exists() && horus_dir.is_dir() {
@@ -935,8 +858,9 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
     // 10. Toolchain Check
     print!("  {} Checking toolchain... ", "▸".cyan());
-    if let Some(ref yaml) = yaml_value {
-        if let Some(language) = yaml.get("language").and_then(|l| l.as_str()) {
+    if let Some(ref m) = manifest {
+        if let Some(ref language) = m.package.language {
+            let language = language.as_str();
             let toolchain_available = match language {
                 "rust" => std::process::Command::new("rustc")
                     .arg("--version")
@@ -969,8 +893,9 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
     // 11. Code Validation
     print!("  {} Validating code syntax... ", "▸".cyan());
-    if let Some(ref yaml) = yaml_value {
-        if let Some(language) = yaml.get("language").and_then(|l| l.as_str()) {
+    if let Some(ref m) = manifest {
+        if let Some(ref lang) = m.package.language {
+            let language = lang.as_str();
             match language {
                 "rust" => {
                     let has_cargo = base_dir.join(CARGO_TOML).exists();
@@ -1181,8 +1106,9 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
     // 15. API Usage Check
     print!("  {} Checking API usage... ", "▸".cyan());
-    if let Some(ref yaml) = yaml_value {
-        if let Some(language) = yaml.get("language").and_then(|l| l.as_str()) {
+    if let Some(ref m) = manifest {
+        if let Some(ref lang_str) = m.package.language {
+            let language = lang_str.as_str();
             match language {
                 "rust" => {
                     let uses_horus = dep_specs
@@ -1466,45 +1392,41 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Helper: write a horus.yaml with given content into a temp dir and return the path
-    fn write_yaml(dir: &TempDir, content: &str) -> PathBuf {
-        let yaml_path = dir.path().join("horus.yaml");
-        fs::write(&yaml_path, content).unwrap();
-        yaml_path
+    /// Helper: write a horus.toml with given content into a temp dir and return the path
+    fn write_toml(dir: &TempDir, content: &str) -> PathBuf {
+        let toml_path = dir.path().join("horus.toml");
+        fs::write(&toml_path, content).unwrap();
+        toml_path
     }
 
-    // ─── YAML Syntax Tests ───
+    // ─── TOML Syntax Tests ───
 
     #[test]
-    fn valid_yaml_passes_check() {
+    fn valid_toml_passes_check() {
         let dir = TempDir::new().unwrap();
-        // Create a valid horus.yaml with all required fields
-        // Don't create Cargo.toml — code validation step simply skips
-        write_yaml(&dir, "name: my-robot\nversion: \"0.1.0\"\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(
             result.is_ok(),
-            "Valid horus.yaml should pass: {:?}",
+            "Valid horus.toml should pass: {:?}",
             result.err()
         );
     }
 
     #[test]
-    fn malformed_yaml_returns_error() {
+    fn malformed_toml_returns_error() {
         let dir = TempDir::new().unwrap();
-        // Deliberately malformed YAML (tabs in wrong place, invalid mapping)
-        write_yaml(&dir, "name: [\ninvalid: yaml: content:\n  - broken");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
-        assert!(result.is_err(), "Malformed YAML should fail validation");
+        write_toml(&dir, "[package\ninvalid toml content");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        assert!(result.is_err(), "Malformed TOML should fail validation");
     }
 
     #[test]
-    fn empty_yaml_returns_error() {
+    fn empty_toml_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(&dir, "");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
-        // Empty file has no required fields
-        assert!(result.is_err(), "Empty YAML should fail");
+        write_toml(&dir, "");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        assert!(result.is_err(), "Empty TOML should fail");
     }
 
     // ─── Required Fields Tests ───
@@ -1512,24 +1434,26 @@ mod tests {
     #[test]
     fn missing_name_field_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(&dir, "version: \"0.1.0\"\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Missing 'name' should fail");
     }
 
     #[test]
     fn missing_version_field_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(&dir, "name: my-robot\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my-robot\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Missing 'version' should fail");
     }
 
     #[test]
     fn missing_language_field_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(&dir, "name: my-robot\nversion: \"0.1.0\"\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        // Note: language is optional in manifest schema, but check command warns about it
+        // This test may pass or fail depending on whether language is treated as required
         assert!(result.is_err(), "Missing 'language' should fail");
     }
 
@@ -1538,19 +1462,16 @@ mod tests {
     #[test]
     fn invalid_version_format_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(
-            &dir,
-            "name: my-robot\nversion: not_a_version\nlanguage: rust\n",
-        );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"not_a_version\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Invalid semver version should fail");
     }
 
     #[test]
     fn valid_semver_version_passes() {
         let dir = TempDir::new().unwrap();
-        write_yaml(&dir, "name: my-robot\nversion: \"1.2.3\"\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"1.2.3\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(
             result.is_ok(),
             "Valid semver should pass: {:?}",
@@ -1563,11 +1484,8 @@ mod tests {
     #[test]
     fn invalid_language_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(
-            &dir,
-            "name: my-robot\nversion: \"0.1.0\"\nlanguage: javascript\n",
-        );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\nlanguage = \"javascript\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Invalid language 'javascript' should fail");
     }
 
@@ -1576,33 +1494,24 @@ mod tests {
     #[test]
     fn name_with_spaces_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(
-            &dir,
-            "name: \"my robot\"\nversion: \"0.1.0\"\nlanguage: rust\n",
-        );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my robot\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Name with spaces should fail");
     }
 
     #[test]
     fn name_with_special_chars_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_yaml(
-            &dir,
-            "name: \"my@robot!\"\nversion: \"0.1.0\"\nlanguage: rust\n",
-        );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my@robot!\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Name with special chars should fail");
     }
 
     #[test]
     fn name_with_hyphens_and_underscores_passes() {
         let dir = TempDir::new().unwrap();
-        write_yaml(
-            &dir,
-            "name: my-robot_v2\nversion: \"0.1.0\"\nlanguage: rust\n",
-        );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        write_toml(&dir, "[package]\nname = \"my-robot_v2\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(
             result.is_ok(),
             "Hyphens and underscores in name should pass: {:?}",
@@ -1634,11 +1543,11 @@ mod tests {
         fs::create_dir_all(&pkg_a).unwrap();
         fs::create_dir_all(&pkg_b).unwrap();
 
-        // A depends on B via path (map format: dependencies: { pkg-b: { path: ... } })
+        // A depends on B via path
         fs::write(
-            pkg_a.join("horus.yaml"),
+            pkg_a.join("horus.toml"),
             format!(
-                "name: pkg-a\nversion: \"0.1.0\"\nlanguage: rust\ndependencies:\n  pkg-b:\n    path: \"{}\"\n",
+                "[package]\nname = \"pkg-aa\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n\n[dependencies.pkg-bb]\npath = \"{}\"\n",
                 pkg_b.display()
             ),
         )
@@ -1646,16 +1555,16 @@ mod tests {
 
         // B depends on A via path (circular!)
         fs::write(
-            pkg_b.join("horus.yaml"),
+            pkg_b.join("horus.toml"),
             format!(
-                "name: pkg-b\nversion: \"0.1.0\"\nlanguage: rust\ndependencies:\n  pkg-a:\n    path: \"{}\"\n",
+                "[package]\nname = \"pkg-bb\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n\n[dependencies.pkg-aa]\npath = \"{}\"\n",
                 pkg_a.display()
             ),
         )
         .unwrap();
 
         // Check package A — should detect the circular dependency
-        let result = run_check(Some(pkg_a.join("horus.yaml")), true, false);
+        let result = run_check(Some(pkg_a.join("horus.toml")), true, false);
         assert!(result.is_err(), "Circular dependency A→B→A should fail");
     }
 
@@ -1664,12 +1573,11 @@ mod tests {
     #[test]
     fn path_dependency_nonexistent_returns_error() {
         let dir = TempDir::new().unwrap();
-        // Use map format: dependencies: { missing-dep: { path: ./nonexistent_dir } }
-        write_yaml(
+        write_toml(
             &dir,
-            "name: my-robot\nversion: \"0.1.0\"\nlanguage: rust\ndependencies:\n  missing-dep:\n    path: ./nonexistent_dir\n",
+            "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n\n[dependencies.missing-dep]\npath = \"./nonexistent_dir\"\n",
         );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(
             result.is_err(),
             "Path dependency to non-existent dir should fail"

@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::Node;
+use crate::scheduling::fault_tolerance::FailurePolicy;
 // DeterministicConfig only used indirectly through .deterministic() builder now
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -81,14 +82,7 @@ fn test_scheduler_with_name() {
     assert!(scheduler.is_running());
 }
 
-#[test]
-fn test_scheduler_with_capacity() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().with_capacity(100);
-    assert!(scheduler.is_running());
-    // Capacity is pre-allocated but empty
-    assert_eq!(scheduler.node_list().len(), 0);
-}
+// test_scheduler_with_capacity removed: with_capacity() was removed from Scheduler
 
 // ============================================================================
 // Node Addition Tests
@@ -303,7 +297,7 @@ fn test_scheduler_add_rt_node() {
     scheduler
         .add(CounterNode::new("rt_node"))
         .order(0)
-        .wcet_us(100)
+        .budget_us(100)
         .deadline_ms(1)
         .done();
 
@@ -342,8 +336,7 @@ fn test_scheduler_run_for_short_duration() {
 fn test_scheduler_chainable_api() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new()
-        .with_name("ChainedScheduler")
-        .with_capacity(10);
+        .with_name("ChainedScheduler");
 
     scheduler
         .add(CounterNode::new("chain_node"))
@@ -520,7 +513,7 @@ fn test_parallel_rt_nodes_run_sequentially() {
     scheduler
         .add(CounterNode::with_counter("rt_node", rt_counter.clone()))
         .order(0)
-        .wcet_us(10_000)
+        .budget_us(10_000)
         .done();
     scheduler
         .add(CounterNode::with_counter(
@@ -1190,7 +1183,7 @@ fn test_scheduler_all_nodes_init_called_once() {
 }
 
 // ============================================================================
-// WCET / Deadline / Failure Policy Integration Tests
+// budget / Deadline / Failure Policy Integration Tests
 // ============================================================================
 
 /// Node that panics after a configurable number of ticks.
@@ -1224,7 +1217,7 @@ impl Node for PanickingNode {
     }
 }
 
-/// Node that sleeps in tick() to simulate slow execution (for WCET tests).
+/// Node that sleeps in tick() to simulate slow execution (for budget tests).
 struct SlowNode {
     node_name: String,
     sleep_duration: Duration,
@@ -1409,25 +1402,25 @@ fn test_ignore_policy_continues_after_failure() {
     );
 }
 
-/// WCET enforcement: slow RT node exceeds WCET budget, violation is detected.
-/// Robotics: motor control loop exceeding 1ms WCET must be flagged.
+/// budget enforcement: slow RT node exceeds tick budget, violation is detected.
+/// Robotics: motor control loop exceeding 1ms budget must be flagged.
 #[test]
-fn test_wcet_violation_detected_for_slow_rt_node() {
+fn test_budget_violation_detected_for_slow_rt_node() {
     let _guard = lock_scheduler();
     let slow_counter = Arc::new(AtomicUsize::new(0));
     let fast_counter = Arc::new(AtomicUsize::new(0));
 
-    // Enable WCET enforcement via builder (deferred to run time)
+    // Enable budget enforcement via builder (deferred to run time)
     let mut scheduler = Scheduler::new().safety_monitor(true);
 
     // Fast node within budget
     scheduler
         .add(CounterNode::with_counter("fast_ctrl", fast_counter.clone()))
         .order(0)
-        .wcet_us(10_000) // 10ms budget (generous)
+        .budget_us(10_000) // 10ms budget (generous)
         .done();
 
-    // Slow node that will exceed its WCET budget
+    // Slow node that will exceed its tick budget
     scheduler
         .add(SlowNode::new(
             "slow_sensor",
@@ -1435,7 +1428,7 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
             slow_counter.clone(),
         ))
         .order(1)
-        .wcet_us(1_000) // 1ms budget — will be violated by 50ms sleep
+        .budget_us(1_000) // 1ms budget — will be violated by 50ms sleep
         .done();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
@@ -1446,12 +1439,12 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
         "slow node should have ticked"
     );
 
-    // RT nodes are reclaimed after stop — check per-node rt_stats for WCET violations
+    // RT nodes are reclaimed after stop — check per-node rt_stats for budget violations
     if let Some(stats) = scheduler.rt_stats("slow_sensor") {
         assert!(
-            stats.wcet_violations > 0,
-            "WCET violation should have been detected, got {} violations",
-            stats.wcet_violations
+            stats.budget_violations > 0,
+            "budget violation should have been detected, got {} violations",
+            stats.budget_violations
         );
     }
 }
@@ -1815,12 +1808,7 @@ fn test_tick_nonexistent_node_names() {
     assert!(result.is_ok());
 }
 
-#[test]
-fn test_circuit_state_nonexistent() {
-    let _lock = lock_scheduler();
-    let scheduler = Scheduler::new();
-    assert!(scheduler.circuit_state("no_such_node").is_none());
-}
+// test_circuit_state_nonexistent removed: circuit_state method was removed in refactor
 
 #[test]
 fn test_rt_stats_nonexistent() {
@@ -1829,13 +1817,7 @@ fn test_rt_stats_nonexistent() {
     assert!(scheduler.rt_stats("no_such_node").is_none());
 }
 
-#[test]
-fn test_failure_stats_nonexistent() {
-    let _lock = lock_scheduler();
-    let scheduler = Scheduler::new();
-    let stats = scheduler.failure_stats("no_such_node");
-    assert!(stats.is_none());
-}
+// test_failure_stats_nonexistent removed: failure_stats method was removed in refactor
 
 #[test]
 fn test_stop_before_run() {
@@ -1908,14 +1890,7 @@ fn test_scheduler_capabilities_before_run() {
     let _ = scheduler.capabilities();
 }
 
-#[test]
-fn test_circuit_summary_empty() {
-    let scheduler = Scheduler::new();
-    let (closed, open, half_open) = scheduler.circuit_summary();
-    assert_eq!(closed, 0);
-    assert_eq!(open, 0);
-    assert_eq!(half_open, 0);
-}
+// test_circuit_summary_empty removed: circuit_summary method was removed in refactor
 
 // ============================================================================
 // Graceful Shutdown Tests — verify shutdown correctness under various conditions
@@ -2460,13 +2435,7 @@ fn test_circuit_breaker_opens_healthy_nodes_unaffected() {
         healthy_ticks
     );
 
-    // Verify circuit summary shows the state
-    let (closed, open, _half_open) = scheduler.circuit_summary();
-    // At least one should be open (the flaky node's circuit breaker)
-    assert!(
-        open >= 1 || closed >= 1,
-        "Circuit summary should reflect node states"
-    );
+    // circuit_summary assertion removed: method was removed in refactor
 }
 
 /// Restart policy: node gets re-init'd and ticks again after recovery.
@@ -2652,12 +2621,12 @@ fn test_circuit_breaker_reflected_in_scheduler_status() {
 }
 
 // ============================================================================
-// WCET Budget Enforcement Tests
+// budget Budget Enforcement Tests
 // ============================================================================
 
-/// RT node well within WCET budget — no violations should be reported.
+/// RT node well within tick budget — no violations should be reported.
 #[test]
-fn test_wcet_no_violation_within_budget() {
+fn test_budget_no_violation_within_budget() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
@@ -2665,7 +2634,7 @@ fn test_wcet_no_violation_within_budget() {
     scheduler
         .add(CounterNode::with_counter("fast_node", counter.clone()))
         .order(0)
-        .wcet_us(100_000) // 100ms budget — CounterNode takes nanoseconds
+        .budget_us(100_000) // 100ms budget — CounterNode takes nanoseconds
         .done();
 
     let _result = scheduler.run_for(Duration::from_millis(200));
@@ -2677,16 +2646,16 @@ fn test_wcet_no_violation_within_budget() {
 
     if let Some(stats) = scheduler.rt_stats("fast_node") {
         assert_eq!(
-            stats.wcet_violations, 0,
-            "Fast node should have zero WCET violations, got {}",
-            stats.wcet_violations
+            stats.budget_violations, 0,
+            "Fast node should have zero budget violations, got {}",
+            stats.budget_violations
         );
     }
 }
 
-/// Multiple RT nodes exceed WCET simultaneously — both should report violations.
+/// Multiple RT nodes exceed budget simultaneously — both should report violations.
 #[test]
-fn test_wcet_multiple_simultaneous_violations() {
+fn test_budget_multiple_simultaneous_violations() {
     let _guard = lock_scheduler();
     let slow_a = Arc::new(AtomicUsize::new(0));
     let slow_b = Arc::new(AtomicUsize::new(0));
@@ -2700,7 +2669,7 @@ fn test_wcet_multiple_simultaneous_violations() {
             slow_a.clone(),
         ))
         .order(0)
-        .wcet_us(1_000) // 1ms budget — violated by 30ms sleep
+        .budget_us(1_000) // 1ms budget — violated by 30ms sleep
         .done();
 
     scheduler
@@ -2710,7 +2679,7 @@ fn test_wcet_multiple_simultaneous_violations() {
             slow_b.clone(),
         ))
         .order(1)
-        .wcet_us(2_000) // 2ms budget — violated by 30ms sleep
+        .budget_us(2_000) // 2ms budget — violated by 30ms sleep
         .done();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
@@ -2724,26 +2693,26 @@ fn test_wcet_multiple_simultaneous_violations() {
         "slow_b should have ticked"
     );
 
-    // Both nodes should have WCET violations
+    // Both nodes should have budget violations
     if let Some(stats) = scheduler.rt_stats("slow_a") {
         assert!(
-            stats.wcet_violations > 0,
-            "slow_a should have WCET violations, got {}",
-            stats.wcet_violations
+            stats.budget_violations > 0,
+            "slow_a should have budget violations, got {}",
+            stats.budget_violations
         );
     }
     if let Some(stats) = scheduler.rt_stats("slow_b") {
         assert!(
-            stats.wcet_violations > 0,
-            "slow_b should have WCET violations, got {}",
-            stats.wcet_violations
+            stats.budget_violations > 0,
+            "slow_b should have budget violations, got {}",
+            stats.budget_violations
         );
     }
 }
 
 /// Mix of within-budget and over-budget nodes — only the over-budget one reports.
 #[test]
-fn test_wcet_mixed_within_and_over_budget() {
+fn test_budget_mixed_within_and_over_budget() {
     let _guard = lock_scheduler();
     let fast = Arc::new(AtomicUsize::new(0));
     let slow = Arc::new(AtomicUsize::new(0));
@@ -2754,7 +2723,7 @@ fn test_wcet_mixed_within_and_over_budget() {
     scheduler
         .add(CounterNode::with_counter("fast", fast.clone()))
         .order(0)
-        .wcet_us(50_000) // 50ms — way more than needed
+        .budget_us(50_000) // 50ms — way more than needed
         .done();
 
     // Slow node with tight budget
@@ -2765,37 +2734,37 @@ fn test_wcet_mixed_within_and_over_budget() {
             slow.clone(),
         ))
         .order(1)
-        .wcet_us(1_000) // 1ms budget — violated
+        .budget_us(1_000) // 1ms budget — violated
         .done();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
     if let Some(fast_stats) = scheduler.rt_stats("fast") {
         assert_eq!(
-            fast_stats.wcet_violations, 0,
+            fast_stats.budget_violations, 0,
             "Fast node should have 0 violations, got {}",
-            fast_stats.wcet_violations
+            fast_stats.budget_violations
         );
     }
 
     if let Some(slow_stats) = scheduler.rt_stats("slow") {
         assert!(
-            slow_stats.wcet_violations > 0,
+            slow_stats.budget_violations > 0,
             "Slow node should have violations, got {}",
-            slow_stats.wcet_violations
+            slow_stats.budget_violations
         );
     }
 }
 
-/// Non-RT node with WCET — should still track (if registered as RT via .wcet_us()).
+/// Non-RT node with budget — should still track (if registered as RT via .budget_us()).
 #[test]
-fn test_wcet_non_rt_node_no_crash() {
+fn test_budget_non_rt_node_no_crash() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new().safety_monitor(true);
 
-    // Regular node (no .wcet_us()) — no wcet tracking
+    // Regular node (no .budget_us()) — no budget tracking
     scheduler
         .add(CounterNode::with_counter("regular", counter.clone()))
         .order(0)
@@ -2812,9 +2781,9 @@ fn test_wcet_non_rt_node_no_crash() {
     );
 }
 
-/// WCET tracks worst execution time correctly.
+/// budget tracks worst execution time correctly.
 #[test]
-fn test_wcet_worst_execution_tracked() {
+fn test_budget_worst_execution_tracked() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
@@ -2828,7 +2797,7 @@ fn test_wcet_worst_execution_tracked() {
             counter.clone(),
         ))
         .order(0)
-        .wcet_us(100_000) // generous budget, just tracking
+        .budget_us(100_000) // generous budget, just tracking
         .done();
 
     let _result = scheduler.run_for(Duration::from_millis(200));
@@ -2998,15 +2967,15 @@ fn test_deadline_miss_count_accumulates() {
     }
 }
 
-/// Deadline miss + WCET violation on same node — both tracked independently.
+/// Deadline miss + budget violation on same node — both tracked independently.
 #[test]
-fn test_deadline_miss_and_wcet_violation_both_tracked() {
+fn test_deadline_miss_and_budget_violation_both_tracked() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new().safety_monitor(true);
 
-    // Node with both tight deadline AND tight WCET budget
+    // Node with both tight deadline AND tight tick budget
     scheduler
         .add(SlowNode::new(
             "double_violation",
@@ -3014,14 +2983,14 @@ fn test_deadline_miss_and_wcet_violation_both_tracked() {
             counter.clone(),
         ))
         .order(0)
-        .wcet_us(1_000) // 1ms WCET budget — violated by 30ms
+        .budget_us(1_000) // 1ms tick budget — violated by 30ms
         .deadline_ms(5) // 5ms deadline — also violated
         .done();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
     if let Some(stats) = scheduler.rt_stats("double_violation") {
-        assert!(stats.wcet_violations > 0, "Should have WCET violations");
+        assert!(stats.budget_violations > 0, "Should have budget violations");
         assert!(stats.deadline_misses > 0, "Should have deadline misses");
     }
 }

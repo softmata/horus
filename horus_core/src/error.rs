@@ -1021,7 +1021,7 @@ impl HorusError {
                 Some("CRITICAL: Received a corrupt IPC tensor descriptor. This indicates data corruption or a malicious sender. Do NOT use the data. Investigate the sending process."),
 
             // === Config ===
-            Self::Config(ConfigError::ParseFailed { format, .. }) =>
+            Self::Config(ConfigError::ParseFailed { format: _, .. }) =>
                 Some("Check the config file syntax. Run a linter for the format (e.g., `taplo check` for TOML, `yamllint` for YAML)."),
             Self::Config(ConfigError::MissingField { .. }) =>
                 Some("A required field is missing from the config file. Check the documentation for the expected schema."),

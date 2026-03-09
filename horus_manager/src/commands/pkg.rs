@@ -5,7 +5,8 @@
 
 use crate::cargo_utils::is_executable;
 use crate::cli_output;
-use crate::config::{CARGO_TOML, HORUS_YAML};
+use crate::config::CARGO_TOML;
+use crate::manifest::{DependencyValue, DetailedDependency, HorusManifest, HORUS_TOML};
 use crate::plugins::{
     CommandInfo, Compatibility, PluginEntry, PluginRegistry, PluginResolver, PluginScope,
     PluginSource, VerificationStatus, HORUS_VERSION,
@@ -21,13 +22,13 @@ use std::path::{Path, PathBuf};
 ///
 /// Returns Some(PluginMetadata) if the package provides CLI extensions
 pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
-    // Check for horus.yaml with plugin configuration
-    let horus_yaml = package_dir.join(HORUS_YAML);
-    if horus_yaml.exists() {
-        if let Ok(content) = fs::read_to_string(&horus_yaml) {
-            if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                if let Some(plugin) = yaml.get("plugin") {
-                    return parse_plugin_yaml(plugin, &yaml, package_dir);
+    // Check for horus.toml with plugin configuration
+    let horus_toml_path = package_dir.join(HORUS_TOML);
+    if horus_toml_path.exists() {
+        if let Ok(content) = fs::read_to_string(&horus_toml_path) {
+            if let Ok(toml_val) = content.parse::<toml::Table>() {
+                if let Some(plugin) = toml_val.get("plugin") {
+                    return parse_plugin_toml_manifest(plugin, &toml_val, package_dir);
                 }
             }
         }
@@ -157,32 +158,34 @@ pub struct PluginMetadata {
     pub permissions: Vec<String>,
 }
 
-fn parse_plugin_yaml(
-    plugin: &serde_yaml::Value,
-    yaml: &serde_yaml::Value,
+fn parse_plugin_toml_manifest(
+    plugin: &toml::Value,
+    toml_table: &toml::Table,
     package_dir: &Path,
 ) -> Option<PluginMetadata> {
     let command = plugin.get("command")?.as_str()?.to_string();
     let binary_rel = plugin.get("binary")?.as_str()?;
     let binary = package_dir.join(binary_rel);
 
-    let package_name = yaml
-        .get("name")
+    let package_name = toml_table
+        .get("package")
+        .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str())
         .unwrap_or("unknown")
         .to_string();
 
-    let version = yaml
-        .get("version")
+    let version = toml_table
+        .get("package")
+        .and_then(|p| p.get("version"))
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.0")
         .to_string();
 
     let commands = plugin
         .get("subcommands")
-        .and_then(|s| s.as_sequence())
-        .map(|seq| {
-            seq.iter()
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
                 .filter_map(|item| {
                     let name = item.get("name")?.as_str()?.to_string();
                     let description = item
@@ -213,9 +216,9 @@ fn parse_plugin_yaml(
                 .unwrap_or_else(|| "2.0.0".to_string()),
             platforms: c
                 .get("platforms")
-                .and_then(|p| p.as_sequence())
-                .map(|seq| {
-                    seq.iter()
+                .and_then(|p| p.as_array())
+                .map(|arr| {
+                    arr.iter()
                         .filter_map(|v| v.as_str().map(|s| s.to_string()))
                         .collect()
                 })
@@ -225,9 +228,9 @@ fn parse_plugin_yaml(
 
     let permissions = plugin
         .get("permissions")
-        .and_then(|p| p.as_sequence())
-        .map(|seq| {
-            seq.iter()
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect()
         })
@@ -322,15 +325,11 @@ fn find_binary(package_dir: &Path, binary_name: &str) -> Option<PathBuf> {
 }
 
 fn detect_version(package_dir: &Path) -> Option<String> {
-    // Try horus.yaml
-    let horus_yaml = package_dir.join(HORUS_YAML);
-    if horus_yaml.exists() {
-        if let Ok(content) = fs::read_to_string(&horus_yaml) {
-            if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                if let Some(version) = yaml.get("version").and_then(|v| v.as_str()) {
-                    return Some(version.to_string());
-                }
-            }
+    // Try horus.toml
+    let horus_toml_path = package_dir.join(HORUS_TOML);
+    if horus_toml_path.exists() {
+        if let Ok((manifest, _)) = HorusManifest::load_from(&horus_toml_path) {
+            return Some(manifest.package.version);
         }
     }
 
@@ -828,8 +827,40 @@ pub fn list_plugins(show_global: bool, show_project: bool) -> Result<()> {
 
 // ── Package management command handlers ──────────────────────────────────
 
-use crate::{registry, workspace, yaml_utils};
+use crate::{registry, workspace};
 use horus_core::error::{ConfigError, HorusError, HorusResult};
+
+/// Read the package name from a directory by checking horus.toml, then Cargo.toml
+fn read_package_name_from_path(path: &Path) -> Result<String> {
+    // Try horus.toml first
+    let horus_toml_path = path.join(HORUS_TOML);
+    if horus_toml_path.exists() {
+        if let Ok((manifest, _)) = HorusManifest::load_from(&horus_toml_path) {
+            return Ok(manifest.package.name);
+        }
+    }
+
+    // Try Cargo.toml
+    let cargo_toml_path = path.join(CARGO_TOML);
+    if cargo_toml_path.exists() {
+        let content = fs::read_to_string(&cargo_toml_path)?;
+        if let Ok(toml_val) = content.parse::<toml::Table>() {
+            if let Some(name) = toml_val
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+            {
+                return Ok(name.to_string());
+            }
+        }
+    }
+
+    // Fall back to directory name
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("Cannot determine package name from path: {}", path.display()))
+}
 
 /// Install a package from registry or local path
 pub fn run_install(
@@ -839,7 +870,7 @@ pub fn run_install(
     target: Option<String>,
 ) -> HorusResult<()> {
     // Check if package is actually a path
-    if yaml_utils::is_path_like(&package) {
+    if package.contains('/') || package.starts_with('.') || package.starts_with('~') {
         // Path dependency installation
         if global {
             return Err(HorusError::Config(ConfigError::Other(
@@ -878,8 +909,8 @@ pub fn run_install(
             ))));
         }
 
-        // Read package name from the path
-        let package_name = yaml_utils::read_package_name_from_path(&absolute_path)
+        // Read package name from the path (try horus.toml, then Cargo.toml)
+        let package_name = read_package_name_from_path(&absolute_path)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         println!(
@@ -917,21 +948,33 @@ pub fn run_install(
             .install_from_path(&package_name, &absolute_path, install_target, None)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-        // Update horus.yaml with path dependency
-        let horus_yaml_path = workspace_path.join(HORUS_YAML);
-        if horus_yaml_path.exists() {
-            if let Err(e) = yaml_utils::add_path_dependency_to_horus_yaml(
-                &horus_yaml_path,
+        // Update horus.toml with path dependency
+        let horus_toml_path = workspace_path.join(HORUS_TOML);
+        if horus_toml_path.exists() {
+            let dep_value = DependencyValue::Detailed(DetailedDependency {
+                path: Some(package.clone()), // Use original path as provided by user
+                version: None,
+                source: None,
+                git: None,
+                branch: None,
+                tag: None,
+                rev: None,
+                features: vec![],
+                target: None,
+            });
+            if let Err(e) = crate::manifest::add_dependency_to_file(
+                &horus_toml_path,
                 &package_name,
-                &package, // Use original path as provided by user
+                &dep_value,
+                "dependencies",
             ) {
                 println!(
-                    "  {} Failed to update horus.yaml: {}",
+                    "  {} Failed to update horus.toml: {}",
                     cli_output::ICON_WARN.yellow(),
                     e
                 );
             } else {
-                println!("  {} Updated horus.yaml", cli_output::ICON_SUCCESS.green());
+                println!("  {} Updated horus.toml", cli_output::ICON_SUCCESS.green());
             }
         }
 
@@ -994,16 +1037,20 @@ pub fn run_install(
             }
         }
 
-        // Update horus.yaml if installing locally
+        // Update horus.toml if installing locally
         if let workspace::InstallTarget::Local(workspace_path) = install_target {
-            let horus_yaml_path = workspace_path.join(HORUS_YAML);
-            if horus_yaml_path.exists() {
-                let version = ver.as_deref().unwrap_or("latest");
-                if let Err(e) =
-                    yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &package, version)
-                {
+            let horus_toml_path = workspace_path.join(HORUS_TOML);
+            if horus_toml_path.exists() {
+                let version = ver.as_deref().unwrap_or("*");
+                let dep_value = DependencyValue::Simple(version.to_string());
+                if let Err(e) = crate::manifest::add_dependency_to_file(
+                    &horus_toml_path,
+                    &package,
+                    &dep_value,
+                    "dependencies",
+                ) {
                     println!(
-                        "  {} Failed to update horus.yaml: {}",
+                        "  {} Failed to update horus.toml: {}",
                         cli_output::ICON_WARN.yellow(),
                         e
                     );
@@ -1023,7 +1070,7 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
         package.yellow()
     );
 
-    // Track workspace path for horus.yaml update
+    // Track workspace path for horus.toml update
     let workspace_path = if global {
         None
     } else if let Some(target_name) = &target {
@@ -1124,38 +1171,21 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
         println!("  Removed system package reference for {}", package);
 
-        // Update horus.yaml if removing from local workspace
+        // Update horus.toml if removing from local workspace
         if let Some(ws_path) = workspace_path {
-            let horus_yaml_path = ws_path.join(HORUS_YAML);
-            if horus_yaml_path.exists() {
-                let content = fs::read_to_string(&horus_yaml_path)
-                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-                // Remove package from dependencies list
-                let lines: Vec<&str> = content.lines().collect();
-                let mut new_lines = Vec::new();
-                let mut in_deps = false;
-
-                for line in lines {
-                    if line.trim() == "dependencies:" {
-                        in_deps = true;
-                        new_lines.push(line);
-                    } else if in_deps && line.starts_with("  -") {
-                        let dep = line.trim_start_matches("  -").trim();
-                        if dep != package && !dep.starts_with(&format!("{}@", package)) {
-                            new_lines.push(line);
-                        }
-                    } else {
-                        if in_deps && !line.starts_with("  ") {
-                            in_deps = false;
-                        }
-                        new_lines.push(line);
-                    }
+            let horus_toml_path = ws_path.join(HORUS_TOML);
+            if horus_toml_path.exists() {
+                if let Err(e) = crate::manifest::remove_dependency_from_file(
+                    &horus_toml_path,
+                    &package,
+                    "dependencies",
+                ) {
+                    println!(
+                        "  {} Failed to update horus.toml: {}",
+                        cli_output::ICON_WARN.yellow(),
+                        e
+                    );
                 }
-
-                let new_content = new_lines.join("\n") + "\n";
-                fs::write(&horus_yaml_path, new_content)
-                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             }
         }
 
@@ -1173,15 +1203,17 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
     println!("  Removed {} from {}", package, remove_dir.display());
 
-    // Update horus.yaml if removing from local workspace
+    // Update horus.toml if removing from local workspace
     if let Some(ws_path) = workspace_path {
-        let horus_yaml_path = ws_path.join(HORUS_YAML);
-        if horus_yaml_path.exists() {
-            if let Err(e) =
-                yaml_utils::remove_dependency_from_horus_yaml(&horus_yaml_path, &package)
-            {
+        let horus_toml_path = ws_path.join(HORUS_TOML);
+        if horus_toml_path.exists() {
+            if let Err(e) = crate::manifest::remove_dependency_from_file(
+                &horus_toml_path,
+                &package,
+                "dependencies",
+            ) {
                 println!(
-                    "  {} Failed to update horus.yaml: {}",
+                    "  {} Failed to update horus.toml: {}",
                     cli_output::ICON_WARN.yellow(),
                     e
                 );
@@ -1505,10 +1537,10 @@ pub fn run_publish(freeze: bool, dry_run: bool) -> HorusResult<()> {
             .freeze()
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-        let freeze_file = "horus-freeze.yaml";
-        let yaml =
-            serde_yaml::to_string(&manifest).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        fs::write(freeze_file, yaml).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let freeze_file = "horus-freeze.toml";
+        let toml_str =
+            toml::to_string_pretty(&manifest).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        fs::write(freeze_file, toml_str).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         println!("  Environment also frozen to {}", freeze_file);
     }
@@ -1587,16 +1619,16 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
     Ok(())
 }
 
-/// Add a dependency to horus.yaml (does NOT install - deferred to `horus run`)
+/// Add a dependency to horus.toml (does NOT install - deferred to `horus run`)
 pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) -> HorusResult<()> {
-    // Find horus.yaml in current directory or workspace
+    // Find horus.toml in current directory or workspace
     let workspace_path = workspace::find_workspace_root()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let horus_yaml_path = workspace_path.join(HORUS_YAML);
+    let horus_toml_path = workspace_path.join(HORUS_TOML);
 
-    if !horus_yaml_path.exists() {
+    if !horus_toml_path.exists() {
         return Err(HorusError::Config(ConfigError::Other(
-            "No horus.yaml found. Run 'horus init' or 'horus new' first.".to_string(),
+            "No horus.toml found. Run 'horus init' or 'horus new' first.".to_string(),
         )));
     }
 
@@ -1609,26 +1641,24 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) ->
         "node"
     };
 
-    let version = ver.as_deref().unwrap_or("latest");
+    let version = ver.as_deref().unwrap_or("*");
+    let dep_value = DependencyValue::Simple(version.to_string());
 
-    // All dependencies use the same format: name@version (no type prefix)
-    // The registry already has package_type metadata — the CLI doesn't need to track it in horus.yaml
-    let dep_string = if version == "latest" {
-        name.clone()
-    } else {
-        format!("{}@{}", name, version)
-    };
-
-    // Add to horus.yaml
-    match yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version) {
+    // Add to horus.toml
+    match crate::manifest::add_dependency_to_file(
+        &horus_toml_path,
+        &name,
+        &dep_value,
+        "dependencies",
+    ) {
         Ok(_) => {
             println!(
-                "{} Added '{}' to horus.yaml",
+                "{} Added '{}' to horus.toml",
                 cli_output::ICON_SUCCESS.green(),
                 name.cyan()
             );
             println!("  Type: {}", pkg_type.dimmed());
-            if version != "latest" {
+            if version != "*" {
                 println!("  Version: {}", version.dimmed());
             }
             println!();
@@ -1636,7 +1666,7 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) ->
         }
         Err(e) => {
             return Err(HorusError::Config(ConfigError::Other(format!(
-                "Failed to update horus.yaml: {}",
+                "Failed to update horus.toml: {}",
                 e
             ))));
         }
@@ -1645,45 +1675,43 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) ->
     Ok(())
 }
 
-/// Remove a dependency from horus.yaml (does NOT delete from cache)
+/// Remove a dependency from horus.toml (does NOT delete from cache)
 pub fn run_remove_dep(name: String) -> HorusResult<()> {
-    // Find horus.yaml in current directory or workspace
+    // Find horus.toml in current directory or workspace
     let workspace_path = workspace::find_workspace_root()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let horus_yaml_path = workspace_path.join(HORUS_YAML);
+    let horus_toml_path = workspace_path.join(HORUS_TOML);
 
-    if !horus_yaml_path.exists() {
+    if !horus_toml_path.exists() {
         return Err(HorusError::Config(ConfigError::Other(
-            "No horus.yaml found in current directory or workspace.".to_string(),
+            "No horus.toml found in current directory or workspace.".to_string(),
         )));
     }
 
-    // Remove from horus.yaml
-    match yaml_utils::remove_dependency_from_horus_yaml(&horus_yaml_path, &name) {
-        Ok(_) => {
-            println!(
-                "{} Removed '{}' from horus.yaml",
-                cli_output::ICON_SUCCESS.green(),
-                name.cyan()
-            );
-            println!();
-            println!("Note: Package remains in cache (~/.horus/cache/).");
-            println!(
-                "Run {} to clean unused packages.",
-                "horus cache clean".dimmed()
-            );
+    // Remove from horus.toml
+    match crate::manifest::remove_dependency_from_file(&horus_toml_path, &name, "dependencies") {
+        Ok(removed) => {
+            if removed {
+                println!(
+                    "{} Removed '{}' from horus.toml",
+                    cli_output::ICON_SUCCESS.green(),
+                    name.cyan()
+                );
+                println!();
+                println!("Note: Package remains in cache (~/.horus/cache/).");
+                println!(
+                    "Run {} to clean unused packages.",
+                    "horus cache clean".dimmed()
+                );
+            } else {
+                println!("{} '{}' is not in horus.toml", "!".yellow(), name);
+            }
         }
         Err(e) => {
-            // Check if it's a "not found" error
-            let err_str = e.to_string();
-            if err_str.contains("not found") {
-                println!("{} '{}' is not in horus.yaml", "!".yellow(), name);
-            } else {
-                return Err(HorusError::Config(ConfigError::Other(format!(
-                    "Failed to update horus.yaml: {}",
-                    e
-                ))));
-            }
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Failed to update horus.toml: {}",
+                e
+            ))));
         }
     }
 
@@ -1703,10 +1731,14 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_version_from_horus_yaml() {
+    fn test_detect_version_from_horus_toml() {
         let temp_dir = TempDir::new().unwrap();
-        let yaml_path = temp_dir.path().join(HORUS_YAML);
-        fs::write(&yaml_path, "name: test\nversion: 1.2.3\n").unwrap();
+        let toml_path = temp_dir.path().join(HORUS_TOML);
+        fs::write(
+            &toml_path,
+            "[package]\nname = \"test-pkg\"\nversion = \"1.2.3\"\n",
+        )
+        .unwrap();
 
         let version = detect_version(temp_dir.path());
         assert_eq!(version, Some("1.2.3".to_string()));

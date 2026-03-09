@@ -57,6 +57,7 @@ lazy_static = "1.4"
 rayon = "1.10"
 syn = { version = "2.0", features = ["full", "visit"] }
 num_cpus = "1.16"
+schemars = { version = "0.8", optional = true }
 
 # TUI dependencies
 ratatui = "0.30"
@@ -94,6 +95,9 @@ default = []
 
 # mDNS discovery for local peer finding
 mdns = ["horus_core/mdns"]
+
+# JSON Schema generation for manifest types
+schema = ["dep:schemars"]
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

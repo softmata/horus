@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Python wrapper for NodeState
-#[pyclass(module = "horus._horus")]
+#[pyclass(name = "NodeState", module = "horus._horus")]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PyNodeState {
     #[pyo3(get)]
@@ -76,7 +76,7 @@ impl From<&CoreNodeState> for PyNodeState {
 }
 
 /// Python wrapper for NodeInfo
-#[pyclass(module = "horus._horus")]
+#[pyclass(name = "NodeInfo", module = "horus._horus")]
 #[derive(Clone)]
 pub struct PyNodeInfo {
     pub inner: Arc<Mutex<CoreNodeInfo>>,
@@ -208,7 +208,7 @@ impl PyNodeInfo {
         use horus::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp,
-            tick_number: 0, // Python nodes don't have deterministic tick counter
+            tick_number: 0,
             node_name,
             log_type: LogType::Publish,
             topic: Some(topic),
@@ -238,7 +238,7 @@ impl PyNodeInfo {
         use horus::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp,
-            tick_number: 0, // Python nodes don't have deterministic tick counter
+            tick_number: 0,
             node_name,
             log_type: LogType::Subscribe,
             topic: Some(topic),
@@ -361,7 +361,7 @@ impl PyNodeInfo {
 /// by subclassing and implementing the required methods.
 ///
 /// NOTE: PyNode no longer creates its own NodeInfo. The scheduler will provide one.
-#[pyclass(module = "horus._horus", subclass)]
+#[pyclass(name = "Node", module = "horus._horus", subclass)]
 pub struct PyNode {
     #[pyo3(get)]
     pub name: String,

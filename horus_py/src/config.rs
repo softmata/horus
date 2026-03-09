@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 ///
 /// All fields from the Rust config are exposed. For common use cases,
 /// prefer `Scheduler.deploy()`, `Scheduler.safety_critical()`, etc.
-#[pyclass(module = "horus._horus")]
+#[pyclass(name = "SchedulerConfig", module = "horus._horus")]
 #[derive(Clone, Debug)]
 pub struct PySchedulerConfig {
     // --- Timing ---
@@ -20,8 +20,8 @@ pub struct PySchedulerConfig {
 
     // --- Real-time ---
     #[pyo3(get, set)]
-    /// Enable WCET enforcement
-    pub wcet_enforcement: bool,
+    /// Enable budget enforcement
+    pub budget_enforcement: bool,
 
     #[pyo3(get, set)]
     /// Enable deadline monitoring
@@ -80,11 +80,6 @@ pub struct PySchedulerConfig {
     #[pyo3(get, set)]
     /// Telemetry export endpoint
     pub telemetry_endpoint: Option<String>,
-
-    // --- Deterministic ---
-    #[pyo3(get, set)]
-    /// Enable deterministic execution (uses DeterministicConfig::strict())
-    pub deterministic_enabled: bool,
 
     // --- Recording ---
     #[pyo3(get, set)]
@@ -157,16 +152,15 @@ impl PySchedulerConfig {
     fn __repr__(&self) -> String {
         format!(
             "SchedulerConfig(config={}, tick_rate={:.1}Hz, circuit_breaker={}, \
-             wcet={}, deadline_monitoring={}, safety_monitor={}, memory_locking={}, \
-             deterministic={}, recording={})",
+             budget={}, deadline_monitoring={}, safety_monitor={}, memory_locking={}, \
+             recording={})",
             self.config_name,
             self.tick_rate,
             self.circuit_breaker,
-            self.wcet_enforcement,
+            self.budget_enforcement,
             self.deadline_monitoring,
             self.safety_monitor,
             self.memory_locking,
-            self.deterministic_enabled,
             self.recording_enabled,
         )
     }
@@ -185,7 +179,7 @@ impl PySchedulerConfig {
 
         config.circuit_breaker = self.circuit_breaker;
 
-        config.realtime.wcet_enforcement = self.wcet_enforcement;
+        config.realtime.budget_enforcement = self.budget_enforcement;
         config.realtime.deadline_monitoring = self.deadline_monitoring;
         config.realtime.watchdog_enabled = self.watchdog_enabled;
         config.realtime.watchdog_timeout_ms = self.watchdog_timeout_ms;
@@ -216,7 +210,7 @@ impl PySchedulerConfig {
         PySchedulerConfig {
             tick_rate: rust_config.timing.global_rate_hz,
             circuit_breaker: rust_config.circuit_breaker,
-            wcet_enforcement: rust_config.realtime.wcet_enforcement,
+            budget_enforcement: rust_config.realtime.budget_enforcement,
             deadline_monitoring: rust_config.realtime.deadline_monitoring,
             watchdog_enabled: rust_config.realtime.watchdog_enabled,
             watchdog_timeout_ms: rust_config.realtime.watchdog_timeout_ms,
@@ -231,7 +225,6 @@ impl PySchedulerConfig {
             black_box_enabled: rust_config.monitoring.black_box_enabled,
             black_box_size_mb: rust_config.monitoring.black_box_size_mb,
             telemetry_endpoint: rust_config.monitoring.telemetry_endpoint,
-            deterministic_enabled: false,
             recording_enabled: rust_config.recording.is_some(),
             config_name: name.to_string(),
         }

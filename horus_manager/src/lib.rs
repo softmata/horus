@@ -20,4 +20,5 @@ pub mod security;
 pub mod system_deps;
 pub mod version;
 pub mod workspace;
-pub mod yaml_utils;
+pub mod lockfile;
+pub mod manifest;

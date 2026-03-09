@@ -13,25 +13,26 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::commands::run;
-use crate::config::{CARGO_TOML, HORUS_YAML};
+use crate::config::CARGO_TOML;
+use crate::manifest::HORUS_TOML;
 
 /// Check if Cargo.toml needs regeneration
 fn needs_rebuild(horus_dir: &Path) -> bool {
     let cargo_toml = horus_dir.join(CARGO_TOML);
-    let horus_yaml = PathBuf::from(HORUS_YAML);
+    let horus_toml = PathBuf::from(HORUS_TOML);
 
     // If no Cargo.toml, definitely needs build
     if !cargo_toml.exists() {
         return true;
     }
 
-    // If horus.yaml exists and is newer than Cargo.toml, needs rebuild
-    if horus_yaml.exists() {
-        if let (Ok(yaml_meta), Ok(cargo_meta)) =
-            (fs::metadata(&horus_yaml), fs::metadata(&cargo_toml))
+    // If horus.toml exists and is newer than Cargo.toml, needs rebuild
+    if horus_toml.exists() {
+        if let (Ok(toml_meta), Ok(cargo_meta)) =
+            (fs::metadata(&horus_toml), fs::metadata(&cargo_toml))
         {
-            if let (Ok(yaml_time), Ok(cargo_time)) = (yaml_meta.modified(), cargo_meta.modified()) {
-                return yaml_time > cargo_time;
+            if let (Ok(toml_time), Ok(cargo_time)) = (toml_meta.modified(), cargo_meta.modified()) {
+                return toml_time > cargo_time;
             }
         }
     }

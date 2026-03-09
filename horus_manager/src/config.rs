@@ -72,9 +72,6 @@ pub const WS_BROADCAST_INTERVAL_MS: u64 = 250;
 
 // === File Name Constants ===
 
-/// HORUS workspace manifest file name.
-pub const HORUS_YAML: &str = "horus.yaml";
-
 /// Cargo manifest file name.
 pub const CARGO_TOML: &str = "Cargo.toml";
 
@@ -197,11 +194,6 @@ mod tests {
     }
 
     // ── File name constants ──────────────────────────────────────────
-
-    #[test]
-    fn horus_yaml_filename_correct() {
-        assert_eq!(HORUS_YAML, "horus.yaml");
-    }
 
     #[test]
     fn cargo_toml_filename_correct() {

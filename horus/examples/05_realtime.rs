@@ -1,7 +1,7 @@
 //! # Example 5: Real-Time Nodes
 //!
 //! Shows how to use real-time Node methods for time-critical applications like
-//! motor control, with WCET budgets and deadline monitoring.
+//! motor control, with tick budgets and deadline monitoring.
 //!
 //! ```bash
 //! cargo run --example 05_realtime
@@ -69,7 +69,7 @@ impl Node for PidController {
         self.publisher.send(cmd);
     }
 
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(200)) // 200μs max execution time
     }
 

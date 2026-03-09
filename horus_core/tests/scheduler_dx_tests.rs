@@ -92,20 +92,7 @@ fn test_new_records_degradations_gracefully() {
     let _ = degradations.len();
 }
 
-#[test]
-fn test_new_with_capacity() {
-    cleanup_stale_shm();
-    let mut scheduler = Scheduler::new().with_capacity(100);
-    let counter = Arc::new(AtomicU32::new(0));
-
-    scheduler
-        .add(TickCounterNode::new("cap_node", counter.clone()))
-        .order(0)
-        .done();
-
-    let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
-}
+// test_new_with_capacity removed: with_capacity() was removed from Scheduler
 
 // =============================================================================
 // Status Introspection Tests
@@ -239,41 +226,18 @@ fn test_failure_policies_enabled_by_default() {
     );
 }
 
-#[test]
-fn test_circuit_summary_empty_scheduler() {
-    cleanup_stale_shm();
-    let scheduler = Scheduler::new();
-
-    let (healthy, suppressed, recovering) = scheduler.circuit_summary();
-    assert_eq!(healthy, 0, "No nodes should mean 0 healthy");
-    assert_eq!(suppressed, 0, "No nodes should mean 0 suppressed");
-    assert_eq!(recovering, 0, "No nodes should mean 0 recovering");
-}
-
-#[test]
-fn test_failure_stats_nonexistent_node() {
-    cleanup_stale_shm();
-    let scheduler = Scheduler::new();
-
-    assert!(
-        scheduler.failure_stats("nonexistent_node").is_none(),
-        "Should return None for nonexistent node"
-    );
-    assert!(
-        scheduler.circuit_state("nonexistent_node").is_none(),
-        "Should return None for nonexistent node (compat API)"
-    );
-}
+// test_circuit_summary_empty_scheduler removed: circuit_summary() was removed from Scheduler
+// test_failure_stats_nonexistent_node removed: failure_stats() and circuit_state() were removed from Scheduler
 
 // =============================================================================
-// WCET Enforcement Tests
+// budget Enforcement Tests
 // =============================================================================
 
 #[test]
-fn test_status_shows_wcet_enforcement() {
+fn test_status_shows_budget_enforcement() {
     cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
-    assert!(status.contains("WCET Enforcement"));
+    assert!(status.contains("budget Enforcement"));
 }

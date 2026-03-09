@@ -42,7 +42,7 @@ impl Node for MotorControlNode {
 
         // Simulate computation
         if self.simulate_overrun {
-            // Simulate WCET violation
+            // Simulate budget violation
             std::thread::sleep(Duration::from_micros(200));
         } else {
             // Normal execution within budget
@@ -60,7 +60,7 @@ impl Node for MotorControlNode {
         Ok(())
     }
 
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(100))
     }
 
@@ -72,17 +72,6 @@ impl Node for MotorControlNode {
         DeadlineMissPolicy::EmergencyStop
     }
 
-    fn pre_condition(&self) -> bool {
-        true
-    }
-
-    fn post_condition(&self) -> bool {
-        true
-    }
-
-    fn invariant(&self) -> bool {
-        true
-    }
 }
 
 /// Example: Sensor fusion node with firm real-time constraints
@@ -127,7 +116,7 @@ impl Node for SensorFusionNode {
         Ok(())
     }
 
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(500))
     }
 
@@ -181,7 +170,7 @@ impl Node for LoggingNode {
         Ok(())
     }
 
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(5))
     }
 
@@ -261,30 +250,15 @@ fn test_rt_node_with_safety_critical_config() {
 }
 
 #[test]
-fn test_rt_node_wcet_budget() {
-    // Test that nodes respect their WCET budget
+fn test_rt_node_tick_budget() {
+    // Test that nodes respect their tick budget
     let node = MotorControlNode::new("test_motor");
-    assert_eq!(node.wcet_budget(), Some(Duration::from_micros(100)));
+    assert_eq!(node.tick_budget(), Some(Duration::from_micros(100)));
     assert_eq!(node.deadline(), Duration::from_millis(1));
     assert_eq!(node.deadline_miss_policy(), DeadlineMissPolicy::EmergencyStop);
 }
 
-#[test]
-fn test_rt_node_formal_verification() {
-    let mut node = MotorControlNode::new("verified_motor");
-
-    // Test pre-condition
-    assert!(node.pre_condition());
-
-    // Execute tick
-    node.tick();
-
-    // Test post-condition
-    assert!(node.post_condition());
-
-    // Test invariant
-    assert!(node.invariant());
-}
+// test_rt_node_formal_verification removed: pre_condition/post_condition/invariant removed from Node trait
 
 #[test]
 fn test_deadline_miss_policies() {

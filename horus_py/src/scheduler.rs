@@ -5,7 +5,7 @@ use horus_core::core::Node as CoreNode;
 use horus_core::core::NodeMetrics;
 use horus_core::error::HorusError;
 use horus_core::scheduling::{
-    CircuitState, FailurePolicy, NodeRegistration, NodeTier, Scheduler as CoreScheduler,
+    FailurePolicy, NodeRegistration, NodeTier, Scheduler as CoreScheduler,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -224,8 +224,8 @@ impl CoreNode for PyNodeAdapter {
 /// Fluent builder for adding nodes to the scheduler.
 ///
 /// Example:
-///     scheduler.add(my_node).order(0).rate_hz(100.0).wcet_us(500).build()
-#[pyclass(module = "horus._horus")]
+///     scheduler.add(my_node).order(0).rate_hz(100.0).budget_us(500).build()
+#[pyclass(name = "NodeBuilder", module = "horus._horus")]
 pub struct PyNodeBuilder {
     scheduler: Py<PyScheduler>,
     node: Py<PyAny>,
@@ -233,7 +233,7 @@ pub struct PyNodeBuilder {
     rate_hz: Option<f64>,
     rt: bool,
     deadline_ms: Option<f64>,
-    wcet_us: Option<u64>,
+    budget_us: Option<u64>,
     tier: Option<String>,
     failure_policy: Option<String>,
 }
@@ -259,9 +259,9 @@ impl PyNodeBuilder {
         slf
     }
 
-    /// Set WCET budget in microseconds.
-    fn wcet_us(mut slf: PyRefMut<'_, Self>, us: u64) -> PyRefMut<'_, Self> {
-        slf.wcet_us = Some(us);
+    /// Set tick budget in microseconds.
+    fn budget_us(mut slf: PyRefMut<'_, Self>, us: u64) -> PyRefMut<'_, Self> {
+        slf.budget_us = Some(us);
         slf.rt = true;
         slf
     }
@@ -315,7 +315,7 @@ impl PyNodeBuilder {
 /// All scheduling logic (rate control, circuit breaker, watchdog, deadline,
 /// parallel execution, record/replay, telemetry, etc.) is handled by horus_core.
 /// Python API is preserved with zero breaking changes.
-#[pyclass(module = "horus._horus")]
+#[pyclass(name = "Scheduler", module = "horus._horus")]
 pub struct PyScheduler {
     inner: Mutex<Option<CoreScheduler>>,
     tick_rate_hz: f64,
@@ -442,11 +442,10 @@ impl PyScheduler {
         Ok(())
     }
 
-    /// Build a Python dict from a NodeMetrics + optional failure stats.
+    /// Build a Python dict from a NodeMetrics.
     fn metric_to_dict(
         py: Python,
         metric: &NodeMetrics,
-        failure: Option<&horus_core::scheduling::FailureHandlerStats>,
         tick_rate: f64,
     ) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
@@ -463,15 +462,9 @@ impl PyScheduler {
         dict.set_item("last_tick_duration_ms", metric.last_tick_duration_ms)?;
         dict.set_item("uptime_seconds", metric.uptime_seconds)?;
 
-        if let Some(f) = failure {
-            dict.set_item("failure_count", f.failure_count)?;
-            dict.set_item("consecutive_failures", f.failure_count)?;
-            dict.set_item("circuit_open", f.is_suppressed)?;
-        } else {
-            dict.set_item("failure_count", 0u32)?;
-            dict.set_item("consecutive_failures", 0u32)?;
-            dict.set_item("circuit_open", false)?;
-        }
+        dict.set_item("failure_count", metric.errors_count)?;
+        dict.set_item("consecutive_failures", 0u32)?;
+        dict.set_item("circuit_open", false)?;
 
         dict.set_item("deadline_ms", py.None())?;
         dict.set_item("deadline_misses", 0u64)?;
@@ -547,7 +540,7 @@ impl PyScheduler {
             rate_hz: None,
             rt: false,
             deadline_ms: None,
-            wcet_us: None,
+            budget_us: None,
             tier: None,
             failure_policy: None,
         })
@@ -658,8 +651,7 @@ impl PyScheduler {
 
         for metric in inner.metrics() {
             if metric.name == node_name {
-                let failure = inner.failure_stats(&node_name);
-                return Self::metric_to_dict(py, &metric, failure.as_ref(), self.tick_rate_hz);
+                return Self::metric_to_dict(py, &metric, self.tick_rate_hz);
             }
         }
 
@@ -698,11 +690,9 @@ impl PyScheduler {
             if removed.contains(&metric.name) {
                 continue;
             }
-            let failure = inner.failure_stats(&metric.name);
             result.push(Self::metric_to_dict(
                 py,
                 &metric,
-                failure.as_ref(),
                 self.tick_rate_hz,
             )?);
         }
@@ -901,7 +891,7 @@ impl PyScheduler {
             Some(stats) => {
                 let dict = PyDict::new(py);
                 dict.set_item("state", format!("{:?}", stats.state))?;
-                dict.set_item("wcet_overruns", stats.wcet_overruns)?;
+                dict.set_item("budget_overruns", stats.budget_overruns)?;
                 dict.set_item("deadline_misses", stats.deadline_misses)?;
                 dict.set_item("watchdog_expirations", stats.watchdog_expirations)?;
                 Ok(Some(dict.into()))
@@ -910,52 +900,7 @@ impl PyScheduler {
         }
     }
 
-    /// Get circuit breaker state for a node.
-    fn circuit_state(&self, node_name: String) -> PyResult<Option<String>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        match guard.as_ref() {
-            Some(sched) => match sched.circuit_state(&node_name) {
-                Some(state) => {
-                    let s = match state {
-                        CircuitState::Closed => "closed",
-                        CircuitState::Open => "open",
-                        CircuitState::HalfOpen => "half_open",
-                    };
-                    Ok(Some(s.to_string()))
-                }
-                None => Ok(None),
-            },
-            None => Ok(None),
-        }
-    }
 
-    /// Get circuit breaker summary: (closed_count, open_count, half_open_count).
-    fn circuit_summary(&self, py: Python) -> PyResult<Py<PyAny>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        match guard.as_ref() {
-            Some(sched) => {
-                let (closed, open, half_open) = sched.circuit_summary();
-                let dict = PyDict::new(py);
-                dict.set_item("closed", closed)?;
-                dict.set_item("open", open)?;
-                dict.set_item("half_open", half_open)?;
-                Ok(dict.into())
-            }
-            None => {
-                let dict = PyDict::new(py);
-                dict.set_item("closed", 0)?;
-                dict.set_item("open", 0)?;
-                dict.set_item("half_open", 0)?;
-                Ok(dict.into())
-            }
-        }
-    }
 
     // ========================================================================
     // Recording
@@ -1010,17 +955,17 @@ impl PyScheduler {
     // Node Control
     // ========================================================================
 
-    /// Set WCET budget for a node in microseconds.
-    fn set_wcet_budget(&self, node_name: String, us: u64) -> PyResult<()> {
+    /// Set tick budget for a node in microseconds.
+    fn set_tick_budget(&self, node_name: String, us: u64) -> PyResult<()> {
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
         let inner = guard.as_mut().ok_or_else(|| {
-            PyRuntimeError::new_err("Cannot set WCET budget while scheduler is running")
+            PyRuntimeError::new_err("Cannot set tick budget while scheduler is running")
         })?;
         inner
-            .set_wcet_budget(&node_name, Duration::from_micros(us))
+            .set_tick_budget(&node_name, Duration::from_micros(us))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
     }
@@ -1038,58 +983,6 @@ impl PyScheduler {
             .add_critical_node(&node_name, Duration::from_millis(timeout_ms))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
-    }
-
-    // ========================================================================
-    // Deterministic / Simulation Mode
-    // ========================================================================
-
-    /// Check if scheduler is in simulation mode (deterministic execution).
-    fn is_simulation_mode(&self) -> PyResult<bool> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        match guard.as_ref() {
-            Some(sched) => Ok(sched.is_simulation_mode()),
-            None => Ok(false),
-        }
-    }
-
-    /// Get the deterministic seed (simulation mode only).
-    fn seed(&self) -> PyResult<Option<u64>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        match guard.as_ref() {
-            Some(sched) => Ok(sched.seed()),
-            None => Ok(None),
-        }
-    }
-
-    /// Get the current virtual time in seconds (simulation mode only).
-    fn virtual_time(&self) -> PyResult<Option<f64>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        match guard.as_ref() {
-            Some(sched) => Ok(sched.virtual_time().map(|d| d.as_secs_f64())),
-            None => Ok(None),
-        }
-    }
-
-    /// Get the current virtual tick number (simulation mode only).
-    fn virtual_tick(&self) -> PyResult<Option<u64>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        match guard.as_ref() {
-            Some(sched) => Ok(sched.virtual_tick()),
-            None => Ok(None),
-        }
     }
 
     /// Delete a recording by session name.

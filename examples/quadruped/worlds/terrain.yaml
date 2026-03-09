@@ -1,0 +1,48 @@
+name: "terrain"
+ground:
+  enabled: true
+  size: [20.0, 20.0]
+  material:
+    color: [0.4, 0.5, 0.3, 1.0]
+
+lighting:
+  directional:
+    - direction: [-0.4, -1.0, -0.3]
+      intensity: 10000.0
+      shadows: true
+
+objects:
+  # Flat stepping stones
+  - type: box
+    name: "step_1"
+    position: [1.5, 0.03, 0.0]
+    size: [0.4, 0.06, 0.4]
+    static: true
+    material:
+      color: [0.6, 0.6, 0.6, 1.0]
+
+  - type: box
+    name: "step_2"
+    position: [3.0, 0.06, 0.0]
+    size: [0.4, 0.12, 0.4]
+    static: true
+    material:
+      color: [0.55, 0.55, 0.55, 1.0]
+
+  - type: box
+    name: "step_3"
+    position: [4.5, 0.09, 0.0]
+    size: [0.4, 0.18, 0.4]
+    static: true
+    material:
+      color: [0.5, 0.5, 0.5, 1.0]
+
+  # Ramp
+  - type: box
+    name: "ramp"
+    position: [7.0, 0.15, 0.0]
+    size: [2.0, 0.02, 0.6]
+    static: true
+    rotation: [0.0, 0.0, 0.1]
+    material:
+      color: [0.45, 0.45, 0.5, 1.0]

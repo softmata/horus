@@ -30,7 +30,6 @@ use std::time::Duration;
 
 use crate::terminal::print_line;
 
-use super::fault_tolerance::FailureAction;
 use super::primitives::NodeRunner;
 use super::types::{ExecutionClass, RegisteredNode, SharedMonitors};
 
@@ -196,11 +195,9 @@ impl EventExecutor {
 
                     match tr.result {
                         Ok(_) => {
-                            node.failure_handler.record_success();
                             tick_count += 1;
                         }
                         Err(panic_err) => {
-                            let action = node.failure_handler.record_failure();
                             monitors
                                 .profiler
                                 .lock()
@@ -215,33 +212,6 @@ impl EventExecutor {
                             };
                             print_line(&error_msg);
                             node.node.on_error(&error_msg);
-
-                            match action {
-                                FailureAction::StopScheduler
-                                | FailureAction::FatalAfterRestarts => {
-                                    print_line(&format!(
-                                        "[Event] Fatal failure in '{}' — stopping scheduler",
-                                        node.name
-                                    ));
-                                    running.store(false, Ordering::SeqCst);
-                                    break;
-                                }
-                                FailureAction::RestartNode => {
-                                    if let Some(ref mut ctx) = node.context {
-                                        match ctx.restart() {
-                                            Ok(_) => node.initialized = true,
-                                            Err(e) => {
-                                                print_line(&format!(
-                                                    "[Event] Restart failed for '{}': {}",
-                                                    node.name, e
-                                                ));
-                                                node.initialized = false;
-                                            }
-                                        }
-                                    }
-                                }
-                                FailureAction::SkipNode | FailureAction::Continue => {}
-                            }
                         }
                     }
                 }
@@ -289,7 +259,6 @@ mod tests {
     }
 
     fn make_event_node(name: &str, topic: &str, count: Arc<AtomicU64>) -> RegisteredNode {
-        use super::super::fault_tolerance::FailureHandler;
 
         let node = CounterNode {
             name: name.to_string(),
@@ -303,18 +272,14 @@ mod tests {
             context: Some(NodeInfo::new(name.to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Fatal,
-            ),
             is_rt_node: false,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: ExecutionClass::Event(topic.to_string()),
-            has_custom_failure_policy: false,
         }
     }
 

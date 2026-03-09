@@ -2723,7 +2723,7 @@ pub fn generate_html(port: u16) -> String {
                             expandableContent = `
                                 <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
                                     <div style="color: var(--text-secondary); margin-bottom: 8px; font-size: 0.9em; font-weight: 600;">
-                                        Dependencies (horus.yaml):
+                                        Dependencies (horus.toml):
                                     </div>
                                     <div style="display: flex; flex-direction: column; gap: 4px;">
                                         ${{env.dependencies.map(dep => `
@@ -2742,7 +2742,7 @@ pub fn generate_html(port: u16) -> String {
                             expandableContent = `
                                 <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
                                     <div style="color: var(--text-tertiary); font-size: 0.85em; font-style: italic;">
-                                        No dependencies declared in horus.yaml
+                                        No dependencies declared in horus.toml
                                     </div>
                                 </div>
                             `;
@@ -3080,7 +3080,7 @@ pub fn generate_html(port: u16) -> String {
                             expandableContent = `
                                 <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
                                     <div style="color: var(--text-secondary); margin-bottom: 8px; font-size: 0.9em; font-weight: 600;">
-                                        Dependencies (horus.yaml):
+                                        Dependencies (horus.toml):
                                     </div>
                                     <div style="display: flex; flex-direction: column; gap: 4px;">
                                         ${{env.dependencies.map(dep => `
@@ -3099,7 +3099,7 @@ pub fn generate_html(port: u16) -> String {
                             expandableContent = `
                                 <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
                                     <div style="color: var(--text-tertiary); font-size: 0.85em; font-style: italic;">
-                                        No dependencies declared in horus.yaml
+                                        No dependencies declared in horus.toml
                                     </div>
                                 </div>
                             `;

@@ -1,7 +1,7 @@
 //! Scheduler RT Jitter Benchmarks
 //!
 //! Measures RT node timing accuracy using the node-declared API
-//! (Scheduler::new() with .wcet_us() nodes) under heavy compute load.
+//! (Scheduler::new() with .budget_us() nodes) under heavy compute load.
 //!
 //! Run with: cargo bench -- scheduler_jitter
 
@@ -140,7 +140,7 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
             let compute_b = HeavyComputeNode::new("bench_compute_b", 5000);
 
             let mut scheduler = Scheduler::new().tick_hz(500.0);
-            scheduler.add(rt_node).order(0).wcet_us(10_000).rate_hz(500.0).done();
+            scheduler.add(rt_node).order(0).budget_us(10_000).rate_hz(500.0).done();
             scheduler.add(compute_a).order(10).compute().done();
             scheduler.add(compute_b).order(11).compute().done();
 
@@ -164,7 +164,7 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
             let (rt_node, _count, timestamps) = JitterMeasureNode::new("bench_rt_solo");
 
             let mut scheduler = Scheduler::new().tick_hz(500.0);
-            scheduler.add(rt_node).order(0).wcet_us(10_000).rate_hz(500.0).done();
+            scheduler.add(rt_node).order(0).budget_us(10_000).rate_hz(500.0).done();
 
             scheduler.run_for(Duration::from_millis(200)).unwrap();
 
@@ -194,7 +194,7 @@ fn bench_jitter_report(c: &mut Criterion) {
             let slow = HeavyComputeNode::new("proof_slow", 50_000); // 50ms blocking work
 
             let mut scheduler = Scheduler::new().tick_hz(500.0);
-            scheduler.add(rt_node).order(0).wcet_us(10_000).rate_hz(500.0).done();
+            scheduler.add(rt_node).order(0).budget_us(10_000).rate_hz(500.0).done();
             scheduler.add(slow).order(10).compute().rate_hz(10.0).done();
 
             scheduler.run_for(Duration::from_millis(500)).unwrap();

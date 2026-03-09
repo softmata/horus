@@ -57,8 +57,8 @@ impl PluginResolver {
         let mut current = std::env::current_dir().ok()?;
 
         for _ in 0..10 {
-            // Check for .horus directory or horus.yaml
-            if current.join(".horus").exists() || current.join("horus.yaml").exists() {
+            // Check for .horus directory or horus.toml
+            if current.join(".horus").exists() || current.join("horus.toml").exists() {
                 return Some(current);
             }
 

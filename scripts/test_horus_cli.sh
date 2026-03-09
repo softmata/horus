@@ -402,11 +402,11 @@ test_init() {
     cd init-test-project
     local output
     output=$($HORUS init 2>&1)
-    if [ -f "horus.yaml" ]; then
+    if [ -f "horus.toml" ]; then
         log_pass "init creates workspace"
         cd "$TEST_DIR"
     else
-        log_fail "init creates workspace" "horus.yaml not created"
+        log_fail "init creates workspace" "horus.toml not created"
         cd "$TEST_DIR"
     fi
 }
@@ -416,7 +416,7 @@ test_new() {
     rm -rf new-test-project
     local output
     output=$($HORUS new new-test-project 2>&1) || true
-    if [ -f "new-test-project/horus.yaml" ]; then
+    if [ -f "new-test-project/horus.toml" ]; then
         log_pass "new creates project"
     else
         log_skip "new - may need additional setup"

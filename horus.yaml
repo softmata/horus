@@ -1,7 +1,0 @@
-name: HORUS
-version: 0.1.9
-language: rust
-
-dependencies:
-  - horus
-  - requests@latest

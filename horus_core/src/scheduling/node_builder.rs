@@ -17,7 +17,7 @@
 //! scheduler.add(my_node)
 //!     .order(0)
 //!     .rate_hz(100.0)
-//!     .wcet_us(500)
+//!     .budget_us(500)
 //!     .build()?;
 //! ```
 
@@ -28,7 +28,7 @@ use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
 ///
-/// Most users should use `Scheduler::add(node).wcet_us(N).build()` instead.
+/// Most users should use `Scheduler::add(node).budget_us(N).build()` instead.
 /// This type exists for advanced use cases like Python bindings.
 #[doc(hidden)]
 pub struct NodeRegistration {
@@ -40,8 +40,8 @@ pub struct NodeRegistration {
     pub(crate) rate_hz: Option<f64>,
     /// Whether this is a real-time node
     pub(crate) is_rt: bool,
-    /// WCET budget for RT nodes
-    pub(crate) wcet_budget: Option<Duration>,
+    /// tick budget for RT nodes
+    pub(crate) tick_budget: Option<Duration>,
     /// Deadline for RT nodes
     pub(crate) deadline: Option<Duration>,
     /// Execution tier override
@@ -62,15 +62,15 @@ impl NodeRegistration {
     ///     .rate_hz(100.0);
     /// ```
     pub fn new(node: Box<dyn Node>) -> Self {
-        let wcet_budget = node.wcet_budget();
-        let is_rt = wcet_budget.is_some();
+        let tick_budget = node.tick_budget();
+        let is_rt = tick_budget.is_some();
         let deadline = if is_rt { Some(node.deadline()) } else { None };
         Self {
             node: NodeKind::new(node),
             order: 100, // Default to medium priority
             rate_hz: None,
             is_rt,
-            wcet_budget,
+            tick_budget,
             deadline,
             tier: None,
             failure_policy: None,
@@ -167,11 +167,11 @@ impl NodeRegistration {
     /// # Example
     /// ```rust,ignore
     /// NodeRegistration::new(pid_controller)
-    ///     .wcet_us(200)  // Must complete within 200μs
+    ///     .budget_us(200)  // Must complete within 200μs
     /// ```
-    pub fn wcet_us(mut self, us: u64) -> Self {
+    pub fn budget_us(mut self, us: u64) -> Self {
         self.is_rt = true;
-        self.wcet_budget = Some(Duration::from_micros(us));
+        self.tick_budget = Some(Duration::from_micros(us));
         self.execution_class = ExecutionClass::Rt;
         self
     }
@@ -280,13 +280,13 @@ impl NodeRegistration {
             }
         }
 
-        // Validate WCET: must be > 0 if set
-        if let Some(wcet) = self.wcet_budget {
-            if wcet.is_zero() {
+        // Validate budget: must be > 0 if set
+        if let Some(budget) = self.tick_budget {
+            if budget.is_zero() {
                 return Err(ValidationError::InvalidValue {
-                    field: "wcet_us".into(),
+                    field: "budget_us".into(),
                     value: "0".into(),
-                    reason: "WCET budget must be > 0".into(),
+                    reason: "tick budget must be > 0".into(),
                 }
                 .into());
             }
@@ -301,7 +301,7 @@ impl NodeRegistration {
                 _ => unreachable!(),
             };
             return Err(ValidationError::Conflict {
-                field_a: "is_rt / .wcet_us() / .deadline_*()".into(),
+                field_a: "is_rt / .budget_us() / .deadline_*()".into(),
                 field_b: format!(".{}()", class_name),
                 reason: format!(
                     "node '{}' is marked as RT but has execution class '{}' — \
@@ -313,14 +313,14 @@ impl NodeRegistration {
         }
 
         // Validate RT-specific constraints on non-RT nodes
-        if !self.is_rt && (self.wcet_budget.is_some() || self.deadline.is_some()) {
-            // This shouldn't happen since wcet_us/deadline_* auto-set is_rt,
+        if !self.is_rt && (self.tick_budget.is_some() || self.deadline.is_some()) {
+            // This shouldn't happen since budget_us/deadline_* auto-set is_rt,
             // but guard against manual NodeRegistration construction.
             return Err(ValidationError::Conflict {
-                field_a: "wcet_budget / deadline".into(),
+                field_a: "tick_budget / deadline".into(),
                 field_b: "is_rt = false".into(),
                 reason: format!(
-                    "node '{}' has WCET/deadline set but is not marked as RT",
+                    "node '{}' has budget/deadline set but is not marked as RT",
                     node_name
                 ),
             }
@@ -340,7 +340,7 @@ impl NodeRegistration {
 /// scheduler.add(my_node)
 ///     .order(0)
 ///     .rate_hz(100.0)
-///     .wcet_us(500)
+///     .budget_us(500)
 ///     .build()?;
 /// ```
 #[must_use = "call .build() to register the node — dropping this builder discards the registration"]
@@ -395,9 +395,9 @@ impl<'a> NodeBuilder<'a> {
         self
     }
 
-    /// Set the WCET budget in microseconds.
-    pub fn wcet_us(mut self, us: u64) -> Self {
-        self.config = self.config.wcet_us(us);
+    /// Set the tick budget in microseconds.
+    pub fn budget_us(mut self, us: u64) -> Self {
+        self.config = self.config.budget_us(us);
         self
     }
 
@@ -431,7 +431,7 @@ impl<'a> NodeBuilder<'a> {
     /// Finish configuration and add the node to the scheduler.
     ///
     /// Validates the configuration before registering. Returns an error if
-    /// the configuration is contradictory (e.g. `.wcet_us(N).compute()`) or contains
+    /// the configuration is contradictory (e.g. `.budget_us(N).compute()`) or contains
     /// invalid values (e.g. `rate_hz(NaN)`, `deadline_ms(0)`).
     ///
     /// # Example
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(reg.order, 100);
         assert!(reg.rate_hz.is_none());
         assert!(!reg.is_rt);
-        assert!(reg.wcet_budget.is_none());
+        assert!(reg.tick_budget.is_none());
         assert!(reg.deadline.is_none());
         assert!(reg.tier.is_none());
         assert!(reg.failure_policy.is_none());
@@ -595,27 +595,27 @@ mod tests {
         assert!(!reg.is_rt);
     }
 
-    // ── .wcet_us() ──
+    // ── .budget_us() ──
 
     #[test]
-    fn test_wcet_us_sets_budget_and_rt() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(500);
+    fn test_budget_us_sets_budget_and_rt() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(500);
         assert!(reg.is_rt);
-        assert_eq!(reg.wcet_budget, Some(Duration::from_micros(500)));
+        assert_eq!(reg.tick_budget, Some(Duration::from_micros(500)));
     }
 
     #[test]
-    fn test_wcet_us_zero_stored() {
+    fn test_budget_us_zero_stored() {
         // Builder stores zero — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).wcet_us(0);
-        assert_eq!(reg.wcet_budget, Some(Duration::from_micros(0)));
+        let reg = NodeRegistration::new(stub("n")).budget_us(0);
+        assert_eq!(reg.tick_budget, Some(Duration::from_micros(0)));
         assert!(reg.is_rt);
     }
 
     #[test]
-    fn test_wcet_us_max() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(u64::MAX);
-        assert_eq!(reg.wcet_budget, Some(Duration::from_micros(u64::MAX)));
+    fn test_budget_us_max() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(u64::MAX);
+        assert_eq!(reg.tick_budget, Some(Duration::from_micros(u64::MAX)));
     }
 
     // ── .deadline_us() ──
@@ -720,15 +720,15 @@ mod tests {
     // ── Execution class conflicts (documents current behavior) ──
 
     #[test]
-    fn test_wcet_then_compute_takes_last_class() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).compute();
+    fn test_budget_then_compute_takes_last_class() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).compute();
         assert_eq!(reg.execution_class, ExecutionClass::Compute);
-        assert!(reg.is_rt); // wcet_us sets is_rt, compute overrides class
+        assert!(reg.is_rt); // budget_us sets is_rt, compute overrides class
     }
 
     #[test]
-    fn test_compute_then_wcet_takes_last_class() {
-        let reg = NodeRegistration::new(stub("n")).compute().wcet_us(100);
+    fn test_compute_then_budget_takes_last_class() {
+        let reg = NodeRegistration::new(stub("n")).compute().budget_us(100);
         assert_eq!(reg.execution_class, ExecutionClass::Rt);
         assert!(reg.is_rt);
     }
@@ -743,20 +743,20 @@ mod tests {
     }
 
     #[test]
-    fn test_wcet_then_async_io_takes_last_class() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).async_io();
+    fn test_budget_then_async_io_takes_last_class() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).async_io();
         assert_eq!(reg.execution_class, ExecutionClass::AsyncIo);
-        assert!(reg.is_rt); // wcet_us sets is_rt, async_io overrides class
+        assert!(reg.is_rt); // budget_us sets is_rt, async_io overrides class
     }
 
     // ── Builder chain ordering independence ──
 
     #[test]
-    fn test_order_rate_wcet_chain() {
+    fn test_order_rate_budget_chain() {
         let reg = NodeRegistration::new(stub("n"))
             .order(5)
             .rate_hz(100.0)
-            .wcet_us(200)
+            .budget_us(200)
             .deadline_ms(1)
             .tier(NodeTier::UltraFast)
             .failure_policy(FailurePolicy::Fatal);
@@ -764,7 +764,7 @@ mod tests {
         assert_eq!(reg.order, 5);
         assert_eq!(reg.rate_hz, Some(100.0));
         assert!(reg.is_rt);
-        assert_eq!(reg.wcet_budget, Some(Duration::from_micros(200)));
+        assert_eq!(reg.tick_budget, Some(Duration::from_micros(200)));
         assert_eq!(reg.deadline, Some(Duration::from_millis(1)));
         assert_eq!(reg.tier, Some(NodeTier::UltraFast));
         assert!(matches!(reg.failure_policy, Some(FailurePolicy::Fatal)));
@@ -776,14 +776,14 @@ mod tests {
             .failure_policy(FailurePolicy::Ignore)
             .tier(NodeTier::Normal)
             .deadline_ms(5)
-            .wcet_us(100)
+            .budget_us(100)
             .rate_hz(50.0)
             .order(10);
 
         assert_eq!(reg.order, 10);
         assert_eq!(reg.rate_hz, Some(50.0));
         assert!(reg.is_rt);
-        assert_eq!(reg.wcet_budget, Some(Duration::from_micros(100)));
+        assert_eq!(reg.tick_budget, Some(Duration::from_micros(100)));
         assert_eq!(reg.deadline, Some(Duration::from_millis(5)));
         assert_eq!(reg.tier, Some(NodeTier::Normal));
         assert!(matches!(reg.failure_policy, Some(FailurePolicy::Ignore)));
@@ -832,7 +832,7 @@ mod tests {
                 "minimal_rt"
             }
             fn tick(&mut self) {}
-            fn wcet_budget(&self) -> Option<Duration> {
+            fn tick_budget(&self) -> Option<Duration> {
                 Some(Duration::from_micros(100))
             }
             fn deadline(&self) -> Duration {
@@ -868,7 +868,7 @@ mod tests {
         use crate::scheduling::Scheduler;
 
         let mut scheduler = Scheduler::new();
-        scheduler.add(StubNode("rt".into())).wcet_us(500).build().unwrap();
+        scheduler.add(StubNode("rt".into())).budget_us(500).build().unwrap();
         scheduler.add(StubNode("compute".into())).compute().build().unwrap();
         scheduler.add(StubNode("event".into())).on("topic").build().unwrap();
         scheduler.add(StubNode("async".into())).async_io().build().unwrap();
@@ -890,8 +890,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_wcet_only_ok() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(500);
+    fn validate_budget_only_ok() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(500);
         assert!(reg.validate().is_ok());
     }
 
@@ -950,19 +950,19 @@ mod tests {
         );
     }
 
-    // -- WCET/deadline auto-sets RT --
+    // -- budget/deadline auto-sets RT --
 
-    /// .wcet_us() auto-sets is_rt=true AND execution_class=Rt.
+    /// .budget_us() auto-sets is_rt=true AND execution_class=Rt.
     #[test]
-    fn wcet_auto_sets_rt_flag_and_class() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(500);
-        assert!(reg.is_rt, "wcet_us should auto-set is_rt");
+    fn budget_auto_sets_rt_flag_and_class() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(500);
+        assert!(reg.is_rt, "budget_us should auto-set is_rt");
         assert_eq!(
             reg.execution_class,
             ExecutionClass::Rt,
-            "wcet_us should set execution_class to Rt"
+            "budget_us should set execution_class to Rt"
         );
-        assert_eq!(reg.wcet_budget, Some(Duration::from_micros(500)));
+        assert_eq!(reg.tick_budget, Some(Duration::from_micros(500)));
     }
 
     /// .deadline_ms() auto-sets is_rt=true and execution_class=Rt.
@@ -1038,47 +1038,47 @@ mod tests {
         assert_eq!(reg.execution_class, ExecutionClass::Rt);
     }
 
-    // -- WCET + compute conflict --
+    // -- budget + compute conflict --
 
-    /// .wcet_us(100).compute() — WCET monitoring with compute class.
-    /// WCET is stored but the compute pool won't enforce RT deadlines.
+    /// .budget_us(100).compute() — budget monitoring with compute class.
+    /// budget is stored but the compute pool won't enforce RT deadlines.
     #[test]
-    fn conflict_wcet_then_compute_wcet_stored_class_compute() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).compute();
+    fn conflict_budget_then_compute_budget_stored_class_compute() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).compute();
         assert_eq!(reg.execution_class, ExecutionClass::Compute);
-        assert!(reg.is_rt, "is_rt from wcet persists");
-        assert_eq!(reg.wcet_budget, Some(Duration::from_micros(100)));
+        assert!(reg.is_rt, "is_rt from budget persists");
+        assert_eq!(reg.tick_budget, Some(Duration::from_micros(100)));
     }
 
     // -- Triple class changes --
 
-    /// .wcet_us().compute().async_io() — last class wins, is_rt persists.
+    /// .budget_us().compute().async_io() — last class wins, is_rt persists.
     #[test]
     fn conflict_triple_class_change_last_wins() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).compute().async_io();
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).compute().async_io();
         assert_eq!(reg.execution_class, ExecutionClass::AsyncIo);
-        assert!(reg.is_rt, "is_rt from .wcet_us() persists through chain");
+        assert!(reg.is_rt, "is_rt from .budget_us() persists through chain");
     }
 
-    /// .on("a").wcet_us(100).compute().on("b") — ends as Event("b").
+    /// .on("a").budget_us(100).compute().on("b") — ends as Event("b").
     #[test]
     fn conflict_four_class_changes_last_wins() {
-        let reg = NodeRegistration::new(stub("n")).on("a").wcet_us(100).compute().on("b");
+        let reg = NodeRegistration::new(stub("n")).on("a").budget_us(100).compute().on("b");
         assert_eq!(reg.execution_class, ExecutionClass::Event("b".to_string()));
     }
 
     #[test]
-    fn validate_wcet_with_deadline_ok() {
+    fn validate_budget_with_deadline_ok() {
         let reg = NodeRegistration::new(stub("n"))
-            .wcet_us(200)
+            .budget_us(200)
             .deadline_ms(1);
         assert!(reg.validate().is_ok());
     }
 
     #[test]
-    fn validate_wcet_alone_ok() {
-        // wcet_us auto-sets is_rt, class stays BestEffort — allowed
-        let reg = NodeRegistration::new(stub("n")).wcet_us(500);
+    fn validate_budget_alone_ok() {
+        // budget_us auto-sets is_rt, class stays BestEffort — allowed
+        let reg = NodeRegistration::new(stub("n")).budget_us(500);
         assert!(reg.validate().is_ok());
     }
 
@@ -1110,24 +1110,24 @@ mod tests {
     // -- Execution class conflicts: is_rt + non-RT class → error --
 
     #[test]
-    fn validate_wcet_then_compute_rejects() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).compute();
+    fn validate_budget_then_compute_rejects() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).compute();
         let err = reg.validate().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("compute"), "error should mention compute: {}", msg);
     }
 
     #[test]
-    fn validate_wcet_then_async_io_rejects() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).async_io();
+    fn validate_budget_then_async_io_rejects() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).async_io();
         let err = reg.validate().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("async_io"), "error should mention async_io: {}", msg);
     }
 
     #[test]
-    fn validate_wcet_then_event_rejects() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).on("sensor");
+    fn validate_budget_then_event_rejects() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).on("sensor");
         let err = reg.validate().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("event"), "error should mention event: {}", msg);
@@ -1148,21 +1148,21 @@ mod tests {
 
     #[test]
     fn validate_triple_conflict_rejects() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(100).compute().async_io();
-        assert!(reg.validate().is_err(), "wcet + compute + async_io should conflict");
+        let reg = NodeRegistration::new(stub("n")).budget_us(100).compute().async_io();
+        assert!(reg.validate().is_err(), "budget + compute + async_io should conflict");
     }
 
-    /// .compute().wcet_us() — wcet_us called last, so class=Rt and is_rt=true — no conflict
+    /// .compute().budget_us() — budget_us called last, so class=Rt and is_rt=true — no conflict
     #[test]
-    fn validate_compute_then_wcet_ok() {
-        let reg = NodeRegistration::new(stub("n")).compute().wcet_us(100);
-        assert!(reg.validate().is_ok(), ".compute().wcet_us() should be valid (RT wins)");
+    fn validate_compute_then_budget_ok() {
+        let reg = NodeRegistration::new(stub("n")).compute().budget_us(100);
+        assert!(reg.validate().is_ok(), ".compute().budget_us() should be valid (RT wins)");
     }
 
-    /// .on("topic").wcet_us() — wcet_us called last, class=Rt — no conflict
+    /// .on("topic").budget_us() — budget_us called last, class=Rt — no conflict
     #[test]
-    fn validate_event_then_wcet_ok() {
-        let reg = NodeRegistration::new(stub("n")).on("sensor").wcet_us(100);
+    fn validate_event_then_budget_ok() {
+        let reg = NodeRegistration::new(stub("n")).on("sensor").budget_us(100);
         assert!(reg.validate().is_ok());
     }
 
@@ -1232,17 +1232,17 @@ mod tests {
         assert!(reg.validate().is_ok());
     }
 
-    // -- Invalid WCET --
+    // -- Invalid budget --
 
     #[test]
-    fn validate_wcet_zero_rejects() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(0);
-        assert!(reg.validate().is_err(), "zero WCET should be rejected");
+    fn validate_budget_zero_rejects() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(0);
+        assert!(reg.validate().is_err(), "zero budget should be rejected");
     }
 
     #[test]
-    fn validate_wcet_positive_ok() {
-        let reg = NodeRegistration::new(stub("n")).wcet_us(1);
+    fn validate_budget_positive_ok() {
+        let reg = NodeRegistration::new(stub("n")).budget_us(1);
         assert!(reg.validate().is_ok());
     }
 
@@ -1255,7 +1255,7 @@ mod tests {
         let mut scheduler = Scheduler::new();
         let result = scheduler
             .add(StubNode("conflict".into()))
-            .wcet_us(100)
+            .budget_us(100)
             .compute()
             .build();
 
@@ -1295,7 +1295,7 @@ mod tests {
         let reg = NodeRegistration::new(stub("n"))
             .order(5)
             .rate_hz(100.0)
-            .wcet_us(200)
+            .budget_us(200)
             .deadline_ms(1)
             .tier(NodeTier::UltraFast)
             .failure_policy(FailurePolicy::Fatal);

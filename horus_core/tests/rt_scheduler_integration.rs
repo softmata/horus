@@ -58,7 +58,7 @@ impl Node for CriticalControlNode {
         Ok(())
     }
 
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(self.execution_time_us + 20))
     }
 
@@ -70,17 +70,6 @@ impl Node for CriticalControlNode {
         DeadlineMissPolicy::EmergencyStop
     }
 
-    fn pre_condition(&self) -> bool {
-        true
-    }
-
-    fn post_condition(&self) -> bool {
-        true
-    }
-
-    fn invariant(&self) -> bool {
-        true
-    }
 }
 
 #[test]
@@ -92,7 +81,7 @@ fn test_scheduler_with_rt_nodes() {
     scheduler
         .add(CriticalControlNode::new("motor_control", 50)) // 50μs execution
         .order(0) // Highest priority
-        .wcet_us(100) // 100μs WCET budget
+        .budget_us(100) // 100μs tick budget
         .deadline_ms(1) // 1ms deadline
         .done();
 
@@ -100,7 +89,7 @@ fn test_scheduler_with_rt_nodes() {
     scheduler
         .add(CriticalControlNode::new("sensor_fusion", 30)) // 30μs execution
         .order(1)
-        .wcet_us(50)
+        .budget_us(50)
         .deadline_ms(2)
         .done();
 
@@ -125,14 +114,14 @@ fn test_scheduler_with_safety_critical_config() {
     scheduler
         .add(CriticalControlNode::new("flight_control", 80))
         .order(0)
-        .wcet_us(100)
+        .budget_us(100)
         .deadline_ms(1)
         .done();
 
     scheduler
         .add(CriticalControlNode::new("navigation", 60))
         .order(1)
-        .wcet_us(80)
+        .budget_us(80)
         .deadline_ms(2)
         .done();
 
@@ -142,21 +131,21 @@ fn test_scheduler_with_safety_critical_config() {
 }
 
 #[test]
-fn test_wcet_violation_detection() {
+fn test_budget_violation_detection() {
     cleanup_stale_shm();
     // Enable RT monitoring
     let mut scheduler = Scheduler::new().safety_monitor(true);
 
-    // Add node that will violate WCET
-    // Execution time (100μs) > WCET budget (50μs)
+    // Add node that will violate budget
+    // Execution time (100μs) > tick budget (50μs)
     scheduler
         .add(CriticalControlNode::new("violator", 100))
         .order(0)
-        .wcet_us(50) // WCET budget too small
+        .budget_us(50) // tick budget too small
         .deadline_ms(1)
         .done();
 
-    // This should detect WCET violations but continue running
+    // This should detect budget violations but continue running
     let result = scheduler.run_for(Duration::from_millis(20));
     assert!(result.is_ok());
 }
@@ -171,7 +160,7 @@ fn test_deadline_miss_detection() {
     scheduler
         .add(CriticalControlNode::new("tight_deadline", 900))
         .order(0)
-        .wcet_us(1000)
+        .budget_us(1000)
         .deadline_us(500) // Deadline smaller than execution time
         .done();
 
@@ -189,7 +178,7 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler
         .add(CriticalControlNode::new("rt_critical", 50))
         .order(0)
-        .wcet_us(100)
+        .budget_us(100)
         .deadline_ms(1)
         .done();
 
@@ -201,7 +190,7 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler
         .add(CriticalControlNode::new("rt_sensor", 30))
         .order(1)
-        .wcet_us(50)
+        .budget_us(50)
         .deadline_ms(2)
         .done();
 
@@ -227,7 +216,7 @@ fn test_watchdog_functionality() {
     scheduler
         .add(CriticalControlNode::new("watchdog_monitored", 10))
         .order(0)
-        .wcet_us(50)
+        .budget_us(50)
         .deadline_ms(1)
         .done();
 
@@ -246,14 +235,14 @@ fn test_high_performance_rt_config() {
     scheduler
         .add(CriticalControlNode::new("traction_control", 10))
         .order(0)
-        .wcet_us(20)
+        .budget_us(20)
         .deadline_us(100) // 10kHz control loop
         .done();
 
     scheduler
         .add(CriticalControlNode::new("stability_control", 15))
         .order(1)
-        .wcet_us(25)
+        .budget_us(25)
         .deadline_us(100)
         .done();
 

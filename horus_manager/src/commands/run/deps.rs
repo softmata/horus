@@ -1,5 +1,4 @@
-use crate::config::HORUS_YAML;
-use crate::dependency_resolver::DependencySpec;
+use crate::manifest::{DependencyValue, DetailedDependency, DepSource, HorusManifest, HORUS_TOML};
 use anyhow::{anyhow, bail, Result};
 use colored::*;
 use std::collections::HashSet;
@@ -181,14 +180,15 @@ pub(crate) fn scan_imports(
     let content = fs::read_to_string(file)?;
     let mut dependencies = HashSet::new();
 
-    // First, check if horus.yaml exists and use it
-    let from_yaml = Path::new(HORUS_YAML).exists();
+    // First, check if horus.toml exists and use it
+    let from_manifest = Path::new(HORUS_TOML).exists();
 
-    if from_yaml {
-        log::debug!("Reading dependencies from horus.yaml");
-        eprintln!("  {} Reading dependencies from horus.yaml", "".cyan());
-        let yaml_deps = parse_horus_yaml_dependencies(HORUS_YAML)?;
-        dependencies.extend(yaml_deps);
+    if from_manifest {
+        log::debug!("Reading dependencies from horus.toml");
+        eprintln!("  {} Reading dependencies from horus.toml", "".cyan());
+        if let Ok((manifest, _)) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
+            dependencies.extend(manifest_deps_to_string_set(&manifest));
+        }
     } else {
         // Fallback: scan imports from source code
         match language {
@@ -221,9 +221,9 @@ pub(crate) fn scan_imports(
     // Filter out ignored packages
     dependencies.retain(|dep| !ignore.should_ignore_package(dep));
 
-    // Auto-create or update horus.yaml if we scanned from source
-    if !from_yaml && !dependencies.is_empty() {
-        auto_update_horus_yaml(file, language, &dependencies)?;
+    // Auto-create horus.toml if we scanned from source and none exists
+    if !from_manifest && !dependencies.is_empty() {
+        auto_create_horus_toml(file, language, &dependencies)?;
     }
 
     Ok(dependencies)
@@ -335,465 +335,226 @@ fn is_stdlib_package(name: &str) -> bool {
 
 // Removed: parse_c_include() - C support no longer provided
 
-/// Parse a single YAML dependency and convert to Cargo.toml format
-/// Handles: - horus, - name: serde with version: "1" features: [derive]
-pub(crate) fn parse_yaml_cargo_dependency(value: &serde_yaml::Value) -> Option<String> {
-    match value {
-        serde_yaml::Value::String(dep_str) => {
-            // Simple string: - horus, - cargo:serde@1.0:features=derive, etc.
-            let dep = dep_str.trim();
+/// Convert a manifest dependency to a Cargo.toml dependency line.
+///
+/// Returns `None` for horus packages (already added as path deps) and pip-only packages.
+/// Returns a string like `serde = "1.0"` or `serde = { version = "1.0", features = ["derive"] }`.
+pub(crate) fn manifest_dep_to_cargo_line(name: &str, value: &DependencyValue) -> Option<String> {
+    // Skip horus packages — they're already added as path dependencies
+    if name == "horus" || name.starts_with("horus_") {
+        return None;
+    }
 
-            // Skip horus packages - they're already added as path dependencies
-            if dep == "horus" || dep.starts_with("horus_") || dep.starts_with("horus@") {
+    match value {
+        DependencyValue::Simple(version_str) => {
+            let v = if version_str == "latest" { "*" } else { version_str.as_str() };
+            Some(format!("{} = \"{}\"", name, v))
+        }
+        DependencyValue::Detailed(detail) => {
+            // Skip pip-only deps
+            if matches!(detail.source, Some(DepSource::Pypi)) {
+                return None;
+            }
+            // Skip system deps
+            if matches!(detail.source, Some(DepSource::System)) {
                 return None;
             }
 
-            // Parse cargo: or pip: prefixed dependencies
-            let dep_clean = if let Some(rest) = dep.strip_prefix("cargo:") {
-                rest // Remove "cargo:" prefix
-            } else if dep.starts_with("pip:") {
-                // Skip pip dependencies in Cargo.toml
-                return None;
-            } else {
-                dep
-            };
-
-            // Parse package@version:features=feat1,feat2 format
-            if let Some(at_pos) = dep_clean.find('@') {
-                let pkg_name = dep_clean[..at_pos].trim();
-                let rest = &dep_clean[at_pos + 1..];
-
-                // Split version and features
-                if let Some(features_pos) = rest.find(":features=") {
-                    let version = rest[..features_pos].trim();
-                    let features_str = rest[features_pos + 10..].trim(); // Skip ":features="
-                    let features: Vec<&str> = features_str.split(',').map(|s| s.trim()).collect();
-
-                    return Some(format!(
-                        "{} = {{ version = \"{}\", features = [{}] }}",
-                        pkg_name,
-                        version,
-                        features
-                            .iter()
-                            .map(|f| format!("\"{}\"", f))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                } else {
-                    // Just version, no features
-                    let version = rest.trim();
-                    return Some(format!("{} = \"{}\"", pkg_name, version));
-                }
+            // Path dependency
+            if let Some(ref path) = detail.path {
+                return Some(format!("{} = {{ path = \"{}\" }}", name, path));
             }
 
-            // No version specified, use "*"
-            Some(format!("{} = \"*\"", dep_clean))
-        }
-        serde_yaml::Value::Mapping(map) => {
-            // Map format: - name: serde, version: "1", features: [derive]
-            let name = map.get("name")?.as_str()?;
-
-            if name == "horus" || name.starts_with("horus_") {
-                return None; // Skip, already added
+            // Git dependency
+            if let Some(ref git) = detail.git {
+                let mut parts = vec![format!("git = \"{}\"", git)];
+                if let Some(ref branch) = detail.branch {
+                    parts.push(format!("branch = \"{}\"", branch));
+                }
+                if let Some(ref tag) = detail.tag {
+                    parts.push(format!("tag = \"{}\"", tag));
+                }
+                if let Some(ref rev) = detail.rev {
+                    parts.push(format!("rev = \"{}\"", rev));
+                }
+                return Some(format!("{} = {{ {} }}", name, parts.join(", ")));
             }
 
-            let mut cargo_dep = format!("{} = ", name);
-
-            // Check for simple version string
-            if let Some(version) = map.get("version").and_then(|v| v.as_str()) {
-                // Check if features exist
-                if let Some(features_val) = map.get("features") {
-                    if let Some(features_list) = features_val.as_sequence() {
-                        let features: Vec<&str> =
-                            features_list.iter().filter_map(|f| f.as_str()).collect();
-
-                        if !features.is_empty() {
-                            cargo_dep.push_str(&format!(
-                                "{{ version = \"{}\", features = [{}] }}",
-                                version,
-                                features
-                                    .iter()
-                                    .map(|f| format!("\"{}\"", f))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ));
-                            return Some(cargo_dep);
-                        }
-                    }
-                }
-
-                // No features, just version
-                cargo_dep.push_str(&format!("\"{}\"", version));
-                Some(cargo_dep)
+            // Version-based dependency
+            let version = detail.version.as_deref().unwrap_or("*");
+            if detail.features.is_empty() {
+                Some(format!("{} = \"{}\"", name, version))
             } else {
-                // No version specified
-                Some(format!("{} = \"*\"", name))
+                let features_str = detail
+                    .features
+                    .iter()
+                    .map(|f| format!("\"{}\"", f))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(format!(
+                    "{} = {{ version = \"{}\", features = [{}] }}",
+                    name, version, features_str
+                ))
             }
         }
-        _ => None,
     }
 }
 
-pub(crate) fn parse_horus_yaml_dependencies(path: &str) -> Result<HashSet<String>> {
-    let content = fs::read_to_string(path)?;
-
-    // Try to parse as proper YAML first (supports complex table syntax)
-    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
-        Ok(yaml) => {
-            let mut dependencies = HashSet::new();
-
-            // Get language context
-            let language = yaml
-                .get("language")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            // Parse dependencies
-            if let Some(deps_value) = yaml.get("dependencies") {
-                match deps_value {
-                    // Array format: dependencies: [- pkg, - pkg = "version"]
-                    serde_yaml::Value::Sequence(list) => {
-                        for item in list {
-                            if let Some(dep_str) =
-                                parse_dependency_value(item, language.as_deref())?
-                            {
-                                dependencies.insert(dep_str);
-                            }
-                        }
-                    }
-
-                    // Map format: dependencies: { pkg: version, pkg: {path: ...} }
-                    serde_yaml::Value::Mapping(map) => {
-                        for (key, value) in map {
-                            if let serde_yaml::Value::String(pkg_name) = key {
-                                if let Some(dep_str) = parse_dependency_map_entry(
-                                    pkg_name,
-                                    value,
-                                    language.as_deref(),
-                                )? {
-                                    dependencies.insert(dep_str);
-                                }
-                            }
-                        }
-                    }
-
-                    _ => {}
+/// Convert manifest dependencies to a set of dependency strings (for compatibility
+/// with existing code that expects `HashSet<String>`).
+///
+/// Produces strings in the old format: `"horus"`, `"pip:numpy@^1.24"`, `"cargo:serde@1.0"`, etc.
+pub(crate) fn manifest_deps_to_string_set(manifest: &HorusManifest) -> HashSet<String> {
+    let mut deps = HashSet::new();
+    for (name, value) in &manifest.dependencies {
+        match value {
+            DependencyValue::Simple(version) => {
+                if version == "*" || version == "latest" {
+                    deps.insert(name.clone());
+                } else {
+                    deps.insert(format!("{}@{}", name, version));
                 }
             }
-
-            Ok(dependencies)
+            DependencyValue::Detailed(detail) => {
+                let version = detail.version.as_deref().unwrap_or("*");
+                let prefix = match &detail.source {
+                    Some(DepSource::Pypi) => "pip:",
+                    Some(DepSource::CratesIo) => "cargo:",
+                    Some(DepSource::System) => "system:",
+                    _ => "",
+                };
+                if version == "*" {
+                    deps.insert(format!("{}{}", prefix, name));
+                } else {
+                    deps.insert(format!("{}{}@{}", prefix, name, version));
+                }
+            }
         }
-
-        // Fallback to simple line-by-line parsing for malformed YAML
-        Err(_) => parse_horus_yaml_dependencies_simple(path),
     }
+    deps
 }
 
-/// Parse a single dependency value from YAML (array item)
-fn parse_dependency_value(
-    value: &serde_yaml::Value,
-    language: Option<&str>,
-) -> Result<Option<String>> {
-    match value {
-        serde_yaml::Value::String(dep_str) => {
-            let dep_str = dep_str.trim();
-            if dep_str.is_empty() || dep_str.starts_with('#') {
-                return Ok(None);
-            }
-
-            // Skip normalization for strings that already have package manager prefixes
-            // (cargo: or pip:) to avoid corrupting feature syntax like ":features=derive"
-            if dep_str.starts_with("cargo:") || dep_str.starts_with("pip:") {
-                return Ok(Some(dep_str.to_string()));
-            }
-
-            // Normalize "pkg = version" syntax
-            if let Some(equals_pos) = dep_str.find('=') {
-                let pkg_name = dep_str[..equals_pos].trim();
-                let version_part = dep_str[equals_pos + 1..].trim();
-                let version = version_part.trim_matches('\'').trim_matches('"').trim();
-
-                if !pkg_name.contains(':') {
-                    let prefix = match language {
-                        Some("python") => "pip",
-                        Some("rust") => "cargo",
-                        _ => "cargo",
-                    };
-                    return Ok(Some(format!("{}:{}@{}", prefix, pkg_name, version)));
-                } else {
-                    return Ok(Some(format!("{}@{}", pkg_name, version)));
-                }
-            }
-
-            Ok(Some(dep_str.to_string()))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Parse dependency from map format: pkg: {version: "1.0", features: [...]}
-fn parse_dependency_map_entry(
-    pkg_name: &str,
-    value: &serde_yaml::Value,
-    language: Option<&str>,
-) -> Result<Option<String>> {
-    match value {
-        // Simple string version: pkg: "1.0"
-        serde_yaml::Value::String(version_str) => {
-            let version = version_str.trim_matches('\'').trim_matches('"').trim();
-            let prefix = if pkg_name.contains(':') {
-                ""
-            } else {
-                match language {
-                    Some("python") => "pip:",
-                    Some("rust") => "cargo:",
-                    _ => "cargo:",
-                }
-            };
-            Ok(Some(format!("{}{}@{}", prefix, pkg_name, version)))
-        }
-
-        // Table format: pkg: {version: "1.0", features: ["full"], path: "...", git: "..."}
-        serde_yaml::Value::Mapping(map) => {
-            // Check for empty map (pkg: {}) - treat as simple dependency
-            if map.is_empty() {
-                return Ok(Some(pkg_name.to_string()));
-            }
-
-            // Extract version
-            let version = map
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim_matches('\'').trim_matches('"').trim());
-
-            // Extract features
-            let features: Vec<String> = map
-                .get("features")
-                .and_then(|v| v.as_sequence())
-                .map(|seq| {
-                    seq.iter()
-                        .filter_map(|f| f.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            // Check for path dependency
-            if let Some(path_value) = map.get("path") {
-                if let Some(path_str) = path_value.as_str() {
-                    // Path dependencies are now supported! Return special format: path:pkg_name:path_str
-                    return Ok(Some(format!("path:{}:{}", pkg_name, path_str)));
-                }
-            }
-
-            // Check for git dependency
-            if let Some(git_value) = map.get("git") {
-                if let Some(git_str) = git_value.as_str() {
-                    // Extract optional branch, tag, or rev
-                    let branch = map.get("branch").and_then(|v| v.as_str());
-                    let tag = map.get("tag").and_then(|v| v.as_str());
-                    let rev = map.get("rev").and_then(|v| v.as_str());
-
-                    // Build git reference string
-                    let ref_str = if let Some(b) = branch {
-                        format!(":branch={}", b)
-                    } else if let Some(t) = tag {
-                        format!(":tag={}", t)
-                    } else if let Some(r) = rev {
-                        format!(":rev={}", r)
-                    } else {
-                        String::new()
-                    };
-
-                    // Return format: git:pkg_name:git_url[:branch=X|tag=X|rev=X]
-                    return Ok(Some(format!("git:{}:{}{}", pkg_name, git_str, ref_str)));
-                }
-            }
-
-            // Build dependency string
-            let prefix = if pkg_name.contains(':') {
-                ""
-            } else {
-                match language {
-                    Some("python") => "pip:",
-                    Some("rust") => "cargo:",
-                    _ => "cargo:",
-                }
-            };
-
-            if let Some(ver) = version {
-                if !features.is_empty() {
-                    Ok(Some(format!(
-                        "{}{}@{}:features={}",
-                        prefix,
-                        pkg_name,
-                        ver,
-                        features.join(",")
-                    )))
-                } else {
-                    Ok(Some(format!("{}{}@{}", prefix, pkg_name, ver)))
-                }
-            } else {
-                // No version specified
-                if !features.is_empty() {
-                    Ok(Some(format!(
-                        "{}{}:features={}",
-                        prefix,
-                        pkg_name,
-                        features.join(",")
-                    )))
-                } else {
-                    Ok(Some(format!("{}{}", prefix, pkg_name)))
-                }
-            }
-        }
-
-        _ => Ok(None),
-    }
-}
-
-/// Fallback simple line-by-line parser for malformed YAML
-fn parse_horus_yaml_dependencies_simple(path: &str) -> Result<HashSet<String>> {
-    let content = fs::read_to_string(path)?;
-    let mut dependencies = HashSet::new();
-
-    // First, detect language from horus.yaml to determine default prefix
-    let mut language = None;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("language:") {
-            language = trimmed
-                .strip_prefix("language:")
-                .map(|s| s.trim().to_string());
-            break;
-        }
-    }
-
-    // Simple YAML parsing for dependencies section
-    let mut in_deps = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("dependencies:") {
-            in_deps = true;
+/// Append all cargo-compatible dependencies from a manifest to a Cargo.toml string.
+///
+/// Skips horus framework packages and pip/system-only deps.
+pub(crate) fn append_manifest_cargo_deps(
+    cargo_toml: &mut String,
+    manifest: &HorusManifest,
+    skip_names: &HashSet<String>,
+) {
+    for (name, value) in &manifest.dependencies {
+        if skip_names.contains(name) {
             continue;
         }
-
-        // Exit dependencies section if we hit another top-level key
-        if in_deps
-            && !trimmed.is_empty()
-            && !trimmed.starts_with("- ")
-            && !trimmed.starts_with("#")
-            && trimmed.contains(':')
-        {
-            in_deps = false;
-        }
-
-        if in_deps && trimmed.starts_with("- ") {
-            // Extract full dependency string "package@version" or "package"
-            let dep_str = trimmed[2..].trim();
-            if dep_str.starts_with("#") {
-                continue; // Skip comments
-            }
-
-            // Strip inline comments (handle both quoted and unquoted strings)
-            let dep_str = if let Some(comment_pos) = dep_str.find('#') {
-                // Check if the # is inside quotes
-                let before_comment = &dep_str[..comment_pos];
-                let single_quotes = before_comment.matches('\'').count();
-                let double_quotes = before_comment.matches('"').count();
-
-                // If quotes are balanced, # is a comment. Otherwise, it's part of the string
-                if single_quotes.is_multiple_of(2) && double_quotes.is_multiple_of(2) {
-                    dep_str[..comment_pos].trim()
-                } else {
-                    dep_str
-                }
-            } else {
-                dep_str
-            };
-
-            // Remove surrounding quotes if present
-            let dep_str = dep_str.trim_matches('\'').trim_matches('"');
-
-            // Normalize package manager syntax: "eframe = \"0.29\"" -> "cargo:eframe@0.29" or "pip:numpy@1.24"
-            let dep_str = if let Some(equals_pos) = dep_str.find('=') {
-                let pkg_name = dep_str[..equals_pos].trim();
-                let version_part = dep_str[equals_pos + 1..].trim();
-                // Remove quotes from version
-                let version = version_part.trim_matches('\'').trim_matches('"').trim();
-
-                // If no prefix (cargo:/pip:/horus), infer from language context
-                if !pkg_name.contains(':') {
-                    let prefix = match language.as_deref() {
-                        Some("python") => "pip",
-                        Some("rust") => "cargo",
-                        _ => "cargo", // Default to cargo if unknown
-                    };
-                    format!("{}:{}@{}", prefix, pkg_name, version)
-                } else {
-                    // Already has prefix, just reformat
-                    format!("{}@{}", pkg_name, version)
-                }
-            } else {
-                dep_str.to_string()
-            };
-
-            // Insert the full dependency string (including version)
-            // This will be split later into HORUS vs pip packages
-            dependencies.insert(dep_str);
+        if let Some(line) = manifest_dep_to_cargo_line(name, value) {
+            cargo_toml.push_str(&format!("{}\n", line));
         }
     }
-
-    Ok(dependencies)
 }
 
-/// Parse horus.yaml dependencies with support for path, git, and registry sources
-/// Returns `Vec<DependencySpec>` which includes source information
-pub fn parse_horus_yaml_dependencies_v2(path: &str) -> Result<Vec<DependencySpec>> {
-    let content = fs::read_to_string(path)?;
+/// Auto-create horus.toml when none exists and dependencies were detected from source.
+pub(crate) fn auto_create_horus_toml(
+    file: &Path,
+    language: &str,
+    dependencies: &HashSet<String>,
+) -> Result<()> {
+    use crate::manifest::{PackageInfo, IgnoreConfig};
+    use std::collections::BTreeMap;
 
-    // Try parsing as proper YAML first (supports structured format)
-    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
-        Ok(yaml) => {
-            let mut deps = Vec::new();
-
-            if let Some(deps_value) = yaml.get("dependencies") {
-                match deps_value {
-                    // List format: dependencies: [- pkg@version]
-                    serde_yaml::Value::Sequence(list) => {
-                        for item in list {
-                            if let serde_yaml::Value::String(dep_str) = item {
-                                // Parse simple string format
-                                deps.push(DependencySpec::parse(dep_str)?);
-                            }
-                        }
-                    }
-
-                    // Map format: dependencies: { pkg: version, pkg: {path: ...} }
-                    serde_yaml::Value::Mapping(map) => {
-                        for (key, value) in map {
-                            if let serde_yaml::Value::String(name) = key {
-                                deps.push(DependencySpec::from_yaml_value(name.clone(), value)?);
-                            }
-                        }
-                    }
-
-                    _ => {}
-                }
+    let toml_path = PathBuf::from(HORUS_TOML);
+    if toml_path.exists() {
+        // If manifest exists, add missing deps via toml_edit
+        let (existing, _) = HorusManifest::load_from(&toml_path)?;
+        let mut added = 0;
+        for dep in dependencies {
+            let base_name = dep.split('@').next().unwrap_or(dep);
+            let base_name = base_name.strip_prefix("pip:").or_else(|| base_name.strip_prefix("cargo:")).unwrap_or(base_name);
+            if !existing.dependencies.contains_key(base_name) {
+                let value = DependencyValue::Simple("*".to_string());
+                crate::manifest::add_dependency_to_file(&toml_path, base_name, &value, "dependencies")?;
+                added += 1;
             }
-
-            Ok(deps)
         }
-
-        // Fallback to simple parsing for backward compatibility
-        Err(_) => {
-            let old_deps = parse_horus_yaml_dependencies(path)?;
-            let mut deps = Vec::new();
-            for dep_str in old_deps {
-                deps.push(DependencySpec::parse(&dep_str)?);
-            }
-            Ok(deps)
+        if added > 0 {
+            eprintln!("  {} Added {} new dependencies to horus.toml", "\u{2713}".green(), added);
         }
+        return Ok(());
+    }
+
+    // Create new horus.toml
+    let project_name = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| {
+            file.file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("my-project")
+                .to_string()
+        });
+
+    let mut deps = BTreeMap::new();
+    for dep in dependencies {
+        let (name, source) = if let Some(rest) = dep.strip_prefix("pip:") {
+            let (n, v) = split_dep_spec(rest);
+            (n, Some((DepSource::Pypi, v)))
+        } else if let Some(rest) = dep.strip_prefix("cargo:") {
+            let (n, v) = split_dep_spec(rest);
+            (n, Some((DepSource::CratesIo, v)))
+        } else {
+            let (n, v) = split_dep_spec(dep);
+            (n, if v == "*" { None } else { Some((DepSource::Registry, v.to_string())) })
+        };
+
+        let value = match source {
+            Some((src, v)) => DependencyValue::Detailed(DetailedDependency {
+                version: Some(v.to_string()),
+                source: Some(src),
+                path: None, git: None, branch: None, tag: None, rev: None,
+                features: vec![], target: None,
+            }),
+            None => DependencyValue::Simple("*".to_string()),
+        };
+        deps.insert(name.to_string(), value);
+    }
+
+    let manifest = HorusManifest {
+        package: PackageInfo {
+            name: project_name,
+            version: "0.1.0".to_string(),
+            description: None,
+            authors: vec![],
+            license: None,
+            language: Some(language.to_string()),
+            edition: "1".to_string(),
+            repository: None,
+            package_type: None,
+            categories: vec![],
+        },
+        dependencies: deps,
+        dev_dependencies: BTreeMap::new(),
+        build_dependencies: BTreeMap::new(),
+        drivers: BTreeMap::new(),
+        ignore: IgnoreConfig::default(),
+        enable: Vec::new(),
+    };
+
+    manifest.save_to(&toml_path)?;
+    eprintln!(
+        "  {} Created horus.toml with {} dependencies",
+        "\u{2713}".green(),
+        dependencies.len()
+    );
+
+    Ok(())
+}
+
+/// Split "name@version" into (name, version) or (name, "*")
+fn split_dep_spec(s: &str) -> (&str, String) {
+    if let Some(pos) = s.find('@') {
+        let v = &s[pos + 1..];
+        (&s[..pos], if v == "latest" { "*".to_string() } else { v.to_string() })
+    } else {
+        (s, "*".to_string())
     }
 }
 
@@ -877,7 +638,7 @@ pub(crate) fn is_cargo_package(package_name: &str) -> bool {
 /// Separate HORUS packages, pip packages, and cargo packages
 ///
 /// # Arguments
-/// * `deps` - Set of dependency strings from horus.yaml
+/// * `deps` - Set of dependency strings from horus.toml
 /// * `context_language` - Optional language context ("rust", "python", "cpp") to guide auto-detection
 pub(crate) fn split_dependencies_with_context(
     deps: HashSet<String>,
@@ -1257,200 +1018,3 @@ pub(crate) fn split_dependencies_with_path_context(
     )
 }
 
-/// Auto-create or update horus.yaml with detected dependencies
-pub(crate) fn auto_update_horus_yaml(
-    file: &Path,
-    language: &str,
-    dependencies: &HashSet<String>,
-) -> Result<()> {
-    let yaml_path = PathBuf::from(HORUS_YAML);
-
-    if yaml_path.exists() {
-        // Update existing horus.yaml
-        update_existing_horus_yaml(&yaml_path, language, dependencies)?;
-    } else {
-        // Create new horus.yaml
-        create_horus_yaml(&yaml_path, file, language, dependencies)?;
-    }
-
-    Ok(())
-}
-
-/// Create new horus.yaml from scratch
-fn create_horus_yaml(
-    yaml_path: &Path,
-    file: &Path,
-    language: &str,
-    dependencies: &HashSet<String>,
-) -> Result<()> {
-    // Derive project name from directory or file
-    let project_name = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| {
-            file.file_stem()
-                .and_then(|n| n.to_str())
-                .unwrap_or("my-project")
-                .to_string()
-        });
-
-    // Categorize dependencies based on language context
-    let mut horus_deps = Vec::new();
-    let mut pip_deps = Vec::new();
-    let mut cargo_deps = Vec::new();
-
-    for dep in dependencies {
-        if dep.starts_with("horus") {
-            horus_deps.push(dep.clone());
-        } else {
-            // Default based on language
-            match language {
-                "python" => pip_deps.push(format!("pip:{}", dep)),
-                "rust" => cargo_deps.push(format!("cargo:{}", dep)),
-                _ => pip_deps.push(format!("pip:{}", dep)), // Default to pip
-            }
-        }
-    }
-
-    // Sort for consistent output
-    horus_deps.sort();
-    pip_deps.sort();
-    cargo_deps.sort();
-
-    // Build YAML content
-    let mut content = String::new();
-    content.push_str(&format!("name: {}\n", project_name));
-    content.push_str("version: 0.1.9\n");
-    content.push_str(&format!("language: {}\n", language));
-    content.push_str("\ndependencies:\n");
-
-    // Add HORUS packages first
-    for dep in horus_deps {
-        content.push_str(&format!("  - {}\n", dep));
-    }
-
-    // Add pip packages
-    for dep in pip_deps {
-        content.push_str(&format!("  - {}\n", dep));
-    }
-
-    // Add cargo packages
-    for dep in cargo_deps {
-        content.push_str(&format!("  - {}\n", dep));
-    }
-
-    // Write file
-    fs::write(yaml_path, content)?;
-
-    eprintln!(
-        "  {} Created horus.yaml with {} dependencies",
-        "".green(),
-        dependencies.len()
-    );
-
-    Ok(())
-}
-
-/// Update existing horus.yaml with new dependencies
-fn update_existing_horus_yaml(
-    yaml_path: &Path,
-    language: &str,
-    new_dependencies: &HashSet<String>,
-) -> Result<()> {
-    // Parse existing yaml to get current dependencies
-    let existing_content = fs::read_to_string(yaml_path)?;
-    let existing_deps = parse_horus_yaml_dependencies_from_content(&existing_content)?;
-
-    // Find new dependencies not in existing
-    let mut added = Vec::new();
-    for dep in new_dependencies {
-        let dep_str = if dep.starts_with("horus") {
-            dep.clone()
-        } else {
-            // Categorize based on language context
-            match language {
-                "python" => format!("pip:{}", dep),
-                "rust" => format!("cargo:{}", dep),
-                _ => format!("pip:{}", dep), // Default to pip
-            }
-        };
-
-        // Check if dependency already exists (in any form)
-        let base_name = dep_str
-            .split(':')
-            .next_back()
-            .unwrap_or(&dep_str)
-            .split('@')
-            .next()
-            .unwrap_or(&dep_str);
-
-        let already_exists = existing_deps.iter().any(|e| {
-            let e_base = e
-                .split(':')
-                .next_back()
-                .unwrap_or(e)
-                .split('@')
-                .next()
-                .unwrap_or(e);
-            e_base == base_name
-        });
-
-        if !already_exists {
-            added.push(dep_str);
-        }
-    }
-
-    if added.is_empty() {
-        return Ok(()); // No new dependencies
-    }
-
-    // Append new dependencies to file
-    let mut content = existing_content;
-    if !content.ends_with('\n') {
-        content.push('\n');
-    }
-
-    for dep in &added {
-        content.push_str(&format!("  - {}\n", dep));
-    }
-
-    fs::write(yaml_path, content)?;
-
-    eprintln!(
-        "  {} Added {} new dependencies to horus.yaml",
-        "".green(),
-        added.len()
-    );
-    for dep in &added {
-        eprintln!("     + {}", dep);
-    }
-
-    Ok(())
-}
-
-/// Parse dependencies from YAML content string
-fn parse_horus_yaml_dependencies_from_content(content: &str) -> Result<HashSet<String>> {
-    let mut dependencies = HashSet::new();
-    let mut in_deps = false;
-
-    for line in content.lines() {
-        if line.trim() == "dependencies:" {
-            in_deps = true;
-            continue;
-        }
-
-        if in_deps {
-            if line.starts_with("  -") {
-                let dep = line.trim_start_matches("  -").trim();
-                if !dep.is_empty() && !dep.starts_with('#') {
-                    dependencies.insert(dep.to_string());
-                }
-            } else if !line.starts_with("  ") && !line.trim().is_empty() {
-                // End of dependencies section
-                in_deps = false;
-            }
-        }
-    }
-
-    Ok(dependencies)
-}

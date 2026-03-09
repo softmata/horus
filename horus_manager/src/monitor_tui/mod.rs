@@ -173,7 +173,7 @@ struct WorkspaceData {
     name: String,
     path: String,
     packages: Vec<PackageData>,
-    dependencies: Vec<DependencyData>, // Declared in horus.yaml but not installed
+    dependencies: Vec<DependencyData>, // Declared in horus.toml but not installed
     is_current: bool, // True if this is the current workspace (detected via find_workspace_root)
 }
 
@@ -187,7 +187,7 @@ struct PackageData {
 #[derive(Debug, Clone)]
 struct DependencyData {
     name: String,
-    declared_version: String, // Version string from horus.yaml (e.g., "package@1.0.0" or just "package")
+    declared_version: String, // Version string from horus.toml (e.g., "package@1.0.0" or just "package")
 }
 
 #[derive(Debug, Clone)]

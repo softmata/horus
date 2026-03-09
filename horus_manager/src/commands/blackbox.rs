@@ -1,7 +1,7 @@
 //! `horus blackbox` / `horus bb` — read and inspect BlackBox flight recorder data.
 //!
 //! The BlackBox records critical scheduler events (errors, deadline misses,
-//! WCET violations, emergency stops) to a WAL file and JSON snapshot for
+//! budget violations, emergency stops) to a WAL file and JSON snapshot for
 //! post-mortem crash analysis.
 
 use anyhow::{Context, Result};
@@ -243,7 +243,7 @@ fn format_event_detail(event: &BlackBoxEvent) -> String {
             actual_us,
             actual_us.saturating_sub(*deadline_us)
         ),
-        BlackBoxEvent::WCETViolation {
+        BlackBoxEvent::BudgetViolation {
             name,
             budget_us,
             actual_us,
@@ -393,7 +393,7 @@ fn event_node_name(event: &BlackBoxEvent) -> &str {
         BlackBoxEvent::NodeTick { name, .. } => name,
         BlackBoxEvent::NodeError { name, .. } => name,
         BlackBoxEvent::DeadlineMiss { name, .. } => name,
-        BlackBoxEvent::WCETViolation { name, .. } => name,
+        BlackBoxEvent::BudgetViolation { name, .. } => name,
         BlackBoxEvent::CircuitBreakerChange { name, .. } => name,
         BlackBoxEvent::LearningComplete { .. } => "",
         BlackBoxEvent::EmergencyStop { .. } => "",
@@ -410,7 +410,7 @@ fn event_type_name(event: &BlackBoxEvent) -> &'static str {
         BlackBoxEvent::NodeTick { .. } => "NodeTick",
         BlackBoxEvent::NodeError { .. } => "NodeError",
         BlackBoxEvent::DeadlineMiss { .. } => "DeadlineMiss",
-        BlackBoxEvent::WCETViolation { .. } => "WCETViolation",
+        BlackBoxEvent::BudgetViolation { .. } => "BudgetViolation",
         BlackBoxEvent::CircuitBreakerChange { .. } => "CircuitBreakerChange",
         BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
         BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",
@@ -424,7 +424,7 @@ fn is_anomaly(event: &BlackBoxEvent) -> bool {
         event,
         BlackBoxEvent::NodeError { .. }
             | BlackBoxEvent::DeadlineMiss { .. }
-            | BlackBoxEvent::WCETViolation { .. }
+            | BlackBoxEvent::BudgetViolation { .. }
             | BlackBoxEvent::EmergencyStop { .. }
             | BlackBoxEvent::CircuitBreakerChange { .. }
     )
@@ -446,7 +446,7 @@ fn event_color(event: &BlackBoxEvent) -> EventColor {
         | BlackBoxEvent::LearningComplete { .. } => EventColor::Green,
 
         BlackBoxEvent::NodeTick { success, .. } if !success => EventColor::Yellow,
-        BlackBoxEvent::CircuitBreakerChange { .. } | BlackBoxEvent::WCETViolation { .. } => {
+        BlackBoxEvent::CircuitBreakerChange { .. } | BlackBoxEvent::BudgetViolation { .. } => {
             EventColor::Yellow
         }
 

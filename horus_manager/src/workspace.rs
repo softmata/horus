@@ -1,6 +1,6 @@
 // Workspace tracking and detection for HORUS projects
 
-use crate::config::HORUS_YAML;
+use crate::manifest::HORUS_TOML;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use colored::*;
@@ -96,8 +96,8 @@ pub fn find_workspace_root() -> Option<PathBuf> {
             return Some(current);
         }
 
-        // Priority 2: horus.yaml (workspace config)
-        if current.join(HORUS_YAML).exists() {
+        // Priority 2: horus.toml (workspace config)
+        if current.join(HORUS_TOML).exists() {
             log::debug!("found workspace root: {:?}", current);
             return Some(current);
         }
@@ -238,10 +238,10 @@ fn interactive_workspace_selector(
         let horus_dir = current.join(".horus");
         fs::create_dir_all(&horus_dir).context("Failed to create .horus directory")?;
 
-        // Create minimal horus.yaml
-        let horus_yaml = current.join(HORUS_YAML);
-        let yaml_content = format!("name: {}\nversion: 0.1.9\n", workspace_name);
-        fs::write(&horus_yaml, yaml_content).context("Failed to create horus.yaml")?;
+        // Create minimal horus.toml
+        let horus_toml = current.join(HORUS_TOML);
+        let toml_content = format!("[package]\nname = \"{}\"\nversion = \"0.1.9\"\n", workspace_name);
+        fs::write(&horus_toml, toml_content).context("Failed to create horus.toml")?;
 
         // Register in workspace registry
         let mut registry = WorkspaceRegistry::load()?;
@@ -286,12 +286,12 @@ pub fn register_current_workspace(name: Option<String>) -> Result<()> {
         println!("  {} Created .horus/ directory", "".green());
     }
 
-    // Create minimal horus.yaml if it doesn't exist
-    let horus_yaml = current.join(HORUS_YAML);
-    if !horus_yaml.exists() {
-        let yaml_content = format!("name: {}\nversion: 0.1.9\n", workspace_name);
-        fs::write(&horus_yaml, yaml_content)?;
-        println!("  {} Created horus.yaml", "".green());
+    // Create minimal horus.toml if it doesn't exist
+    let horus_toml = current.join(HORUS_TOML);
+    if !horus_toml.exists() {
+        let toml_content = format!("[package]\nname = \"{}\"\nversion = \"0.1.9\"\n", workspace_name);
+        fs::write(&horus_toml, toml_content)?;
+        println!("  {} Created horus.toml", "".green());
     }
 
     // Register in workspace registry
@@ -549,9 +549,9 @@ mod tests {
     }
 
     #[test]
-    fn find_workspace_root_with_horus_yaml() {
+    fn find_workspace_root_with_horus_toml() {
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join(HORUS_YAML), "name: test\nversion: 0.1.0\n").unwrap();
+        fs::write(tmp.path().join(HORUS_TOML), "[package]\nname = \"test\"\nversion = \"0.1.0\"\n").unwrap();
 
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();

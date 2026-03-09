@@ -66,7 +66,7 @@ impl Scheduler {
             .nodes
             .insert(node_name.clone(), replayer);
 
-        let replay_tier = NodeTier::default();
+        let _replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
             node: super::super::types::NodeKind::new(Box::new(replay_node)),
             name: Arc::from(node_name.as_str()),
@@ -75,18 +75,14 @@ impl Scheduler {
             context: None,
             rate_hz: None,
             last_tick: None,
-            failure_handler: super::super::fault_tolerance::FailureHandler::new(
-                replay_tier.default_failure_policy(),
-            ),
             is_rt_node: false,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::BestEffort,
-            has_custom_failure_policy: false,
         });
 
         self.nodes.sort_by_key(|n| n.priority);

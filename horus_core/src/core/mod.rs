@@ -37,4 +37,4 @@ pub use node::{
 pub use presence::NodePresence;
 pub use timer::{Rate, Stopwatch};
 // rt_config types are pub(crate) — accessed directly by scheduling/ internals
-pub use rt_node::{DeadlineMissPolicy, RtStats, WCETViolation};
+pub use rt_node::{BudgetViolation, DeadlineMissPolicy, RtStats};

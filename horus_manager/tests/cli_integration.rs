@@ -175,7 +175,7 @@ fn test_init_creates_workspace_files() {
     let tmp = TempDir::new().unwrap();
 
     // Init may return non-zero due to workspace registry parse in empty dir,
-    // but it should still create the .horus directory and horus.yaml
+    // but it should still create the .horus directory and horus.toml
     let output = horus_cmd()
         .arg("init")
         .current_dir(tmp.path())
@@ -219,12 +219,12 @@ fn test_new_creates_project() {
         .assert()
         .success();
 
-    // Should create project directory with horus.yaml
+    // Should create project directory with horus.toml
     let project_dir = tmp.path().join("test-project");
     assert!(project_dir.exists(), "Project directory should be created");
     assert!(
-        project_dir.join("horus.yaml").exists(),
-        "horus.yaml should be created"
+        project_dir.join("horus.toml").exists(),
+        "horus.toml should be created"
     );
 }
 
@@ -245,10 +245,10 @@ fn test_new_rust_project() {
 
     let project_dir = tmp.path().join("rust-project");
     assert!(project_dir.exists());
-    // Rust projects should have horus.yaml and main.rs
+    // Rust projects should have horus.toml and main.rs
     assert!(
-        project_dir.join("horus.yaml").exists(),
-        "horus.yaml should be created for Rust projects"
+        project_dir.join("horus.toml").exists(),
+        "horus.toml should be created for Rust projects"
     );
     assert!(
         project_dir.join("main.rs").exists(),
@@ -323,10 +323,10 @@ fn test_check_empty_directory() {
 }
 
 #[test]
-fn test_check_valid_horus_yaml() {
+fn test_check_valid_horus_toml() {
     let tmp = TempDir::new().unwrap();
     fs::write(
-        tmp.path().join("horus.yaml"),
+        tmp.path().join("horus.toml"),
         "name: test-project\nversion: 0.1.0\n",
     )
     .unwrap();
@@ -364,7 +364,7 @@ fn write_sample_wal(dir: &std::path::Path) {
         json!({"timestamp_us": 1700000003_000000u64, "tick": 3, "event": {"NodeTick": {"name": "motor_ctrl", "duration_us": 4200, "success": true}}}),
         json!({"timestamp_us": 1700000004_000000u64, "tick": 4, "event": {"DeadlineMiss": {"name": "motor_ctrl", "deadline_us": 1000, "actual_us": 4200}}}),
         json!({"timestamp_us": 1700000005_000000u64, "tick": 5, "event": {"NodeError": {"name": "camera_node", "error": "device disconnected"}}}),
-        json!({"timestamp_us": 1700000006_000000u64, "tick": 6, "event": {"WCETViolation": {"name": "motor_ctrl", "budget_us": 2000, "actual_us": 4200}}}),
+        json!({"timestamp_us": 1700000006_000000u64, "tick": 6, "event": {"BudgetViolation": {"name": "motor_ctrl", "budget_us": 2000, "actual_us": 4200}}}),
         json!({"timestamp_us": 1700000007_000000u64, "tick": 7, "event": {"EmergencyStop": {"reason": "safety limit exceeded"}}}),
         json!({"timestamp_us": 1700000008_000000u64, "tick": 8, "event": {"SchedulerStop": {"reason": "clean shutdown", "total_ticks": 8}}}),
     ];
@@ -477,7 +477,7 @@ fn test_blackbox_anomalies_filter() {
 
     let bb_dir = tmp.path().join(".horus/blackbox");
 
-    // WAL has 4 anomalies: DeadlineMiss, NodeError, WCETViolation, EmergencyStop
+    // WAL has 4 anomalies: DeadlineMiss, NodeError, BudgetViolation, EmergencyStop
     horus_cmd()
         .args(["bb", "--path", &bb_dir.to_string_lossy(), "--anomalies"])
         .assert()
@@ -516,7 +516,7 @@ fn test_blackbox_node_filter() {
 
     let bb_dir = tmp.path().join(".horus/blackbox");
 
-    // "motor_ctrl" appears in: NodeTick(tick 3), DeadlineMiss(tick 4), WCETViolation(tick 6)
+    // "motor_ctrl" appears in: NodeTick(tick 3), DeadlineMiss(tick 4), BudgetViolation(tick 6)
     let output = horus_cmd()
         .args([
             "bb",
@@ -731,7 +731,7 @@ fn test_blackbox_combined_filters() {
 
     let bb_dir = tmp.path().join(".horus/blackbox");
 
-    // Anomalies + node=motor_ctrl → DeadlineMiss(tick 4) + WCETViolation(tick 6)
+    // Anomalies + node=motor_ctrl → DeadlineMiss(tick 4) + BudgetViolation(tick 6)
     let output = horus_cmd()
         .args([
             "bb",
@@ -751,7 +751,7 @@ fn test_blackbox_combined_filters() {
     assert_eq!(
         parsed.len(),
         2,
-        "anomalies for motor_ctrl: DeadlineMiss + WCETViolation"
+        "anomalies for motor_ctrl: DeadlineMiss + BudgetViolation"
     );
 }
 

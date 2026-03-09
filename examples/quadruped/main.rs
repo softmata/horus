@@ -149,7 +149,7 @@ impl Node for JointController {
         self.cmd_pub.send(self.current.clone());
     }
 
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(100))
     }
 

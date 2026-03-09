@@ -1,0 +1,11 @@
+[package]
+name = "multi_robot"
+version = "0.1.0"
+description = "Multi-robot formation — launch files, namespaces, and discovery"
+author = "softmata"
+license = "Apache-2.0"
+language = "rust"
+
+[dependencies]
+horus = "*"
+horus_library = "*"

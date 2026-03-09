@@ -2,7 +2,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::rt_node::{DeadlineMissPolicy, WCETViolation};
+use super::rt_node::DeadlineMissPolicy;
 
 /// Compact logging summary for message types.
 ///
@@ -613,30 +613,30 @@ pub trait Node: Send {
     }
 
     // ==================== Real-Time Support ====================
-    // Override wcet_budget() to return Some(duration) to opt into RT scheduling.
+    // Override tick_budget() to return Some(duration) to opt into RT scheduling.
     // Nodes that return None (default) are treated as regular non-RT nodes.
 
-    /// Worst-case execution time budget.
+    /// Maximum allowed execution time per tick.
     ///
     /// Return `Some(duration)` to opt this node into real-time scheduling
-    /// with WCET enforcement, deadline monitoring, and priority-based preemption.
+    /// with budget enforcement, deadline monitoring, and priority-based preemption.
     /// Return `None` (default) for a regular non-RT node.
     ///
     /// # Example
     /// ```ignore
-    /// fn wcet_budget(&self) -> Option<Duration> {
+    /// fn tick_budget(&self) -> Option<Duration> {
     ///     Some(Duration::from_micros(100)) // 100µs max execution
     /// }
     /// ```
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         None
     }
 
     /// Deadline for completion (from start of tick).
     ///
-    /// Default: 2x WCET budget. Only meaningful when `wcet_budget()` returns `Some`.
+    /// Default: 2x tick budget. Only meaningful when `tick_budget()` returns `Some`.
     fn deadline(&self) -> Duration {
-        self.wcet_budget().unwrap_or_default() * 2
+        self.tick_budget().unwrap_or_default() * 2
     }
 
     /// What to do if deadline is missed.
@@ -644,44 +644,6 @@ pub trait Node: Send {
     /// Default: `Warn` (log and continue).
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
         DeadlineMissPolicy::Warn
-    }
-
-    /// Pre-condition that must be true before tick (formal verification).
-    fn pre_condition(&self) -> bool {
-        true
-    }
-
-    /// Post-condition that must be true after tick (formal verification).
-    fn post_condition(&self) -> bool {
-        true
-    }
-
-    /// System invariant that must always hold (formal verification).
-    fn invariant(&self) -> bool {
-        true
-    }
-
-    /// Called when WCET budget is exceeded.
-    fn on_wcet_violation(&mut self, violation: &WCETViolation) {
-        eprintln!(
-            "WCET violation in {}: budget={:?}, actual={:?}, overrun={:?}",
-            violation.node_name, violation.budget, violation.actual, violation.overrun
-        );
-    }
-
-    /// Called when deadline is missed.
-    fn on_deadline_miss(&mut self, elapsed: Duration, deadline: Duration) {
-        eprintln!(
-            "Deadline miss in {}: deadline={:?}, elapsed={:?}",
-            self.name(),
-            deadline,
-            elapsed
-        );
-    }
-
-    /// Get fallback node for redundancy (N-version programming).
-    fn fallback_node(&self) -> Option<Box<dyn Node>> {
-        None
     }
 
     /// Check if node is in safe state (for safety monitor).

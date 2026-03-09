@@ -90,7 +90,7 @@ impl RtExecutor {
             .expect("RT thread panicked")
     }
 
-    /// Process a single node tick with all infrastructure (stats, profiler, WCET, deadline, failure handling).
+    /// Process a single node tick with all infrastructure (stats, profiler, budget, deadline).
     ///
     /// Extracted from the RT loop body so the caller can wrap this in `catch_unwind`.
     /// If this function panics, the caller marks the node as stopped.
@@ -100,32 +100,6 @@ impl RtExecutor {
             node.last_tick = Some(Instant::now());
         }
 
-        // RT pre-conditions (catch_unwind: user code may panic)
-        {
-            let pre_ok = catch_unwind(AssertUnwindSafe(|| node.node.pre_condition()));
-            match pre_ok {
-                Ok(true) => {} // proceed to tick
-                Ok(false) => {
-                    if monitors.verbose {
-                        print_line(&format!(
-                            "[RT-thread] Pre-condition failed for '{}' — skipping",
-                            node.name
-                        ));
-                    }
-                    return;
-                }
-                Err(_) => {
-                    if monitors.verbose {
-                        print_line(&format!(
-                            "[RT-thread] Pre-condition panicked for '{}' — skipping",
-                            node.name
-                        ));
-                    }
-                    return;
-                }
-            }
-        }
-
         // Begin recording tick (before execution)
         if let Some(ref mut recorder) = node.recorder {
             recorder.begin_tick(0); // RT thread has no global tick counter
@@ -133,29 +107,6 @@ impl RtExecutor {
 
         // Execute tick via NodeRunner
         let tr = NodeRunner::run_tick(&mut node.node);
-
-        // RT post-conditions (only on success, catch_unwind: user code may panic)
-        if tr.result.is_ok() {
-            match catch_unwind(AssertUnwindSafe(|| node.node.post_condition())) {
-                Ok(true) => {}
-                Ok(false) => {
-                    if monitors.verbose {
-                        print_line(&format!(
-                            "[RT-thread] Post-condition failed for '{}'",
-                            node.name
-                        ));
-                    }
-                }
-                Err(_) => {
-                    if monitors.verbose {
-                        print_line(&format!(
-                            "[RT-thread] Post-condition panicked for '{}'",
-                            node.name
-                        ));
-                    }
-                }
-            }
-        }
 
         // Record execution stats
         if let Some(ref mut stats) = node.rt_stats {
@@ -173,27 +124,26 @@ impl RtExecutor {
             recorder.end_tick(tr.duration.as_nanos() as u64);
         }
 
-        // WCET budget check via TimingEnforcer
-        if let Some(wcet_budget) = node.wcet_budget {
-            if let Some(wcet_result) =
-                TimingEnforcer::check_wcet(&node.name, tr.duration, wcet_budget)
+        // tick budget check via TimingEnforcer
+        if let Some(tick_budget) = node.tick_budget {
+            if let Some(budget_result) =
+                TimingEnforcer::check_tick_budget(&node.name, tr.duration, tick_budget)
             {
                 if monitors.verbose {
                     print_line(&format!(
-                        "[RT-thread] WCET violation in '{}': {:?} > {:?}",
-                        node.name, wcet_result.violation.actual, wcet_result.violation.budget
+                        "[RT-thread] budget violation in '{}': {:?} > {:?}",
+                        node.name, budget_result.violation.actual, budget_result.violation.budget
                     ));
                 }
                 if let Some(ref mut stats) = node.rt_stats {
-                    stats.wcet_violations += 1;
+                    stats.budget_violations += 1;
                 }
-                node.node.on_wcet_violation(&wcet_result.violation);
                 // Record to blackbox (try_lock to avoid RT priority inversion)
                 if let Some(ref bb) = monitors.blackbox {
                     if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::WCETViolation {
+                        bb.record(super::blackbox::BlackBoxEvent::BudgetViolation {
                             name: node.name.to_string(),
-                            budget_us: wcet_budget.as_micros() as u64,
+                            budget_us: tick_budget.as_micros() as u64,
                             actual_us: tr.duration.as_micros() as u64,
                         });
                     }
@@ -225,9 +175,6 @@ impl RtExecutor {
                         });
                     }
                 }
-                // Invoke RtNode callback
-                node.node.on_deadline_miss(dm.elapsed, dm.deadline);
-
                 match dm.action {
                     DeadlineAction::Warn => {}
                     DeadlineAction::Skip => {
@@ -240,23 +187,6 @@ impl RtExecutor {
                         ));
                         running.store(false, Ordering::SeqCst);
                     }
-                    DeadlineAction::Degrade => {
-                        node.priority = node.priority.saturating_add(10);
-                    }
-                    DeadlineAction::Fallback => {
-                        let fallback = node.node.fallback_node();
-                        if let Some(fallback_node) = fallback {
-                            let fallback_name: Arc<str> = Arc::from(fallback_node.name());
-                            if monitors.verbose {
-                                print_line(&format!(
-                                    "[RT-thread] Switching '{}' to fallback '{}'",
-                                    node.name, fallback_name
-                                ));
-                            }
-                            node.node = super::types::NodeKind::new(fallback_node);
-                            node.name = fallback_name;
-                        }
-                    }
                 }
             }
         }
@@ -264,13 +194,11 @@ impl RtExecutor {
         // Handle tick result
         match tr.result {
             Ok(_) => {
-                node.failure_handler.record_success();
                 if let Some(ref mut ctx) = node.context {
                     ctx.record_tick();
                 }
             }
             Err(panic_err) => {
-                let action = node.failure_handler.record_failure();
                 // Use try_lock to avoid priority inversion — skip if contended
                 if let Ok(mut profiler) = monitors.profiler.try_lock() {
                     profiler.record_node_failure(&node.name);
@@ -288,42 +216,6 @@ impl RtExecutor {
 
                 // Call on_error handler
                 node.node.on_error(&error_msg);
-
-                match action {
-                    super::fault_tolerance::FailureAction::StopScheduler
-                    | super::fault_tolerance::FailureAction::FatalAfterRestarts => {
-                        // Always print fatal stop — this is an emergency-level message
-                        print_line(&format!(
-                            "[RT-thread] Fatal failure in '{}' — stopping scheduler",
-                            node.name
-                        ));
-                        running.store(false, Ordering::SeqCst);
-                    }
-                    super::fault_tolerance::FailureAction::RestartNode => {
-                        if let Some(ref mut ctx) = node.context {
-                            match ctx.restart() {
-                                Ok(_) => {
-                                    node.initialized = true;
-                                }
-                                Err(e) => {
-                                    if monitors.verbose {
-                                        print_line(&format!(
-                                            "[RT-thread] Restart failed for '{}': {}",
-                                            node.name, e
-                                        ));
-                                    }
-                                    node.initialized = false;
-                                }
-                            }
-                        }
-                    }
-                    super::fault_tolerance::FailureAction::SkipNode => {
-                        // Circuit breaker opened — will skip via should_allow()
-                    }
-                    super::fault_tolerance::FailureAction::Continue => {
-                        // Log already printed above
-                    }
-                }
             }
         }
     }
@@ -409,13 +301,8 @@ impl RtExecutor {
                     }
                 }
 
-                // Circuit breaker / failure handler
-                if !node.failure_handler.should_allow() {
-                    continue;
-                }
-
                 // Guard all infrastructure + tick processing against panics.
-                // If ANY infrastructure code panics (recorder, failure_handler,
+                // If ANY infrastructure code panics (recorder,
                 // timing enforcer, etc.), the node is stopped but the RT thread
                 // continues ticking remaining nodes.
                 let infra_result = catch_unwind(AssertUnwindSafe(|| {
@@ -499,7 +386,6 @@ mod tests {
     }
 
     fn make_rt_registered(name: &str, count: Arc<std::sync::atomic::AtomicU64>) -> RegisteredNode {
-        use super::super::fault_tolerance::FailureHandler;
         use crate::core::NodeInfo;
 
         let node = CounterNode {
@@ -514,18 +400,14 @@ mod tests {
             context: Some(NodeInfo::new(name.to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Fatal,
-            ),
             is_rt_node: true,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::Rt,
-            has_custom_failure_policy: false,
         }
     }
 
@@ -616,7 +498,6 @@ mod tests {
 
     #[test]
     fn test_rt_executor_handles_panic() {
-        use super::super::fault_tolerance::FailureHandler;
         use crate::core::NodeInfo;
 
         let node = PanicNode;
@@ -628,18 +509,14 @@ mod tests {
             context: Some(NodeInfo::new("panic_rt".to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Fatal,
-            ),
             is_rt_node: true,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::Rt,
-            has_custom_failure_policy: false,
         };
 
         let running = Arc::new(AtomicBool::new(true));
@@ -651,23 +528,20 @@ mod tests {
             Vec::new(),
         );
 
-        // The panic node with Fatal policy should stop the scheduler
+        // The panic node should log errors and continue (no longer stops scheduler)
         std::thread::sleep(Duration::from_millis(50));
-
-        // running should have been set to false by the fatal policy
-        assert!(!running.load(Ordering::Relaxed));
 
         let returned = executor.stop();
         assert_eq!(returned.len(), 1);
     }
 
-    /// RtNode whose pre_condition panics — tests catch_unwind isolation
-    struct PanicPreConditionNode {
+    /// Node that just ticks normally -- used to verify siblings survive panicking nodes.
+    struct SimpleCounterNode {
         name: String,
         count: Arc<std::sync::atomic::AtomicU64>,
     }
 
-    impl Node for PanicPreConditionNode {
+    impl Node for SimpleCounterNode {
         fn name(&self) -> &str {
             &self.name
         }
@@ -675,78 +549,9 @@ mod tests {
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        fn wcet_budget(&self) -> Option<Duration> {
+        fn tick_budget(&self) -> Option<Duration> {
             Some(Duration::from_millis(10))
         }
-        fn pre_condition(&self) -> bool {
-            panic!("pre_condition panic");
-        }
-    }
-
-    #[test]
-    fn test_rt_executor_survives_precondition_panic() {
-        use super::super::fault_tolerance::FailureHandler;
-        use crate::core::NodeInfo;
-
-        let panic_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let normal_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-        // Node with panicking pre_condition (RtNode variant)
-        let panic_node = PanicPreConditionNode {
-            name: "panic_pre".to_string(),
-            count: panic_count.clone(),
-        };
-        let panic_registered = RegisteredNode {
-            node: super::super::types::NodeKind::new(Box::new(panic_node)),
-            name: Arc::from("panic_pre"),
-            priority: 0,
-            initialized: true,
-            context: Some(NodeInfo::new("panic_pre".to_string())),
-            rate_hz: None,
-            last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Ignore,
-            ),
-            is_rt_node: true,
-            wcet_budget: None,
-            deadline: None,
-            recorder: None,
-            is_stopped: false,
-            is_paused: false,
-            rt_stats: None,
-            execution_class: super::super::types::ExecutionClass::Rt,
-            has_custom_failure_policy: false,
-        };
-
-        // Normal node that should still tick
-        let normal_registered = make_rt_registered("normal_rt", normal_count.clone());
-
-        let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start(
-            vec![panic_registered, normal_registered],
-            running.clone(),
-            Duration::from_millis(1),
-            test_monitors(),
-            Vec::new(),
-        );
-
-        std::thread::sleep(Duration::from_millis(100));
-        running.store(false, Ordering::SeqCst);
-        let returned = executor.stop();
-
-        // RT thread should NOT have crashed
-        assert_eq!(returned.len(), 2);
-        // Pre-condition panicked → tick was skipped → count should be 0
-        assert_eq!(
-            panic_count.load(std::sync::atomic::Ordering::Relaxed),
-            0,
-            "Panicking pre_condition node should never tick"
-        );
-        // Normal node should have ticked many times
-        assert!(
-            normal_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
-            "Normal node should still tick despite sibling's pre_condition panic"
-        );
     }
 
     fn make_rt_with_rate(
@@ -912,92 +717,7 @@ mod tests {
         );
     }
 
-    /// RtNode whose post_condition panics — tests catch_unwind isolation
-    struct PanicPostConditionNode {
-        name: String,
-        count: Arc<std::sync::atomic::AtomicU64>,
-    }
-
-    impl Node for PanicPostConditionNode {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn tick(&mut self) {
-            self.count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        fn wcet_budget(&self) -> Option<Duration> {
-            Some(Duration::from_millis(10))
-        }
-        fn post_condition(&self) -> bool {
-            panic!("post_condition panic");
-        }
-    }
-
-    /// Stress test: panicking post_condition should not crash RT executor.
-    ///
-    /// The RT thread should catch the panic, log a warning, and continue
-    /// ticking other nodes.
-    #[test]
-    fn test_stress_postcondition_panic_survives() {
-        use super::super::fault_tolerance::FailureHandler;
-        use crate::core::NodeInfo;
-
-        let panic_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let normal_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-        let panic_node = PanicPostConditionNode {
-            name: "panic_post".to_string(),
-            count: panic_count.clone(),
-        };
-        let panic_registered = RegisteredNode {
-            node: super::super::types::NodeKind::new(Box::new(panic_node)),
-            name: Arc::from("panic_post"),
-            priority: 0,
-            initialized: true,
-            context: Some(NodeInfo::new("panic_post".to_string())),
-            rate_hz: None,
-            last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Ignore,
-            ),
-            is_rt_node: true,
-            wcet_budget: None,
-            deadline: None,
-            recorder: None,
-            is_stopped: false,
-            is_paused: false,
-            rt_stats: None,
-            execution_class: super::super::types::ExecutionClass::Rt,
-            has_custom_failure_policy: false,
-        };
-
-        let normal_registered = make_rt_registered("normal_beside_post", normal_count.clone());
-
-        let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start(
-            vec![panic_registered, normal_registered],
-            running.clone(),
-            Duration::from_millis(1),
-            test_monitors(),
-            Vec::new(),
-        );
-
-        std::thread::sleep(Duration::from_millis(100));
-        running.store(false, Ordering::SeqCst);
-        let returned = executor.stop();
-
-        assert_eq!(returned.len(), 2);
-        // Post-condition panics inside catch_unwind — the node's tick DID run
-        // but infrastructure panic marks it stopped after first iteration
-        // Normal node should keep ticking regardless
-        assert!(
-            normal_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
-            "Normal node should still tick despite sibling's post_condition panic"
-        );
-    }
-
-    /// Node that panics on every tick — Fatal policy triggers scheduler stop.
+    /// Node that panics on every tick -- used for panic survival tests.
     struct AlwaysPanicNode {
         name: String,
         count: Arc<std::sync::atomic::AtomicU64>,
@@ -1014,15 +734,14 @@ mod tests {
         }
     }
 
-    /// Stress test: tick panic with Ignore policy — node continues, sibling unaffected.
+    /// Stress test: tick panic -- node logs error and continues, sibling unaffected.
     ///
-    /// The tick panic is caught by NodeRunner::run_tick's catch_unwind. With Ignore
-    /// policy, the failure handler lets the node continue. The outer infrastructure
-    /// catch_unwind handles panics in post-tick infrastructure (profiler, recorder,
-    /// timing enforcer) — not in the tick itself.
+    /// The tick panic is caught by NodeRunner::run_tick's catch_unwind. The error
+    /// is logged and the node continues. The outer infrastructure catch_unwind
+    /// handles panics in post-tick infrastructure (profiler, recorder,
+    /// timing enforcer) -- not in the tick itself.
     #[test]
-    fn test_stress_tick_panic_ignore_policy_continues() {
-        use super::super::fault_tolerance::FailureHandler;
+    fn test_stress_tick_panic_continues() {
         use crate::core::NodeInfo;
 
         let panic_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1040,18 +759,14 @@ mod tests {
             context: Some(NodeInfo::new("always_panic".to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Ignore,
-            ),
             is_rt_node: true,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::Rt,
-            has_custom_failure_policy: false,
         };
 
         let normal_registered = make_rt_registered("survivor_node", normal_count.clone());
@@ -1072,7 +787,7 @@ mod tests {
         // RT thread should NOT have crashed
         assert_eq!(returned.len(), 2);
 
-        // The panicking node should have attempted multiple ticks (Ignore policy)
+        // The panicking node should have attempted multiple ticks
         let panic_ticks = panic_count.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
             panic_ticks > 0,
@@ -1121,19 +836,18 @@ mod tests {
         );
     }
 
-    /// Stress test: verbose=false with panicking pre_condition.
+    /// Stress test: verbose=false with a panicking node.
     ///
-    /// Combines verbose=false with a panicking pre_condition to verify
-    /// that the panic message path doesn't crash when verbose is disabled.
+    /// Combines verbose=false with a panicking tick to verify
+    /// that the error logging path doesn't crash when verbose is disabled.
     #[test]
     fn test_stress_verbose_false_with_panic() {
-        use super::super::fault_tolerance::FailureHandler;
         use crate::core::NodeInfo;
 
         let normal_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let panic_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        let panic_node = PanicPreConditionNode {
+        let panic_node = AlwaysPanicNode {
             name: "quiet_panic".to_string(),
             count: panic_count,
         };
@@ -1145,18 +859,14 @@ mod tests {
             context: Some(NodeInfo::new("quiet_panic".to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Ignore,
-            ),
             is_rt_node: true,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::Rt,
-            has_custom_failure_policy: false,
         };
 
         let normal_registered = make_rt_registered("quiet_normal", normal_count.clone());

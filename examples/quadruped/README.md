@@ -5,7 +5,7 @@ A quadruped robot with a trot gait, real-time joint control, and IMU-based balan
 ## What you'll learn
 
 - High-frequency RT scheduling (200Hz)
-- RT node configuration: `wcet_budget()`, `deadline()`, `deadline_miss_policy()`
+- RT node configuration: `tick_budget()`, `deadline()`, `deadline_miss_policy()`
 - 12-DOF joint coordination (4 legs x 3 joints)
 - IMU-based balance compensation
 - Deadline monitoring with blackbox analysis
@@ -21,7 +21,7 @@ GaitGenerator (200Hz)  -->  JointController (200Hz, RT)  -->  joint_commands
                             BalanceMonitor (50Hz)  <--  imu/data
 ```
 
-`GaitGenerator` produces a trot gait (diagonal legs FL+RR move together, then FR+RL). `JointController` smooths the targets and runs at RT priority with a 100us WCET budget and 500us deadline. `BalanceMonitor` reads IMU data and publishes roll/pitch corrections.
+`GaitGenerator` produces a trot gait (diagonal legs FL+RR move together, then FR+RL). `JointController` smooths the targets and runs at RT priority with a 100us budget budget and 500us deadline. `BalanceMonitor` reads IMU data and publishes roll/pitch corrections.
 
 ## Robot
 
@@ -56,7 +56,7 @@ horus node list
 
 # Inspect RT node configuration
 horus node info JointController
-# WCET budget: 100us, Deadline: 500us, Priority: High, RT class: Firm
+# budget budget: 100us, Deadline: 500us, Priority: High, RT class: Firm
 
 # Watch joint commands at 200Hz
 horus topic bw joint_commands
@@ -97,14 +97,14 @@ The balance monitor compensates by adjusting hip joint angles proportionally to 
 After running for 30 seconds:
 
 ```bash
-# Check for WCET violations and deadline misses
+# Check for budget violations and deadline misses
 horus blackbox -a
 
 # View timing data for last 20 ticks
 horus blackbox -t 20
 ```
 
-On an unloaded system, there should be 0 WCET violations and 0 deadline misses.
+On an unloaded system, there should be 0 budget violations and 0 deadline misses.
 
 ## Emergency stop
 

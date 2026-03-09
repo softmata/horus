@@ -1,6 +1,7 @@
 //! Plugin command - search, discover, inspect, install, and remove HORUS plugins
 
-use crate::{cli_output, registry, workspace, yaml_utils};
+use crate::manifest::{DependencyValue, HORUS_TOML};
+use crate::{cli_output, registry, workspace};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::path::PathBuf;
@@ -397,14 +398,14 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
                     "source": "local",
                     "status": "installed",
                 });
-                let yaml_path = dir.join("horus.yaml");
-                if yaml_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&yaml_path) {
-                        if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                            if let Some(desc) = yaml.get("description").and_then(|v| v.as_str()) {
+                let toml_path = dir.join(HORUS_TOML);
+                if toml_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&toml_path) {
+                        if let Ok(parsed) = toml::from_str::<toml::Value>(&content) {
+                            if let Some(desc) = parsed.get("description").and_then(|v| v.as_str()) {
                                 info["description"] = serde_json::Value::String(desc.to_string());
                             }
-                            if let Some(ver) = yaml.get("version").and_then(|v| v.as_str()) {
+                            if let Some(ver) = parsed.get("version").and_then(|v| v.as_str()) {
                                 info["version"] = serde_json::Value::String(ver.to_string());
                             }
                         }
@@ -423,15 +424,15 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
             println!("  Location:  {}", dir.display());
             println!("  Status:    {}", "installed".green());
 
-            // Try to read horus.yaml or package.json for more info
-            let yaml_path = dir.join("horus.yaml");
-            if yaml_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&yaml_path) {
-                    if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                        if let Some(desc) = yaml.get("description").and_then(|v| v.as_str()) {
+            // Try to read horus.toml or package.json for more info
+            let toml_path = dir.join(HORUS_TOML);
+            if toml_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&toml_path) {
+                    if let Ok(parsed) = toml::from_str::<toml::Value>(&content) {
+                        if let Some(desc) = parsed.get("description").and_then(|v| v.as_str()) {
                             println!("  Description: {}", desc);
                         }
-                        if let Some(ver) = yaml.get("version").and_then(|v| v.as_str()) {
+                        if let Some(ver) = parsed.get("version").and_then(|v| v.as_str()) {
                             println!("  Version:     {}", ver.white());
                         }
                     }
@@ -557,22 +558,26 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
         }
     }
 
-    // Update horus.yaml with plugin-prefixed dependency
+    // Update horus.toml with plugin-prefixed dependency
     if let workspace::InstallTarget::Local(workspace_path) = &install_target {
-        let horus_yaml_path = workspace_path.join("horus.yaml");
-        if horus_yaml_path.exists() {
+        let horus_toml_path = workspace_path.join(HORUS_TOML);
+        if horus_toml_path.exists() {
             let dep_string = format!("plugin:{}", plugin);
             let version = ver.as_deref().unwrap_or(&installed_version);
-            if let Err(e) =
-                yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version)
-            {
+            if let Err(e) = crate::manifest::add_dependency_to_file(
+                &horus_toml_path,
+                &dep_string,
+                &DependencyValue::Simple(version.to_string()),
+                "dependencies",
+            ) {
                 println!(
-                    "  {} Failed to update horus.yaml: {}",
+                    "  {} Failed to update {}: {}",
                     cli_output::ICON_WARN.yellow(),
+                    HORUS_TOML,
                     e
                 );
             } else {
-                println!("  {} Updated horus.yaml", cli_output::ICON_SUCCESS.green());
+                println!("  {} Updated {}", cli_output::ICON_SUCCESS.green(), HORUS_TOML);
             }
         }
     }

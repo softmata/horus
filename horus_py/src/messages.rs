@@ -1,17 +1,25 @@
-//! Python wrapper classes for HORUS message types
+//! Python wrapper classes for HORUS message types — POD-optimized
 //!
-//! These Python classes mirror the Rust message types from horus_library,
-//! enabling typed Topic communication in Python:
+//! Each Python class stores the Rust POD struct directly (`inner` field),
+//! enabling zero-extraction send and zero-construction recv in Topic.
 //!
 //! ```python
 //! from horus import Topic, CmdVel, Pose2D
 //!
 //! topic = Topic(CmdVel)
 //! topic.send(CmdVel(1.5, 0.3))
-//! msg = topic.recv()  # Returns CmdVel instance
+//! msg = topic.recv()  # Returns CmdVel backed by Rust POD
 //! ```
 
+use horus_library::messages::clock::Clock;
+use horus_library::messages::cmd_vel::CmdVel;
+use horus_library::messages::geometry::Pose2D;
+use horus_library::messages::sensor::{Imu, JointState, LaserScan, Odometry};
 use pyo3::prelude::*;
+
+// ============================================================================
+// CmdVel — 16 bytes POD
+// ============================================================================
 
 /// Velocity command message for differential drive robots
 ///
@@ -21,39 +29,51 @@ use pyo3::prelude::*;
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
-///     cmd = CmdVel(1.5, 0.3)           # Forward at 1.5 m/s, turning at 0.3 rad/s
-///     cmd = CmdVel(linear=0.5, angular=0.0)  # Straight forward
-///     cmd = CmdVel(0.0, 1.0, timestamp_ns=12345)  # With explicit timestamp
+///     cmd = CmdVel(1.5, 0.3)
+///     cmd = CmdVel(linear=0.5, angular=0.0)
 #[pyclass(name = "CmdVel")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PyCmdVel {
-    #[pyo3(get, set)]
-    pub linear: f32,
-    #[pyo3(get, set)]
-    pub angular: f32,
-    #[pyo3(get, set)]
-    pub timestamp_ns: u64,
+    pub(crate) inner: CmdVel,
 }
 
 #[pymethods]
 impl PyCmdVel {
-    /// Create a new CmdVel message
-    ///
-    /// Args:
-    ///     linear: Forward velocity in m/s
-    ///     angular: Angular velocity in rad/s
-    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
     #[pyo3(signature = (linear, angular, timestamp_ns=0))]
     fn new(linear: f32, angular: f32, timestamp_ns: u64) -> Self {
         Self {
-            linear,
-            angular,
-            timestamp_ns,
+            inner: CmdVel::with_timestamp(linear, angular, timestamp_ns),
         }
     }
 
-    /// Topic name for this message type (used for auto-discovery)
+    #[getter]
+    fn linear(&self) -> f32 {
+        self.inner.linear
+    }
+    #[setter]
+    fn set_linear(&mut self, v: f32) {
+        self.inner.linear = v;
+    }
+
+    #[getter]
+    fn angular(&self) -> f32 {
+        self.inner.angular
+    }
+    #[setter]
+    fn set_angular(&mut self, v: f32) {
+        self.inner.angular = v;
+    }
+
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "cmd_vel"
@@ -62,14 +82,19 @@ impl PyCmdVel {
     fn __repr__(&self) -> String {
         format!(
             "CmdVel(linear={:.3}, angular={:.3}, timestamp_ns={})",
-            self.linear, self.angular, self.timestamp_ns
+            self.inner.linear, self.inner.angular, self.inner.timestamp_ns
         )
     }
 
     fn __eq__(&self, other: &Self) -> bool {
-        (self.linear - other.linear).abs() < 1e-6 && (self.angular - other.angular).abs() < 1e-6
+        (self.inner.linear - other.inner.linear).abs() < 1e-6
+            && (self.inner.angular - other.inner.angular).abs() < 1e-6
     }
 }
+
+// ============================================================================
+// Pose2D — 32 bytes POD
+// ============================================================================
 
 /// 2D pose message (position and orientation)
 ///
@@ -80,42 +105,65 @@ impl PyCmdVel {
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
-///     pose = Pose2D(1.0, 2.0, 0.5)     # Position (1,2) facing 0.5 rad
-///     pose = Pose2D(x=0, y=0, theta=3.14)  # At origin, facing backward
+///     pose = Pose2D(1.0, 2.0, 0.5)
+///     pose = Pose2D(x=0, y=0, theta=3.14)
 #[pyclass(name = "Pose2D")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PyPose2D {
-    #[pyo3(get, set)]
-    pub x: f64,
-    #[pyo3(get, set)]
-    pub y: f64,
-    #[pyo3(get, set)]
-    pub theta: f64,
-    #[pyo3(get, set)]
-    pub timestamp_ns: u64,
+    pub(crate) inner: Pose2D,
 }
 
 #[pymethods]
 impl PyPose2D {
-    /// Create a new Pose2D message
-    ///
-    /// Args:
-    ///     x: X position in meters
-    ///     y: Y position in meters
-    ///     theta: Orientation in radians
-    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
     #[pyo3(signature = (x, y, theta, timestamp_ns=0))]
     fn new(x: f64, y: f64, theta: f64, timestamp_ns: u64) -> Self {
         Self {
-            x,
-            y,
-            theta,
-            timestamp_ns,
+            inner: Pose2D {
+                x,
+                y,
+                theta,
+                timestamp_ns,
+            },
         }
     }
 
-    /// Topic name for this message type
+    #[getter]
+    fn x(&self) -> f64 {
+        self.inner.x
+    }
+    #[setter]
+    fn set_x(&mut self, v: f64) {
+        self.inner.x = v;
+    }
+
+    #[getter]
+    fn y(&self) -> f64 {
+        self.inner.y
+    }
+    #[setter]
+    fn set_y(&mut self, v: f64) {
+        self.inner.y = v;
+    }
+
+    #[getter]
+    fn theta(&self) -> f64 {
+        self.inner.theta
+    }
+    #[setter]
+    fn set_theta(&mut self, v: f64) {
+        self.inner.theta = v;
+    }
+
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "pose"
@@ -124,16 +172,20 @@ impl PyPose2D {
     fn __repr__(&self) -> String {
         format!(
             "Pose2D(x={:.3}, y={:.3}, theta={:.3}, timestamp_ns={})",
-            self.x, self.y, self.theta, self.timestamp_ns
+            self.inner.x, self.inner.y, self.inner.theta, self.inner.timestamp_ns
         )
     }
 
     fn __eq__(&self, other: &Self) -> bool {
-        (self.x - other.x).abs() < 1e-9
-            && (self.y - other.y).abs() < 1e-9
-            && (self.theta - other.theta).abs() < 1e-9
+        (self.inner.x - other.inner.x).abs() < 1e-9
+            && (self.inner.y - other.inner.y).abs() < 1e-9
+            && (self.inner.theta - other.inner.theta).abs() < 1e-9
     }
 }
+
+// ============================================================================
+// Imu — 304 bytes POD
+// ============================================================================
 
 /// IMU (Inertial Measurement Unit) sensor message
 ///
@@ -143,36 +195,17 @@ impl PyPose2D {
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
-///     imu = Imu(0.0, 0.0, 9.81, 0.0, 0.0, 0.0)  # At rest (gravity on Z)
+///     imu = Imu(0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
 ///     imu = Imu(accel_x=1.0, accel_y=0.0, accel_z=9.81,
-///               gyro_x=0.0, gyro_y=0.0, gyro_z=0.1)  # Accelerating + rotating
+///               gyro_x=0.0, gyro_y=0.0, gyro_z=0.1)
 #[pyclass(name = "Imu")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PyImu {
-    #[pyo3(get, set)]
-    pub accel_x: f64,
-    #[pyo3(get, set)]
-    pub accel_y: f64,
-    #[pyo3(get, set)]
-    pub accel_z: f64,
-    #[pyo3(get, set)]
-    pub gyro_x: f64,
-    #[pyo3(get, set)]
-    pub gyro_y: f64,
-    #[pyo3(get, set)]
-    pub gyro_z: f64,
-    #[pyo3(get, set)]
-    pub timestamp_ns: u64,
+    pub(crate) inner: Imu,
 }
 
 #[pymethods]
 impl PyImu {
-    /// Create a new Imu message
-    ///
-    /// Args:
-    ///     accel_x, accel_y, accel_z: Linear acceleration (m/s²)
-    ///     gyro_x, gyro_y, gyro_z: Angular velocity (rad/s)
-    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
     #[pyo3(signature = (accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, timestamp_ns=0))]
     fn new(
@@ -184,18 +217,76 @@ impl PyImu {
         gyro_z: f64,
         timestamp_ns: u64,
     ) -> Self {
-        Self {
-            accel_x,
-            accel_y,
-            accel_z,
-            gyro_x,
-            gyro_y,
-            gyro_z,
-            timestamp_ns,
-        }
+        let mut imu = Imu::new();
+        imu.linear_acceleration = [accel_x, accel_y, accel_z];
+        imu.angular_velocity = [gyro_x, gyro_y, gyro_z];
+        imu.timestamp_ns = timestamp_ns;
+        Self { inner: imu }
     }
 
-    /// Topic name for this message type
+    #[getter]
+    fn accel_x(&self) -> f64 {
+        self.inner.linear_acceleration[0]
+    }
+    #[setter]
+    fn set_accel_x(&mut self, v: f64) {
+        self.inner.linear_acceleration[0] = v;
+    }
+
+    #[getter]
+    fn accel_y(&self) -> f64 {
+        self.inner.linear_acceleration[1]
+    }
+    #[setter]
+    fn set_accel_y(&mut self, v: f64) {
+        self.inner.linear_acceleration[1] = v;
+    }
+
+    #[getter]
+    fn accel_z(&self) -> f64 {
+        self.inner.linear_acceleration[2]
+    }
+    #[setter]
+    fn set_accel_z(&mut self, v: f64) {
+        self.inner.linear_acceleration[2] = v;
+    }
+
+    #[getter]
+    fn gyro_x(&self) -> f64 {
+        self.inner.angular_velocity[0]
+    }
+    #[setter]
+    fn set_gyro_x(&mut self, v: f64) {
+        self.inner.angular_velocity[0] = v;
+    }
+
+    #[getter]
+    fn gyro_y(&self) -> f64 {
+        self.inner.angular_velocity[1]
+    }
+    #[setter]
+    fn set_gyro_y(&mut self, v: f64) {
+        self.inner.angular_velocity[1] = v;
+    }
+
+    #[getter]
+    fn gyro_z(&self) -> f64 {
+        self.inner.angular_velocity[2]
+    }
+    #[setter]
+    fn set_gyro_z(&mut self, v: f64) {
+        self.inner.angular_velocity[2] = v;
+    }
+
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "imu"
@@ -204,16 +295,20 @@ impl PyImu {
     fn __repr__(&self) -> String {
         format!(
             "Imu(accel=[{:.3}, {:.3}, {:.3}], gyro=[{:.3}, {:.3}, {:.3}], timestamp_ns={})",
-            self.accel_x,
-            self.accel_y,
-            self.accel_z,
-            self.gyro_x,
-            self.gyro_y,
-            self.gyro_z,
-            self.timestamp_ns
+            self.inner.linear_acceleration[0],
+            self.inner.linear_acceleration[1],
+            self.inner.linear_acceleration[2],
+            self.inner.angular_velocity[0],
+            self.inner.angular_velocity[1],
+            self.inner.angular_velocity[2],
+            self.inner.timestamp_ns
         )
     }
 }
+
+// ============================================================================
+// Odometry — 748 bytes POD
+// ============================================================================
 
 /// Odometry message (pose + velocity)
 ///
@@ -224,35 +319,17 @@ impl PyImu {
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
-///     odom = Odometry(x=1.0, y=2.0, theta=0.5)  # Position only
+///     odom = Odometry(x=1.0, y=2.0, theta=0.5)
 ///     odom = Odometry(x=1.0, y=2.0, theta=0.5,
-///                     linear_velocity=0.5, angular_velocity=0.1)  # With velocity
+///                     linear_velocity=0.5, angular_velocity=0.1)
 #[pyclass(name = "Odometry")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PyOdometry {
-    #[pyo3(get, set)]
-    pub x: f64,
-    #[pyo3(get, set)]
-    pub y: f64,
-    #[pyo3(get, set)]
-    pub theta: f64,
-    #[pyo3(get, set)]
-    pub linear_velocity: f64,
-    #[pyo3(get, set)]
-    pub angular_velocity: f64,
-    #[pyo3(get, set)]
-    pub timestamp_ns: u64,
+    pub(crate) inner: Odometry,
 }
 
 #[pymethods]
 impl PyOdometry {
-    /// Create a new Odometry message
-    ///
-    /// Args:
-    ///     x, y, theta: Position and orientation
-    ///     linear_velocity: Forward velocity (m/s)
-    ///     angular_velocity: Rotational velocity (rad/s)
-    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
     #[pyo3(signature = (x=0.0, y=0.0, theta=0.0, linear_velocity=0.0, angular_velocity=0.0, timestamp_ns=0))]
     fn new(
@@ -263,17 +340,70 @@ impl PyOdometry {
         angular_velocity: f64,
         timestamp_ns: u64,
     ) -> Self {
-        Self {
-            x,
-            y,
-            theta,
-            linear_velocity,
-            angular_velocity,
-            timestamp_ns,
-        }
+        let mut odom = Odometry::new();
+        odom.pose.x = x;
+        odom.pose.y = y;
+        odom.pose.theta = theta;
+        odom.twist.linear[0] = linear_velocity;
+        odom.twist.angular[2] = angular_velocity;
+        odom.timestamp_ns = timestamp_ns;
+        Self { inner: odom }
     }
 
-    /// Topic name for this message type
+    #[getter]
+    fn x(&self) -> f64 {
+        self.inner.pose.x
+    }
+    #[setter]
+    fn set_x(&mut self, v: f64) {
+        self.inner.pose.x = v;
+    }
+
+    #[getter]
+    fn y(&self) -> f64 {
+        self.inner.pose.y
+    }
+    #[setter]
+    fn set_y(&mut self, v: f64) {
+        self.inner.pose.y = v;
+    }
+
+    #[getter]
+    fn theta(&self) -> f64 {
+        self.inner.pose.theta
+    }
+    #[setter]
+    fn set_theta(&mut self, v: f64) {
+        self.inner.pose.theta = v;
+    }
+
+    #[getter]
+    fn linear_velocity(&self) -> f64 {
+        self.inner.twist.linear[0]
+    }
+    #[setter]
+    fn set_linear_velocity(&mut self, v: f64) {
+        self.inner.twist.linear[0] = v;
+    }
+
+    #[getter]
+    fn angular_velocity(&self) -> f64 {
+        self.inner.twist.angular[2]
+    }
+    #[setter]
+    fn set_angular_velocity(&mut self, v: f64) {
+        self.inner.twist.angular[2] = v;
+    }
+
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "odom"
@@ -282,15 +412,19 @@ impl PyOdometry {
     fn __repr__(&self) -> String {
         format!(
             "Odometry(x={:.3}, y={:.3}, theta={:.3}, v_lin={:.3}, v_ang={:.3}, timestamp_ns={})",
-            self.x,
-            self.y,
-            self.theta,
-            self.linear_velocity,
-            self.angular_velocity,
-            self.timestamp_ns
+            self.inner.pose.x,
+            self.inner.pose.y,
+            self.inner.pose.theta,
+            self.inner.twist.linear[0],
+            self.inner.twist.angular[2],
+            self.inner.timestamp_ns
         )
     }
 }
+
+// ============================================================================
+// LaserScan — 1480 bytes POD (fixed [f32; 360])
+// ============================================================================
 
 /// Laser scan message (range measurements from a LiDAR)
 ///
@@ -300,40 +434,26 @@ impl PyOdometry {
 ///     angle_increment: Angular distance between measurements
 ///     range_min: Minimum valid range in meters
 ///     range_max: Maximum valid range in meters
-///     ranges: List of range measurements
+///     ranges: List of range measurements (max 360)
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
 ///     scan = LaserScan(
-///         angle_min=-1.57,    # -90 degrees
-///         angle_max=1.57,     # +90 degrees
+///         angle_min=-1.57,
+///         angle_max=1.57,
 ///         angle_increment=0.01,
 ///         range_min=0.1,
 ///         range_max=10.0,
-///         ranges=[1.0, 1.1, 1.2, ...]  # Distance measurements
+///         ranges=[1.0, 1.1, 1.2, ...]
 ///     )
 #[pyclass(name = "LaserScan")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PyLaserScan {
-    #[pyo3(get, set)]
-    pub angle_min: f32,
-    #[pyo3(get, set)]
-    pub angle_max: f32,
-    #[pyo3(get, set)]
-    pub angle_increment: f32,
-    #[pyo3(get, set)]
-    pub range_min: f32,
-    #[pyo3(get, set)]
-    pub range_max: f32,
-    #[pyo3(get, set)]
-    pub ranges: Vec<f32>,
-    #[pyo3(get, set)]
-    pub timestamp_ns: u64,
+    pub(crate) inner: LaserScan,
 }
 
 #[pymethods]
 impl PyLaserScan {
-    /// Create a new LaserScan message
     #[new]
     #[pyo3(signature = (angle_min=0.0, angle_max=0.0, angle_increment=0.0, range_min=0.0, range_max=0.0, ranges=None, timestamp_ns=0))]
     fn new(
@@ -345,40 +465,110 @@ impl PyLaserScan {
         ranges: Option<Vec<f32>>,
         timestamp_ns: u64,
     ) -> Self {
-        Self {
-            angle_min,
-            angle_max,
-            angle_increment,
-            range_min,
-            range_max,
-            ranges: ranges.unwrap_or_default(),
-            timestamp_ns,
+        let mut scan = LaserScan::new();
+        scan.angle_min = angle_min;
+        scan.angle_max = angle_max;
+        scan.angle_increment = angle_increment;
+        scan.range_min = range_min;
+        scan.range_max = range_max;
+        scan.timestamp_ns = timestamp_ns;
+        if let Some(r) = ranges {
+            let len = r.len().min(360);
+            scan.ranges[..len].copy_from_slice(&r[..len]);
         }
+        Self { inner: scan }
     }
 
-    /// Topic name for this message type
+    #[getter]
+    fn angle_min(&self) -> f32 {
+        self.inner.angle_min
+    }
+    #[setter]
+    fn set_angle_min(&mut self, v: f32) {
+        self.inner.angle_min = v;
+    }
+
+    #[getter]
+    fn angle_max(&self) -> f32 {
+        self.inner.angle_max
+    }
+    #[setter]
+    fn set_angle_max(&mut self, v: f32) {
+        self.inner.angle_max = v;
+    }
+
+    #[getter]
+    fn angle_increment(&self) -> f32 {
+        self.inner.angle_increment
+    }
+    #[setter]
+    fn set_angle_increment(&mut self, v: f32) {
+        self.inner.angle_increment = v;
+    }
+
+    #[getter]
+    fn range_min(&self) -> f32 {
+        self.inner.range_min
+    }
+    #[setter]
+    fn set_range_min(&mut self, v: f32) {
+        self.inner.range_min = v;
+    }
+
+    #[getter]
+    fn range_max(&self) -> f32 {
+        self.inner.range_max
+    }
+    #[setter]
+    fn set_range_max(&mut self, v: f32) {
+        self.inner.range_max = v;
+    }
+
+    #[getter]
+    fn ranges(&self) -> Vec<f32> {
+        self.inner.ranges.to_vec()
+    }
+    #[setter]
+    fn set_ranges(&mut self, ranges: Vec<f32>) {
+        self.inner.ranges = [0.0; 360];
+        let len = ranges.len().min(360);
+        self.inner.ranges[..len].copy_from_slice(&ranges[..len]);
+    }
+
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "scan"
     }
 
-    /// Number of range measurements
     fn __len__(&self) -> usize {
-        self.ranges.len()
+        self.inner.valid_count()
     }
 
     fn __repr__(&self) -> String {
         format!(
             "LaserScan(angle=[{:.2}, {:.2}], range=[{:.2}, {:.2}], {} points, timestamp_ns={})",
-            self.angle_min,
-            self.angle_max,
-            self.range_min,
-            self.range_max,
-            self.ranges.len(),
-            self.timestamp_ns
+            self.inner.angle_min,
+            self.inner.angle_max,
+            self.inner.range_min,
+            self.inner.range_max,
+            self.inner.valid_count(),
+            self.inner.timestamp_ns
         )
     }
 }
+
+// ============================================================================
+// Pose3D — 64 bytes POD
+// ============================================================================
 
 /// 3D pose (position + orientation)
 ///
@@ -388,8 +578,8 @@ impl PyLaserScan {
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
-///     pose = Pose3D(1.0, 2.0, 3.0)                    # Position only (identity rotation)
-///     pose = Pose3D(1.0, 2.0, 3.0, 0, 0, 0.707, 0.707)  # With rotation
+///     pose = Pose3D(1.0, 2.0, 3.0)
+///     pose = Pose3D(1.0, 2.0, 3.0, 0, 0, 0.707, 0.707)
 #[pyclass(name = "Pose3D")]
 #[derive(Clone, Debug)]
 pub struct PyPose3D {
@@ -413,16 +603,19 @@ pub struct PyPose3D {
 
 #[pymethods]
 impl PyPose3D {
-    /// Create a new Pose3D message
-    ///
-    /// Args:
-    ///     x, y, z: Position in meters
-    ///     qx, qy, qz, qw: Quaternion orientation (default: identity)
-    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
     #[pyo3(signature = (x=0.0, y=0.0, z=0.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0, timestamp_ns=0))]
     #[allow(clippy::too_many_arguments)]
-    fn new(x: f64, y: f64, z: f64, qx: f64, qy: f64, qz: f64, qw: f64, timestamp_ns: u64) -> Self {
+    fn new(
+        x: f64,
+        y: f64,
+        z: f64,
+        qx: f64,
+        qy: f64,
+        qz: f64,
+        qw: f64,
+        timestamp_ns: u64,
+    ) -> Self {
         Self {
             x,
             y,
@@ -435,7 +628,6 @@ impl PyPose3D {
         }
     }
 
-    /// Topic name for this message type
     #[classattr]
     fn __topic_name__() -> &'static str {
         "pose3d"
@@ -448,6 +640,10 @@ impl PyPose3D {
         )
     }
 }
+
+// ============================================================================
+// JointState — ~913 bytes POD (fixed [f64; 16] arrays + [[u8; 32]; 16] names)
+// ============================================================================
 
 /// Joint state feedback message
 ///
@@ -463,30 +659,13 @@ impl PyPose3D {
 /// Examples:
 ///     js = JointState(names=["shoulder", "elbow"], positions=[0.5, 1.2])
 #[pyclass(name = "JointState")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PyJointState {
-    #[pyo3(get, set)]
-    pub names: Vec<String>,
-    #[pyo3(get, set)]
-    pub positions: Vec<f64>,
-    #[pyo3(get, set)]
-    pub velocities: Vec<f64>,
-    #[pyo3(get, set)]
-    pub efforts: Vec<f64>,
-    #[pyo3(get, set)]
-    pub timestamp_ns: u64,
+    pub(crate) inner: JointState,
 }
 
 #[pymethods]
 impl PyJointState {
-    /// Create a new JointState message
-    ///
-    /// Args:
-    ///     names: Joint names (max 16)
-    ///     positions: Joint positions (radians or meters)
-    ///     velocities: Joint velocities (default: zeros)
-    ///     efforts: Joint efforts/torques (default: zeros)
-    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
     #[pyo3(signature = (names=None, positions=None, velocities=None, efforts=None, timestamp_ns=0))]
     fn new(
@@ -496,37 +675,75 @@ impl PyJointState {
         efforts: Option<Vec<f64>>,
         timestamp_ns: u64,
     ) -> Self {
+        let mut js = JointState::new();
+        js.timestamp_ns = timestamp_ns;
         let names = names.unwrap_or_default();
-        let count = names.len();
-        Self {
-            names,
-            positions: positions.unwrap_or_else(|| vec![0.0; count]),
-            velocities: velocities.unwrap_or_else(|| vec![0.0; count]),
-            efforts: efforts.unwrap_or_else(|| vec![0.0; count]),
-            timestamp_ns,
+        let positions = positions.unwrap_or_else(|| vec![0.0; names.len()]);
+        let velocities = velocities.unwrap_or_else(|| vec![0.0; names.len()]);
+        let efforts = efforts.unwrap_or_else(|| vec![0.0; names.len()]);
+        for (i, name) in names.iter().take(16).enumerate() {
+            let pos = positions.get(i).copied().unwrap_or(0.0);
+            let vel = velocities.get(i).copied().unwrap_or(0.0);
+            let eff = efforts.get(i).copied().unwrap_or(0.0);
+            let _ = js.add_joint(name, pos, vel, eff);
         }
+        Self { inner: js }
     }
 
-    /// Topic name for this message type
+    #[getter]
+    fn names(&self) -> Vec<String> {
+        (0..self.inner.joint_count as usize)
+            .filter_map(|i| self.inner.joint_name(i).map(|s| s.to_string()))
+            .collect()
+    }
+
+    #[getter]
+    fn positions(&self) -> Vec<f64> {
+        self.inner.positions[..self.inner.joint_count as usize].to_vec()
+    }
+
+    #[getter]
+    fn velocities(&self) -> Vec<f64> {
+        self.inner.velocities[..self.inner.joint_count as usize].to_vec()
+    }
+
+    #[getter]
+    fn efforts(&self) -> Vec<f64> {
+        self.inner.efforts[..self.inner.joint_count as usize].to_vec()
+    }
+
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "joint_states"
     }
 
-    /// Number of joints
     fn __len__(&self) -> usize {
-        self.names.len()
+        self.inner.joint_count as usize
     }
 
     fn __repr__(&self) -> String {
+        let names: Vec<String> = self.names();
         format!(
             "JointState({} joints: [{}], timestamp_ns={})",
-            self.names.len(),
-            self.names.join(", "),
-            self.timestamp_ns
+            names.len(),
+            names.join(", "),
+            self.inner.timestamp_ns
         )
     }
 }
+
+// ============================================================================
+// Clock — 48 bytes POD
+// ============================================================================
 
 /// Clock / time synchronization message
 ///
@@ -539,35 +756,15 @@ impl PyJointState {
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
-///     clk = Clock(clock_ns=1000000000, sim_speed=2.0, source=1)  # 1s sim time at 2x
+///     clk = Clock(clock_ns=1000000000, sim_speed=2.0, source=1)
 #[pyclass(name = "Clock")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PyClock {
-    #[pyo3(get, set)]
-    pub clock_ns: u64,
-    #[pyo3(get, set)]
-    pub realtime_ns: u64,
-    #[pyo3(get, set)]
-    pub sim_speed: f64,
-    #[pyo3(get, set)]
-    pub paused: bool,
-    #[pyo3(get, set)]
-    pub source: u8,
-    #[pyo3(get, set)]
-    pub timestamp_ns: u64,
+    pub(crate) inner: Clock,
 }
 
 #[pymethods]
 impl PyClock {
-    /// Create a new Clock message
-    ///
-    /// Args:
-    ///     clock_ns: Simulation/replay time in nanoseconds
-    ///     realtime_ns: Wall clock time in nanoseconds
-    ///     sim_speed: Playback speed (1.0 = real-time)
-    ///     paused: Whether the clock is paused
-    ///     source: 0=wall, 1=sim, 2=replay
-    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
     #[pyo3(signature = (clock_ns=0, realtime_ns=0, sim_speed=1.0, paused=false, source=0, timestamp_ns=0))]
     fn new(
@@ -578,24 +775,77 @@ impl PyClock {
         source: u8,
         timestamp_ns: u64,
     ) -> Self {
-        Self {
-            clock_ns,
-            realtime_ns,
-            sim_speed,
-            paused,
-            source,
-            timestamp_ns,
-        }
+        let mut clk = Clock::wall_clock();
+        clk.clock_ns = clock_ns;
+        clk.realtime_ns = realtime_ns;
+        clk.sim_speed = sim_speed;
+        clk.paused = paused as u8;
+        clk.source = source;
+        clk.timestamp_ns = timestamp_ns;
+        Self { inner: clk }
     }
 
-    /// Topic name for this message type
+    #[getter]
+    fn clock_ns(&self) -> u64 {
+        self.inner.clock_ns
+    }
+    #[setter]
+    fn set_clock_ns(&mut self, v: u64) {
+        self.inner.clock_ns = v;
+    }
+
+    #[getter]
+    fn realtime_ns(&self) -> u64 {
+        self.inner.realtime_ns
+    }
+    #[setter]
+    fn set_realtime_ns(&mut self, v: u64) {
+        self.inner.realtime_ns = v;
+    }
+
+    #[getter]
+    fn sim_speed(&self) -> f64 {
+        self.inner.sim_speed
+    }
+    #[setter]
+    fn set_sim_speed(&mut self, v: f64) {
+        self.inner.sim_speed = v;
+    }
+
+    #[getter]
+    fn paused(&self) -> bool {
+        self.inner.paused != 0
+    }
+    #[setter]
+    fn set_paused(&mut self, v: bool) {
+        self.inner.paused = v as u8;
+    }
+
+    #[getter]
+    fn source(&self) -> u8 {
+        self.inner.source
+    }
+    #[setter]
+    fn set_source(&mut self, v: u8) {
+        self.inner.source = v;
+    }
+
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "clock"
     }
 
     fn __repr__(&self) -> String {
-        let source_str = match self.source {
+        let source_str = match self.inner.source {
             0 => "wall",
             1 => "sim",
             2 => "replay",
@@ -603,12 +853,19 @@ impl PyClock {
         };
         format!(
             "Clock(clock_ns={}, speed={:.1}x, paused={}, source={}, timestamp_ns={})",
-            self.clock_ns, self.sim_speed, self.paused, source_str, self.timestamp_ns
+            self.inner.clock_ns,
+            self.inner.sim_speed,
+            self.inner.paused != 0,
+            source_str,
+            self.inner.timestamp_ns
         )
     }
 }
 
-/// Register all message classes with the Python module
+// ============================================================================
+// Module registration
+// ============================================================================
+
 pub fn register_message_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCmdVel>()?;
     m.add_class::<PyPose2D>()?;

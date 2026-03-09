@@ -54,20 +54,13 @@ pub(super) fn get_local_workspaces(
         let env_path_buf = ws.path;
         let horus_dir = env_path_buf.join(".horus");
 
-        // Read dependencies from horus.yaml
-        let horus_yaml_path = env_path_buf.join("horus.yaml");
-        let yaml_dependencies = if horus_yaml_path.exists() {
-            fs::read_to_string(&horus_yaml_path)
+        // Read dependencies from horus.toml
+        let horus_toml_path = env_path_buf.join(crate::manifest::HORUS_TOML);
+        let toml_dependencies = if horus_toml_path.exists() {
+            crate::manifest::HorusManifest::load_from(&horus_toml_path)
                 .ok()
-                .and_then(|content| serde_yaml::from_str::<serde_yaml::Value>(&content).ok())
-                .and_then(|yaml| {
-                    yaml.get("dependencies")
-                        .and_then(|deps| deps.as_sequence())
-                        .map(|seq| {
-                            seq.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect::<Vec<String>>()
-                        })
+                .map(|(manifest, _)| {
+                    manifest.dependencies.keys().cloned().collect::<Vec<String>>()
                 })
                 .unwrap_or_default()
         } else {
@@ -165,8 +158,8 @@ pub(super) fn get_local_workspaces(
             }
         }
 
-        // Process dependencies from horus.yaml - only include those NOT already installed
-        let dependencies: Vec<DependencyData> = yaml_dependencies
+        // Process dependencies from horus.toml - only include those NOT already installed
+        let dependencies: Vec<DependencyData> = toml_dependencies
             .iter()
             .filter_map(|dep_str| {
                 let dep_name = dep_str.split('@').next().unwrap_or(dep_str);

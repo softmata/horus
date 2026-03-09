@@ -1,6 +1,8 @@
+use crate::manifest::{DependencyValue, HorusManifest, PackageInfo, HORUS_TOML};
 use crate::{cli_output, version};
 use anyhow::{Context, Result};
 use colored::*;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -55,8 +57,8 @@ pub fn create_new_project(
     // Create .gitignore in project root
     create_gitignore(&project_path, &language)?;
 
-    // Generate horus.yaml with dependencies
-    create_horus_yaml(
+    // Generate horus.toml with dependencies
+    create_horus_toml(
         &project_path,
         &name,
         &description,
@@ -218,7 +220,7 @@ build/
     Ok(())
 }
 
-fn create_horus_yaml(
+fn create_horus_toml(
     project_path: &Path,
     name: &str,
     description: &str,
@@ -226,70 +228,53 @@ fn create_horus_yaml(
     language: &str,
     use_macro: bool,
 ) -> Result<()> {
-    // Determine dependencies based on language
-    let dependencies = match language {
+    let mut dependencies = BTreeMap::new();
+
+    match language {
         "rust" => {
+            dependencies.insert("horus".to_string(), DependencyValue::Simple("*".to_string()));
             if use_macro {
-                r#"dependencies:
-  - horus
-  - horus_macros
-  - horus_library  # Standard robotics messages (CmdVel, etc.)
-
-  # For path dependencies (local development):
-  # my_driver:
-  #   path: "./drivers/my_driver"
-"#
-            } else {
-                r#"dependencies:
-  - horus
-  - horus_library  # Standard robotics messages (CmdVel, etc.)
-
-  # For path dependencies (local development):
-  # my_driver:
-  #   path: "./drivers/my_driver"
-"#
+                dependencies.insert(
+                    "horus_macros".to_string(),
+                    DependencyValue::Simple("*".to_string()),
+                );
             }
+            dependencies.insert(
+                "horus_library".to_string(),
+                DependencyValue::Simple("*".to_string()),
+            );
         }
         "python" => {
-            r#"dependencies:
-  - pip:horus-robotics
-  # Add Python packages as needed
-
-  # For path dependencies (local development):
-  # my_module:
-  #   path: "./my_module"
-"#
+            dependencies.insert(
+                "horus-robotics".to_string(),
+                DependencyValue::Simple("*".to_string()),
+            );
         }
-        _ => "",
+        _ => {}
+    }
+
+    let manifest = HorusManifest {
+        package: PackageInfo {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            description: Some(description.to_string()),
+            authors: vec![author.to_string()],
+            license: Some("Apache-2.0".to_string()),
+            language: Some(language.to_string()),
+            edition: "1".to_string(),
+            repository: None,
+            package_type: None,
+            categories: Vec::new(),
+        },
+        dependencies,
+        dev_dependencies: BTreeMap::new(),
+        build_dependencies: BTreeMap::new(),
+        drivers: BTreeMap::new(),
+        ignore: Default::default(),
+        enable: Vec::new(),
     };
 
-    let content = format!(
-        r#"name: {}
-version: 0.1.9
-description: {}
-author: {}
-license: Apache-2.0
-language: {}
-horus_id: null  # Auto-generated on first dependency resolution
-
-{}
-# Optional: Ignore files, directories, and packages during horus run/check
-# ignore:
-#   files:
-#     - "debug_*.py"
-#     - "test_*.rs"
-#     - "**/experiments/**"
-#   directories:
-#     - "old/"
-#     - "experiments/"
-#   packages:
-#     - "ipython"
-#     - "jupyter"
-"#,
-        name, description, author, language, dependencies
-    );
-
-    fs::write(project_path.join("horus.yaml"), content)?;
+    manifest.save_to(&project_path.join(HORUS_TOML))?;
 
     Ok(())
 }

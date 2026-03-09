@@ -30,7 +30,6 @@ use std::time::{Duration, Instant};
 
 use crate::terminal::print_line;
 
-use super::fault_tolerance::FailureAction;
 use super::primitives::NodeRunner;
 use super::types::{RegisteredNode, SharedMonitors};
 
@@ -113,11 +112,6 @@ impl AsyncExecutor {
                                 continue;
                             }
                         }
-                    }
-
-                    // Circuit breaker
-                    if !node.failure_handler.should_allow() {
-                        continue;
                     }
 
                     ready_indices.push(i);
@@ -217,7 +211,7 @@ impl AsyncExecutor {
     fn process_node_result(
         node: &mut RegisteredNode,
         tr: super::primitives::TickResult,
-        running: &Arc<AtomicBool>,
+        _running: &Arc<AtomicBool>,
         monitors: &SharedMonitors,
     ) {
         // Record execution stats
@@ -239,13 +233,11 @@ impl AsyncExecutor {
 
         match tr.result {
             Ok(_) => {
-                node.failure_handler.record_success();
                 if let Some(ref mut ctx) = node.context {
                     ctx.record_tick();
                 }
             }
             Err(panic_err) => {
-                let action = node.failure_handler.record_failure();
                 monitors
                     .profiler
                     .lock()
@@ -260,33 +252,6 @@ impl AsyncExecutor {
                 };
                 print_line(&error_msg);
                 node.node.on_error(&error_msg);
-
-                match action {
-                    FailureAction::StopScheduler | FailureAction::FatalAfterRestarts => {
-                        print_line(&format!(
-                            "[AsyncIO] Fatal failure in '{}' — stopping scheduler",
-                            node.name
-                        ));
-                        running.store(false, Ordering::SeqCst);
-                    }
-                    FailureAction::RestartNode => {
-                        if let Some(ref mut ctx) = node.context {
-                            match ctx.restart() {
-                                Ok(_) => {
-                                    node.initialized = true;
-                                }
-                                Err(e) => {
-                                    print_line(&format!(
-                                        "[AsyncIO] Restart failed for '{}': {}",
-                                        node.name, e
-                                    ));
-                                    node.initialized = false;
-                                }
-                            }
-                        }
-                    }
-                    FailureAction::SkipNode | FailureAction::Continue => {}
-                }
             }
         }
     }
@@ -339,7 +304,6 @@ mod tests {
     }
 
     fn make_async_node(name: &str, count: Arc<AtomicU64>) -> RegisteredNode {
-        use super::super::fault_tolerance::FailureHandler;
 
         let node = CounterNode {
             name: name.to_string(),
@@ -353,23 +317,18 @@ mod tests {
             context: Some(NodeInfo::new(name.to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Fatal,
-            ),
             is_rt_node: false,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::AsyncIo,
-            has_custom_failure_policy: false,
         }
     }
 
     fn make_slow_io_node(name: &str, sleep_ms: u64, count: Arc<AtomicU64>) -> RegisteredNode {
-        use super::super::fault_tolerance::FailureHandler;
 
         let node = SlowIoNode {
             name: name.to_string(),
@@ -384,18 +343,14 @@ mod tests {
             context: Some(NodeInfo::new(name.to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Fatal,
-            ),
             is_rt_node: false,
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::AsyncIo,
-            has_custom_failure_policy: false,
         }
     }
 

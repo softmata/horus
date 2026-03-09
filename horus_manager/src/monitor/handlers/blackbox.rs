@@ -198,7 +198,7 @@ fn is_anomaly(event: &BlackBoxEvent) -> bool {
         event,
         BlackBoxEvent::NodeError { .. }
             | BlackBoxEvent::DeadlineMiss { .. }
-            | BlackBoxEvent::WCETViolation { .. }
+            | BlackBoxEvent::BudgetViolation { .. }
             | BlackBoxEvent::EmergencyStop { .. }
             | BlackBoxEvent::CircuitBreakerChange { .. }
     )
@@ -211,7 +211,7 @@ fn event_node_name(event: &BlackBoxEvent) -> &str {
         BlackBoxEvent::NodeTick { name, .. } => name,
         BlackBoxEvent::NodeError { name, .. } => name,
         BlackBoxEvent::DeadlineMiss { name, .. } => name,
-        BlackBoxEvent::WCETViolation { name, .. } => name,
+        BlackBoxEvent::BudgetViolation { name, .. } => name,
         BlackBoxEvent::CircuitBreakerChange { name, .. } => name,
         _ => "",
     }
@@ -539,7 +539,7 @@ fn event_type_name(event: &BlackBoxEvent) -> &'static str {
         BlackBoxEvent::NodeTick { .. } => "NodeTick",
         BlackBoxEvent::NodeError { .. } => "NodeError",
         BlackBoxEvent::DeadlineMiss { .. } => "DeadlineMiss",
-        BlackBoxEvent::WCETViolation { .. } => "WCETViolation",
+        BlackBoxEvent::BudgetViolation { .. } => "BudgetViolation",
         BlackBoxEvent::CircuitBreakerChange { .. } => "CircuitBreakerChange",
         BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
         BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",

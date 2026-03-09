@@ -1,5 +1,5 @@
 // Safety monitor for real-time critical systems
-use crate::core::rt_node::WCETViolation;
+use crate::core::rt_node::BudgetViolation;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -81,10 +81,10 @@ impl Watchdog {
     }
 }
 
-/// WCET (Worst-Case Execution Time) enforcer
+/// budget (Worst-Case Execution Time) enforcer
 #[derive(Debug)]
-pub(crate) struct WCETEnforcer {
-    /// WCET budgets per node
+pub(crate) struct BudgetEnforcer {
+    /// tick budgets per node
     budgets: HashMap<String, Duration>,
     /// Overrun counter
     pub(crate) overruns: AtomicU64,
@@ -92,7 +92,7 @@ pub(crate) struct WCETEnforcer {
     critical_overruns: AtomicU64,
 }
 
-impl Default for WCETEnforcer {
+impl Default for BudgetEnforcer {
     fn default() -> Self {
         Self {
             budgets: HashMap::new(),
@@ -102,23 +102,23 @@ impl Default for WCETEnforcer {
     }
 }
 
-impl WCETEnforcer {
+impl BudgetEnforcer {
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Set WCET budget for a node
+    /// Set tick budget for a node
     pub(crate) fn set_budget(&mut self, node: String, budget: Duration) {
         self.budgets.insert(node, budget);
     }
 
     /// Check if execution time is within budget
-    pub(crate) fn check_budget(&self, node: &str, actual: Duration) -> Result<(), WCETViolation> {
+    pub(crate) fn check_budget(&self, node: &str, actual: Duration) -> Result<(), BudgetViolation> {
         if let Some(&budget) = self.budgets.get(node) {
             if actual > budget {
                 self.overruns.fetch_add(1, Ordering::SeqCst);
                 let overrun = actual - budget;
-                return Err(WCETViolation {
+                return Err(BudgetViolation {
                     node_name: node.to_string(),
                     budget,
                     actual,
@@ -152,8 +152,8 @@ pub(crate) struct SafetyMonitor {
     /// so multiple scheduler ticks can iterate concurrently.  Only
     /// `add_critical_node()` needs a write lock (infrequent setup-time call).
     watchdogs: Arc<RwLock<HashMap<String, Watchdog>>>,
-    /// WCET enforcer
-    wcet_enforcer: Arc<Mutex<WCETEnforcer>>,
+    /// budget enforcer
+    budget_enforcer: Arc<Mutex<BudgetEnforcer>>,
     /// Critical nodes that must never fail — protected by RwLock for interior mutability.
     /// add_critical_node() acquires a write lock; all readers acquire a read lock.
     critical_nodes: Arc<RwLock<Vec<String>>>,
@@ -169,7 +169,7 @@ impl SafetyMonitor {
             state: Arc::new(Mutex::new(SafetyState::Normal)),
             emergency_stop: Arc::new(AtomicBool::new(false)),
             watchdogs: Arc::new(RwLock::new(HashMap::new())),
-            wcet_enforcer: Arc::new(Mutex::new(WCETEnforcer::new())),
+            budget_enforcer: Arc::new(Mutex::new(BudgetEnforcer::new())),
             critical_nodes: Arc::new(RwLock::new(Vec::new())),
             deadline_misses: AtomicU64::new(0),
             max_deadline_misses,
@@ -188,9 +188,9 @@ impl SafetyMonitor {
             .insert(node_name, Watchdog::new(watchdog_timeout));
     }
 
-    /// Set WCET budget for a node.
-    pub(crate) fn set_wcet_budget(&self, node_name: String, budget: Duration) {
-        self.wcet_enforcer.lock().set_budget(node_name, budget);
+    /// Set tick budget for a node.
+    pub(crate) fn set_tick_budget(&self, node_name: String, budget: Duration) {
+        self.budget_enforcer.lock().set_budget(node_name, budget);
     }
 
     /// Feed watchdog for a node.
@@ -243,26 +243,26 @@ impl SafetyMonitor {
         }
     }
 
-    /// Check WCET budget for a node
-    pub(crate) fn check_wcet(
+    /// Check tick budget for a node
+    pub(crate) fn check_tick_budget(
         &self,
         node_name: &str,
         execution_time: Duration,
-    ) -> Result<(), WCETViolation> {
+    ) -> Result<(), BudgetViolation> {
         let result = self
-            .wcet_enforcer
+            .budget_enforcer
             .lock()
             .check_budget(node_name, execution_time);
 
         if let Err(ref violation) = result {
-            // Critical node WCET violation triggers emergency stop.
+            // Critical node budget violation triggers emergency stop.
             // Read lock is acquired for the contains() check and released immediately
-            // after (before the wcet_enforcer.lock() below — no lock ordering issue).
+            // after (before the budget_enforcer.lock() below — no lock ordering issue).
             let is_critical = self.critical_nodes.read().contains(&violation.node_name);
             if is_critical {
-                self.wcet_enforcer.lock().mark_critical_overrun();
+                self.budget_enforcer.lock().mark_critical_overrun();
                 self.trigger_emergency_stop(format!(
-                    "Critical node {} exceeded WCET budget: {:?} > {:?}",
+                    "Critical node {} exceeded tick budget: {:?} > {:?}",
                     violation.node_name, violation.actual, violation.budget
                 ));
             }
@@ -306,7 +306,7 @@ impl SafetyMonitor {
     pub(crate) fn get_stats(&self) -> SafetyStats {
         SafetyStats {
             state: self.get_state(),
-            wcet_overruns: self.wcet_enforcer.lock().get_overrun_count(),
+            budget_overruns: self.budget_enforcer.lock().get_overrun_count(),
             deadline_misses: self.deadline_misses.load(Ordering::SeqCst),
             watchdog_expirations: self
                 .watchdogs
@@ -322,7 +322,7 @@ impl SafetyMonitor {
 #[derive(Debug, Clone)]
 pub struct SafetyStats {
     pub state: SafetyState,
-    pub wcet_overruns: u64,
+    pub budget_overruns: u64,
     pub deadline_misses: u64,
     pub watchdog_expirations: u64,
 }
@@ -588,7 +588,7 @@ mod loom_tests {
                 let _ = nodes_r1.read().contains(&"node_a".to_string());
             });
 
-            // Reader 2: check_wcet() path
+            // Reader 2: check_tick_budget() path
             let nodes_r2 = nodes.clone();
             let t_read2 = thread::spawn(move || {
                 let _ = nodes_r2.read().contains(&"node_b".to_string());

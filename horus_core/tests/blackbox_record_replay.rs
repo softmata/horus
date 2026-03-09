@@ -103,8 +103,7 @@ fn test_blackbox_legacy_array_compat() {
         other => unreachable!("Should be a Custom event, got {:?}", other),
     }
 
-    // loss counter should be 0 for legacy format
-    assert_eq!(bb.get_loss_count(), 0);
+    // get_loss_count() removed
 }
 
 #[test]

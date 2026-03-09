@@ -35,12 +35,12 @@ MAX_LOG_DATA_SIZE = 200
 # Import the Rust extension module
 try:
     from horus._horus import (
-        PyNode as _PyNode,
-        PyNodeInfo as _NodeInfo,
+        Node as _PyNode,
+        NodeInfo as _NodeInfo,
         Topic,  # Unified communication API
-        PyScheduler as _PyScheduler,
-        PyNodeState as NodeState,
-        PySchedulerConfig as _SchedulerConfig,
+        Scheduler as _PyScheduler,
+        NodeState,
+        SchedulerConfig as _SchedulerConfig,
         get_version,
         # GPU utility functions
         cuda_is_available,
@@ -84,7 +84,7 @@ except ImportError:
             self.profiling = False
             self.black_box_enabled = False
             self.black_box_size_mb = 0
-            self.wcet_enforcement = False
+            self.budget_enforcement = False
             self.deadline_monitoring = False
             self.watchdog_enabled = False
             self.watchdog_timeout_ms = 0
@@ -94,7 +94,6 @@ except ImportError:
             self.cpu_cores = None
             self.metrics_interval_ms = 1000
             self.telemetry_endpoint = None
-            self.deterministic_enabled = False
             self.recording_enabled = False
         @staticmethod
         def minimal(): return _SchedulerConfig()
@@ -716,7 +715,6 @@ class Scheduler:
                  watchdog_ms: int = 0,
                  safety_monitor: bool = False,
                  recording: bool = False,
-                 deterministic: bool = False,
                  _inner=None):
         """
         Create a scheduler.
@@ -731,7 +729,6 @@ class Scheduler:
             watchdog_ms: Watchdog timeout in ms (0 = disabled)
             safety_monitor: Enable safety monitor (default: False)
             recording: Enable recording (default: False)
-            deterministic: Enable deterministic execution (default: False)
             _inner: Internal — used by preset constructors
         """
         if _inner is not None:
@@ -752,7 +749,6 @@ class Scheduler:
                 cfg.watchdog_timeout_ms = watchdog_ms
             cfg.safety_monitor = safety_monitor
             cfg.recording_enabled = recording
-            cfg.deterministic_enabled = deterministic
             self._scheduler = _PyScheduler(cfg)
         else:
             self._scheduler = None
@@ -1034,7 +1030,7 @@ class Scheduler:
         Get safety monitor statistics.
 
         Returns:
-            Dict with keys: state, wcet_overruns, deadline_misses,
+            Dict with keys: state, budget_overruns, deadline_misses,
             watchdog_expirations. None if safety monitor is not enabled.
         """
         if self._scheduler:
@@ -1119,17 +1115,17 @@ class Scheduler:
     # Node Control
     # ========================================================================
 
-    def set_wcet_budget(self, node_name: str, us: int) -> None:
+    def set_tick_budget(self, node_name: str, us: int) -> None:
         """
-        Set WCET (Worst-Case Execution Time) budget for a node.
+        Set budget (Worst-Case Execution Time) budget for a node.
 
         Args:
             node_name: Name of the node
             us: Budget in microseconds
         """
         if not self._scheduler:
-            raise RuntimeError("Cannot set WCET budget before scheduler is created")
-        self._scheduler.set_wcet_budget(node_name, us)
+            raise RuntimeError("Cannot set budget budget before scheduler is created")
+        self._scheduler.set_tick_budget(node_name, us)
 
     def add_critical_node(self, node_name: str, timeout_ms: int) -> None:
         """
@@ -1142,54 +1138,6 @@ class Scheduler:
         if not self._scheduler:
             raise RuntimeError("Cannot add critical node before scheduler is created")
         self._scheduler.add_critical_node(node_name, timeout_ms)
-
-    # ========================================================================
-    # Deterministic / Simulation Mode
-    # ========================================================================
-
-    def is_simulation_mode(self) -> bool:
-        """
-        Check if scheduler is in simulation mode (deterministic execution).
-
-        Returns:
-            True if deterministic clock is active
-        """
-        if self._scheduler:
-            return self._scheduler.is_simulation_mode()
-        return False
-
-    def seed(self) -> Optional[int]:
-        """
-        Get the deterministic seed (simulation mode only).
-
-        Returns:
-            Seed value, or None if not in simulation mode
-        """
-        if self._scheduler:
-            return self._scheduler.seed()
-        return None
-
-    def virtual_time(self) -> Optional[float]:
-        """
-        Get the current virtual time in seconds (simulation mode only).
-
-        Returns:
-            Virtual time in seconds, or None if not in simulation mode
-        """
-        if self._scheduler:
-            return self._scheduler.virtual_time()
-        return None
-
-    def virtual_tick(self) -> Optional[int]:
-        """
-        Get the current virtual tick number (simulation mode only).
-
-        Returns:
-            Virtual tick count, or None if not in simulation mode
-        """
-        if self._scheduler:
-            return self._scheduler.virtual_tick()
-        return None
 
     @staticmethod
     def delete_recording(session_name: str) -> None:

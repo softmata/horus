@@ -1117,7 +1117,7 @@ impl TuiDashboard {
                 ];
                 let dep_table = Table::new(dep_rows, dep_widths)
                     .header(
-                        Row::new(vec!["Package", "Declared (horus.yaml)", "Status"])
+                        Row::new(vec!["Package", "Declared (horus.toml)", "Status"])
                             .style(Style::default().add_modifier(Modifier::BOLD)),
                     )
                     .block(
@@ -1896,7 +1896,7 @@ impl TuiDashboard {
                 "  Enter      - Drill into selected workspace to view packages & dependencies",
             ),
             Line::from("  ESC        - Navigate back to workspace list"),
-            Line::from("  Note       - Missing dependencies (from horus.yaml) shown in red"),
+            Line::from("  Note       - Missing dependencies (from horus.toml) shown in red"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Parameters Tab:",

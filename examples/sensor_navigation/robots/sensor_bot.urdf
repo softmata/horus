@@ -1,0 +1,124 @@
+<?xml version="1.0"?>
+<robot name="sensor_bot">
+  <!-- Chassis -->
+  <link name="base_link">
+    <inertial>
+      <mass value="8.0"/>
+      <origin xyz="0 0 0.06" rpy="0 0 0"/>
+      <inertia ixx="0.08" ixy="0" ixz="0" iyy="0.08" iyz="0" izz="0.12"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.06" rpy="0 0 0"/>
+      <geometry><cylinder length="0.08" radius="0.18"/></geometry>
+      <material name="teal"><color rgba="0.1 0.6 0.6 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.06" rpy="0 0 0"/>
+      <geometry><cylinder length="0.08" radius="0.18"/></geometry>
+    </collision>
+  </link>
+
+  <!-- Left wheel -->
+  <link name="left_wheel">
+    <inertial>
+      <mass value="0.4"/>
+      <inertia ixx="0.0006" ixy="0" ixz="0" iyy="0.0006" iyz="0" izz="0.001"/>
+    </inertial>
+    <visual>
+      <geometry><cylinder length="0.03" radius="0.05"/></geometry>
+      <material name="black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+    </visual>
+    <collision>
+      <geometry><cylinder length="0.03" radius="0.05"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="left_wheel"/>
+    <origin xyz="0.0 0.19 0.02" rpy="-1.5708 0 0"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="0.01" friction="0.05"/>
+  </joint>
+
+  <!-- Right wheel -->
+  <link name="right_wheel">
+    <inertial>
+      <mass value="0.4"/>
+      <inertia ixx="0.0006" ixy="0" ixz="0" iyy="0.0006" iyz="0" izz="0.001"/>
+    </inertial>
+    <visual>
+      <geometry><cylinder length="0.03" radius="0.05"/></geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <geometry><cylinder length="0.03" radius="0.05"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="right_wheel"/>
+    <origin xyz="0.0 -0.19 0.02" rpy="-1.5708 0 0"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="0.01" friction="0.05"/>
+  </joint>
+
+  <!-- Caster -->
+  <link name="caster">
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+    <visual>
+      <geometry><sphere radius="0.02"/></geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <geometry><sphere radius="0.02"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="caster"/>
+    <origin xyz="-0.14 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- LiDAR mount (raised platform) -->
+  <link name="lidar_link">
+    <inertial>
+      <mass value="0.2"/>
+      <inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0003"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry><cylinder length="0.04" radius="0.04"/></geometry>
+      <material name="dark_grey"><color rgba="0.2 0.2 0.2 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry><cylinder length="0.04" radius="0.04"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="lidar_mount" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <origin xyz="0.05 0 0.10" rpy="0 0 0"/>
+  </joint>
+
+  <!-- IMU (internal, no visual) -->
+  <link name="imu_link">
+    <inertial>
+      <mass value="0.01"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="imu_mount" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.06" rpy="0 0 0"/>
+  </joint>
+</robot>

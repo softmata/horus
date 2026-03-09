@@ -13,7 +13,7 @@ use std::time::Duration;
 ///
 /// impl Node for VideoEncoder {
 ///     fn tick(&mut self) { /* ... */ }
-///     fn wcet_budget(&self) -> Option<Duration> { Some(Duration::from_millis(5)) }
+///     fn tick_budget(&self) -> Option<Duration> { Some(Duration::from_millis(5)) }
 ///
 ///     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
 ///         DeadlineMissPolicy::Skip  // Drop frame, keep streaming
@@ -28,15 +28,11 @@ pub enum DeadlineMissPolicy {
     Skip,
     /// Emergency stop - trigger safety shutdown
     EmergencyStop,
-    /// Downgrade priority for future ticks
-    Degrade,
-    /// Switch to fallback node
-    Fallback,
 }
 
-/// WCET (Worst-Case Execution Time) violation handling
+/// Tick budget violation — node exceeded its allowed execution time.
 #[derive(Debug, Clone)]
-pub struct WCETViolation {
+pub struct BudgetViolation {
     pub node_name: String,
     pub budget: Duration,
     pub actual: Duration,
@@ -68,8 +64,8 @@ pub struct WCETViolation {
 pub struct RtStats {
     /// Number of deadline misses
     pub deadline_misses: u64,
-    /// Number of WCET violations
-    pub wcet_violations: u64,
+    /// Number of Budget violations
+    pub budget_violations: u64,
     /// Worst observed execution time
     pub worst_execution: Duration,
     /// Last execution time
@@ -121,13 +117,13 @@ impl RtStats {
     /// Get human-readable statistics
     pub fn summary(&self) -> String {
         format!(
-            "Ticks: {}, Worst: {:.1}μs, Avg: {:.1}μs, Jitter: {:.1}μs, Deadline misses: {}, WCET violations: {}",
+            "Ticks: {}, Worst: {:.1}μs, Avg: {:.1}μs, Jitter: {:.1}μs, Deadline misses: {}, Budget violations: {}",
             self.total_ticks,
             self.worst_execution.as_micros(),
             self.avg_execution_us,
             self.jitter_us,
             self.deadline_misses,
-            self.wcet_violations
+            self.budget_violations
         )
     }
 }
@@ -142,23 +138,23 @@ mod tests {
     // =========================================================================
 
     /// Minimal RT node for testing trait defaults.
-    /// Simulates a motor controller with a fixed WCET budget.
+    /// Simulates a motor controller with a fixed tick budget.
     struct TestMotorNode {
-        wcet: Duration,
+        budget: Duration,
     }
 
     impl TestMotorNode {
-        fn new(wcet_us: u64) -> Self {
+        fn new(budget_us: u64) -> Self {
             Self {
-                wcet: Duration::from_micros(wcet_us),
+                budget: Duration::from_micros(budget_us),
             }
         }
     }
 
     impl Node for TestMotorNode {
         fn tick(&mut self) {}
-        fn wcet_budget(&self) -> Option<Duration> {
-            Some(self.wcet)
+        fn tick_budget(&self) -> Option<Duration> {
+            Some(self.budget)
         }
     }
 
@@ -166,15 +162,15 @@ mod tests {
     // Section 1: RtNode trait default tests
     // =========================================================================
 
-    /// Default deadline is 2x WCET budget.
-    /// Robotics: standard safety margin — motor controller with 100µs WCET
+    /// Default deadline is 2x tick budget.
+    /// Robotics: standard safety margin — motor controller with 100µs budget
     /// gets a 200µs deadline, allowing for cache misses and interrupts.
     #[test]
-    fn default_deadline_is_2x_wcet() {
+    fn default_deadline_is_2x_budget() {
         let node = TestMotorNode::new(100);
         assert_eq!(node.deadline(), Duration::from_micros(200));
 
-        // 1ms WCET → 2ms deadline
+        // 1ms budget → 2ms deadline
         let node2 = TestMotorNode::new(1000);
         assert_eq!(node2.deadline(), Duration::from_micros(2000));
     }
@@ -184,24 +180,6 @@ mod tests {
     fn default_deadline_miss_policy_is_warn() {
         let node = TestMotorNode::new(100);
         assert_eq!(node.deadline_miss_policy(), DeadlineMissPolicy::Warn);
-    }
-
-    /// Formal verification defaults: pre/post conditions and invariants
-    /// all return true — no constraints unless overridden.
-    #[test]
-    fn default_formal_verification_all_true() {
-        let node = TestMotorNode::new(100);
-        assert!(node.pre_condition());
-        assert!(node.post_condition());
-        assert!(node.invariant());
-    }
-
-    /// Default fallback is None — no redundant node unless explicitly provided.
-    /// Robotics: N-version programming requires explicit fallback configuration.
-    #[test]
-    fn default_fallback_is_none() {
-        let node = TestMotorNode::new(100);
-        assert!(node.fallback_node().is_none());
     }
 
     /// Default safe state: node reports safe, enter_safe_state is a no-op.
@@ -297,7 +275,7 @@ mod tests {
     }
 
     /// Worst-case tracking always keeps the absolute maximum.
-    /// Robotics: WCET monitoring — one spike sets the record permanently.
+    /// Robotics: budget monitoring — one spike sets the record permanently.
     #[test]
     fn rtstats_worst_case_tracks_maximum() {
         let mut stats = RtStats::default();
@@ -396,13 +374,13 @@ mod tests {
     }
 
     // =========================================================================
-    // Section 4: WCETViolation struct
+    // Section 4: BudgetViolation struct
     // =========================================================================
 
-    /// WCETViolation stores correct values.
+    /// BudgetViolation stores correct values.
     #[test]
-    fn wcet_violation_fields() {
-        let v = WCETViolation {
+    fn budget_violation_fields() {
+        let v = BudgetViolation {
             node_name: "motor_ctrl".to_string(),
             budget: Duration::from_micros(100),
             actual: Duration::from_micros(250),

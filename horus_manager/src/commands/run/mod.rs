@@ -6,7 +6,6 @@ mod run_python;
 mod run_rust;
 
 // Re-export public API
-pub use deps::parse_horus_yaml_dependencies_v2;
 pub use hardware::check_hardware_requirements;
 pub use run_rust::execute_build_only;
 pub(crate) use run_rust::find_horus_source_dir;
@@ -15,7 +14,8 @@ pub(crate) use run_rust::find_horus_source_dir;
 pub(crate) use run_python::detect_python_interpreter;
 
 use crate::cli_output;
-use crate::config::{CARGO_TOML, HORUS_YAML};
+use crate::config::CARGO_TOML;
+use crate::manifest::{HORUS_TOML, HorusManifest};
 use crate::progress;
 use anyhow::{anyhow, bail, Context, Result};
 use colored::*;
@@ -113,12 +113,8 @@ fn execute_single_file(
         language.yellow()
     );
 
-    // Load ignore patterns from horus.yaml if it exists
-    let ignore = if Path::new(HORUS_YAML).exists() {
-        features::parse_horus_yaml_ignore(HORUS_YAML).unwrap_or_default()
-    } else {
-        features::IgnorePatterns::default()
-    };
+    // Load ignore patterns from horus.toml
+    let ignore = load_ignore_patterns();
 
     // Ensure .horus directory exists
     ensure_horus_directory()?;
@@ -228,19 +224,21 @@ fn execute_from_manifest(
     );
 
     match manifest_path.file_name().and_then(|s| s.to_str()) {
-        Some(HORUS_YAML) => execute_from_horus_yaml(manifest_path, args, release, clean),
+        Some(HORUS_TOML) => {
+            execute_from_horus_manifest(manifest_path, args, release, clean)
+        }
         Some(CARGO_TOML) => run_rust::execute_from_cargo_toml(manifest_path, args, release, clean),
         _ => bail!("Unsupported manifest type: {}", manifest_path.display()),
     }
 }
 
-fn execute_from_horus_yaml(
+fn execute_from_horus_manifest(
     manifest_path: PathBuf,
     args: Vec<String>,
     release: bool,
     clean: bool,
 ) -> Result<()> {
-    // For now, find the main file in the same directory as horus.yaml
+    // For now, find the main file in the same directory as horus.toml
     let project_dir = manifest_path
         .parent()
         .ok_or_else(|| anyhow!("Cannot determine project directory"))?;
@@ -516,16 +514,9 @@ fn resolve_execution_target(input: PathBuf) -> Result<Vec<ExecutionTarget>> {
 
     if input.is_file() {
         // Check if it's a manifest file
-        match input.extension().and_then(|s| s.to_str()) {
-            Some("yaml") | Some("yml") => {
-                if input.file_name().and_then(|s| s.to_str()) == Some(HORUS_YAML) {
-                    return Ok(vec![ExecutionTarget::Manifest(input)]);
-                }
-            }
-            Some("toml") => {
-                if input.file_name().and_then(|s| s.to_str()) == Some(CARGO_TOML) {
-                    return Ok(vec![ExecutionTarget::Manifest(input)]);
-                }
+        match input.file_name().and_then(|s| s.to_str()) {
+            Some(HORUS_TOML) | Some(CARGO_TOML) => {
+                return Ok(vec![ExecutionTarget::Manifest(input)]);
             }
             _ => {}
         }
@@ -544,12 +535,8 @@ fn resolve_execution_target(input: PathBuf) -> Result<Vec<ExecutionTarget>> {
 }
 
 fn resolve_glob_pattern(pattern: &str) -> Result<Vec<ExecutionTarget>> {
-    // Load ignore patterns from horus.yaml if it exists
-    let ignore = if Path::new(HORUS_YAML).exists() {
-        features::parse_horus_yaml_ignore(HORUS_YAML).unwrap_or_default()
-    } else {
-        features::IgnorePatterns::default()
-    };
+    // Load ignore patterns from horus.toml
+    let ignore = load_ignore_patterns();
 
     let mut files = Vec::new();
 
@@ -590,12 +577,8 @@ fn resolve_glob_pattern(pattern: &str) -> Result<Vec<ExecutionTarget>> {
 fn auto_detect_main_file() -> Result<PathBuf> {
     log::debug!("auto-detecting main file in current directory");
 
-    // Load ignore patterns from horus.yaml if it exists
-    let ignore = if Path::new(HORUS_YAML).exists() {
-        features::parse_horus_yaml_ignore(HORUS_YAML).unwrap_or_default()
-    } else {
-        features::IgnorePatterns::default()
-    };
+    // Load ignore patterns from horus.toml
+    let ignore = load_ignore_patterns();
 
     // Check for main files in priority order (Rust and Python only)
     let candidates = ["main.rs", "main.py", "src/main.rs", "src/main.py"];
@@ -657,6 +640,16 @@ fn ensure_horus_directory() -> Result<()> {
     fs::create_dir_all(horus_dir.join("cache"))?;
 
     Ok(())
+}
+
+/// Load ignore patterns from horus.toml.
+fn load_ignore_patterns() -> features::IgnorePatterns {
+    if Path::new(HORUS_TOML).exists() {
+        if let Ok((manifest, _)) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
+            return manifest.ignore.into();
+        }
+    }
+    features::IgnorePatterns::default()
 }
 
 /// Build a map of environment variables for child processes.

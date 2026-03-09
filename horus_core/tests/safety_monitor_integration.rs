@@ -1,7 +1,7 @@
 //! Integration tests for the safety monitor.
 //!
-//! Covers: WCET critical violation, non-critical WCET, multiple watchdog expiry,
-//! deadline miss threshold, safety stats accuracy, concurrent WCET checks.
+//! Covers: budget critical violation, non-critical budget, multiple watchdog expiry,
+//! deadline miss threshold, safety stats accuracy, concurrent budget checks.
 
 use horus_core::core::{DeadlineMissPolicy, Node};
 use horus_core::scheduling::Scheduler;
@@ -16,7 +16,7 @@ use common::cleanup_stale_shm;
 // Mock nodes
 // ============================================================================
 
-/// Node with configurable execution time for WCET testing.
+/// Node with configurable execution time for budget testing.
 struct TimedRtNode {
     name: String,
     tick_count: Arc<AtomicU64>,
@@ -31,7 +31,7 @@ impl Node for TimedRtNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_micros(self.sleep_us));
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(self.sleep_us + 50))
     }
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
@@ -39,15 +39,15 @@ impl Node for TimedRtNode {
     }
 }
 
-/// Node that deliberately exceeds WCET budget.
-struct WcetViolatorNode {
+/// Node that deliberately exceeds tick budget.
+struct BudgetViolatorNode {
     name: String,
     tick_count: Arc<AtomicU64>,
     budget_us: u64,
     actual_us: u64,
 }
 
-impl Node for WcetViolatorNode {
+impl Node for BudgetViolatorNode {
     fn name(&self) -> &'static str {
         Box::leak(self.name.clone().into_boxed_str())
     }
@@ -55,7 +55,7 @@ impl Node for WcetViolatorNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_micros(self.actual_us));
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(self.budget_us))
     }
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
@@ -76,7 +76,7 @@ impl Node for FastCounterNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(10))
     }
 }
@@ -86,7 +86,7 @@ impl Node for FastCounterNode {
 // ============================================================================
 
 #[test]
-fn test_wcet_critical_violation_emergency_stop() {
+fn test_budget_critical_violation_emergency_stop() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
@@ -96,17 +96,17 @@ fn test_wcet_critical_violation_emergency_stop() {
         .watchdog(Duration::from_millis(100));
 
     scheduler
-        .add(WcetViolatorNode {
-            name: "wcet_critical_violator".to_string(),
+        .add(BudgetViolatorNode {
+            name: "budget_critical_violator".to_string(),
             tick_count: tick_count.clone(),
             budget_us: 50,  // 50us budget
             actual_us: 500, // 500us actual (10x overrun)
         })
         .order(0)
-        .wcet_us(50)
+        .budget_us(50)
         .done();
 
-    // The WCET violation should be detected by the safety monitor
+    // The budget violation should be detected by the safety monitor
     let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok());
 
@@ -120,7 +120,7 @@ fn test_wcet_critical_violation_emergency_stop() {
 }
 
 #[test]
-fn test_wcet_non_critical_no_emergency() {
+fn test_budget_non_critical_no_emergency() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
@@ -128,17 +128,17 @@ fn test_wcet_non_critical_no_emergency() {
 
     // This node is NOT registered as critical (no watchdog = no auto-critical)
     scheduler
-        .add(WcetViolatorNode {
-            name: "wcet_noncritical".to_string(),
+        .add(BudgetViolatorNode {
+            name: "budget_noncritical".to_string(),
             tick_count: tick_count.clone(),
             budget_us: 50,
             actual_us: 200,
         })
         .order(0)
-        .wcet_us(50)
+        .budget_us(50)
         .done();
 
-    // Non-critical WCET overrun should NOT trigger emergency stop
+    // Non-critical budget overrun should NOT trigger emergency stop
     let result = scheduler.run_for(Duration::from_millis(200));
     assert!(result.is_ok());
 
@@ -187,14 +187,14 @@ fn test_deadline_miss_threshold_triggers_stop() {
 
     // Node that will miss deadlines
     scheduler
-        .add(WcetViolatorNode {
+        .add(BudgetViolatorNode {
             name: "deadline_misser".to_string(),
             tick_count: tick_count.clone(),
             budget_us: 1000,
             actual_us: 2000, // Exceeds deadline
         })
         .order(0)
-        .wcet_us(5000)
+        .budget_us(5000)
         .deadline_us(500) // Will be missed
         .done();
 
@@ -219,16 +219,16 @@ fn test_safety_stats_accurate() {
         .safety_monitor(true)
         .max_deadline_misses(100); // High threshold so we don't stop
 
-    // Node that violates WCET and misses deadlines
+    // Node that violates budget and misses deadlines
     scheduler
-        .add(WcetViolatorNode {
+        .add(BudgetViolatorNode {
             name: "stats_node".to_string(),
             tick_count: tick_count.clone(),
             budget_us: 50,
             actual_us: 200,
         })
         .order(0)
-        .wcet_us(50)
+        .budget_us(50)
         .deadline_us(100)
         .done();
 
@@ -240,7 +240,7 @@ fn test_safety_stats_accurate() {
 }
 
 #[test]
-fn test_concurrent_wcet_check_and_add_critical() {
+fn test_concurrent_budget_check_and_add_critical() {
     cleanup_stale_shm();
 
     // Watchdog auto-registers all RT nodes as critical
@@ -257,7 +257,7 @@ fn test_concurrent_wcet_check_and_add_critical() {
                 tick_count: Arc::new(AtomicU64::new(0)),
             })
             .order(i)
-            .wcet_us(10000)
+            .budget_us(10000)
             .done();
     }
 

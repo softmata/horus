@@ -19,8 +19,8 @@ pub struct TimingConfig {
 /// [`RtConfig`](crate::core::rt_config::RtConfig) directly.
 #[derive(Debug, Clone)]
 pub struct RealTimeConfig {
-    /// Enable WCET enforcement
-    pub wcet_enforcement: bool,
+    /// Enable budget enforcement
+    pub budget_enforcement: bool,
     /// Enable deadline monitoring
     pub deadline_monitoring: bool,
     /// Enable watchdog timers
@@ -73,7 +73,7 @@ pub struct MonitoringConfig {
     pub wal_flush_interval: usize,
     /// Telemetry export endpoint (e.g., "udp://localhost:9999", "file:///var/log/metrics.json")
     pub telemetry_endpoint: Option<String>,
-    /// Enable verbose logging from executor threads (WCET warnings, pre/post-condition
+    /// Enable verbose logging from executor threads (budget warnings, pre/post-condition
     /// failures, startup/shutdown messages, etc.). Emergency-stop messages are always
     /// printed regardless of this setting. Default: true.
     pub verbose: bool,
@@ -183,7 +183,7 @@ impl Default for SchedulerConfig {
             },
             circuit_breaker: false,
             realtime: RealTimeConfig {
-                wcet_enforcement: false,
+                budget_enforcement: false,
                 deadline_monitoring: false,
                 watchdog_enabled: false,
                 watchdog_timeout_ms: 1000,
@@ -234,9 +234,9 @@ mod tests {
             any::<bool>(),
         )
             .prop_map(
-                |(wcet, deadline, watchdog, timeout, safety, max_miss, memlock, rt_class)| {
+                |(budget, deadline, watchdog, timeout, safety, max_miss, memlock, rt_class)| {
                     RealTimeConfig {
-                        wcet_enforcement: wcet,
+                        budget_enforcement: budget,
                         deadline_monitoring: deadline,
                         watchdog_enabled: watchdog,
                         watchdog_timeout_ms: timeout,
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn realtime_config_default_all_disabled() {
         let config = SchedulerConfig::default();
-        assert!(!config.realtime.wcet_enforcement);
+        assert!(!config.realtime.budget_enforcement);
         assert!(!config.realtime.deadline_monitoring);
         assert!(!config.realtime.watchdog_enabled);
         assert!(!config.realtime.safety_monitor);
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn realtime_config_all_enabled_simultaneously() {
         let rt = RealTimeConfig {
-            wcet_enforcement: true,
+            budget_enforcement: true,
             deadline_monitoring: true,
             watchdog_enabled: true,
             watchdog_timeout_ms: 500,
@@ -515,7 +515,7 @@ mod tests {
             rt_scheduling_class: true,
         };
         // All flags enabled simultaneously should be representable
-        assert!(rt.wcet_enforcement);
+        assert!(rt.budget_enforcement);
         assert!(rt.deadline_monitoring);
         assert!(rt.watchdog_enabled);
         assert!(rt.safety_monitor);

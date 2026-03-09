@@ -25,7 +25,7 @@ Project:
   run               Run a HORUS project or file(s)
   build             Build the HORUS project without running
   test              Run tests for the HORUS project
-  check             Validate horus.yaml, source files, or workspace
+  check             Validate horus.toml, source files, or workspace
   clean             Clean build artifacts and shared memory
   launch, l         Launch multiple nodes from a YAML file
 
@@ -236,7 +236,7 @@ enum Commands {
         enable: Option<Vec<String>>,
     },
 
-    /// Validate horus.yaml, source files, or entire workspace
+    /// Validate horus.toml, source files, or entire workspace
     Check {
         /// Path to file, directory, or workspace (default: current directory)
         #[arg(value_name = "PATH")]
@@ -380,7 +380,7 @@ enum Commands {
     /// Inspect the BlackBox flight recorder (post-mortem crash analysis)
     #[command(visible_alias = "bb")]
     Blackbox {
-        /// Show only anomalies (errors, deadline misses, WCET violations, e-stops)
+        /// Show only anomalies (errors, deadline misses, budget violations, e-stops)
         #[arg(short = 'a', long = "anomalies")]
         anomalies: bool,
 
@@ -487,7 +487,7 @@ enum Commands {
         /// Target workspace/project name
         #[arg(short = 't', long = "target")]
         target: Option<String>,
-        /// Install as driver (adds to horus.yaml drivers section)
+        /// Install as driver (adds to horus.toml drivers section)
         #[arg(long = "driver", conflicts_with = "plugin")]
         driver: bool,
         /// Install as CLI plugin (defaults to global scope)
@@ -1836,7 +1836,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 }
                 Ok(())
             } else {
-                // Remove from local horus.yaml + optionally clean cache
+                // Remove from local horus.toml + optionally clean cache
                 commands::pkg::run_remove_dep(name)?;
                 if purge {
                     commands::cache::run_clean(false)?;

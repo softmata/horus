@@ -473,6 +473,12 @@ pub async fn run(port: u16, no_auth: bool) -> anyhow::Result<()> {
     );
     println!("{}", "  Press Ctrl+C to stop the server\n".bright_black());
 
+    // Auto-open browser to the monitor UI
+    let url = format!("http://localhost:{}", port);
+    if let Err(e) = open::that(&url) {
+        eprintln!("{} Failed to open browser: {}", "Warning:".yellow(), e);
+    }
+
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     axum::serve(
         listener,

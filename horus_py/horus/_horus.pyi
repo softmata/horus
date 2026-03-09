@@ -6,7 +6,7 @@ This file provides type hints for IDE autocomplete and static type checking.
 
 from typing import Any, Dict, List, Optional
 
-class PyNodeInfo:
+class NodeInfo:
     """
     Python wrapper for NodeInfo - provides node state, metrics, and logging.
 
@@ -29,7 +29,7 @@ class PyNodeInfo:
         ...
 
     @property
-    def state(self) -> PyNodeState:
+    def state(self) -> NodeState:
         """Get the current node state."""
         ...
 
@@ -206,7 +206,7 @@ class PyNodeInfo:
         ...
 
 
-class PyNodeState:
+class NodeState:
     """
     Node state enum.
 
@@ -234,7 +234,7 @@ class PyNodeState:
         ...
 
 
-class PyScheduler:
+class Scheduler:
     """
     Python wrapper for HORUS Scheduler.
 
@@ -242,7 +242,7 @@ class PyScheduler:
     Supports per-node rate control for flexible scheduling.
     """
 
-    def __init__(self, config: Optional['PySchedulerConfig'] = None) -> None:
+    def __init__(self, config: Optional['SchedulerConfig'] = None) -> None:
         """Create a new Scheduler with optional config."""
         ...
 
@@ -366,12 +366,12 @@ class PyScheduler:
         ...
 
 
-class PyNode:
+class Node:
     """
-    Internal Python wrapper for HORUS Node (legacy).
+    Base HORUS Node class.
 
-    Note: Most users should use the horus.Node class from the Python
-    wrapper instead, which provides a more Pythonic API.
+    Most users should use the horus.Node class from the Python
+    wrapper which provides a more Pythonic API.
     """
 
     def __init__(self, name: str) -> None:
@@ -388,7 +388,7 @@ class PyNode:
         """Get the node name."""
         ...
 
-    def tick(self, info: Optional[PyNodeInfo] = None) -> None:
+    def tick(self, info: Optional[NodeInfo] = None) -> None:
         """
         Execute one tick.
 
@@ -397,7 +397,7 @@ class PyNode:
         """
         ...
 
-    def init(self, info: Optional[PyNodeInfo] = None) -> None:
+    def init(self, info: Optional[NodeInfo] = None) -> None:
         """
         Initialize the node.
 
@@ -406,7 +406,7 @@ class PyNode:
         """
         ...
 
-    def shutdown(self, info: Optional[PyNodeInfo] = None) -> None:
+    def shutdown(self, info: Optional[NodeInfo] = None) -> None:
         """
         Shutdown the node.
 

@@ -8,7 +8,8 @@ mod tests;
 // Re-export all public types and functions
 pub use helpers::generate_signing_keypair;
 
-use crate::config::{CARGO_TOML, HORUS_YAML};
+use crate::config::CARGO_TOML;
+use crate::manifest::HORUS_TOML;
 use crate::dependency_resolver::{DependencySpec, PackageProvider};
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};

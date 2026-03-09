@@ -288,39 +288,44 @@ impl RegistryClient {
         );
 
         match &manifest.manifest_format {
-            ManifestFormat::HorusYaml => {
-                let yaml_path = current_dir.join(HORUS_YAML);
-                if yaml_path.exists() {
-                    use crate::commands::run::parse_horus_yaml_dependencies_v2;
+            ManifestFormat::HorusToml => {
+                let toml_path = current_dir.join(HORUS_TOML);
+                if toml_path.exists() {
                     use crate::dependency_resolver::DependencySource;
+                    use crate::manifest::HorusManifest;
 
-                    match parse_horus_yaml_dependencies_v2(&yaml_path.to_string_lossy()) {
-                        Ok(deps) => {
-                            let mut has_path_deps = false;
-                            for dep in deps {
-                                if let DependencySource::Path(p) = dep.source {
-                                    println!(
-                                        "\n{} Cannot publish package with path dependencies!",
-                                        "Error:".red()
-                                    );
-                                    println!("  Path dependency: {} -> {}", dep.name, p.display());
-                                    println!(
-                                        "\n{}",
-                                        "Path dependencies are not reproducible and cannot be published."
-                                            .yellow()
-                                    );
-                                    println!("{}", "Please publish the path dependency to the registry first, then update horus.yaml.".yellow());
-                                    has_path_deps = true;
+                    match HorusManifest::load_from(&toml_path) {
+                        Ok((m, _)) => match m.dependencies_as_specs() {
+                            Ok(deps) => {
+                                let mut has_path_deps = false;
+                                for dep in deps {
+                                    if let DependencySource::Path(p) = dep.source {
+                                        println!(
+                                            "\n{} Cannot publish package with path dependencies!",
+                                            "Error:".red()
+                                        );
+                                        println!("  Path dependency: {} -> {}", dep.name, p.display());
+                                        println!(
+                                            "\n{}",
+                                            "Path dependencies are not reproducible and cannot be published."
+                                                .yellow()
+                                        );
+                                        println!("{}", "Please publish the path dependency to the registry first, then update horus.toml.".yellow());
+                                        has_path_deps = true;
+                                    }
+                                }
+                                if has_path_deps {
+                                    return Err(anyhow!(
+                                        "Cannot publish package with path dependencies"
+                                    ));
                                 }
                             }
-                            if has_path_deps {
-                                return Err(anyhow!(
-                                    "Cannot publish package with path dependencies"
-                                ));
+                            Err(e) => {
+                                log::warn!("Failed to parse horus.toml dependencies: {}", e);
                             }
-                        }
+                        },
                         Err(e) => {
-                            log::warn!("Failed to parse horus.yaml dependencies: {}", e);
+                            log::warn!("Failed to load horus.toml manifest: {}", e);
                         }
                     }
                 }

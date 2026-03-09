@@ -1,0 +1,11 @@
+[package]
+name = "sensor_navigation"
+version = "0.1.0"
+description = "Mobile robot with LiDAR + IMU — obstacle avoidance and multi-node scheduling"
+author = "softmata"
+license = "Apache-2.0"
+language = "rust"
+
+[dependencies]
+horus = "*"
+horus_library = "*"

@@ -1,0 +1,211 @@
+<?xml version="1.0"?>
+<robot name="quadruped">
+  <!-- ════════════════════════════════════════════════════════════════
+       Body — rectangular torso
+       ════════════════════════════════════════════════════════════════ -->
+  <link name="base_link">
+    <inertial>
+      <mass value="4.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.08" iyz="0" izz="0.09"/>
+    </inertial>
+    <visual>
+      <geometry><box size="0.40 0.20 0.08"/></geometry>
+      <material name="body"><color rgba="0.3 0.3 0.3 1.0"/></material>
+    </visual>
+    <collision>
+      <geometry><box size="0.40 0.20 0.08"/></geometry>
+    </collision>
+  </link>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       Front-Left Leg (FL)
+       ════════════════════════════════════════════════════════════════ -->
+  <link name="fl_hip">
+    <inertial><mass value="0.3"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+    <visual>
+      <geometry><cylinder length="0.04" radius="0.025"/></geometry>
+      <material name="joint_color"><color rgba="0.7 0.4 0.1 1.0"/></material>
+    </visual>
+    <collision><geometry><cylinder length="0.04" radius="0.025"/></geometry></collision>
+  </link>
+
+  <joint name="fl_hip_joint" type="revolute">
+    <parent link="base_link"/><child link="fl_hip"/>
+    <origin xyz="0.15 0.12 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.5" upper="0.5" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="fl_upper">
+    <inertial><mass value="0.4"/><origin xyz="0 0 -0.06"/><inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.0005"/></inertial>
+    <visual>
+      <origin xyz="0 0 -0.06"/>
+      <geometry><box size="0.03 0.03 0.12"/></geometry>
+      <material name="leg_color"><color rgba="0.5 0.5 0.5 1.0"/></material>
+    </visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.03 0.03 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="fl_upper_joint" type="revolute">
+    <parent link="fl_hip"/><child link="fl_upper"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.2" upper="1.2" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="fl_lower">
+    <inertial><mass value="0.2"/><origin xyz="0 0 -0.06"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0002"/></inertial>
+    <visual>
+      <origin xyz="0 0 -0.06"/>
+      <geometry><box size="0.025 0.025 0.12"/></geometry>
+      <material name="leg_color"/>
+    </visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.025 0.025 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="fl_lower_joint" type="revolute">
+    <parent link="fl_upper"/><child link="fl_lower"/>
+    <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="0.0" effort="15" velocity="5"/>
+    <dynamics damping="0.05" friction="0.05"/>
+  </joint>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       Front-Right Leg (FR)
+       ════════════════════════════════════════════════════════════════ -->
+  <link name="fr_hip">
+    <inertial><mass value="0.3"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+    <visual><geometry><cylinder length="0.04" radius="0.025"/></geometry><material name="joint_color"/></visual>
+    <collision><geometry><cylinder length="0.04" radius="0.025"/></geometry></collision>
+  </link>
+
+  <joint name="fr_hip_joint" type="revolute">
+    <parent link="base_link"/><child link="fr_hip"/>
+    <origin xyz="0.15 -0.12 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.5" upper="0.5" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="fr_upper">
+    <inertial><mass value="0.4"/><origin xyz="0 0 -0.06"/><inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.0005"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><box size="0.03 0.03 0.12"/></geometry><material name="leg_color"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.03 0.03 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="fr_upper_joint" type="revolute">
+    <parent link="fr_hip"/><child link="fr_upper"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.2" upper="1.2" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="fr_lower">
+    <inertial><mass value="0.2"/><origin xyz="0 0 -0.06"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0002"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><box size="0.025 0.025 0.12"/></geometry><material name="leg_color"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.025 0.025 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="fr_lower_joint" type="revolute">
+    <parent link="fr_upper"/><child link="fr_lower"/>
+    <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="0.0" effort="15" velocity="5"/>
+    <dynamics damping="0.05" friction="0.05"/>
+  </joint>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       Rear-Left Leg (RL)
+       ════════════════════════════════════════════════════════════════ -->
+  <link name="rl_hip">
+    <inertial><mass value="0.3"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+    <visual><geometry><cylinder length="0.04" radius="0.025"/></geometry><material name="joint_color"/></visual>
+    <collision><geometry><cylinder length="0.04" radius="0.025"/></geometry></collision>
+  </link>
+
+  <joint name="rl_hip_joint" type="revolute">
+    <parent link="base_link"/><child link="rl_hip"/>
+    <origin xyz="-0.15 0.12 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.5" upper="0.5" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="rl_upper">
+    <inertial><mass value="0.4"/><origin xyz="0 0 -0.06"/><inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.0005"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><box size="0.03 0.03 0.12"/></geometry><material name="leg_color"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.03 0.03 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="rl_upper_joint" type="revolute">
+    <parent link="rl_hip"/><child link="rl_upper"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.2" upper="1.2" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="rl_lower">
+    <inertial><mass value="0.2"/><origin xyz="0 0 -0.06"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0002"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><box size="0.025 0.025 0.12"/></geometry><material name="leg_color"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.025 0.025 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="rl_lower_joint" type="revolute">
+    <parent link="rl_upper"/><child link="rl_lower"/>
+    <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="0.0" effort="15" velocity="5"/>
+    <dynamics damping="0.05" friction="0.05"/>
+  </joint>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       Rear-Right Leg (RR)
+       ════════════════════════════════════════════════════════════════ -->
+  <link name="rr_hip">
+    <inertial><mass value="0.3"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+    <visual><geometry><cylinder length="0.04" radius="0.025"/></geometry><material name="joint_color"/></visual>
+    <collision><geometry><cylinder length="0.04" radius="0.025"/></geometry></collision>
+  </link>
+
+  <joint name="rr_hip_joint" type="revolute">
+    <parent link="base_link"/><child link="rr_hip"/>
+    <origin xyz="-0.15 -0.12 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.5" upper="0.5" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="rr_upper">
+    <inertial><mass value="0.4"/><origin xyz="0 0 -0.06"/><inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.0005"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><box size="0.03 0.03 0.12"/></geometry><material name="leg_color"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.03 0.03 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="rr_upper_joint" type="revolute">
+    <parent link="rr_hip"/><child link="rr_upper"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.2" upper="1.2" effort="20" velocity="5"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="rr_lower">
+    <inertial><mass value="0.2"/><origin xyz="0 0 -0.06"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0002"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><box size="0.025 0.025 0.12"/></geometry><material name="leg_color"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><box size="0.025 0.025 0.12"/></geometry></collision>
+  </link>
+
+  <joint name="rr_lower_joint" type="revolute">
+    <parent link="rr_upper"/><child link="rr_lower"/>
+    <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0" upper="0.0" effort="15" velocity="5"/>
+    <dynamics damping="0.05" friction="0.05"/>
+  </joint>
+</robot>

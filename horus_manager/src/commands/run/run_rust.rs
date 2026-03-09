@@ -1,5 +1,6 @@
 use crate::cli_output;
-use crate::config::{CARGO_TOML, HORUS_YAML};
+use crate::config::CARGO_TOML;
+use crate::manifest::{HorusManifest, HORUS_TOML};
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
 use colored::*;
@@ -98,9 +99,14 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
                 cli_output::ICON_INFO.cyan()
             );
 
-            // Parse horus.yaml to get dependencies
-            let dependencies = if Path::new(HORUS_YAML).exists() {
-                deps::parse_horus_yaml_dependencies(HORUS_YAML)?
+            // Parse horus.toml to get dependencies
+            let manifest = if Path::new(HORUS_TOML).exists() {
+                HorusManifest::load_from(Path::new(HORUS_TOML)).ok().map(|(m, _)| m)
+            } else {
+                None
+            };
+            let dependencies = if let Some(ref m) = manifest {
+                deps::manifest_deps_to_string_set(m)
             } else {
                 HashSet::new()
             };
@@ -269,7 +275,7 @@ path = "{}"
                         cli_output::ICON_WARN.yellow(),
                         pkg.name
                     );
-                    eprintln!("     Example: 'cargo:{}@1.0' in horus.yaml", pkg.name);
+                    eprintln!("     Example: add '{}' to [dependencies] in horus.toml", pkg.name);
                     println!(
                         "  {} Added crates.io dependency: {}",
                         cli_output::ICON_INFO.cyan(),
@@ -314,30 +320,12 @@ path = "{}"
                 }
             }
 
-            // Also add dependencies directly from horus.yaml (in case some weren't parsed by resolve_dependencies)
-            // Track already-added cargo packages to avoid duplicates
+            // Also add dependencies from horus.toml (in case some weren't parsed by resolve_dependencies)
             let added_cargo_deps: HashSet<String> =
                 cargo_packages.iter().map(|pkg| pkg.name.clone()).collect();
 
-            if Path::new(HORUS_YAML).exists() {
-                if let Ok(yaml_content) = fs::read_to_string(HORUS_YAML) {
-                    if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_content) {
-                        if let Some(serde_yaml::Value::Sequence(list)) = yaml.get("dependencies") {
-                            for item in list {
-                                if let Some(dep_str) = deps::parse_yaml_cargo_dependency(item) {
-                                    // Extract dependency name from the generated string (e.g., "serde = ..." -> "serde")
-                                    let dep_name =
-                                        dep_str.split('=').next().unwrap_or(&dep_str).trim();
-
-                                    // Skip if already added from cargo_packages
-                                    if !added_cargo_deps.contains(dep_name) {
-                                        cargo_toml.push_str(&format!("{}\n", dep_str));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(ref m) = manifest {
+                deps::append_manifest_cargo_deps(&mut cargo_toml, m, &added_cargo_deps);
             }
 
             fs::write(&cargo_toml_path, cargo_toml)?;
@@ -492,12 +480,8 @@ pub(super) fn build_rust_files_batch(
     // Ensure .horus directory exists
     super::ensure_horus_directory()?;
 
-    // Load ignore patterns from horus.yaml if it exists
-    let ignore = if Path::new(HORUS_YAML).exists() {
-        features::parse_horus_yaml_ignore(HORUS_YAML).unwrap_or_default()
-    } else {
-        features::IgnorePatterns::default()
-    };
+    // Load ignore patterns from horus.toml
+    let ignore = super::load_ignore_patterns();
 
     // Find HORUS source directory
     let horus_source = find_horus_source_dir()?;
@@ -588,7 +572,7 @@ path = "{}"
     cargo_toml.push_str("[dependencies]\n");
 
     // Add HORUS core dependencies (all horus_* crates that might be imported)
-    // This fixes Issue #26: users shouldn't need to explicitly add horus_core to horus.yaml
+    // This fixes Issue #26: users shouldn't need to explicitly add horus_core to horus.toml
     if horus_source.ends_with(".horus/cache") || horus_source.ends_with(".horus\\cache") {
         let cache_base = horus_source.join("horus@0.1.0");
         cargo_toml.push_str(&format!(
@@ -626,18 +610,10 @@ path = "{}"
         ));
     }
 
-    // Add dependencies from horus.yaml
-    if Path::new(HORUS_YAML).exists() {
-        if let Ok(yaml_content) = fs::read_to_string(HORUS_YAML) {
-            if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_content) {
-                if let Some(serde_yaml::Value::Sequence(list)) = yaml.get("dependencies") {
-                    for item in list {
-                        if let Some(dep_str) = deps::parse_yaml_cargo_dependency(item) {
-                            cargo_toml.push_str(&format!("{}\n", dep_str));
-                        }
-                    }
-                }
-            }
+    // Add dependencies from horus.toml
+    if Path::new(HORUS_TOML).exists() {
+        if let Ok((m, _)) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
+            deps::append_manifest_cargo_deps(&mut cargo_toml, &m, &HashSet::new());
         }
     }
 
@@ -706,12 +682,8 @@ pub(super) fn build_file_for_concurrent_execution(
     // Ensure .horus directory exists
     super::ensure_horus_directory()?;
 
-    // Load ignore patterns from horus.yaml if it exists
-    let ignore = if Path::new(HORUS_YAML).exists() {
-        features::parse_horus_yaml_ignore(HORUS_YAML).unwrap_or_default()
-    } else {
-        features::IgnorePatterns::default()
-    };
+    // Load ignore patterns from horus.toml
+    let ignore = super::load_ignore_patterns();
 
     // Scan imports and resolve dependencies
     let dependencies = deps::scan_imports(&file_path, &language, &ignore)?;
@@ -746,7 +718,7 @@ path = "{}"
             );
 
             // Add HORUS dependencies (all horus_* crates that might be imported)
-            // This fixes Issue #26: users shouldn't need to explicitly add horus_core to horus.yaml
+            // This fixes Issue #26: users shouldn't need to explicitly add horus_core to horus.toml
             if horus_source.ends_with(".horus/cache") || horus_source.ends_with(".horus\\cache") {
                 let cache_base = horus_source.join("horus@0.1.0");
                 cargo_toml.push_str(&format!(
@@ -784,18 +756,10 @@ path = "{}"
                 ));
             }
 
-            // Add dependencies from horus.yaml
-            if Path::new(HORUS_YAML).exists() {
-                if let Ok(yaml_content) = fs::read_to_string(HORUS_YAML) {
-                    if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_content) {
-                        if let Some(serde_yaml::Value::Sequence(list)) = yaml.get("dependencies") {
-                            for item in list {
-                                if let Some(dep_str) = deps::parse_yaml_cargo_dependency(item) {
-                                    cargo_toml.push_str(&format!("{}\n", dep_str));
-                                }
-                            }
-                        }
-                    }
+            // Add dependencies from horus.toml
+            if Path::new(HORUS_TOML).exists() {
+                if let Ok((m, _)) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
+                    deps::append_manifest_cargo_deps(&mut cargo_toml, &m, &HashSet::new());
                 }
             }
 
@@ -859,22 +823,26 @@ pub(super) fn execute_with_scheduler(
 ) -> Result<()> {
     match language.as_str() {
         "rust" => {
-            // Use Cargo-based compilation (same as horus.yaml path)
+            // Use Cargo-based compilation (same as horus.toml path)
             println!(
                 "{} Setting up Cargo workspace...",
                 cli_output::ICON_INFO.cyan()
             );
 
-            // Parse horus.yaml to get dependencies
-            let (horus_deps, cargo_packages, path_deps, git_deps) =
-                if Path::new(HORUS_YAML).exists() {
-                    let dep_set = deps::parse_horus_yaml_dependencies(HORUS_YAML)?;
-                    let (horus_pkgs, _pip_pkgs, cargo_pkgs, path_pkgs, git_pkgs) =
-                        deps::split_dependencies_with_path_context(dep_set, Some("rust"));
-                    (horus_pkgs, cargo_pkgs, path_pkgs, git_pkgs)
-                } else {
-                    (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-                };
+            // Parse horus.toml to get dependencies
+            let manifest = if Path::new(HORUS_TOML).exists() {
+                HorusManifest::load_from(Path::new(HORUS_TOML)).ok().map(|(m, _)| m)
+            } else {
+                None
+            };
+            let dep_set = manifest.as_ref()
+                .map(deps::manifest_deps_to_string_set)
+                .unwrap_or_default();
+            let (horus_deps, cargo_packages, path_deps, git_deps) = {
+                let (horus_pkgs, _pip_pkgs, cargo_pkgs, path_pkgs, git_pkgs) =
+                    deps::split_dependencies_with_path_context(dep_set, Some("rust"));
+                (horus_pkgs, cargo_pkgs, path_pkgs, git_pkgs)
+            };
 
             // Find HORUS source directory
             let horus_source = find_horus_source_dir()?;
@@ -927,11 +895,11 @@ path = "{}"
                 }
             }
 
-            // Add HORUS dependencies from horus.yaml or defaults
+            // Add HORUS dependencies from horus.toml or defaults
             let horus_packages_to_add = if !horus_deps.is_empty() {
                 horus_deps
             } else {
-                // Default HORUS packages if no horus.yaml
+                // Default HORUS packages if no horus.toml
                 vec!["horus".to_string(), "horus_library".to_string()]
             };
 
@@ -1041,7 +1009,7 @@ path = "{}"
                         cli_output::ICON_WARN.yellow(),
                         pkg.name
                     );
-                    eprintln!("     Example: 'cargo:{}@1.0' in horus.yaml", pkg.name);
+                    eprintln!("     Example: add '{}' to [dependencies] in horus.toml", pkg.name);
                     println!(
                         "  {} Added crates.io dependency: {}",
                         cli_output::ICON_INFO.cyan(),
@@ -1086,30 +1054,12 @@ path = "{}"
                 }
             }
 
-            // Also add dependencies directly from horus.yaml (in case some weren't parsed by resolve_dependencies)
-            // Track already-added cargo packages to avoid duplicates
+            // Also add dependencies from horus.toml (in case some weren't parsed by resolve_dependencies)
             let added_cargo_deps: HashSet<String> =
                 cargo_packages.iter().map(|pkg| pkg.name.clone()).collect();
 
-            if Path::new(HORUS_YAML).exists() {
-                if let Ok(yaml_content) = fs::read_to_string(HORUS_YAML) {
-                    if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_content) {
-                        if let Some(serde_yaml::Value::Sequence(list)) = yaml.get("dependencies") {
-                            for item in list {
-                                if let Some(dep_str) = deps::parse_yaml_cargo_dependency(item) {
-                                    // Extract dependency name from the generated string (e.g., "serde = ..." -> "serde")
-                                    let dep_name =
-                                        dep_str.split('=').next().unwrap_or(&dep_str).trim();
-
-                                    // Skip if already added from cargo_packages
-                                    if !added_cargo_deps.contains(dep_name) {
-                                        cargo_toml.push_str(&format!("{}\n", dep_str));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(ref m) = manifest {
+                deps::append_manifest_cargo_deps(&mut cargo_toml, m, &added_cargo_deps);
             }
 
             fs::write(&cargo_toml_path, cargo_toml)?;

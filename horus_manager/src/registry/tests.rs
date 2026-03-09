@@ -109,8 +109,8 @@ fn test_validate_name_special_chars_rejected() {
 // ============================================================================
 
 #[test]
-fn test_manifest_format_display_horus_yaml() {
-    assert_eq!(format!("{}", ManifestFormat::HorusYaml), "horus.yaml");
+fn test_manifest_format_display_horus_toml() {
+    assert_eq!(format!("{}", ManifestFormat::HorusToml), "horus.toml");
 }
 
 #[test]
@@ -278,11 +278,11 @@ fn test_check_global_versions_partial_name_no_match() {
 // ============================================================================
 
 #[test]
-fn test_detect_package_version_horus_yaml() {
+fn test_detect_package_version_horus_toml() {
     let tmp = TempDir::new().unwrap();
     fs::write(
-        tmp.path().join("horus.yaml"),
-        "name: my-node\nversion: 2.3.1\ndescription: A test node\n",
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"my-node\"\nversion = \"2.3.1\"\ndescription = \"A test node\"\n",
     )
     .unwrap();
     let version = detect_package_version(tmp.path());
@@ -321,12 +321,12 @@ fn test_detect_package_version_no_manifest() {
 }
 
 #[test]
-fn test_detect_package_version_horus_yaml_takes_priority() {
+fn test_detect_package_version_horus_toml_takes_priority() {
     let tmp = TempDir::new().unwrap();
-    // Both horus.yaml and Cargo.toml exist - horus.yaml should win
+    // Both horus.toml and Cargo.toml exist - horus.toml should win
     fs::write(
-        tmp.path().join("horus.yaml"),
-        "name: my-node\nversion: 1.0.0\n",
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"my-node\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
     fs::write(
@@ -372,11 +372,11 @@ fn test_detect_pypi_version_no_dist_info() {
 // ============================================================================
 
 #[test]
-fn test_detect_package_info_horus_yaml() {
+fn test_detect_package_info_horus_toml() {
     let tmp = TempDir::new().unwrap();
     fs::write(
-        tmp.path().join("horus.yaml"),
-        "name: lidar-driver\nversion: 1.0.0\ndescription: A LiDAR driver\nlicense: MIT\npackage_type: driver\ncategories: Perception\n",
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"lidar-driver\"\nversion = \"1.0.0\"\ndescription = \"A LiDAR driver\"\nlicense = \"MIT\"\npackage-type = \"driver\"\ncategories = [\"Perception\"]\n",
     )
     .unwrap();
     let manifest = detect_package_info(tmp.path()).unwrap();
@@ -388,7 +388,7 @@ fn test_detect_package_info_horus_yaml() {
     assert_eq!(manifest.categories, Some("Perception".to_string()));
     assert!(matches!(
         manifest.manifest_format,
-        ManifestFormat::HorusYaml
+        ManifestFormat::HorusToml
     ));
 }
 
@@ -1081,8 +1081,8 @@ fn test_copy_dir_all_nested_structure() {
     fs::create_dir_all(src.path().join("src/nodes")).unwrap();
     fs::create_dir_all(src.path().join("config")).unwrap();
     fs::write(
-        src.path().join("horus.yaml"),
-        "name: test\nversion: 0.1.0\n",
+        src.path().join("horus.toml"),
+        "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
     fs::write(
@@ -1094,7 +1094,7 @@ fn test_copy_dir_all_nested_structure() {
 
     copy_dir_all(src.path(), &dst_path).unwrap();
 
-    assert!(dst_path.join("horus.yaml").exists());
+    assert!(dst_path.join("horus.toml").exists());
     assert!(dst_path.join("src/nodes/lidar.rs").exists());
     assert!(dst_path.join("config/params.yaml").exists());
     assert_eq!(

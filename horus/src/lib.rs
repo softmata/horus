@@ -76,7 +76,7 @@
 //! ```rust,ignore
 //! let mut scheduler = Scheduler::new().tick_hz(100.0);
 //! scheduler.add(sensor).order(0).rate_hz(100.0).build()?;
-//! scheduler.add(controller).order(1).wcet_us(200).build()?;
+//! scheduler.add(controller).order(1).budget_us(200).build()?;
 //! scheduler.add(planner).order(5).compute().build()?;
 //! scheduler.add(logger).order(10).async_io().rate_hz(1.0).build()?;
 //! scheduler.run()?;
@@ -115,7 +115,7 @@
 //! ```rust,ignore
 //! impl Node for MotorCtrl {
 //!     fn tick(&mut self) { /* motor control logic */ }
-//!     fn wcet_budget(&self) -> Option<Duration> { Some(Duration::from_micros(200)) }
+//!     fn tick_budget(&self) -> Option<Duration> { Some(Duration::from_micros(200)) }
 //!     fn deadline(&self) -> Duration { Duration::from_millis(1) }
 //!     fn deadline_miss_policy(&self) -> DeadlineMissPolicy { DeadlineMissPolicy::Skip }
 //! }

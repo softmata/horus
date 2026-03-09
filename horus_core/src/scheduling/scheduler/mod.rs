@@ -33,7 +33,6 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
 }
 
-use super::fault_tolerance::{FailureAction, FailurePolicy};
 use super::profiler::RuntimeProfiler;
 use super::safety_monitor::SafetyMonitor;
 
@@ -272,7 +271,7 @@ impl Scheduler {
     /// Enable or disable verbose logging from executor threads.
     ///
     /// When disabled, suppresses non-emergency messages from the RT thread
-    /// (WCET warnings, pre/post-condition failures, startup/shutdown notices).
+    /// (budget warnings, pre/post-condition failures, startup/shutdown notices).
     /// Emergency-stop messages are always printed regardless of this setting.
     ///
     /// Default: `true` (verbose logging enabled).
@@ -336,7 +335,7 @@ impl Scheduler {
     // NEW BUILDER METHODS — deferred to finalize_config() at run() time
     // ========================================================================
 
-    /// Enable the safety monitor for RT nodes (WCET enforcement, deadline monitoring, watchdogs).
+    /// Enable the safety monitor for RT nodes (budget enforcement, deadline monitoring, watchdogs).
     ///
     /// # Example
     /// ```rust,ignore
@@ -346,7 +345,7 @@ impl Scheduler {
     /// ```
     pub fn safety_monitor(mut self, enabled: bool) -> Self {
         self.pending_config.realtime.safety_monitor = enabled;
-        self.pending_config.realtime.wcet_enforcement = enabled;
+        self.pending_config.realtime.budget_enforcement = enabled;
         self.pending_config.realtime.deadline_monitoring = enabled;
         self
     }
@@ -414,13 +413,7 @@ impl Scheduler {
         self
     }
 
-    /// Enable tier-based fault tolerance (circuit breaker, restart policies).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .circuit_breaker(true);
-    /// ```
+    /// Enable circuit breaker behavior for fault tolerance.
     pub fn circuit_breaker(mut self, enabled: bool) -> Self {
         self.pending_config.circuit_breaker = enabled;
         self
@@ -451,8 +444,7 @@ impl Scheduler {
         // Eagerly create the blackbox so it's accessible before run()
         let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
         let bb = super::blackbox::BlackBox::new(size_mb)
-            .with_path(bb_dir)
-            .with_wal_flush_interval(self.pending_config.monitoring.wal_flush_interval);
+            .with_path(bb_dir);
         self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
         self
     }
@@ -531,7 +523,7 @@ impl Scheduler {
     /// - Scheduler start/stop
     /// - Node additions
     /// - Deadline misses
-    /// - WCET violations
+    /// - budget violations
     /// - Circuit breaker state changes
     /// - Emergency stops
     ///
@@ -553,7 +545,6 @@ impl Scheduler {
         self.monitor.blackbox.as_ref()
     }
 
-    /// Get the circuit breaker state for a specific node.
     ///
     /// Returns the current circuit state (Closed, Open, or HalfOpen) for
     /// the node with the given name.
@@ -573,91 +564,13 @@ impl Scheduler {
     /// let mut scheduler = Scheduler::new();
     /// scheduler.add(my_node).order(10).build()?;
     ///
-    /// if let Some(state) = scheduler.circuit_state("my_node") {
-    ///     match state {
-    ///         CircuitState::Closed => println!("Node healthy"),
-    ///         CircuitState::Open => println!("Node isolated (failing)"),
-    ///         CircuitState::HalfOpen => println!("Testing recovery"),
-    ///     }
-    /// }
-    /// ```
-    /// Get the failure handler statistics for a specific node.
-    ///
-    /// Returns `None` if the node doesn't exist.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// let scheduler = Scheduler::new();
-    /// if let Some(stats) = scheduler.failure_stats("my_node") {
-    ///     println!("Policy: {}, State: {}", stats.policy, stats.state);
-    /// }
-    /// ```
-    #[doc(hidden)]
-    pub fn failure_stats(
-        &self,
-        node_name: &str,
-    ) -> Option<super::fault_tolerance::FailureHandlerStats> {
-        self.nodes
-            .iter()
-            .find(|n| &*n.name == node_name)
-            .map(|n| n.failure_handler.stats())
-    }
-
-    /// Get the circuit breaker state for a specific node (backward compatibility).
-    ///
-    /// For nodes with `Skip` policy, returns the underlying circuit state.
-    /// For other policies, maps to the closest circuit breaker equivalent:
-    /// - Healthy/allowed → `Closed`
-    /// - Suppressed/in-backoff → `Open`
-    #[doc(hidden)]
-    pub fn circuit_state(&self, node_name: &str) -> Option<super::fault_tolerance::CircuitState> {
-        self.nodes.iter().find(|n| &*n.name == node_name).map(|n| {
-            let stats = n.failure_handler.stats();
-            if stats.is_suppressed {
-                super::fault_tolerance::CircuitState::Open
-            } else {
-                super::fault_tolerance::CircuitState::Closed
-            }
-        })
-    }
-
-    /// Get a summary of all node failure handler states.
-    ///
-    /// Returns counts of nodes in each state:
-    /// - `healthy` - Normal operation, node allowed to tick
-    /// - `suppressed` - Node is being skipped (backoff/circuit open)
-    /// - `recovering` - Node had failures but is currently allowed
-    ///
-    /// For backward compatibility, the tuple maps to (healthy, suppressed, recovering).
-    #[doc(hidden)]
-    pub fn circuit_summary(&self) -> (usize, usize, usize) {
-        let mut healthy = 0;
-        let mut suppressed = 0;
-        let mut recovering = 0;
-
-        for node in &self.nodes {
-            let stats = node.failure_handler.stats();
-            if stats.is_suppressed {
-                suppressed += 1;
-            } else if stats.failure_count > 0 {
-                recovering += 1;
-            } else {
-                healthy += 1;
-            }
-        }
-
-        (healthy, suppressed, recovering)
-    }
-
-    /// Get safety statistics including WCET overruns, deadline misses, and watchdog expirations.
+    /// Get safety statistics including budget overruns, deadline misses, and watchdog expirations.
     ///
     /// Returns `None` if the safety monitor is not enabled.
     ///
     /// The returned `SafetyStats` contains:
     /// - `state`: Current safety state (Normal, Degraded, EmergencyStop, SafeMode)
-    /// - `wcet_overruns`: Number of WCET budget violations
+    /// - `budget_overruns`: Number of tick budget violations
     /// - `deadline_misses`: Number of deadline misses
     /// - `watchdog_expirations`: Number of watchdog timeouts
     ///
@@ -667,7 +580,7 @@ impl Scheduler {
     /// // ... run scheduler for a while ...
     ///
     /// if let Some(stats) = scheduler.safety_stats() {
-    ///     println!("WCET overruns: {}", stats.wcet_overruns);
+    ///     println!("budget overruns: {}", stats.budget_overruns);
     ///     println!("Deadline misses: {}", stats.deadline_misses);
     /// }
     /// ```
@@ -799,7 +712,7 @@ impl Scheduler {
         lines
     }
 
-    /// Build safety features, execution mode, and WCET statistics status lines.
+    /// Build safety features, execution mode, and budget statistics status lines.
     fn safety_status_lines(&self) -> Vec<String> {
         let thin_sep = "------------------------------------------------------------------";
         let mut lines = Vec::new();
@@ -836,24 +749,24 @@ impl Scheduler {
                 " "
             }
         ));
-        lines.push("  [x] Failure Policies (tier-aware)".to_string());
-        let has_wcet =
-            self.monitor.safety.is_some() && self.nodes.iter().any(|n| n.wcet_budget.is_some());
+        lines.push("  [x] Error Handling".to_string());
+        let has_budget =
+            self.monitor.safety.is_some() && self.nodes.iter().any(|n| n.tick_budget.is_some());
         lines.push(format!(
-            "  [{}] WCET Enforcement (RT nodes)",
-            if has_wcet { "x" } else { " " }
+            "  [{}] budget Enforcement (RT nodes)",
+            if has_budget { "x" } else { " " }
         ));
 
-        // WCET Stats
+        // budget Stats
         if let Some(ref monitor) = self.monitor.safety {
             let stats = monitor.get_stats();
-            if stats.wcet_overruns > 0 || stats.deadline_misses > 0 {
+            if stats.budget_overruns > 0 || stats.deadline_misses > 0 {
                 lines.push(thin_sep.to_string());
-                lines.push("WCET / Deadline Statistics:".to_string());
-                if stats.wcet_overruns > 0 {
-                    lines.push(format!("  [WARN] {} WCET overruns", stats.wcet_overruns));
+                lines.push("budget / Deadline Statistics:".to_string());
+                if stats.budget_overruns > 0 {
+                    lines.push(format!("  [WARN] {} budget overruns", stats.budget_overruns));
                 } else {
-                    lines.push("  [OK] No WCET overruns".to_string());
+                    lines.push("  [OK] No budget overruns".to_string());
                 }
                 if stats.deadline_misses > 0 {
                     lines.push(format!(
@@ -874,45 +787,24 @@ impl Scheduler {
         let thin_sep = "------------------------------------------------------------------";
         let mut lines = Vec::new();
 
-        // Node Health (failure policy states)
+        // Node Health
         if !self.nodes.is_empty() {
             lines.push(thin_sep.to_string());
-            lines.push("Node Health (Failure Policies):".to_string());
-            let mut suppressed_count = 0;
-            let mut failing_count = 0;
-            for node in &self.nodes {
-                let stats = node.failure_handler.stats();
-                if stats.is_suppressed {
-                    suppressed_count += 1;
-                } else if stats.failure_count > 0 {
-                    failing_count += 1;
-                }
-            }
-            if suppressed_count == 0 && failing_count == 0 {
+            lines.push("Node Health:".to_string());
+            let stopped_count = self.nodes.iter().filter(|n| n.is_stopped).count();
+            if stopped_count == 0 {
                 lines.push(format!("  [OK] All {} nodes healthy", self.nodes.len()));
             } else {
                 lines.push(format!(
-                    "  [WARN] {} suppressed, {} with failures, {} healthy",
-                    suppressed_count,
-                    failing_count,
-                    self.nodes.len() - suppressed_count - failing_count
+                    "  [WARN] {} stopped, {} healthy",
+                    stopped_count,
+                    self.nodes.len() - stopped_count
                 ));
                 for node in &self.nodes {
-                    let stats = node.failure_handler.stats();
-                    if stats.is_suppressed {
+                    if node.is_stopped {
                         lines.push(format!(
-                            "    - {}: SUPPRESSED ({}, {})",
+                            "    - {}: STOPPED",
                             node.name.as_ref(),
-                            stats.policy,
-                            stats.state
-                        ));
-                    } else if stats.failure_count > 0 {
-                        lines.push(format!(
-                            "    - {}: {} failures ({}, {})",
-                            node.name.as_ref(),
-                            stats.failure_count,
-                            stats.policy,
-                            stats.state
                         ));
                     }
                 }
@@ -1012,9 +904,8 @@ impl Scheduler {
             };
         self.tick.period = std::time::Duration::from_micros((1_000_000.0 / rate_hz) as u64);
 
-        // RT safety, fault tolerance, and OS-level optimizations
+        // RT safety and OS-level optimizations
         self.apply_safety_config(&config.realtime);
-        self.apply_fault_tolerance(config.circuit_breaker);
         self.apply_rt_optimizations(&config.realtime, &config.resources);
 
         // Resource configuration
@@ -1038,9 +929,9 @@ impl Scheduler {
         }
     }
 
-    /// Configure the safety monitor for RT nodes (watchdogs, WCET, deadlines).
+    /// Configure the safety monitor for RT nodes (watchdogs, budget, deadlines).
     fn apply_safety_config(&mut self, rt: &super::config::RealTimeConfig) {
-        if rt.safety_monitor || rt.wcet_enforcement || rt.deadline_monitoring {
+        if rt.safety_monitor || rt.budget_enforcement || rt.deadline_monitoring {
             let monitor = SafetyMonitor::new(rt.max_deadline_misses);
 
             for registered in self.nodes.iter() {
@@ -1050,32 +941,14 @@ impl Scheduler {
                         monitor.add_critical_node(registered.name.to_string(), watchdog_timeout);
                     }
 
-                    if let Some(wcet) = registered.wcet_budget {
-                        monitor.set_wcet_budget(registered.name.to_string(), wcet);
+                    if let Some(budget) = registered.tick_budget {
+                        monitor.set_tick_budget(registered.name.to_string(), budget);
                     }
                 }
             }
 
             self.monitor.safety = Some(monitor);
             print_line("Safety monitor configured for RT nodes");
-        }
-    }
-
-    /// Apply fault tolerance configuration to all registered nodes.
-    ///
-    /// Nodes with user-specified failure policies (via `.failure_policy()`) are
-    /// never overridden — their handler is only reset, preserving the policy.
-    fn apply_fault_tolerance(&mut self, circuit_breaker: bool) {
-        for registered in self.nodes.iter_mut() {
-            if registered.has_custom_failure_policy {
-                // User explicitly set a policy — respect it, just reset state
-                registered.failure_handler.reset();
-            } else if circuit_breaker {
-                registered.failure_handler.reset();
-            } else {
-                registered.failure_handler =
-                    super::fault_tolerance::FailureHandler::new(FailurePolicy::Ignore);
-            }
         }
     }
 
@@ -1130,16 +1003,6 @@ impl Scheduler {
             }
         }
 
-        // NUMA awareness (detection only, no syscall)
-        if resources.numa_aware {
-            let numa_nodes = super::rt::get_numa_node_count();
-            if numa_nodes > 1 {
-                print_line(&format!(
-                    "[SCHEDULER] NUMA-aware scheduling ({} nodes detected)",
-                    numa_nodes
-                ));
-            }
-        }
     }
 
     /// Apply monitoring configuration (profiling, blackbox, telemetry).
@@ -1157,8 +1020,7 @@ impl Scheduler {
         if monitoring.black_box_enabled && monitoring.black_box_size_mb > 0 {
             let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
             let mut bb = super::blackbox::BlackBox::new(monitoring.black_box_size_mb)
-                .with_path(bb_dir)
-                .with_wal_flush_interval(monitoring.wal_flush_interval);
+                .with_path(bb_dir);
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
                 name: self.scheduler_name.clone(),
                 node_count: self.nodes.len(),
@@ -1177,7 +1039,7 @@ impl Scheduler {
         // Telemetry export
         if let Some(ref endpoint_str) = monitoring.telemetry_endpoint {
             let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
-            let interval_ms = monitoring.metrics_interval_ms;
+            let interval_ms = 1000u64;
             let mut tm = super::telemetry::TelemetryManager::new(endpoint, interval_ms);
             tm.set_scheduler_name(&self.scheduler_name);
             self.monitor.telemetry = Some(tm);
@@ -1230,20 +1092,11 @@ impl Scheduler {
         });
     }
 
-    /// Pre-allocate node capacity (prevents reallocations during runtime)
-    ///
-    /// Call this before adding nodes for deterministic memory behavior.
-    #[doc(hidden)]
-    pub fn with_capacity(mut self, capacity: usize) -> Self {
-        self.nodes.reserve(capacity);
-        self
-    }
-
     /// Add a critical node to the safety monitor with a watchdog timeout.
     ///
     /// Critical nodes are monitored more strictly:
     /// - Watchdog expiration triggers emergency stop
-    /// - WCET violations trigger emergency stop
+    /// - budget violations trigger emergency stop
     /// - Deadline misses trigger emergency stop
     ///
     /// # Example
@@ -1275,9 +1128,9 @@ impl Scheduler {
         }
     }
 
-    /// Set the WCET (Worst-Case Execution Time) budget for a node.
+    /// Set the budget (Worst-Case Execution Time) budget for a node.
     ///
-    /// When a node exceeds its WCET budget:
+    /// When a node exceeds its tick budget:
     /// - Regular nodes: Warning logged, counter incremented
     /// - Critical nodes: Emergency stop triggered
     ///
@@ -1288,19 +1141,19 @@ impl Scheduler {
     ///
     /// let mut scheduler = Scheduler::new()
     ///     .safety_monitor(true);
-    /// // WCET budgets are typically set via .wcet_us() on the node builder
+    /// // tick budgets are typically set via .budget_us() on the node builder
     /// ```
     ///
     /// # Errors
     /// Returns an error if the safety monitor is not enabled.
     #[doc(hidden)]
-    pub fn set_wcet_budget(
+    pub fn set_tick_budget(
         &mut self,
         node_name: &str,
         budget: std::time::Duration,
     ) -> crate::error::HorusResult<&mut Self> {
         if let Some(ref mut monitor) = self.monitor.safety {
-            monitor.set_wcet_budget(node_name.to_string(), budget);
+            monitor.set_tick_budget(node_name.to_string(), budget);
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
@@ -1414,16 +1267,16 @@ impl Scheduler {
     ///     .order(0)
     ///     .build();
     ///
-    /// // RT node — auto-detected from wcet_budget() or explicit .wcet_us()
+    /// // RT node — auto-detected from tick_budget() or explicit .budget_us()
     /// scheduler.add(MotorController::new())
     ///     .order(0)
     ///     .rate_hz(1000.0)  // 1kHz
-    ///     .wcet_us(500)     // 500μs max → enables RT scheduling
+    ///     .budget_us(500)     // 500μs max → enables RT scheduling
     ///     .build()?;
     ///
     /// // Chain multiple nodes
     /// scheduler.add(SensorNode::new()).order(0).build()?;
-    /// scheduler.add(ControlNode::new()).order(1).wcet_us(200).build()?;
+    /// scheduler.add(ControlNode::new()).order(1).budget_us(200).build()?;
     /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
@@ -1441,7 +1294,7 @@ impl Scheduler {
     ///
     /// let config = NodeRegistration::new(Box::new(my_node))
     ///     .order(0)
-    ///     .wcet_us(500);
+    ///     .budget_us(500);
     ///
     /// scheduler.add_configured(config);
     /// ```
@@ -1459,10 +1312,9 @@ impl Scheduler {
         let priority = config.order;
         let custom_rate = config.rate_hz;
         let is_rt_node = config.is_rt;
-        let wcet_budget = config.wcet_budget;
+        let tick_budget = config.tick_budget;
         let deadline = config.deadline;
-        let tier = config.tier;
-        let failure_policy = config.failure_policy;
+        let _resolved_tier = config.tier.unwrap_or_default();
         let execution_class = config.execution_class;
 
         let node_name = node.name().to_string();
@@ -1494,9 +1346,7 @@ impl Scheduler {
         // Use custom rate or node's declared rate
         let node_rate = custom_rate.or_else(|| node.rate_hz());
 
-        let resolved_tier = tier.unwrap_or_default();
-        let has_custom_failure_policy = failure_policy.is_some();
-        let policy = failure_policy.unwrap_or_else(|| resolved_tier.default_failure_policy());
+
         // Allocate RtStats for RT nodes
         let rt_stats = if is_rt_node {
             Some(crate::core::RtStats::default())
@@ -1516,10 +1366,8 @@ impl Scheduler {
             } else {
                 None
             },
-            failure_handler: super::fault_tolerance::FailureHandler::new(policy),
-            has_custom_failure_policy,
             is_rt_node,
-            wcet_budget,
+            tick_budget,
             deadline,
             recorder,
             is_stopped: false,
@@ -1653,7 +1501,7 @@ impl Scheduler {
     ///
     /// Called once from `run_with_filter()`. This is better than eagerly applying
     /// config in builders because `finalize_config()` runs AFTER all nodes are added,
-    /// so `apply_safety_config` and `apply_fault_tolerance` correctly see all nodes.
+    /// so `apply_safety_config` correctly sees all nodes.
     fn finalize_config(&mut self) {
         let config = self.pending_config.clone();
 
@@ -1665,7 +1513,6 @@ impl Scheduler {
 
         // Safety config runs here so it sees ALL nodes (added after builder methods)
         self.apply_safety_config(&config.realtime);
-        self.apply_fault_tolerance(config.circuit_breaker);
 
         // Auto-enable mlockall if: RT nodes present, system permits it, and user didn't
         // explicitly disable it. This prevents 10-100ms page fault spikes under memory pressure.
@@ -1698,7 +1545,7 @@ impl Scheduler {
                     let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
                     let mut tm = super::telemetry::TelemetryManager::new(
                         endpoint,
-                        config.monitoring.metrics_interval_ms,
+                        1000u64,
                     );
                     tm.set_scheduler_name(&self.scheduler_name);
                     self.monitor.telemetry = Some(tm);
@@ -2029,12 +1876,6 @@ impl Scheduler {
                             print_line(&format!("Initialized node '{}'", node_name));
                         }
                         Err(e) => {
-                            // Use severity to decide how to handle the init failure.
-                            let severity = e.severity();
-                            let action = registered
-                                .failure_handler
-                                .record_failure_with_severity(severity);
-
                             if let Some(hint) = e.help() {
                                 print_line(&format!(
                                     "Failed to initialize node '{}': {}\n  hint: {}",
@@ -2047,24 +1888,19 @@ impl Scheduler {
                                 ));
                             }
 
-                            match action {
-                                FailureAction::StopScheduler => {
-                                    print_line(&format!(
-                                        " FATAL: Node '{}' init failed with fatal severity — stopping",
-                                        node_name
-                                    ));
-                                    ctx.transition_to_crashed(format!("Fatal init: {}", e));
-                                    self.stop();
-                                    return;
-                                }
-                                FailureAction::RestartNode => {
-                                    // Transient error: leave initialized=false so reinit_pending
-                                    // picks it up next cycle.
-                                    ctx.transition_to_error(format!("Init failed (transient, will retry): {}", e));
-                                }
-                                _ => {
-                                    ctx.transition_to_error(format!("Initialization failed: {}", e));
-                                }
+                            let severity = e.severity();
+                            if severity == crate::error::Severity::Fatal {
+                                print_line(&format!(
+                                    " FATAL: Node '{}' init failed with fatal severity — stopping",
+                                    node_name
+                                ));
+                                ctx.transition_to_crashed(format!("Fatal init: {}", e));
+                                self.stop();
+                                return;
+                            } else if severity == crate::error::Severity::Transient {
+                                ctx.transition_to_error(format!("Init failed (transient, will retry): {}", e));
+                            } else {
+                                ctx.transition_to_error(format!("Initialization failed: {}", e));
                             }
                         }
                     }
@@ -2128,11 +1964,6 @@ impl Scheduler {
                             print_line(&format!("[CONTROL] Node '{}' re-initialized", node_name));
                         }
                         Err(e) => {
-                            let severity = e.severity();
-                            let action = registered
-                                .failure_handler
-                                .record_failure_with_severity(severity);
-
                             if let Some(hint) = e.help() {
                                 print_line(&format!(
                                     "[CONTROL] Failed to re-initialize node '{}': {}\n  hint: {}",
@@ -2145,21 +1976,15 @@ impl Scheduler {
                                 ));
                             }
 
-                            match action {
-                                FailureAction::StopScheduler => {
-                                    // Fatal: stop node permanently.
-                                    registered.is_stopped = true;
-                                    ctx.transition_to_crashed(format!("Fatal re-init: {}", e));
-                                }
-                                FailureAction::RestartNode => {
-                                    // Transient: leave initialized=false for retry next cycle.
-                                    ctx.transition_to_error(format!("Re-init failed (transient, will retry): {}", e));
-                                }
-                                _ => {
-                                    // Permanent or exhausted: stop to prevent infinite loops.
-                                    registered.is_stopped = true;
-                                    ctx.transition_to_error(format!("Re-initialization failed: {}", e));
-                                }
+                            let severity = e.severity();
+                            if severity == crate::error::Severity::Fatal {
+                                registered.is_stopped = true;
+                                ctx.transition_to_crashed(format!("Fatal re-init: {}", e));
+                            } else if severity == crate::error::Severity::Transient {
+                                ctx.transition_to_error(format!("Re-init failed (transient, will retry): {}", e));
+                            } else {
+                                registered.is_stopped = true;
+                                ctx.transition_to_error(format!("Re-initialization failed: {}", e));
                             }
                         }
                     }
@@ -2190,28 +2015,6 @@ impl Scheduler {
                         });
                 }
 
-                // Transition all RT nodes to safe state
-                for registered in self.nodes.iter_mut() {
-                    if registered.is_rt_node && !registered.node.is_safe_state() {
-                        print_line(&format!(
-                            " Entering safe state for RT node '{}'",
-                            registered.name
-                        ));
-                        registered.node.enter_safe_state();
-                        if let Some(ref bb) = self.monitor.blackbox {
-                            bb.lock()
-                                .unwrap()
-                                .record(super::blackbox::BlackBoxEvent::Custom {
-                                    category: "safe_state".to_string(),
-                                    message: format!(
-                                        "Node '{}' transitioned to safe state",
-                                        registered.name
-                                    ),
-                                });
-                        }
-                    }
-                }
-
                 return true;
             }
         }
@@ -2225,42 +2028,15 @@ impl Scheduler {
             self.snapshot_state_to_registry();
             self.monitor.last_snapshot = Instant::now();
 
-            // Log failure handler status for nodes with issues
-            let mut has_failure_issues = false;
-            let mut suppressed_count = 0u32;
-            for registered in &self.nodes {
-                let stats = registered.failure_handler.stats();
-                if stats.is_suppressed {
-                    suppressed_count += 1;
-                }
-                if stats.failure_count > 0 || stats.is_suppressed {
-                    if !has_failure_issues {
-                        print_line("\nFailure Handler Status:");
-                        has_failure_issues = true;
-                    }
-                    print_line(&format!(
-                        "  {} - Policy: {}, State: {}, Failures: {}{}",
-                        registered.name.as_ref(),
-                        stats.policy,
-                        stats.state,
-                        stats.failure_count,
-                        if stats.is_suppressed {
-                            " [SUPPRESSED]"
-                        } else {
-                            ""
-                        }
-                    ));
-                }
-            }
-
-            // Record degradation to blackbox when nodes are suppressed
-            if suppressed_count > 0 {
+            // Log stopped nodes
+            let stopped_count = self.nodes.iter().filter(|n| n.is_stopped).count();
+            if stopped_count > 0 {
                 if let Some(ref bb) = self.monitor.blackbox {
                     bb.lock()
                         .unwrap()
                         .record(super::blackbox::BlackBoxEvent::Custom {
                             category: "safety".to_string(),
-                            message: format!("{} nodes suppressed", suppressed_count),
+                            message: format!("{} nodes stopped", stopped_count),
                         });
                 }
             }
@@ -2483,6 +2259,8 @@ impl Scheduler {
             .find(|n| &*n.name == node_name)
             .and_then(|n| n.rt_stats.as_ref())
     }
+
+    // circuit_state and circuit_summary methods removed: failure_handler was removed from RegisteredNode
 
     /// Write metadata to registry file for monitor to read
     fn update_registry(&self) {
@@ -2744,7 +2522,7 @@ impl Scheduler {
         }
     }
 
-    /// Execute a single node: tick + profiling + WCET + deadline + failure handling.
+    /// Execute a single node: tick + profiling + budget + deadline + failure handling.
     /// Returns true if the scheduler should stop (fatal failure).
     fn execute_single_node(&mut self, i: usize, node_filter: Option<&[&str]>) -> bool {
         // Skip stopped nodes
@@ -2785,11 +2563,6 @@ impl Scheduler {
             return false;
         }
 
-        // Check failure handler (circuit breaker / backoff / skip)
-        if !self.nodes[i].failure_handler.should_allow() {
-            return false;
-        }
-
         // Update last tick time if rate limited
         if self.nodes[i].rate_hz.is_some() {
             self.nodes[i].last_tick = Some(Instant::now());
@@ -2807,41 +2580,6 @@ impl Scheduler {
             {
                 if let Some(ref mut recorder) = self.nodes[i].recorder {
                     recorder.begin_tick(self.tick.current);
-                }
-            }
-
-            // RtNode pre-condition and invariant checks (before tick)
-            if self.nodes[i].is_rt_node {
-                if !self.nodes[i].node.pre_condition() {
-                    let name = self.nodes[i].name.as_ref();
-                    print_line(&format!(
-                        " Pre-condition failed for RT node '{}' — skipping tick",
-                        name
-                    ));
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock()
-                            .unwrap()
-                            .record(super::blackbox::BlackBoxEvent::Custom {
-                                category: "rt_condition".to_string(),
-                                message: format!("Pre-condition failed for '{}'", name),
-                            });
-                    }
-                    return false;
-                }
-                if !self.nodes[i].node.invariant() {
-                    let name = self.nodes[i].name.as_ref();
-                    print_line(&format!(
-                        " Invariant violated before tick for RT node '{}'",
-                        name
-                    ));
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock()
-                            .unwrap()
-                            .record(super::blackbox::BlackBoxEvent::Custom {
-                                category: "rt_condition".to_string(),
-                                message: format!("Invariant violated before tick for '{}'", name),
-                            });
-                    }
                 }
             }
 
@@ -2864,46 +2602,12 @@ impl Scheduler {
                 }
             };
 
-            // RtNode post-condition and invariant checks (after successful tick)
-            if tick_result.is_ok() && self.nodes[i].is_rt_node {
-                if !self.nodes[i].node.post_condition() {
-                    let name = self.nodes[i].name.as_ref();
-                    print_line(&format!(" Post-condition failed for RT node '{}'", name));
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock()
-                            .unwrap()
-                            .record(super::blackbox::BlackBoxEvent::Custom {
-                                category: "rt_condition".to_string(),
-                                message: format!("Post-condition failed for '{}'", name),
-                            });
-                    }
-                }
-                if !self.nodes[i].node.invariant() {
-                    let name = self.nodes[i].name.as_ref();
-                    print_line(&format!(
-                        " Invariant violated after tick for RT node '{}'",
-                        name
-                    ));
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock()
-                            .unwrap()
-                            .record(super::blackbox::BlackBoxEvent::Custom {
-                                category: "rt_condition".to_string(),
-                                message: format!(
-                                    "Invariant violated after tick for '{}'",
-                                    name
-                                ),
-                            });
-                    }
-                }
-            }
-
             return self.process_tick_result(i, tick_start, tick_duration, tick_result);
         }
         false
     }
 
-    /// Process the result of a node tick (profiling, WCET, failure handling).
+    /// Process the result of a node tick (profiling, budget, failure handling).
     /// Returns true if the scheduler should stop.
     fn process_tick_result(
         &mut self,
@@ -2938,10 +2642,9 @@ impl Scheduler {
             return true; // Emergency stop triggered by deadline policy
         }
 
-        // Handle tick result with policy-driven dispatch
+        // Handle tick result
         match tick_result {
             Ok(_) => {
-                self.nodes[i].failure_handler.record_success();
                 if let Some(ref mut context) = self.nodes[i].context {
                     context.record_tick();
                 }
@@ -2951,9 +2654,9 @@ impl Scheduler {
         }
     }
 
-    /// Check WCET budget and deadline violations for real-time nodes.
+    /// Check tick budget and deadline violations for real-time nodes.
     ///
-    /// Uses `TimingEnforcer` for the core WCET/deadline detection, then dispatches
+    /// Uses `TimingEnforcer` for the core budget/deadline detection, then dispatches
     /// node callbacks, stats updates, blackbox recording, and policy actions.
     ///
     /// Returns `true` if the scheduler should stop (EmergencyStop policy).
@@ -2967,31 +2670,28 @@ impl Scheduler {
 
         let node_name = Arc::clone(&self.nodes[i].name);
 
-        // Check WCET budget for RT nodes via TimingEnforcer
+        // Check tick budget for RT nodes via TimingEnforcer
         if self.nodes[i].is_rt_node {
-            if let Some(wcet_budget) = self.nodes[i].wcet_budget {
-                if let Some(wcet_result) =
-                    TimingEnforcer::check_wcet(&node_name, tick_duration, wcet_budget)
+            if let Some(tick_budget) = self.nodes[i].tick_budget {
+                if let Some(budget_result) =
+                    TimingEnforcer::check_tick_budget(&node_name, tick_duration, tick_budget)
                 {
-                    let violation = &wcet_result.violation;
+                    let violation = &budget_result.violation;
                     print_line(&format!(
-                        " WCET violation in {}: {:?} > {:?}",
+                        " budget violation in {}: {:?} > {:?}",
                         violation.node_name, violation.actual, violation.budget
                     ));
 
-                    // Invoke RtNode callback
-                    self.nodes[i].node.on_wcet_violation(violation);
-
                     // Update RtStats
                     if let Some(ref mut stats) = self.nodes[i].rt_stats {
-                        stats.wcet_violations += 1;
+                        stats.budget_violations += 1;
                     }
 
                     // Record in blackbox
                     if let Some(ref bb) = self.monitor.blackbox {
                         bb.lock()
                             .unwrap()
-                            .record(super::blackbox::BlackBoxEvent::WCETViolation {
+                            .record(super::blackbox::BlackBoxEvent::BudgetViolation {
                                 name: node_name.to_string(),
                                 budget_us: violation.budget.as_micros() as u64,
                                 actual_us: violation.actual.as_micros() as u64,
@@ -3000,7 +2700,7 @@ impl Scheduler {
 
                     // Also report to safety monitor if available
                     if let Some(ref monitor) = self.monitor.safety {
-                        let _ = monitor.check_wcet(&node_name, tick_duration);
+                        let _ = monitor.check_tick_budget(&node_name, tick_duration);
                     }
                 }
             }
@@ -3020,9 +2720,6 @@ impl Scheduler {
                         " Deadline miss in {}: {:?} > {:?}",
                         node_name, dm.elapsed, dm.deadline
                     ));
-
-                    // Invoke RtNode callback
-                    self.nodes[i].node.on_deadline_miss(dm.elapsed, dm.deadline);
 
                     // Update RtStats
                     if let Some(ref mut stats) = self.nodes[i].rt_stats {
@@ -3065,30 +2762,6 @@ impl Scheduler {
                             }
                             return true;
                         }
-                        DeadlineAction::Degrade => {
-                            self.nodes[i].priority = self.nodes[i].priority.saturating_add(10);
-                            print_line(&format!(
-                                " Deadline policy: degraded '{}' priority to {}",
-                                node_name, self.nodes[i].priority
-                            ));
-                        }
-                        DeadlineAction::Fallback => {
-                            let fallback = self.nodes[i].node.fallback_node();
-                            if let Some(fallback_node) = fallback {
-                                let fallback_name: Arc<str> = Arc::from(fallback_node.name());
-                                print_line(&format!(
-                                    " Deadline policy: switching '{}' to fallback '{}'",
-                                    node_name, fallback_name
-                                ));
-                                self.nodes[i].node = super::types::NodeKind::new(fallback_node);
-                                self.nodes[i].name = fallback_name;
-                            } else {
-                                print_line(&format!(
-                                    " Deadline policy: no fallback for '{}', continuing",
-                                    node_name
-                                ));
-                            }
-                        }
                     }
                 }
             }
@@ -3096,10 +2769,9 @@ impl Scheduler {
         false
     }
 
-    /// Handle a node tick failure according to its failure policy.
+    /// Handle a node tick failure.
     /// Returns `true` if the scheduler should stop (fatal failure).
     fn handle_tick_failure(&mut self, i: usize, panic_err: Box<dyn std::any::Any + Send>) -> bool {
-        let action = self.nodes[i].failure_handler.record_failure();
         let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
             format!("Node panicked: {}", s)
         } else if let Some(s) = panic_err.downcast_ref::<String>() {
@@ -3119,56 +2791,11 @@ impl Scheduler {
             registered.node.on_error(&error_msg);
             clear_node_context();
 
-            match action {
-                FailureAction::StopScheduler => {
-                    print_line(&format!(
-                        " FATAL: Node '{}' failed — stopping scheduler: {}",
-                        node_name, error_msg
-                    ));
-                    context.transition_to_crashed(error_msg);
-                    self.stop();
-                    return true;
-                }
-                FailureAction::FatalAfterRestarts => {
-                    print_line(&format!(
-                        " FATAL: Node '{}' exhausted restart attempts — stopping scheduler",
-                        node_name
-                    ));
-                    context.transition_to_crashed(format!("Max restarts exceeded: {}", error_msg));
-                    self.stop();
-                    return true;
-                }
-                FailureAction::RestartNode => {
-                    let stats = registered.failure_handler.stats();
-                    print_line(&format!(
-                        " Node '{}' failed, restarting (attempt {}): {}",
-                        node_name, stats.restart_count, error_msg
-                    ));
-                    match context.restart() {
-                        Ok(_) => {
-                            registered.initialized = true;
-                        }
-                        Err(e) => {
-                            print_line(&format!(" Node '{}' restart failed: {}", node_name, e));
-                            context.transition_to_crashed(format!("Restart failed: {}", e));
-                            registered.initialized = false;
-                        }
-                    }
-                }
-                FailureAction::SkipNode => {
-                    print_line(&format!(
-                        " Node '{}' circuit opened — skipping until cooldown: {}",
-                        node_name, error_msg
-                    ));
-                    context.transition_to_error(error_msg);
-                }
-                FailureAction::Continue => {
-                    print_line(&format!(
-                        " Node '{}' failed (continuing): {}",
-                        node_name, error_msg
-                    ));
-                }
-            }
+            print_line(&format!(
+                " Node '{}' failed (continuing): {}",
+                node_name, error_msg
+            ));
+            context.transition_to_error(error_msg);
         }
         false
     }

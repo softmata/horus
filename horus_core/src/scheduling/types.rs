@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::fault_tolerance::FailureHandler;
 use super::profiler::RuntimeProfiler;
 use super::record_replay::NodeRecorder;
 use crate::core::{Node, NodeInfo, RtStats};
@@ -94,18 +93,14 @@ mod execution_class_tests {
             context: Some(NodeInfo::new(name.to_string())),
             rate_hz: None,
             last_tick: None,
-            failure_handler: super::super::fault_tolerance::FailureHandler::new(
-                super::super::fault_tolerance::FailurePolicy::Fatal,
-            ),
             is_rt_node: matches!(class, ExecutionClass::Rt),
-            wcet_budget: None,
+            tick_budget: None,
             deadline: None,
             recorder: None,
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
             execution_class: class,
-            has_custom_failure_policy: false,
         }
     }
 
@@ -182,7 +177,7 @@ mod execution_class_tests {
 /// let mut scheduler = Scheduler::new();
 ///
 /// // Motor control on dedicated RT thread
-/// scheduler.add(motor_node).order(0).wcet_us(200).build()?;
+/// scheduler.add(motor_node).order(0).budget_us(200).build()?;
 ///
 /// // Path planning in parallel compute pool
 /// scheduler.add(planner_node).order(5).compute().build()?;
@@ -214,7 +209,7 @@ pub enum ExecutionClass {
 /// The `is_rt_node` field on `RegisteredNode` tracks RT scheduling.
 ///
 /// Implements `Deref<Target = dyn Node>` so callers can call any Node
-/// method directly (e.g. `node.tick()`, `node.pre_condition()`).
+/// method directly (e.g. `node.tick()`, `node.name()`).
 pub(crate) struct NodeKind(pub(crate) Box<dyn Node>);
 
 impl NodeKind {
@@ -302,11 +297,8 @@ pub(crate) struct RegisteredNode {
     pub(crate) context: Option<NodeInfo>,
     pub(crate) rate_hz: Option<f64>,
     pub(crate) last_tick: Option<Instant>,
-    pub(crate) failure_handler: FailureHandler,
-    /// Whether the user explicitly set a failure policy (don't override in apply_fault_tolerance)
-    pub(crate) has_custom_failure_policy: bool,
     pub(crate) is_rt_node: bool,
-    pub(crate) wcet_budget: Option<Duration>,
+    pub(crate) tick_budget: Option<Duration>,
     pub(crate) deadline: Option<Duration>,
     pub(crate) recorder: Option<NodeRecorder>,
     pub(crate) is_stopped: bool,

@@ -42,8 +42,8 @@ pub enum BlackBoxEvent {
         deadline_us: u64,
         actual_us: u64,
     },
-    /// WCET violation
-    WCETViolation {
+    /// budget violation
+    BudgetViolation {
         name: String,
         budget_us: u64,
         actual_us: u64,
@@ -249,7 +249,7 @@ impl BlackBox {
                     r.event,
                     BlackBoxEvent::NodeError { .. }
                         | BlackBoxEvent::DeadlineMiss { .. }
-                        | BlackBoxEvent::WCETViolation { .. }
+                        | BlackBoxEvent::BudgetViolation { .. }
                         | BlackBoxEvent::EmergencyStop { .. }
                         | BlackBoxEvent::CircuitBreakerChange { .. }
                 )

@@ -13,7 +13,7 @@
 //!
 //! // Nodes declare their execution needs
 //! let mut scheduler = Scheduler::new().tick_hz(500.0);
-//! scheduler.add(motor_ctrl).order(0).wcet_us(500).rate_hz(1000.0).done();
+//! scheduler.add(motor_ctrl).order(0).budget_us(500).rate_hz(1000.0).done();
 //! scheduler.add(planner).order(5).compute().done();
 //! scheduler.add(telemetry).order(10).async_io().rate_hz(1.0).done();
 //! scheduler.run()?;
@@ -135,7 +135,7 @@ pub(crate) mod blackbox {
             deadline_us: u64,
             actual_us: u64,
         },
-        WCETViolation {
+        BudgetViolation {
             name: String,
             budget_us: u64,
             actual_us: u64,
@@ -234,7 +234,7 @@ pub use scheduler::Scheduler;
 
 // Internal re-exports — accessible but hidden from rustdoc.
 #[doc(hidden)]
-pub use crate::core::rt_node::WCETViolation;
+pub use crate::core::rt_node::BudgetViolation;
 #[doc(hidden)]
 pub use blackbox::{BlackBox, BlackBoxEvent, BlackBoxRecord};
 #[doc(hidden)]

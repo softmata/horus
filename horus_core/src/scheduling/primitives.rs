@@ -6,13 +6,13 @@
 use std::time::{Duration, Instant};
 
 use super::types::NodeKind;
-use crate::core::rt_node::WCETViolation;
+use crate::core::rt_node::BudgetViolation;
 use crate::core::DeadlineMissPolicy;
 
 /// Result of a single node tick execution.
 ///
 /// Contains the raw timing and panic information. Higher-level concerns
-/// (profiling, WCET checks, failure policies) are handled by the scheduler.
+/// (budget checks, failure policies) are handled by the scheduler.
 pub(crate) struct TickResult {
     /// The instant when the tick started (needed for deadline checks).
     pub tick_start: Instant,
@@ -25,8 +25,8 @@ pub(crate) struct TickResult {
 /// Executes a single node tick with timing measurement and panic isolation.
 ///
 /// This is the minimal execution primitive: measure time, call `tick()`, catch panics.
-/// It does NOT handle rate limiting, failure policies, RT pre/post conditions,
-/// watchdog feeding, or recording — those are scheduler-level concerns.
+/// It does NOT handle rate limiting, failure policies, watchdog feeding,
+/// or recording — those are scheduler-level concerns.
 pub(crate) struct NodeRunner;
 
 impl NodeRunner {
@@ -49,10 +49,10 @@ impl NodeRunner {
     }
 }
 
-/// Action to take after a WCET violation is detected.
+/// Action to take after a budget violation is detected.
 #[derive(Debug)]
-pub(crate) struct WcetViolationResult {
-    pub violation: WCETViolation,
+pub(crate) struct BudgetViolationResult {
+    pub violation: BudgetViolation,
 }
 
 /// Action to take after a deadline miss is detected.
@@ -64,10 +64,6 @@ pub(crate) enum DeadlineAction {
     Skip,
     /// Trigger emergency stop — caller must stop the scheduler.
     EmergencyStop,
-    /// Lower the node's priority by 10.
-    Degrade,
-    /// Swap in the fallback node (if available).
-    Fallback,
 }
 
 /// Result of a deadline check when a miss is detected.
@@ -78,7 +74,7 @@ pub(crate) struct DeadlineMissResult {
     pub action: DeadlineAction,
 }
 
-/// Stateless timing enforcer for WCET and deadline checks.
+/// Stateless timing enforcer for budget and deadline checks.
 ///
 /// Extracts the timing violation logic from both the scheduler and RT executor
 /// into a single reusable struct. Callers provide the raw tick data and node
@@ -87,23 +83,23 @@ pub(crate) struct DeadlineMissResult {
 pub(crate) struct TimingEnforcer;
 
 impl TimingEnforcer {
-    /// Check whether a tick exceeded its WCET budget.
+    /// Check whether a tick exceeded its budget.
     ///
-    /// Returns `Some(WcetViolationResult)` if the tick duration exceeds the budget,
+    /// Returns `Some(BudgetViolationResult)` if the tick duration exceeds the budget,
     /// `None` otherwise.
     #[inline]
-    pub fn check_wcet(
+    pub fn check_tick_budget(
         node_name: &str,
         tick_duration: Duration,
-        wcet_budget: Duration,
-    ) -> Option<WcetViolationResult> {
-        if tick_duration > wcet_budget {
-            Some(WcetViolationResult {
-                violation: WCETViolation {
+        tick_budget: Duration,
+    ) -> Option<BudgetViolationResult> {
+        if tick_duration > tick_budget {
+            Some(BudgetViolationResult {
+                violation: BudgetViolation {
                     node_name: node_name.to_string(),
-                    budget: wcet_budget,
+                    budget: tick_budget,
                     actual: tick_duration,
-                    overrun: tick_duration - wcet_budget,
+                    overrun: tick_duration - tick_budget,
                 },
             })
         } else {
@@ -130,8 +126,6 @@ impl TimingEnforcer {
                 DeadlineMissPolicy::Warn => DeadlineAction::Warn,
                 DeadlineMissPolicy::Skip => DeadlineAction::Skip,
                 DeadlineMissPolicy::EmergencyStop => DeadlineAction::EmergencyStop,
-                DeadlineMissPolicy::Degrade => DeadlineAction::Degrade,
-                DeadlineMissPolicy::Fallback => DeadlineAction::Fallback,
             };
             Some(DeadlineMissResult {
                 elapsed,
@@ -207,8 +201,8 @@ mod tests {
     // ====================================================================
 
     #[test]
-    fn test_check_wcet_no_violation() {
-        let result = TimingEnforcer::check_wcet(
+    fn test_check_budget_no_violation() {
+        let result = TimingEnforcer::check_tick_budget(
             "node",
             Duration::from_micros(100),
             Duration::from_micros(500),
@@ -217,8 +211,8 @@ mod tests {
     }
 
     #[test]
-    fn test_check_wcet_violation() {
-        let result = TimingEnforcer::check_wcet(
+    fn test_check_budget_violation() {
+        let result = TimingEnforcer::check_tick_budget(
             "motor_ctrl",
             Duration::from_micros(800),
             Duration::from_micros(500),
@@ -231,8 +225,8 @@ mod tests {
     }
 
     #[test]
-    fn test_check_wcet_exact_budget_no_violation() {
-        let result = TimingEnforcer::check_wcet(
+    fn test_check_budget_exact_no_violation() {
+        let result = TimingEnforcer::check_tick_budget(
             "node",
             Duration::from_micros(500),
             Duration::from_micros(500),
@@ -276,8 +270,6 @@ mod tests {
             (DeadlineMissPolicy::Warn, "Warn"),
             (DeadlineMissPolicy::Skip, "Skip"),
             (DeadlineMissPolicy::EmergencyStop, "EmergencyStop"),
-            (DeadlineMissPolicy::Degrade, "Degrade"),
-            (DeadlineMissPolicy::Fallback, "Fallback"),
         ];
 
         for (policy, expected_name) in policies_and_expected {

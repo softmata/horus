@@ -169,14 +169,13 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
     let mut used_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for ws in &registry.workspaces {
-        let yaml_path = ws.path.join("horus.yaml");
-        if yaml_path.exists() {
-            if let Ok(deps) = crate::commands::run::parse_horus_yaml_dependencies_v2(
-                yaml_path.to_str().unwrap_or(""),
-            ) {
-                for dep in deps {
-                    // Extract package name from dependency spec
-                    used_packages.insert(dep.name.clone());
+        let toml_path = ws.path.join("horus.toml");
+        if toml_path.exists() {
+            if let Ok((manifest, _)) = crate::manifest::HorusManifest::load_from(&toml_path) {
+                if let Ok(deps) = manifest.dependencies_as_specs() {
+                    for dep in deps {
+                        used_packages.insert(dep.name.clone());
+                    }
                 }
             }
         }

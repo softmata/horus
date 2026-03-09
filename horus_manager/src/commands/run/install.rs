@@ -1,10 +1,12 @@
 use super::deps::{
-    parse_horus_yaml_dependencies_v2, split_dependencies_with_context, CargoPackage, GitPackage,
+    split_dependencies_with_context, CargoPackage, GitPackage,
     GitRef, PipPackage,
 };
 use crate::cargo_utils::detect_system_cargo_binary;
 use crate::cli_output;
-use crate::config::{CARGO_TOML, HORUS_YAML};
+use crate::config::CARGO_TOML;
+use crate::lockfile::{hash_manifest_deps, HorusLockfile, LockedPackage, HORUS_LOCK};
+use crate::manifest::{HorusManifest, HORUS_TOML};
 use crate::version;
 use anyhow::{anyhow, bail, Context, Result};
 use colored::*;
@@ -400,9 +402,35 @@ pub(crate) fn resolve_dependencies_with_context(
         return Err(e);
     }
 
+    // ── Lockfile: check if resolution can be skipped ──
+    let lock_path = Path::new(HORUS_LOCK);
+    let toml_path = Path::new(HORUS_TOML);
+    let manifest_hash = if toml_path.exists() {
+        let content = fs::read_to_string(toml_path).ok();
+        content.map(|c| hash_manifest_deps(&c))
+    } else {
+        None
+    };
+
+    if lock_path.exists() {
+        if let Ok(existing_lock) = HorusLockfile::load_from(lock_path) {
+            if let Some(ref hash) = manifest_hash {
+                if !existing_lock.is_stale(hash) {
+                    log::info!("Lockfile is up-to-date, using pinned versions");
+                    eprintln!(
+                        "  {} Dependencies locked (horus.lock is up-to-date)",
+                        cli_output::ICON_SUCCESS.green()
+                    );
+                    return Ok(());
+                }
+                log::info!("Lockfile is stale, re-resolving dependencies");
+            }
+        }
+    }
+
     // Split dependencies into HORUS packages, pip packages, and cargo packages
     let (horus_packages, pip_packages, cargo_packages) =
-        split_dependencies_with_context(dependencies, context_language);
+        split_dependencies_with_context(dependencies.clone(), context_language);
 
     // Resolve HORUS packages (existing logic)
     if !horus_packages.is_empty() {
@@ -419,6 +447,9 @@ pub(crate) fn resolve_dependencies_with_context(
     if !cargo_packages.is_empty() && context_language != Some("python") {
         install_cargo_packages(cargo_packages)?;
     }
+
+    // ── Lockfile: write after successful resolution ──
+    write_lockfile(&dependencies, &manifest_hash)?;
 
     Ok(())
 }
@@ -549,102 +580,68 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
             let client = RegistryClient::new();
             let target = workspace::detect_or_select_workspace(true)?;
 
-            // Try to use structured dependencies from horus.yaml
-            let horus_yaml_path = Path::new(HORUS_YAML);
-            let use_structured_deps = horus_yaml_path.exists();
+            // Try to use structured dependencies from horus.toml
+            let toml_path = Path::new(HORUS_TOML);
+            let base_dir = toml_path.parent().or_else(|| Some(Path::new(".")));
 
-            // Get base directory for resolving relative paths (directory containing horus.yaml)
-            let base_dir = horus_yaml_path.parent().or_else(|| Some(Path::new(".")));
+            if let Ok((manifest, _)) = HorusManifest::load_from(toml_path) {
+                // Build spec map from manifest
+                let dep_specs = manifest.dependencies_as_specs().unwrap_or_default();
+                let mut spec_map: std::collections::HashMap<
+                    String,
+                    crate::dependency_resolver::DependencySpec,
+                > = dep_specs
+                    .into_iter()
+                    .map(|spec| (spec.name.clone(), spec))
+                    .collect();
 
-            if use_structured_deps {
-                // Parse with v2 to get DependencySpecs with source information
-                match parse_horus_yaml_dependencies_v2(HORUS_YAML) {
-                    Ok(dep_specs) => {
-                        // Create a map of package name -> DependencySpec
-                        let mut spec_map: std::collections::HashMap<
-                            String,
-                            crate::dependency_resolver::DependencySpec,
-                        > = dep_specs
-                            .into_iter()
-                            .map(|spec| (spec.name.clone(), spec))
-                            .collect();
+                for package in &missing_packages {
+                    if let Some(spec) = spec_map.remove(package) {
+                        print!(
+                            "  {} Installing {}... ",
+                            cli_output::ICON_INFO.cyan(),
+                            package.yellow()
+                        );
+                        io::stdout().flush()?;
 
-                        for package in &missing_packages {
-                            if let Some(spec) = spec_map.remove(package) {
-                                print!(
-                                    "  {} Installing {}... ",
-                                    cli_output::ICON_INFO.cyan(),
-                                    package.yellow()
+                        match client.install_dependency_spec(
+                            &spec,
+                            target.clone(),
+                            base_dir,
+                        ) {
+                            Ok(_) => {
+                                println!("{}", cli_output::ICON_SUCCESS.green());
+                            }
+                            Err(e) => {
+                                println!("{}", cli_output::ICON_ERROR.red());
+                                eprintln!(
+                                    "    {} Failed to install {}: {}",
+                                    cli_output::ICON_ERROR.red(),
+                                    package,
+                                    e
                                 );
-                                io::stdout().flush()?;
-
-                                match client.install_dependency_spec(
-                                    &spec,
-                                    target.clone(),
-                                    base_dir,
-                                ) {
-                                    Ok(_) => {
-                                        println!("{}", cli_output::ICON_SUCCESS.green());
-                                    }
-                                    Err(e) => {
-                                        println!("{}", cli_output::ICON_ERROR.red());
-                                        eprintln!(
-                                            "    {} Failed to install {}: {}",
-                                            cli_output::ICON_ERROR.red(),
-                                            package,
-                                            e
-                                        );
-                                        bail!("Failed to install required dependency: {}", package);
-                                    }
-                                }
-                            } else {
-                                // Fallback to registry install if spec not found
-                                print!(
-                                    "  {} Installing {} (from registry)... ",
-                                    cli_output::ICON_INFO.cyan(),
-                                    package.yellow()
-                                );
-                                io::stdout().flush()?;
-                                match client.install(package, None) {
-                                    Ok(_) => println!("{}", cli_output::ICON_SUCCESS.green()),
-                                    Err(e) => {
-                                        println!("{}", cli_output::ICON_ERROR.red());
-                                        bail!("Failed to install {}: {}", package, e);
-                                    }
-                                }
+                                bail!("Failed to install required dependency: {}", package);
                             }
                         }
-                    }
-                    Err(_) => {
-                        // Fallback to old parser
-                        for package in &missing_packages {
-                            print!(
-                                "  {} Installing {}... ",
-                                cli_output::ICON_INFO.cyan(),
-                                package.yellow()
-                            );
-                            io::stdout().flush()?;
-
-                            match client.install(package, None) {
-                                Ok(_) => {
-                                    println!("{}", cli_output::ICON_SUCCESS.green());
-                                }
-                                Err(e) => {
-                                    println!("{}", cli_output::ICON_ERROR.red());
-                                    eprintln!(
-                                        "    {} Failed to install {}: {}",
-                                        cli_output::ICON_ERROR.red(),
-                                        package,
-                                        e
-                                    );
-                                    bail!("Failed to install required dependency: {}", package);
-                                }
+                    } else {
+                        // Fallback to registry install if spec not found
+                        print!(
+                            "  {} Installing {} (from registry)... ",
+                            cli_output::ICON_INFO.cyan(),
+                            package.yellow()
+                        );
+                        io::stdout().flush()?;
+                        match client.install(package, None) {
+                            Ok(_) => println!("{}", cli_output::ICON_SUCCESS.green()),
+                            Err(e) => {
+                                println!("{}", cli_output::ICON_ERROR.red());
+                                bail!("Failed to install {}: {}", package, e);
                             }
                         }
                     }
                 }
             } else {
-                // No horus.yaml, use old behavior
+                // No horus.toml, use registry-only behavior
                 for package in &missing_packages {
                     print!(
                         "  {} Installing {}... ",
@@ -944,6 +941,96 @@ pub(crate) fn prompt_system_package_choice_run(
             Ok(SystemPackageChoiceRun::InstallHORUS)
         }
     }
+}
+
+/// Write a lockfile capturing the resolved dependencies.
+fn write_lockfile(
+    dependencies: &HashSet<String>,
+    manifest_hash: &Option<String>,
+) -> Result<()> {
+    let lock_path = Path::new(HORUS_LOCK);
+    let toml_path = Path::new(HORUS_TOML);
+
+    // Build locked packages from manifest if available
+    let packages = if toml_path.exists() {
+        if let Ok((manifest, _)) = HorusManifest::load_from(toml_path) {
+            manifest
+                .dependencies
+                .iter()
+                .filter(|(name, _)| dependencies.contains(name.as_str()))
+                .map(|(name, value)| {
+                    let version = match value {
+                        crate::manifest::DependencyValue::Simple(v) => v.clone(),
+                        crate::manifest::DependencyValue::Detailed(d) => {
+                            d.version.clone().unwrap_or_else(|| "*".to_string())
+                        }
+                    };
+                    let source = match value {
+                        crate::manifest::DependencyValue::Detailed(d) => {
+                            d.source
+                                .as_ref()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "registry".to_string())
+                        }
+                        _ => "registry".to_string(),
+                    };
+                    LockedPackage {
+                        name: name.clone(),
+                        version,
+                        source,
+                        checksum: None,
+                        dependencies: vec![],
+                    }
+                })
+                .collect()
+        } else {
+            // Can't read manifest, create entries from dependency names
+            deps_to_locked_packages(dependencies)
+        }
+    } else {
+        // No manifest, create entries from dependency names
+        deps_to_locked_packages(dependencies)
+    };
+
+    let lockfile = HorusLockfile {
+        version: 1,
+        packages,
+        manifest_hash: manifest_hash.clone(),
+    };
+
+    lockfile
+        .save_to(lock_path)
+        .context("Failed to write horus.lock")?;
+
+    log::info!("Wrote lockfile: {}", lock_path.display());
+    eprintln!(
+        "  {} Updated {}",
+        cli_output::ICON_SUCCESS.green(),
+        HORUS_LOCK
+    );
+
+    Ok(())
+}
+
+/// Convert a set of dependency strings into `LockedPackage` entries.
+fn deps_to_locked_packages(dependencies: &HashSet<String>) -> Vec<LockedPackage> {
+    dependencies
+        .iter()
+        .map(|dep| {
+            let (name, version) = if let Some((n, v)) = dep.split_once('@') {
+                (n.to_string(), v.to_string())
+            } else {
+                (dep.clone(), "*".to_string())
+            };
+            LockedPackage {
+                name,
+                version,
+                source: "registry".to_string(),
+                checksum: None,
+                dependencies: vec![],
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

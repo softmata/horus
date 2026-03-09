@@ -2788,8 +2788,8 @@ if [ -d "horus_library/apps/snakesim" ]; then
     # Verify the copy
     if [ -f "$EXAMPLES_DIR/snakesim/main.rs" ] && [ -f "$EXAMPLES_DIR/snakesim/snakesim_gui/main.rs" ]; then
         echo -e "${GREEN}${NC} Installed Snake Game example"
-        echo -e "${CYAN}     ${NC} Backend: main.rs + horus.yaml"
-        echo -e "${CYAN}     ${NC} GUI: snakesim_gui/main.rs + horus.yaml"
+        echo -e "${CYAN}     ${NC} Backend: main.rs + horus.toml"
+        echo -e "${CYAN}     ${NC} GUI: snakesim_gui/main.rs + horus.toml"
     else
         echo -e "${YELLOW}${NC}  Warning: Snake Game example may be incomplete"
     fi

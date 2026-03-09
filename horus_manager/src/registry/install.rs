@@ -70,8 +70,8 @@ impl RegistryClient {
                 "System packages not supported via horus pkg install"
             )),
             PackageSource::Path { .. } => Err(anyhow!(
-                "Path dependencies must be specified in horus.yaml.\n\
-                     Use 'horus run' to install dependencies from horus.yaml."
+                "Path dependencies must be specified in horus.toml.\n\
+                     Use 'horus run' to install dependencies from horus.toml."
             )),
         }
     }
@@ -249,7 +249,7 @@ impl RegistryClient {
                     .map(|_| ()) // Ignore version for dependency spec
             }
             DependencySource::CratesIO => {
-                // Install from crates.io (source pinned in horus.yaml)
+                // Install from crates.io (source pinned in horus.toml)
                 let version_str = if spec.requirement.to_string() != "*" {
                     Some(spec.requirement.to_string())
                 } else {
@@ -1205,7 +1205,7 @@ impl RegistryClient {
         let source_path = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            // Resolve relative to base_dir (horus.yaml location) or current directory
+            // Resolve relative to base_dir (horus.toml location) or current directory
             let base = base_dir
                 .map(|p| p.to_path_buf())
                 .or_else(|| std::env::current_dir().ok())

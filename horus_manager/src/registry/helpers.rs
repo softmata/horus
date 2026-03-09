@@ -493,18 +493,11 @@ pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 
 // Helper function to detect package version from directory
 pub(crate) fn detect_package_version(dir: &Path) -> Option<String> {
-    // Try horus.yaml first (primary HORUS manifest)
-    let horus_yaml = dir.join(HORUS_YAML);
-    if horus_yaml.exists() {
-        if let Ok(content) = fs::read_to_string(&horus_yaml) {
-            // Simple YAML parsing for version
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("version:") {
-                    let version = trimmed.trim_start_matches("version:").trim().to_string();
-                    return Some(version);
-                }
-            }
+    // Try horus.toml first (primary HORUS manifest)
+    let horus_toml = dir.join(HORUS_TOML);
+    if horus_toml.exists() {
+        if let Ok((manifest, _)) = crate::manifest::HorusManifest::load_from(&horus_toml) {
+            return Some(manifest.package.version);
         }
     }
 
@@ -607,7 +600,7 @@ pub(crate) fn detect_cargo_installed_version(pkg_dir: &Path, package_name: &str)
 
 #[derive(Debug)]
 pub(crate) enum ManifestFormat {
-    HorusYaml,
+    HorusToml,
     CargoToml,
     PackageJson,
 }
@@ -615,7 +608,7 @@ pub(crate) enum ManifestFormat {
 impl std::fmt::Display for ManifestFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ManifestFormat::HorusYaml => write!(f, "{}", HORUS_YAML),
+            ManifestFormat::HorusToml => write!(f, "{}", HORUS_TOML),
             ManifestFormat::CargoToml => write!(f, "{}", CARGO_TOML),
             ManifestFormat::PackageJson => write!(f, "package.json"),
         }
@@ -635,54 +628,27 @@ pub(crate) struct PackageManifest {
 }
 
 pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
-    // Try horus.yaml first (primary manifest)
-    let horus_yaml = dir.join(HORUS_YAML);
-    if horus_yaml.exists() {
-        let content = fs::read_to_string(&horus_yaml)?;
+    // Try horus.toml first (primary manifest)
+    let horus_toml = dir.join(HORUS_TOML);
+    if horus_toml.exists() {
+        let (manifest, _) = crate::manifest::HorusManifest::load_from(&horus_toml)?;
 
-        let mut name = String::from("unknown");
-        let mut version = String::from("0.1.0");
-        let mut description: Option<String> = None;
-        let mut license: Option<String> = None;
-        let mut package_type: Option<String> = None;
-        let mut categories: Option<String> = None;
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("name:") {
-                name = trimmed.trim_start_matches("name:").trim().to_string();
-            } else if trimmed.starts_with("version:") {
-                version = trimmed.trim_start_matches("version:").trim().to_string();
-            } else if trimmed.starts_with("description:") {
-                description = Some(
-                    trimmed
-                        .trim_start_matches("description:")
-                        .trim()
-                        .to_string(),
-                );
-            } else if trimmed.starts_with("license:") {
-                license = Some(trimmed.trim_start_matches("license:").trim().to_string());
-            } else if trimmed.starts_with("package_type:") {
-                package_type = Some(
-                    trimmed
-                        .trim_start_matches("package_type:")
-                        .trim()
-                        .to_string(),
-                );
-            } else if trimmed.starts_with("categories:") {
-                categories = Some(trimmed.trim_start_matches("categories:").trim().to_string());
-            }
-        }
+        let package_type = manifest.package.package_type.as_ref().map(|t| t.to_string());
+        let categories = if manifest.package.categories.is_empty() {
+            None
+        } else {
+            Some(manifest.package.categories.join(", "))
+        };
 
         return Ok(PackageManifest {
-            name,
-            version,
-            description,
-            license,
+            name: manifest.package.name,
+            version: manifest.package.version,
+            description: manifest.package.description,
+            license: manifest.package.license,
             package_type,
             categories,
-            source_url: None,
-            manifest_format: ManifestFormat::HorusYaml,
+            source_url: manifest.package.repository,
+            manifest_format: ManifestFormat::HorusToml,
         });
     }
 
@@ -811,8 +777,8 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
     }
 
     Err(anyhow!(
-        "no package manifest found. Supported: horus.yaml, Cargo.toml, package.json\n\
-         Run 'horus new <name>' to create a new package with horus.yaml."
+        "no package manifest found. Supported: horus.toml, Cargo.toml, package.json\n\
+         Run 'horus new <name>' to create a new package with horus.toml."
     ))
 }
 
@@ -875,23 +841,16 @@ pub(crate) fn extract_package_dependencies(dir: &Path) -> Result<Vec<DependencyS
         }
     }
 
-    // Try horus.yaml
-    if dir.join(HORUS_YAML).exists() {
-        let content = fs::read_to_string(dir.join(HORUS_YAML))?;
-        // Simple YAML parsing for dependencies
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("- ") && !trimmed.contains(':') {
-                // Simple list item
-                let dep = trimmed[2..].trim();
-                if dep.starts_with("horus") {
-                    if let Ok(spec) = DependencySpec::parse(dep) {
+    // Try horus.toml
+    let horus_toml_path = dir.join(HORUS_TOML);
+    if horus_toml_path.exists() {
+        if let Ok((manifest, _)) = crate::manifest::HorusManifest::load_from(&horus_toml_path) {
+            if let Ok(specs) = manifest.dependencies_as_specs() {
+                for spec in specs {
+                    if spec.name.starts_with("horus") {
                         dependencies.push(spec);
                     }
                 }
-            } else if trimmed.starts_with("dependencies:") {
-                // Dependencies section marker, items come next
-                continue;
             }
         }
     }

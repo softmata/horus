@@ -210,25 +210,25 @@ if [ -f "horus_manager/src/config/cargo_config.rs" ]; then
 fi
 
 echo ""
-echo -e "${CYAN}[5/10] Updating YAML config files...${NC}"
+echo -e "${CYAN}[5/10] Updating TOML config files...${NC}"
 
-YAML_FILES=(
-    "horus.yaml"
-    "tests/env/user_a/horus.yaml"
-    "tests/env/user_a/horus-freeze.yaml"
-    "tests/env/user_b/horus.yaml"
-    "tests/monitor/robot_fleet_rust/horus.yaml"
-    "tests/monitor/robot_fleet_python/horus.yaml"
-    "tests/monitor/1pub/horus.yaml"
-    "tests/multi_language_example/horus.yaml"
-    "horus_core/tests/horus.yaml"
-    "tests/sim2d/sim2d_driver/horus.yaml"
-    "tests/sim2d/f1tenth_race/horus.yaml"
-    "tests/sim3d/figure8_racer/horus.yaml"
+TOML_FILES=(
+    "horus.toml"
+    "tests/env/user_a/horus.toml"
+    "tests/env/user_a/horus-freeze.toml"
+    "tests/env/user_b/horus.toml"
+    "tests/monitor/robot_fleet_rust/horus.toml"
+    "tests/monitor/robot_fleet_python/horus.toml"
+    "tests/monitor/1pub/horus.toml"
+    "tests/multi_language_example/horus.toml"
+    "horus_core/tests/horus.toml"
+    "tests/sim2d/sim2d_driver/horus.toml"
+    "tests/sim2d/f1tenth_race/horus.toml"
+    "tests/sim3d/figure8_racer/horus.toml"
     # NOTE: horus_library/apps/* (snakesim, wallesim) are now standalone packages
 )
 
-for file in "${YAML_FILES[@]}"; do
+for file in "${TOML_FILES[@]}"; do
     if [ -f "$file" ]; then
         sed -i "s/$CURRENT_VERSION/$NEW_VERSION/g" "$file"
         echo -e "  ${GREEN}+${NC} $file"

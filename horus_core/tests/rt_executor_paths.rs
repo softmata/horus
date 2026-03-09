@@ -17,31 +17,7 @@ use common::cleanup_stale_shm;
 // Mock nodes
 // ============================================================================
 
-/// RtNode with controllable pre/post conditions via Arc<AtomicBool>.
-struct ConditionalRtNode {
-    name: String,
-    tick_count: Arc<AtomicU64>,
-    pre_ok: Arc<AtomicBool>,
-    post_ok: Arc<AtomicBool>,
-}
-
-impl Node for ConditionalRtNode {
-    fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
-    }
-    fn tick(&mut self) {
-        self.tick_count.fetch_add(1, Ordering::SeqCst);
-    }
-    fn wcet_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
-    }
-    fn pre_condition(&self) -> bool {
-        self.pre_ok.load(Ordering::SeqCst)
-    }
-    fn post_condition(&self) -> bool {
-        self.post_ok.load(Ordering::SeqCst)
-    }
-}
+// ConditionalRtNode removed: pre_condition/post_condition were removed from Node trait
 
 /// RtNode that takes a configurable time, with a configurable deadline miss policy.
 struct PolicyRtNode {
@@ -61,7 +37,7 @@ impl Node for PolicyRtNode {
             std::thread::sleep(Duration::from_micros(self.sleep_us));
         }
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
     }
     fn deadline(&self) -> Duration {
@@ -72,54 +48,7 @@ impl Node for PolicyRtNode {
     }
 }
 
-/// RtNode that provides a fallback node.
-struct FallbackPrimaryNode {
-    name: String,
-    tick_count: Arc<AtomicU64>,
-    fallback_count: Arc<AtomicU64>,
-}
-
-impl Node for FallbackPrimaryNode {
-    fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
-    }
-    fn tick(&mut self) {
-        self.tick_count.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_micros(200));
-    }
-    fn wcet_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
-    }
-    fn deadline(&self) -> Duration {
-        Duration::from_micros(10)
-    }
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Fallback
-    }
-    fn fallback_node(&self) -> Option<Box<dyn Node>> {
-        Some(Box::new(FallbackSecondaryNode {
-            name: "fallback_secondary".to_string(),
-            tick_count: self.fallback_count.clone(),
-        }))
-    }
-}
-
-struct FallbackSecondaryNode {
-    name: String,
-    tick_count: Arc<AtomicU64>,
-}
-
-impl Node for FallbackSecondaryNode {
-    fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
-    }
-    fn tick(&mut self) {
-        self.tick_count.fetch_add(1, Ordering::SeqCst);
-    }
-    fn wcet_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
-    }
-}
+// FallbackPrimaryNode and FallbackSecondaryNode removed: DeadlineMissPolicy::Fallback and fallback_node() were removed from Node trait
 
 /// Node that panics with a &str literal.
 struct StrPanicNode {
@@ -135,7 +64,7 @@ impl Node for StrPanicNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         panic!("literal str panic");
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
     }
 }
@@ -158,7 +87,7 @@ impl Node for StringPanicNode {
         );
         panic!("{}", msg);
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
     }
 }
@@ -177,7 +106,7 @@ impl Node for UnknownPanicNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::panic::panic_any(42i32);
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
     }
 }
@@ -203,7 +132,7 @@ impl Node for ErrorTrackingNode {
     fn on_error(&mut self, _error: &str) {
         self.error_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
     }
 }
@@ -222,7 +151,7 @@ impl Node for AlwaysPanicRtNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         panic!("always panic");
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
     }
 }
@@ -240,7 +169,7 @@ impl Node for SimpleRtNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn wcet_budget(&self) -> Option<Duration> {
+    fn tick_budget(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
     }
 }
@@ -249,57 +178,8 @@ impl Node for SimpleRtNode {
 // Tests
 // ============================================================================
 
-#[test]
-fn test_rt_precondition_false_skips_tick() {
-    cleanup_stale_shm();
-    let tick_count = Arc::new(AtomicU64::new(0));
-    let pre_ok = Arc::new(AtomicBool::new(false)); // pre-condition always false
-
-    let mut scheduler = Scheduler::new();
-    scheduler
-        .add(ConditionalRtNode {
-            name: "pre_false".to_string(),
-            tick_count: tick_count.clone(),
-            pre_ok,
-            post_ok: Arc::new(AtomicBool::new(true)),
-        })
-        .order(0)
-        .done();
-
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
-
-    // Pre-condition is false, node should never tick
-    assert_eq!(
-        tick_count.load(Ordering::SeqCst),
-        0,
-        "Node with false pre_condition should never tick"
-    );
-}
-
-#[test]
-fn test_rt_postcondition_false_continues() {
-    cleanup_stale_shm();
-    let tick_count = Arc::new(AtomicU64::new(0));
-
-    let mut scheduler = Scheduler::new();
-    scheduler
-        .add(ConditionalRtNode {
-            name: "post_false".to_string(),
-            tick_count: tick_count.clone(),
-            pre_ok: Arc::new(AtomicBool::new(true)),
-            post_ok: Arc::new(AtomicBool::new(false)), // post-condition always false
-        })
-        .order(0)
-        .done();
-
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
-
-    // Post-condition failure only logs warning, doesn't stop ticking
-    assert!(
-        tick_count.load(Ordering::SeqCst) > 0,
-        "Node with false post_condition should still tick"
-    );
-}
+// test_rt_precondition_false_skips_tick removed: pre_condition was removed from Node trait
+// test_rt_postcondition_false_continues removed: post_condition was removed from Node trait
 
 #[test]
 fn test_deadline_emergency_stop() {
@@ -380,64 +260,8 @@ fn test_deadline_skip_pauses_node() {
     // than a simple fast node would
 }
 
-#[test]
-fn test_deadline_degrade_lowers_priority() {
-    cleanup_stale_shm();
-    let tick_count = Arc::new(AtomicU64::new(0));
-
-    let mut scheduler = Scheduler::new();
-    scheduler
-        .add(PolicyRtNode {
-            name: "degrade_node".to_string(),
-            tick_count: tick_count.clone(),
-            sleep_us: 500,
-            policy: DeadlineMissPolicy::Degrade,
-        })
-        .order(0)
-        .deadline_us(10)
-        .done();
-
-    // Run briefly — degrade increases priority value by 10 on each miss
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
-
-    // Node should still tick (degrade doesn't stop execution)
-    assert!(
-        tick_count.load(Ordering::SeqCst) > 0,
-        "Degraded node should still tick"
-    );
-}
-
-#[test]
-fn test_deadline_fallback_swaps_node() {
-    cleanup_stale_shm();
-    let primary_count = Arc::new(AtomicU64::new(0));
-    let fallback_count = Arc::new(AtomicU64::new(0));
-
-    let mut scheduler = Scheduler::new();
-    scheduler
-        .add(FallbackPrimaryNode {
-            name: "primary".to_string(),
-            tick_count: primary_count.clone(),
-            fallback_count: fallback_count.clone(),
-        })
-        .order(0)
-        .deadline_us(10)
-        .done();
-
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
-
-    // Primary should tick at least once (to trigger the deadline miss + fallback)
-    assert!(
-        primary_count.load(Ordering::SeqCst) >= 1,
-        "Primary should tick at least once"
-    );
-
-    // After fallback swap, the fallback node should be ticking
-    assert!(
-        fallback_count.load(Ordering::SeqCst) > 0,
-        "Fallback node should tick after swap"
-    );
-}
+// test_deadline_degrade_lowers_priority removed: DeadlineMissPolicy::Degrade was removed
+// test_deadline_fallback_swaps_node removed: DeadlineMissPolicy::Fallback and fallback_node() were removed
 
 #[test]
 fn test_rt_panic_str_literal() {

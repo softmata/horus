@@ -378,9 +378,9 @@ class TestSchedulerConfig:
         from horus._horus import PySchedulerConfig as SchedulerConfig
         config = SchedulerConfig.minimal()
         config.tick_rate = 500.0
-        config.wcet_enforcement = True
+        config.budget_enforcement = True
         assert config.tick_rate == 500.0
-        assert config.wcet_enforcement is True
+        assert config.budget_enforcement is True
 
 
 # ============================================================================
