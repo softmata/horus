@@ -363,7 +363,9 @@ mod tests {
         };
         let result = filter_records(records, &params, false);
         assert_eq!(result.len(), 2);
-        assert!(result.iter().all(|r| event_node_name(&r.event).contains("lidar")));
+        assert!(result
+            .iter()
+            .all(|r| event_node_name(&r.event).contains("lidar")));
     }
 
     #[test]

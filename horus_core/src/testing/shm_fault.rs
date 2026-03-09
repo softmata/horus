@@ -376,10 +376,7 @@ mod tests {
         injector.inject(ShmFault::ZeroFill);
 
         let all = injector.read_bytes(0, 4096).unwrap();
-        assert!(
-            all.iter().all(|&b| b == 0),
-            "Entire region must be zeroed"
-        );
+        assert!(all.iter().all(|&b| b == 0), "Entire region must be zeroed");
     }
 
     #[test]
@@ -463,7 +460,10 @@ mod tests {
     fn shm_fault_read_out_of_bounds_returns_none() {
         let injector = ShmFaultInjector::new("test_fault_read_oob", 256).unwrap();
         let result = injector.read_bytes(250, 10);
-        assert!(result.is_none(), "Reading past region size should return None");
+        assert!(
+            result.is_none(),
+            "Reading past region size should return None"
+        );
     }
 
     // ── Network Fault Tests ──
@@ -506,8 +506,7 @@ mod tests {
 
     #[test]
     fn network_unreachable_fault() {
-        let endpoint =
-            MockNetworkEndpoint::with_fault("offline.local", NetworkFault::Unreachable);
+        let endpoint = MockNetworkEndpoint::with_fault("offline.local", NetworkFault::Unreachable);
         let result = endpoint.resolve();
         assert!(result.is_err());
         let err = result.unwrap_err();

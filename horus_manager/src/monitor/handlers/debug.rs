@@ -811,8 +811,7 @@ mod tests {
     /// Deleting a non-existent debug session returns 404.
     #[tokio::test]
     async fn debug_session_delete_nonexistent_returns_404() {
-        let resp =
-            debug_session_delete_handler(Path("nonexistent-session-id".to_string())).await;
+        let resp = debug_session_delete_handler(Path("nonexistent-session-id".to_string())).await;
         let response = resp.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -820,8 +819,7 @@ mod tests {
     /// Getting a non-existent debug session returns 404.
     #[tokio::test]
     async fn debug_session_get_nonexistent_returns_404() {
-        let resp =
-            debug_session_get_handler(Path("nonexistent-session-id".to_string())).await;
+        let resp = debug_session_get_handler(Path("nonexistent-session-id".to_string())).await;
         let response = resp.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }

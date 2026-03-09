@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7090fe63a879712cf9be09ea19f9229ab2f96806aa0803dd379925285b4b8c7f # shrinks to msg = RangeSensor { sensor_type: 0, field_of_view: 0.0, min_range: 0.0, max_range: 0.0, range: 0.0, timestamp_ns: 0 }
+cc 5b2606ac72e3f056fb05082a2dd1681d77ec15305a7fbc50fae4b5f4d7867099 # shrinks to msg = MotorCommand { motor_id: 0, mode: 0, target: 0.0, max_velocity: 0.0, max_acceleration: 0.0, feed_forward: 0.0, enable: 0, timestamp_ns: 0 }
+cc a9be1e6b48fae0e99198e0956a7e6c3897e4aae217677728d494d1c1112d84c0 # shrinks to msg = ServoCommand { servo_id: 0, position: 0.0, speed: 0.0, enable: 0, timestamp_ns: 0 }
+cc 418390e36814122adafa6755503b227652a24a7b99bf54762f839fc9d27e8fd9 # shrinks to msg = PidConfig { controller_id: 0, kp: 0.0, ki: 0.0, kd: 0.0, integral_limit: 0.0, output_limit: 0.0, anti_windup: 0, timestamp_ns: 0 }
+cc 31b638f716955055314440a64b1087ab55e93144e7a881a4f1540bd5aea61064 # shrinks to msg = Heartbeat { node_name: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], node_id: 0, sequence: 0, alive: 0, uptime: 0.0, timestamp_ns: 0 }
+cc c3da3e9d856fb7dabd04f50eff61aa8006f0e1c498ce6010fe8731d188fd25ed # shrinks to msg = EmergencyStop { engaged: 0, reason: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], source: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], auto_reset: 0, timestamp_ns: 0 }

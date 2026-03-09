@@ -9017,7 +9017,7 @@ fn mpsc_ring_single_slot() {
     assert!(ring.try_send(42).is_ok());
     assert_eq!(ring.try_recv(), Some(42));
     assert_eq!(ring.try_recv(), None); // empty after drain
-    // Refill works
+                                       // Refill works
     assert!(ring.try_send(99).is_ok());
     assert_eq!(ring.try_recv(), Some(99));
 }
@@ -9150,7 +9150,7 @@ fn mpmc_ring_single_slot() {
     assert!(ring.try_send(42).is_ok());
     assert_eq!(ring.try_recv(), Some(42));
     assert_eq!(ring.try_recv(), None); // empty after drain
-    // Refill works
+                                       // Refill works
     assert!(ring.try_send(99).is_ok());
     assert_eq!(ring.try_recv(), Some(99));
 }
@@ -9218,10 +9218,26 @@ fn all_rings_round_capacity_to_power_of_two() {
 
     // Fill 4 slots (rounded up from 3)
     for i in 0..4u64 {
-        assert!(spsc.try_send(i).is_ok(), "SPSC should accept {} with cap 3→4", i);
-        assert!(mpsc.try_send(i).is_ok(), "MPSC should accept {} with cap 3→4", i);
-        assert!(spmc.try_send(i).is_ok(), "SPMC should accept {} with cap 3→4", i);
-        assert!(mpmc.try_send(i).is_ok(), "MPMC should accept {} with cap 3→4", i);
+        assert!(
+            spsc.try_send(i).is_ok(),
+            "SPSC should accept {} with cap 3→4",
+            i
+        );
+        assert!(
+            mpsc.try_send(i).is_ok(),
+            "MPSC should accept {} with cap 3→4",
+            i
+        );
+        assert!(
+            spmc.try_send(i).is_ok(),
+            "SPMC should accept {} with cap 3→4",
+            i
+        );
+        assert!(
+            mpmc.try_send(i).is_ok(),
+            "MPMC should accept {} with cap 3→4",
+            i
+        );
     }
 
     // 5th should fail (capacity is 4)
@@ -9289,7 +9305,9 @@ fn spsc_ring_fast_producer_slow_consumer() {
 
     let consumer = thread::spawn(move || {
         let start = Instant::now();
-        while recv_c.load(Ordering::Relaxed) < total_msgs && start.elapsed() < Duration::from_secs(5) {
+        while recv_c.load(Ordering::Relaxed) < total_msgs
+            && start.elapsed() < Duration::from_secs(5)
+        {
             if r.try_recv().is_some() {
                 recv_c.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -9671,7 +9689,10 @@ fn alloc_mp_slots_large_capacity() {
     let slots = primitives::alloc_mp_slots::<u64>(cap);
     assert_eq!(slots.len(), cap);
     assert_eq!(slots[0].sequence.load(Ordering::Relaxed), 0);
-    assert_eq!(slots[cap - 1].sequence.load(Ordering::Relaxed), (cap - 1) as u64);
+    assert_eq!(
+        slots[cap - 1].sequence.load(Ordering::Relaxed),
+        (cap - 1) as u64
+    );
 }
 
 /// Ring buffer capacity auto-sizing: next_power_of_two behavior.
@@ -9720,10 +9741,7 @@ fn mp_slot_write_and_read() {
     let slots = primitives::alloc_mp_slots::<u64>(4);
     // Write to slot 0
     unsafe {
-        slots[0]
-            .data
-            .get()
-            .write(std::mem::MaybeUninit::new(42u64));
+        slots[0].data.get().write(std::mem::MaybeUninit::new(42u64));
     }
     // Mark as written
     slots[0].sequence.store(1, Ordering::Release);
@@ -9790,9 +9808,7 @@ fn ring_pending_count_mpmc_accuracy() {
 
 /// POD type: message exactly fills the type's slot (always exact fit).
 #[repr(C)]
-#[derive(
-    Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Pod64 {
     data: [u8; 32],
     data2: [u8; 32],
@@ -9830,9 +9846,7 @@ fn pod_single_byte_message() {
 
 /// POD type: large struct spanning multiple cache lines (256 bytes).
 #[repr(C)]
-#[derive(
-    Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct LargePod {
     a: [u64; 16], // 128 bytes
     b: [u64; 16], // 128 bytes — total 256 bytes = 4 cache lines
@@ -9918,12 +9932,14 @@ fn serde_empty_string_message() {
 /// Capacity boundary: topic with capacity=1 holds exactly 1 message.
 #[test]
 fn capacity_one_holds_one_message() {
-    let t: Topic<u64> =
-        Topic::with_capacity(&unique("cap1"), 1, None).expect("create");
+    let t: Topic<u64> = Topic::with_capacity(&unique("cap1"), 1, None).expect("create");
     t.send(42);
     // Ring is now full (cap=1), second send via try_send should fail
     let result = t.try_send(99);
-    assert!(result.is_err(), "Capacity-1 ring should be full after 1 send");
+    assert!(
+        result.is_err(),
+        "Capacity-1 ring should be full after 1 send"
+    );
     assert_eq!(t.recv(), Some(42));
 }
 
@@ -9932,8 +9948,7 @@ fn capacity_one_holds_one_message() {
 #[test]
 fn capacity_boundary_exact_fill() {
     let cap = 8u32;
-    let t: Topic<u64> =
-        Topic::with_capacity(&unique("cap_fill"), cap, None).expect("create");
+    let t: Topic<u64> = Topic::with_capacity(&unique("cap_fill"), cap, None).expect("create");
 
     // Fill to capacity
     for i in 0..cap as u64 {
@@ -9994,8 +10009,7 @@ fn capacity_zero_rejected() {
 /// Multiple sends up to capacity, drain, refill — verifies no state corruption.
 #[test]
 fn capacity_fill_drain_refill_cycle() {
-    let t: Topic<u32> =
-        Topic::with_capacity(&unique("cap_cycle"), 16, None).expect("create");
+    let t: Topic<u32> = Topic::with_capacity(&unique("cap_cycle"), 16, None).expect("create");
 
     for cycle in 0..5 {
         // Fill

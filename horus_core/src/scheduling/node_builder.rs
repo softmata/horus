@@ -1040,11 +1040,7 @@ mod tests {
             ExecutionClass::Event("sensor".to_string()),
             "Event class should be preserved"
         );
-        assert_eq!(
-            reg.rate_hz,
-            Some(100.0),
-            "rate_hz should still be stored"
-        );
+        assert_eq!(reg.rate_hz, Some(100.0), "rate_hz should still be stored");
     }
 
     /// .rate_hz(100.0).on("topic") — same result, order doesn't matter.
@@ -1075,10 +1071,7 @@ mod tests {
             Some(Duration::from_millis(1)),
             "Deadline should persist even with async_io"
         );
-        assert!(
-            reg.is_rt,
-            "is_rt flag from deadline should persist"
-        );
+        assert!(reg.is_rt, "is_rt flag from deadline should persist");
     }
 
     /// .async_io().deadline_ms(1) — deadline auto-sets RT but class stays async_io
@@ -1126,10 +1119,7 @@ mod tests {
             .rt()
             .compute()
             .on("b");
-        assert_eq!(
-            reg.execution_class,
-            ExecutionClass::Event("b".to_string())
-        );
+        assert_eq!(reg.execution_class, ExecutionClass::Event("b".to_string()));
     }
 
     // -- Full conflicting configuration via NodeBuilder --

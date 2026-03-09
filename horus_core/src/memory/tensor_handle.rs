@@ -514,7 +514,8 @@ mod tests {
         let handle2 =
             TensorHandle::alloc(pool.clone(), &[16], TensorDtype::U8, Device::cpu()).unwrap();
         assert_eq!(
-            handle2.tensor().slot_id, slot_id,
+            handle2.tensor().slot_id,
+            slot_id,
             "Pool should reuse the freed slot"
         );
 
@@ -526,8 +527,7 @@ mod tests {
     fn test_handle_multiple_clones_refcount() {
         let pool = create_test_pool();
 
-        let h1 =
-            TensorHandle::alloc(pool.clone(), &[8], TensorDtype::F32, Device::cpu()).unwrap();
+        let h1 = TensorHandle::alloc(pool.clone(), &[8], TensorDtype::F32, Device::cpu()).unwrap();
         assert_eq!(h1.refcount(), 1);
 
         let h2 = h1.clone();
@@ -613,8 +613,7 @@ mod tests {
         let pool = create_test_pool();
 
         let handle =
-            TensorHandle::alloc(pool.clone(), &[20, 10], TensorDtype::F32, Device::cpu())
-                .unwrap();
+            TensorHandle::alloc(pool.clone(), &[20, 10], TensorDtype::F32, Device::cpu()).unwrap();
         assert_eq!(handle.refcount(), 1);
 
         let slice = handle.slice_first_dim(5, 15).expect("slice should work");
@@ -716,8 +715,7 @@ mod tests {
         let pool = create_test_pool();
 
         let handle =
-            TensorHandle::alloc(pool.clone(), &[5, 10], TensorDtype::F64, Device::cpu())
-                .unwrap();
+            TensorHandle::alloc(pool.clone(), &[5, 10], TensorDtype::F64, Device::cpu()).unwrap();
 
         assert_eq!(handle.shape(), &[5, 10]);
         assert_eq!(handle.dtype(), TensorDtype::F64);

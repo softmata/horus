@@ -370,8 +370,7 @@ mod tests {
     /// Valid but non-existent session name returns 404 for info.
     #[tokio::test]
     async fn recordings_info_nonexistent_session_returns_404() {
-        let resp =
-            recordings_info_handler(Path("nonexistent_session_xyz_12345".to_string())).await;
+        let resp = recordings_info_handler(Path("nonexistent_session_xyz_12345".to_string())).await;
         let response = resp.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }

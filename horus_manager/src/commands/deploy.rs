@@ -755,17 +755,32 @@ targets:
 
     #[test]
     fn detect_arch_jetson_keywords() {
-        assert!(matches!(detect_target_arch("nvidia@jetson"), TargetArch::Aarch64));
-        assert!(matches!(detect_target_arch("user@nano.local"), TargetArch::Aarch64));
-        assert!(matches!(detect_target_arch("xavier-01"), TargetArch::Aarch64));
+        assert!(matches!(
+            detect_target_arch("nvidia@jetson"),
+            TargetArch::Aarch64
+        ));
+        assert!(matches!(
+            detect_target_arch("user@nano.local"),
+            TargetArch::Aarch64
+        ));
+        assert!(matches!(
+            detect_target_arch("xavier-01"),
+            TargetArch::Aarch64
+        ));
         assert!(matches!(detect_target_arch("orin-nx"), TargetArch::Aarch64));
     }
 
     #[test]
     fn detect_arch_raspberry_pi_keywords() {
-        assert!(matches!(detect_target_arch("pi4-robot"), TargetArch::Aarch64));
+        assert!(matches!(
+            detect_target_arch("pi4-robot"),
+            TargetArch::Aarch64
+        ));
         assert!(matches!(detect_target_arch("pi5"), TargetArch::Aarch64));
-        assert!(matches!(detect_target_arch("raspberry-pi"), TargetArch::Aarch64));
+        assert!(matches!(
+            detect_target_arch("raspberry-pi"),
+            TargetArch::Aarch64
+        ));
     }
 
     #[test]
@@ -777,7 +792,10 @@ targets:
     #[test]
     fn detect_arch_unknown_defaults_to_aarch64() {
         // Unknown hostnames default to aarch64 (most modern robot boards)
-        assert!(matches!(detect_target_arch("some-robot"), TargetArch::Aarch64));
+        assert!(matches!(
+            detect_target_arch("some-robot"),
+            TargetArch::Aarch64
+        ));
     }
 
     // ── DeployConfig defaults ──────────────────────────────────────────
@@ -809,8 +827,14 @@ targets:
 
     #[test]
     fn rust_target_strings_are_valid() {
-        assert_eq!(TargetArch::Aarch64.rust_target(), "aarch64-unknown-linux-gnu");
-        assert_eq!(TargetArch::Armv7.rust_target(), "armv7-unknown-linux-gnueabihf");
+        assert_eq!(
+            TargetArch::Aarch64.rust_target(),
+            "aarch64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            TargetArch::Armv7.rust_target(),
+            "armv7-unknown-linux-gnueabihf"
+        );
         assert_eq!(TargetArch::X86_64.rust_target(), "x86_64-unknown-linux-gnu");
         assert_eq!(TargetArch::Native.rust_target(), "");
     }

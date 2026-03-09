@@ -783,9 +783,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/login")
                     .header("Content-Type", "application/json")
-                    .body(Body::from(
-                        r#"{"password":"test_monitor_password_123"}"#,
-                    ))
+                    .body(Body::from(r#"{"password":"test_monitor_password_123"}"#))
                     .unwrap(),
             )
             .await
@@ -812,9 +810,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/login")
                     .header("Content-Type", "application/json")
-                    .body(Body::from(
-                        r#"{"password":"test_monitor_password_123"}"#,
-                    ))
+                    .body(Body::from(r#"{"password":"test_monitor_password_123"}"#))
                     .unwrap(),
             )
             .await
@@ -1128,14 +1124,8 @@ mod tests {
     #[test]
     fn workspace_cache_returns_same_results() {
         let cache = workspace_cache();
-        let first = cache
-            .write()
-            .unwrap()
-            .get_or_refresh(&None);
-        let second = cache
-            .write()
-            .unwrap()
-            .get_or_refresh(&None);
+        let first = cache.write().unwrap().get_or_refresh(&None);
+        let second = cache.write().unwrap().get_or_refresh(&None);
         assert_eq!(first.len(), second.len());
     }
 }
