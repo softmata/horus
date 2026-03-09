@@ -773,4 +773,369 @@ mod tests {
             "WebSocket upgrade without token must be rejected with 401"
         );
     }
+
+    /// Helper: perform a successful login and return the session token.
+    async fn login_and_get_token(app: &axum::Router) -> String {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/login")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        r#"{"password":"test_monitor_password_123"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        json["session_token"]
+            .as_str()
+            .expect("login response must contain session_token")
+            .to_string()
+    }
+
+    /// Successful login returns 200 with session_token, csrf_token, and
+    /// success=true in the JSON body and a Set-Cookie header.
+    #[tokio::test]
+    async fn login_success_returns_token_and_csrf() {
+        let app = build_test_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/login")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        r#"{"password":"test_monitor_password_123"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // Verify Set-Cookie header is present with HttpOnly flag
+        let set_cookie = resp
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .expect("login must set a cookie")
+            .to_str()
+            .unwrap();
+        assert!(
+            set_cookie.contains("session_token="),
+            "cookie must contain session_token"
+        );
+        assert!(
+            set_cookie.contains("HttpOnly"),
+            "session cookie must be HttpOnly"
+        );
+        assert!(
+            set_cookie.contains("SameSite=Strict"),
+            "session cookie must be SameSite=Strict"
+        );
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], true);
+        assert!(json["session_token"].is_string());
+        assert!(json["csrf_token"].is_string());
+        assert!(json["error"].is_null());
+    }
+
+    /// Login with wrong password returns 401 with success=false and error
+    /// message.
+    #[tokio::test]
+    async fn login_wrong_password_returns_401_with_error() {
+        let app = build_test_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/login")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"password":"wrong_password"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], false);
+        assert!(json["session_token"].is_null());
+        assert!(json["error"].is_string());
+    }
+
+    /// After successful login, authenticated GET /api/status returns 200 with
+    /// expected JSON fields.
+    #[tokio::test]
+    async fn authenticated_status_returns_200_with_json() {
+        let app = build_test_app();
+        let token = login_and_get_token(&app).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .header("Cookie", format!("session_token={}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Validate JSON schema
+        assert!(json["status"].is_string(), "status must be a string");
+        assert!(json["health"].is_string(), "health must be a string");
+        assert!(json["version"].is_string(), "version must be a string");
+        assert!(json["nodes"].is_number(), "nodes count must be a number");
+        assert!(json["topics"].is_number(), "topics count must be a number");
+        assert!(json["workspace"].is_object(), "workspace must be an object");
+    }
+
+    /// Bearer token authentication works for protected endpoints.
+    #[tokio::test]
+    async fn bearer_token_auth_works() {
+        let app = build_test_app();
+        let token = login_and_get_token(&app).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "Bearer token should authenticate the request"
+        );
+    }
+
+    /// Invalid session token returns 401.
+    #[tokio::test]
+    async fn invalid_session_token_returns_401() {
+        let app = build_test_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .header("Cookie", "session_token=bogus_invalid_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    /// Authenticated GET /api/debug/sessions returns 200 with JSON containing
+    /// sessions array and count.
+    #[tokio::test]
+    async fn authenticated_debug_sessions_returns_json() {
+        let app = build_test_app();
+        let token = login_and_get_token(&app).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/debug/sessions")
+                    .header("Cookie", format!("session_token={}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["sessions"].is_array());
+        assert!(json["count"].is_number());
+    }
+
+    /// GET /api/debug/sessions/:id for a non-existent session returns 404.
+    #[tokio::test]
+    async fn debug_session_not_found_returns_404() {
+        let app = build_test_app();
+        let token = login_and_get_token(&app).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/debug/sessions/nonexistent-id-12345")
+                    .header("Cookie", format!("session_token={}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"].is_string());
+    }
+
+    /// POST /api/login with invalid JSON returns 4xx (malformed request).
+    #[tokio::test]
+    async fn login_with_invalid_json_returns_error() {
+        let app = build_test_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/login")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"not valid json"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Axum returns 422 Unprocessable Entity for JSON parse failures
+        assert!(
+            resp.status().is_client_error(),
+            "invalid JSON should return 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    /// POST /api/login without Content-Type header returns an error (Axum
+    /// requires Content-Type: application/json for Json extractor).
+    #[tokio::test]
+    async fn login_without_content_type_returns_error() {
+        let app = build_test_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/login")
+                    .body(Body::from(r#"{"password":"test"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_client_error(),
+            "missing Content-Type should return 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    /// WebSocket upgrade with token in query parameter should not return 401
+    /// (tests the `?token=` path in `ws_auth_middleware`).
+    #[tokio::test]
+    async fn websocket_upgrade_with_query_token_passes_auth() {
+        let app = build_test_app();
+        let token = login_and_get_token(&app).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/ws?token={}", token))
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+                    .header("Sec-WebSocket-Version", "13")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // With a valid token, auth middleware passes. The response may be 101
+        // (Switching Protocols) or another non-401 status depending on how Axum
+        // handles the upgrade in a test (no real TCP socket).
+        assert_ne!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "WebSocket upgrade with valid ?token= must pass auth"
+        );
+    }
+
+    /// WebSocket upgrade with invalid query token returns 401.
+    #[tokio::test]
+    async fn websocket_upgrade_with_invalid_query_token_returns_401() {
+        let app = build_test_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/ws?token=invalid_token_value")
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+                    .header("Sec-WebSocket-Version", "13")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "WebSocket upgrade with invalid token must return 401"
+        );
+    }
+
+    /// WebSocket upgrade with empty query token returns 401.
+    #[tokio::test]
+    async fn websocket_upgrade_with_empty_query_token_returns_401() {
+        let app = build_test_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/ws?token=")
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+                    .header("Sec-WebSocket-Version", "13")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "WebSocket upgrade with empty token must return 401"
+        );
+    }
+
+    /// Verify workspace cache returns consistent results across calls.
+    #[test]
+    fn workspace_cache_returns_same_results() {
+        let cache = workspace_cache();
+        let first = cache
+            .write()
+            .unwrap()
+            .get_or_refresh(&None);
+        let second = cache
+            .write()
+            .unwrap()
+            .get_or_refresh(&None);
+        assert_eq!(first.len(), second.len());
+    }
 }

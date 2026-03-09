@@ -741,4 +741,123 @@ mod tests {
             parent.display()
         );
     }
+
+    #[test]
+    fn test_cleanup_stale_namespaces_with_simulated_stale_dir() {
+        // Create a fake stale namespace directory with a dead PGID
+        let parent = shm_parent_dir();
+        // Use a unique dead PGID based on timestamp to avoid interference from parallel tests
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            % 100_000_000;
+        let dead_pgid = 900_000_000 + unique_suffix as i32;
+        #[cfg(unix)]
+        let uid = unsafe { libc::getuid() };
+        #[cfg(not(unix))]
+        let uid: u32 = 0;
+
+        let stale_dir_name = format!("horus_pgid{}_uid{}", dead_pgid, uid);
+        let stale_path = parent.join(&stale_dir_name);
+
+        // Ensure we start clean
+        let _ = std::fs::remove_dir_all(&stale_path);
+
+        // Create the fake stale directory with a file inside
+        std::fs::create_dir_all(&stale_path).expect("create stale dir");
+        std::fs::write(stale_path.join("test_topic"), b"stale data").expect("write stale file");
+        assert!(stale_path.exists());
+
+        // Run cleanup — it should remove this stale directory
+        let result = cleanup_stale_namespaces();
+        assert!(
+            result.removed >= 1,
+            "Should remove at least our stale directory, removed={}",
+            result.removed
+        );
+        assert!(
+            !stale_path.exists(),
+            "Stale directory should have been removed"
+        );
+        assert!(result.bytes_freed > 0, "Should have freed some bytes");
+    }
+
+    #[test]
+    fn test_cleanup_does_not_remove_live_namespaces() {
+        // Create a directory matching the current process's PGID — should NOT be removed
+        let parent = shm_parent_dir();
+        #[cfg(unix)]
+        let pgid = unsafe { libc::getpgrp() };
+        #[cfg(not(unix))]
+        let pgid: i32 = std::process::id() as i32;
+        #[cfg(unix)]
+        let uid = unsafe { libc::getuid() };
+        #[cfg(not(unix))]
+        let uid: u32 = 0;
+
+        let live_dir_name = format!("horus_pgid{}_uid{}", pgid, uid);
+        let live_path = parent.join(&live_dir_name);
+
+        // Might already exist from the current process's namespace
+        let created = if !live_path.exists() {
+            std::fs::create_dir_all(&live_path).expect("create live dir");
+            true
+        } else {
+            false
+        };
+
+        let result = cleanup_stale_namespaces();
+
+        // The live directory should NOT have been removed
+        assert!(
+            live_path.exists(),
+            "Live process group directory should not be removed"
+        );
+
+        // Clean up if we created it
+        if created {
+            let _ = std::fs::remove_dir_all(&live_path);
+        }
+
+        // No errors should have occurred for this directory
+        let _ = result; // result is valid
+    }
+
+    #[test]
+    fn test_list_all_horus_namespaces() {
+        let namespaces = list_all_horus_namespaces();
+        // Should return a list (possibly empty, but shouldn't panic)
+        for ns in &namespaces {
+            assert!(ns.dir_name.starts_with("horus_"));
+            // Note: path may not exist if another test cleaned it up concurrently
+        }
+    }
+
+    #[test]
+    fn test_dir_size_bytes_and_file_count() {
+        use std::io::Write;
+        let tmp = std::env::temp_dir().join("horus_test_dir_size");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Create a file with known size
+        let mut f = std::fs::File::create(tmp.join("file1.dat")).unwrap();
+        f.write_all(&[0u8; 100]).unwrap();
+        drop(f);
+
+        // Create a subdirectory with another file
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        let mut f2 = std::fs::File::create(tmp.join("sub/file2.dat")).unwrap();
+        f2.write_all(&[0u8; 200]).unwrap();
+        drop(f2);
+
+        let size = dir_size_bytes(&tmp);
+        assert_eq!(size, 300, "Total size should be 300 bytes");
+
+        let count = dir_file_count(&tmp);
+        assert_eq!(count, 2, "Should have 2 files");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

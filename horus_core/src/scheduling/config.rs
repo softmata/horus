@@ -472,4 +472,234 @@ mod tests {
         assert!(!config.realtime.memory_locking);
         assert!(!config.realtime.rt_scheduling_class);
     }
+
+    // ── Edge Case & Boundary Tests ──────────────────────────────────────
+
+    #[test]
+    fn timing_config_very_low_rate() {
+        let config = TimingConfig {
+            global_rate_hz: 0.001,
+        };
+        let period = 1.0 / config.global_rate_hz;
+        assert!(period > 999.0, "Very low rate should produce long period");
+    }
+
+    #[test]
+    fn timing_config_very_high_rate() {
+        let config = TimingConfig {
+            global_rate_hz: 100_000.0,
+        };
+        let period = 1.0 / config.global_rate_hz;
+        assert!(period < 0.001, "Very high rate should produce tiny period");
+    }
+
+    #[test]
+    fn timing_config_exactly_one_hz() {
+        let config = TimingConfig {
+            global_rate_hz: 1.0,
+        };
+        let period = 1.0 / config.global_rate_hz;
+        assert!((period - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn realtime_config_all_enabled_simultaneously() {
+        let rt = RealTimeConfig {
+            wcet_enforcement: true,
+            deadline_monitoring: true,
+            watchdog_enabled: true,
+            watchdog_timeout_ms: 500,
+            safety_monitor: true,
+            max_deadline_misses: 10,
+            memory_locking: true,
+            rt_scheduling_class: true,
+        };
+        // All flags enabled simultaneously should be representable
+        assert!(rt.wcet_enforcement);
+        assert!(rt.deadline_monitoring);
+        assert!(rt.watchdog_enabled);
+        assert!(rt.safety_monitor);
+        assert!(rt.memory_locking);
+        assert!(rt.rt_scheduling_class);
+    }
+
+    #[test]
+    fn realtime_config_min_watchdog_timeout() {
+        let rt = RealTimeConfig {
+            watchdog_timeout_ms: 1,
+            ..SchedulerConfig::default().realtime
+        };
+        assert_eq!(rt.watchdog_timeout_ms, 1);
+    }
+
+    #[test]
+    fn realtime_config_large_max_deadline_misses() {
+        let rt = RealTimeConfig {
+            max_deadline_misses: u64::MAX,
+            ..SchedulerConfig::default().realtime
+        };
+        assert_eq!(rt.max_deadline_misses, u64::MAX);
+    }
+
+    #[test]
+    fn monitoring_config_zero_blackbox_size() {
+        let mon = MonitoringConfig {
+            black_box_enabled: true,
+            black_box_size_mb: 0,
+            ..SchedulerConfig::default().monitoring
+        };
+        // Zero-size blackbox with enable flag should be representable
+        assert!(mon.black_box_enabled);
+        assert_eq!(mon.black_box_size_mb, 0);
+    }
+
+    #[test]
+    fn monitoring_config_wal_flush_interval_one() {
+        let mon = MonitoringConfig {
+            wal_flush_interval: 1,
+            ..SchedulerConfig::default().monitoring
+        };
+        assert_eq!(mon.wal_flush_interval, 1);
+    }
+
+    #[test]
+    fn monitoring_config_large_wal_flush_interval() {
+        let mon = MonitoringConfig {
+            wal_flush_interval: 100_000,
+            ..SchedulerConfig::default().monitoring
+        };
+        assert_eq!(mon.wal_flush_interval, 100_000);
+    }
+
+    #[test]
+    fn monitoring_config_with_telemetry_endpoint() {
+        let mon = MonitoringConfig {
+            telemetry_endpoint: Some("udp://localhost:9999".to_string()),
+            ..SchedulerConfig::default().monitoring
+        };
+        assert_eq!(
+            mon.telemetry_endpoint.as_deref(),
+            Some("udp://localhost:9999")
+        );
+    }
+
+    #[test]
+    fn monitoring_config_verbose_false() {
+        let mon = MonitoringConfig {
+            verbose: false,
+            ..SchedulerConfig::default().monitoring
+        };
+        assert!(!mon.verbose);
+    }
+
+    #[test]
+    fn resource_config_specific_cpu_cores() {
+        let res = ResourceConfig {
+            cpu_cores: Some(vec![0, 2, 4]),
+            numa_aware: true,
+        };
+        assert_eq!(res.cpu_cores, Some(vec![0, 2, 4]));
+        assert!(res.numa_aware);
+    }
+
+    #[test]
+    fn resource_config_empty_cpu_cores() {
+        let res = ResourceConfig {
+            cpu_cores: Some(vec![]),
+            numa_aware: false,
+        };
+        assert_eq!(res.cpu_cores, Some(vec![]));
+    }
+
+    #[test]
+    fn scheduler_config_with_recording_enabled() {
+        let mut config = SchedulerConfig::default();
+        config.recording = Some(RecordingConfigYaml::full());
+        assert!(config.recording.is_some());
+        assert!(config.recording.as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn recording_config_include_and_exclude_nodes() {
+        let config = RecordingConfigYaml {
+            enabled: true,
+            include_nodes: vec!["sensor".to_string(), "motor".to_string()],
+            exclude_nodes: vec!["logger".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(config.include_nodes.len(), 2);
+        assert_eq!(config.exclude_nodes.len(), 1);
+    }
+
+    #[test]
+    fn recording_config_with_session_name() {
+        let config = RecordingConfigYaml {
+            session_name: Some("test_session_001".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.session_name.as_deref(), Some("test_session_001"));
+    }
+
+    #[test]
+    fn recording_config_max_size_zero_means_unlimited() {
+        let config = RecordingConfigYaml::default();
+        assert_eq!(config.max_size_mb, 0);
+    }
+
+    #[test]
+    fn scheduler_config_clone_independence() {
+        let config = SchedulerConfig::default();
+        let mut cloned = config.clone();
+        cloned.timing.global_rate_hz = 999.0;
+        cloned.circuit_breaker = true;
+        // Original should be unmodified
+        assert_eq!(config.timing.global_rate_hz, 60.0);
+        assert!(!config.circuit_breaker);
+    }
+
+    #[test]
+    fn scheduler_config_debug_format() {
+        let config = SchedulerConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("SchedulerConfig"));
+        assert!(debug.contains("global_rate_hz"));
+        assert!(debug.contains("60"));
+    }
+
+    // ── Proptest: boundary value fuzzing ────────────────────────────────
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// RealTimeConfig: watchdog timeout is always reasonable
+        #[test]
+        fn realtime_config_watchdog_always_positive(timeout in 1u64..u64::MAX) {
+            let rt = RealTimeConfig {
+                watchdog_timeout_ms: timeout,
+                ..SchedulerConfig::default().realtime
+            };
+            prop_assert!(rt.watchdog_timeout_ms > 0);
+        }
+
+        /// RecordingConfig: max_size_mb is non-negative (usize guarantees this)
+        #[test]
+        fn recording_config_max_size_non_negative(size in 0usize..1_000_000) {
+            let config = RecordingConfigYaml {
+                max_size_mb: size,
+                ..Default::default()
+            };
+            // usize is always >= 0, just verify it's stored correctly
+            prop_assert_eq!(config.max_size_mb, size);
+        }
+
+        /// SchedulerConfig: circuit_breaker flag toggles independently
+        #[test]
+        fn scheduler_config_circuit_breaker_independent(cb in any::<bool>()) {
+            let mut config = SchedulerConfig::default();
+            config.circuit_breaker = cb;
+            prop_assert_eq!(config.circuit_breaker, cb);
+            // Other defaults unchanged
+            prop_assert_eq!(config.timing.global_rate_hz, 60.0);
+        }
+    }
 }

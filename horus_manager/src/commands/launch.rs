@@ -643,5 +643,200 @@ nodes:
     fn run_launch_missing_file_returns_error() {
         let result = run_launch(Path::new("/nonexistent/launch.yaml"), false, None, 5);
         assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Launch file not found"),
+            "error should be user-friendly: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn list_launch_nodes_missing_file_returns_error() {
+        let result = list_launch_nodes(Path::new("/nonexistent/launch.yaml"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Launch file not found"));
+    }
+
+    #[test]
+    fn sort_by_dependencies_independent_nodes() {
+        let nodes = vec![
+            LaunchNode {
+                name: "a".to_string(),
+                depends_on: vec![],
+                ..serde_yaml::from_str("name: a").unwrap()
+            },
+            LaunchNode {
+                name: "b".to_string(),
+                depends_on: vec![],
+                ..serde_yaml::from_str("name: b").unwrap()
+            },
+        ];
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted.len(), 2);
+    }
+
+    #[test]
+    fn sort_by_dependencies_respects_order() {
+        let nodes = vec![
+            LaunchNode {
+                name: "motor".to_string(),
+                depends_on: vec!["sensor".to_string()],
+                ..serde_yaml::from_str("name: motor").unwrap()
+            },
+            LaunchNode {
+                name: "sensor".to_string(),
+                depends_on: vec![],
+                ..serde_yaml::from_str("name: sensor").unwrap()
+            },
+        ];
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted[0].name, "sensor", "dependency should come first");
+        assert_eq!(sorted[1].name, "motor");
+    }
+
+    #[test]
+    fn sort_by_dependencies_detects_cycle() {
+        let nodes = vec![
+            LaunchNode {
+                name: "a".to_string(),
+                depends_on: vec!["b".to_string()],
+                ..serde_yaml::from_str("name: a").unwrap()
+            },
+            LaunchNode {
+                name: "b".to_string(),
+                depends_on: vec!["a".to_string()],
+                ..serde_yaml::from_str("name: b").unwrap()
+            },
+        ];
+        let result = sort_by_dependencies(&nodes);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Circular dependency"),
+            "should detect cycle: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn sort_by_dependencies_diamond() {
+        // D depends on B and C, both depend on A
+        let nodes = vec![
+            LaunchNode {
+                name: "D".to_string(),
+                depends_on: vec!["B".to_string(), "C".to_string()],
+                ..serde_yaml::from_str("name: D").unwrap()
+            },
+            LaunchNode {
+                name: "B".to_string(),
+                depends_on: vec!["A".to_string()],
+                ..serde_yaml::from_str("name: B").unwrap()
+            },
+            LaunchNode {
+                name: "C".to_string(),
+                depends_on: vec!["A".to_string()],
+                ..serde_yaml::from_str("name: C").unwrap()
+            },
+            LaunchNode {
+                name: "A".to_string(),
+                depends_on: vec![],
+                ..serde_yaml::from_str("name: A").unwrap()
+            },
+        ];
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted.len(), 4);
+        assert_eq!(sorted[0].name, "A", "root dependency first");
+        // D must come after B and C
+        let d_pos = sorted.iter().position(|n| n.name == "D").unwrap();
+        let b_pos = sorted.iter().position(|n| n.name == "B").unwrap();
+        let c_pos = sorted.iter().position(|n| n.name == "C").unwrap();
+        assert!(d_pos > b_pos);
+        assert!(d_pos > c_pos);
+    }
+
+    #[test]
+    fn run_launch_invalid_yaml_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
+        std::fs::write(&path, "not: [valid yaml: {{").unwrap();
+        let result = run_launch(&path, false, None, 5);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("parse launch file"),
+            "error should mention parsing: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn run_launch_empty_nodes_succeeds_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.yaml");
+        std::fs::write(&path, "nodes: []").unwrap();
+        // Empty nodes with dry_run should succeed (prints "No nodes defined")
+        let result = run_launch(&path, true, None, 5);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn node_namespace_construction() {
+        // Mirrors the logic in run_launch/print_launch_plan
+        let cases = vec![
+            (Some("global"), Some("local"), "node", "global/local/node"),
+            (Some("global"), None, "node", "global/node"),
+            (None, Some("local"), "node", "local/node"),
+            (None, None, "node", "node"),
+        ];
+        for (global, local, name, expected) in cases {
+            let full = match (global, local) {
+                (Some(g), Some(l)) => format!("{}/{}/{}", g, l, name),
+                (Some(ns), None) | (None, Some(ns)) => format!("{}/{}", ns, name),
+                (None, None) => name.to_string(),
+            };
+            assert_eq!(full, expected);
+        }
+    }
+
+    #[test]
+    fn launch_node_requires_command_or_package() {
+        // A node without command or package should fail
+        let node = LaunchNode {
+            name: "orphan".to_string(),
+            package: None,
+            command: None,
+            ..serde_yaml::from_str("name: orphan").unwrap()
+        };
+        let result = launch_node(&node, &HashMap::new(), &None);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must specify either 'command' or 'package'"),
+            "error should be helpful: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn launch_node_empty_command_fails() {
+        let node = LaunchNode {
+            name: "empty_cmd".to_string(),
+            command: Some(String::new()),
+            ..serde_yaml::from_str("name: empty_cmd").unwrap()
+        };
+        let result = launch_node(&node, &HashMap::new(), &None);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Empty command"));
+    }
+
+    #[test]
+    fn launch_node_param_env_format() {
+        // Verify param-to-env key transformation
+        let key = "max-speed";
+        let env_key = format!("HORUS_PARAM_{}", key.to_uppercase().replace('-', "_"));
+        assert_eq!(env_key, "HORUS_PARAM_MAX_SPEED");
     }
 }

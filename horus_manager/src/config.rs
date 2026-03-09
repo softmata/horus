@@ -92,3 +92,161 @@ pub fn trust_proxy() -> bool {
         Ok("1") | Ok("true") | Ok("yes")
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Constants validation ─────────────────────────────────────────
+
+    #[test]
+    fn default_registry_url_is_https() {
+        assert!(
+            DEFAULT_REGISTRY_URL.starts_with("https://"),
+            "Registry URL must use HTTPS"
+        );
+    }
+
+    #[test]
+    fn default_plugin_registry_url_is_https() {
+        assert!(
+            DEFAULT_PLUGIN_REGISTRY_URL.starts_with("https://"),
+            "Plugin registry URL must use HTTPS"
+        );
+    }
+
+    #[test]
+    fn pypi_api_url_is_valid() {
+        assert!(PYPI_API_URL.starts_with("https://"));
+        assert!(PYPI_API_URL.contains("pypi.org"));
+    }
+
+    #[test]
+    fn crates_io_api_url_is_valid() {
+        assert!(CRATES_IO_API_URL.starts_with("https://"));
+        assert!(CRATES_IO_API_URL.contains("crates.io"));
+    }
+
+    // ── Security constants ───────────────────────────────────────────
+
+    #[test]
+    fn auth_max_attempts_is_reasonable() {
+        assert!(
+            AUTH_MAX_ATTEMPTS >= 3 && AUTH_MAX_ATTEMPTS <= 10,
+            "Auth max attempts should be 3-10, got {}",
+            AUTH_MAX_ATTEMPTS
+        );
+    }
+
+    #[test]
+    fn min_password_length_meets_nist_minimum() {
+        // NIST SP 800-63B recommends at least 8 characters
+        assert!(
+            MIN_PASSWORD_LENGTH >= 8,
+            "Password minimum should be at least 8 (NIST), got {}",
+            MIN_PASSWORD_LENGTH
+        );
+    }
+
+    #[test]
+    fn rate_limit_window_is_reasonable() {
+        assert!(
+            AUTH_RATE_LIMIT_WINDOW_SECS > 0 && AUTH_RATE_LIMIT_WINDOW_SECS <= 300,
+            "Rate limit window should be 1-300s, got {}",
+            AUTH_RATE_LIMIT_WINDOW_SECS
+        );
+    }
+
+    #[test]
+    fn session_timeout_is_reasonable() {
+        // Session should expire between 15 minutes and 24 hours
+        assert!(SESSION_TIMEOUT_SECS >= 900, "Session timeout too short");
+        assert!(SESSION_TIMEOUT_SECS <= 86400, "Session timeout too long");
+    }
+
+    #[test]
+    fn session_absolute_timeout_exceeds_inactivity_timeout() {
+        assert!(
+            SESSION_ABSOLUTE_TIMEOUT_SECS > SESSION_TIMEOUT_SECS,
+            "Absolute timeout must be longer than inactivity timeout"
+        );
+    }
+
+    // ── Cache & monitoring constants ─────────────────────────────────
+
+    #[test]
+    fn workspace_cache_ttl_is_reasonable() {
+        assert!(WORKSPACE_CACHE_TTL_SECS > 0);
+        assert!(WORKSPACE_CACHE_TTL_SECS <= 3600);
+    }
+
+    #[test]
+    fn discovery_cache_is_sub_second() {
+        assert!(DISCOVERY_CACHE_MS < 1000, "Discovery cache should be < 1s");
+    }
+
+    #[test]
+    fn tui_intervals_are_reasonable() {
+        assert!(TUI_POLL_INTERVAL_MS > 0 && TUI_POLL_INTERVAL_MS <= 1000);
+        assert!(TUI_REFRESH_INTERVAL_MS > 0 && TUI_REFRESH_INTERVAL_MS <= 1000);
+    }
+
+    #[test]
+    fn ws_broadcast_interval_is_reasonable() {
+        assert!(WS_BROADCAST_INTERVAL_MS > 0 && WS_BROADCAST_INTERVAL_MS <= 5000);
+    }
+
+    // ── File name constants ──────────────────────────────────────────
+
+    #[test]
+    fn horus_yaml_filename_correct() {
+        assert_eq!(HORUS_YAML, "horus.yaml");
+    }
+
+    #[test]
+    fn cargo_toml_filename_correct() {
+        assert_eq!(CARGO_TOML, "Cargo.toml");
+    }
+
+    // ── Environment variable functions ───────────────────────────────
+
+    #[test]
+    fn registry_url_returns_default_when_unset() {
+        // Temporarily clear env var if set
+        let original = std::env::var("HORUS_REGISTRY_URL").ok();
+        std::env::remove_var("HORUS_REGISTRY_URL");
+
+        let url = registry_url();
+        assert_eq!(url, DEFAULT_REGISTRY_URL);
+
+        // Restore if was set
+        if let Some(val) = original {
+            std::env::set_var("HORUS_REGISTRY_URL", val);
+        }
+    }
+
+    #[test]
+    fn plugin_registry_url_returns_default_when_unset() {
+        let original = std::env::var("HORUS_PLUGIN_REGISTRY_URL").ok();
+        std::env::remove_var("HORUS_PLUGIN_REGISTRY_URL");
+
+        let url = plugin_registry_url();
+        assert_eq!(url, DEFAULT_PLUGIN_REGISTRY_URL);
+
+        if let Some(val) = original {
+            std::env::set_var("HORUS_PLUGIN_REGISTRY_URL", val);
+        }
+    }
+
+    #[test]
+    fn trust_proxy_defaults_to_false() {
+        let original = std::env::var("HORUS_TRUST_PROXY").ok();
+        std::env::remove_var("HORUS_TRUST_PROXY");
+
+        assert!(!trust_proxy(), "trust_proxy should default to false");
+
+        if let Some(val) = original {
+            std::env::set_var("HORUS_TRUST_PROXY", val);
+        }
+    }
+}

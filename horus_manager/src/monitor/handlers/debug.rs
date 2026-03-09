@@ -675,7 +675,7 @@ pub async fn debug_snapshot_handler(Path(session_id): Path<String>) -> impl Into
     }
 }
 
-/// Get current watch values
+/// Get current watch values.
 pub async fn debug_watches_values_handler(Path(session_id): Path<String>) -> impl IntoResponse {
     let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
@@ -711,5 +711,180 @@ pub async fn debug_watches_values_handler(Path(session_id): Path<String>) -> imp
                 "error": format!("Debug session '{}' not found", session_id)
             })),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn create_debug_session_request_deserializes() {
+        let json = r#"{
+            "recording_session": "my_session",
+            "recording_file": "node@123.horus",
+            "session_name": "debug1"
+        }"#;
+        let req: CreateDebugSessionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.recording_session, "my_session");
+        assert_eq!(req.recording_file, "node@123.horus");
+        assert_eq!(req.session_name, Some("debug1".to_string()));
+    }
+
+    #[test]
+    fn create_debug_session_request_optional_name() {
+        let json = r#"{
+            "recording_session": "sess",
+            "recording_file": "file.horus"
+        }"#;
+        let req: CreateDebugSessionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.session_name.is_none());
+    }
+
+    #[test]
+    fn add_breakpoint_request_deserializes() {
+        let json = r#"{
+            "breakpoint_type": "at_tick",
+            "tick": 42,
+            "name": "bp1"
+        }"#;
+        let req: AddBreakpointRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.breakpoint_type, "at_tick");
+        assert_eq!(req.tick, Some(42));
+        assert_eq!(req.name, Some("bp1".to_string()));
+        assert!(req.topic.is_none());
+        assert!(req.pattern.is_none());
+    }
+
+    #[test]
+    fn add_watch_request_deserializes() {
+        let json = r#"{
+            "id": "w1",
+            "name": "velocity",
+            "topic": "/cmd_vel",
+            "watch_type": "input",
+            "byte_offset": 0,
+            "byte_length": 8
+        }"#;
+        let req: AddWatchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.id, "w1");
+        assert_eq!(req.topic, "/cmd_vel");
+        assert_eq!(req.watch_type, "input");
+        assert_eq!(req.byte_offset, Some(0));
+        assert_eq!(req.byte_length, Some(8));
+    }
+
+    #[test]
+    fn seek_request_deserializes() {
+        let json = r#"{"tick": 100}"#;
+        let req: SeekRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.tick, 100);
+    }
+
+    /// Creating a debug session with path traversal returns 400.
+    #[tokio::test]
+    async fn debug_session_create_rejects_path_traversal() {
+        let req = CreateDebugSessionRequest {
+            recording_session: "../../../etc".to_string(),
+            recording_file: "passwd".to_string(),
+            session_name: None,
+        };
+        let resp = debug_session_create_handler(Json(req)).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Creating a debug session with traversal in filename returns 400.
+    #[tokio::test]
+    async fn debug_session_create_rejects_file_traversal() {
+        let req = CreateDebugSessionRequest {
+            recording_session: "valid_session".to_string(),
+            recording_file: "../../shadow".to_string(),
+            session_name: None,
+        };
+        let resp = debug_session_create_handler(Json(req)).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Deleting a non-existent debug session returns 404.
+    #[tokio::test]
+    async fn debug_session_delete_nonexistent_returns_404() {
+        let resp =
+            debug_session_delete_handler(Path("nonexistent-session-id".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Getting a non-existent debug session returns 404.
+    #[tokio::test]
+    async fn debug_session_get_nonexistent_returns_404() {
+        let resp =
+            debug_session_get_handler(Path("nonexistent-session-id".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Step forward on non-existent session returns 404.
+    #[tokio::test]
+    async fn debug_step_forward_nonexistent_returns_404() {
+        let resp = debug_step_forward_handler(Path("nonexistent".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Step backward on non-existent session returns 404.
+    #[tokio::test]
+    async fn debug_step_backward_nonexistent_returns_404() {
+        let resp = debug_step_backward_handler(Path("nonexistent".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Continue on non-existent session returns 404.
+    #[tokio::test]
+    async fn debug_continue_nonexistent_returns_404() {
+        let resp = debug_continue_handler(Path("nonexistent".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Pause on non-existent session returns 404.
+    #[tokio::test]
+    async fn debug_pause_nonexistent_returns_404() {
+        let resp = debug_pause_handler(Path("nonexistent".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Snapshot on non-existent session returns 404.
+    #[tokio::test]
+    async fn debug_snapshot_nonexistent_returns_404() {
+        let resp = debug_snapshot_handler(Path("nonexistent".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Watch values on non-existent session returns 404.
+    #[tokio::test]
+    async fn debug_watches_values_nonexistent_returns_404() {
+        let resp = debug_watches_values_handler(Path("nonexistent".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// List debug sessions returns JSON with sessions array and count.
+    #[tokio::test]
+    async fn debug_sessions_list_returns_json() {
+        let resp = debug_sessions_list_handler().await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["sessions"].is_array());
+        assert!(json["count"].is_number());
     }
 }

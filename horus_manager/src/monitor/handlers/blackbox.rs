@@ -326,6 +326,200 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].tick, 2);
     }
+
+    #[test]
+    fn filter_records_by_node_name() {
+        let records = vec![
+            BlackBoxRecord {
+                tick: 1,
+                timestamp_us: 1000,
+                event: BlackBoxEvent::NodeTick {
+                    name: "lidar_node".into(),
+                    duration_us: 100,
+                    success: true,
+                },
+            },
+            BlackBoxRecord {
+                tick: 2,
+                timestamp_us: 2000,
+                event: BlackBoxEvent::NodeTick {
+                    name: "camera_node".into(),
+                    duration_us: 200,
+                    success: true,
+                },
+            },
+            BlackBoxRecord {
+                tick: 3,
+                timestamp_us: 3000,
+                event: BlackBoxEvent::NodeError {
+                    name: "lidar_node".into(),
+                    error: "timeout".into(),
+                },
+            },
+        ];
+        let params = BlackboxQuery {
+            node: Some("lidar".into()),
+            ..Default::default()
+        };
+        let result = filter_records(records, &params, false);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|r| event_node_name(&r.event).contains("lidar")));
+    }
+
+    #[test]
+    fn filter_records_by_event_type() {
+        let records = vec![
+            BlackBoxRecord {
+                tick: 1,
+                timestamp_us: 1000,
+                event: BlackBoxEvent::NodeTick {
+                    name: "n".into(),
+                    duration_us: 100,
+                    success: true,
+                },
+            },
+            BlackBoxRecord {
+                tick: 2,
+                timestamp_us: 2000,
+                event: BlackBoxEvent::NodeError {
+                    name: "n".into(),
+                    error: "fail".into(),
+                },
+            },
+        ];
+        let params = BlackboxQuery {
+            event: Some("NodeError".into()),
+            ..Default::default()
+        };
+        let result = filter_records(records, &params, false);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].tick, 2);
+    }
+
+    #[test]
+    fn filter_records_by_tick_range() {
+        let records: Vec<BlackBoxRecord> = (0..20)
+            .map(|i| BlackBoxRecord {
+                tick: i,
+                timestamp_us: i * 1000,
+                event: BlackBoxEvent::NodeTick {
+                    name: "n".into(),
+                    duration_us: 100,
+                    success: true,
+                },
+            })
+            .collect();
+        let params = BlackboxQuery {
+            tick: Some("5-10".into()),
+            ..Default::default()
+        };
+        let result = filter_records(records, &params, false);
+        assert_eq!(result.len(), 6); // ticks 5,6,7,8,9,10
+        assert_eq!(result[0].tick, 5);
+        assert_eq!(result[5].tick, 10);
+    }
+
+    #[test]
+    fn filter_records_combined_filters() {
+        let records = vec![
+            BlackBoxRecord {
+                tick: 5,
+                timestamp_us: 5000,
+                event: BlackBoxEvent::NodeTick {
+                    name: "sensor".into(),
+                    duration_us: 100,
+                    success: true,
+                },
+            },
+            BlackBoxRecord {
+                tick: 10,
+                timestamp_us: 10000,
+                event: BlackBoxEvent::NodeError {
+                    name: "sensor".into(),
+                    error: "fail".into(),
+                },
+            },
+            BlackBoxRecord {
+                tick: 15,
+                timestamp_us: 15000,
+                event: BlackBoxEvent::NodeError {
+                    name: "motor".into(),
+                    error: "stall".into(),
+                },
+            },
+        ];
+        let params = BlackboxQuery {
+            node: Some("sensor".into()),
+            event: Some("NodeError".into()),
+            ..Default::default()
+        };
+        let result = filter_records(records, &params, false);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].tick, 10);
+    }
+
+    #[test]
+    fn event_type_name_all_variants() {
+        assert_eq!(
+            event_type_name(&BlackBoxEvent::SchedulerStart {
+                name: "s".into(),
+                node_count: 1,
+                config: Default::default(),
+            }),
+            "SchedulerStart"
+        );
+        assert_eq!(
+            event_type_name(&BlackBoxEvent::SchedulerStop {
+                reason: "done".into(),
+                total_ticks: 0,
+            }),
+            "SchedulerStop"
+        );
+        assert_eq!(
+            event_type_name(&BlackBoxEvent::NodeTick {
+                name: "n".into(),
+                duration_us: 0,
+                success: true,
+            }),
+            "NodeTick"
+        );
+        assert_eq!(
+            event_type_name(&BlackBoxEvent::NodeError {
+                name: "n".into(),
+                error: "e".into(),
+            }),
+            "NodeError"
+        );
+    }
+
+    #[test]
+    fn is_anomaly_deadline_miss() {
+        let event = BlackBoxEvent::DeadlineMiss {
+            name: "n".into(),
+            deadline_us: 1000,
+            actual_us: 2000,
+        };
+        assert!(is_anomaly(&event));
+    }
+
+    #[test]
+    fn is_anomaly_scheduler_start_is_not() {
+        let event = BlackBoxEvent::SchedulerStart {
+            name: "s".into(),
+            node_count: 1,
+            config: Default::default(),
+        };
+        assert!(!is_anomaly(&event));
+    }
+
+    #[test]
+    fn blackbox_query_default_has_no_filters() {
+        let q = BlackboxQuery::default();
+        assert!(q.node.is_none());
+        assert!(q.event.is_none());
+        assert!(q.tick.is_none());
+        assert!(q.limit.is_none());
+    }
 }
 
 fn event_type_name(event: &BlackBoxEvent) -> &'static str {

@@ -692,6 +692,260 @@ mod tests {
             "Concurrent atomic increments should sum correctly"
         );
     }
+
+    // ── Negative input tests ──────────────────────────────────────────────
+
+    #[test]
+    fn shm_small_size() {
+        let name = unique_name("test_small");
+        // Minimum viable size — 1 byte
+        let region = ShmRegion::new(&name, 1).expect("1-byte SHM should succeed");
+        assert!(region.is_owner());
+        // Write and read 1 byte
+        unsafe {
+            let ptr = region.as_ptr() as *mut u8;
+            *ptr = 0xFF;
+            assert_eq!(*ptr, 0xFF);
+        }
+    }
+
+    #[test]
+    fn shm_page_aligned_size() {
+        let name = unique_name("test_page");
+        // Exactly one page (4096)
+        let region = ShmRegion::new(&name, 4096).expect("page-size SHM should succeed");
+        assert!(region.is_owner());
+    }
+
+    #[test]
+    fn shm_non_page_aligned_size() {
+        let name = unique_name("test_non_page");
+        // Non-page-aligned: 5000 bytes
+        let region = ShmRegion::new(&name, 5000).expect("non-page-aligned SHM should succeed");
+        // Should be able to write to all 5000 bytes
+        let ptr = region.as_ptr() as *mut u8;
+        unsafe {
+            *ptr.add(4999) = 0xAB;
+            assert_eq!(*ptr.add(4999), 0xAB);
+        }
+    }
+
+    #[test]
+    fn shm_same_name_gets_same_region() {
+        let name = unique_name("test_reopen");
+        let size = 4096;
+
+        let region1 = ShmRegion::new(&name, size).expect("first create");
+        assert!(region1.is_owner());
+
+        // Write a pattern via region1
+        unsafe {
+            let ptr = region1.as_ptr() as *mut u8;
+            *ptr = 0xAB;
+        }
+
+        let region2 = ShmRegion::new(&name, size).expect("second open");
+        assert!(!region2.is_owner(), "Second opener should not be owner");
+
+        // Should see the same data
+        unsafe {
+            let ptr = region2.as_ptr();
+            assert_eq!(*ptr, 0xAB, "Second region should see data from first");
+        }
+    }
+
+    #[test]
+    fn shm_drop_owner_removes_file() {
+        let name = unique_name("test_drop");
+        let size = 4096;
+
+        let path;
+        {
+            let region = ShmRegion::new(&name, size).expect("create");
+            path = region.path.clone();
+            assert!(path.exists(), "SHM file should exist while region is alive");
+        }
+        // After drop, owner should clean up the file
+        assert!(
+            !path.exists(),
+            "SHM file should be removed after owner drops"
+        );
+    }
+
+    #[test]
+    fn shm_non_owner_drop_does_not_remove_file() {
+        let name = unique_name("test_non_owner_drop");
+        let size = 4096;
+
+        let region1 = ShmRegion::new(&name, size).expect("create owner");
+        let path = region1.path.clone();
+
+        {
+            let region2 = ShmRegion::new(&name, size).expect("open non-owner");
+            assert!(!region2.is_owner());
+            // region2 drops here — should NOT remove the file
+        }
+
+        assert!(
+            path.exists(),
+            "SHM file should still exist after non-owner drops"
+        );
+
+        // Owner's data should still be intact
+        assert!(region1.is_owner());
+        // region1 drops here and cleans up
+    }
+
+    #[test]
+    fn shm_file_permissions_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let name = unique_name("test_perms");
+        let size = 4096;
+
+        let region = ShmRegion::new(&name, size).expect("create");
+        let metadata = std::fs::metadata(&region.path).expect("metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o600,
+            "SHM file should be owner read/write only (0o600), got {:#o}",
+            mode
+        );
+    }
+
+    #[test]
+    fn shm_directory_permissions_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let name = unique_name("test_dir_perms");
+        let size = 4096;
+
+        let region = ShmRegion::new(&name, size).expect("create");
+        let parent_dir = region.path.parent().expect("parent");
+        let metadata = std::fs::metadata(parent_dir).expect("dir metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o700,
+            "SHM directory should be owner-only (0o700), got {:#o}",
+            mode
+        );
+    }
+
+    #[test]
+    fn shm_orphaned_file_reused_by_new_owner() {
+        let name = unique_name("test_orphan_reuse");
+        let size = 4096;
+
+        let path;
+        {
+            let region = ShmRegion::new(&name, size).expect("create original");
+            path = region.path.clone();
+            // Write a pattern
+            unsafe {
+                let ptr = region.as_ptr() as *mut u8;
+                *ptr = 0xDE;
+                *ptr.add(1) = 0xAD;
+            }
+            // Simulate abnormal exit: forget the region to prevent Drop cleanup
+            std::mem::forget(region);
+        }
+
+        // The SHM file should still exist (no cleanup happened)
+        assert!(path.exists(), "Orphaned SHM file should still exist");
+
+        // New process opens the same name — should see it as non-owner
+        let region2 = ShmRegion::new(&name, size).expect("reopen orphaned");
+        assert!(
+            !region2.is_owner(),
+            "Should open existing orphaned file as non-owner"
+        );
+
+        // Should be able to read the old data (it wasn't cleaned)
+        unsafe {
+            let ptr = region2.as_ptr();
+            assert_eq!(*ptr, 0xDE, "Should see old data from orphaned region");
+            assert_eq!(*ptr.add(1), 0xAD);
+        }
+
+        // Manual cleanup since we forgot the original owner
+        drop(region2); // non-owner drop doesn't clean up
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn shm_region_data_integrity_after_reopen() {
+        let name = unique_name("test_reopen_integrity");
+        let size = 4096;
+
+        // Write pattern as owner
+        let path;
+        {
+            let region = ShmRegion::new(&name, size).expect("create");
+            path = region.path.clone();
+            let ptr = region.as_ptr() as *mut u8;
+            unsafe {
+                for i in 0..size {
+                    *ptr.add(i) = (i % 251) as u8; // prime to detect alignment issues
+                }
+            }
+            // Forget to simulate crash (orphan)
+            std::mem::forget(region);
+        }
+
+        // Reopen and verify all bytes
+        let region2 = ShmRegion::new(&name, size).expect("reopen");
+        let ptr = region2.as_ptr();
+        for i in 0..size {
+            let val = unsafe { *ptr.add(i) };
+            assert_eq!(
+                val,
+                (i % 251) as u8,
+                "Data mismatch at byte {} after reopen",
+                i
+            );
+        }
+
+        drop(region2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn shm_multiple_regions_independent() {
+        let name_a = unique_name("test_multi_a");
+        let name_b = unique_name("test_multi_b");
+        let size = 4096;
+
+        let region_a = ShmRegion::new(&name_a, size).expect("create A");
+        let region_b = ShmRegion::new(&name_b, size).expect("create B");
+
+        // Write different data to each
+        unsafe {
+            let pa = region_a.as_ptr() as *mut u8;
+            let pb = region_b.as_ptr() as *mut u8;
+            *pa = 0xAA;
+            *pb = 0xBB;
+        }
+
+        // Verify they're independent
+        unsafe {
+            assert_eq!(*region_a.as_ptr(), 0xAA);
+            assert_eq!(*region_b.as_ptr(), 0xBB);
+        }
+
+        // Dropping one shouldn't affect the other
+        let path_b = region_b.path.clone();
+        drop(region_b);
+        assert!(!path_b.exists(), "B's file should be cleaned up");
+        unsafe {
+            assert_eq!(
+                *region_a.as_ptr(),
+                0xAA,
+                "A should still be readable after B dropped"
+            );
+        }
+    }
 }
 
 // ============================================================================

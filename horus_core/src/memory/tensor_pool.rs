@@ -1966,4 +1966,849 @@ mod tests {
         pool.release(&t3);
         std::fs::remove_file(&pool.shm_path).ok();
     }
+
+    // ── Negative input tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_alloc_empty_shape() {
+        let pool = make_test_pool(9800);
+        // Empty shape: product of no elements = 1 (identity element of multiplication)
+        // This allocates a scalar tensor (0-dimensional) with 1 element
+        let result = pool.alloc(&[], TensorDtype::F32, Device::cpu());
+        match result {
+            Ok(tensor) => {
+                // Scalar: ndim=0, numel=1, nbytes=4
+                assert_eq!(tensor.ndim, 0);
+                pool.release(&tensor);
+            }
+            Err(_) => {} // Also acceptable if the API rejects empty shape
+        }
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_zero_element_dimension() {
+        let pool = make_test_pool(9799);
+        // Shape with a zero dimension — total elements = 0
+        let result = pool.alloc(&[10, 0, 5], TensorDtype::F32, Device::cpu());
+        match result {
+            Ok(tensor) => {
+                assert_eq!(tensor.numel(), 0);
+                pool.release(&tensor);
+            }
+            Err(_) => {} // Zero-element tensors may be rejected
+        }
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_single_element() {
+        let pool = make_test_pool(9798);
+        let tensor = pool
+            .alloc(&[1], TensorDtype::U8, Device::cpu())
+            .expect("single element alloc should succeed");
+        assert_eq!(tensor.numel(), 1);
+        assert_eq!(tensor.nbytes(), 1);
+        pool.release(&tensor);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_too_many_dimensions() {
+        let pool = make_test_pool(9797);
+        // Tensor supports up to 8 dimensions (ndim: u8, shape: [u64; 8])
+        let shape_9d: Vec<u64> = vec![1; 9];
+        let result = pool.alloc(&shape_9d, TensorDtype::U8, Device::cpu());
+        match result {
+            Ok(tensor) => {
+                // If it succeeds, it should have clamped or handled gracefully
+                pool.release(&tensor);
+            }
+            Err(e) => {
+                // Expected: reject shapes with > 8 dimensions
+                let msg = format!("{}", e);
+                assert!(
+                    !msg.is_empty(),
+                    "Error message should be descriptive for >8 dimensions"
+                );
+            }
+        }
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_pool_exhaustion() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 2,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9796, config).expect("Failed to create pool");
+
+        let t1 = pool
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("first alloc");
+        let t2 = pool
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("second alloc");
+
+        // Third allocation should fail — pool is exhausted
+        let result = pool.alloc(&[8], TensorDtype::U8, Device::cpu());
+        assert!(result.is_err(), "Should fail when pool is exhausted");
+
+        pool.release(&t1);
+        pool.release(&t2);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_after_release_reuses_slot() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 1,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9795, config).expect("Failed to create pool");
+
+        let t1 = pool
+            .alloc(&[16], TensorDtype::U8, Device::cpu())
+            .expect("first alloc");
+        let slot_id = t1.slot_id;
+        pool.release(&t1);
+
+        // After release, should be able to allocate again
+        let t2 = pool
+            .alloc(&[16], TensorDtype::U8, Device::cpu())
+            .expect("alloc after release should succeed");
+        assert_eq!(t2.slot_id, slot_id, "Should reuse the freed slot");
+        assert!(
+            t2.generation_full() > t1.generation_full(),
+            "Generation should increase on reuse"
+        );
+
+        pool.release(&t2);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_double_release_is_safe() {
+        let pool = make_test_pool(9794);
+        let tensor = pool
+            .alloc(&[16], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+
+        pool.release(&tensor);
+        assert_eq!(pool.refcount(&tensor), 0);
+
+        // Second release should be a no-op (generation mismatch after slot recycling)
+        pool.release(&tensor);
+        // No panic, no UB
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_release_without_retain_goes_to_zero() {
+        let pool = make_test_pool(9793);
+        let tensor = pool
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+
+        assert_eq!(pool.refcount(&tensor), 1);
+        pool.release(&tensor);
+        assert_eq!(pool.refcount(&tensor), 0);
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_retain_release_balance() {
+        let pool = make_test_pool(9792);
+        let tensor = pool
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+
+        // Retain 5 times
+        for _ in 0..5 {
+            pool.retain(&tensor);
+        }
+        assert_eq!(pool.refcount(&tensor), 6); // 1 initial + 5 retains
+
+        // Release 6 times
+        for _ in 0..6 {
+            pool.release(&tensor);
+        }
+        assert_eq!(pool.refcount(&tensor), 0);
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_with_timeout_zero_expires_immediately() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 1,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9791, config).expect("Failed to create pool");
+
+        // Exhaust the pool
+        let t1 = pool
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("first alloc");
+
+        // Zero timeout should fail immediately
+        let start = std::time::Instant::now();
+        let result = pool.alloc_with_timeout(
+            &[8],
+            TensorDtype::U8,
+            Device::cpu(),
+            std::time::Duration::ZERO,
+        );
+        assert!(
+            result.is_err(),
+            "Zero timeout on exhausted pool should fail"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "Zero timeout should return quickly"
+        );
+
+        pool.release(&t1);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_data_slice_bounds() {
+        let pool = make_test_pool(9790);
+        let tensor = pool
+            .alloc(&[10], TensorDtype::F32, Device::cpu())
+            .expect("alloc failed");
+
+        // data_slice should return exactly 40 bytes (10 * 4 bytes per f32)
+        let data = pool.data_slice(&tensor).unwrap();
+        assert_eq!(data.len(), 40);
+
+        let data_mut = pool.data_slice_mut(&tensor).unwrap();
+        assert_eq!(data_mut.len(), 40);
+
+        pool.release(&tensor);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_stats_reflect_allocations() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9789, config).expect("Failed to create pool");
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 0);
+        assert_eq!(stats.max_slots, 4);
+
+        let t1 = pool.alloc(&[100], TensorDtype::U8, Device::cpu()).unwrap();
+        let t2 = pool.alloc(&[200], TensorDtype::F32, Device::cpu()).unwrap();
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 2);
+        assert!(stats.used_bytes > 0);
+
+        pool.release(&t1);
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 1);
+
+        pool.release(&t2);
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 0);
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_pool_config_defaults() {
+        let config = TensorPoolConfig::default();
+        assert!(config.pool_size > 0, "Default pool_size should be positive");
+        assert!(config.max_slots > 0, "Default max_slots should be positive");
+        assert!(
+            config.slot_alignment > 0,
+            "Default alignment should be positive"
+        );
+    }
+
+    #[test]
+    fn test_alloc_larger_than_pool() {
+        let config = TensorPoolConfig {
+            pool_size: 1024, // Very small pool: 1KB
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9788, config).expect("Failed to create pool");
+
+        // Try to allocate 2KB in a 1KB pool
+        let result = pool.alloc(&[2048], TensorDtype::U8, Device::cpu());
+        assert!(result.is_err(), "Allocation larger than pool should fail");
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_multiple_dtypes() {
+        let pool = make_test_pool(9787);
+
+        let t_u8 = pool.alloc(&[10], TensorDtype::U8, Device::cpu()).unwrap();
+        let t_f32 = pool.alloc(&[10], TensorDtype::F32, Device::cpu()).unwrap();
+        let t_f64 = pool.alloc(&[10], TensorDtype::F64, Device::cpu()).unwrap();
+
+        assert_eq!(t_u8.nbytes(), 10);
+        assert_eq!(t_f32.nbytes(), 40);
+        assert_eq!(t_f64.nbytes(), 80);
+
+        pool.release(&t_u8);
+        pool.release(&t_f32);
+        pool.release(&t_f64);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    // ========================================================================
+    // Exhaustion and fragmentation tests
+    // ========================================================================
+
+    #[test]
+    fn test_slot_exhaustion_returns_error_not_panic() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9600, config).expect("Failed to create pool");
+
+        // Fill all 4 slots
+        let mut tensors = Vec::new();
+        for _ in 0..4 {
+            tensors.push(pool.alloc(&[8], TensorDtype::U8, Device::cpu()).unwrap());
+        }
+
+        // 5th allocation should return Err, not panic
+        let result = pool.alloc(&[8], TensorDtype::U8, Device::cpu());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HorusError::Memory(msg) => {
+                assert!(
+                    msg.to_string().contains("No free tensor slots"),
+                    "Expected 'No free tensor slots' error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected Memory error, got: {:?}", other),
+        }
+
+        for t in &tensors {
+            pool.release(t);
+        }
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_data_region_exhaustion_returns_error() {
+        let config = TensorPoolConfig {
+            pool_size: 256, // Very small: 256 bytes data region
+            max_slots: 8,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9601, config).expect("Failed to create pool");
+
+        // First alloc takes most of the data region (192 bytes, aligned to 64 → 192)
+        let t1 = pool
+            .alloc(&[192], TensorDtype::U8, Device::cpu())
+            .expect("First alloc should succeed");
+
+        // Second alloc should fail — data region exhausted (only 64 bytes left, need 128+alignment)
+        let result = pool.alloc(&[128], TensorDtype::U8, Device::cpu());
+        assert!(result.is_err(), "Should fail when data region is exhausted");
+        match result.unwrap_err() {
+            HorusError::Memory(msg) => {
+                assert!(
+                    msg.to_string().contains("out of memory"),
+                    "Expected 'out of memory' error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected Memory error, got: {:?}", other),
+        }
+
+        pool.release(&t1);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_fragmentation_pattern_alloc_free_interleaved() {
+        // Allocate/free in a pattern that would fragment a naive allocator
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 8,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9602, config).expect("Failed to create pool");
+
+        // Round 1: fill all slots
+        let mut tensors: Vec<_> = (0..8)
+            .map(|_| pool.alloc(&[64], TensorDtype::U8, Device::cpu()).unwrap())
+            .collect();
+
+        // Free even slots
+        for i in (0..8).step_by(2) {
+            pool.release(&tensors[i]);
+        }
+
+        // Verify stats: 4 allocated, 4 free
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 4);
+
+        // Reallocate into the freed slots
+        let new_tensors: Vec<_> = (0..4)
+            .map(|_| pool.alloc(&[32], TensorDtype::U8, Device::cpu()).unwrap())
+            .collect();
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 8);
+
+        // Free odd slots from round 1
+        for i in (1..8).step_by(2) {
+            pool.release(&tensors[i]);
+        }
+
+        // Free round 2 tensors
+        for t in &new_tensors {
+            pool.release(t);
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 0);
+
+        // Round 3: can still allocate after fragmentation
+        let t = pool
+            .alloc(&[100], TensorDtype::U8, Device::cpu())
+            .expect("Should still allocate after fragmentation");
+        pool.release(&t);
+
+        // Clear the original vec to prevent use-after-free on tensors
+        tensors.clear();
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_rapid_alloc_release_cycles() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 2,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9603, config).expect("Failed to create pool");
+
+        // Run 50 alloc/release cycles on a 2-slot pool
+        for i in 0..50 {
+            let t = pool
+                .alloc(&[64], TensorDtype::U8, Device::cpu())
+                .unwrap_or_else(|e| panic!("Alloc failed on cycle {}: {:?}", i, e));
+            pool.release(&t);
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 0);
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_free_different_sizes_fragmentation() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 16,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9604, config).expect("Failed to create pool");
+
+        // Allocate tensors of varying sizes
+        let sizes: Vec<u64> = vec![8, 256, 1024, 16, 512, 64, 2048, 32];
+        let mut tensors: Vec<Tensor> = Vec::new();
+        for &s in &sizes {
+            tensors.push(pool.alloc(&[s], TensorDtype::U8, Device::cpu()).unwrap());
+        }
+
+        let stats_full = pool.stats();
+        assert_eq!(stats_full.allocated_slots, 8);
+
+        // Free every other tensor (fragmentation pattern)
+        for i in (0..8).step_by(2) {
+            pool.release(&tensors[i]);
+        }
+
+        // Reallocate with different sizes
+        let realloc_sizes: Vec<u64> = vec![128, 512, 32, 1024];
+        let mut new_tensors = Vec::new();
+        for &s in &realloc_sizes {
+            new_tensors.push(pool.alloc(&[s], TensorDtype::U8, Device::cpu()).unwrap());
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 8); // 4 original odd + 4 new
+
+        // Clean up
+        for i in (1..8).step_by(2) {
+            pool.release(&tensors[i]);
+        }
+        for t in &new_tensors {
+            pool.release(t);
+        }
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    // ========================================================================
+    // Concurrent allocation tests
+    // ========================================================================
+
+    #[test]
+    fn test_concurrent_alloc_no_corruption() {
+        use std::sync::Arc;
+
+        let config = TensorPoolConfig {
+            pool_size: 16 * 1024 * 1024, // 16MB
+            max_slots: 64,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = Arc::new(TensorPool::new(9605, config).expect("Failed to create pool"));
+
+        let num_threads = 4;
+        let allocs_per_thread = 10;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                std::thread::spawn(move || {
+                    let mut tensors = Vec::new();
+                    for _ in 0..allocs_per_thread {
+                        let t = pool
+                            .alloc(&[64], TensorDtype::F32, Device::cpu())
+                            .expect("concurrent alloc failed");
+                        // Write unique data to verify no overlap
+                        let data = pool.data_slice_mut(&t).unwrap();
+                        for byte in data.iter_mut() {
+                            *byte = 0xAB;
+                        }
+                        tensors.push(t);
+                    }
+                    tensors
+                })
+            })
+            .collect();
+
+        let all_tensors: Vec<Vec<Tensor>> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Verify no slot ID collisions
+        let mut all_slot_ids: Vec<u32> = all_tensors
+            .iter()
+            .flat_map(|v| v.iter().map(|t| t.slot_id))
+            .collect();
+        let total = all_slot_ids.len();
+        all_slot_ids.sort();
+        all_slot_ids.dedup();
+        assert_eq!(
+            all_slot_ids.len(),
+            total,
+            "Slot IDs should be unique across threads"
+        );
+
+        // Verify data integrity — each tensor's data should be 0xAB
+        for tensors in &all_tensors {
+            for t in tensors {
+                let data = pool.data_slice(t).unwrap();
+                assert!(
+                    data.iter().all(|&b| b == 0xAB),
+                    "Data corruption detected in slot {}",
+                    t.slot_id
+                );
+            }
+        }
+
+        // Stats should reflect total allocations
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, num_threads * allocs_per_thread);
+
+        // Clean up
+        for tensors in &all_tensors {
+            for t in tensors {
+                pool.release(t);
+            }
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 0);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_concurrent_alloc_release_stress() {
+        use std::sync::Arc;
+
+        let config = TensorPoolConfig {
+            pool_size: 4 * 1024 * 1024, // 4MB
+            max_slots: 8,               // Small pool to force contention
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = Arc::new(TensorPool::new(9606, config).expect("Failed to create pool"));
+
+        let num_threads = 4;
+        let cycles_per_thread = 20;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                std::thread::spawn(move || {
+                    let mut successes = 0u32;
+                    for _ in 0..cycles_per_thread {
+                        match pool.alloc(&[32], TensorDtype::U8, Device::cpu()) {
+                            Ok(t) => {
+                                successes += 1;
+                                // Brief hold then release
+                                std::thread::yield_now();
+                                pool.release(&t);
+                            }
+                            Err(_) => {
+                                // Pool full — expected under contention
+                                std::thread::yield_now();
+                            }
+                        }
+                    }
+                    successes
+                })
+            })
+            .collect();
+
+        let total_successes: u32 = handles.into_iter().map(|h| h.join().unwrap()).sum();
+        assert!(
+            total_successes > 0,
+            "At least some concurrent allocations should succeed"
+        );
+
+        // After all threads complete, pool should be empty
+        let stats = pool.stats();
+        assert_eq!(
+            stats.allocated_slots, 0,
+            "All slots should be freed after stress test"
+        );
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_concurrent_retain_release() {
+        use std::sync::Arc;
+
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = Arc::new(TensorPool::new(9607, config).expect("Failed to create pool"));
+        let tensor = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+
+        // 4 threads each retain then release
+        let num_threads = 4;
+        let ops_per_thread = 25;
+
+        // Pre-retain so refcount = 1 + num_threads * ops_per_thread
+        for _ in 0..num_threads * ops_per_thread {
+            pool.retain(&tensor);
+        }
+        assert_eq!(
+            pool.refcount(&tensor),
+            1 + (num_threads * ops_per_thread) as u32
+        );
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                let t = tensor.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..ops_per_thread {
+                        pool.release(&t);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Should be back to refcount 1 (original alloc)
+        assert_eq!(pool.refcount(&tensor), 1);
+
+        pool.release(&tensor);
+        assert_eq!(pool.refcount(&tensor), 0);
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    // ========================================================================
+    // Stats accuracy tests
+    // ========================================================================
+
+    #[test]
+    fn test_stats_accuracy_under_alloc_release_load() {
+        let config = TensorPoolConfig {
+            pool_size: 4 * 1024 * 1024,
+            max_slots: 16,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9608, config).expect("Failed to create pool");
+
+        // Allocate 10 tensors of various sizes
+        let shapes: Vec<Vec<u64>> = vec![
+            vec![100],
+            vec![10, 20],
+            vec![8, 8, 8],
+            vec![1024],
+            vec![64],
+            vec![256],
+            vec![32],
+            vec![128],
+            vec![512],
+            vec![16],
+        ];
+        let mut tensors = Vec::new();
+        for shape in &shapes {
+            tensors.push(pool.alloc(shape, TensorDtype::F32, Device::cpu()).unwrap());
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 10);
+        assert_eq!(stats.max_slots, 16);
+        assert_eq!(stats.total_refcount, 10); // Each has refcount 1
+        assert!(stats.used_bytes > 0);
+        assert!(stats.free_bytes < stats.pool_size);
+        assert_eq!(stats.used_bytes + stats.free_bytes, stats.pool_size);
+
+        // Retain some tensors
+        pool.retain(&tensors[0]);
+        pool.retain(&tensors[0]);
+        pool.retain(&tensors[5]);
+
+        let stats = pool.stats();
+        assert_eq!(stats.total_refcount, 13); // 10 + 3 retains
+
+        // Release all original references
+        for t in &tensors {
+            pool.release(t);
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 2); // tensors[0] (rc=2) and tensors[5] (rc=1) still live
+        assert_eq!(stats.total_refcount, 3);
+
+        // Final cleanup
+        pool.release(&tensors[0]);
+        pool.release(&tensors[0]);
+        pool.release(&tensors[5]);
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 0);
+        assert_eq!(stats.total_refcount, 0);
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_stats_used_bytes_monotonically_increases() {
+        // The bump allocator never reclaims data region bytes, only slot metadata
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 8,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9609, config).expect("Failed to create pool");
+
+        let mut prev_used = 0;
+        let mut tensors = Vec::new();
+
+        for _ in 0..5 {
+            let t = pool.alloc(&[64], TensorDtype::U8, Device::cpu()).unwrap();
+            tensors.push(t);
+            let stats = pool.stats();
+            assert!(
+                stats.used_bytes >= prev_used,
+                "used_bytes should never decrease: {} < {}",
+                stats.used_bytes,
+                prev_used
+            );
+            prev_used = stats.used_bytes;
+        }
+
+        // Release all tensors — used_bytes should NOT decrease (bump allocator)
+        for t in &tensors {
+            pool.release(t);
+        }
+        let stats = pool.stats();
+        assert_eq!(
+            stats.used_bytes, prev_used,
+            "Bump allocator: used_bytes stays the same after release"
+        );
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    // ========================================================================
+    // Pack/unpack tagged head tests
+    // ========================================================================
+
+    #[test]
+    fn test_pack_unpack_tagged_head_roundtrip() {
+        let test_cases = [
+            (0u32, 0u32),
+            (1, 0),
+            (0, 1),
+            (u32::MAX, u32::MAX),
+            (42, 7),
+            (0xDEAD, 0xBEEF),
+        ];
+        for (gen, slot) in test_cases {
+            let packed = pack_tagged_head(gen, slot);
+            let (g, s) = unpack_tagged_head(packed);
+            assert_eq!(
+                (g, s),
+                (gen, slot),
+                "Roundtrip failed for ({}, {})",
+                gen,
+                slot
+            );
+        }
+    }
+
+    #[test]
+    fn test_pack_tagged_head_layout() {
+        let packed = pack_tagged_head(0x12345678, 0xABCDEF01);
+        assert_eq!(packed >> 32, 0x12345678);
+        assert_eq!(packed & 0xFFFF_FFFF, 0xABCDEF01);
+    }
 }

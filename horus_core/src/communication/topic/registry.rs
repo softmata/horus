@@ -81,3 +81,385 @@ pub(crate) fn notify_epoch_change(name: &str, new_epoch: u64) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64 as StdAtomicU64;
+    use std::sync::Barrier;
+
+    // Unique topic names to avoid cross-test interference from global statics
+    static TEST_COUNTER: StdAtomicU64 = StdAtomicU64::new(0);
+    fn unique(prefix: &str) -> String {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("registry_test_{}_{}_{}", prefix, std::process::id(), id)
+    }
+
+    // ── store_or_get_backend ──
+
+    #[test]
+    fn test_store_backend_returns_stored() {
+        let name = unique("store");
+        let backend: Arc<dyn Any + Send + Sync> = Arc::new(42u64);
+        let got = store_or_get_backend(&name, 1, backend);
+        assert_eq!(*got.downcast_ref::<u64>().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_store_same_key_returns_first() {
+        let name = unique("first_wins");
+        let first: Arc<dyn Any + Send + Sync> = Arc::new(1u64);
+        let second: Arc<dyn Any + Send + Sync> = Arc::new(2u64);
+
+        let got1 = store_or_get_backend(&name, 1, first);
+        let got2 = store_or_get_backend(&name, 1, second);
+
+        // First one wins
+        assert_eq!(*got1.downcast_ref::<u64>().unwrap(), 1);
+        assert_eq!(*got2.downcast_ref::<u64>().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_store_different_epochs() {
+        let name = unique("epochs");
+        let e1: Arc<dyn Any + Send + Sync> = Arc::new(10u64);
+        let e2: Arc<dyn Any + Send + Sync> = Arc::new(20u64);
+
+        store_or_get_backend(&name, 1, e1);
+        store_or_get_backend(&name, 2, e2);
+
+        // Both epochs accessible
+        assert_eq!(
+            *lookup_backend(&name, 1)
+                .unwrap()
+                .downcast_ref::<u64>()
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            *lookup_backend(&name, 2)
+                .unwrap()
+                .downcast_ref::<u64>()
+                .unwrap(),
+            20
+        );
+    }
+
+    #[test]
+    fn test_store_cleans_old_epochs() {
+        let name = unique("cleanup");
+        let e1: Arc<dyn Any + Send + Sync> = Arc::new(1u64);
+        let e3: Arc<dyn Any + Send + Sync> = Arc::new(3u64);
+
+        store_or_get_backend(&name, 1, e1);
+        // Storing epoch 3 should clean epochs < 2 (epoch - 1)
+        store_or_get_backend(&name, 3, e3);
+
+        // Epoch 1 should be cleaned (3 - 1 = 2, retains >= 2)
+        assert!(lookup_backend(&name, 1).is_none());
+        assert_eq!(
+            *lookup_backend(&name, 3)
+                .unwrap()
+                .downcast_ref::<u64>()
+                .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_store_different_topics_independent() {
+        let name_a = unique("topic_a");
+        let name_b = unique("topic_b");
+
+        let a: Arc<dyn Any + Send + Sync> = Arc::new(100u64);
+        let b: Arc<dyn Any + Send + Sync> = Arc::new(200u64);
+
+        store_or_get_backend(&name_a, 1, a);
+        store_or_get_backend(&name_b, 1, b);
+
+        assert_eq!(
+            *lookup_backend(&name_a, 1)
+                .unwrap()
+                .downcast_ref::<u64>()
+                .unwrap(),
+            100
+        );
+        assert_eq!(
+            *lookup_backend(&name_b, 1)
+                .unwrap()
+                .downcast_ref::<u64>()
+                .unwrap(),
+            200
+        );
+    }
+
+    // ── lookup_backend ──
+
+    #[test]
+    fn test_lookup_nonexistent_returns_none() {
+        let name = unique("missing");
+        assert!(lookup_backend(&name, 1).is_none());
+    }
+
+    #[test]
+    fn test_lookup_wrong_epoch_returns_none() {
+        let name = unique("wrong_epoch");
+        let b: Arc<dyn Any + Send + Sync> = Arc::new(42u64);
+        store_or_get_backend(&name, 1, b);
+        assert!(lookup_backend(&name, 2).is_none());
+    }
+
+    // ── remove_topic ──
+
+    #[test]
+    fn test_remove_topic_clears_all_epochs() {
+        let name = unique("remove");
+        let e1: Arc<dyn Any + Send + Sync> = Arc::new(1u64);
+        let e2: Arc<dyn Any + Send + Sync> = Arc::new(2u64);
+
+        store_or_get_backend(&name, 1, e1);
+        store_or_get_backend(&name, 2, e2);
+
+        remove_topic(&name);
+
+        assert!(lookup_backend(&name, 1).is_none());
+        assert!(lookup_backend(&name, 2).is_none());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_topic_no_panic() {
+        remove_topic(&unique("never_existed"));
+        // Should not panic
+    }
+
+    #[test]
+    fn test_remove_doesnt_affect_other_topics() {
+        let name_a = unique("rem_a");
+        let name_b = unique("rem_b");
+
+        let a: Arc<dyn Any + Send + Sync> = Arc::new(1u64);
+        let b: Arc<dyn Any + Send + Sync> = Arc::new(2u64);
+
+        store_or_get_backend(&name_a, 1, a);
+        store_or_get_backend(&name_b, 1, b);
+
+        remove_topic(&name_a);
+
+        assert!(lookup_backend(&name_a, 1).is_none());
+        assert!(lookup_backend(&name_b, 1).is_some());
+    }
+
+    // ── get_or_create_process_epoch ──
+
+    #[test]
+    fn test_get_or_create_epoch_initial_zero() {
+        let name = unique("epoch_init");
+        let epoch = get_or_create_process_epoch(&name);
+        assert_eq!(epoch.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_get_or_create_epoch_idempotent() {
+        let name = unique("epoch_idem");
+        let e1 = get_or_create_process_epoch(&name);
+        let e2 = get_or_create_process_epoch(&name);
+
+        // Both should point to the same Arc (same allocation)
+        assert!(Arc::ptr_eq(&e1, &e2));
+    }
+
+    #[test]
+    fn test_get_or_create_epoch_different_topics() {
+        let a = unique("epoch_a");
+        let b = unique("epoch_b");
+        let ea = get_or_create_process_epoch(&a);
+        let eb = get_or_create_process_epoch(&b);
+
+        // Different topics get different atomics
+        assert!(!Arc::ptr_eq(&ea, &eb));
+    }
+
+    // ── notify_epoch_change ──
+
+    #[test]
+    fn test_notify_epoch_change_updates_value() {
+        let name = unique("notify");
+        let epoch = get_or_create_process_epoch(&name);
+        assert_eq!(epoch.load(Ordering::Relaxed), 0);
+
+        notify_epoch_change(&name, 5);
+        assert_eq!(epoch.load(Ordering::Acquire), 5);
+    }
+
+    #[test]
+    fn test_notify_nonexistent_topic_no_panic() {
+        notify_epoch_change(&unique("no_exist"), 42);
+        // Should not panic
+    }
+
+    // ── Concurrent access tests ──
+
+    #[test]
+    fn test_concurrent_store_same_key_first_wins() {
+        let name = unique("concurrent_store");
+        let barrier = Arc::new(Barrier::new(8));
+        let results: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let name = name.clone();
+                let barrier = Arc::clone(&barrier);
+                let results = Arc::clone(&results);
+                std::thread::spawn(move || {
+                    let backend: Arc<dyn Any + Send + Sync> = Arc::new(i as u64);
+                    barrier.wait();
+                    let got = store_or_get_backend(&name, 1, backend);
+                    results
+                        .lock()
+                        .unwrap()
+                        .push(*got.downcast_ref::<u64>().unwrap());
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let results = results.lock().unwrap();
+        // All threads should get the same value (first-wins semantics)
+        let first = results[0];
+        assert!(results.iter().all(|&v| v == first));
+    }
+
+    #[test]
+    fn test_concurrent_lookup_during_store() {
+        let name = unique("concurrent_lookup");
+        let barrier = Arc::new(Barrier::new(8));
+
+        // Pre-store a value
+        let backend: Arc<dyn Any + Send + Sync> = Arc::new(99u64);
+        store_or_get_backend(&name, 1, backend);
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let name = name.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    // Half threads lookup, half threads store new epochs
+                    let val = lookup_backend(&name, 1);
+                    assert!(val.is_some());
+                    assert_eq!(*val.unwrap().downcast_ref::<u64>().unwrap(), 99);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_concurrent_epoch_creation() {
+        let name = unique("concurrent_epoch");
+        let barrier = Arc::new(Barrier::new(8));
+        let epochs: Arc<Mutex<Vec<Arc<AtomicU64>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let name = name.clone();
+                let barrier = Arc::clone(&barrier);
+                let epochs = Arc::clone(&epochs);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let epoch = get_or_create_process_epoch(&name);
+                    epochs.lock().unwrap().push(epoch);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let epochs = epochs.lock().unwrap();
+        // All threads should get the same Arc (same pointer)
+        let first = &epochs[0];
+        assert!(epochs.iter().all(|e| Arc::ptr_eq(first, e)));
+    }
+
+    #[test]
+    fn test_concurrent_notify_and_read() {
+        let name = unique("concurrent_notify");
+        let epoch = get_or_create_process_epoch(&name);
+        let barrier = Arc::new(Barrier::new(4));
+
+        // 2 writers, 2 readers
+        let mut handles = Vec::new();
+        for i in 0..2 {
+            let name = name.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for v in 0..100 {
+                    notify_epoch_change(&name, (i * 100 + v) as u64);
+                }
+            }));
+        }
+        for _ in 0..2 {
+            let epoch = Arc::clone(&epoch);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..100 {
+                    let _ = epoch.load(Ordering::Acquire);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // After all writes, epoch should be one of the written values
+        let final_val = epoch.load(Ordering::Acquire);
+        assert!(final_val < 200);
+    }
+
+    #[test]
+    fn test_concurrent_store_and_remove() {
+        let name = unique("store_remove");
+        let barrier = Arc::new(Barrier::new(4));
+
+        let mut handles = Vec::new();
+        // 2 threads store
+        for i in 0..2 {
+            let name = name.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for e in 0..50 {
+                    let b: Arc<dyn Any + Send + Sync> = Arc::new((i * 50 + e) as u64);
+                    store_or_get_backend(&name, e as u64, b);
+                }
+            }));
+        }
+        // 2 threads remove
+        for _ in 0..2 {
+            let name = name.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..50 {
+                    remove_topic(&name);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Should not panic or deadlock
+    }
+}

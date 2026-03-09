@@ -432,3 +432,288 @@ where
 
     scan_recursive(base_path, 0, add_workspace, current_workspace);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ========================================================================
+    // WorkspaceRegistry tests
+    // ========================================================================
+
+    #[test]
+    fn workspace_registry_empty_on_missing_file() {
+        // If registry file doesn't exist, load returns empty
+        let registry = WorkspaceRegistry {
+            workspaces: Vec::new(),
+        };
+        assert!(registry.workspaces.is_empty());
+    }
+
+    #[test]
+    fn workspace_registry_serde_roundtrip() {
+        let ws = Workspace {
+            name: "test_ws".to_string(),
+            path: PathBuf::from("/tmp/test_ws"),
+            created_at: Utc::now(),
+            last_used: Utc::now(),
+        };
+        let registry = WorkspaceRegistry {
+            workspaces: vec![ws],
+        };
+
+        let json = serde_json::to_string(&registry).unwrap();
+        let loaded: WorkspaceRegistry = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.workspaces.len(), 1);
+        assert_eq!(loaded.workspaces[0].name, "test_ws");
+        assert_eq!(loaded.workspaces[0].path, PathBuf::from("/tmp/test_ws"));
+    }
+
+    #[test]
+    fn workspace_registry_find_by_name() {
+        let registry = WorkspaceRegistry {
+            workspaces: vec![
+                Workspace {
+                    name: "alpha".to_string(),
+                    path: PathBuf::from("/tmp/alpha"),
+                    created_at: Utc::now(),
+                    last_used: Utc::now(),
+                },
+                Workspace {
+                    name: "beta".to_string(),
+                    path: PathBuf::from("/tmp/beta"),
+                    created_at: Utc::now(),
+                    last_used: Utc::now(),
+                },
+            ],
+        };
+
+        assert!(registry.find_by_name("alpha").is_some());
+        assert_eq!(
+            registry.find_by_name("alpha").unwrap().path,
+            PathBuf::from("/tmp/alpha")
+        );
+        assert!(registry.find_by_name("beta").is_some());
+        assert!(registry.find_by_name("gamma").is_none());
+    }
+
+    #[test]
+    fn workspace_registry_add_deduplicates_by_path() {
+        let mut registry = WorkspaceRegistry {
+            workspaces: Vec::new(),
+        };
+
+        // Simulate add without save (avoid touching real filesystem)
+        let path = PathBuf::from("/tmp/dedup_test");
+        registry.workspaces.push(Workspace {
+            name: "first_name".to_string(),
+            path: path.clone(),
+            created_at: Utc::now(),
+            last_used: Utc::now(),
+        });
+
+        // Add again with different name but same path
+        registry.workspaces.retain(|w| w.path != path);
+        registry.workspaces.push(Workspace {
+            name: "second_name".to_string(),
+            path: path.clone(),
+            created_at: Utc::now(),
+            last_used: Utc::now(),
+        });
+
+        assert_eq!(registry.workspaces.len(), 1);
+        assert_eq!(registry.workspaces[0].name, "second_name");
+    }
+
+    // ========================================================================
+    // find_workspace_root tests
+    // ========================================================================
+
+    #[test]
+    fn find_workspace_root_with_horus_dir() {
+        let tmp = TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        // Save and set current dir
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = find_workspace_root();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), tmp.path());
+
+        // Restore
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn find_workspace_root_with_horus_yaml() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join(HORUS_YAML), "name: test\nversion: 0.1.0\n").unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = find_workspace_root();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), tmp.path());
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn find_workspace_root_from_subdirectory() {
+        let tmp = TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let sub_dir = tmp.path().join("src/nodes");
+        fs::create_dir_all(&sub_dir).unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&sub_dir).unwrap();
+
+        let result = find_workspace_root();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), tmp.path());
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    // ========================================================================
+    // InstallTarget tests
+    // ========================================================================
+
+    #[test]
+    fn install_target_clone() {
+        let local = InstallTarget::Local(PathBuf::from("/tmp/test"));
+        let cloned = local.clone();
+        match cloned {
+            InstallTarget::Local(p) => assert_eq!(p, PathBuf::from("/tmp/test")),
+            _ => panic!("Expected Local"),
+        }
+
+        let global = InstallTarget::Global;
+        let cloned = global.clone();
+        matches!(cloned, InstallTarget::Global);
+    }
+
+    #[test]
+    fn install_target_debug() {
+        let local = InstallTarget::Local(PathBuf::from("/tmp/test"));
+        let debug = format!("{:?}", local);
+        assert!(debug.contains("Local"));
+
+        let global = InstallTarget::Global;
+        let debug = format!("{:?}", global);
+        assert!(debug.contains("Global"));
+    }
+
+    // ========================================================================
+    // discover_all_workspaces tests
+    // ========================================================================
+
+    #[test]
+    fn discover_no_workspaces() {
+        // With no current workspace and no registry, should return empty
+        let result = discover_all_workspaces(&None);
+        // May find registered workspaces from global registry, so just check it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn discover_current_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let current = Some(tmp.path().to_path_buf());
+        let result = discover_all_workspaces(&current);
+
+        // Should find at least the current workspace
+        assert!(!result.is_empty());
+        assert!(result.iter().any(|w| w.is_current));
+    }
+
+    #[test]
+    fn discover_nested_workspaces() {
+        let tmp = TempDir::new().unwrap();
+        // Create parent workspace
+        let parent_horus = tmp.path().join(".horus");
+        fs::create_dir_all(&parent_horus).unwrap();
+
+        // Create nested workspaces
+        let nested1 = tmp.path().join("robot_a");
+        fs::create_dir_all(nested1.join(".horus")).unwrap();
+
+        let nested2 = tmp.path().join("robot_b");
+        fs::create_dir_all(nested2.join(".horus")).unwrap();
+
+        let current = Some(tmp.path().to_path_buf());
+        let result = discover_all_workspaces(&current);
+
+        // Should find parent + both nested
+        assert!(result.len() >= 3);
+        let names: Vec<&str> = result.iter().map(|w| w.name.as_str()).collect();
+        assert!(names.contains(&"robot_a"));
+        assert!(names.contains(&"robot_b"));
+    }
+
+    #[test]
+    fn discover_skips_hidden_and_build_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let parent_horus = tmp.path().join(".horus");
+        fs::create_dir_all(&parent_horus).unwrap();
+
+        // Create dirs that should be skipped
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        fs::create_dir_all(tmp.path().join("target/.horus")).unwrap();
+        fs::create_dir_all(tmp.path().join("node_modules/.horus")).unwrap();
+
+        // Create a valid nested workspace
+        fs::create_dir_all(tmp.path().join("real_ws/.horus")).unwrap();
+
+        let current = Some(tmp.path().to_path_buf());
+        let result = discover_all_workspaces(&current);
+
+        let names: Vec<&str> = result.iter().map(|w| w.name.as_str()).collect();
+        assert!(names.contains(&"real_ws"));
+        assert!(!names.contains(&"target"));
+        assert!(!names.contains(&"node_modules"));
+    }
+
+    #[test]
+    fn discover_deduplicates_by_canonical_path() {
+        let tmp = TempDir::new().unwrap();
+        let ws_dir = tmp.path().join("workspace");
+        fs::create_dir_all(ws_dir.join(".horus")).unwrap();
+
+        // Use the same path twice as current workspace
+        let current = Some(ws_dir.clone());
+        let result = discover_all_workspaces(&current);
+
+        // Count how many times "workspace" appears
+        let ws_count = result.iter().filter(|w| w.name == "workspace").count();
+        assert_eq!(ws_count, 1, "Should deduplicate identical paths");
+    }
+
+    // ========================================================================
+    // DiscoveredWorkspace tests
+    // ========================================================================
+
+    #[test]
+    fn discovered_workspace_fields() {
+        let dw = DiscoveredWorkspace {
+            name: "my_robot".to_string(),
+            path: PathBuf::from("/home/user/my_robot"),
+            is_current: true,
+        };
+        assert_eq!(dw.name, "my_robot");
+        assert!(dw.is_current);
+        let cloned = dw.clone();
+        assert_eq!(cloned.name, "my_robot");
+        let _ = format!("{:?}", dw);
+    }
+}

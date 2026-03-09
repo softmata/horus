@@ -486,4 +486,248 @@ mod tests {
         // This must panic (debug_assert fires before the Err return).
         let _ = TensorHandle::from_owned(tensor, Arc::clone(&pool_b));
     }
+
+    // ── Handle lifecycle tests ──────────────────────────────────────────
+
+    /// Dropping a TensorHandle returns the slot to the pool for reuse.
+    #[test]
+    fn test_handle_drop_returns_slot_to_pool() {
+        let pool = create_test_pool();
+
+        let handle =
+            TensorHandle::alloc(pool.clone(), &[16], TensorDtype::U8, Device::cpu()).unwrap();
+        let slot_id = handle.tensor().slot_id;
+        assert_eq!(pool.refcount(handle.tensor()), 1);
+
+        let stats_before = pool.stats();
+        assert_eq!(stats_before.allocated_slots, 1);
+
+        drop(handle); // Should free the slot
+
+        let stats_after = pool.stats();
+        assert_eq!(
+            stats_after.allocated_slots, 0,
+            "Slot should be freed after handle drop"
+        );
+
+        // Slot should be reusable — allocate again
+        let handle2 =
+            TensorHandle::alloc(pool.clone(), &[16], TensorDtype::U8, Device::cpu()).unwrap();
+        assert_eq!(
+            handle2.tensor().slot_id, slot_id,
+            "Pool should reuse the freed slot"
+        );
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// Multiple clones increment refcount correctly and last drop frees the slot.
+    #[test]
+    fn test_handle_multiple_clones_refcount() {
+        let pool = create_test_pool();
+
+        let h1 =
+            TensorHandle::alloc(pool.clone(), &[8], TensorDtype::F32, Device::cpu()).unwrap();
+        assert_eq!(h1.refcount(), 1);
+
+        let h2 = h1.clone();
+        assert_eq!(h1.refcount(), 2);
+
+        let h3 = h2.clone();
+        assert_eq!(h1.refcount(), 3);
+
+        let h4 = h3.clone();
+        assert_eq!(h1.refcount(), 4);
+
+        drop(h2);
+        assert_eq!(h1.refcount(), 3);
+
+        drop(h4);
+        assert_eq!(h1.refcount(), 2);
+
+        drop(h3);
+        assert_eq!(h1.refcount(), 1);
+
+        // Stats should still show allocated
+        assert_eq!(pool.stats().allocated_slots, 1);
+
+        drop(h1); // Last handle — slot freed
+        assert_eq!(pool.stats().allocated_slots, 0);
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// Clone survives original being dropped — no use-after-free.
+    #[test]
+    fn test_handle_clone_survives_original_drop() {
+        let pool = create_test_pool();
+
+        let original =
+            TensorHandle::alloc(pool.clone(), &[4], TensorDtype::F32, Device::cpu()).unwrap();
+
+        // Write data through original
+        // SAFETY: F32 dtype matches f32 type.
+        unsafe {
+            let data = original.data_as_mut::<f32>().unwrap();
+            data[0] = 1.0;
+            data[1] = 2.0;
+            data[2] = 3.0;
+            data[3] = 4.0;
+        }
+
+        let clone = original.clone();
+        drop(original); // Drop original — clone should still be valid
+
+        // Data should still be accessible through the clone
+        let data = unsafe { clone.data_as::<f32>().unwrap() };
+        assert_eq!(data, &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(clone.refcount(), 1);
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// TensorHandle::new() increments refcount (wrapping an existing descriptor).
+    #[test]
+    fn test_handle_new_increments_refcount() {
+        let pool = create_test_pool();
+
+        let tensor = pool
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+        assert_eq!(pool.refcount(&tensor), 1);
+
+        // TensorHandle::new() should retain (increment refcount)
+        let handle = TensorHandle::new(tensor, Arc::clone(&pool));
+        assert_eq!(handle.refcount(), 2); // 1 from alloc + 1 from new()
+
+        drop(handle); // Drop decrements back to 1
+        assert_eq!(pool.refcount(&tensor), 1);
+
+        pool.release(&tensor); // Clean up the original alloc
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// slice_first_dim creates a handle that shares refcount with original.
+    #[test]
+    fn test_handle_slice_refcount() {
+        let pool = create_test_pool();
+
+        let handle =
+            TensorHandle::alloc(pool.clone(), &[20, 10], TensorDtype::F32, Device::cpu())
+                .unwrap();
+        assert_eq!(handle.refcount(), 1);
+
+        let slice = handle.slice_first_dim(5, 15).expect("slice should work");
+        assert_eq!(handle.refcount(), 2);
+        assert_eq!(slice.shape(), &[10, 10]);
+
+        // Clone the slice
+        let slice2 = slice.clone();
+        assert_eq!(handle.refcount(), 3);
+
+        drop(slice);
+        assert_eq!(handle.refcount(), 2);
+
+        drop(slice2);
+        assert_eq!(handle.refcount(), 1);
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// view() creates a handle that shares refcount with original.
+    #[test]
+    fn test_handle_view_refcount() {
+        let pool = create_test_pool();
+
+        let handle =
+            TensorHandle::alloc(pool.clone(), &[100], TensorDtype::F32, Device::cpu()).unwrap();
+        assert_eq!(handle.refcount(), 1);
+
+        let view = handle.view(&[10, 10]).expect("view should work");
+        assert_eq!(handle.refcount(), 2);
+        assert_eq!(view.shape(), &[10, 10]);
+        assert_eq!(view.numel(), 100);
+
+        drop(view);
+        assert_eq!(handle.refcount(), 1);
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// Cross-thread clone and drop correctness.
+    #[test]
+    fn test_handle_cross_thread_clone_drop() {
+        use std::thread;
+
+        let pool = create_test_pool();
+
+        let handle =
+            TensorHandle::alloc(pool.clone(), &[32], TensorDtype::U8, Device::cpu()).unwrap();
+
+        // Write a pattern
+        handle.data_slice_mut().unwrap().fill(0xAB);
+
+        // Clone into 4 threads
+        let handles: Vec<_> = (0..4).map(|_| handle.clone()).collect();
+        assert_eq!(handle.refcount(), 5); // 1 original + 4 clones
+
+        let threads: Vec<_> = handles
+            .into_iter()
+            .map(|h| {
+                thread::spawn(move || {
+                    // Each thread reads the data and verifies it
+                    let data = h.data_slice().unwrap();
+                    assert!(data.iter().all(|&b| b == 0xAB));
+                    assert!(h.refcount() >= 1);
+                    // Handle dropped at end of closure
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        assert_eq!(handle.refcount(), 1); // Only original remains
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// Debug format includes useful information.
+    #[test]
+    fn test_handle_debug_format() {
+        let pool = create_test_pool();
+
+        let handle =
+            TensorHandle::alloc(pool.clone(), &[3, 4], TensorDtype::F32, Device::cpu()).unwrap();
+        let debug = format!("{:?}", handle);
+
+        assert!(debug.contains("TensorHandle"));
+        assert!(debug.contains("shape"));
+        assert!(debug.contains("dtype"));
+        assert!(debug.contains("refcount"));
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// Handle accessors return correct values.
+    #[test]
+    fn test_handle_accessors() {
+        let pool = create_test_pool();
+
+        let handle =
+            TensorHandle::alloc(pool.clone(), &[5, 10], TensorDtype::F64, Device::cpu())
+                .unwrap();
+
+        assert_eq!(handle.shape(), &[5, 10]);
+        assert_eq!(handle.dtype(), TensorDtype::F64);
+        assert_eq!(handle.numel(), 50);
+        assert_eq!(handle.nbytes(), 400); // 50 * 8 bytes
+        assert!(handle.is_cpu());
+        assert!(!handle.is_cuda());
+        assert!(handle.is_contiguous());
+        assert!(std::ptr::eq(handle.pool().as_ref(), pool.as_ref()));
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
 }

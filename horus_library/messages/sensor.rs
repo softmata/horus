@@ -983,7 +983,12 @@ mod tests {
     #[test]
     fn test_imu_data_orientation() {
         let mut imu = Imu::new();
-        imu.orientation = [0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2];
+        imu.orientation = [
+            0.0,
+            0.0,
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+        ];
         let q = ImuData::orientation(&imu);
         assert!((q[2] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert!((q[3] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);

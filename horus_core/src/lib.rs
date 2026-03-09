@@ -40,6 +40,11 @@ pub(crate) mod terminal;
 pub mod types;
 pub(crate) mod utils;
 
+// Test utilities — available under `test-utils` feature or in test builds
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+pub mod testing;
+
 // Crate-internal re-exports (used by `crate::HorusError` etc. within this crate,
 // and by horus_py / macro-generated code cross-crate).
 #[doc(hidden)]

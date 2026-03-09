@@ -545,6 +545,77 @@ mod tests {
         assert!(!topic_names.contains("nav/request"));
         assert!(!topic_names.contains("nav/response"));
     }
+
+    #[test]
+    fn send_goal_rejects_invalid_json() {
+        // send_goal validates JSON before opening topics. Invalid JSON → Config error.
+        let result = send_goal("test_action", "not valid json", false, 5.0);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid goal JSON"),
+            "error should mention invalid JSON: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn action_name_matching_logic() {
+        // Mimic the matching in action_info: exact, ends_with /name, or basename match.
+        let action_name = "robot/navigate_to_pose";
+        let search = "navigate_to_pose";
+
+        let matches = action_name == search
+            || action_name.ends_with(&format!("/{}", search))
+            || action_name
+                .rsplit('/')
+                .next()
+                .map(|base| base == search)
+                .unwrap_or(false);
+        assert!(matches, "should match by base name");
+    }
+
+    #[test]
+    fn action_name_exact_match() {
+        let action_name = "navigate";
+        let search = "navigate";
+        assert_eq!(action_name, search);
+    }
+
+    #[test]
+    fn action_name_no_match() {
+        let action_name = "navigate";
+        let search = "pick";
+        let matches = action_name == search
+            || action_name.ends_with(&format!("/{}", search))
+            || action_name
+                .rsplit('/')
+                .next()
+                .map(|base| base == search)
+                .unwrap_or(false);
+        assert!(!matches);
+    }
+
+    #[test]
+    fn cancel_goal_topic_name_format() {
+        let name = "navigate";
+        let cancel_topic = format!("{}/cancel", name);
+        assert_eq!(cancel_topic, "navigate/cancel");
+    }
+
+    #[test]
+    fn goal_request_json_structure() {
+        let goal_id = "test-uuid-1234";
+        let goal_value = serde_json::json!({"x": 1.0, "y": 2.0});
+        let goal_request = serde_json::json!({
+            "goal_id": goal_id,
+            "priority": 128,
+            "payload": goal_value,
+        });
+        assert_eq!(goal_request["goal_id"], "test-uuid-1234");
+        assert_eq!(goal_request["priority"], 128);
+        assert_eq!(goal_request["payload"]["x"], 1.0);
+    }
 }
 
 /// Cancel a goal on an action server (`horus action cancel_goal <name>`)

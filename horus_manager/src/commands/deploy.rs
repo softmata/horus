@@ -731,4 +731,112 @@ targets:
         assert!(jetson.dir.is_none());
         assert!(jetson.port.is_none());
     }
+
+    // ── resolve_target ─────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_target_direct_user_at_host() {
+        let resolved = resolve_target("pi@192.168.1.100");
+        assert_eq!(resolved.host, "pi@192.168.1.100");
+        assert!(resolved.arch.is_none());
+        assert!(resolved.dir.is_none());
+        assert!(resolved.port.is_none());
+        assert!(resolved.identity.is_none());
+    }
+
+    #[test]
+    fn resolve_target_bare_hostname() {
+        // Without @ and without YAML, returns as-is
+        let resolved = resolve_target("unknown-host-xyz");
+        assert_eq!(resolved.host, "unknown-host-xyz");
+    }
+
+    // ── detect_target_arch ─────────────────────────────────────────────
+
+    #[test]
+    fn detect_arch_jetson_keywords() {
+        assert!(matches!(detect_target_arch("nvidia@jetson"), TargetArch::Aarch64));
+        assert!(matches!(detect_target_arch("user@nano.local"), TargetArch::Aarch64));
+        assert!(matches!(detect_target_arch("xavier-01"), TargetArch::Aarch64));
+        assert!(matches!(detect_target_arch("orin-nx"), TargetArch::Aarch64));
+    }
+
+    #[test]
+    fn detect_arch_raspberry_pi_keywords() {
+        assert!(matches!(detect_target_arch("pi4-robot"), TargetArch::Aarch64));
+        assert!(matches!(detect_target_arch("pi5"), TargetArch::Aarch64));
+        assert!(matches!(detect_target_arch("raspberry-pi"), TargetArch::Aarch64));
+    }
+
+    #[test]
+    fn detect_arch_pi3_is_armv7() {
+        assert!(matches!(detect_target_arch("pi3-old"), TargetArch::Armv7));
+        assert!(matches!(detect_target_arch("pi2"), TargetArch::Armv7));
+    }
+
+    #[test]
+    fn detect_arch_unknown_defaults_to_aarch64() {
+        // Unknown hostnames default to aarch64 (most modern robot boards)
+        assert!(matches!(detect_target_arch("some-robot"), TargetArch::Aarch64));
+    }
+
+    // ── DeployConfig defaults ──────────────────────────────────────────
+
+    #[test]
+    fn deploy_config_defaults() {
+        let config = DeployConfig::default();
+        assert_eq!(config.target, "");
+        assert_eq!(config.remote_dir, "~/horus_deploy");
+        assert!(matches!(config.arch, TargetArch::Aarch64));
+        assert!(!config.run_after);
+        assert!(config.release);
+        assert_eq!(config.port, 22);
+        assert!(config.identity.is_none());
+        assert!(config.excludes.is_empty());
+    }
+
+    // ── find_binary_name ───────────────────────────────────────────────
+
+    #[test]
+    fn find_binary_name_no_cargo_toml() {
+        // When run from a directory without Cargo.toml, returns None
+        // (this is always the case in test cwd which is the workspace root)
+        // If it returns Some, that's also fine — just check it doesn't panic.
+        let _ = find_binary_name();
+    }
+
+    // ── Rust target strings ────────────────────────────────────────────
+
+    #[test]
+    fn rust_target_strings_are_valid() {
+        assert_eq!(TargetArch::Aarch64.rust_target(), "aarch64-unknown-linux-gnu");
+        assert_eq!(TargetArch::Armv7.rust_target(), "armv7-unknown-linux-gnueabihf");
+        assert_eq!(TargetArch::X86_64.rust_target(), "x86_64-unknown-linux-gnu");
+        assert_eq!(TargetArch::Native.rust_target(), "");
+    }
+
+    // ── DeployYaml edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn deploy_yaml_empty_targets() {
+        let yaml = "targets: {}";
+        let config: DeployYaml = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.targets.is_empty());
+    }
+
+    #[test]
+    fn deploy_yaml_minimal_target() {
+        let yaml = r#"
+targets:
+  dev:
+    host: localhost
+"#;
+        let config: DeployYaml = serde_yaml::from_str(yaml).unwrap();
+        let dev = &config.targets["dev"];
+        assert_eq!(dev.host, "localhost");
+        assert!(dev.arch.is_none());
+        assert!(dev.dir.is_none());
+        assert!(dev.port.is_none());
+        assert!(dev.identity.is_none());
+    }
 }

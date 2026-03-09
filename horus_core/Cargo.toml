@@ -70,3 +70,6 @@ blackbox = []
 # mDNS/DNS-SD for automatic peer discovery on local networks
 mdns = ["mdns-sd"]
 
+# Test utilities (MockTopic, etc.) for use in downstream crate tests
+test-utils = []
+

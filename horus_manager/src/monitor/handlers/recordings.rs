@@ -331,6 +331,75 @@ mod tests {
         assert_eq!(json["total_ticks"], 3000);
         assert_eq!(json["node_count"], 5);
     }
+
+    #[test]
+    fn recording_list_item_all_fields_serialized() {
+        let item = RecordingListItem {
+            session_name: "session_2026".into(),
+            started_at: "2026-03-08 12:00:00".into(),
+            ended_at: None,
+            total_ticks: 0,
+            node_count: 0,
+            size_bytes: 512,
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["session_name"], "session_2026");
+        assert_eq!(json["started_at"], "2026-03-08 12:00:00");
+        assert!(json["ended_at"].is_null());
+        assert_eq!(json["total_ticks"], 0);
+        assert_eq!(json["node_count"], 0);
+        assert_eq!(json["size_bytes"], 512);
+    }
+
+    /// Path traversal in recording info handler returns 400.
+    #[tokio::test]
+    async fn recordings_info_rejects_path_traversal() {
+        let resp = recordings_info_handler(Path("../../../etc/passwd".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Path traversal in recording delete handler returns 400.
+    #[tokio::test]
+    async fn recordings_delete_rejects_path_traversal() {
+        let resp = recordings_delete_handler(Path("../../secrets".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Valid but non-existent session name returns 404 for info.
+    #[tokio::test]
+    async fn recordings_info_nonexistent_session_returns_404() {
+        let resp =
+            recordings_info_handler(Path("nonexistent_session_xyz_12345".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Valid but non-existent session name returns 404 for delete.
+    #[tokio::test]
+    async fn recordings_delete_nonexistent_session_returns_404() {
+        let resp =
+            recordings_delete_handler(Path("nonexistent_session_xyz_12345".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Empty session name is rejected (path traversal check).
+    #[tokio::test]
+    async fn recordings_info_empty_name_returns_400() {
+        let resp = recordings_info_handler(Path(String::new())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Session name with null byte is rejected.
+    #[tokio::test]
+    async fn recordings_info_null_byte_returns_400() {
+        let resp = recordings_info_handler(Path("session\0evil".to_string())).await;
+        let response = resp.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 /// Format bytes to human-readable size

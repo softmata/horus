@@ -699,3 +699,750 @@ pub(crate) fn current_time_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    // ── Helper ──────────────────────────────────────────────────────────
+
+    fn make_header(type_size: u32, type_align: u32, is_pod: bool, capacity: u32) -> TopicHeader {
+        let mut h = TopicHeader::zeroed();
+        h.init(type_size, type_align, is_pod, capacity, type_size.max(16));
+        h
+    }
+
+    // ── Constants ───────────────────────────────────────────────────────
+
+    #[test]
+    fn magic_is_ascii_adaptive() {
+        let bytes = TOPIC_MAGIC.to_be_bytes();
+        assert_eq!(&bytes, b"ADAPTIVE");
+    }
+
+    #[test]
+    fn header_size_is_640_bytes() {
+        assert_eq!(std::mem::size_of::<TopicHeader>(), 640);
+        assert_eq!(TOPIC_HEADER_SIZE, 640);
+    }
+
+    #[test]
+    fn participant_entry_size_is_24_bytes() {
+        assert_eq!(std::mem::size_of::<ParticipantEntry>(), 24);
+    }
+
+    #[test]
+    fn debug_log_offset_matches_struct_layout() {
+        let h = TopicHeader::zeroed();
+        let base = &h as *const TopicHeader as *const u8;
+        let debug_ptr = &h.debug_log as *const AtomicU8 as *const u8;
+        let offset = unsafe { debug_ptr.offset_from(base) } as usize;
+        assert_eq!(offset, TOPIC_DEBUG_LOG_OFFSET);
+    }
+
+    // ── TopicHeader::init ───────────────────────────────────────────────
+
+    #[test]
+    fn init_sets_magic_and_version() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.magic, TOPIC_MAGIC);
+        assert_eq!(h.version, TOPIC_VERSION);
+    }
+
+    #[test]
+    fn init_sets_type_metadata() {
+        let h = make_header(4, 4, false, 32);
+        assert_eq!(h.type_size, 4);
+        assert_eq!(h.type_align, 4);
+        assert_eq!(h.is_pod.load(Ordering::Relaxed), POD_NO);
+    }
+
+    #[test]
+    fn init_pod_yes_flag() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.is_pod.load(Ordering::Relaxed), POD_YES);
+        assert!(h.is_pod_type());
+    }
+
+    #[test]
+    fn init_pod_no_flag() {
+        let h = make_header(8, 8, false, 16);
+        assert_eq!(h.is_pod.load(Ordering::Relaxed), POD_NO);
+        assert!(!h.is_pod_type());
+    }
+
+    #[test]
+    fn init_rounds_capacity_to_power_of_two() {
+        let h = make_header(8, 8, true, 10);
+        assert_eq!(h.capacity, 16); // 10 → next_power_of_two → 16
+        assert_eq!(h.capacity_mask, 15);
+    }
+
+    #[test]
+    fn init_capacity_already_power_of_two() {
+        let h = make_header(8, 8, true, 64);
+        assert_eq!(h.capacity, 64);
+        assert_eq!(h.capacity_mask, 63);
+    }
+
+    #[test]
+    fn init_capacity_one() {
+        let h = make_header(8, 8, true, 1);
+        assert_eq!(h.capacity, 1);
+        assert_eq!(h.capacity_mask, 0);
+    }
+
+    #[test]
+    fn init_sets_creator_pid_and_thread() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.creator_pid, std::process::id());
+        let expected_hash = hash_thread_id(std::thread::current().id());
+        assert_eq!(h.creator_thread_id_hash, expected_hash);
+    }
+
+    #[test]
+    fn init_backend_starts_unknown() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.mode(), BackendMode::Unknown);
+    }
+
+    #[test]
+    fn init_counters_are_zero() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.pub_count(), 0);
+        assert_eq!(h.sub_count(), 0);
+        assert_eq!(h.total_participants.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn init_migration_starts_unlocked() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.migration_lock.load(Ordering::Relaxed), MIGRATION_UNLOCKED);
+        assert_eq!(h.migration_epoch.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn init_sequence_and_tail_are_zero() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.sequence_or_head.load(Ordering::Relaxed), 0);
+        assert_eq!(h.tail.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn init_debug_log_disabled() {
+        let h = make_header(8, 8, true, 16);
+        assert!(!h.is_debug_enabled());
+    }
+
+    #[test]
+    fn init_participants_all_cleared() {
+        let h = make_header(8, 8, true, 16);
+        for p in &h.participants {
+            assert_eq!(p.pid.load(Ordering::Relaxed), 0);
+            assert_eq!(p.thread_id_hash.load(Ordering::Relaxed), 0);
+            assert_eq!(p.role.load(Ordering::Relaxed), 0);
+            assert_eq!(p.active.load(Ordering::Relaxed), 0);
+            assert_eq!(p.lease_expires_ms.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    // ── ParticipantEntry ────────────────────────────────────────────────
+
+    #[test]
+    fn participant_lease_expired_when_zero() {
+        let p = ParticipantEntry {
+            pid: AtomicU32::new(0),
+            thread_id_hash: AtomicU32::new(0),
+            role: AtomicU8::new(0),
+            active: AtomicU8::new(0),
+            _pad: [0; 6],
+            lease_expires_ms: AtomicU64::new(0),
+        };
+        assert!(p.is_lease_expired(1000));
+    }
+
+    #[test]
+    fn participant_lease_not_expired_when_future() {
+        let p = ParticipantEntry {
+            pid: AtomicU32::new(0),
+            thread_id_hash: AtomicU32::new(0),
+            role: AtomicU8::new(0),
+            active: AtomicU8::new(0),
+            _pad: [0; 6],
+            lease_expires_ms: AtomicU64::new(5000),
+        };
+        assert!(!p.is_lease_expired(4999));
+    }
+
+    #[test]
+    fn participant_lease_expired_when_past() {
+        let p = ParticipantEntry {
+            pid: AtomicU32::new(0),
+            thread_id_hash: AtomicU32::new(0),
+            role: AtomicU8::new(0),
+            active: AtomicU8::new(0),
+            _pad: [0; 6],
+            lease_expires_ms: AtomicU64::new(5000),
+        };
+        assert!(p.is_lease_expired(5001));
+    }
+
+    #[test]
+    fn participant_lease_expired_at_exact_boundary() {
+        let p = ParticipantEntry {
+            pid: AtomicU32::new(0),
+            thread_id_hash: AtomicU32::new(0),
+            role: AtomicU8::new(0),
+            active: AtomicU8::new(0),
+            _pad: [0; 6],
+            lease_expires_ms: AtomicU64::new(5000),
+        };
+        // now_ms == expires → not expired (> check, not >=)
+        assert!(!p.is_lease_expired(5000));
+    }
+
+    #[test]
+    fn participant_refresh_lease_updates_expiry() {
+        let p = ParticipantEntry {
+            pid: AtomicU32::new(0),
+            thread_id_hash: AtomicU32::new(0),
+            role: AtomicU8::new(0),
+            active: AtomicU8::new(0),
+            _pad: [0; 6],
+            lease_expires_ms: AtomicU64::new(0),
+        };
+        p.refresh_lease(1000, 5000);
+        assert_eq!(p.lease_expires_ms.load(Ordering::Relaxed), 6000);
+        assert!(!p.is_lease_expired(5999));
+        assert!(p.is_lease_expired(6001));
+    }
+
+    #[test]
+    fn participant_clear_resets_all_fields() {
+        let p = ParticipantEntry {
+            pid: AtomicU32::new(42),
+            thread_id_hash: AtomicU32::new(0xABCD),
+            role: AtomicU8::new(3),
+            active: AtomicU8::new(1),
+            _pad: [0; 6],
+            lease_expires_ms: AtomicU64::new(99999),
+        };
+        p.clear();
+        assert_eq!(p.pid.load(Ordering::Relaxed), 0);
+        assert_eq!(p.thread_id_hash.load(Ordering::Relaxed), 0);
+        assert_eq!(p.role.load(Ordering::Relaxed), 0);
+        assert_eq!(p.active.load(Ordering::Relaxed), 0);
+        assert_eq!(p.lease_expires_ms.load(Ordering::Relaxed), 0);
+    }
+
+    // ── Registration ────────────────────────────────────────────────────
+
+    #[test]
+    fn register_producer_increments_pub_count() {
+        let h = make_header(8, 8, true, 16);
+        let slot = h.register_producer().unwrap();
+        assert!(slot < MAX_PARTICIPANTS);
+        assert_eq!(h.pub_count(), 1);
+        assert_eq!(h.sub_count(), 0);
+        assert_eq!(h.total_participants.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn register_consumer_increments_sub_count() {
+        let h = make_header(8, 8, true, 16);
+        let slot = h.register_consumer().unwrap();
+        assert!(slot < MAX_PARTICIPANTS);
+        assert_eq!(h.sub_count(), 1);
+        assert_eq!(h.pub_count(), 0);
+    }
+
+    #[test]
+    fn register_same_thread_reuses_slot() {
+        let h = make_header(8, 8, true, 16);
+        let slot1 = h.register_producer().unwrap();
+        let slot2 = h.register_consumer().unwrap();
+        assert_eq!(
+            slot1, slot2,
+            "Same thread should reuse same participant slot"
+        );
+        assert_eq!(h.pub_count(), 1);
+        assert_eq!(h.sub_count(), 1);
+        // Role should be both producer and consumer (1 | 2 = 3)
+        let role = h.participants[slot1].role.load(Ordering::Relaxed);
+        assert_eq!(role, 3);
+    }
+
+    #[test]
+    fn register_producer_twice_same_thread_no_double_count() {
+        let h = make_header(8, 8, true, 16);
+        let s1 = h.register_producer().unwrap();
+        let s2 = h.register_producer().unwrap();
+        assert_eq!(s1, s2);
+        assert_eq!(
+            h.pub_count(),
+            1,
+            "Should not double-count same-thread producer"
+        );
+    }
+
+    #[test]
+    fn register_from_different_threads_uses_different_slots() {
+        let h = make_header(8, 8, true, 16);
+        let slot1 = h.register_producer().unwrap();
+
+        let header_ptr = &h as *const TopicHeader as usize;
+        let slot2 = std::thread::spawn(move || {
+            let h = unsafe { &*(header_ptr as *const TopicHeader) };
+            h.register_producer().unwrap()
+        })
+        .join()
+        .unwrap();
+
+        assert_ne!(slot1, slot2);
+        assert_eq!(h.pub_count(), 2);
+    }
+
+    #[test]
+    fn register_fills_all_slots() {
+        let h = make_header(8, 8, true, 16);
+        let mut slots = Vec::new();
+
+        // Fill MAX_PARTICIPANTS slots from different threads
+        let header_ptr = &h as *const TopicHeader as usize;
+        let handles: Vec<_> = (0..MAX_PARTICIPANTS)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    let h = unsafe { &*(header_ptr as *const TopicHeader) };
+                    h.register_producer().unwrap()
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            slots.push(handle.join().unwrap());
+        }
+
+        // All slots should be unique and in range
+        slots.sort();
+        slots.dedup();
+        assert_eq!(slots.len(), MAX_PARTICIPANTS);
+        assert_eq!(h.pub_count(), MAX_PARTICIPANTS as u32);
+    }
+
+    #[test]
+    fn register_fails_when_all_slots_full() {
+        let h = make_header(8, 8, true, 16);
+
+        // Fill all slots from different threads
+        let header_ptr = &h as *const TopicHeader as usize;
+        let handles: Vec<_> = (0..MAX_PARTICIPANTS)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    let h = unsafe { &*(header_ptr as *const TopicHeader) };
+                    h.register_producer().unwrap()
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // The next registration from yet another thread should fail
+        let result = std::thread::spawn(move || {
+            let h = unsafe { &*(header_ptr as *const TopicHeader) };
+            h.register_producer()
+        })
+        .join()
+        .unwrap();
+        assert!(result.is_err());
+    }
+
+    // ── Topology detection ──────────────────────────────────────────────
+
+    #[test]
+    fn is_same_process_true_when_no_participants() {
+        let h = make_header(8, 8, true, 16);
+        assert!(h.is_same_process());
+    }
+
+    #[test]
+    fn is_same_process_true_with_local_participants() {
+        let h = make_header(8, 8, true, 16);
+        h.register_producer().unwrap();
+        assert!(h.is_same_process());
+    }
+
+    #[test]
+    fn is_same_process_false_with_foreign_pid() {
+        let h = make_header(8, 8, true, 16);
+        // Manually inject a participant with a different PID
+        h.participants[0].pid.store(99999, Ordering::Relaxed);
+        h.participants[0].active.store(1, Ordering::Relaxed);
+        assert!(!h.is_same_process());
+    }
+
+    #[test]
+    fn is_same_thread_true_on_same_thread() {
+        let h = make_header(8, 8, true, 16);
+        assert!(h.is_same_thread());
+    }
+
+    #[test]
+    fn all_participants_same_thread_empty() {
+        let h = make_header(8, 8, true, 16);
+        assert!(h.all_participants_same_thread());
+    }
+
+    #[test]
+    fn all_participants_same_thread_single_producer() {
+        let h = make_header(8, 8, true, 16);
+        h.register_producer().unwrap();
+        assert!(h.all_participants_same_thread());
+    }
+
+    #[test]
+    fn all_participants_same_thread_false_with_different_threads() {
+        let h = make_header(8, 8, true, 16);
+        h.register_producer().unwrap();
+
+        let header_ptr = &h as *const TopicHeader as usize;
+        std::thread::spawn(move || {
+            let h = unsafe { &*(header_ptr as *const TopicHeader) };
+            h.register_consumer().unwrap();
+        })
+        .join()
+        .unwrap();
+
+        assert!(!h.all_participants_same_thread());
+    }
+
+    // ── Migration lock ──────────────────────────────────────────────────
+
+    #[test]
+    fn migration_lock_acquire_and_release() {
+        let h = make_header(8, 8, true, 16);
+        assert!(h.try_lock_migration());
+        assert_eq!(h.migration_lock.load(Ordering::Relaxed), MIGRATION_LOCKED);
+        // Second acquire should fail
+        assert!(!h.try_lock_migration());
+        h.unlock_migration();
+        assert_eq!(h.migration_lock.load(Ordering::Relaxed), MIGRATION_UNLOCKED);
+        // Now it should succeed again
+        assert!(h.try_lock_migration());
+    }
+
+    // ── Debug flag ──────────────────────────────────────────────────────
+
+    #[test]
+    fn debug_log_toggle() {
+        let h = make_header(8, 8, true, 16);
+        assert!(!h.is_debug_enabled());
+        h.debug_log.store(1, Ordering::Relaxed);
+        assert!(h.is_debug_enabled());
+        h.debug_log.store(0, Ordering::Relaxed);
+        assert!(!h.is_debug_enabled());
+    }
+
+    // ── Backend detection ───────────────────────────────────────────────
+
+    #[test]
+    fn detect_optimal_backend_no_participants_is_unknown() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.detect_optimal_backend(), BackendMode::Unknown);
+    }
+
+    #[test]
+    fn detect_optimal_backend_same_thread_pod_is_direct_channel() {
+        let h = make_header(8, 8, true, 16);
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
+        assert_eq!(h.detect_optimal_backend(), BackendMode::DirectChannel);
+    }
+
+    #[test]
+    fn detect_optimal_backend_same_thread_non_pod_is_spsc_intra() {
+        let h = make_header(8, 8, false, 16);
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+    }
+
+    #[test]
+    fn detect_optimal_backend_single_producer_only() {
+        let h = make_header(8, 8, true, 16);
+        h.register_producer().unwrap();
+        // 1P, 0C → SpscIntra (anticipating single consumer)
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+    }
+
+    #[test]
+    fn detect_optimal_backend_single_consumer_only() {
+        let h = make_header(8, 8, true, 16);
+        h.register_consumer().unwrap();
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+    }
+
+    #[test]
+    fn detect_optimal_backend_cross_thread_spsc_intra() {
+        let h = make_header(8, 8, true, 16);
+        h.register_producer().unwrap();
+        let header_ptr = &h as *const TopicHeader as usize;
+        std::thread::spawn(move || {
+            let h = unsafe { &*(header_ptr as *const TopicHeader) };
+            h.register_consumer().unwrap();
+        })
+        .join()
+        .unwrap();
+        // Same process, different threads, 1P:1C → SpscIntra
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+    }
+
+    #[test]
+    fn detect_optimal_backend_spmc_intra() {
+        let h = make_header(8, 8, true, 16);
+        h.register_producer().unwrap();
+
+        let header_ptr = &h as *const TopicHeader as usize;
+        // Register 2 consumers from different threads
+        for _ in 0..2 {
+            std::thread::spawn(move || {
+                let h = unsafe { &*(header_ptr as *const TopicHeader) };
+                h.register_consumer().unwrap();
+            })
+            .join()
+            .unwrap();
+        }
+        assert_eq!(h.pub_count(), 1);
+        assert!(h.sub_count() >= 2);
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpmcIntra);
+    }
+
+    #[test]
+    fn detect_optimal_backend_mpsc_intra() {
+        let h = make_header(8, 8, true, 16);
+        h.register_consumer().unwrap();
+
+        let header_ptr = &h as *const TopicHeader as usize;
+        // Register 2 producers from different threads
+        for _ in 0..2 {
+            std::thread::spawn(move || {
+                let h = unsafe { &*(header_ptr as *const TopicHeader) };
+                h.register_producer().unwrap();
+            })
+            .join()
+            .unwrap();
+        }
+        assert!(h.pub_count() >= 2);
+        assert_eq!(h.sub_count(), 1);
+        assert_eq!(h.detect_optimal_backend(), BackendMode::MpscIntra);
+    }
+
+    #[test]
+    fn detect_optimal_backend_cross_process_spsc_shm() {
+        let h = make_header(8, 8, true, 16);
+        // Simulate cross-process: inject a participant with different PID
+        h.participants[0].pid.store(99999, Ordering::Relaxed);
+        h.participants[0]
+            .thread_id_hash
+            .store(123, Ordering::Relaxed);
+        h.participants[0].role.store(1, Ordering::Relaxed); // producer
+        h.participants[0].active.store(1, Ordering::Relaxed);
+        h.participants[0]
+            .lease_expires_ms
+            .store(u64::MAX, Ordering::Relaxed);
+        h.publisher_count.store(1, Ordering::Relaxed);
+
+        // Register local consumer
+        h.participants[1]
+            .pid
+            .store(std::process::id(), Ordering::Relaxed);
+        h.participants[1].thread_id_hash.store(
+            hash_thread_id(std::thread::current().id()) as u32,
+            Ordering::Relaxed,
+        );
+        h.participants[1].role.store(2, Ordering::Relaxed); // consumer
+        h.participants[1].active.store(1, Ordering::Relaxed);
+        h.participants[1]
+            .lease_expires_ms
+            .store(u64::MAX, Ordering::Relaxed);
+        h.subscriber_count.store(1, Ordering::Relaxed);
+
+        assert!(!h.is_same_process());
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
+    }
+
+    #[test]
+    fn detect_optimal_backend_cross_process_pod_shm() {
+        let h = make_header(8, 8, true, 16);
+        // Simulate multiple cross-process producers and consumers
+        h.participants[0].pid.store(99999, Ordering::Relaxed);
+        h.participants[0].role.store(1, Ordering::Relaxed);
+        h.participants[0].active.store(1, Ordering::Relaxed);
+        h.participants[0]
+            .lease_expires_ms
+            .store(u64::MAX, Ordering::Relaxed);
+
+        h.participants[1].pid.store(99998, Ordering::Relaxed);
+        h.participants[1].role.store(3, Ordering::Relaxed); // both
+        h.participants[1].active.store(1, Ordering::Relaxed);
+        h.participants[1]
+            .lease_expires_ms
+            .store(u64::MAX, Ordering::Relaxed);
+
+        h.publisher_count.store(2, Ordering::Relaxed);
+        h.subscriber_count.store(2, Ordering::Relaxed);
+
+        assert!(!h.is_same_process());
+        // Multi-pub, multi-sub, cross-process, POD → PodShm
+        assert_eq!(h.detect_optimal_backend(), BackendMode::PodShm);
+    }
+
+    // ── Backend mode read/write ─────────────────────────────────────────
+
+    #[test]
+    fn mode_roundtrip_all_variants() {
+        let h = make_header(8, 8, true, 16);
+        let modes = [
+            BackendMode::Unknown,
+            BackendMode::DirectChannel,
+            BackendMode::SpscIntra,
+            BackendMode::SpmcIntra,
+            BackendMode::MpscIntra,
+            BackendMode::MpmcIntra,
+            BackendMode::PodShm,
+            BackendMode::MpscShm,
+            BackendMode::SpmcShm,
+            BackendMode::SpscShm,
+            BackendMode::MpmcShm,
+        ];
+        for mode in modes {
+            h.backend_mode.store(mode as u8, Ordering::Relaxed);
+            assert_eq!(h.mode(), mode);
+        }
+    }
+
+    // ── Zeroed header ───────────────────────────────────────────────────
+
+    #[test]
+    fn zeroed_has_no_magic() {
+        let h = TopicHeader::zeroed();
+        assert_eq!(h.magic, 0);
+        assert_eq!(h.version, 0);
+    }
+
+    // ── hash_thread_id ──────────────────────────────────────────────────
+
+    #[test]
+    fn hash_thread_id_deterministic() {
+        let id = std::thread::current().id();
+        let h1 = hash_thread_id(id);
+        let h2 = hash_thread_id(id);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn hash_thread_id_different_threads_different_hashes() {
+        let main_hash = hash_thread_id(std::thread::current().id());
+        let other_hash = std::thread::spawn(|| hash_thread_id(std::thread::current().id()))
+            .join()
+            .unwrap();
+        // Different threads should (almost certainly) produce different hashes
+        assert_ne!(main_hash, other_hash);
+    }
+
+    // ── current_time_ms ─────────────────────────────────────────────────
+
+    #[test]
+    fn current_time_ms_is_reasonable() {
+        let now = current_time_ms();
+        // Should be after 2024-01-01 (ms since epoch ≈ 1704067200000)
+        assert!(now > 1_704_067_200_000);
+        // Should be monotonically non-decreasing
+        let later = current_time_ms();
+        assert!(later >= now);
+    }
+
+    // ── set_topic_debug (unsafe) ────────────────────────────────────────
+
+    #[test]
+    fn set_topic_debug_via_raw_pointer() {
+        let mut h = make_header(8, 8, true, 16);
+        assert!(!h.is_debug_enabled());
+
+        let ptr = &mut h as *mut TopicHeader as *mut u8;
+        unsafe { set_topic_debug(ptr, true) };
+        assert!(h.is_debug_enabled());
+
+        unsafe { set_topic_debug(ptr, false) };
+        assert!(!h.is_debug_enabled());
+    }
+
+    // ── Lease expiration eviction ───────────────────────────────────────
+
+    #[test]
+    fn expired_slot_reclaimed_by_new_registration() {
+        let h = make_header(8, 8, true, 16);
+
+        // Manually create an "expired" participant in slot 0
+        h.participants[0].pid.store(99999, Ordering::Relaxed);
+        h.participants[0]
+            .thread_id_hash
+            .store(111, Ordering::Relaxed);
+        h.participants[0].role.store(1, Ordering::Relaxed); // producer
+        h.participants[0].active.store(1, Ordering::Relaxed);
+        h.participants[0]
+            .lease_expires_ms
+            .store(1, Ordering::Relaxed); // expired long ago
+        h.publisher_count.store(1, Ordering::Relaxed);
+
+        // Register from current thread — should evict the expired slot
+        let slot = h.register_producer().unwrap();
+        assert_eq!(slot, 0, "Should reclaim expired slot 0");
+        assert_eq!(
+            h.pub_count(),
+            1,
+            "Old pub decremented, new pub incremented → still 1"
+        );
+        assert_eq!(
+            h.participants[0].pid.load(Ordering::Relaxed),
+            std::process::id()
+        );
+    }
+
+    // ── Boundary values ─────────────────────────────────────────────────
+
+    #[test]
+    fn init_with_zero_type_size() {
+        // Zero-sized types (like () or PhantomData) should still work
+        let h = make_header(0, 1, true, 16);
+        assert_eq!(h.type_size, 0);
+        assert_eq!(h.type_align, 1);
+    }
+
+    #[test]
+    fn init_with_large_type_size() {
+        let h = make_header(u32::MAX, 64, false, 16);
+        assert_eq!(h.type_size, u32::MAX);
+    }
+
+    #[test]
+    fn lease_refresh_large_values_no_panic() {
+        let p = ParticipantEntry {
+            pid: AtomicU32::new(0),
+            thread_id_hash: AtomicU32::new(0),
+            role: AtomicU8::new(0),
+            active: AtomicU8::new(0),
+            _pad: [0; 6],
+            lease_expires_ms: AtomicU64::new(0),
+        };
+        // Realistic large timestamp (year ~2100 in ms) + large timeout
+        let far_future_ms: u64 = 4_102_444_800_000; // 2100-01-01
+        let timeout_ms: u64 = 86_400_000; // 24 hours
+        p.refresh_lease(far_future_ms, timeout_ms);
+        assert_eq!(
+            p.lease_expires_ms.load(Ordering::Relaxed),
+            far_future_ms + timeout_ms
+        );
+    }
+}

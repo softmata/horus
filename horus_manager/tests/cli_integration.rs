@@ -1454,3 +1454,826 @@ fn test_discover_command_exists() {
     // discover should work (either mdns or stub)
     horus_cmd().args(["discover", "--help"]).assert().success();
 }
+
+// ============================================================================
+// Node command integration tests
+// ============================================================================
+
+#[test]
+fn test_node_list_help() {
+    horus_cmd()
+        .args(["node", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--verbose"))
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--category"));
+}
+
+#[test]
+fn test_node_list_succeeds() {
+    // node list should succeed regardless of whether nodes are running
+    horus_cmd()
+        .args(["node", "list"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("No running nodes")
+                .or(predicate::str::contains("Running Nodes")),
+        );
+}
+
+#[test]
+fn test_node_list_json_valid() {
+    let output = horus_cmd()
+        .args(["node", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed["count"].is_number());
+    assert!(parsed["items"].is_array());
+    // count should match items length
+    let count = parsed["count"].as_u64().unwrap();
+    let items_len = parsed["items"].as_array().unwrap().len() as u64;
+    assert_eq!(count, items_len);
+}
+
+#[test]
+fn test_node_list_verbose_succeeds() {
+    horus_cmd()
+        .args(["node", "list", "--verbose"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("No running nodes")
+                .or(predicate::str::contains("Running Nodes")),
+        );
+}
+
+#[test]
+fn test_node_list_invalid_category() {
+    horus_cmd()
+        .args(["node", "list", "--category", "bogus"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_node_list_valid_category_node() {
+    // Should succeed even if no nodes found (returns empty)
+    horus_cmd()
+        .args(["node", "list", "--category", "node"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_node_list_valid_category_tool() {
+    horus_cmd()
+        .args(["node", "list", "--category", "tool"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_node_list_valid_category_cli() {
+    horus_cmd()
+        .args(["node", "list", "--category", "cli"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_node_info_nonexistent() {
+    horus_cmd()
+        .args(["node", "info", "nonexistent_node_xyz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Node")));
+}
+
+#[test]
+fn test_node_kill_nonexistent() {
+    horus_cmd()
+        .args(["node", "kill", "nonexistent_node_xyz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Node")));
+}
+
+#[test]
+fn test_node_kill_help() {
+    horus_cmd()
+        .args(["node", "kill", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--force"));
+}
+
+#[test]
+fn test_node_restart_nonexistent() {
+    horus_cmd()
+        .args(["node", "restart", "nonexistent_node_xyz"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_node_pause_nonexistent() {
+    horus_cmd()
+        .args(["node", "pause", "nonexistent_node_xyz"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_node_resume_nonexistent() {
+    horus_cmd()
+        .args(["node", "resume", "nonexistent_node_xyz"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_node_alias_n() {
+    // 'n' should work as alias for 'node'
+    horus_cmd().args(["n", "list"]).assert().success();
+}
+
+// ============================================================================
+// Topic command integration tests
+// ============================================================================
+
+#[test]
+fn test_topic_list_help() {
+    horus_cmd()
+        .args(["topic", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--verbose"))
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn test_topic_list_no_active_topics() {
+    // With no scheduler running, should succeed and report no topics
+    horus_cmd()
+        .args(["topic", "list"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("No active topics")
+                .or(predicate::str::contains("Active Topics")),
+        );
+}
+
+#[test]
+fn test_topic_list_json() {
+    let output = horus_cmd()
+        .args(["topic", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed["count"].is_number());
+    assert!(parsed["items"].is_array());
+}
+
+#[test]
+fn test_topic_list_verbose() {
+    horus_cmd()
+        .args(["topic", "list", "--verbose"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_topic_info_nonexistent() {
+    horus_cmd()
+        .args(["topic", "info", "nonexistent_topic_xyz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Topic")));
+}
+
+#[test]
+fn test_topic_echo_help() {
+    horus_cmd()
+        .args(["topic", "echo", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--count"))
+        .stdout(predicate::str::contains("--rate"));
+}
+
+#[test]
+fn test_topic_echo_nonexistent() {
+    horus_cmd()
+        .args(["topic", "echo", "nonexistent_topic_xyz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Topic")));
+}
+
+#[test]
+fn test_topic_hz_help() {
+    horus_cmd()
+        .args(["topic", "hz", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--window"));
+}
+
+#[test]
+fn test_topic_pub_help() {
+    horus_cmd()
+        .args(["topic", "pub", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--rate"))
+        .stdout(predicate::str::contains("--count"));
+}
+
+#[test]
+fn test_topic_bw_help() {
+    horus_cmd()
+        .args(["topic", "bw", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--window"));
+}
+
+#[test]
+fn test_topic_alias_t() {
+    horus_cmd().args(["t", "list"]).assert().success();
+}
+
+// ============================================================================
+// Param command integration tests
+// ============================================================================
+
+#[test]
+fn test_param_list_help() {
+    horus_cmd()
+        .args(["param", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--verbose"))
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn test_param_list_empty() {
+    let tmp = TempDir::new().unwrap();
+    // Create .horus dir so init succeeds
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["param", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("No parameters").or(predicate::str::contains("Parameters:")),
+        );
+}
+
+#[test]
+fn test_param_list_json_empty() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    let output = horus_cmd()
+        .args(["param", "list", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed["count"].is_number());
+    assert!(parsed["items"].is_array());
+}
+
+#[test]
+fn test_param_set_and_get() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    // Set a parameter
+    horus_cmd()
+        .args(["param", "set", "test.speed", "42"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Get the parameter back
+    horus_cmd()
+        .args(["param", "get", "test.speed"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("42"));
+}
+
+#[test]
+fn test_param_set_and_get_json() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["param", "set", "robot.name", "test_bot"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = horus_cmd()
+        .args(["param", "get", "robot.name", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["key"], "robot.name");
+    assert_eq!(parsed["value"], "test_bot");
+    assert_eq!(parsed["type"], "string");
+}
+
+#[test]
+fn test_param_set_bool() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["param", "set", "debug.enabled", "true"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = horus_cmd()
+        .args(["param", "get", "debug.enabled", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["value"], true);
+    assert_eq!(parsed["type"], "bool");
+}
+
+#[test]
+fn test_param_set_float() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["param", "set", "motor.kp", "0.5"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = horus_cmd()
+        .args(["param", "get", "motor.kp", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["type"], "float");
+}
+
+#[test]
+fn test_param_get_nonexistent() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["param", "get", "nonexistent.key"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_param_delete() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    // Set then delete
+    horus_cmd()
+        .args(["param", "set", "temp.key", "val"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    horus_cmd()
+        .args(["param", "delete", "temp.key"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted"));
+
+    // Getting deleted param should fail
+    horus_cmd()
+        .args(["param", "get", "temp.key"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_param_delete_nonexistent() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["param", "delete", "nonexistent.key"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_param_reset_without_force() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    // Reset without --force should just print a warning, not actually reset
+    horus_cmd()
+        .args(["param", "reset"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--force"));
+}
+
+#[test]
+fn test_param_dump() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    // Set a param so dump has something
+    horus_cmd()
+        .args(["param", "set", "dump.test", "123"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    horus_cmd()
+        .args(["param", "dump"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dump.test"));
+}
+
+#[test]
+fn test_param_save_and_load() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    let save_path = tmp.path().join("params_backup.yaml");
+
+    // Set params
+    horus_cmd()
+        .args(["param", "set", "save.key1", "value1"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Save to file
+    horus_cmd()
+        .args(["param", "save", "-o", &save_path.to_string_lossy()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(save_path.exists(), "params file should be saved");
+
+    // Load from file
+    horus_cmd()
+        .args(["param", "load", &save_path.to_string_lossy()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_param_load_nonexistent_file() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["param", "load", "/tmp/nonexistent_params_xyz.yaml"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("File")));
+}
+
+#[test]
+fn test_param_alias_p() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    horus_cmd()
+        .args(["p", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_param_set_json_value() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+
+    // Set a JSON object as a parameter value
+    horus_cmd()
+        .args([
+            "param",
+            "set",
+            "pid.config",
+            r#"{"kp":1.0,"ki":0.1,"kd":0.05}"#,
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = horus_cmd()
+        .args(["param", "get", "pid.config", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["type"], "object");
+}
+
+// ============================================================================
+// Service command integration tests
+// ============================================================================
+
+#[test]
+fn test_service_list_help() {
+    horus_cmd()
+        .args(["service", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--verbose"))
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn test_service_list_no_services() {
+    // With no scheduler running, should succeed and report no services
+    horus_cmd()
+        .args(["service", "list"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("No active services")
+                .or(predicate::str::contains("Active Services")),
+        );
+}
+
+#[test]
+fn test_service_list_json() {
+    let output = horus_cmd()
+        .args(["service", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed["count"].is_number());
+    assert!(parsed["items"].is_array());
+}
+
+#[test]
+fn test_service_list_verbose() {
+    horus_cmd()
+        .args(["service", "list", "--verbose"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_service_type_nonexistent() {
+    horus_cmd()
+        .args(["service", "type", "nonexistent_service_xyz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Service")));
+}
+
+#[test]
+fn test_service_find_no_match() {
+    // find with a filter that matches nothing should succeed with empty output
+    horus_cmd()
+        .args(["service", "find", "zzz_nonexistent_filter_zzz"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No services matching"));
+}
+
+#[test]
+fn test_service_call_help() {
+    horus_cmd()
+        .args(["service", "call", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--timeout"));
+}
+
+#[test]
+fn test_service_alias_srv() {
+    horus_cmd()
+        .args(["srv", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Service"));
+}
+
+// ============================================================================
+// Record command integration tests
+// ============================================================================
+
+#[test]
+fn test_record_list_help() {
+    horus_cmd()
+        .args(["record", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--long"))
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn test_record_list_no_sessions() {
+    // Should succeed even with no recordings
+    horus_cmd()
+        .args(["record", "list"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("No recording sessions")
+                .or(predicate::str::contains("recording session")),
+        );
+}
+
+#[test]
+fn test_record_list_json() {
+    let output = horus_cmd()
+        .args(["record", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed["sessions"].is_array());
+}
+
+#[test]
+fn test_record_info_nonexistent_session() {
+    horus_cmd()
+        .args(["record", "info", "nonexistent_session_xyz"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_record_info_json_nonexistent() {
+    let output = horus_cmd()
+        .args(["record", "info", "nonexistent_session_xyz", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["found"], false);
+}
+
+#[test]
+fn test_record_delete_nonexistent_succeeds_silently() {
+    // delete --force of a nonexistent session succeeds (idempotent)
+    horus_cmd()
+        .args(["record", "delete", "nonexistent_session_xyz", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted"));
+}
+
+#[test]
+fn test_record_replay_help() {
+    horus_cmd()
+        .args(["record", "replay", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--speed"))
+        .stdout(predicate::str::contains("--start-tick"))
+        .stdout(predicate::str::contains("--stop-tick"));
+}
+
+#[test]
+fn test_record_diff_help() {
+    horus_cmd()
+        .args(["record", "diff", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--limit"));
+}
+
+#[test]
+fn test_record_export_help() {
+    horus_cmd()
+        .args(["record", "export", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--format"))
+        .stdout(predicate::str::contains("--output"));
+}
+
+#[test]
+fn test_record_inject_help() {
+    horus_cmd()
+        .args(["record", "inject", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--nodes"))
+        .stdout(predicate::str::contains("--all"))
+        .stdout(predicate::str::contains("--script"))
+        .stdout(predicate::str::contains("--speed"))
+        .stdout(predicate::str::contains("--loop"));
+}
+
+#[test]
+fn test_record_alias_rec() {
+    horus_cmd().args(["rec", "list"]).assert().success();
+}
+
+// ============================================================================
+// Cross-command JSON output sanity checks
+// ============================================================================
+
+#[test]
+fn test_node_list_json_no_ansi() {
+    let output = horus_cmd()
+        .args(["node", "list", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("\x1b["),
+        "JSON output should not contain ANSI escape codes"
+    );
+}
+
+#[test]
+fn test_topic_list_json_no_ansi() {
+    let output = horus_cmd()
+        .args(["topic", "list", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("\x1b["),
+        "JSON output should not contain ANSI escape codes"
+    );
+}
+
+#[test]
+fn test_service_list_json_no_ansi() {
+    let output = horus_cmd()
+        .args(["service", "list", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("\x1b["),
+        "JSON output should not contain ANSI escape codes"
+    );
+}
+
+#[test]
+fn test_record_list_json_no_ansi() {
+    let output = horus_cmd()
+        .args(["record", "list", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("\x1b["),
+        "JSON output should not contain ANSI escape codes"
+    );
+}

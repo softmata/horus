@@ -4,6 +4,9 @@
 //! Record/Replay tests: config paths, NodeRecording save/load, interval skip,
 //! replayer advance/seek/reset, RecordingManager session listing.
 
+mod common;
+
+use common::TestTempDir;
 use horus_core::scheduling::{
     BlackBox, BlackBoxEvent, NodeRecording, NodeReplayer, NodeTickSnapshot, Recording,
     RecordingConfig, RecordingManager,
@@ -16,10 +19,9 @@ use std::path::PathBuf;
 
 #[test]
 fn test_blackbox_save_load_round_trip() {
-    let dir = std::env::temp_dir().join(format!("horus_bb_roundtrip_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let tmp = TestTempDir::new("horus_bb_roundtrip");
 
-    let mut bb = BlackBox::new(1).with_path(dir.clone());
+    let mut bb = BlackBox::new(1).with_path(tmp.path().to_path_buf());
 
     // Record some events
     bb.record(BlackBoxEvent::SchedulerStart {
@@ -45,7 +47,7 @@ fn test_blackbox_save_load_round_trip() {
     bb.save().expect("save should succeed");
 
     // Load into a new blackbox
-    let mut bb2 = BlackBox::new(1).with_path(dir.clone());
+    let mut bb2 = BlackBox::new(1).with_path(tmp.path().to_path_buf());
     bb2.load().expect("load should succeed");
 
     let loaded_events = bb2.events();
@@ -65,16 +67,12 @@ fn test_blackbox_save_load_round_trip() {
         }
         other => unreachable!("First event should be SchedulerStart, got {:?}", other),
     }
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
+    // tmp is cleaned up automatically on drop
 }
 
 #[test]
 fn test_blackbox_legacy_array_compat() {
-    let dir = std::env::temp_dir().join(format!("horus_bb_legacy_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TestTempDir::new("horus_bb_legacy");
 
     // Write a bare JSON array (legacy format)
     let legacy_json = r#"[
@@ -89,10 +87,10 @@ fn test_blackbox_legacy_array_compat() {
             }
         }
     ]"#;
-    std::fs::write(dir.join("blackbox.json"), legacy_json).unwrap();
+    std::fs::write(tmp.path().join("blackbox.json"), legacy_json).unwrap();
 
     // Load should succeed with legacy format
-    let mut bb = BlackBox::new(1).with_path(dir.clone());
+    let mut bb = BlackBox::new(1).with_path(tmp.path().to_path_buf());
     bb.load().expect("Legacy format should load");
 
     let events = bb.events();
@@ -107,18 +105,15 @@ fn test_blackbox_legacy_array_compat() {
 
     // loss counter should be 0 for legacy format
     assert_eq!(bb.get_loss_count(), 0);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_blackbox_wal_actual_io() {
-    let dir = std::env::temp_dir().join(format!("horus_bb_wal_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let tmp = TestTempDir::new("horus_bb_wal");
 
     let mut bb = BlackBox::new(1)
         .with_wal_flush_interval(1) // Flush every record for test
-        .with_path(dir.clone());
+        .with_path(tmp.path().to_path_buf());
 
     // Record events (WAL should be written)
     for i in 0..5 {
@@ -130,7 +125,7 @@ fn test_blackbox_wal_actual_io() {
     bb.flush_wal();
 
     // Verify WAL file exists and has content
-    let wal_path = dir.join("blackbox.wal");
+    let wal_path = tmp.path().join("blackbox.wal");
     assert!(wal_path.exists(), "WAL file should exist");
 
     let wal_content = std::fs::read_to_string(&wal_path).unwrap();
@@ -143,8 +138,6 @@ fn test_blackbox_wal_actual_io() {
             serde_json::from_str(line).expect("Each WAL line should be valid JSON");
         assert!(parsed.get("event").is_some());
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -200,8 +193,7 @@ fn test_recording_config_paths() {
 
 #[test]
 fn test_node_recording_save_load() {
-    let dir = std::env::temp_dir().join(format!("horus_recording_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let tmp = TestTempDir::new("horus_recording");
 
     let mut recording = NodeRecording::new("motor_ctrl", "node_001", "test_session");
 
@@ -224,7 +216,7 @@ fn test_node_recording_save_load() {
     assert_eq!(recording.last_tick, 1);
 
     // Save
-    let path = dir.join("test_recording.horus");
+    let path = tmp.path().join("test_recording.horus");
     recording.save(&path).expect("save should succeed");
 
     // Load
@@ -246,8 +238,6 @@ fn test_node_recording_save_load() {
     let snap1 = loaded.snapshot(1).expect("should find tick 1");
     assert_eq!(snap1.state.as_ref().unwrap(), &vec![10, 11, 12]);
     assert_eq!(snap1.duration_ns, 2000);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -333,22 +323,18 @@ fn test_node_replayer_advance_seek_reset() {
 
 #[test]
 fn test_recording_manager_list_sessions() {
-    let base_dir = std::env::temp_dir().join(format!("horus_manager_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base_dir);
-    std::fs::create_dir_all(&base_dir).unwrap();
+    let tmp = TestTempDir::new("horus_manager");
 
     // Create mock session directories
-    std::fs::create_dir_all(base_dir.join("session_alpha")).unwrap();
-    std::fs::create_dir_all(base_dir.join("session_beta")).unwrap();
-    std::fs::create_dir_all(base_dir.join("session_gamma")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("session_alpha")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("session_beta")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("session_gamma")).unwrap();
 
-    let manager = RecordingManager::with_base_dir(base_dir.clone());
+    let manager = RecordingManager::with_base_dir(tmp.path().to_path_buf());
     let sessions = manager.list_sessions().expect("should list sessions");
 
     assert_eq!(sessions.len(), 3, "Should find 3 sessions");
     assert!(sessions.contains(&"session_alpha".to_string()));
     assert!(sessions.contains(&"session_beta".to_string()));
     assert!(sessions.contains(&"session_gamma".to_string()));
-
-    let _ = std::fs::remove_dir_all(&base_dir);
 }
