@@ -144,9 +144,12 @@ impl FrameSlot {
             .store(FrameType::Unallocated as u8, Ordering::Release);
         self.sequence.store(0, Ordering::Release);
 
-        // SAFETY: Both seqlocks odd; no reader will commit a result overlapping
-        // this reset window.
         let hv = self.history_version.fetch_add(1, Ordering::AcqRel) + 1;
+        // SAFETY: Both the outer seqlock (`version`) and inner seqlock (`history_version`)
+        // are held at an odd (write-in-progress) value; any concurrent reader that observes
+        // an odd version will retry and will never commit a result that overlaps this
+        // reset window. `self.history` is a UnsafeCell accessed exclusively here while
+        // the write seqlock is held, so no aliased mutable references exist.
         unsafe {
             let history = &mut *self.history.get();
             for entry in history.iter_mut() {
@@ -426,6 +429,13 @@ impl FrameSlot {
     // ========================================================================
 
     /// Find entry at or before target timestamp
+    ///
+    /// # Safety
+    ///
+    /// `history` must be a valid reference obtained from `self.history.get()`
+    /// while both the outer `version` and inner `history_version` seqlocks are
+    /// in a stable (even) state. The caller must re-check both seqlocks after
+    /// this function returns and discard the result if either changed.
     unsafe fn find_at_timestamp(
         &self,
         history: &[TransformEntry],
@@ -454,6 +464,15 @@ impl FrameSlot {
     }
 
     /// Interpolate between bracketing entries
+    ///
+    /// # Safety
+    ///
+    /// `history` must be a valid reference obtained from `self.history.get()`
+    /// while both the outer `version` and inner `history_version` seqlocks are
+    /// in a stable (even) state. The caller must re-check both seqlocks after
+    /// this function returns and discard the result if either changed, as a
+    /// concurrent writer may have partially overwritten history entries during
+    /// the multi-entry scan.
     unsafe fn interpolate_at_timestamp(
         &self,
         history: &[TransformEntry],

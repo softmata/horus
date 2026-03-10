@@ -3,6 +3,9 @@
 //! This module provides Python-friendly wrappers for HORUS perception types:
 //! - Detection / Detection3D - Object detection results
 //! - PointXYZ / PointXYZRGB / PointXYZI - Point cloud points
+//!
+// PyO3 constructors expose struct fields as Python kwargs — exceeds Clippy's threshold.
+#![allow(clippy::too_many_arguments)]
 //! - Landmark / Landmark3D - Pose estimation keypoints
 //! - SegmentationMask - Semantic/instance segmentation
 //! - TrackedObject - Multi-object tracking
@@ -157,7 +160,6 @@ pub struct PyDetection {
 impl PyDetection {
     #[new]
     #[pyo3(signature = (class_name, confidence, x, y, width, height, class_id=0, instance_id=0))]
-    #[allow(clippy::too_many_arguments)]
     fn new(
         class_name: &str,
         confidence: f32,
@@ -239,39 +241,35 @@ impl PyDetection {
             "to_bytes buffer must be exactly DETECTION_BYTE_SIZE bytes"
         );
 
-        let mut cur = Cursor::new(&mut bytes[..]);
+        {
+            let mut cur = Cursor::new(&mut bytes[..]);
 
-        // BoundingBox2D (16 bytes): x, y, width, height (f32 LE each)
-        cur.write_all(&self.bbox.x.to_le_bytes())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        cur.write_all(&self.bbox.y.to_le_bytes())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        cur.write_all(&self.bbox.width.to_le_bytes())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        cur.write_all(&self.bbox.height.to_le_bytes())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            // BoundingBox2D (16 bytes): x, y, width, height (f32 LE each)
+            cur.write_all(&self.bbox.x.to_le_bytes())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            cur.write_all(&self.bbox.y.to_le_bytes())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            cur.write_all(&self.bbox.width.to_le_bytes())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            cur.write_all(&self.bbox.height.to_le_bytes())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-        // confidence (4 bytes, f32 LE)
-        cur.write_all(&self.confidence.to_le_bytes())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            // confidence (4 bytes, f32 LE)
+            cur.write_all(&self.confidence.to_le_bytes())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-        // class_id (4 bytes, u32 LE)
-        cur.write_all(&self.class_id.to_le_bytes())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            // class_id (4 bytes, u32 LE)
+            cur.write_all(&self.class_id.to_le_bytes())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-        // class_name: 32 bytes, null-padded UTF-8; truncated to 31 chars to
-        // leave room for the NUL terminator.
-        let name_bytes = self.class_name.as_bytes();
-        let len = name_bytes.len().min(31);
-        cur.write_all(&name_bytes[..len])
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        // Advance cursor past the rest of the name field (already zeroed).
-        let pos = cur.position() as usize;
-        #[allow(clippy::drop_non_drop)] // intentional: release &mut borrow on `bytes`
-        drop(cur);
-        // Zero-pad: the vec was initialised to all-zeros, so we just need to
-        // set the cursor to skip past the name region.
-        let _ = pos; // cursor dropped; name region beyond `len` is already 0.
+            // class_name: 32 bytes, null-padded UTF-8; truncated to 31 chars to
+            // leave room for the NUL terminator.
+            let name_bytes = self.class_name.as_bytes();
+            let len = name_bytes.len().min(31);
+            cur.write_all(&name_bytes[..len])
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            // cursor drops here, releasing &mut borrow on `bytes`
+        }
 
         // instance_id (4 bytes, u32 LE) at offset 56.
         bytes[56..60].copy_from_slice(&self.instance_id.to_le_bytes());
@@ -419,8 +417,8 @@ impl PyPointXYZ {
     }
 
     /// Convert to numpy array (requires numpy)
-    #[allow(clippy::wrong_self_convention)]
-    fn to_numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    #[pyo3(name = "to_numpy")]
+    fn as_numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let np = py.import("numpy")?;
         let arr = np.call_method1("array", (vec![self.x, self.y, self.z],))?;
         Ok(arr.unbind())
@@ -1124,20 +1122,11 @@ mod detection_serialization_tests {
 
         let decoded = PyDetection::from_bytes(&bytes).expect("from_bytes failed");
 
-        assert_eq!((decoded.bbox.x - original.bbox.x).abs() < 1e-6, true);
-        assert_eq!((decoded.bbox.y - original.bbox.y).abs() < 1e-6, true);
-        assert_eq!(
-            (decoded.bbox.width - original.bbox.width).abs() < 1e-6,
-            true
-        );
-        assert_eq!(
-            (decoded.bbox.height - original.bbox.height).abs() < 1e-6,
-            true
-        );
-        assert_eq!(
-            (decoded.confidence - original.confidence).abs() < 1e-6,
-            true
-        );
+        assert!((decoded.bbox.x - original.bbox.x).abs() < 1e-6);
+        assert!((decoded.bbox.y - original.bbox.y).abs() < 1e-6);
+        assert!((decoded.bbox.width - original.bbox.width).abs() < 1e-6);
+        assert!((decoded.bbox.height - original.bbox.height).abs() < 1e-6);
+        assert!((decoded.confidence - original.confidence).abs() < 1e-6);
         assert_eq!(decoded.class_id, original.class_id);
         assert_eq!(decoded.class_name, original.class_name);
         assert_eq!(decoded.instance_id, original.instance_id);
@@ -1189,13 +1178,13 @@ mod detection_serialization_tests {
     #[test]
     fn test_from_bytes_rejects_short_buffer() {
         let short = vec![0u8; DETECTION_BYTE_SIZE - 1];
-        assert!(PyDetection::from_bytes(&short).is_err());
+        PyDetection::from_bytes(&short).unwrap_err();
     }
 
     /// from_bytes must reject buffers longer than DETECTION_BYTE_SIZE.
     #[test]
     fn test_from_bytes_rejects_long_buffer() {
         let long = vec![0u8; DETECTION_BYTE_SIZE + 1];
-        assert!(PyDetection::from_bytes(&long).is_err());
+        PyDetection::from_bytes(&long).unwrap_err();
     }
 }

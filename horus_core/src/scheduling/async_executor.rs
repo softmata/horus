@@ -438,7 +438,7 @@ mod tests {
         let ticks = count.load(Ordering::Relaxed);
         // At 10Hz for 250ms, expect ~2-3 ticks (not hundreds)
         assert!(
-            ticks >= 1 && ticks <= 5,
+            (1..=5).contains(&ticks),
             "Expected 1-5 ticks at 10Hz in 250ms, got {}",
             ticks
         );

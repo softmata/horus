@@ -823,8 +823,8 @@ class Scheduler:
 
     Example (adding nodes):
         scheduler = Scheduler()
-        scheduler.add(sensor_node, order=0, rate_hz=100.0)
-        scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
+        scheduler.add(sensor_node, order=0, rate=100.0)
+        scheduler.add(motor_node, order=1, rt=True, deadline=5.0)
         scheduler.run()
     """
 
@@ -889,7 +889,7 @@ class Scheduler:
 
         Example:
             scheduler = Scheduler.deploy(tick_rate=500.0)
-            scheduler.add(motor_node, order=0, rate_hz=500.0)
+            scheduler.add(motor_node, order=0, rate=500.0)
             scheduler.run()
         """
         if _SchedulerConfig:
@@ -943,9 +943,9 @@ class Scheduler:
         return cls(tick_rate=tick_rate, rt=True, fault_tolerance=True,
                    safety_monitor=True, watchdog_ms=500, profiling=True, **kwargs)
 
-    def add(self, node: 'Node', order: int = 100, rate_hz: Optional[float] = None,
-            rt: bool = False, deadline_ms: Optional[float] = None,
-            budget_us: Optional[int] = None,
+    def add(self, node: 'Node', order: int = 100, rate: Optional[float] = None,
+            rt: bool = False, deadline: Optional[float] = None,
+            budget: Optional[int] = None,
             failure_policy: Optional[str] = None,
             on_miss: Optional[str] = None) -> 'Scheduler':
         """
@@ -954,10 +954,10 @@ class Scheduler:
         Args:
             node: Node instance to add
             order: Execution order (lower = earlier, default: 100)
-            rate_hz: Node-specific tick rate in Hz (default: uses node.rate)
+            rate: Node-specific tick rate in Hz (default: uses node.rate)
             rt: Mark as real-time node (default: False)
-            deadline_ms: Soft deadline in milliseconds (default: None)
-            budget_us: Tick budget in microseconds (default: None)
+            deadline: Soft deadline in milliseconds (default: None)
+            budget: Tick budget in microseconds (default: None)
             failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
             on_miss: Deadline miss policy - Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, Miss.STOP
                   (default: None = warn)
@@ -966,17 +966,17 @@ class Scheduler:
             self (for method chaining)
 
         Example:
-            scheduler.add(sensor_node, order=0, rate_hz=1000.0)
-            scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0, on_miss=Miss.SAFE_MODE)
+            scheduler.add(sensor_node, order=0, rate=1000.0)
+            scheduler.add(motor_node, order=1, rt=True, deadline=5.0, on_miss=Miss.SAFE_MODE)
             scheduler.add(logger_node, order=100, failure_policy="skip")
         """
         self._nodes.append(node)
 
         if self._scheduler:
-            # Use node.rate if rate_hz not specified
-            actual_rate = rate_hz if rate_hz is not None else node.rate
-            self._scheduler.add(node, order, actual_rate, rt, deadline_ms,
-                                budget_us, failure_policy, on_miss)
+            # Use node.rate if rate not specified
+            actual_rate = rate if rate is not None else node.rate
+            self._scheduler.add(node, order, actual_rate, rt, deadline,
+                                budget, failure_policy, on_miss)
 
         return self
 
@@ -984,8 +984,8 @@ class Scheduler:
         """Start building a node configuration (fluent API).
 
         Example:
-            scheduler.node(detector).on("lidar_scan").order(0).done()
-            scheduler.node(motor).rate_hz(500).budget_us(200).failure_policy("restart", max_retries=10).done()
+            scheduler.node(detector).on("lidar_scan").order(0).build()
+            scheduler.node(motor).rate(500).budget(200).failure_policy("restart", max_retries=10).build()
         """
         self._nodes.append(node)
         if self._scheduler:
@@ -1056,13 +1056,13 @@ class Scheduler:
             return self._scheduler.get_node_stats(node_name)
         return {}
 
-    def set_node_rate(self, node_name: str, rate_hz: float) -> None:
+    def set_node_rate(self, node_name: str, rate: float) -> None:
         """
         Set the execution rate for a specific node.
 
         Args:
             node_name: Name of the node
-            rate_hz: New rate in Hz (ticks per second)
+            rate: New rate in Hz (ticks per second)
 
         Example:
             scheduler.set_node_rate("sensor", 100.0)  # Change to 100Hz
@@ -1070,13 +1070,13 @@ class Scheduler:
         # Update the node's rate attribute
         for node in self._nodes:
             if node.name == node_name:
-                node.rate = rate_hz
-                node._tick_period = 1.0 / rate_hz if rate_hz > 0 else 0.0
+                node.rate = rate
+                node._tick_period = 1.0 / rate if rate > 0 else 0.0
                 break
 
         # Update Rust scheduler if available
         if self._scheduler:
-            self._scheduler.set_node_rate(node_name, rate_hz)
+            self._scheduler.set_node_rate(node_name, rate)
 
     def get_all_nodes(self) -> List[Dict[str, Any]]:
         """
@@ -1086,7 +1086,7 @@ class Scheduler:
             List of dictionaries containing node information:
             - name: Node name
             - order: Execution order
-            - rate_hz: Node execution rate
+            - rate: Node execution rate
             - total_ticks: Total number of ticks executed
             - successful_ticks: Number of successful ticks
             - failed_ticks: Number of failed ticks

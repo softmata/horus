@@ -52,6 +52,10 @@ macro_rules! loom_sp_try_send {
             return Err($msg);
         }
         let index = (head & $self.mask) as usize;
+        // SAFETY: We won the CAS (or are the sole producer), so `head` is the
+        // exclusive write position. `index` is in bounds (`head & mask < capacity`).
+        // No consumer touches this slot until `head` is released with
+        // `Ordering::Release` on the next line.
         $self.buffer[index].with_mut(|ptr| unsafe {
             ptr.write(MaybeUninit::new($msg));
         });
@@ -67,6 +71,10 @@ macro_rules! loom_sp_drop {
         let tail = $self.tail.load(Ordering::Relaxed);
         for i in tail..head {
             let index = (i & $self.mask) as usize;
+            // SAFETY: Drop runs with exclusive (`&mut self`) access, so no
+            // concurrent readers or writers exist. Each slot in `tail..head`
+            // was written by the producer and not yet consumed (tail <= i < head),
+            // so the `MaybeUninit` is fully initialized and safe to drop once.
             $self.buffer[index].with_mut(|ptr| unsafe {
                 (*ptr).assume_init_drop();
             });
@@ -83,6 +91,11 @@ macro_rules! loom_mp_drop {
             let index = (i & $self.mask) as usize;
             let seq = $self.slots[index].sequence.load(Ordering::Relaxed);
             if seq == i.wrapping_add(1) {
+                // SAFETY: Drop runs with exclusive (`&mut self`) access, so no
+                // concurrent producers or consumers exist. The sequence check
+                // `seq == i.wrapping_add(1)` confirms a producer fully committed
+                // the write to this slot, so the `MaybeUninit` is initialized.
+                // Each slot is dropped at most once (the loop covers `tail..head`).
                 $self.slots[index].data.with_mut(|ptr| unsafe {
                     (*ptr).assume_init_drop();
                 });
@@ -137,6 +150,11 @@ impl<T> LoomSpscRing<T> {
             return None;
         }
         let index = (tail & self.mask) as usize;
+        // SAFETY: `tail < head` (checked above) and `head` was loaded with
+        // `Acquire`, so the producer's `Release` store of `head` after writing
+        // the slot is visible here. The slot at `index` is fully initialized.
+        // SPSC has a single consumer, so this is the only read of the slot;
+        // `tail` is advanced with `Release` afterwards to publish consumption.
         let msg = self.buffer[index].with(|ptr| unsafe { (*ptr).assume_init_read() });
         self.tail.store(tail.wrapping_add(1), Ordering::Release);
         Some(msg)
@@ -199,6 +217,11 @@ impl<T> LoomSpmcRing<T> {
                 .is_ok()
             {
                 let index = (tail & self.mask) as usize;
+                // SAFETY: The CAS on `tail` succeeded with `AcqRel`, which
+                // synchronises-with the producer's `Release` on `head`. The slot
+                // at `index` was written before `head` was published, so the
+                // `MaybeUninit` is initialized. The CAS ensures exactly one
+                // consumer claims this `tail` position, preventing double-reads.
                 let msg = self.buffer[index].with(|ptr| unsafe { (*ptr).assume_init_read() });
                 return Some(msg);
             }
@@ -277,6 +300,12 @@ impl<T> LoomMpscRing<T> {
                     )
                     .is_ok()
                 {
+                    // SAFETY: The CAS on `head` succeeded, giving this producer
+                    // exclusive ownership of the slot at `index`. The sequence
+                    // `seq == head` (initial slot value from `alloc_loom_mp_slots`)
+                    // confirms the consumer has already recycled the slot, so no
+                    // reader holds a reference to it. We publish the write by
+                    // storing `head + 1` into `sequence` with `Release` below.
                     self.slots[index].data.with_mut(|ptr| unsafe {
                         ptr.write(MaybeUninit::new(msg));
                     });
@@ -300,6 +329,11 @@ impl<T> LoomMpscRing<T> {
         let seq = self.slots[index].sequence.load(Ordering::Acquire);
 
         if seq == tail.wrapping_add(1) {
+            // SAFETY: `seq == tail + 1` confirms the producer stored `head + 1`
+            // with `Release` after completing the write, so the `MaybeUninit` is
+            // initialized and the Acquire load of `seq` synchronises-with that
+            // store. MPSC has a single consumer so `tail` is not racing with
+            // another reader; the slot is claimed exclusively for this read.
             let msg = self.slots[index]
                 .data
                 .with(|ptr| unsafe { (*ptr).assume_init_read() });
@@ -372,6 +406,11 @@ impl<T> LoomMpmcRing<T> {
                     )
                     .is_ok()
                 {
+                    // SAFETY: The CAS on `head` succeeded, granting this thread
+                    // exclusive write access to the slot at `index`. `seq == head`
+                    // (the recycled sequence value) confirms no consumer or other
+                    // producer currently owns the slot. We publish the write by
+                    // storing `head + 1` into `sequence` with `Release` below.
                     self.slots[index].data.with_mut(|ptr| unsafe {
                         ptr.write(MaybeUninit::new(msg));
                     });
@@ -407,6 +446,12 @@ impl<T> LoomMpmcRing<T> {
                     )
                     .is_ok()
                 {
+                    // SAFETY: The CAS on `tail` succeeded, giving this consumer
+                    // exclusive ownership of the slot. `seq == tail + 1` (verified
+                    // before the CAS) means the producer's `Release` store has
+                    // already published a fully initialized value; the Acquire load
+                    // of `seq` synchronises-with that store. No other consumer
+                    // can claim the same `tail` position due to the CAS.
                     let msg = self.slots[index]
                         .data
                         .with(|ptr| unsafe { (*ptr).assume_init_read() });
@@ -441,6 +486,13 @@ impl<T> LoomMpmcRing<T> {
         let seq = self.slots[index].sequence.load(Ordering::Acquire);
         // Slot is readable when sequence == prev + 1 (write completed).
         if seq == prev.wrapping_add(1) {
+            // SAFETY: `seq == prev + 1` means a producer completed a `Release`
+            // store of the sequence after writing the slot; the Acquire load here
+            // synchronises-with that store, making the data visible. `T: Copy`
+            // (enforced by the method bound) means there are no heap-owning fields:
+            // even if a concurrent consumer claims this slot between our `seq` load
+            // and this read, copying the plain bytes is safe — no double-free or
+            // use-after-free can occur.
             let msg = self.slots[index]
                 .data
                 .with(|ptr| unsafe { (*ptr).assume_init_read() });
@@ -470,7 +522,7 @@ fn loom_spsc_send_recv_ordering() {
         let r = ring.clone();
 
         let producer = loom::thread::spawn(move || {
-            assert!(r.try_send(42).is_ok());
+            r.try_send(42).unwrap();
         });
 
         // Consumer may or may not see the value depending on scheduling
@@ -495,8 +547,8 @@ fn loom_spsc_full_ring_backpressure() {
         let r = ring.clone();
 
         // Fill the ring
-        assert!(ring.try_send(1).is_ok());
-        assert!(ring.try_send(2).is_ok());
+        ring.try_send(1).unwrap();
+        ring.try_send(2).unwrap();
 
         // Spawn consumer that drains one
         let consumer = loom::thread::spawn(move || r.try_recv());
@@ -538,8 +590,8 @@ fn loom_spsc_two_messages_fifo() {
         let r = ring.clone();
 
         let producer = loom::thread::spawn(move || {
-            assert!(r.try_send(1).is_ok());
-            assert!(r.try_send(2).is_ok());
+            r.try_send(1).unwrap();
+            r.try_send(2).unwrap();
         });
 
         producer.join().unwrap();
@@ -555,8 +607,8 @@ fn loom_spsc_drop_pending() {
     // Verify that pending messages are dropped correctly when the ring is destroyed.
     loom::model(|| {
         let ring = LoomSpscRing::<String>::new(4);
-        assert!(ring.try_send("hello".to_string()).is_ok());
-        assert!(ring.try_send("world".to_string()).is_ok());
+        ring.try_send("hello".to_string()).unwrap();
+        ring.try_send("world".to_string()).unwrap();
         // Consume one
         assert_eq!(ring.try_recv(), Some("hello".to_string()));
         // Drop ring with "world" still pending — should not leak
@@ -575,7 +627,7 @@ fn loom_spmc_competing_consumers() {
         let ring = Arc::new(LoomSpmcRing::<u64>::new(2));
 
         // Producer sends one message
-        assert!(ring.try_send(42).is_ok());
+        ring.try_send(42).unwrap();
 
         let r1 = ring.clone();
         let r2 = ring.clone();
@@ -600,8 +652,8 @@ fn loom_spmc_two_messages_two_consumers() {
     loom::model(|| {
         let ring = Arc::new(LoomSpmcRing::<u64>::new(4));
 
-        assert!(ring.try_send(1).is_ok());
-        assert!(ring.try_send(2).is_ok());
+        ring.try_send(1).unwrap();
+        ring.try_send(2).unwrap();
 
         let r1 = ring.clone();
         let r2 = ring.clone();
@@ -650,10 +702,10 @@ fn loom_mpsc_two_producers_one_consumer() {
         let r2 = ring.clone();
 
         let p1 = loom::thread::spawn(move || {
-            assert!(r1.try_send(1).is_ok());
+            r1.try_send(1).unwrap();
         });
         let p2 = loom::thread::spawn(move || {
-            assert!(r2.try_send(2).is_ok());
+            r2.try_send(2).unwrap();
         });
 
         p1.join().unwrap();
@@ -677,7 +729,7 @@ fn loom_mpsc_producer_consumer_concurrent() {
         let r = ring.clone();
 
         let producer = loom::thread::spawn(move || {
-            assert!(r.try_send(99).is_ok());
+            r.try_send(99).unwrap();
         });
 
         let val = ring.try_recv();
@@ -743,8 +795,8 @@ fn loom_mpmc_concurrent_consumers() {
         let ring = Arc::new(LoomMpmcRing::<u64>::new(4));
 
         // Pre-fill sequentially
-        assert!(ring.try_send(1).is_ok());
-        assert!(ring.try_send(2).is_ok());
+        ring.try_send(1).unwrap();
+        ring.try_send(2).unwrap();
 
         let r1 = ring.clone();
         let r2 = ring.clone();
@@ -796,7 +848,7 @@ fn loom_mpmc_concurrent_send_recv() {
         let r = ring.clone();
 
         let producer = loom::thread::spawn(move || {
-            assert!(r.try_send(77).is_ok());
+            r.try_send(77).unwrap();
         });
 
         let val = ring.try_recv();
@@ -815,8 +867,8 @@ fn loom_mpmc_drop_with_pending() {
     // Verify MPMC ring drops pending messages with sequence-checked Drop.
     loom::model(|| {
         let ring = LoomMpmcRing::<String>::new(4);
-        assert!(ring.try_send("a".to_string()).is_ok());
-        assert!(ring.try_send("b".to_string()).is_ok());
+        ring.try_send("a".to_string()).unwrap();
+        ring.try_send("b".to_string()).unwrap();
         // Consume one
         assert_eq!(ring.try_recv(), Some("a".to_string()));
         // Drop with "b" still pending — must not leak
@@ -837,7 +889,7 @@ fn loom_spmc_read_latest_concurrent_with_consumer() {
         let ring = Arc::new(LoomSpmcRing::<u64>::new(2));
 
         // Producer sends one message
-        assert!(ring.try_send(42).is_ok());
+        ring.try_send(42).unwrap();
 
         let consumer_ring = ring.clone();
         let reader_ring = ring.clone();
@@ -871,8 +923,8 @@ fn loom_spmc_read_latest_with_two_consumers() {
     loom::model(|| {
         let ring = Arc::new(LoomSpmcRing::<u64>::new(4));
 
-        assert!(ring.try_send(10).is_ok());
-        assert!(ring.try_send(20).is_ok());
+        ring.try_send(10).unwrap();
+        ring.try_send(20).unwrap();
 
         let c1 = ring.clone();
         let c2 = ring.clone();
@@ -927,7 +979,7 @@ fn loom_mpmc_read_latest_concurrent_with_consumer() {
     loom::model(|| {
         let ring = Arc::new(LoomMpmcRing::<u64>::new(2));
 
-        assert!(ring.try_send(99).is_ok());
+        ring.try_send(99).unwrap();
 
         let consumer_ring = ring.clone();
         let reader_ring = ring.clone();

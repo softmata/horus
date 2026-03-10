@@ -22,7 +22,6 @@ const RECORDING_EXT: &str = "horus";
 
 /// Recording configuration
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // record_inputs/record_outputs are read in #[cfg(test)] impls
 pub struct RecordingConfig {
     /// Session name
     pub session_name: String,

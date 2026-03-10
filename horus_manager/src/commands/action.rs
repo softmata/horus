@@ -474,6 +474,39 @@ pub fn send_goal(
     Ok(())
 }
 
+/// Cancel a goal on an action server (`horus action cancel_goal <name>`)
+pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {
+    use horus_core::communication::Topic;
+
+    let cancel_topic_name = format!("{}/cancel", name);
+    let cancel_request = serde_json::json!({
+        "goal_id": goal_id.unwrap_or(""),  // empty = cancel all
+        "cancel_all": goal_id.is_none(),
+    });
+
+    let cancel_topic: Topic<serde_json::Value> = Topic::new(&cancel_topic_name).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Cannot open cancel topic '{}': {}",
+            cancel_topic_name, e
+        )))
+    })?;
+
+    cancel_topic.send(cancel_request);
+
+    println!(
+        "{} Cancel request sent to action '{}'",
+        cli_output::ICON_SUCCESS.green(),
+        name
+    );
+    if let Some(id) = goal_id {
+        println!("  {} {}", "Goal ID:".dimmed(), id);
+    } else {
+        println!("  {} (all goals)", "Canceling:".dimmed());
+    }
+
+    Ok(())
+}
+
 // ─── cancel_goal ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -616,37 +649,4 @@ mod tests {
         assert_eq!(goal_request["priority"], 128);
         assert_eq!(goal_request["payload"]["x"], 1.0);
     }
-}
-
-/// Cancel a goal on an action server (`horus action cancel_goal <name>`)
-pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {
-    use horus_core::communication::Topic;
-
-    let cancel_topic_name = format!("{}/cancel", name);
-    let cancel_request = serde_json::json!({
-        "goal_id": goal_id.unwrap_or(""),  // empty = cancel all
-        "cancel_all": goal_id.is_none(),
-    });
-
-    let cancel_topic: Topic<serde_json::Value> = Topic::new(&cancel_topic_name).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Cannot open cancel topic '{}': {}",
-            cancel_topic_name, e
-        )))
-    })?;
-
-    cancel_topic.send(cancel_request);
-
-    println!(
-        "{} Cancel request sent to action '{}'",
-        cli_output::ICON_SUCCESS.green(),
-        name
-    );
-    if let Some(id) = goal_id {
-        println!("  {} {}", "Goal ID:".dimmed(), id);
-    } else {
-        println!("  {} (all goals)", "Canceling:".dimmed());
-    }
-
-    Ok(())
 }

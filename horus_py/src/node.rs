@@ -421,4 +421,118 @@ impl PyNode {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horus::core::NodeState as CoreNodeState;
+
+    #[test]
+    fn node_state_from_all_core_variants() {
+        let cases: Vec<(CoreNodeState, &str)> = vec![
+            (CoreNodeState::Uninitialized, "uninitialized"),
+            (CoreNodeState::Initializing, "initializing"),
+            (CoreNodeState::Running, "running"),
+            (CoreNodeState::Stopping, "stopping"),
+            (CoreNodeState::Stopped, "stopped"),
+            (CoreNodeState::Error("oops".into()), "error"),
+            (CoreNodeState::Crashed("bang".into()), "crashed"),
+        ];
+
+        for (state, expected_name) in cases {
+            let py_state = PyNodeState::from(&state);
+            assert_eq!(
+                py_state.name, expected_name,
+                "CoreNodeState::{:?} should map to '{}'",
+                state, expected_name
+            );
+        }
+    }
+
+    #[test]
+    fn node_state_repr() {
+        let state = PyNodeState::new("running".to_string());
+        assert_eq!(state.__repr__(), "NodeState('running')");
+        assert_eq!(state.__str__(), "running");
+    }
+
+    #[test]
+    fn node_state_equality() {
+        let a = PyNodeState::new("running".to_string());
+        let b = PyNodeState::new("running".to_string());
+        let c = PyNodeState::new("stopped".to_string());
+        assert!(a.__eq__(&b));
+        assert!(!a.__eq__(&c));
+    }
+
+    #[test]
+    fn node_info_construction() {
+        let info = PyNodeInfo::new("test_sensor".to_string());
+        assert!(info.scheduler_running.is_none());
+        let inner = info.inner.lock().unwrap();
+        assert_eq!(inner.name(), "test_sensor");
+    }
+
+    #[test]
+    fn node_info_custom_data() {
+        let info = PyNodeInfo::new("test_node".to_string());
+        {
+            let mut inner = info.inner.lock().unwrap();
+            inner.set_custom_data("key".to_string(), "value".to_string());
+        }
+        {
+            let inner = info.inner.lock().unwrap();
+            assert_eq!(inner.get_custom_data("key"), Some(&"value".to_string()));
+            assert_eq!(inner.get_custom_data("missing"), None);
+        }
+    }
+
+    #[test]
+    fn node_construction() {
+        let node = PyNode::new("motor_controller".to_string()).unwrap();
+        assert_eq!(node.name, "motor_controller");
+        assert!(node.py_callback.is_none());
+        assert_eq!(node.__repr__(), "Node(name='motor_controller')");
+    }
+
+    #[test]
+    fn node_info_metrics_initial_values() {
+        let info = PyNodeInfo::new("sensor".to_string());
+        let inner = info.inner.lock().unwrap();
+        let metrics = inner.metrics();
+        assert_eq!(metrics.total_ticks, 0);
+        assert_eq!(metrics.successful_ticks, 0);
+        assert_eq!(metrics.failed_ticks, 0);
+        assert_eq!(metrics.errors_count, 0);
+    }
+
+    #[test]
+    fn node_info_tick_tracking() {
+        let info = PyNodeInfo::new("tracker".to_string());
+        {
+            let mut inner = info.inner.lock().unwrap();
+            inner.start_tick();
+            inner.record_tick();
+        }
+        let inner = info.inner.lock().unwrap();
+        assert_eq!(inner.metrics().total_ticks, 1);
+        assert_eq!(inner.metrics().successful_ticks, 1);
+    }
+
+    #[test]
+    fn node_info_scheduler_running_flag() {
+        let running = Arc::new(AtomicBool::new(true));
+        let info = PyNodeInfo {
+            inner: Arc::new(Mutex::new(CoreNodeInfo::new("test".to_string()))),
+            scheduler_running: Some(running.clone()),
+        };
+
+        assert!(running.load(Ordering::SeqCst));
+        // Simulate request_stop
+        if let Some(ref flag) = info.scheduler_running {
+            flag.store(false, Ordering::SeqCst);
+        }
+        assert!(!running.load(Ordering::SeqCst));
+    }
+}
+
 // Bridge struct to implement the Rust Node trait

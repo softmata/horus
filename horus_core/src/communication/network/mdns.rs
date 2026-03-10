@@ -164,7 +164,7 @@ impl Mdns {
         })?;
 
         // Store registered service name for cleanup
-        *self.registered_service.lock().unwrap() = Some(full_name.clone());
+        *self.registered_service.lock().expect("mutex poisoned") = Some(full_name.clone());
 
         log::info!(
             "Registered mDNS service: {} on port {} with topics {:?}",
@@ -178,7 +178,7 @@ impl Mdns {
 
     /// Unregister the currently registered service
     pub fn unregister_service(&self) -> HorusResult<()> {
-        let mut registered = self.registered_service.lock().unwrap();
+        let mut registered = self.registered_service.lock().expect("mutex poisoned");
         if let Some(full_name) = registered.take() {
             self.daemon.unregister(&full_name).map_err(|e| {
                 crate::error::HorusError::mdns_failed("unregister service", e.to_string())
@@ -207,7 +207,7 @@ impl Mdns {
     pub fn resolve_hostname(&self, hostname: &str) -> HorusResult<IpAddr> {
         // Check cache first
         {
-            let cache = self.resolution_cache.lock().unwrap();
+            let cache = self.resolution_cache.lock().expect("mutex poisoned");
             if let Some(cached) = cache.get(hostname) {
                 if cached.resolved_at.elapsed() < RESOLUTION_CACHE_TTL {
                     log::debug!("mDNS cache hit for {}: {}", hostname, cached.ip);
@@ -237,7 +237,7 @@ impl Mdns {
                         // Get the first IPv4 address (prefer IPv4 for compatibility)
                         if let Some(addr) = info.get_addresses().iter().find(|a| a.is_ipv4()) {
                             // Cache the result
-                            let mut cache = self.resolution_cache.lock().unwrap();
+                            let mut cache = self.resolution_cache.lock().expect("mutex poisoned");
                             cache.insert(
                                 hostname.to_string(),
                                 CachedResolution {
@@ -252,7 +252,7 @@ impl Mdns {
 
                         // Fall back to IPv6 if no IPv4
                         if let Some(addr) = info.get_addresses().iter().next() {
-                            let mut cache = self.resolution_cache.lock().unwrap();
+                            let mut cache = self.resolution_cache.lock().expect("mutex poisoned");
                             cache.insert(
                                 hostname.to_string(),
                                 CachedResolution {
@@ -294,7 +294,7 @@ impl Mdns {
     ) -> HorusResult<IpAddr> {
         // Check cache first (same as resolve_hostname)
         {
-            let cache = self.resolution_cache.lock().unwrap();
+            let cache = self.resolution_cache.lock().expect("mutex poisoned");
             if let Some(cached) = cache.get(hostname) {
                 if cached.resolved_at.elapsed() < RESOLUTION_CACHE_TTL {
                     return Ok(cached.ip);
@@ -323,7 +323,7 @@ impl Mdns {
                             .find(|a| a.is_ipv4())
                             .or_else(|| info.get_addresses().iter().next())
                         {
-                            let mut cache = self.resolution_cache.lock().unwrap();
+                            let mut cache = self.resolution_cache.lock().expect("mutex poisoned");
                             cache.insert(
                                 hostname.to_string(),
                                 CachedResolution {
@@ -429,7 +429,7 @@ impl Mdns {
 
         // Update the internal cache
         {
-            let mut services = self.services.write().unwrap();
+            let mut services = self.services.write().expect("rwlock poisoned");
             *services = discovered.clone();
         }
 
@@ -441,7 +441,12 @@ impl Mdns {
     /// This returns cached results from the last browse operation.
     /// Call `browse_services()` first to populate the cache.
     pub fn get_cached_services(&self) -> Vec<ServiceInfo> {
-        self.services.read().unwrap().values().cloned().collect()
+        self.services
+            .read()
+            .expect("rwlock poisoned")
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Find a service by instance name
@@ -450,7 +455,7 @@ impl Mdns {
     pub fn find_service(&self, instance_name: &str) -> Option<ServiceInfo> {
         self.services
             .read()
-            .unwrap()
+            .expect("rwlock poisoned")
             .values()
             .find(|s| s.instance_name == instance_name)
             .cloned()
@@ -460,7 +465,7 @@ impl Mdns {
     pub fn find_services_with_topic(&self, topic: &str) -> Vec<ServiceInfo> {
         self.services
             .read()
-            .unwrap()
+            .expect("rwlock poisoned")
             .values()
             .filter(|s| s.topics.contains(&topic.to_string()))
             .cloned()
@@ -469,14 +474,17 @@ impl Mdns {
 
     /// Clear the resolution cache
     pub fn clear_cache(&self) {
-        self.resolution_cache.lock().unwrap().clear();
-        self.services.write().unwrap().clear();
+        self.resolution_cache
+            .lock()
+            .expect("mutex poisoned")
+            .clear();
+        self.services.write().expect("rwlock poisoned").clear();
     }
 
     /// Get cache statistics
     pub fn cache_stats(&self) -> MdnsCacheStats {
-        let resolution_cache = self.resolution_cache.lock().unwrap();
-        let services = self.services.read().unwrap();
+        let resolution_cache = self.resolution_cache.lock().expect("mutex poisoned");
+        let services = self.services.read().expect("rwlock poisoned");
 
         MdnsCacheStats {
             cached_resolutions: resolution_cache.len(),
@@ -488,7 +496,7 @@ impl Mdns {
     pub fn shutdown(self) -> HorusResult<()> {
         // Unregister any registered service first
         {
-            let registered = self.registered_service.lock().unwrap();
+            let registered = self.registered_service.lock().expect("mutex poisoned");
             if let Some(ref full_name) = *registered {
                 let _ = self.daemon.unregister(full_name);
             }
@@ -505,7 +513,7 @@ impl Mdns {
 impl Drop for Mdns {
     fn drop(&mut self) {
         // Try to unregister service on drop
-        let registered = self.registered_service.lock().unwrap();
+        let registered = self.registered_service.lock().expect("mutex poisoned");
         if let Some(ref full_name) = *registered {
             let _ = self.daemon.unregister(full_name);
         }
@@ -807,7 +815,7 @@ impl DiscoveryWatcher {
 
             loop {
                 // Check stop signal
-                if *stop_clone.read().unwrap() {
+                if *stop_clone.read().expect("rwlock poisoned") {
                     break;
                 }
 
@@ -868,7 +876,7 @@ impl DiscoveryWatcher {
 
     /// Stop the watcher
     pub fn stop(&mut self) {
-        *self.stop_signal.write().unwrap() = true;
+        *self.stop_signal.write().expect("rwlock poisoned") = true;
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -1096,7 +1104,7 @@ impl MdnsNodeRegistration {
     /// # Returns
     /// Ok(()) if registration succeeded, or an error
     pub fn register(&self, topics: &[&str]) -> HorusResult<()> {
-        let mut is_registered = self.is_registered.lock().unwrap();
+        let mut is_registered = self.is_registered.lock().expect("mutex poisoned");
 
         if *is_registered {
             // Already registered, just update topics
@@ -1106,7 +1114,7 @@ impl MdnsNodeRegistration {
 
         // Store topics
         {
-            let mut current = self.current_topics.write().unwrap();
+            let mut current = self.current_topics.write().expect("rwlock poisoned");
             *current = topics.iter().map(|s| s.to_string()).collect();
         }
 
@@ -1138,7 +1146,7 @@ impl MdnsNodeRegistration {
     /// This re-registers the service with updated topic information.
     /// Useful when a node dynamically adds/removes publishers or subscribers.
     pub fn update_topics(&self, topics: &[&str]) -> HorusResult<()> {
-        let is_registered = self.is_registered.lock().unwrap();
+        let is_registered = self.is_registered.lock().expect("mutex poisoned");
 
         if !*is_registered {
             // Not registered yet, just register
@@ -1149,7 +1157,7 @@ impl MdnsNodeRegistration {
 
         // Check if topics actually changed
         {
-            let current = self.current_topics.read().unwrap();
+            let current = self.current_topics.read().expect("rwlock poisoned");
             let new_topics: Vec<String> = topics.iter().map(|s| s.to_string()).collect();
             if *current == new_topics {
                 return Ok(()); // No change
@@ -1161,7 +1169,7 @@ impl MdnsNodeRegistration {
 
         // Update stored topics
         {
-            let mut current = self.current_topics.write().unwrap();
+            let mut current = self.current_topics.write().expect("rwlock poisoned");
             *current = topics.iter().map(|s| s.to_string()).collect();
         }
 
@@ -1183,7 +1191,7 @@ impl MdnsNodeRegistration {
     /// This is called automatically on Drop, but can be called explicitly
     /// for clean shutdown sequences.
     pub fn unregister(&self) -> HorusResult<()> {
-        let mut is_registered = self.is_registered.lock().unwrap();
+        let mut is_registered = self.is_registered.lock().expect("mutex poisoned");
 
         if !*is_registered {
             return Ok(()); // Already unregistered
@@ -1199,7 +1207,7 @@ impl MdnsNodeRegistration {
 
     /// Check if currently registered
     pub fn is_registered(&self) -> bool {
-        *self.is_registered.lock().unwrap()
+        *self.is_registered.lock().expect("mutex poisoned")
     }
 
     /// Get the sanitized hostname
@@ -1214,7 +1222,7 @@ impl MdnsNodeRegistration {
 
     /// Get the current topics
     pub fn topics(&self) -> Vec<String> {
-        self.current_topics.read().unwrap().clone()
+        self.current_topics.read().expect("rwlock poisoned").clone()
     }
 
     /// Get the advertised port
@@ -1352,7 +1360,7 @@ impl GlobalMdnsManager {
         let registration = Arc::new(MdnsNodeRegistration::new(node_name, port)?);
         registration.register(topics)?;
 
-        let mut registrations = self.registrations.write().unwrap();
+        let mut registrations = self.registrations.write().expect("rwlock poisoned");
         registrations.insert(node_name.to_string(), registration.clone());
 
         Ok(registration)
@@ -1360,12 +1368,16 @@ impl GlobalMdnsManager {
 
     /// Get a registration by node name
     pub fn get(&self, node_name: &str) -> Option<Arc<MdnsNodeRegistration>> {
-        self.registrations.read().unwrap().get(node_name).cloned()
+        self.registrations
+            .read()
+            .expect("rwlock poisoned")
+            .get(node_name)
+            .cloned()
     }
 
     /// Unregister a node
     pub fn unregister_node(&self, node_name: &str) -> HorusResult<()> {
-        let mut registrations = self.registrations.write().unwrap();
+        let mut registrations = self.registrations.write().expect("rwlock poisoned");
         if let Some(reg) = registrations.remove(node_name) {
             reg.unregister()?;
         }
@@ -1374,7 +1386,7 @@ impl GlobalMdnsManager {
 
     /// Unregister all nodes
     pub fn unregister_all(&self) -> HorusResult<()> {
-        let mut registrations = self.registrations.write().unwrap();
+        let mut registrations = self.registrations.write().expect("rwlock poisoned");
         for (_, reg) in registrations.drain() {
             let _ = reg.unregister();
         }
@@ -1383,12 +1395,17 @@ impl GlobalMdnsManager {
 
     /// Get count of registered nodes
     pub fn count(&self) -> usize {
-        self.registrations.read().unwrap().len()
+        self.registrations.read().expect("rwlock poisoned").len()
     }
 
     /// Get all registered node names
     pub fn node_names(&self) -> Vec<String> {
-        self.registrations.read().unwrap().keys().cloned().collect()
+        self.registrations
+            .read()
+            .expect("rwlock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 

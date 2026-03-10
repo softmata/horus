@@ -28,7 +28,7 @@ impl Scheduler {
     /// use std::path::PathBuf;
     ///
     /// let mut scheduler = Scheduler::new();
-    /// scheduler.add(live_sensor).order(0).done();  // Live node
+    /// scheduler.add(live_sensor).order(0).build();  // Live node
     /// scheduler.add_replay(
     ///     PathBuf::from("~/.horus/recordings/crash/motor_node@abc123.horus"),
     ///     1,  // priority

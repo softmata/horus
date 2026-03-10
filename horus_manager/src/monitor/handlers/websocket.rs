@@ -35,66 +35,6 @@ pub fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
     auth_str.strip_prefix("Bearer ")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::HeaderMap;
-
-    #[test]
-    fn extract_cookie_token_present() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::COOKIE,
-            "other=abc; session_token=my_token_value; foo=bar"
-                .parse()
-                .unwrap(),
-        );
-        assert_eq!(extract_cookie_token(&headers), Some("my_token_value"));
-    }
-
-    #[test]
-    fn extract_cookie_token_missing() {
-        let headers = HeaderMap::new();
-        assert_eq!(extract_cookie_token(&headers), None);
-    }
-
-    #[test]
-    fn extract_cookie_token_no_session_cookie() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::COOKIE,
-            "other=abc; foo=bar".parse().unwrap(),
-        );
-        assert_eq!(extract_cookie_token(&headers), None);
-    }
-
-    #[test]
-    fn extract_bearer_token_present() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            "Bearer my_bearer_token".parse().unwrap(),
-        );
-        assert_eq!(extract_bearer_token(&headers), Some("my_bearer_token"));
-    }
-
-    #[test]
-    fn extract_bearer_token_missing() {
-        let headers = HeaderMap::new();
-        assert_eq!(extract_bearer_token(&headers), None);
-    }
-
-    #[test]
-    fn extract_bearer_token_wrong_scheme() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            "Basic dXNlcjpwYXNz".parse().unwrap(),
-        );
-        assert_eq!(extract_bearer_token(&headers), None);
-    }
-}
-
 async fn handle_websocket(socket: WebSocket) {
     let (mut sender, _receiver) = socket.split();
 
@@ -205,5 +145,65 @@ async fn handle_websocket(socket: WebSocket) {
         {
             break; // Client disconnected
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn extract_cookie_token_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            "other=abc; session_token=my_token_value; foo=bar"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(extract_cookie_token(&headers), Some("my_token_value"));
+    }
+
+    #[test]
+    fn extract_cookie_token_missing() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_cookie_token(&headers), None);
+    }
+
+    #[test]
+    fn extract_cookie_token_no_session_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            "other=abc; foo=bar".parse().unwrap(),
+        );
+        assert_eq!(extract_cookie_token(&headers), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer my_bearer_token".parse().unwrap(),
+        );
+        assert_eq!(extract_bearer_token(&headers), Some("my_bearer_token"));
+    }
+
+    #[test]
+    fn extract_bearer_token_missing() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_wrong_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic dXNlcjpwYXNz".parse().unwrap(),
+        );
+        assert_eq!(extract_bearer_token(&headers), None);
     }
 }

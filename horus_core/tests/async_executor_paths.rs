@@ -3,6 +3,7 @@
 //! Covers: panic handling, mixed success/failure, skip policy,
 //! paused node, uninitialized node, restart failure.
 
+use horus_core::core::DurationExt;
 use horus_core::core::Node;
 use horus_core::error::HorusResult;
 use horus_core::scheduling::{FailurePolicy, Scheduler};
@@ -86,7 +87,7 @@ fn test_async_panic_handled() {
         .order(5)
         .async_io()
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(100)).unwrap();
 
@@ -113,7 +114,7 @@ fn test_async_mixed_success_failure() {
         })
         .order(5)
         .async_io()
-        .done();
+        .build();
 
     // Panic node with Ignore
     scheduler
@@ -124,7 +125,7 @@ fn test_async_mixed_success_failure() {
         .order(6)
         .async_io()
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(100)).unwrap();
 
@@ -154,7 +155,7 @@ fn test_async_skip_policy() {
         .order(5)
         .async_io()
         .failure_policy(FailurePolicy::skip(2, 5000))
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
@@ -183,7 +184,7 @@ fn test_async_paused_node_skipped() {
         })
         .order(5)
         .async_io()
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(100)).unwrap();
 
@@ -204,7 +205,7 @@ fn test_async_uninitialized_node_skipped() {
         })
         .order(5)
         .async_io()
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(100)).unwrap();
 
@@ -229,7 +230,7 @@ fn test_async_restart_failure() {
         .order(5)
         .async_io()
         .failure_policy(FailurePolicy::restart(3, 10))
-        .done();
+        .build();
 
     // The restart policy should attempt to restart the node after panics.
     // After exhausting restarts (3), it escalates to fatal and stops the scheduler.

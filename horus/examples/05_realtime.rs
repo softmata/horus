@@ -113,23 +113,24 @@ impl Node for SafetyMonitor {
 fn main() -> Result<()> {
     println!("=== HORUS Example 5: Real-Time Nodes ===\n");
 
-    let mut scheduler = Scheduler::new().tick_hz(100.0);
+    let mut scheduler = Scheduler::new().tick_rate(100.hz());
 
     // PID controller: RT node on dedicated thread
     scheduler
         .add(PidController::new()?)
         .order(0)
-        .rate_hz(100.0)
+        .rate(100.hz())
         .budget(200.us()) // 200μs max execution time
         .deadline(1.ms()) // 1ms deadline for 1kHz control
         .on_miss(Miss::Skip) // Occasional miss tolerated
         .build()?;
 
-    // Safety monitor: best-effort at 10 Hz
+    // Safety monitor: compute node at 10 Hz (not RT)
     scheduler
         .add(SafetyMonitor::new()?)
         .order(10)
-        .rate_hz(10.0)
+        .compute()
+        .rate(10.hz())
         .build()?;
 
     scheduler.run_for(Duration::from_secs(3))?;

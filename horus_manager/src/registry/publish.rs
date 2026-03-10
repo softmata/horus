@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use std::cmp::Reverse;
 use std::io::IsTerminal;
 use walkdir::WalkDir;
 
@@ -557,7 +558,7 @@ impl RegistryClient {
             // Show file listing in dry-run mode
             println!("\n{}", "   Files to be published:".cyan());
             let mut sorted_files = included_files.clone();
-            sorted_files.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by size descending
+            sorted_files.sort_by_key(|item| Reverse(item.1)); // Sort by size descending
             let show_count = sorted_files.len().min(20);
             for (path, size) in &sorted_files[..show_count] {
                 if *size > 1024 * 1024 {

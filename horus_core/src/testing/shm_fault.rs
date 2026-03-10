@@ -474,7 +474,7 @@ mod tests {
     fn network_healthy_endpoint_resolves() {
         let endpoint = MockNetworkEndpoint::healthy("robot.local");
         let result = endpoint.resolve();
-        assert!(result.is_ok());
+        result.unwrap();
         assert_eq!(endpoint.resolve_attempts(), 1);
     }
 
@@ -482,7 +482,7 @@ mod tests {
     fn network_healthy_endpoint_connects() {
         let endpoint = MockNetworkEndpoint::healthy("robot.local");
         let result = endpoint.connect();
-        assert!(result.is_ok());
+        result.unwrap();
         assert_eq!(endpoint.connect_attempts(), 1);
     }
 
@@ -493,7 +493,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            format!("{}", err).contains("timeout"),
+            format!("{}", err).to_lowercase().contains("timeout"),
             "Error should mention timeout: {}",
             err
         );

@@ -1,5 +1,5 @@
 // Test real-time node functionality
-use horus_core::core::{Miss, Node};
+use horus_core::core::{DurationExt, Miss, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
@@ -156,27 +156,27 @@ fn test_rt_node_basic() {
     scheduler
         .add(MotorControlNode::new("motor_ctrl"))
         .order(0)
-        .budget_us(100)
-        .deadline_ms(1)
+        .budget(100.us())
+        .deadline(1.ms())
         .on_miss(Miss::Stop)
-        .done();
+        .build();
     scheduler
         .add(SensorFusionNode::new("sensor_fusion"))
         .order(1)
-        .budget_us(500)
-        .deadline_ms(10)
+        .budget(500.us())
+        .deadline(10.ms())
         .on_miss(Miss::Skip)
-        .done();
+        .build();
     scheduler
         .add(LoggingNode::new("logger"))
         .order(10)
-        .budget_us(5000)
-        .deadline_ms(100)
-        .done();
+        .budget(5000.us())
+        .deadline(100.ms())
+        .build();
 
     // Run for a short duration
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -199,23 +199,23 @@ fn test_rt_node_priority_ordering() {
     scheduler
         .add(log_node)
         .order(10)
-        .budget_us(5000)
-        .deadline_ms(100)
-        .done(); // Low priority
+        .budget(5000.us())
+        .deadline(100.ms())
+        .build(); // Low priority
     scheduler
         .add(sensor_node)
         .order(1)
-        .budget_us(500)
-        .deadline_ms(10)
+        .budget(500.us())
+        .deadline(10.ms())
         .on_miss(Miss::Skip)
-        .done(); // High priority
+        .build(); // High priority
     scheduler
         .add(motor_node)
         .order(0)
-        .budget_us(100)
-        .deadline_ms(1)
+        .budget(100.us())
+        .deadline(1.ms())
         .on_miss(Miss::Stop)
-        .done(); // Critical priority
+        .build(); // Critical priority
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
@@ -227,26 +227,26 @@ fn test_rt_node_priority_ordering() {
 fn test_rt_node_with_safety_critical_config() {
     cleanup_stale_shm();
     // Use safety-critical configuration (all RT features enabled)
-    let mut scheduler = Scheduler::new().tick_hz(1000.0);
+    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
 
     scheduler
         .add(MotorControlNode::new("critical_motor"))
         .order(0)
-        .budget_us(100)
-        .deadline_ms(1)
+        .budget(100.us())
+        .deadline(1.ms())
         .on_miss(Miss::Stop)
-        .done();
+        .build();
     scheduler
         .add(SensorFusionNode::new("critical_sensor"))
         .order(1)
-        .budget_us(500)
-        .deadline_ms(10)
+        .budget(500.us())
+        .deadline(10.ms())
         .on_miss(Miss::Skip)
-        .done();
+        .build();
 
     // Run briefly (safety-critical config runs at 1kHz)
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 // test_rt_node_tick_budget removed: tick_budget/deadline/deadline_miss_policy removed from Node trait;

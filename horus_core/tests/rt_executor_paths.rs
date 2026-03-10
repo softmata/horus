@@ -4,7 +4,7 @@
 //! (str, String, unknown), on_error callback, skip policy rejection,
 //! and restart failure deinit.
 
-use horus_core::core::{Miss, Node};
+use horus_core::core::{DurationExt, Miss, Node};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -168,14 +168,14 @@ fn test_deadline_emergency_stop() {
             policy: Miss::Stop,
         })
         .order(0)
-        .budget_us(100_000)
-        .deadline_us(10)
+        .budget(100_000.us())
+        .deadline(10.us())
         .on_miss(Miss::Stop)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(500));
     // The scheduler should stop due to emergency stop
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Emergency stop sets running=false, but the RT loop checks at the top of each
     // cycle. The 500us sleep per tick means it takes time to reach the check.
@@ -211,10 +211,10 @@ fn test_deadline_skip_pauses_node() {
             policy: Miss::Skip,
         })
         .order(0)
-        .budget_us(100_000)
-        .deadline_us(10)
+        .budget(100_000.us())
+        .deadline(10.us())
         .on_miss(Miss::Skip)
-        .done();
+        .build();
 
     // Reference node to confirm scheduler is still running
     scheduler
@@ -223,8 +223,8 @@ fn test_deadline_skip_pauses_node() {
             tick_count: reference_count.clone(),
         })
         .order(1)
-        .budget_us(100_000)
-        .done();
+        .budget(100_000.us())
+        .build();
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
@@ -253,9 +253,9 @@ fn test_rt_panic_str_literal() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget_us(100_000)
+        .budget(100_000.us())
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(300)).unwrap();
 
@@ -280,9 +280,9 @@ fn test_rt_panic_owned_string() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget_us(100_000)
+        .budget(100_000.us())
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(300)).unwrap();
 
@@ -306,9 +306,9 @@ fn test_rt_panic_unknown_type() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget_us(100_000)
+        .budget(100_000.us())
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(300)).unwrap();
 
@@ -335,9 +335,9 @@ fn test_rt_on_error_callback() {
             should_panic: AtomicBool::new(true),
         })
         .order(0)
-        .budget_us(100_000)
+        .budget(100_000.us())
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(300)).unwrap();
 
@@ -368,9 +368,9 @@ fn test_rt_skip_policy_rejection() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget_us(100_000)
+        .budget(100_000.us())
         .failure_policy(FailurePolicy::skip(2, 5000)) // Skips after 2 failures, 5s cooldown
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
@@ -397,9 +397,9 @@ fn test_rt_restart_failure_deinitializes() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget_us(100_000)
+        .budget(100_000.us())
         .failure_policy(FailurePolicy::restart(3, 10))
-        .done();
+        .build();
 
     // The restart policy should attempt restarts after panics.
     // After exhausting restarts (3), it escalates to fatal and stops.

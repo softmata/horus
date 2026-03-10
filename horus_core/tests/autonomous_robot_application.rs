@@ -1,3 +1,4 @@
+use horus_core::core::DurationExt;
 /// Complete Autonomous Mobile Robot Application
 /// Demonstrates the enhanced HORUS scheduler with a real robotics system
 ///
@@ -1009,54 +1010,54 @@ fn test_autonomous_robot_complete_system() {
     scheduler
         .add(MotorControllerNode::new().expect("Failed to create motor controller"))
         .order(0) // Highest priority
-        .done();
+        .build();
 
     // Sensor fusion (high priority)
     scheduler
         .add(SensorFusionNode::new().expect("Failed to create sensor fusion"))
         .order(10)
-        .done();
+        .build();
 
     // IMU sensor (high priority)
     scheduler
         .add(IMUSensorNode::new().expect("Failed to create IMU sensor"))
         .order(15)
-        .done();
+        .build();
 
     // Navigation controller
     scheduler
         .add(NavigationControllerNode::new().expect("Failed to create navigation controller"))
         .order(20)
-        .done();
+        .build();
 
     // Path planner
     scheduler
         .add(PathPlannerNode::new((10.0, 10.0)).expect("Failed to create path planner")) // Goal at (10, 10)
         .order(30)
-        .done();
+        .build();
 
     // Camera perception (I/O heavy - will use async tier)
     scheduler
         .add(CameraPerceptionNode::new(0).expect("Failed to create front camera")) // Front camera
         .order(40)
-        .done();
+        .build();
 
     scheduler
         .add(CameraPerceptionNode::new(1).expect("Failed to create rear camera")) // Rear camera
         .order(45)
-        .done();
+        .build();
 
     // Lidar processing (I/O heavy - will use async tier)
     scheduler
         .add(LidarProcessingNode::new().expect("Failed to create lidar processor"))
         .order(50)
-        .done();
+        .build();
 
     // Battery monitor (prone to failures - will test skip policy)
     scheduler
         .add(BatteryMonitorNode::new().expect("Failed to create battery monitor"))
         .order(100) // Lower priority
-        .done();
+        .build();
 
     println!("Robot system configuration:");
     println!("- Motor controller: PID control at 1kHz (ultra-fast inline)");
@@ -1144,7 +1145,7 @@ fn test_robot_performance_metrics() {
             counter: Arc::clone(&motor_ticks),
         })
         .order(0)
-        .done();
+        .build();
 
     // Run for 2 seconds
     let run_duration = Duration::from_secs(2);

@@ -295,20 +295,20 @@ mod tests {
     fn test_presets() {
         let small = HFrameConfig::small();
         assert_eq!(small.max_frames, 256);
-        assert!(small.validate().is_ok());
+        small.validate().unwrap();
 
         let medium = HFrameConfig::medium();
         assert_eq!(medium.max_frames, 1024);
-        assert!(medium.validate().is_ok());
+        medium.validate().unwrap();
 
         let large = HFrameConfig::large();
         assert_eq!(large.max_frames, 4096);
-        assert!(large.validate().is_ok());
+        large.validate().unwrap();
 
         let massive = HFrameConfig::massive();
         assert_eq!(massive.max_frames, 16384);
         assert!(massive.enable_overflow);
-        assert!(massive.validate().is_ok());
+        massive.validate().unwrap();
     }
 
     #[test]

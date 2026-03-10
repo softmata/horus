@@ -30,11 +30,11 @@ fn test_minimal_node_compiles_and_implements_node() {
     // Node trait: name() defaults to snake_case of struct name
     assert_eq!(node.name(), "minimal_node");
     // init should succeed (default impl)
-    assert!(node.init().is_ok());
+    node.init().unwrap();
     // tick should not panic
     node.tick();
     // shutdown should succeed
-    assert!(node.shutdown().is_ok());
+    node.shutdown().unwrap();
     // No publishers or subscribers
     assert!(node.publishers().is_empty());
     assert!(node.subscribers().is_empty());

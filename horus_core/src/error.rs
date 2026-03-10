@@ -1836,10 +1836,7 @@ mod tests {
     /// From<Box<dyn Error>> → HorusError::Internal
     #[test]
     fn from_boxed_error() {
-        let boxed: Box<dyn std::error::Error> = Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "boxed io error",
-        ));
+        let boxed: Box<dyn std::error::Error> = Box::new(std::io::Error::other("boxed io error"));
         let err: HorusError = boxed.into();
         assert!(matches!(err, HorusError::Internal { .. }));
         let msg = format!("{}", err);
@@ -1849,10 +1846,8 @@ mod tests {
     /// From<Box<dyn Error + Send + Sync>> → HorusError::Contextual
     #[test]
     fn from_boxed_send_sync_error() {
-        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "send+sync io error",
-        ));
+        let boxed: Box<dyn std::error::Error + Send + Sync> =
+            Box::new(std::io::Error::other("send+sync io error"));
         let err: HorusError = boxed.into();
         assert!(matches!(err, HorusError::Contextual { .. }));
         let msg = format!("{}", err);
@@ -2068,7 +2063,7 @@ mod tests {
         let err = HorusError::Config(ConfigError::Other("bad config".into()));
         assert!(err.help().is_none(), "Config should not have help text");
 
-        let err = HorusError::Io(std::io::Error::new(std::io::ErrorKind::Other, "io"));
+        let err = HorusError::Io(std::io::Error::other("io"));
         assert!(err.help().is_none(), "Io should not have help text");
     }
 
@@ -2171,7 +2166,7 @@ mod tests {
             called = true;
             "should not be called".to_string()
         });
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(!called, "closure should not be called on Ok");
     }
 
@@ -2311,7 +2306,7 @@ mod tests {
     /// From<anyhow::Error> preserves chain via Contextual.
     #[test]
     fn chain_anyhow_preserves_source() {
-        let inner = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let inner = std::io::Error::other("disk full");
         let anyhow_err = anyhow::Error::new(inner);
         let err: HorusError = anyhow_err.into();
 
@@ -2447,7 +2442,7 @@ mod tests {
                 name: "missing".to_string(),
             }))
         });
-        assert!(result.is_err());
+        result.unwrap_err();
         // Permanent error: should not retry
         assert_eq!(attempt, 1);
     }
@@ -2460,7 +2455,7 @@ mod tests {
             attempt += 1;
             Err(HorusError::InvalidDescriptor("corrupt".to_string()))
         });
-        assert!(result.is_err());
+        result.unwrap_err();
         assert_eq!(attempt, 1);
     }
 
@@ -2476,7 +2471,7 @@ mod tests {
                 deadline: Some(Duration::from_secs(1)),
             }))
         });
-        assert!(result.is_err());
+        result.unwrap_err();
         // Initial attempt + 2 retries = 3 total
         assert_eq!(attempt, 3);
     }

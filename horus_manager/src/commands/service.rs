@@ -341,6 +341,33 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
     }
 }
 
+/// Find services by type name filter (`horus service find <type_filter>`)
+pub fn find_services(type_filter: &str) -> HorusResult<()> {
+    let services = discover_services()?;
+
+    // Since we don't store type metadata in the SHM topics (the type names are
+    // only known to the Rust types at compile time), we fall back to matching
+    // service names that contain the filter string.
+    let matched: Vec<&DiscoveredService> = services
+        .iter()
+        .filter(|s| s.name.to_lowercase().contains(&type_filter.to_lowercase()))
+        .collect();
+
+    if matched.is_empty() {
+        println!(
+            "{}",
+            format!("No services matching '{}' found.", type_filter).yellow()
+        );
+        return Ok(());
+    }
+
+    for svc in &matched {
+        println!("{}", svc.name);
+    }
+
+    Ok(())
+}
+
 // ─── service_find ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -406,31 +433,4 @@ mod tests {
         assert!(topic.strip_suffix("/request").is_none());
         assert!(topic.strip_suffix("/response").is_none());
     }
-}
-
-/// Find services by type name filter (`horus service find <type_filter>`)
-pub fn find_services(type_filter: &str) -> HorusResult<()> {
-    let services = discover_services()?;
-
-    // Since we don't store type metadata in the SHM topics (the type names are
-    // only known to the Rust types at compile time), we fall back to matching
-    // service names that contain the filter string.
-    let matched: Vec<&DiscoveredService> = services
-        .iter()
-        .filter(|s| s.name.to_lowercase().contains(&type_filter.to_lowercase()))
-        .collect();
-
-    if matched.is_empty() {
-        println!(
-            "{}",
-            format!("No services matching '{}' found.", type_filter).yellow()
-        );
-        return Ok(());
-    }
-
-    for svc in &matched {
-        println!("{}", svc.name);
-    }
-
-    Ok(())
 }

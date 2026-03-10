@@ -66,7 +66,7 @@ impl<'a> FrameBuilder<'a> {
     /// Requires a parent (static root frames are not supported).
     #[inline]
     pub fn static_transform(mut self, tf: &Transform) -> Self {
-        self.static_tf = Some(tf.clone());
+        self.static_tf = Some(*tf);
         self
     }
 
@@ -78,55 +78,5 @@ impl<'a> FrameBuilder<'a> {
         } else {
             self.hf.register_frame(self.name, self.parent)
         }
-    }
-}
-
-// ── Deprecated types (kept for backward compatibility) ───────────────────────
-
-/// Deprecated: use [`FrameBuilder`] with `.static_transform()` instead.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use hf.add_frame(name).parent(p).static_transform(&tf).build()? instead"
-)]
-pub struct StaticFrameBuilder<'a> {
-    hf: &'a HFrame,
-    name: &'a str,
-}
-
-/// Deprecated: use [`FrameBuilder`] with `.static_transform()` instead.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use hf.add_frame(name).parent(p).static_transform(&tf).build()? instead"
-)]
-pub struct StaticFrameBuilderWithParent<'a> {
-    hf: &'a HFrame,
-    name: &'a str,
-    parent: &'a str,
-}
-
-#[allow(deprecated)]
-impl<'a> StaticFrameBuilder<'a> {
-    pub(crate) fn new(hf: &'a HFrame, name: &'a str) -> Self {
-        Self { hf, name }
-    }
-
-    /// Set the parent frame for this static frame.
-    #[inline]
-    pub fn parent(self, parent: &'a str) -> StaticFrameBuilderWithParent<'a> {
-        StaticFrameBuilderWithParent {
-            hf: self.hf,
-            name: self.name,
-            parent,
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl<'a> StaticFrameBuilderWithParent<'a> {
-    /// Set the transform and register this static frame.
-    #[inline]
-    pub fn transform(self, tf: &Transform) -> HorusResult<FrameId> {
-        self.hf
-            .register_static_frame(self.name, Some(self.parent), tf)
     }
 }

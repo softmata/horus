@@ -293,7 +293,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "positive")]
     fn zero_hz_f64_panics() {
-        0.0.hz();
+        0.hz();
     }
 
     #[test]

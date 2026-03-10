@@ -215,6 +215,21 @@ fn event_node_name(event: &BlackBoxEvent) -> &str {
     }
 }
 
+fn event_type_name(event: &BlackBoxEvent) -> &'static str {
+    match event {
+        BlackBoxEvent::SchedulerStart { .. } => "SchedulerStart",
+        BlackBoxEvent::SchedulerStop { .. } => "SchedulerStop",
+        BlackBoxEvent::NodeAdded { .. } => "NodeAdded",
+        BlackBoxEvent::NodeTick { .. } => "NodeTick",
+        BlackBoxEvent::NodeError { .. } => "NodeError",
+        BlackBoxEvent::DeadlineMiss { .. } => "DeadlineMiss",
+        BlackBoxEvent::BudgetViolation { .. } => "BudgetViolation",
+        BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
+        BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",
+        BlackBoxEvent::Custom { .. } => "Custom",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,20 +541,5 @@ mod tests {
         assert!(q.event.is_none());
         assert!(q.tick.is_none());
         assert!(q.limit.is_none());
-    }
-}
-
-fn event_type_name(event: &BlackBoxEvent) -> &'static str {
-    match event {
-        BlackBoxEvent::SchedulerStart { .. } => "SchedulerStart",
-        BlackBoxEvent::SchedulerStop { .. } => "SchedulerStop",
-        BlackBoxEvent::NodeAdded { .. } => "NodeAdded",
-        BlackBoxEvent::NodeTick { .. } => "NodeTick",
-        BlackBoxEvent::NodeError { .. } => "NodeError",
-        BlackBoxEvent::DeadlineMiss { .. } => "DeadlineMiss",
-        BlackBoxEvent::BudgetViolation { .. } => "BudgetViolation",
-        BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
-        BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",
-        BlackBoxEvent::Custom { .. } => "Custom",
     }
 }

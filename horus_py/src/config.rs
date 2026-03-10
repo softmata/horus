@@ -13,11 +13,6 @@ pub struct PySchedulerConfig {
     /// Global tick rate in Hz
     pub tick_rate: f64,
 
-    // --- Fault ---
-    #[pyo3(get, set)]
-    /// Enable tier-based fault tolerance
-    pub fault_tolerance: bool,
-
     // --- Real-time ---
     #[pyo3(get, set)]
     /// Enable budget enforcement
@@ -56,18 +51,10 @@ pub struct PySchedulerConfig {
     /// CPU cores to pin to (None = all cores)
     pub cpu_cores: Option<Vec<usize>>,
 
-    #[pyo3(get, set)]
-    /// Enable NUMA awareness
-    pub numa_aware: bool,
-
     // --- Monitoring ---
     #[pyo3(get, set)]
     /// Enable runtime profiling
     pub profiling: bool,
-
-    #[pyo3(get, set)]
-    /// Metrics export interval in ms
-    pub metrics_interval_ms: u64,
 
     #[pyo3(get, set)]
     /// Enable black box recording
@@ -111,7 +98,7 @@ impl PySchedulerConfig {
     // PROFILE PRESETS — recommended for common use cases
     // ========================================================================
 
-    /// Deploy profile — safety monitor, fault tolerance, watchdog, and blackbox.
+    /// Deploy profile — safety monitor, watchdog, and blackbox.
     ///
     /// Suitable for production robots. Gracefully degrades if RT not available.
     ///
@@ -127,7 +114,6 @@ impl PySchedulerConfig {
         cfg.deadline_monitoring = true;
         cfg.watchdog_enabled = true;
         cfg.watchdog_timeout_ms = 500;
-        cfg.fault_tolerance = true;
         cfg.black_box_enabled = true;
         cfg.black_box_size_mb = 64;
         cfg.config_name = "Deploy".to_string();
@@ -172,7 +158,7 @@ impl PySchedulerConfig {
     // ========================================================================
 
     /// Set tick rate in Hz and return self for chaining.
-    pub fn rate_hz(&mut self, hz: f64) -> Self {
+    pub fn rate(&mut self, hz: f64) -> Self {
         self.tick_rate = hz;
         self.clone()
     }
@@ -211,12 +197,11 @@ impl PySchedulerConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "SchedulerConfig(config={}, tick_rate={:.1}Hz, fault_tolerance={}, \
+            "SchedulerConfig(config={}, tick_rate={:.1}Hz, \
              budget={}, deadline_monitoring={}, safety_monitor={}, memory_locking={}, \
              recording={})",
             self.config_name,
             self.tick_rate,
-            self.fault_tolerance,
             self.budget_enforcement,
             self.deadline_monitoring,
             self.safety_monitor,
@@ -237,8 +222,6 @@ impl PySchedulerConfig {
 
         config.timing.global_rate_hz = self.tick_rate;
 
-        config.fault_tolerance = self.fault_tolerance;
-
         config.realtime.budget_enforcement = self.budget_enforcement;
         config.realtime.deadline_monitoring = self.deadline_monitoring;
         config.realtime.watchdog_enabled = self.watchdog_enabled;
@@ -249,10 +232,8 @@ impl PySchedulerConfig {
         config.realtime.rt_scheduling_class = self.rt_scheduling_class;
 
         config.resources.cpu_cores = self.cpu_cores.clone();
-        config.resources.numa_aware = self.numa_aware;
 
         config.monitoring.profiling_enabled = self.profiling;
-        config.monitoring.metrics_interval_ms = self.metrics_interval_ms;
         config.monitoring.black_box_enabled = self.black_box_enabled;
         config.monitoring.black_box_size_mb = self.black_box_size_mb;
         config.monitoring.telemetry_endpoint = self.telemetry_endpoint.clone();
@@ -269,7 +250,6 @@ impl PySchedulerConfig {
     fn from_rust_config(rust_config: SchedulerConfig, name: &str) -> Self {
         PySchedulerConfig {
             tick_rate: rust_config.timing.global_rate_hz,
-            fault_tolerance: rust_config.fault_tolerance,
             budget_enforcement: rust_config.realtime.budget_enforcement,
             deadline_monitoring: rust_config.realtime.deadline_monitoring,
             watchdog_enabled: rust_config.realtime.watchdog_enabled,
@@ -279,14 +259,108 @@ impl PySchedulerConfig {
             memory_locking: rust_config.realtime.memory_locking,
             rt_scheduling_class: rust_config.realtime.rt_scheduling_class,
             cpu_cores: rust_config.resources.cpu_cores,
-            numa_aware: rust_config.resources.numa_aware,
             profiling: rust_config.monitoring.profiling_enabled,
-            metrics_interval_ms: rust_config.monitoring.metrics_interval_ms,
             black_box_enabled: rust_config.monitoring.black_box_enabled,
             black_box_size_mb: rust_config.monitoring.black_box_size_mb,
             telemetry_endpoint: rust_config.monitoring.telemetry_endpoint,
             recording_enabled: rust_config.recording.is_some(),
             config_name: name.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimal_defaults() {
+        let cfg = PySchedulerConfig::minimal();
+        assert!(!cfg.budget_enforcement);
+        assert!(!cfg.safety_monitor);
+        assert!(!cfg.memory_locking);
+        assert!(!cfg.recording_enabled);
+        assert_eq!(cfg.config_name, "Minimal");
+    }
+
+    #[test]
+    fn deploy_enables_safety_features() {
+        let cfg = PySchedulerConfig::deploy();
+        assert_eq!(cfg.tick_rate, 100.0);
+        assert!(cfg.safety_monitor);
+        assert!(cfg.budget_enforcement);
+        assert!(cfg.deadline_monitoring);
+        assert!(cfg.watchdog_enabled);
+        assert!(cfg.black_box_enabled);
+        assert_eq!(cfg.config_name, "Deploy");
+    }
+
+    #[test]
+    fn hard_rt_extends_deploy() {
+        let cfg = PySchedulerConfig::hard_rt();
+        // Inherits deploy features
+        assert!(cfg.safety_monitor);
+        // Adds RT features
+        assert!(cfg.memory_locking);
+        assert!(cfg.rt_scheduling_class);
+        assert_eq!(cfg.max_deadline_misses, 10);
+    }
+
+    #[test]
+    fn safety_critical_extends_hard_rt() {
+        let cfg = PySchedulerConfig::safety_critical();
+        assert!(cfg.memory_locking);
+        assert!(cfg.profiling);
+        assert_eq!(cfg.max_deadline_misses, 3);
+    }
+
+    #[test]
+    fn to_core_config_round_trip() {
+        let py_cfg = PySchedulerConfig::deploy();
+        let core_cfg = py_cfg.to_core_config();
+
+        assert_eq!(core_cfg.timing.global_rate_hz, 100.0);
+        assert!(core_cfg.realtime.budget_enforcement);
+        assert!(core_cfg.realtime.deadline_monitoring);
+        assert!(core_cfg.realtime.watchdog_enabled);
+        assert!(core_cfg.realtime.safety_monitor);
+        assert!(core_cfg.monitoring.black_box_enabled);
+    }
+
+    #[test]
+    fn builder_methods_chain() {
+        let cfg = PySchedulerConfig::minimal()
+            .rate(50.0)
+            .watchdog_ms(200)
+            .blackbox_mb(32)
+            .cpu_affinity(vec![0, 1]);
+
+        assert_eq!(cfg.tick_rate, 50.0);
+        assert!(cfg.watchdog_enabled);
+        assert_eq!(cfg.watchdog_timeout_ms, 200);
+        assert!(cfg.black_box_enabled);
+        assert_eq!(cfg.black_box_size_mb, 32);
+        assert_eq!(cfg.cpu_cores, Some(vec![0, 1]));
+    }
+
+    #[test]
+    fn no_watchdog_disables_it() {
+        let cfg = PySchedulerConfig::deploy().no_watchdog();
+        assert!(!cfg.watchdog_enabled);
+    }
+
+    #[test]
+    fn recording_enabled_generates_config() {
+        let mut cfg = PySchedulerConfig::minimal();
+        cfg.recording_enabled = true;
+        let core = cfg.to_core_config();
+        assert!(core.recording.is_some());
+    }
+
+    #[test]
+    fn recording_disabled_no_config() {
+        let cfg = PySchedulerConfig::minimal();
+        let core = cfg.to_core_config();
+        assert!(core.recording.is_none());
     }
 }

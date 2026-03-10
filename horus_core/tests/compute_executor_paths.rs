@@ -4,6 +4,7 @@
 //! load shedding activation/cooldown, non-sheddable nodes, paused/uninitialized
 //! nodes, skip policy, restart failure, panic downcasting.
 
+use horus_core::core::DurationExt;
 use horus_core::core::Node;
 use horus_core::error::HorusResult;
 use horus_core::scheduling::{FailurePolicy, Scheduler};
@@ -137,7 +138,7 @@ fn test_compute_single_node_no_crossbeam() {
         })
         .order(5)
         .compute()
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(100)).unwrap();
 
@@ -162,7 +163,7 @@ fn test_compute_parallel_execution() {
             })
             .order(5)
             .compute()
-            .done();
+            .build();
     }
 
     let start = Instant::now();
@@ -193,7 +194,7 @@ fn test_load_shedding_activates() {
     let critical_count = Arc::new(AtomicU64::new(0));
     let background_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_hz(100.0); // 10ms tick period
+    let mut scheduler = Scheduler::new().tick_rate(100.hz()); // 10ms tick period
 
     // Critical compute node (order=0, not sheddable)
     scheduler
@@ -204,7 +205,7 @@ fn test_load_shedding_activates() {
         })
         .order(0)
         .compute()
-        .done();
+        .build();
 
     // Background compute node (order=200, sheddable)
     scheduler
@@ -214,7 +215,7 @@ fn test_load_shedding_activates() {
         })
         .order(200)
         .compute()
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(300)).unwrap();
 
@@ -235,7 +236,7 @@ fn test_load_shedding_cooldown_deactivates() {
     let critical_count = Arc::new(AtomicU64::new(0));
     let background_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_hz(10.0); // 100ms tick period - generous
+    let mut scheduler = Scheduler::new().tick_rate(10.hz()); // 100ms tick period - generous
 
     // Fast critical node (well under budget)
     scheduler
@@ -245,7 +246,7 @@ fn test_load_shedding_cooldown_deactivates() {
         })
         .order(0)
         .compute()
-        .done();
+        .build();
 
     // Background node (should NOT be shed since no overload)
     scheduler
@@ -255,7 +256,7 @@ fn test_load_shedding_cooldown_deactivates() {
         })
         .order(200)
         .compute()
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(500)).unwrap();
 
@@ -276,7 +277,7 @@ fn test_non_sheddable_ticks_during_shedding() {
     cleanup_stale_shm();
     let non_sheddable_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_hz(100.0);
+    let mut scheduler = Scheduler::new().tick_rate(100.hz());
 
     // Non-sheddable node (order < 200) with slow execution
     scheduler
@@ -287,7 +288,7 @@ fn test_non_sheddable_ticks_during_shedding() {
         })
         .order(50) // Below shedding threshold
         .compute()
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(300)).unwrap();
 
@@ -315,7 +316,7 @@ fn test_compute_paused_node_skipped() {
         })
         .order(5)
         .compute()
-        .done();
+        .build();
 
     // Normal operation should tick
     scheduler.run_for(Duration::from_millis(100)).unwrap();
@@ -336,7 +337,7 @@ fn test_compute_uninitialized_node_skipped() {
         })
         .order(5)
         .compute()
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(100)).unwrap();
 
@@ -361,7 +362,7 @@ fn test_compute_skip_policy() {
         .order(5)
         .compute()
         .failure_policy(FailurePolicy::skip(2, 5000))
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
@@ -390,7 +391,7 @@ fn test_compute_restart_failure() {
         .order(5)
         .compute()
         .failure_policy(FailurePolicy::restart(3, 10))
-        .done();
+        .build();
 
     // The restart policy should attempt to restart the node after panics.
     // After exhausting restarts, it escalates to fatal.
@@ -422,7 +423,7 @@ fn test_compute_panic_downcasting() {
         .order(5)
         .compute()
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler
         .add(StringPanicComputeNode {
@@ -432,7 +433,7 @@ fn test_compute_panic_downcasting() {
         .order(6)
         .compute()
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler
         .add(UnknownPanicComputeNode {
@@ -442,7 +443,7 @@ fn test_compute_panic_downcasting() {
         .order(7)
         .compute()
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     scheduler.run_for(Duration::from_millis(100)).unwrap();
 

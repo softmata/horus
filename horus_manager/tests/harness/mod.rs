@@ -21,6 +21,3 @@
 
 mod fixtures;
 mod runtime;
-
-pub use fixtures::TestNodeConfig;
-pub use runtime::HorusTestRuntime;

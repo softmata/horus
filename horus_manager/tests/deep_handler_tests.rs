@@ -752,7 +752,7 @@ async fn params_import_invalid_format_returns_400() {
     let app = builders::test_router();
     let body = r#"{"data":"key: value","format":"xml"}"#;
     let resp = app
-        .oneshot(post_json_request("/api/params/import", &body))
+        .oneshot(post_json_request("/api/params/import", body))
         .await
         .unwrap();
     let json = assert_params_error(resp, StatusCode::BAD_REQUEST).await;
@@ -772,7 +772,7 @@ async fn params_import_invalid_yaml_returns_400() {
     let app = builders::test_router();
     let body = r#"{"data":"{{{{not valid yaml at all::::","format":"yaml"}"#;
     let resp = app
-        .oneshot(post_json_request("/api/params/import", &body))
+        .oneshot(post_json_request("/api/params/import", body))
         .await
         .unwrap();
     let json = assert_params_error(resp, StatusCode::BAD_REQUEST).await;

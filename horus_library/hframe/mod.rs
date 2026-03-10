@@ -154,8 +154,7 @@ mod transform;
 mod types;
 
 // Re-export public API
-#[allow(deprecated)]
-pub use builder::{FrameBuilder, StaticFrameBuilder, StaticFrameBuilderWithParent};
+pub use builder::FrameBuilder;
 pub use config::HFrameConfig;
 pub use core::HFrameCore;
 pub use query::{TransformQuery, TransformQueryFrom};
@@ -374,19 +373,6 @@ impl HFrame {
     #[inline]
     pub fn add_frame<'a>(&'a self, name: &'a str) -> FrameBuilder<'a> {
         FrameBuilder::new(self, name)
-    }
-
-    /// Start building a static frame registration.
-    ///
-    /// Prefer `add_frame(name).parent(p).static_transform(&tf).build()?` instead.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use add_frame(name).parent(p).static_transform(&tf).build()? instead"
-    )]
-    #[inline]
-    #[allow(deprecated)]
-    pub fn add_static<'a>(&'a self, name: &'a str) -> StaticFrameBuilder<'a> {
-        StaticFrameBuilder::new(self, name)
     }
 
     /// Unregister a dynamic frame
@@ -1150,8 +1136,8 @@ impl HFrame {
             return format!("Frame '{}' is not initialized", dst_name);
         }
 
-        let src_root = src_path.last().unwrap();
-        let dst_root = dst_path.last().unwrap();
+        let src_root = src_path.last().expect("checked non-empty above");
+        let dst_root = dst_path.last().expect("checked non-empty above");
 
         if src_root != dst_root {
             return format!(
@@ -1992,7 +1978,7 @@ mod tests {
 
         // Query at ts=1500, data at 1000, gap=500, tolerance=1000 → ok
         let result = hf.tf_at_with_tolerance("a", "world", 1500, 1000);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -2027,7 +2013,7 @@ mod tests {
 
         // u64::MAX tolerance = no limit (same as tf_at)
         let result = hf.tf_at_with_tolerance("a", "world", 999_999, u64::MAX);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -2048,7 +2034,7 @@ mod tests {
 
         // Same but tolerance=5000 → ok
         let result = hf.tf_at_with_tolerance("a", "world", 1000, 5000);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // =====================================================================

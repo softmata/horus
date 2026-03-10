@@ -497,7 +497,7 @@ fn test_update_data_called_multiple_times_no_panic() {
     // Call update_data 10 times to verify no accumulated state issues
     for _ in 0..10 {
         let result = dashboard.update_data();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }
 

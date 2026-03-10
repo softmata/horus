@@ -1464,7 +1464,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             simulation,
             integration,
             no_build,
-            no_cleanup,
+            no_cleanup: _,
             verbose,
             drivers,
             enable,
@@ -1477,7 +1477,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 std::env::set_var("HORUS_ENABLE", enable_list.join(","));
             }
 
-            commands::test::run_tests(
+            commands::test::run_tests(commands::test::TestConfig {
                 filter,
                 release,
                 nocapture,
@@ -1486,9 +1486,8 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 simulation,
                 integration,
                 no_build,
-                no_cleanup,
                 verbose,
-            )
+            })
             .map_err(HorusError::from)?;
             Ok(())
         }
@@ -1814,10 +1813,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
             if list {
                 commands::deploy::list_targets()
             } else if let Some(target) = target {
-                commands::deploy::run_deploy(
-                    &target, remote_dir, arch, run_after, !debug, // release = !debug
-                    port, identity, dry_run,
-                )
+                commands::deploy::run_deploy(commands::deploy::DeployArgs {
+                    target,
+                    remote_dir,
+                    arch,
+                    run_after,
+                    release: !debug,
+                    port,
+                    identity,
+                    dry_run,
+                })
             } else {
                 Err(HorusError::Config(ConfigError::Other(
                     "Target is required for deploy".to_string(),
@@ -1886,7 +1891,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 stop_tick,
                 speed,
                 loop_playback,
-            } => commands::record::run_inject(
+            } => commands::record::run_inject(commands::record::InjectArgs {
                 session,
                 nodes,
                 all,
@@ -1895,7 +1900,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 stop_tick,
                 speed,
                 loop_playback,
-            ),
+            }),
         },
 
         Commands::Blackbox {
@@ -1908,9 +1913,17 @@ fn run_command(command: Commands) -> HorusResult<()> {
             last,
             path,
             clear,
-        } => commands::blackbox::run_blackbox(
-            anomalies, tail, tick, node, event, json, last, path, clear,
-        ),
+        } => commands::blackbox::run_blackbox(commands::blackbox::BlackboxArgs {
+            anomalies_only: anomalies,
+            tail,
+            tick_range: tick,
+            node_filter: node,
+            event_filter: event,
+            json_output: json,
+            last_n: last,
+            custom_path: path,
+            clear,
+        }),
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup

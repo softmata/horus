@@ -43,19 +43,15 @@ impl TuiDashboard {
                 let params_map = self.params.get_all();
                 params_map.len().saturating_sub(1)
             }
-            Tab::Packages => {
-                if self.package_view_mode == PackageViewMode::List {
-                    match self.package_panel_focus {
-                        PackagePanelFocus::LocalWorkspaces => {
-                            self.workspace_cache.len().saturating_sub(1)
-                        }
-                        PackagePanelFocus::GlobalPackages => {
-                            let (_, global_packages) = get_installed_packages();
-                            global_packages.len().saturating_sub(1)
-                        }
+            Tab::Packages if self.package_view_mode == PackageViewMode::List => {
+                match self.package_panel_focus {
+                    PackagePanelFocus::LocalWorkspaces => {
+                        self.workspace_cache.len().saturating_sub(1)
                     }
-                } else {
-                    0
+                    PackagePanelFocus::GlobalPackages => {
+                        let (_, global_packages) = get_installed_packages();
+                        global_packages.len().saturating_sub(1)
+                    }
                 }
             }
             _ => 0,
@@ -83,9 +79,9 @@ impl TuiDashboard {
 
     pub(super) fn open_log_panel(&mut self) {
         match self.active_tab {
-            Tab::Nodes => {
+            Tab::Nodes
                 // Open panel for selected node
-                if self.selected_index < self.nodes.len() {
+                if self.selected_index < self.nodes.len() => {
                     let node = &self.nodes[self.selected_index];
                     // Don't open panel for placeholder entries
                     if !node.name.contains("No HORUS nodes") {
@@ -94,10 +90,9 @@ impl TuiDashboard {
                         self.panel_scroll_offset = 0;
                     }
                 }
-            }
-            Tab::Topics => {
+            Tab::Topics
                 // Open panel for selected topic
-                if self.selected_index < self.topics.len() {
+                if self.selected_index < self.topics.len() => {
                     let topic = &self.topics[self.selected_index];
                     // Don't open panel for placeholder entries
                     if !topic.name.contains("No active topics") {
@@ -108,7 +103,6 @@ impl TuiDashboard {
                         self.panel_scroll_offset = 0;
                     }
                 }
-            }
             _ => {
                 // Log panel not supported for other tabs
             }
@@ -119,33 +113,29 @@ impl TuiDashboard {
         // Update the log panel to show logs for the currently selected node/topic
         // This is called when using Shift+Up/Down to navigate while panel is open
         match self.active_tab {
-            Tab::Nodes => {
-                if self.selected_index < self.nodes.len() {
-                    let node = &self.nodes[self.selected_index];
-                    // Don't update for placeholder entries
-                    if !node.name.contains("No HORUS nodes") {
-                        self.panel_target = Some(LogPanelTarget::Node(node.name.clone()));
-                        self.panel_scroll_offset = 0; // Reset scroll when switching
-                    }
+            Tab::Nodes if self.selected_index < self.nodes.len() => {
+                let node = &self.nodes[self.selected_index];
+                // Don't update for placeholder entries
+                if !node.name.contains("No HORUS nodes") {
+                    self.panel_target = Some(LogPanelTarget::Node(node.name.clone()));
+                    self.panel_scroll_offset = 0; // Reset scroll when switching
                 }
             }
-            Tab::Topics => {
-                if self.selected_index < self.topics.len() {
-                    let topic = &self.topics[self.selected_index];
-                    // Don't update for placeholder entries
-                    if !topic.name.contains("No active topics") {
-                        let new_name = topic.name.clone();
-                        // Disable debug on the old topic, enable on the new one
-                        if let Some(LogPanelTarget::Topic(ref old_name)) = self.panel_target {
-                            if *old_name != new_name {
-                                let old = old_name.clone();
-                                self.disable_topic_debug(&old);
-                                self.enable_topic_debug(&new_name);
-                            }
+            Tab::Topics if self.selected_index < self.topics.len() => {
+                let topic = &self.topics[self.selected_index];
+                // Don't update for placeholder entries
+                if !topic.name.contains("No active topics") {
+                    let new_name = topic.name.clone();
+                    // Disable debug on the old topic, enable on the new one
+                    if let Some(LogPanelTarget::Topic(ref old_name)) = self.panel_target {
+                        if *old_name != new_name {
+                            let old = old_name.clone();
+                            self.disable_topic_debug(&old);
+                            self.enable_topic_debug(&new_name);
                         }
-                        self.panel_target = Some(LogPanelTarget::Topic(new_name));
-                        self.panel_scroll_offset = 0; // Reset scroll when switching
                     }
+                    self.panel_target = Some(LogPanelTarget::Topic(new_name));
+                    self.panel_scroll_offset = 0; // Reset scroll when switching
                 }
             }
             _ => {}
@@ -456,6 +446,9 @@ impl TuiDashboard {
 
         // Set the debug flag
         if mmap.len() > horus_core::TOPIC_DEBUG_LOG_OFFSET {
+            // SAFETY: We verified the mmap length exceeds TOPIC_DEBUG_LOG_OFFSET,
+            // so the write target is within bounds. The pointer is valid because
+            // `mmap` is a live MmapMut mapping the SHM file opened above.
             unsafe {
                 horus_core::set_topic_debug(mmap.as_mut_ptr(), true);
             }
@@ -468,6 +461,9 @@ impl TuiDashboard {
     pub(super) fn disable_topic_debug(&mut self, topic_name: &str) {
         if let Some(mut mmap) = self.debug_mmaps.remove(topic_name) {
             if mmap.len() > horus_core::TOPIC_DEBUG_LOG_OFFSET {
+                // SAFETY: We verified the mmap length exceeds TOPIC_DEBUG_LOG_OFFSET,
+                // so the write target is within bounds. The pointer is valid because
+                // `mmap` is a live MmapMut (not yet dropped/unmapped).
                 unsafe {
                     horus_core::set_topic_debug(mmap.as_mut_ptr(), false);
                 }

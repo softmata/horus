@@ -11,7 +11,7 @@
 //! use horus_core::core::{RtConfig, RtScheduler};
 //!
 //! // Create RT configuration for a critical control loop
-//! let config = RtConfig::new()
+//! let config = RtConfig::builder()
 //!     .memory_locked(true)
 //!     .priority(80)
 //!     .scheduler(RtScheduler::Fifo)
@@ -261,8 +261,7 @@ pub(crate) struct RtConfig {
 
 impl RtConfig {
     /// Create a new RT configuration builder.
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> RtConfigBuilder {
+    pub fn builder() -> RtConfigBuilder {
         RtConfigBuilder::new()
     }
 
@@ -838,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_builder_default() {
-        let config = RtConfig::new().build();
+        let config = RtConfig::builder().build();
         assert!(!config.memory_locked);
         assert_eq!(config.priority, None);
         assert_eq!(config.scheduler, RtScheduler::Normal);
@@ -847,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_builder_full() {
-        let config = RtConfig::new()
+        let config = RtConfig::builder()
             .memory_locked(true)
             .priority(80)
             .scheduler(RtScheduler::Fifo)
@@ -873,7 +872,7 @@ mod tests {
     fn test_get_current_scheduler() {
         // Should not fail
         let result = RtConfig::get_current_scheduler();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]

@@ -66,14 +66,14 @@ mod tests {
         let mut node = TestNode::new("lifecycle_node", counter.clone());
 
         // Test full lifecycle
-        assert!(node.init().is_ok());
+        node.init().unwrap();
 
         // Tick a few times
         for _ in 0..3 {
             node.tick();
         }
 
-        assert!(node.shutdown().is_ok());
+        node.shutdown().unwrap();
 
         // Counter should have been incremented
         let count = counter.lock().unwrap();

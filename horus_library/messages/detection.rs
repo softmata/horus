@@ -141,29 +141,22 @@ impl BoundingBox3D {
         }
     }
 
-    /// Create with full rotation
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_rotation(
-        cx: f32,
-        cy: f32,
-        cz: f32,
-        length: f32,
-        width: f32,
-        height: f32,
-        roll: f32,
-        pitch: f32,
-        yaw: f32,
-    ) -> Self {
+    /// Create with full rotation.
+    ///
+    /// - `center`: `[cx, cy, cz]` in meters
+    /// - `dimensions`: `[length, width, height]` in meters
+    /// - `rotation`: `[roll, pitch, yaw]` in radians
+    pub fn with_rotation(center: [f32; 3], dimensions: [f32; 3], rotation: [f32; 3]) -> Self {
         Self {
-            cx,
-            cy,
-            cz,
-            length,
-            width,
-            height,
-            roll,
-            pitch,
-            yaw,
+            cx: center[0],
+            cy: center[1],
+            cz: center[2],
+            length: dimensions[0],
+            width: dimensions[1],
+            height: dimensions[2],
+            roll: rotation[0],
+            pitch: rotation[1],
+            yaw: rotation[2],
             _pad: [0.0; 3],
         }
     }

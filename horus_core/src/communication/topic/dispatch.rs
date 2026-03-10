@@ -108,6 +108,9 @@ macro_rules! debug_unreachable {
             #[cfg(debug_assertions)]
             panic!($($arg)*);
             #[cfg(not(debug_assertions))]
+            // SAFETY: This arm is only reachable if the caller's invariant is violated
+            // (e.g., dispatch fn assigned to wrong backend variant). In release builds,
+            // set_dispatch_fn_ptrs() guarantees the correct variant, so this is unreachable.
             unsafe { std::hint::unreachable_unchecked() }
         }
     };
@@ -163,13 +166,17 @@ macro_rules! epoch_guard_recv {
 // Housekeeping macros — amortized maintenance after each message
 // ============================================================================
 
-/// Housekeeping after a successful send or recv: lease refresh + periodic maintenance.
-/// Used by all non-DirectChannel paths on the success path.
+/// Housekeeping after a successful send or recv: migration check (fast, every
+/// EPOCH_CHECK_INTERVAL msgs) + lease refresh (slower syscall, every
+/// LEASE_REFRESH_INTERVAL msgs).  Used by all non-DirectChannel paths.
 macro_rules! housekeep_lease {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
-        if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            $topic.periodic_maintenance();
+        if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+            $topic.check_migration_periodic();
+            if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
+                $topic.refresh_lease();
+            }
         }
     };
 }
@@ -186,16 +193,17 @@ macro_rules! housekeep_epoch {
 }
 
 /// Combined housekeeping for intra-process recv: branch on result.
-/// On success: lease refresh. On empty: epoch check.
+/// On success: migration check + lease refresh. On empty: migration check only.
 macro_rules! housekeep_recv {
     ($local:ident, $topic:expr, $result:ident) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
-        if $result.is_some() {
-            if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                $topic.periodic_maintenance();
-            }
-        } else if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+        if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
             $topic.check_migration_periodic();
+            if $result.is_some() {
+                if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
+                    $topic.refresh_lease();
+                }
+            }
         }
     };
 }
@@ -402,7 +410,10 @@ pub(super) fn send_direct_channel_cached<
     let head_ptr = local.cached_header_ptr as *const AtomicU64;
     let tail_ptr = local.cached_seq_ptr as *const AtomicU64;
 
+    // SAFETY: head_ptr/tail_ptr are valid AtomicU64 pointers (see block SAFETY above).
     let head = unsafe { (*head_ptr).load(Ordering::Relaxed) };
+    // SAFETY: tail_ptr is a valid *const AtomicU64 derived from &DirectSlot.tail,
+    // which is kept alive for the lifetime of the Arc<DirectSlot> in BackendStorage.
     let tail = unsafe { (*tail_ptr).load(Ordering::Relaxed) };
     if head.wrapping_sub(tail) >= local.cached_capacity {
         return Err(msg);
@@ -433,7 +444,10 @@ pub(super) fn recv_direct_channel_cached<
     let head_ptr = local.cached_header_ptr as *const AtomicU64;
     let tail_ptr = local.cached_seq_ptr as *const AtomicU64;
 
+    // SAFETY: tail_ptr/head_ptr are valid AtomicU64 pointers (see block SAFETY above).
     let tail = unsafe { (*tail_ptr).load(Ordering::Relaxed) };
+    // SAFETY: head_ptr is a valid *const AtomicU64 derived from &DirectSlot.head,
+    // which is kept alive for the lifetime of the Arc<DirectSlot> in BackendStorage.
     let head = unsafe { (*head_ptr).load(Ordering::Relaxed) };
     if head.wrapping_sub(tail) == 0 {
         local.msg_counter = local.msg_counter.wrapping_add(1);
@@ -517,6 +531,8 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     epoch_guard_send!(topic, msg);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
     let capacity = local.cached_capacity;
@@ -538,6 +554,9 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
 
     let index = (seq & mask) as usize;
+    // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
+    // cached_seq_ptr points to per-slot ready-flag array. index*8 is within bounds.
+    // simd_aware_write handles alignment. Release store publishes data to consumers.
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
@@ -565,11 +584,16 @@ pub(super) fn send_shm_pod_broadcast<
     epoch_guard_send!(topic, msg);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
     let index = (seq & mask) as usize;
+    // SAFETY: cached_seq_ptr points to per-slot ready-flag array in SHM. index*8 is
+    // within bounds (index < capacity). cached_data_ptr points to SHM data region.
+    // simd_aware_write handles alignment. Release store publishes data to consumers.
     unsafe {
         let ready_ptr =
             &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
@@ -600,6 +624,8 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     };
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let seq = local.local_head;
     let slot_size = local.slot_size;
@@ -618,6 +644,9 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     if bytes.len() > max_data_len {
         return Err(msg); // Serialized data too large for slot
     }
+    // SAFETY: cached_data_ptr + slot_offset points to a valid slot within the SHM data
+    // region. slot_offset < capacity * slot_size (index < capacity via mask). The slot
+    // layout is [8B ready | 8B length | data...], and bytes.len() <= max_data_len.
     unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let len_ptr = slot_ptr.add(8) as *mut u64;
@@ -655,6 +684,8 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     };
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let slot_size = local.slot_size;
     let mask = local.cached_capacity_mask;
@@ -676,6 +707,9 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
     let index = (seq & mask) as usize;
     let slot_offset = index * slot_size;
+    // SAFETY: cached_data_ptr + slot_offset points to a valid slot within the SHM data
+    // region. index < capacity via mask. Slot layout: [8B ready | 8B length | data...].
+    // bytes.len() <= max_data_len. Release fence + store publish data to consumers.
     unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let len_ptr = slot_ptr.add(8) as *mut u64;
@@ -733,6 +767,8 @@ pub(super) fn send_shm_sp_pod_colo<
     epoch_guard_send!(topic, msg);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
 
     let seq = local.local_head;
@@ -744,6 +780,9 @@ pub(super) fn send_shm_sp_pod_colo<
     }
 
     let index = (seq & local.cached_capacity_mask) as usize;
+    // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+    // (mask). colo_data/colo_seq access the 64-byte slot at index*64. T fits in 56 bytes
+    // (verified by set_dispatch_fn_ptrs). Release store publishes data to consumers.
     unsafe {
         std::ptr::write(colo_data::<T>(local.cached_data_ptr, index), msg);
         colo_seq(local.cached_data_ptr, index).store(seq.wrapping_add(1), Ordering::Release);
@@ -778,6 +817,8 @@ pub(super) fn send_shm_mp_pod_colo<
     epoch_guard_send!(topic, msg);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
     let capacity = local.cached_capacity;
@@ -795,6 +836,9 @@ pub(super) fn send_shm_mp_pod_colo<
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
 
     let index = (seq & mask) as usize;
+    // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+    // (mask). colo_data/colo_seq access the 64-byte slot at index*64. T fits in 56 bytes
+    // (verified by set_dispatch_fn_ptrs). Release store publishes data to consumers.
     unsafe {
         std::ptr::write(colo_data::<T>(local.cached_data_ptr, index), msg);
         colo_seq(local.cached_data_ptr, index).store(seq.wrapping_add(1), Ordering::Release);
@@ -819,11 +863,16 @@ pub(super) fn send_shm_pod_broadcast_colo<
     epoch_guard_send!(topic, msg);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
     let index = (seq & mask) as usize;
+    // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+    // (mask). colo_data/colo_seq access the 64-byte slot at index*64. T fits in 56 bytes
+    // (verified by set_dispatch_fn_ptrs). Release store publishes data to consumers.
     unsafe {
         std::ptr::write(colo_data::<T>(local.cached_data_ptr, index), msg);
         colo_seq(local.cached_data_ptr, index).store(seq.wrapping_add(1), Ordering::Release);
@@ -878,6 +927,8 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
 
     let tail = local.local_tail;
@@ -890,6 +941,9 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         }
     }
 
+    // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
+    // The producer's Release store on sequence_or_head was observed via our Acquire load.
+    // simd_aware_read handles alignment (slot_size rounded to align_of::<T>()).
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         simd_aware_read(base.add((tail & mask) as usize))
@@ -921,6 +975,8 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
 
     let tail = local.local_tail;
@@ -945,6 +1001,9 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         return None;
     }
 
+    // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
+    // The ready flag Acquire load above established happens-before with the producer's
+    // Release store, so the slot data is fully written. simd_aware_read handles alignment.
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         simd_aware_read(base.add(index))
@@ -972,6 +1031,8 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
@@ -1000,6 +1061,9 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
             )
             .is_ok()
         {
+            // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
+            // CAS success means we own this slot. The producer's Release on sequence_or_head
+            // was observed via our Acquire load. simd_aware_read handles alignment.
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
                 simd_aware_read(base.add((tail & mask) as usize))
@@ -1026,6 +1090,8 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
@@ -1060,6 +1126,9 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         )
         .is_ok()
     {
+        // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
+        // CAS success means we own this slot. Ready flag Acquire load above established
+        // happens-before with the producer's Release store. simd_aware_read handles alignment.
         let msg = unsafe {
             let base = local.cached_data_ptr as *const T;
             simd_aware_read(base.add(index))
@@ -1085,6 +1154,8 @@ pub(super) fn recv_shm_pod_broadcast<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
@@ -1108,6 +1179,8 @@ pub(super) fn recv_shm_pod_broadcast<
     }
 
     let index = (tail & mask) as usize;
+    // SAFETY: cached_seq_ptr points to per-slot ready-flag array in SHM.
+    // index*8 is within bounds (index < capacity, array has capacity entries).
     let ready = unsafe {
         let ready_ptr =
             &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
@@ -1118,6 +1191,9 @@ pub(super) fn recv_shm_pod_broadcast<
         return None;
     }
 
+    // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
+    // The ready flag Acquire load above established happens-before with the producer's
+    // Release store, so the slot data is fully written. simd_aware_read handles alignment.
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         simd_aware_read(base.add(index))
@@ -1141,6 +1217,8 @@ pub(super) fn recv_shm_spsc_serde<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
 
     let tail = local.local_tail;
@@ -1183,6 +1261,8 @@ pub(super) fn recv_shm_mpsc_serde<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
 
     let tail = local.local_tail;
@@ -1236,6 +1316,8 @@ pub(super) fn recv_shm_spmc_serde<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
     let slot_size = local.slot_size;
@@ -1296,6 +1378,8 @@ pub(super) fn recv_shm_mpmc_serde<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
     let slot_size = local.slot_size;
@@ -1386,6 +1470,8 @@ pub(super) fn recv_shm_spsc_pod_colo<
         // colo_seq and colo_data share the SAME cache line, so detecting
         // readiness AND reading data costs ONE cache miss instead of polling
         // header.sequence_or_head (separate cache line) + reading data (another miss).
+        // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+        // (mask). colo_seq returns a reference to the inline AtomicU64 at slot start.
         let seq_val = unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) };
         let expected = tail.wrapping_add(1);
         if seq_val < expected {
@@ -1399,6 +1485,9 @@ pub(super) fn recv_shm_spsc_pod_colo<
 
     // Read data — either from fast path (data guaranteed valid by previous Acquire)
     // or from slow path (colo_data on same cache line as colo_seq just loaded → L1 hit).
+    // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+    // (mask). T fits in 56 bytes (verified by set_dispatch_fn_ptrs). The producer's
+    // Release on colo_seq was observed via our Acquire load, so slot data is valid.
     let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
@@ -1409,6 +1498,8 @@ pub(super) fn recv_shm_spsc_pod_colo<
     // there's 224 slots of headroom. This eliminates the Release store to a
     // separate cache line on 31 of every 32 recvs.
     if new_tail & 0x1F == 0 {
+        // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+        // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
         let header = unsafe { &*local.cached_header_ptr };
         header.tail.store(new_tail, Ordering::Release);
     }
@@ -1430,6 +1521,8 @@ pub(super) fn recv_shm_mpsc_pod_colo<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
 
     let tail = local.local_tail;
@@ -1452,6 +1545,9 @@ pub(super) fn recv_shm_mpsc_pod_colo<
         return None;
     }
 
+    // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+    // (mask). T fits in 56 bytes (verified by set_dispatch_fn_ptrs). The producer's
+    // Release on colo_seq was observed via the Acquire load above, so slot data is valid.
     let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
@@ -1474,6 +1570,8 @@ pub(super) fn recv_shm_spmc_pod_colo<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
@@ -1482,6 +1580,8 @@ pub(super) fn recv_shm_spmc_pod_colo<
         let tail = header.tail.load(Ordering::Acquire);
         let index = (tail & mask) as usize;
 
+        // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+        // (mask). colo_seq returns a reference to the inline AtomicU64 at slot start.
         let seq_val = unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) };
         if seq_val < tail.wrapping_add(1) {
             housekeep_epoch!(local, topic);
@@ -1498,6 +1598,9 @@ pub(super) fn recv_shm_spmc_pod_colo<
             )
             .is_ok()
         {
+            // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+            // (mask). CAS success means we own this slot. colo_seq Acquire load above
+            // established happens-before with the producer's Release. T fits in 56 bytes.
             let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
             local.local_tail = tail.wrapping_add(1);
 
@@ -1523,6 +1626,8 @@ pub(super) fn recv_shm_mpmc_pod_colo<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
@@ -1556,6 +1661,9 @@ pub(super) fn recv_shm_mpmc_pod_colo<
         )
         .is_ok()
     {
+        // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+        // (mask). CAS success means we own this slot. colo_seq Acquire load above
+        // established happens-before with the producer's Release. T fits in 56 bytes.
         let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
         local.local_tail = tail.wrapping_add(1);
 
@@ -1579,6 +1687,8 @@ pub(super) fn recv_shm_pod_broadcast_colo<
     epoch_guard_recv!(topic);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
@@ -1602,6 +1712,8 @@ pub(super) fn recv_shm_pod_broadcast_colo<
     }
 
     let index = (tail & mask) as usize;
+    // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+    // (mask). colo_seq returns a reference to the inline AtomicU64 at slot start.
     let ready = unsafe {
         let seq_val = colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire);
         seq_val >= tail.wrapping_add(1)
@@ -1610,6 +1722,9 @@ pub(super) fn recv_shm_pod_broadcast_colo<
         return None;
     }
 
+    // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
+    // (mask). T fits in 56 bytes (verified by set_dispatch_fn_ptrs). The producer's
+    // Release on colo_seq was observed via the Acquire load above, so slot data is valid.
     let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
     local.local_tail = tail.wrapping_add(1);
 

@@ -74,11 +74,11 @@
 //!
 //! ### Scheduler
 //! ```rust,ignore
-//! let mut scheduler = Scheduler::new().tick_hz(100.0);
-//! scheduler.add(sensor).order(0).rate_hz(100.0).build()?;
+//! let mut scheduler = Scheduler::new().tick_rate(100.hz());
+//! scheduler.add(sensor).order(0).rate(100.hz()).build()?;
 //! scheduler.add(controller).order(1).budget(200.us()).build()?;
 //! scheduler.add(planner).order(5).compute().build()?;
-//! scheduler.add(logger).order(10).async_io().rate_hz(1.0).build()?;
+//! scheduler.add(logger).order(10).async_io().rate(1.hz()).build()?;
 //! scheduler.run()?;
 //! ```
 //!
@@ -210,11 +210,9 @@ pub mod prelude {
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
     // === HFrame (coordinate transforms) ===
-    #[allow(deprecated)]
     pub use horus_library::hframe::{
-        timestamp_now, FrameBuilder, FrameInfo, HFrame, HFrameConfig, HFrameStats,
-        StaticFrameBuilder, StaticFrameBuilderWithParent, Transform, TransformQuery,
-        TransformQueryFrom,
+        timestamp_now, FrameBuilder, FrameInfo, HFrame, HFrameConfig, HFrameStats, Transform,
+        TransformQuery, TransformQueryFrom,
     };
 
     // === Message types (all standard robotics messages) ===

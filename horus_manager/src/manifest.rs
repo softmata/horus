@@ -493,7 +493,7 @@ name = "my-robot"
 version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        assert!(manifest.validate().is_ok());
+        manifest.validate().unwrap();
     }
 
     #[test]
@@ -504,7 +504,7 @@ name = "x"
 version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        assert!(manifest.validate().is_err());
+        manifest.validate().unwrap_err();
     }
 
     #[test]
@@ -515,7 +515,7 @@ name = "horus"
 version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        assert!(manifest.validate().is_err());
+        manifest.validate().unwrap_err();
     }
 
     #[test]
@@ -526,7 +526,7 @@ name = "my-robot"
 version = "not-semver"
 "#;
         let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        assert!(manifest.validate().is_err());
+        manifest.validate().unwrap_err();
     }
 
     // ── Round-trip ──────────────────────────────────────────────────────
@@ -679,7 +679,7 @@ version = "not-semver"
     #[test]
     fn detect_languages_or_error_with_no_files() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(detect_languages_or_error(dir.path()).is_err());
+        detect_languages_or_error(dir.path()).unwrap_err();
     }
 
     #[test]

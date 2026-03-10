@@ -205,20 +205,20 @@ impl Node for BalanceMonitor {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_hz(200.0);
+    let mut scheduler = Scheduler::new().tick_rate(200.hz());
 
     // RT nodes for gait + joint control
-    scheduler.add(GaitGenerator::new()?).order(0).rate_hz(200.0).build()?;
+    scheduler.add(GaitGenerator::new()?).order(0).rate(200.hz()).build()?;
     scheduler.add(JointController::new()?)
         .order(1)
-        .rate_hz(200.0)
+        .rate(200.hz())
         .budget(100.us())          // 100μs max execution time
         .deadline(500.us())        // 500μs deadline
         .on_miss(Miss::Skip)       // Skip tick on deadline miss
         .build()?;
 
     // Balance monitor at lower rate
-    scheduler.add(BalanceMonitor::new()?).order(5).rate_hz(50.0).build()?;
+    scheduler.add(BalanceMonitor::new()?).order(5).rate(50.hz()).build()?;
 
     scheduler.run_for(Duration::from_secs(30))?;
     Ok(())

@@ -121,7 +121,7 @@ mod execution_class_tests {
 /// let mut scheduler = Scheduler::new();
 ///
 /// // Motor control on dedicated RT thread
-/// scheduler.add(motor_node).order(0).budget_us(200).build()?;
+/// scheduler.add(motor_node).order(0).budget(200.us()).build()?;
 ///
 /// // Path planning in parallel compute pool
 /// scheduler.add(planner_node).order(5).compute().build()?;
@@ -130,7 +130,7 @@ mod execution_class_tests {
 /// scheduler.add(obstacle_node).on("lidar_scan").build()?;
 ///
 /// // Telemetry upload on async I/O pool
-/// scheduler.add(telemetry_node).async_io().rate_hz(1.0).build()?;
+/// scheduler.add(telemetry_node).async_io().rate(1.hz()).build()?;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ExecutionClass {

@@ -593,6 +593,85 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
     Ok(())
 }
 
+/// Publish a message to a topic (for testing)
+pub fn publish_topic(
+    name: &str,
+    message: &str,
+    rate: Option<f64>,
+    count: Option<usize>,
+) -> HorusResult<()> {
+    use horus_core::communication::Topic;
+
+    // Parse JSON message
+    let value: serde_json::Value = serde_json::from_str(message).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Invalid JSON message: {}. Example: '{{\"linear\": 1.0}}'",
+            e
+        )))
+    })?;
+
+    // Create topic using the proper ring buffer protocol
+    let topic: Topic<serde_json::Value> = Topic::new(name).map_err(|e| {
+        HorusError::Communication(horus_core::error::CommunicationError::TopicCreationFailed {
+            topic: name.to_string(),
+            reason: e.to_string(),
+        })
+    })?;
+
+    let sleep_duration = match rate {
+        Some(r) if r <= 0.0 => {
+            return Err(HorusError::Config(ConfigError::Other(
+                "Rate must be greater than 0.0".to_string(),
+            )));
+        }
+        Some(r) => Some(Duration::from_secs_f64(1.0 / r)),
+        None => None,
+    };
+    let publish_count = count.unwrap_or(1);
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .ok();
+
+    println!(
+        "{} Publishing to: {}",
+        cli_output::ICON_INFO.cyan(),
+        name.white().bold()
+    );
+
+    let mut published = 0;
+    for i in 0..publish_count {
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        topic.send(value.clone());
+        published += 1;
+        println!(
+            "  [{}] Published: {}",
+            i + 1,
+            message.chars().take(50).collect::<String>()
+        );
+
+        if let Some(duration) = sleep_duration {
+            if i < publish_count - 1 {
+                std::thread::sleep(duration);
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "{} Published {} message(s)",
+        cli_output::ICON_SUCCESS.green(),
+        published
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,83 +756,4 @@ mod tests {
         );
         assert_eq!(fmt, MessageFormat::BincodeHex);
     }
-}
-
-/// Publish a message to a topic (for testing)
-pub fn publish_topic(
-    name: &str,
-    message: &str,
-    rate: Option<f64>,
-    count: Option<usize>,
-) -> HorusResult<()> {
-    use horus_core::communication::Topic;
-
-    // Parse JSON message
-    let value: serde_json::Value = serde_json::from_str(message).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Invalid JSON message: {}. Example: '{{\"linear\": 1.0}}'",
-            e
-        )))
-    })?;
-
-    // Create topic using the proper ring buffer protocol
-    let topic: Topic<serde_json::Value> = Topic::new(name).map_err(|e| {
-        HorusError::Communication(horus_core::error::CommunicationError::TopicCreationFailed {
-            topic: name.to_string(),
-            reason: e.to_string(),
-        })
-    })?;
-
-    let sleep_duration = match rate {
-        Some(r) if r <= 0.0 => {
-            return Err(HorusError::Config(ConfigError::Other(
-                "Rate must be greater than 0.0".to_string(),
-            )));
-        }
-        Some(r) => Some(Duration::from_secs_f64(1.0 / r)),
-        None => None,
-    };
-    let publish_count = count.unwrap_or(1);
-
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        r.store(false, std::sync::atomic::Ordering::SeqCst);
-    })
-    .ok();
-
-    println!(
-        "{} Publishing to: {}",
-        cli_output::ICON_INFO.cyan(),
-        name.white().bold()
-    );
-
-    let mut published = 0;
-    for i in 0..publish_count {
-        if !running.load(std::sync::atomic::Ordering::SeqCst) {
-            break;
-        }
-        topic.send(value.clone());
-        published += 1;
-        println!(
-            "  [{}] Published: {}",
-            i + 1,
-            message.chars().take(50).collect::<String>()
-        );
-
-        if let Some(duration) = sleep_duration {
-            if i < publish_count - 1 {
-                std::thread::sleep(duration);
-            }
-        }
-    }
-
-    println!();
-    println!(
-        "{} Published {} message(s)",
-        cli_output::ICON_SUCCESS.green(),
-        published
-    );
-
-    Ok(())
 }

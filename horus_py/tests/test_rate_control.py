@@ -67,7 +67,7 @@ def test_runtime_rate_change():
     scheduler = horus.Scheduler()
     scheduler.add(node, order=0)
 
-    # Get initial stats - rate_hz reflects global scheduler rate, not per-node rate
+    # Get initial stats - rate reflects global scheduler rate, not per-node rate
     stats = scheduler.get_node_stats("counter")
     print(f"Initial stats: {stats}")
     assert stats['name'] == "counter"

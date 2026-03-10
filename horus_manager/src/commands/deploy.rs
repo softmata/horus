@@ -157,20 +157,32 @@ fn load_deploy_yaml() -> Option<DeployYaml> {
     serde_yaml::from_str(&content).ok()
 }
 
+/// CLI arguments for the `horus deploy` command.
+pub struct DeployArgs {
+    pub target: String,
+    pub remote_dir: Option<String>,
+    pub arch: Option<String>,
+    pub run_after: bool,
+    pub release: bool,
+    pub port: u16,
+    pub identity: Option<PathBuf>,
+    pub dry_run: bool,
+}
+
 /// Run the deploy command
-#[allow(clippy::too_many_arguments)]
-pub fn run_deploy(
-    target: &str,
-    remote_dir: Option<String>,
-    arch: Option<String>,
-    run_after: bool,
-    release: bool,
-    port: u16,
-    identity: Option<PathBuf>,
-    dry_run: bool,
-) -> HorusResult<()> {
+pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
+    let DeployArgs {
+        target,
+        remote_dir,
+        arch,
+        run_after,
+        release,
+        port,
+        identity,
+        dry_run,
+    } = args;
     // Resolve named target from .horus/deploy.yaml (if applicable)
-    let resolved = resolve_target(target);
+    let resolved = resolve_target(&target);
 
     // CLI args win over YAML values. For Option fields, None means "not set by user".
     // For port, 22 is the clap default — treat it as "not explicitly set" so YAML can override.

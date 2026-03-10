@@ -565,7 +565,7 @@ fn edge_validate_after_unregister() {
     hf.register_frame("c", Some("b")).unwrap();
 
     // Valid before unregister
-    assert!(hf.validate().is_ok());
+    hf.validate().unwrap();
 
     // Remove mid-chain frame
     hf.unregister_frame("b").unwrap();
@@ -621,7 +621,7 @@ fn edge_registration_prevents_cycles() {
     assert!(result.is_err(), "Re-registration should be rejected");
 
     // Validate confirms no cycle
-    assert!(hf.validate().is_ok());
+    hf.validate().unwrap();
 }
 
 /// Duplicate frame registration should be rejected.
@@ -681,7 +681,7 @@ fn edge_empty_system() {
     assert_eq!(hf.frame_count(), 0);
     assert!(!hf.has_frame("anything"));
     assert!(!hf.can_transform("a", "b"));
-    assert!(hf.tf("a", "b").is_err());
+    hf.tf("a", "b").unwrap_err();
     assert!(hf.frame_id("nonexistent").is_none());
 
     // validate on empty should pass

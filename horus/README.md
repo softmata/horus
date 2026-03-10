@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     scheduler.add(MyNode {
         publisher: Topic::new("sensor_data")?,
         counter: 0,
-    }).order(0).done();
+    }).order(0).build();
 
     scheduler.run()
 }

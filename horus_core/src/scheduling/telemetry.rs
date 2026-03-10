@@ -407,7 +407,7 @@ mod tests {
         tm.gauge("cpu_usage", 45.5);
 
         let result = tm.export();
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(path.exists());
     }
 

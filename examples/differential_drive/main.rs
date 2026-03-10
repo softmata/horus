@@ -111,10 +111,10 @@ impl Node for SafetyNode {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_hz(50.0);
+    let mut scheduler = Scheduler::new().tick_rate(50.hz());
 
-    scheduler.add(SquareDriver::new()?).order(0).rate_hz(50.0).build()?;
-    scheduler.add(SafetyNode::new()?).order(10).rate_hz(10.0).build()?;
+    scheduler.add(SquareDriver::new()?).order(0).rate(50.hz()).build()?;
+    scheduler.add(SafetyNode::new()?).order(10).rate(10.hz()).build()?;
 
     // Run for 30 seconds (enough for ~2 full squares)
     scheduler.run_for(Duration::from_secs(30))?;

@@ -39,9 +39,6 @@ use super::safety_monitor::SafetyMonitor;
 // Auto-optimization capabilities
 use super::rt::RuntimeCapabilities;
 
-// Deterministic execution (for simulation mode)
-use super::deterministic::{DeterministicClock, DeterministicConfig};
-
 /// Degradation that occurred during auto-optimization.
 ///
 /// When `Scheduler::new()` auto-applies RT optimizations, it may encounter
@@ -150,12 +147,6 @@ pub(crate) struct RecordingState {
     pub scheduler_recording: SchedulerRecording,
 }
 
-/// Deterministic execution state — only present in simulation mode.
-pub(crate) struct DeterministicState {
-    pub clock: Arc<DeterministicClock>,
-    pub config: DeterministicConfig,
-}
-
 /// Central orchestrator: holds nodes, drives the tick loop.
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
@@ -168,7 +159,6 @@ pub struct Scheduler {
     pub(super) monitor: MonitorState,
     pub(super) replay: Option<ReplayState>,
     pub(super) recording: Option<RecordingState>,
-    pub(super) deterministic: Option<DeterministicState>,
 
     /// Deferred configuration applied once at `run()` time via `finalize_config()`.
     /// Builder methods mutate this; `finalize_config()` applies it before the tick loop.
@@ -194,7 +184,7 @@ impl Scheduler {
     /// let scheduler = Scheduler::new();
     ///
     /// // Configure with builder methods
-    /// let scheduler = Scheduler::new().tick_hz(500.0);
+    /// let scheduler = Scheduler::new().tick_rate(500.hz());
     /// ```
     /// Create a scheduler with default configuration.
     ///
@@ -245,7 +235,6 @@ impl Scheduler {
             },
             replay: None,
             recording: None,
-            deterministic: None,
             pending_config: config,
         }
     }
@@ -265,10 +254,10 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     ///
     /// let scheduler = Scheduler::hard_rt()
-    ///     .tick_hz(1000.0)
+    ///     .tick_rate(1000.hz())
     ///     .max_deadline_misses(3);
     ///
-    /// scheduler.add(motor_node).order(0).budget_us(200).build()?;
+    /// scheduler.add(motor_node).order(0).budget(200.us()).build()?;
     /// scheduler.run()?;
     /// ```
     pub fn hard_rt() -> Self {
@@ -278,7 +267,7 @@ impl Scheduler {
         let can_rt =
             s.rt.capabilities
                 .as_ref()
-                .map_or(false, |c| c.rt_priority_available || c.mlockall_permitted);
+                .is_some_and(|c| c.rt_priority_available || c.mlockall_permitted);
         assert!(
             can_rt,
             "hard_rt() requires a system with RT capabilities (SCHED_FIFO or mlockall). \
@@ -296,7 +285,7 @@ impl Scheduler {
             memory_locking: true,
             rt_scheduling_class: true,
         };
-        s.pending_config.fault_tolerance = true;
+
         s
     }
 
@@ -306,7 +295,7 @@ impl Scheduler {
     /// ```rust,ignore
     /// let scheduler = Scheduler::hard_rt()
     ///     .cores(&[2, 3])   // Pin to cores 2 and 3
-    ///     .tick_hz(1000.0);
+    ///     .tick_rate(1000.hz());
     /// ```
     pub fn cores(mut self, cores: &[usize]) -> Self {
         self.pending_config.resources.cpu_cores = Some(cores.to_vec());
@@ -317,17 +306,17 @@ impl Scheduler {
     // BUILDER METHODS — opt in to features one at a time
     // ========================================================================
 
-    /// Set the global tick rate in Hz.
+    /// Set the global tick rate.
     ///
     /// # Example
     /// ```rust,ignore
+    /// use horus::prelude::*;
+    ///
     /// let scheduler = Scheduler::new()
-    ///     .tick_hz(1000.0); // 1kHz control loop
+    ///     .tick_rate(1000.hz()); // 1kHz control loop
     /// ```
-    pub fn tick_hz(mut self, hz: f64) -> Self {
-        if hz.is_finite() && hz > 0.0 {
-            self.pending_config.timing.global_rate_hz = hz;
-        }
+    pub fn tick_rate(mut self, freq: crate::core::duration_ext::Frequency) -> Self {
+        self.pending_config.timing.global_rate_hz = freq.value();
         self
     }
 
@@ -350,7 +339,7 @@ impl Scheduler {
     /// # Example
     /// ```rust,ignore
     /// let mut scheduler = Scheduler::new()
-    ///     .tick_hz(100.0)
+    ///     .tick_rate(100.hz())
     ///     .with_recording();
     /// ```
     pub fn with_recording(mut self) -> Self {
@@ -406,7 +395,7 @@ impl Scheduler {
     /// # Example
     /// ```rust,ignore
     /// let scheduler = Scheduler::deploy()
-    ///     .tick_hz(500.0)
+    ///     .tick_rate(500.hz())
     ///     .cores(&[2, 3]);
     /// ```
     pub fn deploy() -> Self {
@@ -416,7 +405,7 @@ impl Scheduler {
         s.pending_config.realtime.deadline_monitoring = true;
         s.pending_config.realtime.watchdog_enabled = true;
         s.pending_config.realtime.watchdog_timeout_ms = 500;
-        s.pending_config.fault_tolerance = true;
+
         s.pending_config.monitoring.black_box_enabled = true;
         s.pending_config.monitoring.black_box_size_mb = 64;
         s
@@ -430,12 +419,12 @@ impl Scheduler {
     /// # Example
     /// ```rust,ignore
     /// let scheduler = Scheduler::safety_critical()
-    ///     .tick_hz(1000.0)
+    ///     .tick_rate(1000.hz())
     ///     .max_deadline_misses(3);
     /// ```
     pub fn safety_critical() -> Self {
         let mut s = Self::hard_rt();
-        s.pending_config.fault_tolerance = true;
+
         s.pending_config.monitoring.black_box_enabled = true;
         s.pending_config.monitoring.black_box_size_mb = 64;
         s.pending_config.monitoring.profiling_enabled = true;
@@ -481,25 +470,6 @@ impl Scheduler {
         let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
         let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
         self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
-        self
-    }
-
-    /// Enable deterministic execution mode (virtual time, seeded RNG) for simulation.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .deterministic(42);
-    /// ```
-    pub fn deterministic(mut self, seed: u64) -> Self {
-        let det_config = DeterministicConfig {
-            seed,
-            virtual_time: true,
-            tick_duration_ns: 1_000_000,
-        };
-        self.pending_config.deterministic = Some(det_config.clone());
-        // Eagerly apply so is_simulation_mode() works before run()
-        self.apply_deterministic_config(&det_config);
         self
     }
 
@@ -649,7 +619,6 @@ impl Scheduler {
     /// //   [ ] Isolated CPUs: []
     /// // ------------------------------------------------------------------
     /// // Execution Mode:
-    /// //   [ ] Simulation Mode (deterministic)
     /// //   [x] Real-time Mode
     /// // ------------------------------------------------------------------
     /// // Safety Features:
@@ -736,15 +705,7 @@ impl Scheduler {
         // Execution mode
         lines.push(thin_sep.to_string());
         lines.push("Execution Mode:".to_string());
-        let is_sim = self.is_simulation_mode();
-        lines.push(format!(
-            "  [{}] Simulation Mode (deterministic)",
-            if is_sim { "x" } else { " " }
-        ));
-        lines.push(format!(
-            "  [{}] Real-time Mode",
-            if !is_sim { "x" } else { " " }
-        ));
+        lines.push("  [x] Real-time Mode".to_string());
 
         // Safety features
         lines.push(thin_sep.to_string());
@@ -847,67 +808,6 @@ impl Scheduler {
         lines
     }
 
-    // =========================================================================
-    // Deterministic Execution Accessors (Simulation Mode)
-    // =========================================================================
-
-    /// Check if this scheduler is running in simulation mode (deterministic execution).
-    ///
-    /// Returns `true` if the scheduler was created with `Scheduler::simulation()` or
-    /// `Scheduler::simulation_with_seed()`, which enables virtual time, seeded RNG,
-    /// and execution tracing.
-    #[doc(hidden)]
-    pub fn is_simulation_mode(&self) -> bool {
-        self.deterministic.is_some()
-    }
-
-    /// Get the deterministic clock (simulation mode only).
-    ///
-    /// The deterministic clock provides:
-    /// - Virtual time that advances predictably per tick
-    /// - Seeded RNG for reproducible randomness
-    /// - Tick counting for execution tracing
-    ///
-    /// Returns `None` if not in simulation mode.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::simulation_with_seed(12345);
-    /// if let Some(clock) = scheduler.deterministic_clock() {
-    ///     println!("Virtual time: {:?}", clock.now());
-    ///     println!("Tick: {}", clock.tick());
-    ///     println!("Random u64: {}", clock.random_u64());
-    /// }
-    /// ```
-    #[doc(hidden)]
-    pub fn deterministic_clock(&self) -> Option<Arc<DeterministicClock>> {
-        self.deterministic.as_ref().map(|d| d.clock.clone())
-    }
-
-    /// Get the seed used for deterministic RNG (simulation mode only).
-    ///
-    /// Returns `None` if not in simulation mode.
-    #[doc(hidden)]
-    pub fn seed(&self) -> Option<u64> {
-        self.deterministic.as_ref().map(|d| d.config.seed)
-    }
-
-    /// Get the current virtual time (simulation mode only).
-    ///
-    /// Returns `None` if not in simulation mode.
-    #[doc(hidden)]
-    pub fn virtual_time(&self) -> Option<Duration> {
-        self.deterministic.as_ref().map(|d| d.clock.now())
-    }
-
-    /// Get the current virtual tick number (simulation mode only).
-    ///
-    /// Returns `None` if not in simulation mode.
-    #[doc(hidden)]
-    pub fn virtual_tick(&self) -> Option<u64> {
-        self.deterministic.as_ref().map(|d| d.clock.tick())
-    }
-
     /// Apply a full configuration struct. Used internally by presets and horus_py.
     #[doc(hidden)]
     pub fn apply_config(&mut self, config: super::config::SchedulerConfig) {
@@ -931,11 +831,6 @@ impl Scheduler {
 
         // Monitoring (profiling, blackbox, telemetry)
         self.apply_monitoring_config(&config.monitoring);
-
-        // Deterministic execution (simulation mode)
-        if let Some(ref det_config) = config.deterministic {
-            self.apply_deterministic_config(det_config);
-        }
 
         // Recording
         if let Some(ref recording_yaml) = config.recording {
@@ -980,7 +875,7 @@ impl Scheduler {
             rt.memory_locking || rt.rt_scheduling_class || resources.cpu_cores.is_some();
 
         if has_rt_features {
-            let mut builder = RtConfig::new()
+            let mut builder = RtConfig::builder()
                 .memory_locked(rt.memory_locking)
                 .warn_on_degradation(true);
 
@@ -1065,22 +960,6 @@ impl Scheduler {
         }
     }
 
-    /// Apply deterministic execution configuration for simulation mode.
-    fn apply_deterministic_config(
-        &mut self,
-        det_config: &super::deterministic::DeterministicConfig,
-    ) {
-        let clock = Arc::new(DeterministicClock::new(det_config));
-        self.deterministic = Some(DeterministicState {
-            clock,
-            config: det_config.clone(),
-        });
-        print_line(&format!(
-            "[SCHEDULER] Deterministic mode enabled (seed={}, virtual_time={})",
-            det_config.seed, det_config.virtual_time
-        ));
-    }
-
     /// Apply recording configuration for the record/replay system.
     fn apply_recording_config(&mut self, recording_yaml: &super::config::RecordingConfigYaml) {
         let recording_config = RecordingConfig::from(recording_yaml.clone());
@@ -1156,7 +1035,7 @@ impl Scheduler {
     /// use std::time::Duration;
     ///
     /// let mut scheduler = Scheduler::deploy();
-    /// // tick budgets are typically set via .budget_us() on the node builder
+    /// // tick budgets are typically set via .budget() on the node builder
     /// ```
     ///
     /// # Errors
@@ -1284,16 +1163,16 @@ impl Scheduler {
     ///     .order(0)
     ///     .build();
     ///
-    /// // RT node — auto-detected from tick_budget() or explicit .budget_us()
+    /// // RT node — auto-detected from tick_budget() or explicit .budget()
     /// scheduler.add(MotorController::new())
     ///     .order(0)
-    ///     .rate_hz(1000.0)  // 1kHz
-    ///     .budget_us(500)     // 500μs max → enables RT scheduling
+    ///     .rate(1000.hz())  // 1kHz
+    ///     .budget(500.us())   // 500μs max → enables RT scheduling
     ///     .build()?;
     ///
     /// // Chain multiple nodes
     /// scheduler.add(SensorNode::new()).order(0).build()?;
-    /// scheduler.add(ControlNode::new()).order(1).budget_us(200).build()?;
+    /// scheduler.add(ControlNode::new()).order(1).budget(200.us()).build()?;
     /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
@@ -1311,7 +1190,7 @@ impl Scheduler {
     ///
     /// let config = NodeRegistration::new(Box::new(my_node))
     ///     .order(0)
-    ///     .budget_us(500);
+    ///     .budget(500.us());
     ///
     /// scheduler.add_configured(config);
     /// ```
@@ -1389,7 +1268,7 @@ impl Scheduler {
             is_stopped: false,
             is_paused: false,
             rt_stats,
-            miss_policy: miss_policy,
+            miss_policy,
             execution_class,
         });
 
@@ -1448,22 +1327,19 @@ impl Scheduler {
     ///
     /// # Arguments
     /// * `name` - The name of the node
-    /// * `rate_hz` - The desired rate in Hz (ticks per second)
+    /// * `rate` - The desired rate as a `Frequency` (e.g. `100.hz()`)
     ///
     /// # Example
     /// ```ignore
-    /// scheduler.add(sensor, 0)
-    ///     .set_node_rate("sensor", 100.0);  // Run sensor at 100Hz
+    /// scheduler.set_node_rate("sensor", 100.hz());
     /// ```
     #[doc(hidden)]
-    pub fn set_node_rate(&mut self, name: &str, rate_hz: f64) -> &mut Self {
-        if !rate_hz.is_finite() || rate_hz <= 0.0 {
-            print_line(&format!(
-                "Warning: ignoring invalid rate {:.1} Hz for node '{}'",
-                rate_hz, name
-            ));
-            return self;
-        }
+    pub fn set_node_rate(
+        &mut self,
+        name: &str,
+        rate: crate::core::duration_ext::Frequency,
+    ) -> &mut Self {
+        let rate_hz = rate.value();
         for registered in self.nodes.iter_mut() {
             if &*registered.name == name {
                 registered.rate_hz = Some(rate_hz);
@@ -1569,13 +1445,6 @@ impl Scheduler {
                     tm.set_scheduler_name(&self.scheduler_name);
                     self.monitor.telemetry = Some(tm);
                 }
-            }
-        }
-
-        // Deterministic mode (may already be set by .deterministic() builder)
-        if let Some(ref det) = config.deterministic {
-            if self.deterministic.is_none() {
-                self.apply_deterministic_config(det);
             }
         }
 
@@ -2108,17 +1977,8 @@ impl Scheduler {
         }
     }
 
-    /// Compute the tick sleep duration, returning `None` in virtual-time mode.
+    /// Compute the tick sleep duration.
     fn compute_tick_sleep(&self) -> Option<Duration> {
-        let use_virtual_time = self
-            .deterministic
-            .as_ref()
-            .is_some_and(|d| d.config.virtual_time);
-
-        if use_virtual_time {
-            return None;
-        }
-
         let sleep_duration = if let Some(ref replay) = self.replay {
             if replay.speed != 1.0 {
                 Duration::from_nanos((self.tick.period.as_nanos() as f64 / replay.speed) as u64)
@@ -2132,13 +1992,9 @@ impl Scheduler {
         Some(sleep_duration)
     }
 
-    /// Increment tick counter and advance deterministic clock if configured.
+    /// Increment tick counter.
     fn advance_tick(&mut self) {
         self.tick.current += 1;
-
-        if let Some(ref det) = self.deterministic {
-            det.clock.advance_tick();
-        }
     }
 
     /// Shutdown nodes matching the optional filter.

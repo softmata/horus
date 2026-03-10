@@ -537,6 +537,28 @@ fn parse_field(line: &str) -> Option<(String, String)> {
     Some((name, field_type))
 }
 
+/// Compute a definition hash for a message type.
+///
+/// Uses SipHash (via `DefaultHasher`) on the canonical representation
+/// of the message (module::name + field names/types). This detects
+/// when a message definition changes across versions.
+fn compute_message_definition_hash(msg: &MessageInfo) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Create a canonical string representation
+    let mut canonical = format!("{}::{}\n", msg.module, msg.name);
+    for field in &msg.fields {
+        canonical.push_str(&format!("  {}: {}\n", field.name, field.field_type));
+    }
+
+    let mut hasher = DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    format!("{:016x}", hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,26 +744,4 @@ pub struct B {
             "different fields should produce different hashes"
         );
     }
-}
-
-/// Compute a definition hash for a message type.
-///
-/// Uses SipHash (via `DefaultHasher`) on the canonical representation
-/// of the message (module::name + field names/types). This detects
-/// when a message definition changes across versions.
-fn compute_message_definition_hash(msg: &MessageInfo) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    // Create a canonical string representation
-    let mut canonical = format!("{}::{}\n", msg.module, msg.name);
-    for field in &msg.fields {
-        canonical.push_str(&format!("  {}: {}\n", field.name, field.field_type));
-    }
-
-    let mut hasher = DefaultHasher::new();
-    canonical.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    format!("{:016x}", hash)
 }

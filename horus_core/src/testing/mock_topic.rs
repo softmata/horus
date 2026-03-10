@@ -27,7 +27,7 @@ use crate::communication::topic::metrics::TopicMetrics;
 use crate::communication::SendBlockingError;
 
 /// Configuration for MockTopic failure injection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MockTopicConfig {
     /// Maximum capacity of the internal buffer (0 = unlimited)
     pub capacity: usize,
@@ -41,19 +41,6 @@ pub struct MockTopicConfig {
     pub recv_fail_after: Option<u64>,
     /// Simulate send_blocking timeout (if true, send_blocking always returns Timeout)
     pub send_blocking_always_timeout: bool,
-}
-
-impl Default for MockTopicConfig {
-    fn default() -> Self {
-        Self {
-            capacity: 0,
-            send_fail_every_n: None,
-            recv_fail_every_n: None,
-            send_fail_after: None,
-            recv_fail_after: None,
-            send_blocking_always_timeout: false,
-        }
-    }
 }
 
 /// A mock implementation of the Topic API for testing.
@@ -115,7 +102,7 @@ impl<T: Clone> MockTopic<T> {
 
         // Check send_fail_every_n
         if let Some(n) = self.config.send_fail_every_n {
-            if n > 0 && count % n == 0 {
+            if n > 0 && count.is_multiple_of(n) {
                 self.send_failures.fetch_add(1, Ordering::Relaxed);
                 return Err(msg);
             }
@@ -167,7 +154,7 @@ impl<T: Clone> MockTopic<T> {
 
         // Check recv_fail_every_n
         if let Some(n) = self.config.recv_fail_every_n {
-            if n > 0 && count % n == 0 {
+            if n > 0 && count.is_multiple_of(n) {
                 self.recv_failures.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
@@ -327,8 +314,8 @@ mod tests {
             ..Default::default()
         };
         let topic: MockTopic<u64> = MockTopic::new("cap", config);
-        assert!(topic.try_send(1).is_ok());
-        assert!(topic.try_send(2).is_ok());
+        topic.try_send(1).unwrap();
+        topic.try_send(2).unwrap();
         // Third send should fail — at capacity
         let result = topic.try_send(3);
         assert!(result.is_err());
@@ -344,11 +331,11 @@ mod tests {
             ..Default::default()
         };
         let topic: MockTopic<u64> = MockTopic::new("fail", config);
-        assert!(topic.try_send(1).is_ok()); // 1st
-        assert!(topic.try_send(2).is_ok()); // 2nd
+        topic.try_send(1).unwrap(); // 1st
+        topic.try_send(2).unwrap(); // 2nd
         assert!(topic.try_send(3).is_err()); // 3rd — fail
-        assert!(topic.try_send(4).is_ok()); // 4th
-        assert!(topic.try_send(5).is_ok()); // 5th
+        topic.try_send(4).unwrap(); // 4th
+        topic.try_send(5).unwrap(); // 5th
         assert!(topic.try_send(6).is_err()); // 6th — fail
 
         let m = topic.metrics();
@@ -362,8 +349,8 @@ mod tests {
             ..Default::default()
         };
         let topic: MockTopic<u64> = MockTopic::new("fail_after", config);
-        assert!(topic.try_send(1).is_ok()); // 1st
-        assert!(topic.try_send(2).is_ok()); // 2nd
+        topic.try_send(1).unwrap(); // 1st
+        topic.try_send(2).unwrap(); // 2nd
         assert!(topic.try_send(3).is_err()); // 3rd — all fail after 2
         assert!(topic.try_send(4).is_err()); // 4th — still failing
     }
@@ -432,12 +419,12 @@ mod tests {
             ..Default::default()
         };
         let topic: MockTopic<u64> = MockTopic::new("combined", config);
-        assert!(topic.try_send(1).is_ok()); // 1st — ok
+        topic.try_send(1).unwrap(); // 1st — ok
         assert!(topic.try_send(2).is_err()); // 2nd — fail (every 2)
-        assert!(topic.try_send(3).is_ok()); // 3rd — ok
+        topic.try_send(3).unwrap(); // 3rd — ok
         assert!(topic.try_send(4).is_err()); // 4th — fail (every 2)
-        assert!(topic.try_send(5).is_ok()); // 5th — ok
-                                            // Buffer has [1, 3, 5] — at capacity
+        topic.try_send(5).unwrap(); // 5th — ok
+                                    // Buffer has [1, 3, 5] — at capacity
         assert!(topic.try_send(6).is_err()); // 6th — fail (every 2, AND capacity)
         assert!(topic.try_send(7).is_err()); // 7th — fail (capacity full)
     }

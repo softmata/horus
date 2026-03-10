@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn parse_invalid_version_constraint() {
         let result = DependencySpec::parse("pkg@not_a_version");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     // ========================================================================
@@ -622,7 +622,7 @@ mod tests {
         // Require >= 2.0 but only 1.x available
         let deps = vec![DependencySpec::parse("sensor@>=2.0.0").unwrap()];
         let result = resolver.resolve(deps);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

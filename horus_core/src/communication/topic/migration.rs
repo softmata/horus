@@ -458,6 +458,9 @@ mod tests {
             .map(|i| {
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
+                    // SAFETY: `header_ptr` was derived from a stack-local `TopicHeader`
+                    // that outlives all spawned threads (they are joined below).
+                    // The header's fields are atomic, so concurrent access is safe.
                     let h = unsafe { &*(header_ptr as *const TopicHeader) };
                     let m = BackendMigrator::new(h);
                     barrier.wait();

@@ -179,7 +179,7 @@ mod tests {
     fn test_run_tick_success() {
         let mut node = NodeKind::new(Box::new(OkNode));
         let result = NodeRunner::run_tick(&mut node);
-        assert!(result.result.is_ok());
+        result.result.unwrap();
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
     fn test_run_tick_measures_duration() {
         let mut node = NodeKind::new(Box::new(SlowNode { work_us: 1000 }));
         let result = NodeRunner::run_tick(&mut node);
-        assert!(result.result.is_ok());
+        result.result.unwrap();
         // Should be at least ~1ms (allowing some scheduling jitter)
         assert!(result.duration.as_micros() >= 500);
     }

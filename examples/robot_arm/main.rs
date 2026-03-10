@@ -204,10 +204,10 @@ impl Node for FramePublisher {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_hz(50.0);
+    let mut scheduler = Scheduler::new().tick_rate(50.hz());
 
-    scheduler.add(TrajectoryController::new()?).order(0).rate_hz(50.0).build()?;
-    scheduler.add(FramePublisher::new()?).order(1).rate_hz(50.0).build()?;
+    scheduler.add(TrajectoryController::new()?).order(0).rate(50.hz()).build()?;
+    scheduler.add(FramePublisher::new()?).order(1).rate(50.hz()).build()?;
 
     scheduler.run_for(Duration::from_secs(60))?;
     Ok(())

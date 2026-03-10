@@ -1032,25 +1032,25 @@ mod tests {
     fn test_list_frames_empty() {
         // Should handle empty case gracefully
         let result = list_frames(false, false);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn test_view_frames() {
         let result = view_frames(None);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn test_frame_info() {
         let result = frame_info("base_link");
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn test_can_transform() {
         let result = can_transform("base_link", "camera_link");
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]

@@ -51,6 +51,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Shared feedback topic link — lazily initialized, shared across clones.
+type FeedbackLink<F> = Arc<RwLock<Option<Topic<ActionFeedback<F>>>>>;
+
 /// Result of goal execution.
 ///
 /// Returned by the execute callback to indicate how the goal completed.
@@ -196,9 +199,8 @@ impl<A: Action> Debug for ServerGoalHandle<A> {
 }
 
 /// Internal feedback sender that handles rate limiting.
-#[allow(clippy::type_complexity)]
 struct FeedbackSender<A: Action> {
-    link: Arc<RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>>,
+    link: FeedbackLink<A::Feedback>,
     last_send: Arc<RwLock<Instant>>,
     min_interval: Duration,
 }
@@ -207,8 +209,7 @@ impl<A: Action> FeedbackSender<A>
 where
     A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
-    #[allow(clippy::type_complexity)]
-    fn new(link: Arc<RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>>, rate_hz: f64) -> Self {
+    fn new(link: FeedbackLink<A::Feedback>, rate_hz: f64) -> Self {
         let min_interval = if rate_hz > 0.0 {
             Duration::from_secs_f64(1.0 / rate_hz)
         } else {
@@ -384,7 +385,6 @@ where
 /// - Managing goal lifecycle
 /// - Publishing feedback and results
 /// - Enforcing preemption policies
-#[allow(clippy::type_complexity)]
 pub struct ActionServerNode<A: Action> {
     name: String,
 
@@ -400,7 +400,7 @@ pub struct ActionServerNode<A: Action> {
     goal_link: Option<Topic<GoalRequest<A::Goal>>>,
     cancel_link: Option<Topic<CancelRequest>>,
     result_link: Option<Topic<ActionResult<A::Result>>>,
-    feedback_link: Arc<RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>>,
+    feedback_link: FeedbackLink<A::Feedback>,
     status_link: Option<Topic<GoalStatusUpdate>>,
 
     // Active goals

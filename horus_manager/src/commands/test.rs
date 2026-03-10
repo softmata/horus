@@ -57,20 +57,32 @@ fn needs_rebuild(horus_dir: &Path) -> bool {
     false
 }
 
+/// Configuration for the `horus test` command.
+pub struct TestConfig {
+    pub filter: Option<String>,
+    pub release: bool,
+    pub nocapture: bool,
+    pub test_threads: Option<usize>,
+    pub parallel: bool,
+    pub simulation: bool,
+    pub integration: bool,
+    pub no_build: bool,
+    pub verbose: bool,
+}
+
 /// Run tests for a HORUS project with full robotics-aware features
-#[allow(clippy::too_many_arguments)]
-pub fn run_tests(
-    filter: Option<String>,
-    release: bool,
-    nocapture: bool,
-    test_threads: Option<usize>,
-    parallel: bool,
-    simulation: bool,
-    integration: bool,
-    no_build: bool,
-    _no_cleanup: bool, // Legacy parameter, kept for API compatibility
-    verbose: bool,
-) -> Result<()> {
+pub fn run_tests(cfg: TestConfig) -> Result<()> {
+    let TestConfig {
+        filter,
+        release,
+        nocapture,
+        test_threads,
+        parallel,
+        simulation,
+        integration,
+        no_build,
+        verbose,
+    } = cfg;
     let horus_dir = PathBuf::from(".horus");
 
     println!("{} Running HORUS tests", "[*]".cyan());

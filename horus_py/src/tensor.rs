@@ -401,7 +401,12 @@ impl PyTensorHandle {
         let capsule_obj = obj.call_method1(py, "__dlpack__", (py.None(),))?;
 
         // Extract DLManagedTensor* from PyCapsule
-        let capsule_name = CString::new("dltensor").unwrap();
+        let capsule_name = CString::new("dltensor").expect("static str has no NUL");
+        // SAFETY: capsule_obj is the return value of __dlpack__(), which per the
+        // DLPack spec must be a PyCapsule named "dltensor" containing a valid
+        // DLManagedTensor pointer. capsule_name is a valid null-terminated C string.
+        // If the capsule is invalid or already consumed, GetPointer returns null
+        // which we check immediately below.
         let managed_ptr =
             unsafe { pyo3::ffi::PyCapsule_GetPointer(capsule_obj.as_ptr(), capsule_name.as_ptr()) };
         if managed_ptr.is_null() {
@@ -411,6 +416,11 @@ impl PyTensorHandle {
         }
 
         // Parse tensor metadata via horus_core
+        // SAFETY: managed_ptr was obtained from PyCapsule_GetPointer above and
+        // verified non-null. Per the DLPack spec it points to a valid
+        // DLManagedTensor whose dl_tensor field contains valid shape/strides
+        // pointers and a valid data pointer. The capsule has not been consumed
+        // yet (name is still "dltensor"), so the producer has not freed it.
         let descriptor = unsafe {
             horus_core::dlpack::from_dlpack(
                 managed_ptr as *const horus_core::dlpack::DLManagedTensor,
@@ -424,7 +434,12 @@ impl PyTensorHandle {
         // the deleter — we own the cleanup responsibility.  Arm a RAII guard so
         // that any `?` error return between here and the explicit deleter call at
         // the end still invokes the deleter, preventing a memory leak.
-        let used_name = CString::new("used_dltensor").unwrap();
+        let used_name = CString::new("used_dltensor").expect("static str has no NUL");
+        // SAFETY: capsule_obj is a valid PyCapsule (verified by successful
+        // PyCapsule_GetPointer above). used_name is a valid null-terminated
+        // C string. We forget used_name immediately after so that the CString
+        // is not dropped while the PyCapsule still references its pointer.
+        // This rename prevents double-consumption per the DLPack protocol.
         unsafe {
             pyo3::ffi::PyCapsule_SetName(capsule_obj.as_ptr(), used_name.as_ptr());
         }
@@ -460,6 +475,13 @@ impl PyTensorHandle {
         .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
 
         let dst_ptr = handle.data_ptr();
+        // SAFETY: src_ptr points to the DLPack tensor's data buffer which is
+        // valid for at least copy_len bytes (derived from descriptor.size_bytes).
+        // dst_ptr points to a freshly allocated TensorPool slot with the same
+        // shape and dtype, so it has at least copy_len bytes of writable space.
+        // The two buffers do not overlap (src is from an external framework's
+        // allocation, dst is from our pool). Both pointers are properly aligned
+        // for byte-level copy.
         unsafe {
             std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
         }
@@ -469,6 +491,12 @@ impl PyTensorHandle {
         deleter_guard.disarm();
 
         // Call deleter on the original DLManagedTensor (we're done with the data).
+        // SAFETY: managed_dlpack is the valid DLManagedTensor pointer obtained
+        // from the PyCapsule. The data has been fully copied into our pool, so
+        // we no longer need the source buffer. The guard has been disarmed, so
+        // this is the sole invocation of the deleter — no double-free risk.
+        // The deleter was set by the DLPack producer and is responsible for
+        // freeing the DLManagedTensor and its associated resources.
         unsafe {
             if let Some(deleter) = (*managed_dlpack).deleter {
                 deleter(managed_dlpack);

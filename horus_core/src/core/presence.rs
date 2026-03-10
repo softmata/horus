@@ -243,6 +243,8 @@ fn read_pid_start_time_macos(pid: u32) -> u64 {
     if ret != 0 || size == 0 {
         return 0;
     }
+    // SAFETY: `sysctl` succeeded (ret == 0) and wrote `size` bytes into `info`,
+    // so `kp_proc.p_starttime` is fully initialized.
     let tv = unsafe { info.kp_proc.p_starttime };
     (tv.tv_sec as u64)
         .saturating_mul(1_000_000)

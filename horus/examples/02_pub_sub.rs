@@ -89,7 +89,7 @@ impl Node for MonitorNode {
 fn main() -> Result<()> {
     println!("=== HORUS Example 2: Pub/Sub ===\n");
 
-    let mut scheduler = Scheduler::new().tick_hz(2.0);
+    let mut scheduler = Scheduler::new().tick_rate(2.hz());
 
     // Sensor publishes first (order 0), monitor reads after (order 1)
     scheduler.add(SensorNode::new()?).order(0).build()?;

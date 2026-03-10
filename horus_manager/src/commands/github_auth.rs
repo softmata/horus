@@ -263,7 +263,7 @@ fn extract_query_param(path: &str, key: &str) -> Option<String> {
     for pair in query.split('&') {
         let mut parts = pair.splitn(2, '=');
         if parts.next() == Some(key) {
-            return parts.next().map(|v| url_decode(v));
+            return parts.next().map(url_decode);
         }
     }
     None
@@ -485,99 +485,6 @@ pub fn whoami() -> HorusResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn auth_config_serde_roundtrip() {
-        let config = AuthConfig {
-            api_key: "horus_key_abc123".to_string(),
-            registry_url: "https://registry.example.com".to_string(),
-            github_username: Some("testuser".to_string()),
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.api_key, "horus_key_abc123");
-        assert_eq!(parsed.registry_url, "https://registry.example.com");
-        assert_eq!(parsed.github_username, Some("testuser".to_string()));
-    }
-
-    #[test]
-    fn auth_config_github_username_optional() {
-        let json = r#"{"api_key":"horus_key_x","registry_url":"http://localhost"}"#;
-        let config: AuthConfig = serde_json::from_str(json).unwrap();
-        assert!(config.github_username.is_none());
-    }
-
-    #[test]
-    fn token_format_validation_valid() {
-        assert!("horus_key_abc123".starts_with("horus_key_"));
-    }
-
-    #[test]
-    fn token_format_validation_invalid() {
-        assert!(!"invalid_token".starts_with("horus_key_"));
-        assert!(!"".starts_with("horus_key_"));
-        assert!(!"horus_key".starts_with("horus_key_"));
-    }
-
-    #[test]
-    fn extract_query_param_basic() {
-        assert_eq!(
-            extract_query_param("/callback?code=abc123&user=testuser", "code"),
-            Some("abc123".to_string())
-        );
-        assert_eq!(
-            extract_query_param("/callback?code=abc123&user=testuser", "user"),
-            Some("testuser".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_query_param_missing() {
-        assert_eq!(extract_query_param("/callback?code=abc123", "user"), None);
-        assert_eq!(extract_query_param("/callback", "code"), None);
-    }
-
-    #[test]
-    fn extract_query_param_url_decode() {
-        assert_eq!(
-            extract_query_param("/callback?name=hello%20world", "name"),
-            Some("hello world".to_string())
-        );
-        // Test all RFC 3986 percent-encoded characters
-        assert_eq!(
-            extract_query_param("/callback?val=a%26b%3Dc", "val"),
-            Some("a&b=c".to_string())
-        );
-        assert_eq!(
-            extract_query_param("/callback?email=user%40example.com", "email"),
-            Some("user@example.com".to_string())
-        );
-        assert_eq!(
-            extract_query_param("/callback?path=%2Fhome%2Fuser", "path"),
-            Some("/home/user".to_string())
-        );
-        // Test + as space (form encoding)
-        assert_eq!(
-            extract_query_param("/callback?q=hello+world", "q"),
-            Some("hello world".to_string())
-        );
-    }
-
-    #[test]
-    fn url_decode_comprehensive() {
-        assert_eq!(url_decode("hello%20world"), "hello world");
-        assert_eq!(url_decode("100%25"), "100%");
-        assert_eq!(url_decode("no+spaces"), "no spaces");
-        assert_eq!(url_decode("plain"), "plain");
-        // Invalid percent encoding passes through
-        assert_eq!(url_decode("%ZZ"), "%ZZ");
-        assert_eq!(url_decode("%2"), "%2");
-    }
-}
-
 /// Get the current auth token (used by other commands)
 pub fn get_auth_token() -> Option<String> {
     // First check environment variable
@@ -727,4 +634,97 @@ pub fn keys_revoke(key_id: &str) -> HorusResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_config_serde_roundtrip() {
+        let config = AuthConfig {
+            api_key: "horus_key_abc123".to_string(),
+            registry_url: "https://registry.example.com".to_string(),
+            github_username: Some("testuser".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_key, "horus_key_abc123");
+        assert_eq!(parsed.registry_url, "https://registry.example.com");
+        assert_eq!(parsed.github_username, Some("testuser".to_string()));
+    }
+
+    #[test]
+    fn auth_config_github_username_optional() {
+        let json = r#"{"api_key":"horus_key_x","registry_url":"http://localhost"}"#;
+        let config: AuthConfig = serde_json::from_str(json).unwrap();
+        assert!(config.github_username.is_none());
+    }
+
+    #[test]
+    fn token_format_validation_valid() {
+        assert!("horus_key_abc123".starts_with("horus_key_"));
+    }
+
+    #[test]
+    fn token_format_validation_invalid() {
+        assert!(!"invalid_token".starts_with("horus_key_"));
+        assert!(!"".starts_with("horus_key_"));
+        assert!(!"horus_key".starts_with("horus_key_"));
+    }
+
+    #[test]
+    fn extract_query_param_basic() {
+        assert_eq!(
+            extract_query_param("/callback?code=abc123&user=testuser", "code"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(
+            extract_query_param("/callback?code=abc123&user=testuser", "user"),
+            Some("testuser".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_missing() {
+        assert_eq!(extract_query_param("/callback?code=abc123", "user"), None);
+        assert_eq!(extract_query_param("/callback", "code"), None);
+    }
+
+    #[test]
+    fn extract_query_param_url_decode() {
+        assert_eq!(
+            extract_query_param("/callback?name=hello%20world", "name"),
+            Some("hello world".to_string())
+        );
+        // Test all RFC 3986 percent-encoded characters
+        assert_eq!(
+            extract_query_param("/callback?val=a%26b%3Dc", "val"),
+            Some("a&b=c".to_string())
+        );
+        assert_eq!(
+            extract_query_param("/callback?email=user%40example.com", "email"),
+            Some("user@example.com".to_string())
+        );
+        assert_eq!(
+            extract_query_param("/callback?path=%2Fhome%2Fuser", "path"),
+            Some("/home/user".to_string())
+        );
+        // Test + as space (form encoding)
+        assert_eq!(
+            extract_query_param("/callback?q=hello+world", "q"),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn url_decode_comprehensive() {
+        assert_eq!(url_decode("hello%20world"), "hello world");
+        assert_eq!(url_decode("100%25"), "100%");
+        assert_eq!(url_decode("no+spaces"), "no spaces");
+        assert_eq!(url_decode("plain"), "plain");
+        // Invalid percent encoding passes through
+        assert_eq!(url_decode("%ZZ"), "%ZZ");
+        assert_eq!(url_decode("%2"), "%2");
+    }
 }

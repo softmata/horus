@@ -23,8 +23,8 @@ use horus::prelude::*;
 fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
-    scheduler.add(SensorNode::new()?).order(0).done();
-    scheduler.add(ControlNode::new()?).order(1).done();
+    scheduler.add(SensorNode::new()?).order(0).build();
+    scheduler.add(ControlNode::new()?).order(1).build();
 
     scheduler.run()
 }
@@ -48,17 +48,17 @@ pub trait Node: Send {
 let mut scheduler = Scheduler::new();
 
 // Per-node execution classes via fluent builders
-scheduler.add(motor).order(0).rt().rate_hz(1000.0).done();
-scheduler.add(planner).order(5).compute().done();
-scheduler.add(telemetry).order(10).async_io().rate_hz(1.0).done();
+scheduler.add(motor).order(0).rt().rate(1000.0.hz()).build();
+scheduler.add(planner).order(5).compute().build();
+scheduler.add(telemetry).order(10).async_io().rate(1.0.hz()).build();
 
 // Production-ready with safety monitor, watchdog, fault tolerance, blackbox
 let mut scheduler = Scheduler::deploy()
-    .tick_hz(1000.0)
+    .tick_rate(1000.0.hz())
     .with_name("my_robot");
 
 // Add nodes with execution order
-scheduler.add(my_node).order(0).rate_hz(100.0).done();
+scheduler.add(my_node).order(0).rate(100.0.hz()).build();
 
 // Run
 scheduler.run()?;

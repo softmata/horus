@@ -7,15 +7,15 @@
 //!
 //! // Development — lightweight, no syscalls
 //! let mut scheduler = Scheduler::new();
-//! scheduler.add(sensor_node).order(0).done();
-//! scheduler.add(control_node).order(1).done();
+//! scheduler.add(sensor_node).order(0).build();
+//! scheduler.add(control_node).order(1).build();
 //! scheduler.run()?;
 //!
 //! // Nodes declare their execution needs
-//! let mut scheduler = Scheduler::new().tick_hz(500.0);
-//! scheduler.add(motor_ctrl).order(0).budget_us(500).rate_hz(1000.0).done();
-//! scheduler.add(planner).order(5).compute().done();
-//! scheduler.add(telemetry).order(10).async_io().rate_hz(1.0).done();
+//! let mut scheduler = Scheduler::new().tick_rate(500.hz());
+//! scheduler.add(motor_ctrl).order(0).rate(1000.hz()).budget(500.us()).build();
+//! scheduler.add(planner).order(5).compute().build();
+//! scheduler.add(telemetry).order(10).async_io().rate(1.hz()).build();
 //! scheduler.run()?;
 //! ```
 
@@ -213,9 +213,6 @@ pub(crate) mod blackbox {
 // Record/Replay system (internal plumbing; user-facing types re-exported below)
 pub(crate) mod record_replay;
 
-// Deterministic execution (internal)
-pub(crate) mod deterministic;
-
 // Node builder for fluent node configuration (re-exported via #[doc(hidden)] below)
 pub(crate) mod node_builder;
 
@@ -235,7 +232,7 @@ pub use blackbox::{BlackBox, BlackBoxEvent, BlackBoxRecord};
 #[doc(hidden)]
 pub use config::{RecordingConfigYaml, SchedulerConfig};
 #[doc(hidden)]
-pub use fault_tolerance::{FailureHandlerStats, FailurePolicy};
+pub use fault_tolerance::{FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy};
 #[doc(hidden)]
 pub use node_builder::{NodeBuilder, NodeRegistration};
 #[doc(hidden)]

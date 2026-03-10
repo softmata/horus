@@ -488,7 +488,7 @@ impl RegistryClient {
         let pub_key_path = crate::paths::keys_dir()
             .ok()
             .map(|d| d.join("signing_key.pub"));
-        let has_public_key = pub_key_path.as_ref().map_or(false, |p| p.exists());
+        let has_public_key = pub_key_path.as_ref().is_some_and(|p| p.exists());
 
         if let Some(ref sig_hex) = pkg_signature {
             if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
@@ -662,21 +662,19 @@ impl RegistryClient {
             if entry.header().entry_type().is_symlink()
                 || entry.header().entry_type().is_hard_link()
             {
-                if let Ok(link_target) = entry.link_name() {
-                    if let Some(target) = link_target {
-                        let target_path = target.to_path_buf();
-                        if target_path.is_absolute()
-                            || target_path
-                                .components()
-                                .any(|c| matches!(c, std::path::Component::ParentDir))
-                        {
-                            log::warn!(
-                                "Skipping symlink with unsafe target: {:?} -> {:?}",
-                                entry_str,
-                                target_path
-                            );
-                            continue;
-                        }
+                if let Ok(Some(target)) = entry.link_name() {
+                    let target_path = target.to_path_buf();
+                    if target_path.is_absolute()
+                        || target_path
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                    {
+                        log::warn!(
+                            "Skipping symlink with unsafe target: {:?} -> {:?}",
+                            entry_str,
+                            target_path
+                        );
+                        continue;
                     }
                 }
             }
@@ -754,10 +752,10 @@ impl RegistryClient {
                 // Remove existing symlink/dir if present
                 // Try remove_file first (handles symlinks atomically without TOCTOU),
                 // fall back to remove_dir_all for actual directories.
-                if local_link.exists() || local_link.symlink_metadata().is_ok() {
-                    if fs::remove_file(&local_link).is_err() {
-                        fs::remove_dir_all(&local_link)?;
-                    }
+                if (local_link.exists() || local_link.symlink_metadata().is_ok())
+                    && fs::remove_file(&local_link).is_err()
+                {
+                    fs::remove_dir_all(&local_link)?;
                 }
 
                 // Create symlink
@@ -1028,6 +1026,10 @@ impl RegistryClient {
             #[cfg(unix)]
             {
                 use std::os::unix::io::AsRawFd;
+                // SAFETY: `lock_file` is a valid open `File`, so `as_raw_fd()`
+                // returns a valid file descriptor. `flock` with `LOCK_EX` blocks
+                // until the exclusive lock is acquired and does not modify the
+                // file contents or invalidate the fd.
                 unsafe {
                     libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX);
                 }

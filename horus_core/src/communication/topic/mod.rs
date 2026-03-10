@@ -100,6 +100,10 @@
 //!   interleaving for SPSC, SPMC, MPSC, and MPMC algorithms, including
 //!   `read_latest` + `try_recv` races
 
+// Image/PointCloud/DepthImage are large by design; returning them as error
+// from try_send() avoids a Box allocation on the hot path.
+#![allow(clippy::result_large_err)]
+
 pub(crate) mod header;
 pub(crate) mod local_state;
 pub mod metrics;
@@ -551,6 +555,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// is repurposed in DirectChannel mode).
     #[inline(always)]
     fn is_debug_enabled(&self) -> bool {
+        // SAFETY: header_ptr points into the Arc<ShmRegion> storage which outlives self;
+        // the header is initialized before construction completes.
         unsafe { (*self.header_ptr).is_debug_enabled() }
     }
 
@@ -564,7 +570,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Get the local state (interior mutability via UnsafeCell)
     #[inline(always)]
-    #[allow(clippy::mut_from_ref)]
+    #[allow(clippy::mut_from_ref)] // UnsafeCell interior mutability: thread-local access pattern
     fn local(&self) -> &mut LocalState {
         // SAFETY: LocalState access is thread-local; no concurrent mutation
         unsafe { &mut *self.local.get() }
@@ -624,6 +630,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let cap = header.capacity as usize;
         // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        // SAFETY: data_region_offset(cap) is within bounds of allocated storage region
         local.cached_data_ptr =
             unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
@@ -693,12 +700,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // short-circuit and forces a registry lookup (or creation) for
             // `stable_epoch`, ensuring we always join the correct ring.
             //
-            // SAFETY: backend UnsafeCell is accessed from this thread only.
-            // The old backend Arc is dropped here; any in-flight messages in it
-            // were already handled during the migration that incremented the
-            // epoch (the migrator holds the lock and drains before updating the
-            // header).  Resetting is therefore safe and loss-free.
             {
+                // SAFETY: backend UnsafeCell is accessed from this thread only.
+                // The old backend Arc is dropped here; any in-flight messages in it
+                // were already handled during the migration that incremented the
+                // epoch (the migrator holds the lock and drains before updating the
+                // header).  Resetting is therefore safe and loss-free.
                 let backend = unsafe { &mut *self.backend.get() };
                 *backend = BackendStorage::Uninitialized;
             }
@@ -928,6 +935,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let cap = local.cached_capacity as usize;
         // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        // SAFETY: data_region_offset(cap) is within the storage bounds (capacity was validated
+        // when the SHM region was mapped); storage.as_ptr() is a valid non-null pointer.
         local.cached_data_ptr =
             unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
     }
@@ -1350,6 +1359,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// `send_uninitialized` which handles registration + re-dispatch.
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
+        // SAFETY: send_fn UnsafeCell is only mutated by this thread (single-owner contract);
+        // the fn pointer is always valid — set to send_uninitialized at construction, then
+        // updated to a backend-specific function after registration.
         unsafe { (*self.send_fn.get())(self, msg) }
     }
 
@@ -1360,32 +1372,28 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// `recv_uninitialized` which handles registration + re-dispatch.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
+        // SAFETY: recv_fn UnsafeCell is only mutated by this thread (single-owner contract);
+        // the fn pointer is always valid — set to recv_uninitialized at construction, then
+        // updated to a backend-specific function after registration.
         unsafe { (*self.recv_fn.get())(self) }
     }
 
-    /// Periodic maintenance — called every LEASE_REFRESH_INTERVAL messages from dispatch functions.
-    /// Handles lease refresh and cross-process epoch detection (SHM header check).
-    #[cold]
-    #[inline(never)]
-    fn periodic_maintenance(&self) {
-        self.refresh_lease();
-        self.check_migration_periodic();
-    }
+
 
     /// Periodic migration check — reads migration_epoch from SHM header.
-    /// Skipped for DirectChannel mode where cached_header_ptr is repurposed
-    /// as a pointer to DirectSlot.head (AtomicU64), not a real TopicHeader.
+    ///
+    /// Uses `self.header_ptr` (stable pointer to the SHM TopicHeader) instead
+    /// of `local.cached_header_ptr` which is repurposed in DirectChannel mode.
+    /// This ensures cross-process migration is detected even when the local
+    /// backend is DirectChannel (issue #37).
     #[cold]
     #[inline(never)]
     fn check_migration_periodic(&self) {
-        let local = self.local();
-        // DirectChannel repurposes cached_header_ptr for head/tail AtomicU64 pointers,
-        // not a real TopicHeader. Dereferencing as TopicHeader would be UB (misaligned).
-        if matches!(local.cached_mode, BackendMode::DirectChannel) {
-            return;
-        }
-        let header = unsafe { &*local.cached_header_ptr };
+        // SAFETY: header_ptr always points to the real SHM TopicHeader, valid
+        // for the topic's lifetime (backed by the Arc<ShmRegion> in `storage`).
+        let header = unsafe { &*self.header_ptr };
         let shm_epoch = header.migration_epoch.load(Ordering::Relaxed);
+        let local = self.local();
         if shm_epoch != local.cached_epoch {
             self.handle_epoch_change(shm_epoch);
         }
@@ -1398,6 +1406,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[inline(never)]
     fn handle_epoch_change(&self, _hint_epoch: u64) {
         let local = self.local();
+        // SAFETY: cached_header_ptr points to the SHM TopicHeader backed by the Arc<ShmRegion>.
+        // This method is only called from non-DirectChannel paths (DC mode returns early in
+        // check_migration_periodic before reaching here).
         let header = unsafe { &*local.cached_header_ptr };
 
         // DirectChannel local path: flush LocalState head/tail back to DirectSlot
@@ -1412,16 +1423,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
         }
 
-        // Flush batched updates before migration:
+        // Flush batched updates before migration — but ONLY when the current
+        // backend is already SHM-based.  Intra-process backends (DirectChannel,
+        // SpscIntra, etc.) track head/tail in a heap ring, not in the SHM header.
+        // Flushing a heap-ring position into SHM sequence_or_head would create
+        // phantom message slots that were never written to the SHM data region,
+        // causing cross-process subscribers to read garbage (issue #37).
         //
-        // SPSC recv batches header.tail every 32 messages. Without flushing,
-        // the re-read below gets a stale value, causing stale message re-reads.
-        //
-        // SP send batches header.sequence_or_head every 32 messages. Without
-        // flushing, MP producers doing CAS would start from a stale head,
-        // causing slot conflicts. fetch_max ensures we don't overwrite any
-        // advance made by an MP producer that already migrated.
-        if !local.cached_header_ptr.is_null() {
+        // For SHM→SHM transitions (e.g. SpscShm→MpmcShm), the flush is needed
+        // because both backends share the SHM header for head/tail tracking:
+        // - SPSC recv batches header.tail every 32 messages; without flushing,
+        //   the re-read below gets a stale value.
+        // - SP send batches header.sequence_or_head; without flushing, MP
+        //   producers doing CAS start from a stale head.
+        if local.cached_mode.is_cross_process() {
             if local.role.can_recv() {
                 header.tail.store(local.local_tail, Ordering::Release);
             }
@@ -1437,6 +1452,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         local.cached_epoch = actual_epoch;
         Self::sync_local(local, header, true);
         self.initialize_backend();
+
+        // Re-sync head/tail from SHM after initialize_backend.
+        // drain_old_into_shm() (called by init_shm_backend) may have advanced
+        // SHM sequence_or_head by writing drained heap-ring messages.  Without
+        // this re-read, local_head is stale (set by sync_local above, before
+        // the drain) and the next send would overwrite drained slots.
+        // Use header_ptr (always valid) since cached_header_ptr may have been
+        // repurposed by DirectChannel init.
+        let header_post = unsafe { &*self.header_ptr };
+        local.local_head = header_post.sequence_or_head.load(Ordering::Acquire);
+        local.local_tail = header_post.tail.load(Ordering::Acquire);
         // Propagate to other same-process Topics
         registry::notify_epoch_change(&self.name, actual_epoch);
     }
@@ -1498,6 +1524,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if local.role == TopicRole::Both {
             let head = local.local_head;
             if head.wrapping_sub(local.local_tail) < local.cached_capacity {
+                // SAFETY: cached_data_ptr points to the DirectSlot heap buffer; the index is
+                // masked to ring capacity, so it is always in bounds. The capacity check above
+                // ensures the slot is not occupied (no unconsumed data will be overwritten).
                 unsafe {
                     let base = local.cached_data_ptr as *mut T;
                     std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
@@ -1648,6 +1677,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if local.role == TopicRole::Both {
             let tail = local.local_tail;
             if local.local_head.wrapping_sub(tail) > 0 {
+                // SAFETY: cached_data_ptr points to the DirectSlot heap buffer; the index is
+                // masked to ring capacity, so it is always in bounds. The head-tail check above
+                // ensures the slot contains a valid, initialized message written by send().
                 let msg = unsafe {
                     let base = local.cached_data_ptr as *const T;
                     std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))

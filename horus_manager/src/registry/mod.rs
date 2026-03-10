@@ -155,7 +155,7 @@ pub struct DriverListEntry {
 /// Supports both unscoped ("my-pkg") and scoped ("@org/my-pkg") package names.
 pub fn validate_package_name(name: &str) -> Result<()> {
     // Scoped packages: @org/name
-    if name.starts_with('@') {
+    if let Some(rest) = name.strip_prefix('@') {
         // Total length check
         if name.len() < 4 || name.len() > 128 {
             return Err(anyhow!(
@@ -164,7 +164,7 @@ pub fn validate_package_name(name: &str) -> Result<()> {
             ));
         }
 
-        let rest = &name[1..]; // strip @
+        // strip @
         let Some((org, pkg)) = rest.split_once('/') else {
             return Err(anyhow!("Scoped package name must be in @org/name format"));
         };

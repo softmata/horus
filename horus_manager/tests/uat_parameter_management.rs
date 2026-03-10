@@ -7,7 +7,7 @@ mod harness;
 mod monitor_tests;
 
 use monitor_tests::builders;
-use monitor_tests::helpers::{assert_json_ok, get_request, post_json_request};
+use monitor_tests::helpers::{get_request, post_json_request};
 
 use tower::ServiceExt;
 

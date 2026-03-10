@@ -1,7 +1,5 @@
 // Scheduler configuration - preset factories and data structs
 
-use super::deterministic::DeterministicConfig;
-
 /// Timing configuration
 #[derive(Debug, Clone)]
 pub struct TimingConfig {
@@ -42,8 +40,6 @@ pub struct RealTimeConfig {
 pub struct ResourceConfig {
     /// CPU cores to use (None = all cores)
     pub cpu_cores: Option<Vec<usize>>,
-    /// Enable NUMA awareness
-    pub numa_aware: bool,
 }
 
 /// Monitoring and telemetry configuration
@@ -51,26 +47,10 @@ pub struct ResourceConfig {
 pub struct MonitoringConfig {
     /// Enable runtime profiling
     pub profiling_enabled: bool,
-    /// Metrics export interval in ms
-    pub metrics_interval_ms: u64,
     /// Enable black box recording
     pub black_box_enabled: bool,
     /// Black box buffer size in MB
     pub black_box_size_mb: usize,
-    /// How many WAL records to accumulate before flushing to the OS.
-    ///
-    /// Flushing the WAL `BufWriter` on every `record()` call causes thousands
-    /// of `fsync`-equivalent syscalls per second at high scheduler frequencies,
-    /// stalling the scheduler thread on disk I/O.  Batching amortises the cost:
-    ///
-    /// | Scheduler Hz | interval=1 (old) | interval=64 | interval=256 |
-    /// |---|---|---|---|
-    /// | 100 | 100 flushes/s | ≤2 flushes/s | ≤1 flush/2s |
-    /// | 1000 | 1000 flushes/s | ≤16 flushes/s | ≤4 flushes/s |
-    ///
-    /// Default: 64 (a flush every ~640 ms at 100 Hz, ~64 ms at 1 kHz).
-    /// Set to 1 to restore the legacy per-record flush behaviour.
-    pub wal_flush_interval: usize,
     /// Telemetry export endpoint (e.g., "udp://localhost:9999", "file:///var/log/metrics.json")
     pub telemetry_endpoint: Option<String>,
     /// Enable verbose logging from executor threads (budget warnings, pre/post-condition
@@ -151,20 +131,15 @@ impl RecordingConfigYaml {
 ///
 /// ```rust,ignore
 /// // Preferred: use a profile preset
-/// let scheduler = Scheduler::deploy().tick_hz(500.0);
+/// let scheduler = Scheduler::deploy().tick_rate(500.hz());
 ///
 /// // Or configure from scratch
-/// let scheduler = Scheduler::new().tick_hz(500.0);
+/// let scheduler = Scheduler::new().tick_rate(500.hz());
 /// ```
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     /// Timing configuration
     pub timing: TimingConfig,
-    /// Enable tier-based fault tolerance (restart, skip, fatal policies)
-    ///
-    /// When true, nodes use their tier's default FailurePolicy.
-    /// When false, all nodes get FailurePolicy::Ignore.
-    pub fault_tolerance: bool,
     /// Real-time configuration
     pub realtime: RealTimeConfig,
     /// Resource management
@@ -173,8 +148,6 @@ pub struct SchedulerConfig {
     pub monitoring: MonitoringConfig,
     /// Recording configuration for record/replay system
     pub recording: Option<RecordingConfigYaml>,
-    /// Deterministic execution configuration (virtual time, seeded RNG)
-    pub deterministic: Option<DeterministicConfig>,
 }
 
 impl Default for SchedulerConfig {
@@ -183,7 +156,6 @@ impl Default for SchedulerConfig {
             timing: TimingConfig {
                 global_rate_hz: 60.0,
             },
-            fault_tolerance: false,
             realtime: RealTimeConfig {
                 budget_enforcement: false,
                 deadline_monitoring: false,
@@ -194,21 +166,15 @@ impl Default for SchedulerConfig {
                 memory_locking: false,
                 rt_scheduling_class: false,
             },
-            resources: ResourceConfig {
-                cpu_cores: None,
-                numa_aware: false,
-            },
+            resources: ResourceConfig { cpu_cores: None },
             monitoring: MonitoringConfig {
                 profiling_enabled: false,
-                metrics_interval_ms: 1000,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
-                wal_flush_interval: 64,
                 telemetry_endpoint: None,
                 verbose: true,
             },
             recording: None,
-            deterministic: None,
         }
     }
 }
@@ -252,25 +218,15 @@ mod tests {
     }
 
     fn arb_monitoring_config() -> impl Strategy<Value = MonitoringConfig> {
-        (
-            any::<bool>(),
-            1u64..30_000,
-            any::<bool>(),
-            0usize..1024,
-            1usize..1024,
-            any::<bool>(),
+        (any::<bool>(), any::<bool>(), 0usize..1024, any::<bool>()).prop_map(
+            |(prof, bb, bb_size, verbose)| MonitoringConfig {
+                profiling_enabled: prof,
+                black_box_enabled: bb,
+                black_box_size_mb: bb_size,
+                telemetry_endpoint: None,
+                verbose,
+            },
         )
-            .prop_map(
-                |(prof, interval, bb, bb_size, wal, verbose)| MonitoringConfig {
-                    profiling_enabled: prof,
-                    metrics_interval_ms: interval,
-                    black_box_enabled: bb,
-                    black_box_size_mb: bb_size,
-                    wal_flush_interval: wal,
-                    telemetry_endpoint: None,
-                    verbose,
-                },
-            )
     }
 
     fn arb_recording_config() -> impl Strategy<Value = RecordingConfigYaml> {
@@ -305,21 +261,15 @@ mod tests {
     fn arb_scheduler_config() -> impl Strategy<Value = SchedulerConfig> {
         (
             arb_timing_config(),
-            any::<bool>(),
             arb_realtime_config(),
             arb_monitoring_config(),
         )
-            .prop_map(|(timing, cb, realtime, monitoring)| SchedulerConfig {
+            .prop_map(|(timing, realtime, monitoring)| SchedulerConfig {
                 timing,
-                fault_tolerance: cb,
                 realtime,
-                resources: ResourceConfig {
-                    cpu_cores: None,
-                    numa_aware: false,
-                },
+                resources: ResourceConfig { cpu_cores: None },
                 monitoring,
                 recording: None,
-                deterministic: None,
             })
     }
 
@@ -349,20 +299,6 @@ mod tests {
         fn scheduler_config_max_deadline_misses_positive(config in arb_scheduler_config()) {
             prop_assert!(config.realtime.max_deadline_misses > 0,
                 "Max deadline misses must be > 0, got {}", config.realtime.max_deadline_misses);
-        }
-
-        /// SchedulerConfig: metrics interval must be positive
-        #[test]
-        fn scheduler_config_metrics_interval_positive(config in arb_scheduler_config()) {
-            prop_assert!(config.monitoring.metrics_interval_ms > 0,
-                "Metrics interval must be > 0, got {}", config.monitoring.metrics_interval_ms);
-        }
-
-        /// SchedulerConfig: WAL flush interval must be positive
-        #[test]
-        fn scheduler_config_wal_flush_positive(config in arb_scheduler_config()) {
-            prop_assert!(config.monitoring.wal_flush_interval > 0,
-                "WAL flush interval must be > 0, got {}", config.monitoring.wal_flush_interval);
         }
 
         /// SchedulerConfig: clone produces identical config
@@ -411,21 +347,9 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_config_default_fault_tolerance_off() {
-        let config = SchedulerConfig::default();
-        assert!(!config.fault_tolerance);
-    }
-
-    #[test]
     fn scheduler_config_default_no_recording() {
         let config = SchedulerConfig::default();
         assert!(config.recording.is_none());
-    }
-
-    #[test]
-    fn scheduler_config_default_no_deterministic() {
-        let config = SchedulerConfig::default();
-        assert!(config.deterministic.is_none());
     }
 
     #[test]
@@ -459,8 +383,6 @@ mod tests {
     #[test]
     fn monitoring_config_default_values() {
         let config = SchedulerConfig::default();
-        assert_eq!(config.monitoring.metrics_interval_ms, 1000);
-        assert_eq!(config.monitoring.wal_flush_interval, 64);
         assert!(config.monitoring.verbose);
     }
 
@@ -556,24 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn monitoring_config_wal_flush_interval_one() {
-        let mon = MonitoringConfig {
-            wal_flush_interval: 1,
-            ..SchedulerConfig::default().monitoring
-        };
-        assert_eq!(mon.wal_flush_interval, 1);
-    }
-
-    #[test]
-    fn monitoring_config_large_wal_flush_interval() {
-        let mon = MonitoringConfig {
-            wal_flush_interval: 100_000,
-            ..SchedulerConfig::default().monitoring
-        };
-        assert_eq!(mon.wal_flush_interval, 100_000);
-    }
-
-    #[test]
     fn monitoring_config_with_telemetry_endpoint() {
         let mon = MonitoringConfig {
             telemetry_endpoint: Some("udp://localhost:9999".to_string()),
@@ -598,17 +502,14 @@ mod tests {
     fn resource_config_specific_cpu_cores() {
         let res = ResourceConfig {
             cpu_cores: Some(vec![0, 2, 4]),
-            numa_aware: true,
         };
         assert_eq!(res.cpu_cores, Some(vec![0, 2, 4]));
-        assert!(res.numa_aware);
     }
 
     #[test]
     fn resource_config_empty_cpu_cores() {
         let res = ResourceConfig {
             cpu_cores: Some(vec![]),
-            numa_aware: false,
         };
         assert_eq!(res.cpu_cores, Some(vec![]));
     }
@@ -653,10 +554,8 @@ mod tests {
         let config = SchedulerConfig::default();
         let mut cloned = config.clone();
         cloned.timing.global_rate_hz = 999.0;
-        cloned.fault_tolerance = true;
         // Original should be unmodified
         assert_eq!(config.timing.global_rate_hz, 60.0);
-        assert!(!config.fault_tolerance);
     }
 
     #[test]
@@ -692,16 +591,6 @@ mod tests {
             };
             // usize is always >= 0, just verify it's stored correctly
             prop_assert_eq!(config.max_size_mb, size);
-        }
-
-        /// SchedulerConfig: fault_tolerance flag toggles independently
-        #[test]
-        fn scheduler_config_fault_tolerance_independent(cb in any::<bool>()) {
-            let mut config = SchedulerConfig::default();
-            config.fault_tolerance = cb;
-            prop_assert_eq!(config.fault_tolerance, cb);
-            // Other defaults unchanged
-            prop_assert_eq!(config.timing.global_rate_hz, 60.0);
         }
     }
 }

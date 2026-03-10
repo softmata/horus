@@ -70,51 +70,51 @@ fn test_scheduler_with_rt_nodes() {
         .order(0) // Highest priority
         .budget(100.us()) // 100μs tick budget
         .deadline(1.ms()) // 1ms deadline
-        .done();
+        .build();
 
     // Add another RT node
     scheduler
         .add(CriticalControlNode::new("sensor_fusion", 30)) // 30μs execution
         .order(1)
-        .budget_us(50)
-        .deadline_ms(2)
-        .done();
+        .budget(50.us())
+        .deadline(2.ms())
+        .build();
 
     // Add a regular node
     scheduler
         .add(CriticalControlNode::new("logger", 10))
         .order(10)
-        .done();
+        .build();
 
     // Run for a short duration
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
 fn test_scheduler_with_safety_critical_config() {
     cleanup_stale_shm();
     // Configure for safety-critical operation
-    let mut scheduler = Scheduler::new().tick_hz(1000.0);
+    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
 
     // Add critical nodes
     scheduler
         .add(CriticalControlNode::new("flight_control", 80))
         .order(0)
-        .budget_us(100)
-        .deadline_ms(1)
-        .done();
+        .budget(100.us())
+        .deadline(1.ms())
+        .build();
 
     scheduler
         .add(CriticalControlNode::new("navigation", 60))
         .order(1)
-        .budget_us(80)
-        .deadline_ms(2)
-        .done();
+        .budget(80.us())
+        .deadline(2.ms())
+        .build();
 
     // Run briefly with safety monitoring
     let result = scheduler.run_for(Duration::from_millis(50));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -128,13 +128,13 @@ fn test_budget_violation_detection() {
     scheduler
         .add(CriticalControlNode::new("violator", 100))
         .order(0)
-        .budget_us(50) // tick budget too small
-        .deadline_ms(1)
-        .done();
+        .budget(50.us()) // tick budget too small
+        .deadline(1.ms())
+        .build();
 
     // This should detect budget violations but continue running
     let result = scheduler.run_for(Duration::from_millis(20));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -147,13 +147,13 @@ fn test_deadline_miss_detection() {
     scheduler
         .add(CriticalControlNode::new("tight_deadline", 900))
         .order(0)
-        .budget_us(1000)
-        .deadline_us(500) // Deadline smaller than execution time
-        .done();
+        .budget(1000.us())
+        .deadline(500.us()) // Deadline smaller than execution time
+        .build();
 
     // This should detect deadline misses
     let result = scheduler.run_for(Duration::from_millis(30));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -165,30 +165,30 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler
         .add(CriticalControlNode::new("rt_critical", 50))
         .order(0)
-        .budget_us(100)
-        .deadline_ms(1)
-        .done();
+        .budget(100.us())
+        .deadline(1.ms())
+        .build();
 
     scheduler
         .add(CriticalControlNode::new("normal_processing", 200))
         .order(5)
-        .done();
+        .build();
 
     scheduler
         .add(CriticalControlNode::new("rt_sensor", 30))
         .order(1)
-        .budget_us(50)
-        .deadline_ms(2)
-        .done();
+        .budget(50.us())
+        .deadline(2.ms())
+        .build();
 
     scheduler
         .add(CriticalControlNode::new("background_task", 500))
         .order(20)
-        .done();
+        .build();
 
     // RT nodes should be properly prioritized
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -201,37 +201,37 @@ fn test_watchdog_functionality() {
     scheduler
         .add(CriticalControlNode::new("watchdog_monitored", 10))
         .order(0)
-        .budget_us(50)
-        .deadline_ms(1)
-        .done();
+        .budget(50.us())
+        .deadline(1.ms())
+        .build();
 
     // Run normally - watchdog should be fed and not expire
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
 fn test_high_performance_rt_config() {
     cleanup_stale_shm();
     // Configure for high-performance racing robot
-    let mut scheduler = Scheduler::new().tick_hz(10000.0);
+    let mut scheduler = Scheduler::new().tick_rate(10000.hz());
 
     // Add ultra-fast control nodes
     scheduler
         .add(CriticalControlNode::new("traction_control", 10))
         .order(0)
-        .budget_us(20)
-        .deadline_us(100) // 10kHz control loop
-        .done();
+        .budget(20.us())
+        .deadline(100.us()) // 10kHz control loop
+        .build();
 
     scheduler
         .add(CriticalControlNode::new("stability_control", 15))
         .order(1)
-        .budget_us(25)
-        .deadline_us(100)
-        .done();
+        .budget(25.us())
+        .deadline(100.us())
+        .build();
 
     // Should handle high-frequency execution
     let result = scheduler.run_for(Duration::from_millis(50));
-    assert!(result.is_ok());
+    result.unwrap();
 }

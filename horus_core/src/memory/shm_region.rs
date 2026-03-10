@@ -46,8 +46,7 @@ pub struct ShmRegion {
     #[cfg(target_os = "windows")]
     handle: isize, // HANDLE
 
-    #[allow(dead_code)] // used on macOS/Windows for Drop; stored on Linux for future use
-    size: usize,
+    _size: usize,
     owner: bool,
 }
 
@@ -119,7 +118,7 @@ impl ShmRegion {
 
         Ok(Self {
             mmap,
-            size,
+            _size: size,
             path,
             _file: file,
 
@@ -247,7 +246,9 @@ impl ShmRegion {
                     // Won the re-create race — set the size.
                     // SAFETY: new_fd is a valid open file descriptor
                     if unsafe { libc::ftruncate(new_fd, size as libc::off_t) } != 0 {
+                        // SAFETY: new_fd is a valid open file descriptor from shm_open above
                         unsafe { libc::close(new_fd) };
+                        // SAFETY: c_name is a valid null-terminated CString
                         unsafe { libc::shm_unlink(c_name.as_ptr()) };
                         return Err(HorusError::Memory(
                             format!(
@@ -276,6 +277,7 @@ impl ShmRegion {
                     }
                     // The new owner is responsible for sizing; wait for it.
                     if wait_for_shm_init(retry_fd, size).is_err() {
+                        // SAFETY: retry_fd is a valid open file descriptor from shm_open above
                         unsafe { libc::close(retry_fd) };
                         return Err(HorusError::Memory(
                             format!("shm '{}' not fully initialized after all retries", shm_name)
@@ -381,7 +383,7 @@ impl ShmRegion {
             ptr: ptr as *mut u8,
             fd,
             shm_name,
-            size,
+            _size: size,
 
             owner: is_owner,
         })
@@ -494,7 +496,7 @@ impl ShmRegion {
         Ok(Self {
             ptr: ptr as *mut u8,
             handle,
-            size,
+            _size: size,
 
             owner: is_owner,
         })
@@ -564,6 +566,7 @@ mod tests {
 
         // Write pattern via as_ptr (the mmap is PROT_READ|PROT_WRITE)
         let ptr = region.as_ptr() as *mut u8;
+        // SAFETY: ptr is a valid mmap'd region of `size` bytes; writes are within bounds
         unsafe {
             for i in 0..size {
                 *ptr.add(i) = (i % 256) as u8;
@@ -573,6 +576,7 @@ mod tests {
         // Read back and verify
         let rptr = region.as_ptr();
         for i in 0..size {
+            // SAFETY: rptr is a valid mmap'd region of `size` bytes; i < size
             let val = unsafe { *rptr.add(i) };
             assert_eq!(val, (i % 256) as u8, "Mismatch at byte {}", i);
         }
@@ -588,6 +592,7 @@ mod tests {
 
         // Owner should zero-initialize
         for i in 0..size {
+            // SAFETY: ptr is a valid mmap'd region of `size` bytes; i < size
             let val = unsafe { *ptr.add(i) };
             assert_eq!(val, 0, "Byte {} not zeroed", i);
         }
@@ -647,7 +652,7 @@ mod tests {
         // All regions must be the correct size and accessible.
         for region in successes.iter().map(|r| r.as_ref().unwrap()) {
             let ptr = region.as_ptr();
-            // Write and read-back a single byte to confirm the mapping is live.
+            // SAFETY: ptr is a valid mmap'd region of at least 1 byte; write and read are within bounds
             unsafe {
                 let p = ptr as *mut u8;
                 *p = 0xAB;
@@ -676,6 +681,8 @@ mod tests {
             .map(|_| {
                 let r = region.clone();
                 std::thread::spawn(move || {
+                    // SAFETY: ptr is a valid mmap'd region of 4096 bytes, aligned to page boundary
+                    // (sufficient for AtomicU64 alignment); region outlives the thread via Arc
                     let counter = unsafe { &*(r.as_ptr() as *const AtomicU64) };
                     for _ in 0..n_increments {
                         counter.fetch_add(1, Ordering::Relaxed);
@@ -688,6 +695,8 @@ mod tests {
             h.join().unwrap();
         }
 
+        // SAFETY: counter_ptr points to a valid mmap'd region, page-aligned (sufficient for
+        // AtomicU64); all writer threads have joined so no concurrent modification
         let final_val = unsafe { (*counter_ptr).load(Ordering::Relaxed) };
         assert_eq!(
             final_val,
@@ -705,6 +714,7 @@ mod tests {
         let region = ShmRegion::new(&name, 1).expect("1-byte SHM should succeed");
         assert!(region.is_owner());
         // Write and read 1 byte
+        // SAFETY: ptr is a valid mmap'd region of at least 1 byte; read/write within bounds
         unsafe {
             let ptr = region.as_ptr() as *mut u8;
             *ptr = 0xFF;
@@ -727,6 +737,7 @@ mod tests {
         let region = ShmRegion::new(&name, 5000).expect("non-page-aligned SHM should succeed");
         // Should be able to write to all 5000 bytes
         let ptr = region.as_ptr() as *mut u8;
+        // SAFETY: ptr is a valid mmap'd region of 5000 bytes; offset 4999 is within bounds
         unsafe {
             *ptr.add(4999) = 0xAB;
             assert_eq!(*ptr.add(4999), 0xAB);
@@ -742,6 +753,7 @@ mod tests {
         assert!(region1.is_owner());
 
         // Write a pattern via region1
+        // SAFETY: ptr is a valid mmap'd region of `size` bytes; writing first byte is within bounds
         unsafe {
             let ptr = region1.as_ptr() as *mut u8;
             *ptr = 0xAB;
@@ -751,6 +763,7 @@ mod tests {
         assert!(!region2.is_owner(), "Second opener should not be owner");
 
         // Should see the same data
+        // SAFETY: ptr is a valid mmap'd region of `size` bytes backed by the same SHM file
         unsafe {
             let ptr = region2.as_ptr();
             assert_eq!(*ptr, 0xAB, "Second region should see data from first");
@@ -846,6 +859,7 @@ mod tests {
             let region = ShmRegion::new(&name, size).expect("create original");
             path = region.path.clone();
             // Write a pattern
+            // SAFETY: ptr is a valid mmap'd region of `size` bytes; offsets 0 and 1 are within bounds
             unsafe {
                 let ptr = region.as_ptr() as *mut u8;
                 *ptr = 0xDE;
@@ -866,6 +880,7 @@ mod tests {
         );
 
         // Should be able to read the old data (it wasn't cleaned)
+        // SAFETY: ptr is a valid mmap'd region of `size` bytes; offsets 0 and 1 are within bounds
         unsafe {
             let ptr = region2.as_ptr();
             assert_eq!(*ptr, 0xDE, "Should see old data from orphaned region");
@@ -888,6 +903,7 @@ mod tests {
             let region = ShmRegion::new(&name, size).expect("create");
             path = region.path.clone();
             let ptr = region.as_ptr() as *mut u8;
+            // SAFETY: ptr is a valid mmap'd region of `size` bytes; all offsets i < size
             unsafe {
                 for i in 0..size {
                     *ptr.add(i) = (i % 251) as u8; // prime to detect alignment issues
@@ -901,6 +917,7 @@ mod tests {
         let region2 = ShmRegion::new(&name, size).expect("reopen");
         let ptr = region2.as_ptr();
         for i in 0..size {
+            // SAFETY: ptr is a valid mmap'd region of `size` bytes; i < size
             let val = unsafe { *ptr.add(i) };
             assert_eq!(
                 val,
@@ -924,6 +941,7 @@ mod tests {
         let region_b = ShmRegion::new(&name_b, size).expect("create B");
 
         // Write different data to each
+        // SAFETY: both pointers are valid mmap'd regions of `size` bytes; writing first byte is in bounds
         unsafe {
             let pa = region_a.as_ptr() as *mut u8;
             let pb = region_b.as_ptr() as *mut u8;
@@ -932,6 +950,7 @@ mod tests {
         }
 
         // Verify they're independent
+        // SAFETY: both pointers are valid mmap'd regions of `size` bytes; reading first byte is in bounds
         unsafe {
             assert_eq!(*region_a.as_ptr(), 0xAA);
             assert_eq!(*region_b.as_ptr(), 0xBB);
@@ -941,6 +960,7 @@ mod tests {
         let path_b = region_b.path.clone();
         drop(region_b);
         assert!(!path_b.exists(), "B's file should be cleaned up");
+        // SAFETY: region_a's ptr is still a valid mmap'd region; dropping region_b does not affect it
         unsafe {
             assert_eq!(
                 *region_a.as_ptr(),
@@ -994,7 +1014,7 @@ impl ShmRegion {
 
         Ok(Self {
             mmap,
-            size,
+            _size: size,
             path,
             _file: file,
 

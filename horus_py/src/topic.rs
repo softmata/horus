@@ -95,13 +95,6 @@ fn read_lock<T>(lock: &RwLock<T>) -> PyResult<std::sync::RwLockReadGuard<'_, T>>
         .map_err(|e| PyRuntimeError::new_err(format!("Topic lock poisoned: {e}")))
 }
 
-/// Acquire a write lock, converting a poisoned lock into a PyRuntimeError.
-#[inline]
-fn write_lock<T>(lock: &RwLock<T>) -> PyResult<std::sync::RwLockWriteGuard<'_, T>> {
-    lock.write()
-        .map_err(|e| PyRuntimeError::new_err(format!("Topic lock poisoned: {e}")))
-}
-
 /// Log a failed Python node callback at debug level instead of silently dropping it.
 /// Used for non-critical observability calls (log_pub/sub)
 /// that must never crash the data path.
@@ -4782,114 +4775,298 @@ impl PyTopic {
     #[getter]
     fn backend_type(&self) -> String {
         match &self.topic_type {
-            TopicType::CmdVel(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Pose2D(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Pose3D(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Imu(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Odometry(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::LaserScan(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::JointState(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Clock(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::TimeReference(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Image(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PointCloud(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::DepthImage(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::CmdVel(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Pose2D(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Pose3D(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Imu(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Odometry(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::LaserScan(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::JointState(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Clock(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::TimeReference(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Image(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PointCloud(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::DepthImage(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Geometry types
-            TopicType::Twist(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Vector3(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Point3(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Quaternion(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::TransformStamped(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PoseStamped(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PoseWithCovariance(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::TwistWithCovariance(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Accel(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::AccelStamped(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::Twist(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Vector3(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Point3(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Quaternion(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::TransformStamped(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PoseStamped(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PoseWithCovariance(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::TwistWithCovariance(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Accel(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::AccelStamped(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Control types
-            TopicType::MotorCommand(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::ServoCommand(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::DifferentialDriveCommand(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PidConfig(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::TrajectoryPoint(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::JointCommand(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PwmCommand(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::StepperCommand(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::MotorCommand(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::ServoCommand(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::DifferentialDriveCommand(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PidConfig(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::TrajectoryPoint(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::JointCommand(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PwmCommand(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::StepperCommand(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Sensor types
-            TopicType::RangeSensor(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::BatteryState(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::NavSatFix(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::MagneticField(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Temperature(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::FluidPressure(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Illuminance(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::RangeSensor(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::BatteryState(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::NavSatFix(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::MagneticField(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Temperature(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::FluidPressure(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Illuminance(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Diagnostics types
-            TopicType::Heartbeat(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::DiagnosticStatus(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::EmergencyStop(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::ResourceUsage(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::Heartbeat(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::DiagnosticStatus(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::EmergencyStop(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::ResourceUsage(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Force types
-            TopicType::WrenchStamped(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::ForceCommand(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::ContactInfo(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::WrenchStamped(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::ForceCommand(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::ContactInfo(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Navigation types
-            TopicType::NavGoal(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::GoalResult(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PathPlan(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::NavGoal(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::GoalResult(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PathPlan(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Input types
-            TopicType::JoystickInput(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::KeyboardInput(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::JoystickInput(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::KeyboardInput(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Detection/Perception types
-            TopicType::BoundingBox2D(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::BoundingBox3D(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Detection(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Detection3D(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::SegmentationMask(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::BoundingBox2D(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::BoundingBox3D(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Detection(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Detection3D(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::SegmentationMask(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Tracking types
-            TopicType::TrackedObject(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::TrackingHeader(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::TrackedObject(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::TrackingHeader(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Landmark types
-            TopicType::Landmark(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Landmark3D(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::LandmarkArray(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::Landmark(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Landmark3D(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::LandmarkArray(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Perception helper types
-            TopicType::PointField(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PlaneDetection(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::PlaneArray(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::PointField(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PlaneDetection(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::PlaneArray(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // ML types
-            TopicType::TensorData(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Predictions(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::InferenceMetrics(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::ModelInfo(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::FeatureVector(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Classification(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::ChatMessage(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::LLMRequest(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::LLMResponse(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::TrainingMetrics(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::MlTrajectoryPoint(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::DeploymentConfig(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::TensorData(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Predictions(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::InferenceMetrics(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::ModelInfo(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::FeatureVector(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Classification(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::ChatMessage(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::LLMRequest(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::LLMResponse(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::TrainingMetrics(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::MlTrajectoryPoint(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::DeploymentConfig(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Vision types
-            TopicType::CompressedImage(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::CameraInfo(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::RegionOfInterest(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::StereoInfo(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::CompressedImage(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::CameraInfo(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::RegionOfInterest(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::StereoInfo(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Force types (additional)
-            TopicType::TactileArray(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::ImpedanceParameters(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::HapticFeedback(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::TactileArray(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::ImpedanceParameters(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::HapticFeedback(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Diagnostics types (additional)
-            TopicType::DiagnosticValue(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::DiagnosticReport(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::NodeHeartbeat(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::SafetyStatus(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::DiagnosticValue(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::DiagnosticReport(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::NodeHeartbeat(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::SafetyStatus(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Navigation types (additional)
-            TopicType::Waypoint(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::NavPath(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::VelocityObstacle(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::VelocityObstacles(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::OccupancyGrid(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::CostMap(t) => read_lock(t)?.backend_name().to_string(),
-            TopicType::Generic(t) => read_lock(t)?.backend_name().to_string(),
+            TopicType::Waypoint(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::NavPath(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::VelocityObstacle(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::VelocityObstacles(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::OccupancyGrid(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::CostMap(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
+            TopicType::Generic(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
         }
     }
 
@@ -5044,7 +5221,11 @@ impl PyTopic {
     /// Returns:
     ///     Number of pending messages (u64)
     fn pending_count(&self) -> u64 {
-        topic_dispatch!(&self.topic_type, t, read_lock(t).map(|g| g.pending_count()).unwrap_or(0))
+        topic_dispatch!(
+            &self.topic_type,
+            t,
+            read_lock(t).map(|g| g.pending_count()).unwrap_or(0)
+        )
     }
 
     /// Number of active publishers on this topic.
@@ -5052,7 +5233,11 @@ impl PyTopic {
     /// Returns:
     ///     Publisher count (u32)
     fn pub_count(&self) -> u32 {
-        topic_dispatch!(&self.topic_type, t, read_lock(t).map(|g| g.pub_count()).unwrap_or(0))
+        topic_dispatch!(
+            &self.topic_type,
+            t,
+            read_lock(t).map(|g| g.pub_count()).unwrap_or(0)
+        )
     }
 
     /// Number of active subscribers on this topic.
@@ -5060,7 +5245,11 @@ impl PyTopic {
     /// Returns:
     ///     Subscriber count (u32)
     fn sub_count(&self) -> u32 {
-        topic_dispatch!(&self.topic_type, t, read_lock(t).map(|g| g.sub_count()).unwrap_or(0))
+        topic_dispatch!(
+            &self.topic_type,
+            t,
+            read_lock(t).map(|g| g.sub_count()).unwrap_or(0)
+        )
     }
 
     /// Read the most recent message without consuming it.
@@ -5253,4 +5442,62 @@ where
     Topic::with_capacity(endpoint, capacity as u32, None).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create Topic: {}", e))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// read_lock succeeds on a healthy (non-poisoned) lock.
+    /// PyResult can be constructed without a Python runtime.
+    #[test]
+    fn read_lock_succeeds_on_healthy_lock() {
+        let lock = RwLock::new(42u32);
+        let guard = read_lock(&lock).expect("read_lock should succeed on healthy lock");
+        assert_eq!(*guard, 42);
+    }
+
+    /// read_lock returns Err on a poisoned lock.
+    #[test]
+    fn read_lock_returns_error_on_poisoned_lock() {
+        let lock = Arc::new(RwLock::new(42u32));
+        let lock2 = lock.clone();
+
+        // Poison the lock by panicking while holding a write guard
+        let _ = std::thread::spawn(move || {
+            let _guard = lock2.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+
+        let result = read_lock(&lock);
+        assert!(result.is_err(), "read_lock should fail on poisoned lock");
+    }
+
+    /// log_py_callback does not panic on Err (it logs and swallows).
+    #[test]
+    fn log_py_callback_does_not_panic_on_err() {
+        let err_result: PyResult<Py<PyAny>> = Err(PyRuntimeError::new_err("test error"));
+        log_py_callback(err_result, "test_method", "test_topic");
+    }
+
+    /// Multiple concurrent readers can hold read_lock simultaneously.
+    #[test]
+    fn read_lock_allows_concurrent_readers() {
+        let lock = Arc::new(RwLock::new(99u32));
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let lock = lock.clone();
+                std::thread::spawn(move || {
+                    let guard = read_lock(&lock).unwrap();
+                    assert_eq!(*guard, 99);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
 }

@@ -261,7 +261,7 @@ fn spsc_ring_basic_send_recv() {
     assert_eq!(ring.pending_count(), 0);
 
     for i in 0..8u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert_eq!(ring.pending_count(), 8);
     // Ring full
@@ -280,7 +280,7 @@ fn spsc_ring_wraparound() {
     // Fill and drain several times to exercise wraparound
     for round in 0..10u32 {
         for i in 0..4 {
-            assert!(ring.try_send(round * 4 + i).is_ok());
+            ring.try_send(round * 4 + i).unwrap();
         }
         for i in 0..4 {
             assert_eq!(ring.try_recv(), Some(round * 4 + i));
@@ -903,7 +903,7 @@ fn ring_saturation_spsc_full_then_drain() {
     let ring = SpscRing::<u64>::new(16);
     // Fill completely
     for i in 0..16u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     // Reject when full
     assert!(ring.try_send(99).is_err());
@@ -915,7 +915,7 @@ fn ring_saturation_spsc_full_then_drain() {
     }
     // Fill again into the freed slots
     for i in 16..24u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(ring.try_send(99).is_err());
 
@@ -1375,7 +1375,7 @@ fn concurrent_migration_no_livelock_16_threads() {
     for handle in handles {
         let _remaining = deadline.saturating_duration_since(Instant::now());
         // join() has no timeout, but the test runner will kill us if we truly livelock.
-        let _ = handle.join().expect("thread panicked");
+        handle.join().expect("thread panicked");
         if Instant::now() > deadline {
             panic!(
                 "livelock detected: only {}/{} threads completed within 10 s",
@@ -2103,6 +2103,10 @@ fn direct_channel_drop_pending_messages() {
         // Manually fill slots by advancing head — mimics what dispatch::send_direct_channel does
         for i in 0..5u64 {
             let index = (i & slot.mask) as usize;
+            // SAFETY: `index` is computed as `i & slot.mask`, which is always in bounds
+            // for `slot.buffer` (mask == capacity - 1, capacity is a power of two).
+            // No other reference to this slot exists yet; we are the sole writer
+            // performing the initial MaybeUninit write before advancing `head`.
             unsafe {
                 let s = slot.buffer.get_unchecked(index);
                 s.get().write(MaybeUninit::new(DropCounter::new(&counter)));
@@ -2112,6 +2116,10 @@ fn direct_channel_drop_pending_messages() {
         // Simulate consuming 2 messages
         for i in 0..2u64 {
             let index = (i & slot.mask) as usize;
+            // SAFETY: `index` is in bounds (masked by `slot.mask`). Slots 0 and 1
+            // were written in the loop above and `head` was advanced past them, so
+            // the `MaybeUninit` is initialized. We are the only consumer and advance
+            // `tail` afterwards, so this is the unique read of each slot.
             let msg = unsafe {
                 let s = slot.buffer.get_unchecked(index);
                 (*s.get()).assume_init_read()
@@ -3004,7 +3012,7 @@ fn shm_dispatch_spsc_pod_separate() {
                 let mut arr = [0u64; 8];
                 arr[0] = i;
                 arr[7] = i * 100;
-                assert!(t.try_send(arr).is_ok());
+                t.try_send(arr).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3031,7 +3039,7 @@ fn shm_dispatch_spsc_serde() {
         MigrationResult::Success { .. } => {
             trigger_shm_dispatch(&name);
             for i in 0..32 {
-                assert!(t.try_send(format!("spsc_{}", i)).is_ok());
+                t.try_send(format!("spsc_{}", i)).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3067,7 +3075,7 @@ fn shm_dispatch_spmc_pod_colo() {
             assert_eq!(t.mode(), BackendMode::SpmcShm);
             trigger_shm_dispatch(&name);
             for i in 1..=64u64 {
-                assert!(t.try_send(i).is_ok());
+                t.try_send(i).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3094,7 +3102,7 @@ fn shm_dispatch_spmc_serde() {
         MigrationResult::Success { .. } => {
             trigger_shm_dispatch(&name);
             for i in 0..32 {
-                assert!(t.try_send(format!("spmc_{}", i)).is_ok());
+                t.try_send(format!("spmc_{}", i)).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3124,7 +3132,7 @@ fn shm_dispatch_mpsc_pod_colo() {
             assert_eq!(t.mode(), BackendMode::MpscShm);
             trigger_shm_dispatch(&name);
             for i in 1..=64u64 {
-                assert!(t.try_send(i).is_ok());
+                t.try_send(i).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3151,7 +3159,7 @@ fn shm_dispatch_mpsc_serde() {
         MigrationResult::Success { .. } => {
             trigger_shm_dispatch(&name);
             for i in 0..32 {
-                assert!(t.try_send(format!("mpsc_{}", i)).is_ok());
+                t.try_send(format!("mpsc_{}", i)).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3181,7 +3189,7 @@ fn shm_dispatch_mpmc_pod_colo() {
             assert_eq!(t.mode(), BackendMode::MpmcShm);
             trigger_shm_dispatch(&name);
             for i in 1..=64u64 {
-                assert!(t.try_send(i).is_ok());
+                t.try_send(i).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3208,7 +3216,7 @@ fn shm_dispatch_mpmc_serde() {
         MigrationResult::Success { .. } => {
             trigger_shm_dispatch(&name);
             for i in 0..32 {
-                assert!(t.try_send(format!("mpmc_{}", i)).is_ok());
+                t.try_send(format!("mpmc_{}", i)).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3242,7 +3250,7 @@ fn shm_dispatch_pod_broadcast_separate() {
                 let mut arr = [0u64; 8];
                 arr[0] = i;
                 arr[7] = i * 100;
-                assert!(t.try_send(arr).is_ok());
+                t.try_send(arr).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3282,7 +3290,7 @@ fn shm_dispatch_all_modes_rapid_cycle() {
             MigrationResult::Success { .. } => {
                 trigger_shm_dispatch(&name);
                 let val = (round as u64 + 1) * 100;
-                assert!(t.try_send(val).is_ok());
+                t.try_send(val).unwrap();
                 let got = t.try_recv();
                 assert_eq!(
                     got,
@@ -3420,7 +3428,7 @@ fn shm_dispatch_dc_to_shm_pointer_restore() {
 fn ring_saturation_spmc_full_then_drain() {
     let ring = SpmcRing::<u64>::new(16);
     for i in 0..16u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(
         ring.try_send(99).is_err(),
@@ -3432,7 +3440,7 @@ fn ring_saturation_spmc_full_then_drain() {
         assert_eq!(ring.try_recv(), Some(i));
     }
     for i in 16..24u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(ring.try_send(99).is_err());
 
@@ -3446,7 +3454,7 @@ fn ring_saturation_spmc_full_then_drain() {
 fn ring_saturation_mpsc_full_then_drain() {
     let ring = MpscRing::<u64>::new(16);
     for i in 0..16u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(
         ring.try_send(99).is_err(),
@@ -3458,7 +3466,7 @@ fn ring_saturation_mpsc_full_then_drain() {
         assert_eq!(ring.try_recv(), Some(i));
     }
     for i in 16..24u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(ring.try_send(99).is_err());
 
@@ -3472,7 +3480,7 @@ fn ring_saturation_mpsc_full_then_drain() {
 fn ring_saturation_mpmc_full_then_drain() {
     let ring = MpmcRing::<u64>::new(16);
     for i in 0..16u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(
         ring.try_send(99).is_err(),
@@ -3484,7 +3492,7 @@ fn ring_saturation_mpmc_full_then_drain() {
         assert_eq!(ring.try_recv(), Some(i));
     }
     for i in 16..24u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(ring.try_send(99).is_err());
 
@@ -3502,7 +3510,7 @@ fn ring_saturation_mpmc_full_then_drain() {
 fn spmc_ring_fifo_ordering_200_messages() {
     let ring = SpmcRing::<u64>::new(256);
     for i in 0..200u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     for i in 0..200u64 {
         assert_eq!(
@@ -3520,7 +3528,7 @@ fn mpsc_ring_fifo_ordering_200_messages() {
     // Single producer for deterministic FIFO check
     let ring = MpscRing::<u64>::new(256);
     for i in 0..200u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     for i in 0..200u64 {
         assert_eq!(
@@ -3538,7 +3546,7 @@ fn mpmc_ring_fifo_ordering_200_messages() {
     // Single producer, single consumer for deterministic FIFO check
     let ring = MpmcRing::<u64>::new(256);
     for i in 0..200u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     for i in 0..200u64 {
         assert_eq!(
@@ -3733,7 +3741,7 @@ fn spmc_ring_wraparound() {
     let ring = SpmcRing::<u32>::new(4);
     for round in 0..10u32 {
         for i in 0..4 {
-            assert!(ring.try_send(round * 4 + i).is_ok());
+            ring.try_send(round * 4 + i).unwrap();
         }
         for i in 0..4 {
             assert_eq!(ring.try_recv(), Some(round * 4 + i));
@@ -3746,7 +3754,7 @@ fn mpsc_ring_wraparound() {
     let ring = MpscRing::<u32>::new(4);
     for round in 0..10u32 {
         for i in 0..4 {
-            assert!(ring.try_send(round * 4 + i).is_ok());
+            ring.try_send(round * 4 + i).unwrap();
         }
         for i in 0..4 {
             assert_eq!(ring.try_recv(), Some(round * 4 + i));
@@ -3759,7 +3767,7 @@ fn mpmc_ring_wraparound() {
     let ring = MpmcRing::<u32>::new(4);
     for round in 0..10u32 {
         for i in 0..4 {
-            assert!(ring.try_send(round * 4 + i).is_ok());
+            ring.try_send(round * 4 + i).unwrap();
         }
         for i in 0..4 {
             assert_eq!(ring.try_recv(), Some(round * 4 + i));
@@ -3791,7 +3799,7 @@ fn shm_pod_byte_exact_integrity_u64() {
                 0x0102_0304_0506_0708,
             ];
             for &val in &sentinel_values {
-                assert!(t.try_send(val).is_ok());
+                t.try_send(val).unwrap();
             }
             for &expected in &sentinel_values {
                 match t.try_recv() {
@@ -3821,7 +3829,7 @@ fn shm_pod_byte_exact_integrity_array() {
             trigger_shm_dispatch(&name);
             // Simulate joint state: 6 joint positions
             let joint_state = [1.571, -0.785, 0.0, 2.356, -1.047, 0.524];
-            assert!(t.try_send(joint_state).is_ok());
+            t.try_send(joint_state).unwrap();
             if let Some(got) = t.try_recv() {
                 for (i, (&expected, &actual)) in joint_state.iter().zip(got.iter()).enumerate() {
                     assert_eq!(
@@ -3858,7 +3866,7 @@ fn shm_dispatch_mpsc_pod_separate_seq() {
                 let mut arr = [0u64; 8];
                 arr[0] = i;
                 arr[7] = i * 1000;
-                assert!(t.try_send(arr).is_ok());
+                t.try_send(arr).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3894,7 +3902,7 @@ fn shm_dispatch_mpmc_pod_separate_seq() {
                 let mut arr = [0u64; 8];
                 arr[0] = i;
                 arr[7] = i * 999;
-                assert!(t.try_send(arr).is_ok());
+                t.try_send(arr).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3925,7 +3933,7 @@ fn shm_dispatch_spmc_pod_separate_seq() {
                 let mut arr = [0u64; 8];
                 arr[0] = i;
                 arr[7] = i * 777;
-                assert!(t.try_send(arr).is_ok());
+                t.try_send(arr).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -3958,7 +3966,7 @@ fn shm_dispatch_pod_broadcast_colo() {
             assert_eq!(t.mode(), BackendMode::PodShm);
             trigger_shm_dispatch(&name);
             for i in 1..=64u64 {
-                assert!(t.try_send(i).is_ok());
+                t.try_send(i).unwrap();
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
@@ -4525,9 +4533,12 @@ fn concurrent_reclaim_exactly_one_winner() {
         .map(|_| {
             let b = barrier.clone();
             let sc = success_count.clone();
-            // SAFETY: header is stack-allocated, lives until join()
             let hptr = header as *const TopicHeader as usize;
             thread::spawn(move || {
+                // SAFETY: `hptr` points to `header` which is stack-allocated in the
+                // enclosing scope. All threads are joined before that scope exits, so
+                // the pointee outlives this reference. `TopicHeader` is Sync, so
+                // shared read-access from multiple threads is sound.
                 let h = unsafe { &*(hptr as *const TopicHeader) };
                 b.wait();
                 if h.register_producer().is_ok() {
@@ -4749,7 +4760,7 @@ fn topic_try_recv_empty_returns_none_immediately() {
 fn topic_try_send_try_recv_roundtrip_pod() {
     let name = unique("try_rt_pod");
     let t: Topic<u64> = Topic::new(&name).expect("create");
-    assert!(t.try_send(42u64).is_ok());
+    t.try_send(42u64).unwrap();
     assert_eq!(t.try_recv(), Some(42u64));
     assert_eq!(t.try_recv(), None); // drained
 }
@@ -4759,7 +4770,7 @@ fn topic_try_send_try_recv_roundtrip_pod() {
 fn topic_try_send_try_recv_roundtrip_serde() {
     let name = unique("try_rt_serde");
     let t: Topic<String> = Topic::new(&name).expect("create");
-    assert!(t.try_send("hello_robot".to_string()).is_ok());
+    t.try_send("hello_robot".to_string()).unwrap();
     assert_eq!(t.try_recv(), Some("hello_robot".to_string()));
     assert_eq!(t.try_recv(), None);
 }
@@ -4837,7 +4848,7 @@ fn topic_fifo_100_messages() {
         t.send(i);
     }
     for i in 0..100u64 {
-        let got = t.recv().expect(&format!("expected message {}", i));
+        let got = t.recv().unwrap_or_else(|| panic!("expected message {}", i));
         assert_eq!(
             got, i,
             "FIFO violated at position {}: got {} expected {}",
@@ -5052,7 +5063,7 @@ fn ring_boundary_precise_wraparound_spsc() {
     let ring = SpscRing::<u64>::new(64);
     // Fill to position 60 (drain immediately to advance head+tail)
     for i in 0..60u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
         assert_eq!(ring.try_recv(), Some(i));
     }
     // Now head=60, tail=60. Send messages 60-70 crossing the capacity=64 boundary.
@@ -5061,7 +5072,9 @@ fn ring_boundary_precise_wraparound_spsc() {
     }
     // Receive and verify FIFO across the boundary
     for i in 60..70u64 {
-        let msg = ring.try_recv().expect(&format!("expected message {}", i));
+        let msg = ring
+            .try_recv()
+            .unwrap_or_else(|| panic!("expected message {}", i));
         assert_eq!(msg, i, "wrong value at seq {}: got {}", i, msg);
     }
     assert_eq!(ring.try_recv(), None);
@@ -5073,7 +5086,7 @@ fn ring_boundary_precise_wraparound_mpsc() {
     let ring = MpscRing::<u64>::new(64);
     // Advance to near boundary
     for i in 0..60u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
         assert_eq!(ring.try_recv(), Some(i));
     }
     // Send across boundary
@@ -5081,7 +5094,9 @@ fn ring_boundary_precise_wraparound_mpsc() {
         assert!(ring.try_send(i).is_ok(), "failed to send at seq {}", i);
     }
     for i in 60..75u64 {
-        let msg = ring.try_recv().expect(&format!("expected message {}", i));
+        let msg = ring
+            .try_recv()
+            .unwrap_or_else(|| panic!("expected message {}", i));
         assert_eq!(msg, i);
     }
 }
@@ -5097,7 +5112,9 @@ fn ring_extended_sequence_stress_spsc() {
     // exercising the wrapping_add and mask arithmetic repeatedly.
     for i in 0..10_000u64 {
         assert!(ring.try_send(i).is_ok(), "failed to send at seq {}", i);
-        let msg = ring.try_recv().expect(&format!("expected msg {}", i));
+        let msg = ring
+            .try_recv()
+            .unwrap_or_else(|| panic!("expected msg {}", i));
         assert_eq!(
             msg, i,
             "data corruption at sequence {}: expected {} got {}",
@@ -5125,7 +5142,7 @@ fn ring_extended_sequence_stress_spsc() {
         for j in 0..16u64 {
             let msg = ring
                 .try_recv()
-                .expect(&format!("drain failed cycle {} slot {}", cycle, j));
+                .unwrap_or_else(|| panic!("drain failed cycle {} slot {}", cycle, j));
             assert_eq!(msg, base + j, "corruption cycle {} slot {}", cycle, j);
         }
         // Ring should be empty
@@ -5156,7 +5173,7 @@ fn ring_extended_wraparound_mpsc() {
         for i in 0..16u64 {
             let msg = ring
                 .try_recv()
-                .expect(&format!("missing at round {} msg {}", round, i));
+                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
             assert_eq!(msg, base + i);
         }
     }
@@ -5179,7 +5196,7 @@ fn ring_extended_wraparound_spmc() {
         for i in 0..16u64 {
             let msg = ring
                 .try_recv()
-                .expect(&format!("missing at round {} msg {}", round, i));
+                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
             assert_eq!(msg, base + i);
         }
     }
@@ -5202,7 +5219,7 @@ fn ring_extended_wraparound_mpmc() {
         for i in 0..16u64 {
             let msg = ring
                 .try_recv()
-                .expect(&format!("missing at round {} msg {}", round, i));
+                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
             assert_eq!(msg, base + i);
         }
     }
@@ -5216,7 +5233,7 @@ fn ring_single_element_capacity_1() {
     let ring = SpscRing::<u64>::new(1);
 
     // Send fills the single slot
-    assert!(ring.try_send(10).is_ok());
+    ring.try_send(10).unwrap();
     // Ring is now full (1 slot used)
     assert!(ring.try_send(20).is_err());
 
@@ -5224,7 +5241,7 @@ fn ring_single_element_capacity_1() {
     assert_eq!(ring.try_recv(), Some(10));
 
     // Send again
-    assert!(ring.try_send(30).is_ok());
+    ring.try_send(30).unwrap();
     assert_eq!(ring.try_recv(), Some(30));
 }
 
@@ -5326,13 +5343,13 @@ fn ring_sustained_10k_wraparound_cycles() {
         for i in 0..16u64 {
             let msg = ring
                 .try_recv()
-                .expect(&format!("missing at round {} msg {}", round, i));
+                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
             assert_eq!(msg, base + i, "wrong value at round {} msg {}", round, i);
         }
     }
     // After 160,000 messages, ring should be empty and functional
     assert_eq!(ring.try_recv(), None);
-    assert!(ring.try_send(999).is_ok());
+    ring.try_send(999).unwrap();
     assert_eq!(ring.try_recv(), Some(999));
 }
 
@@ -5486,7 +5503,7 @@ fn rapid_topology_changes_detected_via_check() {
 
         // Send/recv should work after each migration
         t1.send(42);
-        while let Some(_) = t1.recv() {}
+        while t1.recv().is_some() {}
     }
 }
 
@@ -5512,11 +5529,11 @@ fn housekeeping_fires_after_lease_refresh_interval() {
     for i in 0..1024u64 {
         t.send(i);
         if i % 256 == 255 {
-            while let Some(_) = t.recv() {}
+            while t.recv().is_some() {}
         }
     }
     // Drain remaining
-    while let Some(_) = t.recv() {}
+    while t.recv().is_some() {}
 
     // msg_counter tracks both sends and recvs. Each successful send increments
     // via housekeep_lease!, each recv increments via housekeep_recv!.
@@ -5597,11 +5614,11 @@ fn housekeeping_sustained_100k_messages_no_skip() {
         t.send(i);
         // Drain every 256 to prevent ring full (capacity = 512)
         if i % 256 == 255 {
-            while let Some(_) = t.recv() {}
+            while t.recv().is_some() {}
         }
     }
     // Drain remaining
-    while let Some(_) = t.recv() {}
+    while t.recv().is_some() {}
 
     // msg_counter tracks all sends + all recvs. With 100K sends and ~100K recvs,
     // counter should be well above the lease refresh interval.
@@ -5652,7 +5669,7 @@ fn dispatch_rewired_after_external_migration_and_check() {
 
         // send/recv still works after re-dispatch
         t1.send(42);
-        while let Some(_) = t1.recv() {}
+        while t1.recv().is_some() {}
     }
 }
 
@@ -5790,7 +5807,9 @@ fn sequence_wrap_u64_max_direct_channel() {
     for i in 0..100u64 {
         let val = 1000 + i;
         t.send(val);
-        let received = t.recv().expect(&format!("recv failed at msg {}", i));
+        let received = t
+            .recv()
+            .unwrap_or_else(|| panic!("recv failed at msg {}", i));
         assert_eq!(
             received,
             val,
@@ -5874,7 +5893,9 @@ fn sequence_wrap_u64_max_large_type() {
         val.data[0] = 5000 + i;
         val.data[15] = i * 7; // sentinel at end of struct
         t.send(val);
-        let received = t.recv().expect(&format!("recv failed at msg {}", i));
+        let received = t
+            .recv()
+            .unwrap_or_else(|| panic!("recv failed at msg {}", i));
         assert_eq!(
             received.data[0],
             5000 + i,
@@ -6037,7 +6058,7 @@ fn separate_seq_layout_for_large_pod_types() {
         match t.try_send(v) {
             Ok(()) => {}
             Err(_) => {
-                while let Some(_) = t.try_recv() {}
+                while t.try_recv().is_some() {}
                 assert!(t.try_send(v).is_ok(), "send after drain at {}", i);
             }
         }
@@ -6092,7 +6113,7 @@ fn slot_index_always_valid_at_wrap_boundary() {
         }
 
         // Also test at exactly u64::MAX
-        let index_at_max = u64::MAX & mask;
+        let index_at_max = mask;
         assert!(index_at_max < cap, "Index at u64::MAX out of bounds");
 
         // And at 0 (after wrap)
@@ -6259,7 +6280,7 @@ fn migration_lock_concurrent_one_winner() {
     // Topic still works after concurrent migration
     t1.send(42);
     // Drain any messages
-    while let Some(_) = t1.recv() {}
+    while t1.recv().is_some() {}
 }
 
 /// Lock release enables subsequent migration by different thread.
@@ -6431,7 +6452,7 @@ fn force_migrate_swaps_backend_and_epoch() {
 
     // send/recv still work after dispatch pointer swap
     t1.send(99);
-    while let Some(_) = t1.recv() {}
+    while t1.recv().is_some() {}
 }
 
 /// Epoch propagation via process_epoch Arc<AtomicU64>: when one handle migrates,
@@ -7052,7 +7073,7 @@ fn stress_rapid_connect_disconnect_cycles() {
         while !done_pub.load(Ordering::Relaxed) {
             topic.send(seq);
             seq += 1;
-            if seq % 100 == 0 {
+            if seq.is_multiple_of(100) {
                 std::thread::yield_now();
             }
         }
@@ -7650,7 +7671,7 @@ fn topic_try_send_full_ring() {
     // Minimum capacity ring (power-of-2, so 1 → 1 slot internally)
     let topic: Topic<u64> = Topic::with_capacity(&name, 1, None).unwrap();
     // Fill it
-    assert!(topic.try_send(1u64).is_ok());
+    topic.try_send(1u64).unwrap();
     // Second send should fail (ring full)
     let result = topic.try_send(2u64);
     assert!(result.is_err(), "Ring full should return Err");
@@ -8530,6 +8551,10 @@ fn partial_write_concurrent_writers_no_partial_data() {
         .map(|writer_id| {
             let b = barrier.clone();
             thread::spawn(move || {
+                // SAFETY: `t_ptr` points to `t` which is stack-allocated in the
+                // enclosing test function. All writer handles are joined before `t`
+                // is dropped, so the reference is valid for the duration of the
+                // thread. `Topic` is Sync, so concurrent shared access is sound.
                 let t = unsafe { &*(t_ptr as *const Topic<[u64; 4]>) };
                 b.wait();
                 for i in 0..msgs_per_writer {
@@ -8543,6 +8568,9 @@ fn partial_write_concurrent_writers_no_partial_data() {
     // Reader
     let reader_barrier = barrier.clone();
     let reader = thread::spawn(move || {
+        // SAFETY: `t_ptr` points to `t` which is stack-allocated in the enclosing
+        // test function. The reader handle is joined before `t` is dropped, so the
+        // reference remains valid. `Topic` is Sync, permitting concurrent reads.
         let t = unsafe { &*(t_ptr as *const Topic<[u64; 4]>) };
         reader_barrier.wait();
         let mut corrupt_count = 0u64;
@@ -8811,8 +8839,8 @@ fn try_send_returns_message_on_failure() {
     let name = unique("try_send_ret");
     let t: Topic<String> = Topic::with_capacity(&name, 2, None).unwrap();
 
-    assert!(t.try_send("a".to_string()).is_ok());
-    assert!(t.try_send("b".to_string()).is_ok());
+    t.try_send("a".to_string()).unwrap();
+    t.try_send("b".to_string()).unwrap();
 
     // Ring full — should return the message
     let result = t.try_send("c".to_string());
@@ -8884,7 +8912,7 @@ fn send_blocking_cross_thread_producer_consumer() {
         barrier_c.wait();
         thread::sleep(Duration::from_millis(20));
         let mut count = 0u64;
-        while let Some(_) = sub_t.try_recv() {
+        while sub_t.try_recv().is_some() {
             count += 1;
         }
         recv_count.store(count, Ordering::Relaxed);
@@ -8918,11 +8946,11 @@ fn send_blocking_cross_thread_producer_consumer() {
 #[test]
 fn spsc_ring_single_slot() {
     let ring = spsc_intra::SpscRing::<u64>::new(1);
-    assert!(ring.try_send(42).is_ok());
+    ring.try_send(42).unwrap();
     assert!(ring.try_send(43).is_err()); // full
     assert_eq!(ring.try_recv(), Some(42));
     assert_eq!(ring.try_recv(), None); // empty
-    assert!(ring.try_send(99).is_ok()); // refill
+    ring.try_send(99).unwrap(); // refill
     assert_eq!(ring.try_recv(), Some(99));
 }
 
@@ -8964,7 +8992,7 @@ fn spsc_ring_multi_wraparound_fifo() {
     for cycle in 0..10u64 {
         for i in 0..4u64 {
             let val = cycle * 4 + i;
-            assert!(ring.try_send(val).is_ok());
+            ring.try_send(val).unwrap();
         }
         for i in 0..4u64 {
             let expected = cycle * 4 + i;
@@ -9014,11 +9042,11 @@ fn spsc_ring_pending_count_interleaved() {
 #[test]
 fn mpsc_ring_single_slot() {
     let ring = mpsc_intra::MpscRing::<u64>::new(1);
-    assert!(ring.try_send(42).is_ok());
+    ring.try_send(42).unwrap();
     assert_eq!(ring.try_recv(), Some(42));
     assert_eq!(ring.try_recv(), None); // empty after drain
                                        // Refill works
-    assert!(ring.try_send(99).is_ok());
+    ring.try_send(99).unwrap();
     assert_eq!(ring.try_recv(), Some(99));
 }
 
@@ -9053,7 +9081,7 @@ fn mpsc_ring_multi_wraparound_fifo() {
     for cycle in 0..10u64 {
         for i in 0..4u64 {
             let val = cycle * 4 + i;
-            assert!(ring.try_send(val).is_ok());
+            ring.try_send(val).unwrap();
         }
         for i in 0..4u64 {
             let expected = cycle * 4 + i;
@@ -9080,11 +9108,11 @@ fn mpsc_ring_read_latest_non_consuming() {
 #[test]
 fn spmc_ring_single_slot() {
     let ring = spmc_intra::SpmcRing::<u64>::new(1);
-    assert!(ring.try_send(42).is_ok());
+    ring.try_send(42).unwrap();
     assert!(ring.try_send(43).is_err());
     assert_eq!(ring.try_recv(), Some(42));
     assert_eq!(ring.try_recv(), None);
-    assert!(ring.try_send(99).is_ok());
+    ring.try_send(99).unwrap();
     assert_eq!(ring.try_recv(), Some(99));
 }
 
@@ -9095,7 +9123,7 @@ fn spmc_ring_exact_capacity_fill_drain() {
     let ring = spmc_intra::SpmcRing::<u64>::new(cap);
 
     for i in 0..cap as u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(ring.try_send(9999).is_err());
 
@@ -9118,7 +9146,7 @@ fn spmc_ring_multi_wraparound_fifo() {
     let ring = spmc_intra::SpmcRing::<u64>::new(4);
     for cycle in 0..10u64 {
         for i in 0..4u64 {
-            assert!(ring.try_send(cycle * 4 + i).is_ok());
+            ring.try_send(cycle * 4 + i).unwrap();
         }
         for i in 0..4u64 {
             assert_eq!(ring.try_recv(), Some(cycle * 4 + i));
@@ -9147,11 +9175,11 @@ fn spmc_ring_read_latest_non_consuming() {
 #[test]
 fn mpmc_ring_single_slot() {
     let ring = mpmc_intra::MpmcRing::<u64>::new(1);
-    assert!(ring.try_send(42).is_ok());
+    ring.try_send(42).unwrap();
     assert_eq!(ring.try_recv(), Some(42));
     assert_eq!(ring.try_recv(), None); // empty after drain
                                        // Refill works
-    assert!(ring.try_send(99).is_ok());
+    ring.try_send(99).unwrap();
     assert_eq!(ring.try_recv(), Some(99));
 }
 
@@ -9162,7 +9190,7 @@ fn mpmc_ring_exact_capacity_fill_drain() {
     let ring = mpmc_intra::MpmcRing::<u64>::new(cap);
 
     for i in 0..cap as u64 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(ring.try_send(9999).is_err());
 
@@ -9185,7 +9213,7 @@ fn mpmc_ring_multi_wraparound_fifo() {
     let ring = mpmc_intra::MpmcRing::<u64>::new(4);
     for cycle in 0..10u64 {
         for i in 0..4u64 {
-            assert!(ring.try_send(cycle * 4 + i).is_ok());
+            ring.try_send(cycle * 4 + i).unwrap();
         }
         for i in 0..4u64 {
             assert_eq!(ring.try_recv(), Some(cycle * 4 + i));
@@ -9256,24 +9284,24 @@ fn all_rings_round_capacity_to_power_of_two() {
 fn all_rings_capacity_one_gives_one_slot() {
     // SPSC and SPMC: can verify "full" rejection
     let spsc = spsc_intra::SpscRing::<u64>::new(1);
-    assert!(spsc.try_send(1).is_ok());
+    spsc.try_send(1).unwrap();
     assert!(spsc.try_send(2).is_err());
 
     let spmc = spmc_intra::SpmcRing::<u64>::new(1);
-    assert!(spmc.try_send(1).is_ok());
+    spmc.try_send(1).unwrap();
     assert!(spmc.try_send(2).is_err());
 
     // MPSC and MPMC: verify send-recv cycle works at capacity=1
     let mpsc = mpsc_intra::MpscRing::<u64>::new(1);
-    assert!(mpsc.try_send(1).is_ok());
+    mpsc.try_send(1).unwrap();
     assert_eq!(mpsc.try_recv(), Some(1));
-    assert!(mpsc.try_send(2).is_ok());
+    mpsc.try_send(2).unwrap();
     assert_eq!(mpsc.try_recv(), Some(2));
 
     let mpmc = mpmc_intra::MpmcRing::<u64>::new(1);
-    assert!(mpmc.try_send(1).is_ok());
+    mpmc.try_send(1).unwrap();
     assert_eq!(mpmc.try_recv(), Some(1));
-    assert!(mpmc.try_send(2).is_ok());
+    mpmc.try_send(2).unwrap();
     assert_eq!(mpmc.try_recv(), Some(2));
 }
 
@@ -9369,11 +9397,11 @@ fn mpmc_ring_multi_producer_multi_consumer_no_loss() {
         let done = all_sent.clone();
         handles.push(thread::spawn(move || {
             loop {
-                if let Some(_) = r.try_recv() {
+                if r.try_recv().is_some() {
                     recv.fetch_add(1, Ordering::Relaxed);
                 } else if done.load(Ordering::Relaxed) {
                     // Double-check: drain remaining
-                    while let Some(_) = r.try_recv() {
+                    while r.try_recv().is_some() {
                         recv.fetch_add(1, Ordering::Relaxed);
                     }
                     break;
@@ -9530,9 +9558,9 @@ fn local_state_default_slot_size_is_8kb() {
 #[test]
 fn local_state_constants() {
     assert_eq!(local_state::LEASE_REFRESH_INTERVAL, 1024);
-    assert_eq!(local_state::EPOCH_CHECK_INTERVAL, 4096);
-    // Epoch check should be >= lease refresh (less frequent)
-    assert!(local_state::EPOCH_CHECK_INTERVAL >= local_state::LEASE_REFRESH_INTERVAL);
+    assert_eq!(local_state::EPOCH_CHECK_INTERVAL, 32);
+    assert!(local_state::EPOCH_CHECK_INTERVAL.is_power_of_two());
+    assert!(local_state::LEASE_REFRESH_INTERVAL.is_power_of_two());
 }
 
 /// LocalState fields can be mutated directly.
@@ -9719,7 +9747,7 @@ fn capacity_auto_sizing_power_of_two() {
 #[test]
 fn capacity_auto_sizing_zero_rounds_to_one() {
     let ring = spsc_intra::SpscRing::<u64>::new(0);
-    assert!(ring.try_send(42).is_ok());
+    ring.try_send(42).unwrap();
     // Capacity 1 means second send should fail
     assert!(ring.try_send(43).is_err());
     assert_eq!(ring.try_recv(), Some(42));
@@ -9730,7 +9758,7 @@ fn capacity_auto_sizing_zero_rounds_to_one() {
 fn capacity_auto_sizing_exact_power_of_two_unchanged() {
     let ring = spsc_intra::SpscRing::<u64>::new(16);
     for i in 0..16 {
-        assert!(ring.try_send(i).is_ok());
+        ring.try_send(i).unwrap();
     }
     assert!(ring.try_send(99).is_err());
 }
@@ -9740,6 +9768,9 @@ fn capacity_auto_sizing_exact_power_of_two_unchanged() {
 fn mp_slot_write_and_read() {
     let slots = primitives::alloc_mp_slots::<u64>(4);
     // Write to slot 0
+    // SAFETY: `slots[0].data` is a freshly allocated `UnsafeCell<MaybeUninit<u64>>`.
+    // No other reference exists; we perform the initial write before any reader
+    // could observe the sequence number we store afterwards.
     unsafe {
         slots[0].data.get().write(std::mem::MaybeUninit::new(42u64));
     }
@@ -9747,6 +9778,10 @@ fn mp_slot_write_and_read() {
     slots[0].sequence.store(1, Ordering::Release);
 
     // Read back
+    // SAFETY: We just wrote an initialized `u64` into `slots[0].data` above and
+    // stored the sequence number, confirming the slot is fully written. This is
+    // a single-threaded test so there is no concurrent mutation; `assume_init_read`
+    // on a fully initialized `MaybeUninit<u64>` (a `Copy` type) is sound.
     let val = unsafe { (*slots[0].data.get()).assume_init_read() };
     assert_eq!(val, 42);
 }

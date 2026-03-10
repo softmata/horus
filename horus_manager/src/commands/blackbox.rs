@@ -10,19 +10,32 @@ use horus_core::scheduling::{BlackBoxEvent, BlackBoxRecord};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// CLI arguments for the `horus blackbox` command.
+pub struct BlackboxArgs {
+    pub anomalies_only: bool,
+    pub tail: bool,
+    pub tick_range: Option<String>,
+    pub node_filter: Option<String>,
+    pub event_filter: Option<String>,
+    pub json_output: bool,
+    pub last_n: Option<usize>,
+    pub custom_path: Option<PathBuf>,
+    pub clear: bool,
+}
+
 /// Entry point for the `horus blackbox` command.
-#[allow(clippy::too_many_arguments)]
-pub fn run_blackbox(
-    anomalies_only: bool,
-    tail: bool,
-    tick_range: Option<String>,
-    node_filter: Option<String>,
-    event_filter: Option<String>,
-    json_output: bool,
-    last_n: Option<usize>,
-    custom_path: Option<PathBuf>,
-    clear: bool,
-) -> horus_core::error::HorusResult<()> {
+pub fn run_blackbox(args: BlackboxArgs) -> horus_core::error::HorusResult<()> {
+    let BlackboxArgs {
+        anomalies_only,
+        tail,
+        tick_range,
+        node_filter,
+        event_filter,
+        json_output,
+        last_n,
+        custom_path,
+        clear,
+    } = args;
     let bb_dir = resolve_blackbox_dir(custom_path)?;
 
     if clear {

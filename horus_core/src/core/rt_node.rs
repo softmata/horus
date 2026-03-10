@@ -16,9 +16,10 @@ use std::time::Duration;
 /// // Motor controller: degrade to safe mode
 /// scheduler.add(motor).rate(1000.hz()).on_miss(Miss::SafeMode).build()?;
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Miss {
     /// Log warning and continue normally.
+    #[default]
     Warn,
     /// Skip this tick, resume next cycle.
     Skip,
@@ -27,12 +28,6 @@ pub enum Miss {
     SafeMode,
     /// Stop the entire scheduler (last resort).
     Stop,
-}
-
-impl Default for Miss {
-    fn default() -> Self {
-        Miss::Warn
-    }
 }
 
 /// Policy for handling deadline misses.

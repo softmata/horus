@@ -3,6 +3,7 @@
 //! Covers: burst notifications, paused event node, fatal policy stops scheduler,
 //! restart recovery after event node panic.
 
+use horus_core::core::DurationExt;
 use horus_core::core::{Node, NodeInfo};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,7 +65,7 @@ fn test_event_burst_notifications() {
         })
         .order(5)
         .on("burst_topic")
-        .done();
+        .build();
 
     // Start scheduler in background
     let handle = std::thread::spawn(move || {
@@ -117,7 +118,7 @@ fn test_event_paused_node_no_tick() {
         })
         .order(5)
         .on("paused_topic")
-        .done();
+        .build();
 
     // Run without sending notifications — node should not tick
     scheduler.run_for(Duration::from_millis(100)).unwrap();
@@ -143,7 +144,7 @@ fn test_event_fatal_policy_stops_scheduler() {
         .order(5)
         .on("fatal_topic")
         .failure_policy(FailurePolicy::Fatal)
-        .done();
+        .build();
 
     let handle = std::thread::spawn(move || {
         scheduler.run_for(Duration::from_millis(500)).unwrap();
@@ -189,7 +190,7 @@ fn test_event_restart_recovery() {
         .order(5)
         .on("restart_topic")
         .failure_policy(FailurePolicy::restart(3, 10))
-        .done();
+        .build();
 
     let handle = std::thread::spawn(move || {
         scheduler.run_for(Duration::from_millis(500)).unwrap();

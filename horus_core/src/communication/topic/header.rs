@@ -619,11 +619,24 @@ pub fn read_latest_slot_bytes(
     //     capacity   : offset 72  (u32)
     //     cap_mask   : offset 76  (u32)
     //     slot_size  : offset 80  (u32)
+    // SAFETY: mmap is validated to be at least TOPIC_HEADER_SIZE (640) bytes above.
+    // All offsets (12, 20, 64, 72, 76, 80) are within the header and read_unaligned
+    // handles any alignment. base is a valid pointer from the mmap.
     let type_size = unsafe { std::ptr::read_unaligned(base.add(12) as *const u32) } as usize;
+    // SAFETY: base is a valid mmap pointer; offset 20 is within the validated header region;
+    // read_unaligned handles any alignment for the u8 is_pod field.
     let is_pod_raw = unsafe { std::ptr::read_unaligned(base.add(20)) };
+    // SAFETY: base is a valid mmap pointer; offset 64 is within the validated header region;
+    // read_unaligned handles any alignment for the u64 seq/head field.
     let write_idx = unsafe { std::ptr::read_unaligned(base.add(64) as *const u64) };
+    // SAFETY: base is a valid mmap pointer; offset 72 is within the validated header region;
+    // read_unaligned handles any alignment for the u32 capacity field.
     let capacity = unsafe { std::ptr::read_unaligned(base.add(72) as *const u32) } as usize;
+    // SAFETY: base is a valid mmap pointer; offset 76 is within the validated header region;
+    // read_unaligned handles any alignment for the u32 cap_mask field.
     let cap_mask = unsafe { std::ptr::read_unaligned(base.add(76) as *const u32) } as usize;
+    // SAFETY: base is a valid mmap pointer; offset 80 is within the validated header region;
+    // read_unaligned handles any alignment for the u32 slot_size field.
     let slot_size = unsafe { std::ptr::read_unaligned(base.add(80) as *const u32) } as usize;
 
     let is_pod = is_pod_raw == POD_YES;
@@ -659,6 +672,8 @@ pub fn read_latest_slot_bytes(
         let slot_start = TOPIC_HEADER_SIZE + last_written * slot_size;
         let len_offset = slot_start + 8;
         let data_offset = slot_start + 16;
+        // SAFETY: len_offset is within mmap bounds (validated by required size check above);
+        // read_unaligned handles any alignment.
         let data_len =
             unsafe { std::ptr::read_unaligned(mmap.as_ptr().add(len_offset) as *const u64) }
                 as usize;
@@ -737,6 +752,8 @@ mod tests {
         let h = TopicHeader::zeroed();
         let base = &h as *const TopicHeader as *const u8;
         let debug_ptr = &h.debug_log as *const AtomicU8 as *const u8;
+        // SAFETY: both pointers derive from the same TopicHeader allocation,
+        // so offset_from is well-defined and within the object bounds.
         let offset = unsafe { debug_ptr.offset_from(base) } as usize;
         assert_eq!(offset, TOPIC_DEBUG_LOG_OFFSET);
     }
@@ -993,6 +1010,8 @@ mod tests {
 
         let header_ptr = &h as *const TopicHeader as usize;
         let slot2 = std::thread::spawn(move || {
+            // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+            // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
             h.register_producer().unwrap()
         })
@@ -1013,6 +1032,8 @@ mod tests {
         let handles: Vec<_> = (0..MAX_PARTICIPANTS)
             .map(|_| {
                 std::thread::spawn(move || {
+                    // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+                    // outlives all spawned threads (main thread joins before h is dropped).
                     let h = unsafe { &*(header_ptr as *const TopicHeader) };
                     h.register_producer().unwrap()
                 })
@@ -1039,6 +1060,8 @@ mod tests {
         let handles: Vec<_> = (0..MAX_PARTICIPANTS)
             .map(|_| {
                 std::thread::spawn(move || {
+                    // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+                    // outlives all spawned threads (main thread joins before h is dropped).
                     let h = unsafe { &*(header_ptr as *const TopicHeader) };
                     h.register_producer().unwrap()
                 })
@@ -1050,12 +1073,14 @@ mod tests {
 
         // The next registration from yet another thread should fail
         let result = std::thread::spawn(move || {
+            // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+            // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
             h.register_producer()
         })
         .join()
         .unwrap();
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     // ── Topology detection ──────────────────────────────────────────────
@@ -1108,6 +1133,8 @@ mod tests {
 
         let header_ptr = &h as *const TopicHeader as usize;
         std::thread::spawn(move || {
+            // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+            // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
             h.register_consumer().unwrap();
         })
@@ -1189,6 +1216,8 @@ mod tests {
         h.register_producer().unwrap();
         let header_ptr = &h as *const TopicHeader as usize;
         std::thread::spawn(move || {
+            // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+            // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
             h.register_consumer().unwrap();
         })
@@ -1207,6 +1236,8 @@ mod tests {
         // Register 2 consumers from different threads
         for _ in 0..2 {
             std::thread::spawn(move || {
+                // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+                // outlives this thread (main thread joins before h is dropped).
                 let h = unsafe { &*(header_ptr as *const TopicHeader) };
                 h.register_consumer().unwrap();
             })
@@ -1227,6 +1258,8 @@ mod tests {
         // Register 2 producers from different threads
         for _ in 0..2 {
             std::thread::spawn(move || {
+                // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+                // outlives this thread (main thread joins before h is dropped).
                 let h = unsafe { &*(header_ptr as *const TopicHeader) };
                 h.register_producer().unwrap();
             })
@@ -1371,9 +1404,11 @@ mod tests {
         assert!(!h.is_debug_enabled());
 
         let ptr = &mut h as *mut TopicHeader as *mut u8;
+        // SAFETY: ptr points to a valid, initialized TopicHeader on the stack (640 bytes).
         unsafe { set_topic_debug(ptr, true) };
         assert!(h.is_debug_enabled());
 
+        // SAFETY: ptr points to a valid, initialized TopicHeader on the stack (640 bytes).
         unsafe { set_topic_debug(ptr, false) };
         assert!(!h.is_debug_enabled());
     }

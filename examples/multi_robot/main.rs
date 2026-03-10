@@ -155,15 +155,15 @@ impl Node for FormationCoordinator {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_hz(20.0);
+    let mut scheduler = Scheduler::new().tick_rate(20.hz());
 
     // Three scout controllers
-    scheduler.add(ScoutController::new(1, -1.0, -1.0)?).order(0).rate_hz(20.0).build()?;
-    scheduler.add(ScoutController::new(2, 1.0, -1.0)?).order(0).rate_hz(20.0).build()?;
-    scheduler.add(ScoutController::new(3, 0.0, 1.0)?).order(0).rate_hz(20.0).build()?;
+    scheduler.add(ScoutController::new(1, -1.0, -1.0)?).order(0).rate(20.hz()).build()?;
+    scheduler.add(ScoutController::new(2, 1.0, -1.0)?).order(0).rate(20.hz()).build()?;
+    scheduler.add(ScoutController::new(3, 0.0, 1.0)?).order(0).rate(20.hz()).build()?;
 
     // Coordinator runs slower
-    scheduler.add(FormationCoordinator::new()?).order(5).rate_hz(5.0).build()?;
+    scheduler.add(FormationCoordinator::new()?).order(5).rate(5.hz()).build()?;
 
     scheduler.run_for(Duration::from_secs(60))?;
     Ok(())

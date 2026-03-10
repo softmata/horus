@@ -1,5 +1,6 @@
 //! Integration tests for Scheduler DX (Developer Experience) API
 
+use horus_core::core::DurationExt;
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
 use horus_core::scheduling::Scheduler;
@@ -56,7 +57,7 @@ fn test_new_creates_scheduler() {
     scheduler
         .add(TickCounterNode::new("test_node", counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(500));
     assert!(

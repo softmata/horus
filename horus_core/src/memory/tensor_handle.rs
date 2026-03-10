@@ -175,7 +175,7 @@ impl TensorHandle {
     ///
     /// Returns [`HorusError::Memory`] if the tensor descriptor is invalid.
     #[inline]
-    #[allow(clippy::mut_from_ref)]
+    #[allow(clippy::mut_from_ref)] // mmap'd shared memory: mutability is OS-level, not Rust borrow-level
     pub unsafe fn data_as_mut<T: Copy>(&self) -> crate::error::HorusResult<&mut [T]> {
         let bytes = self.data_slice_mut()?;
         let ptr = bytes.as_mut_ptr() as *mut T;
@@ -579,6 +579,7 @@ mod tests {
         drop(original); // Drop original — clone should still be valid
 
         // Data should still be accessible through the clone
+        // SAFETY: The tensor was written with f32 values above; dtype matches.
         let data = unsafe { clone.data_as::<f32>().unwrap() };
         assert_eq!(data, &[1.0, 2.0, 3.0, 4.0]);
         assert_eq!(clone.refcount(), 1);

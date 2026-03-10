@@ -169,7 +169,7 @@ impl Node for CounterNode {
 
 #[test]
 fn scheduler_runs_node() {
-    let mut scheduler = Scheduler::new().tick_hz(100.0);
+    let mut scheduler = Scheduler::new().tick_rate(100.hz());
     scheduler
         .add(CounterNode { count: 0 })
         .order(0)
@@ -195,11 +195,11 @@ fn node_builder_uses_build() {
         .build()
         .unwrap();
 
-    // .done() also works (backward compat alias)
+    // .build() also works (backward compat alias)
     scheduler
         .add(CounterNode { count: 0 })
         .order(1)
-        .done()
+        .build()
         .unwrap();
 }
 
@@ -333,29 +333,29 @@ fn runtime_params_get_typed() {
 
     // get_typed fails on missing key
     let missing = params.get_typed::<f64>("nonexistent");
-    assert!(missing.is_err());
+    missing.unwrap_err();
 
     // get_typed fails on type mismatch
     let wrong_type = params.get_typed::<Vec<i32>>("speed");
-    assert!(wrong_type.is_err());
+    wrong_type.unwrap_err();
 }
 
 // ============================================================================
-// 11c. Scheduler tick_hz() is deferred (applies at run time, not at build time)
+// 11c. Scheduler tick_rate() is deferred (applies at run time, not at build time)
 // ============================================================================
 
 #[test]
-fn scheduler_tick_hz_deferred() {
-    // tick_hz() should work as a builder — applied when run() is called
-    let mut scheduler = Scheduler::new().tick_hz(500.0);
+fn scheduler_tick_rate_deferred() {
+    // tick_rate() should work as a builder — applied when run() is called
+    let mut scheduler = Scheduler::new().tick_rate(500.hz());
     scheduler
         .add(CounterNode { count: 0 })
         .order(0)
-        .rate_hz(100.0)
+        .rate(100.hz())
         .build()
         .unwrap();
 
-    // Runs without panic — proves tick_hz config is applied at run() time
+    // Runs without panic — proves tick_rate config is applied at run() time
     scheduler.run_for(Duration::from_millis(50)).unwrap();
 }
 

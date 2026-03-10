@@ -164,6 +164,8 @@ fn set_resource_limits() {
         rlim_cur: 300,
         rlim_max: 300,
     };
+    // SAFETY: `cpu` is a valid `rlimit` struct on the stack with correct field
+    // values. `setrlimit` reads it via the provided pointer and does not retain it.
     unsafe { libc::setrlimit(libc::RLIMIT_CPU, &cpu) };
 
     // Maximum file size a plugin may write: 256 MiB.
@@ -172,6 +174,8 @@ fn set_resource_limits() {
         rlim_cur: 256 * 1024 * 1024,
         rlim_max: 256 * 1024 * 1024,
     };
+    // SAFETY: `fsize` is a valid `rlimit` struct on the stack with correct field
+    // values. `setrlimit` reads it via the provided pointer and does not retain it.
     unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &fsize) };
 
     // Maximum open file descriptors: 64.
@@ -180,6 +184,8 @@ fn set_resource_limits() {
         rlim_cur: 64,
         rlim_max: 64,
     };
+    // SAFETY: `nofile` is a valid `rlimit` struct on the stack with correct field
+    // values. `setrlimit` reads it via the provided pointer and does not retain it.
     unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &nofile) };
 }
 
@@ -192,6 +198,9 @@ fn set_resource_limits() {
 fn close_inherited_fds() {
     // Try close_range(3, UINT_MAX, 0) — available since Linux 5.9 (syscall 436).
     // On older kernels ENOSYS is returned and we fall back to the manual loop.
+    // SAFETY: `close_range` (syscall 436) accepts three integer arguments and
+    // has no pointer parameters. On kernels without this syscall, ENOSYS is
+    // returned harmlessly and we fall back to the manual close loop below.
     let ret = unsafe {
         libc::syscall(436 /* close_range */, 3u32, u32::MAX, 0u32)
     };
@@ -203,6 +212,9 @@ fn close_inherited_fds() {
     // We cannot read /proc/self/fd here (that would be an async-signal-unsafe
     // allocation), so we just brute-force a reasonable range.
     for fd in 3..1024i32 {
+        // SAFETY: `close` on an invalid or already-closed fd returns EBADF,
+        // which is harmless. We intentionally close all fds in this range
+        // regardless of whether they are open.
         unsafe { libc::close(fd) };
     }
 }
@@ -212,6 +224,9 @@ fn close_inherited_fds() {
 /// Set `PR_SET_NO_NEW_PRIVS` so the plugin cannot gain privileges via setuid
 /// binaries, and so that seccomp can be applied without `CAP_SYS_ADMIN`.
 fn set_no_new_privs() -> io::Result<()> {
+    // SAFETY: PR_SET_NO_NEW_PRIVS with arg2=1 is a well-defined prctl operation
+    // that only affects the calling thread's privilege bits. All arguments are
+    // integer values (no pointers).
     let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if ret != 0 {
         return Err(io::Error::last_os_error());
@@ -397,6 +412,12 @@ fn apply_seccomp_filter() -> io::Result<()> {
         filter: filter.as_mut_ptr(),
     };
 
+    // SAFETY: `prog` points to a valid `sock_fprog` whose `filter` field points
+    // to the `filter` array on the stack. The BPF program length (`prog.len`)
+    // matches the number of instructions written. Both `prog` and `filter` remain
+    // valid and live for the duration of this call. `PR_SET_SECCOMP` with
+    // `SECCOMP_MODE_FILTER` reads the program but does not retain the pointer
+    // after the syscall returns.
     let ret = unsafe {
         libc::prctl(
             libc::PR_SET_SECCOMP,
@@ -432,6 +453,9 @@ mod tests {
     fn test_sandbox_apply_does_not_crash() {
         let mut cmd = Command::new("/bin/true");
         cmd.env_clear();
+        // SAFETY: The `pre_exec` closure calls only `apply()`, which uses
+        // async-signal-safe libc functions (setrlimit, close, prctl, syscall).
+        // No Rust allocator or mutex operations occur inside the closure.
         unsafe {
             cmd.pre_exec(|| apply(None));
         }
@@ -467,6 +491,9 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
+        // SAFETY: The `pre_exec` closure calls only `apply()`, which uses
+        // async-signal-safe libc functions (setrlimit, close, prctl, syscall).
+        // No Rust allocator or mutex operations occur inside the closure.
         unsafe {
             cmd.pre_exec(|| apply(None));
         }
@@ -494,6 +521,9 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
+        // SAFETY: The `pre_exec` closure calls only `apply()`, which uses
+        // async-signal-safe libc functions (setrlimit, close, prctl, syscall).
+        // No Rust allocator or mutex operations occur inside the closure.
         unsafe {
             cmd.pre_exec(|| apply(None));
         }

@@ -208,13 +208,13 @@ impl Node for SensorFrames {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_hz(100.0);
+    let mut scheduler = Scheduler::new().tick_rate(100.hz());
 
     // Sensor pipeline: fast → slow
-    scheduler.add(LidarProcessor::new()?).order(0).rate_hz(100.0).build()?;
-    scheduler.add(Navigator::new()?).order(1).rate_hz(20.0).build()?;
-    scheduler.add(SensorFrames::new()?).order(2).rate_hz(1.0).build()?;
-    scheduler.add(TelemetryLogger::new()?).order(10).rate_hz(2.0).build()?;
+    scheduler.add(LidarProcessor::new()?).order(0).rate(100.hz()).build()?;
+    scheduler.add(Navigator::new()?).order(1).rate(20.hz()).build()?;
+    scheduler.add(SensorFrames::new()?).order(2).rate(1.hz()).build()?;
+    scheduler.add(TelemetryLogger::new()?).order(10).rate(2.hz()).build()?;
 
     scheduler.run_for(Duration::from_secs(60))?;
     Ok(())

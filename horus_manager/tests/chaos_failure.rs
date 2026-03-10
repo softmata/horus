@@ -251,8 +251,7 @@ async fn chaos_corrupt_wal_partial_read() {
 
     // Backup existing WAL if any
     let backup = if wal_path.exists() {
-        let data = std::fs::read(&wal_path).ok();
-        data
+        std::fs::read(&wal_path).ok()
     } else {
         None
     };

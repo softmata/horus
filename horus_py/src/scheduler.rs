@@ -16,6 +16,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Parameters for adding a node to the scheduler.
+struct NodeParams {
+    order: u32,
+    rate_hz: Option<f64>,
+    rt: bool,
+    deadline_ms: Option<f64>,
+    budget_us: Option<u64>,
+    failure_policy: Option<FailurePolicy>,
+    miss_policy: Option<String>,
+    execution_class: Option<ExecutionClass>,
+}
+
 // ─── PyNodeAdapter ───────────────────────────────────────────────────────────
 // Implements horus_core::Node by bridging to Python objects via GIL acquisition.
 //
@@ -161,8 +173,15 @@ impl CoreNode for PyNodeAdapter {
                         // Also stop the scheduler via the running flag
                         self.scheduler_running.store(false, Ordering::SeqCst);
                     } else {
-                        // Panic for horus_core's catch_unwind / failure policy
-                        panic!("Python node '{}' tick failed: {}", &self.node_name, e);
+                        // Intentional: horus_core wraps tick() in catch_unwind
+                        // and routes panics through the node's FailurePolicy (restart,
+                        // escalate, ignore).  Returning an error here would bypass
+                        // the fault-tolerance system.  resume_unwind triggers the
+                        // same catch_unwind path without being a panic!() call.
+                        std::panic::resume_unwind(Box::new(format!(
+                            "Python node '{}' tick failed: {}",
+                            &self.node_name, e
+                        )));
                     }
                 }
             }
@@ -222,7 +241,7 @@ impl CoreNode for PyNodeAdapter {
 /// Set via `.on_miss()` on the node builder.
 ///
 /// Example:
-///     scheduler.node(motor).order(0).rate_hz(1000).on_miss(Miss.SAFE_MODE).done()
+///     scheduler.node(motor).order(0).rate(1000).on_miss(Miss.SAFE_MODE).build()
 #[pyclass(name = "Miss", module = "horus._horus")]
 #[derive(Debug, Clone, Copy)]
 pub struct PyMiss;
@@ -265,7 +284,7 @@ fn parse_miss_policy(name: &str) -> PyResult<Miss> {
 /// Fluent builder for adding nodes to the scheduler.
 ///
 /// Example:
-///     scheduler.add(my_node).order(0).rate_hz(100.0).budget_us(500).build()
+///     scheduler.add(my_node).order(0).rate(100.0).budget(500).build()
 #[pyclass(name = "NodeBuilder", module = "horus._horus")]
 pub struct PyNodeBuilder {
     scheduler: Py<PyScheduler>,
@@ -289,20 +308,20 @@ impl PyNodeBuilder {
     }
 
     /// Set node-specific tick rate in Hz.
-    fn rate_hz(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
+    fn rate(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
         slf.rate_hz = Some(rate);
         slf
     }
 
     /// Set soft deadline in milliseconds.
-    fn deadline_ms(mut slf: PyRefMut<'_, Self>, ms: f64) -> PyRefMut<'_, Self> {
+    fn deadline(mut slf: PyRefMut<'_, Self>, ms: f64) -> PyRefMut<'_, Self> {
         slf.deadline_ms = Some(ms);
         slf.rt = true;
         slf
     }
 
     /// Set tick budget in microseconds.
-    fn budget_us(mut slf: PyRefMut<'_, Self>, us: u64) -> PyRefMut<'_, Self> {
+    fn budget(mut slf: PyRefMut<'_, Self>, us: u64) -> PyRefMut<'_, Self> {
         slf.budget_us = Some(us);
         slf.rt = true;
         slf
@@ -354,7 +373,7 @@ impl PyNodeBuilder {
     /// Set event-driven execution: node ticks when `topic` receives data.
     ///
     /// Example:
-    ///     scheduler.node(detector).on("lidar_scan").done()
+    ///     scheduler.node(detector).on("lidar_scan").build()
     fn on(mut slf: PyRefMut<'_, Self>, topic: String) -> PyRefMut<'_, Self> {
         slf.execution_class = Some(ExecutionClass::Event(topic));
         slf
@@ -373,7 +392,7 @@ impl PyNodeBuilder {
     }
 
     /// Finalize and add the node to the scheduler.
-    fn done(slf: PyRefMut<'_, Self>, py: Python) -> PyResult<Py<PyScheduler>> {
+    fn build(slf: PyRefMut<'_, Self>, py: Python) -> PyResult<Py<PyScheduler>> {
         let scheduler = slf.scheduler.clone_ref(py);
         let node = slf.node.clone_ref(py);
         let order = slf.order;
@@ -391,14 +410,16 @@ impl PyNodeBuilder {
             sched.add_node_internal(
                 py,
                 node,
-                order,
-                rate_hz,
-                rt,
-                deadline_ms,
-                budget_us,
-                failure_policy,
-                miss_policy,
-                execution_class,
+                NodeParams {
+                    order,
+                    rate_hz,
+                    rt,
+                    deadline_ms,
+                    budget_us,
+                    failure_policy,
+                    miss_policy,
+                    execution_class,
+                },
             )?;
         }
 
@@ -434,19 +455,17 @@ impl PyScheduler {
         })
     }
 
-    fn add_node_internal(
-        &self,
-        py: Python,
-        node: Py<PyAny>,
-        order: u32,
-        rate_hz: Option<f64>,
-        rt: bool,
-        deadline_ms: Option<f64>,
-        budget_us: Option<u64>,
-        failure_policy: Option<FailurePolicy>,
-        miss_policy: Option<String>,
-        execution_class: Option<ExecutionClass>,
-    ) -> PyResult<()> {
+    fn add_node_internal(&self, py: Python, node: Py<PyAny>, params: NodeParams) -> PyResult<()> {
+        let NodeParams {
+            order,
+            rate_hz,
+            rt,
+            deadline_ms,
+            budget_us,
+            failure_policy,
+            miss_policy,
+            execution_class,
+        } = params;
         let name: String = node.getattr(py, "name")?.extract(py)?;
 
         let publishers: Vec<TopicMetadata> = node
@@ -491,13 +510,14 @@ impl PyScheduler {
 
         let mut config = NodeRegistration::new(Box::new(adapter)).order(order);
         if let Some(rate) = node_rate {
-            config = config.rate_hz(rate);
+            use horus_core::core::DurationExt;
+            config = config.rate(rate.hz());
         }
         if let Some(ms) = deadline_ms {
-            config = config.deadline_ms(ms as u64);
+            config = config.deadline(std::time::Duration::from_millis(ms as u64));
         }
         if let Some(us) = budget_us {
-            config = config.budget_us(us);
+            config = config.budget(std::time::Duration::from_micros(us));
         }
         if let Some(ref miss_name) = miss_policy {
             config = config.on_miss(parse_miss_policy(miss_name)?);
@@ -517,7 +537,7 @@ impl PyScheduler {
                     config = config.async_io();
                 }
                 ExecutionClass::Rt => {
-                    // RT is set implicitly via deadline_ms/budget_us
+                    // RT is set implicitly via deadline/budget
                 }
                 ExecutionClass::BestEffort => {} // default, no-op
             }
@@ -639,16 +659,17 @@ impl PyScheduler {
     }
 
     /// Add a node to the scheduler.
-    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, budget_us=None, failure_policy=None, on_miss=None))]
+    #[allow(clippy::too_many_arguments)] // PyO3 kwargs match Python __init__ convention
+    #[pyo3(signature = (node, order=100, rate=None, rt=false, deadline=None, budget=None, failure_policy=None, on_miss=None))]
     fn add(
         &self,
         py: Python,
         node: Py<PyAny>,
         order: u32,
-        rate_hz: Option<f64>,
+        rate: Option<f64>,
         rt: bool,
-        deadline_ms: Option<f64>,
-        budget_us: Option<u64>,
+        deadline: Option<f64>,
+        budget: Option<u64>,
         failure_policy: Option<String>,
         on_miss: Option<String>,
     ) -> PyResult<()> {
@@ -668,20 +689,22 @@ impl PyScheduler {
         self.add_node_internal(
             py,
             node,
-            order,
-            rate_hz,
-            rt,
-            deadline_ms,
-            budget_us,
-            parsed_policy,
-            on_miss,
-            None,
+            NodeParams {
+                order,
+                rate_hz: rate,
+                rt,
+                deadline_ms: deadline,
+                budget_us: budget,
+                failure_policy: parsed_policy,
+                miss_policy: on_miss,
+                execution_class: None,
+            },
         )
     }
 
     /// Set per-node rate control
-    fn set_node_rate(&self, node_name: String, rate_hz: f64) -> PyResult<()> {
-        if rate_hz <= 0.0 || rate_hz > 10000.0 {
+    fn set_node_rate(&self, node_name: String, rate: f64) -> PyResult<()> {
+        if rate <= 0.0 || rate > 10000.0 {
             return Err(PyRuntimeError::new_err(
                 "Rate must be between 0 and 10000 Hz",
             ));
@@ -695,8 +718,9 @@ impl PyScheduler {
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Cannot modify while scheduler is running"))?;
 
-        inner.set_node_rate(&node_name, rate_hz);
-        tracing::info!(node = %node_name, rate_hz, "Set node rate");
+        use horus_core::core::DurationExt;
+        inner.set_node_rate(&node_name, rate.hz());
+        tracing::info!(node = %node_name, rate, "Set node rate");
         Ok(())
     }
 
@@ -1199,5 +1223,89 @@ mod tests {
             handle.join().unwrap(),
             "Running flag should be observable from callback thread"
         );
+    }
+
+    /// Verify tick metrics accumulate correctly across multiple ticks.
+    #[test]
+    fn node_context_tick_metrics_accumulate() {
+        let ctx = Arc::new(Mutex::new(CoreNodeInfo::new("metrics_test".to_string())));
+
+        for _ in 0..5 {
+            let mut guard = ctx.lock().unwrap();
+            guard.start_tick();
+            guard.record_tick();
+        }
+
+        let guard = ctx.lock().unwrap();
+        assert_eq!(guard.metrics().total_ticks, 5);
+        assert_eq!(guard.metrics().successful_ticks, 5);
+    }
+
+    /// Verify that failed ticks are tracked separately.
+    #[test]
+    fn node_context_failed_ticks_tracked() {
+        let ctx = Arc::new(Mutex::new(CoreNodeInfo::new("fail_test".to_string())));
+
+        // 3 successful ticks
+        for _ in 0..3 {
+            let mut guard = ctx.lock().unwrap();
+            guard.start_tick();
+            guard.record_tick();
+        }
+
+        // 2 failed ticks
+        for _ in 0..2 {
+            let mut guard = ctx.lock().unwrap();
+            guard.start_tick();
+            guard.record_tick_failure("test error".to_string());
+        }
+
+        let guard = ctx.lock().unwrap();
+        assert_eq!(guard.metrics().total_ticks, 5);
+        assert_eq!(guard.metrics().successful_ticks, 3);
+        assert_eq!(guard.metrics().failed_ticks, 2);
+    }
+
+    /// Concurrent access to node_context from multiple threads.
+    #[test]
+    fn node_context_concurrent_access() {
+        let ctx = Arc::new(Mutex::new(CoreNodeInfo::new("concurrent".to_string())));
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        let mut guard = ctx.lock().unwrap();
+                        guard.start_tick();
+                        guard.record_tick();
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let guard = ctx.lock().unwrap();
+        assert_eq!(guard.metrics().total_ticks, 40);
+    }
+
+    /// Verify stop_requested flag propagates across threads.
+    #[test]
+    fn stop_requested_flag_propagates() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let observer = stop.clone();
+
+        assert!(!stop.load(Ordering::SeqCst));
+
+        // Simulate request_stop from Python
+        stop.store(true, Ordering::SeqCst);
+
+        let saw_stop = std::thread::spawn(move || observer.load(Ordering::SeqCst))
+            .join()
+            .unwrap();
+        assert!(saw_stop, "Stop flag should propagate to other threads");
     }
 }

@@ -91,7 +91,7 @@ class TestSchedulerConfigProfiles:
     def test_deploy_config_chaining(self):
         from horus._horus import SchedulerConfig
         cfg = SchedulerConfig.deploy()
-        cfg = cfg.rate_hz(500.0).blackbox_mb(128)
+        cfg = cfg.rate(500.0).blackbox_mb(128)
         assert cfg.tick_rate == 500.0
         assert cfg.black_box_size_mb == 128
         assert cfg.fault_tolerance is True
@@ -133,7 +133,7 @@ class TestSchedulerProfiles:
                 pass
 
         s = Scheduler.deploy(tick_rate=100.0)
-        s.add(TestNode(), order=0, rate_hz=50.0)
+        s.add(TestNode(), order=0, rate=50.0)
 
     def test_deploy_can_run_briefly(self):
         from horus import Scheduler, Node
@@ -170,7 +170,7 @@ class TestNodeRateBuilder:
 
         s = Scheduler(tick_rate=100.0)
         # Rate set via add() parameter — this is the new API
-        s.add(SimpleNode(), order=0, rate_hz=50.0)
+        s.add(SimpleNode(), order=0, rate=50.0)
 
     def test_rate_via_node_attribute(self):
         from horus import Scheduler, Node
@@ -194,8 +194,8 @@ class TestNodeRateBuilder:
                 pass
 
         s = Scheduler(tick_rate=100.0)
-        # Explicit rate_hz param overrides node.rate
-        s.add(RatedNode(), order=0, rate_hz=75.0)
+        # Explicit rate param overrides node.rate
+        s.add(RatedNode(), order=0, rate=75.0)
 
 
 # ============================================================================
@@ -233,9 +233,9 @@ class TestMissEnum:
 
         s = Scheduler(tick_rate=100.0)
         # Use fluent builder API via the native scheduler
-        s._scheduler.node(SimpleNode()).order(0).on_miss(Miss.SAFE_MODE).done()
+        s._scheduler.node(SimpleNode()).order(0).on_miss(Miss.SAFE_MODE).build()
 
-    def test_budget_us_via_add(self):
+    def test_budget_via_add(self):
         from horus import Scheduler, Node
 
         class SimpleNode(Node):
@@ -244,7 +244,7 @@ class TestMissEnum:
                 pass
 
         s = Scheduler(tick_rate=100.0)
-        s.add(SimpleNode(), order=0, budget_us=500)
+        s.add(SimpleNode(), order=0, budget=500)
 
     def test_safety_stats_has_safe_mode_activations(self):
         from horus import Scheduler, Node

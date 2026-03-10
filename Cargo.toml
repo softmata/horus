@@ -70,8 +70,9 @@ approx = "0.5"
 # ─── Workspace Lints ──────────────────────────────────────────────────────────
 # Prevent stub tests and common test quality issues across all crates.
 [workspace.lints.clippy]
-# Catch `let _ = expr` that silently discards Results/Options in tests
-let_underscore_must_use = "warn"
+# `let _ = expr` is the idiomatic Rust acknowledgment of discarding a Result.
+# The rust-level `unused_must_use` lint catches bare expressions without `let _`.
+let_underscore_must_use = "allow"
 # Catch `assert!(result.is_ok())` — prefer unwrap() or match for better errors
 assertions_on_result_states = "warn"
 

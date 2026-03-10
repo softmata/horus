@@ -167,8 +167,8 @@ pub fn create_test_shm_topic(name: &str, size: u64) -> PathBuf {
 /// This cleans up both the nodes and topics directories.  It is safe to call
 /// even if no fixtures exist.
 pub fn cleanup_test_shm() {
-    cleanup_dir_with_prefix(&shm_nodes_dir(), &format!("{}", TEST_PREFIX));
-    cleanup_dir_with_prefix(&shm_topics_dir(), &format!("{}", TEST_PREFIX));
+    cleanup_dir_with_prefix(&shm_nodes_dir(), TEST_PREFIX);
+    cleanup_dir_with_prefix(&shm_topics_dir(), TEST_PREFIX);
 }
 
 /// Remove files in `dir` whose name starts with `prefix`.

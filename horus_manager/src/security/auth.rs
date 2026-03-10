@@ -513,7 +513,7 @@ mod tests {
 
         // 6th attempt should be rate limited
         let result = auth.login("testpass", Some("127.0.0.1".to_string()));
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

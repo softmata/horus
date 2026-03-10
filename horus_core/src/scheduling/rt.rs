@@ -196,11 +196,12 @@ pub fn set_realtime_priority(_priority: i32) -> RuntimeResult<()> {
 // NUMA Awareness
 // ============================================================================
 
-/// Get NUMA node count (returns 1 if NUMA not available)
+/// Get NUMA node count (returns 1 if NUMA not available).
+///
+/// Reserved for future NUMA-aware thread pinning in the scheduler.
+#[cfg(test)]
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
-pub fn get_numa_node_count() -> usize {
-    // Try to read from /sys/devices/system/node/
+pub(crate) fn get_numa_node_count() -> usize {
     if let Ok(entries) = std::fs::read_dir("/sys/devices/system/node/") {
         entries
             .filter_map(|e| e.ok())
@@ -212,9 +213,9 @@ pub fn get_numa_node_count() -> usize {
     }
 }
 
+#[cfg(test)]
 #[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-pub fn get_numa_node_count() -> usize {
+pub(crate) fn get_numa_node_count() -> usize {
     1
 }
 
@@ -636,7 +637,7 @@ mod runtime_tests {
     #[test]
     fn test_prefault_stack() {
         let result = prefault_stack(64 * 1024); // 64KB
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }
 

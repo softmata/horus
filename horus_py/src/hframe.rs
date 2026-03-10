@@ -660,7 +660,7 @@ impl PyHFrame {
             dict.set_item("children_count", info.children_count)?;
             dict.set_item("depth", info.depth)?;
             if let Some((oldest, newest)) = info.time_range {
-                let range = pyo3::types::PyTuple::new(py, &[oldest, newest])?;
+                let range = pyo3::types::PyTuple::new(py, [oldest, newest])?;
                 dict.set_item("time_range", range)?;
             } else {
                 dict.set_item("time_range", py.None())?;

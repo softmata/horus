@@ -147,7 +147,7 @@ pub fn make_dlpack_capsule(
     let managed = horus_core::dlpack::to_dlpack(data_ptr, shape, strides_elements, dtype, device);
     let managed_ptr = Box::into_raw(managed);
 
-    let capsule_name = CString::new("dltensor").unwrap();
+    let capsule_name = CString::new("dltensor").expect("static str has no NUL");
     // SAFETY: managed_ptr is a valid heap allocation from Box::into_raw above.
     // PyCapsule_New takes ownership of the pointer and will call
     // dlpack_capsule_destructor when the capsule is garbage collected.

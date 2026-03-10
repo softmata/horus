@@ -1,3 +1,4 @@
+use horus_core::core::DurationExt;
 use horus_core::{HorusResult as Result, Node, Scheduler, TopicMetadata};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -152,7 +153,7 @@ fn test_enhanced_scheduler() {
             work_ms: 1, // Very fast
         })
         .order(10)
-        .done();
+        .build();
 
     // Add I/O-heavy node (should move to async tier after learning)
     scheduler
@@ -162,7 +163,7 @@ fn test_enhanced_scheduler() {
             io_delay_ms: 50, // Blocking I/O
         })
         .order(20)
-        .done();
+        .build();
 
     // Add flaky node with Ignore policy (tolerates failures without stopping)
     scheduler
@@ -173,7 +174,7 @@ fn test_enhanced_scheduler() {
         })
         .order(30)
         .failure_policy(horus_core::scheduling::FailurePolicy::Ignore)
-        .done();
+        .build();
 
     // Run scheduler for 3 seconds
     let run_duration = Duration::from_secs(3);
@@ -238,7 +239,7 @@ fn test_skip_policy_protection() {
         })
         .order(10)
         .failure_policy(FailurePolicy::skip(5, 30_000))
-        .done();
+        .build();
 
     // Run for 1 second
     scheduler

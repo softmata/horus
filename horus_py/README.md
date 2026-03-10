@@ -51,9 +51,9 @@ msg = topic.recv()  # Returns CmdVel instance
 import horus
 
 scheduler = horus.Scheduler()
-scheduler.node(motor_ctrl).order(0).rt().rate_hz(1000.0).done()
-scheduler.node(planner).order(5).compute().done()
-scheduler.node(telemetry).order(10).async_io().rate_hz(1.0).done()
+scheduler.node(motor_ctrl).order(0).rt().rate(1000.0).build()
+scheduler.node(planner).order(5).compute().build()
+scheduler.node(telemetry).order(10).async_io().rate(1.0).build()
 ```
 
 ## Multiple Nodes

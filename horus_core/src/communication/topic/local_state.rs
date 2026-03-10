@@ -13,9 +13,14 @@ pub(crate) const DEFAULT_SLOT_SIZE: usize = 8 * 1024;
 /// This avoids calling SystemTime::now() syscall on the hot path
 pub(crate) const LEASE_REFRESH_INTERVAL: u32 = 1024;
 
-/// Epoch check interval for DirectChannel (same-thread, no lease needed).
-/// Checks migration_epoch from SHM header every N messages (~0.01ns amortized).
-pub(crate) const EPOCH_CHECK_INTERVAL: u32 = 4096;
+/// Epoch check interval — reads migration_epoch from SHM header every N messages.
+/// Must be a power of two (used with bitmask).
+///
+/// Set to 32 (~1ns amortized) to detect cross-process migration promptly.
+/// At 30 Hz this checks every ~1 s; at 1 kHz every ~32 ms.
+/// The previous value of 4096 caused 100+ second detection delays at low
+/// frequencies.
+pub(crate) const EPOCH_CHECK_INTERVAL: u32 = 32;
 
 /// Local state for an Topic participant
 ///

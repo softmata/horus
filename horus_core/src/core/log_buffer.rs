@@ -217,12 +217,16 @@ impl SharedLogBuffer {
         };
 
         // ── Step 1: Claim a unique slot via atomic fetch_add ─────────────────
+        // SAFETY: base points to the start of the mmap (page-aligned, >= HEADER_SIZE bytes).
+        // The AtomicU64 at offset 0 is 8-byte aligned. MutexGuard keeps mmap alive.
         let claimed_idx = unsafe { claim_slot(base) };
         let slot_idx = (claimed_idx as usize) % MAX_LOG_ENTRIES;
         let slot_off = HEADER_SIZE + slot_idx * SLOT_SIZE;
 
         // ── Step 2: Mark slot as write-in-progress (odd seq) ─────────────────
         // Readers that see an odd seq will skip this slot, preventing torn reads.
+        // SAFETY: slot_idx < MAX_LOG_ENTRIES (modulo above); base covers the full mmap.
+        // HEADER_SIZE and SLOT_SIZE are multiples of 8, so the AtomicU64 is aligned.
         unsafe {
             store_slot_seq(base, slot_idx, claimed_idx.wrapping_mul(2).wrapping_add(1));
         }
@@ -230,6 +234,9 @@ impl SharedLogBuffer {
         // ── Step 3: Write serialised entry data ───────────────────────────────
         let data_off = slot_off + SLOT_SEQ_SIZE;
         let len = serialized.len().min(SLOT_DATA_SIZE);
+        // SAFETY: data_off + SLOT_DATA_SIZE is within the mmap region (bounded by
+        // HEADER_SIZE + MAX_LOG_ENTRIES * SLOT_SIZE). serialized.len() <= SLOT_DATA_SIZE.
+        // MutexGuard keeps the mmap alive; the claimed slot is exclusively ours.
         unsafe {
             std::ptr::copy_nonoverlapping(serialized.as_ptr(), base.add(data_off), len);
             if len < SLOT_DATA_SIZE {
@@ -240,6 +247,7 @@ impl SharedLogBuffer {
         // ── Step 4: Mark slot as complete (even nonzero seq) ─────────────────
         // The Release ordering ensures the data writes above are visible to any
         // reader that performs an Acquire load on this seq field.
+        // SAFETY: slot_idx < MAX_LOG_ENTRIES; base covers the full mmap; aligned (see Step 2).
         unsafe {
             store_slot_seq(base, slot_idx, claimed_idx.wrapping_mul(2).wrapping_add(2));
         }
@@ -255,6 +263,7 @@ impl SharedLogBuffer {
         // SAFETY: same alignment guarantees as push().
         let base: *const u8 = (*guard).as_ptr();
 
+        // SAFETY: base is page-aligned mmap of at least HEADER_SIZE bytes; AtomicU64 at offset 0 is aligned.
         let write_idx = unsafe { load_write_idx(base) } as usize;
 
         let mut logs = Vec::new();

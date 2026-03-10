@@ -49,14 +49,21 @@ pub fn generate_namespace() -> String {
             return sanitize_namespace(&ns);
         }
     }
-    // 3. Auto-generate: PGID groups all processes launched from the same parent
-    //    so they share SHM; different applications have different PGIDs.
+    // 3. Auto-generate from session ID (SID).
+    //
+    //    SID is shared by all processes in the same terminal session, so
+    //    independently launched processes (`./pub &`, `./sub &`) converge
+    //    on the same SHM namespace.  PGID was used previously but breaks
+    //    when processes are backgrounded, since each gets its own PGID
+    //    (GitHub issue #37).
     #[cfg(unix)]
     {
-        // SAFETY: getpgrp() and getuid() are always-succeeding async-signal-safe syscalls.
-        let pgid = unsafe { libc::getpgrp() };
+        // SAFETY: getsid(0) is an always-succeeding async-signal-safe syscall
+        // that returns the session ID of the calling process.
+        let sid = unsafe { libc::getsid(0) };
+        // SAFETY: getuid() is an always-succeeding async-signal-safe syscall with no preconditions.
         let uid = unsafe { libc::getuid() };
-        format!("pgid{}_uid{}", pgid, uid)
+        format!("sid{}_uid{}", sid, uid)
     }
     #[cfg(not(unix))]
     {
@@ -311,6 +318,7 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
     let current_ns = format!("horus_{}", shm_namespace());
 
     #[cfg(unix)]
+    // SAFETY: getuid() is an always-succeeding, async-signal-safe POSIX syscall.
     let current_uid = unsafe { libc::getuid() };
     #[cfg(not(unix))]
     let current_uid: u32 = 0;
@@ -554,14 +562,14 @@ mod tests {
     #[test]
     fn test_generate_namespace_uses_horus_namespace_env() {
         // Set both vars; HORUS_NAMESPACE must win.
-        // SAFETY: setting env vars is process-wide. This test must not run in
-        // parallel with other tests that read HORUS_NAMESPACE.  Since each Rust
-        // test binary runs its tests sequentially by default within a single
-        // thread pool, and the env changes are bracketed, this is acceptable.
-        // In CI, use `--test-threads=1` if parallel env-var tests are added.
         let prev = std::env::var("HORUS_NAMESPACE").ok();
         let prev_legacy = std::env::var("HORUS_SHM_NAMESPACE").ok();
 
+        // SAFETY: set_var/remove_var are process-wide mutations. This test must not run in
+        // parallel with other tests that read HORUS_NAMESPACE or HORUS_SHM_NAMESPACE. Each
+        // Rust test binary runs its tests sequentially by default within a single thread
+        // pool, and the env changes are bracketed by a restore block, so this is safe.
+        // In CI, use `--test-threads=1` if parallel env-var tests are added.
         unsafe {
             std::env::set_var("HORUS_NAMESPACE", "test_robot_A");
             std::env::remove_var("HORUS_SHM_NAMESPACE");
@@ -569,6 +577,8 @@ mod tests {
         let ns = generate_namespace();
 
         // Restore
+        // SAFETY: env var mutation is process-wide; test is single-threaded and
+        // restores original values before returning.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
@@ -589,12 +599,15 @@ mod tests {
         let prev = std::env::var("HORUS_NAMESPACE").ok();
         let prev_legacy = std::env::var("HORUS_SHM_NAMESPACE").ok();
 
+        // SAFETY: env var mutation is process-wide; test is single-threaded and
+        // restores original values before returning.
         unsafe {
             std::env::remove_var("HORUS_NAMESPACE");
             std::env::set_var("HORUS_SHM_NAMESPACE", "legacy_ns");
         }
         let ns = generate_namespace();
 
+        // SAFETY: restoring env vars saved above; same single-threaded test context.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
@@ -615,12 +628,15 @@ mod tests {
         let prev = std::env::var("HORUS_NAMESPACE").ok();
         let prev_legacy = std::env::var("HORUS_SHM_NAMESPACE").ok();
 
+        // SAFETY: env var mutation is process-wide; test is single-threaded and
+        // restores original values before returning.
         unsafe {
             std::env::remove_var("HORUS_NAMESPACE");
             std::env::remove_var("HORUS_SHM_NAMESPACE");
         }
         let ns = generate_namespace();
 
+        // SAFETY: restoring env vars saved above; same single-threaded test context.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
@@ -698,6 +714,7 @@ mod tests {
     #[test]
     fn test_process_group_alive_current() {
         // Our own process group should be alive
+        // SAFETY: getpgrp() is an always-succeeding, async-signal-safe POSIX syscall.
         let pgid = unsafe { libc::getpgrp() };
         assert!(
             process_group_alive(pgid),
@@ -754,6 +771,7 @@ mod tests {
             % 100_000_000;
         let dead_pgid = 900_000_000 + unique_suffix as i32;
         #[cfg(unix)]
+        // SAFETY: getuid() is an always-succeeding, async-signal-safe POSIX syscall.
         let uid = unsafe { libc::getuid() };
         #[cfg(not(unix))]
         let uid: u32 = 0;
@@ -788,10 +806,12 @@ mod tests {
         // Create a directory matching the current process's PGID — should NOT be removed
         let parent = shm_parent_dir();
         #[cfg(unix)]
+        // SAFETY: getpgrp() is an always-succeeding, async-signal-safe POSIX syscall.
         let pgid = unsafe { libc::getpgrp() };
         #[cfg(not(unix))]
         let pgid: i32 = std::process::id() as i32;
         #[cfg(unix)]
+        // SAFETY: getuid() is an always-succeeding, async-signal-safe POSIX syscall.
         let uid = unsafe { libc::getuid() };
         #[cfg(not(unix))]
         let uid: u32 = 0;

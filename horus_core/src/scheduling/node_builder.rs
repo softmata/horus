@@ -12,7 +12,7 @@
 //!
 //! scheduler.add(my_node)
 //!     .order(0)
-//!     .rate_hz(100.0)
+//!     .rate(100.hz())
 //!     .budget(500.us())
 //!     .deadline(1.ms())
 //!     .build()?;
@@ -48,6 +48,8 @@ pub struct NodeRegistration {
     pub(crate) miss_policy: Miss,
     /// Execution class — determines scheduling group
     pub(crate) execution_class: ExecutionClass,
+    /// Source frequency for deferred auto-derivation at build time
+    source_freq: Option<Frequency>,
 }
 
 impl NodeRegistration {
@@ -57,7 +59,7 @@ impl NodeRegistration {
     /// ```rust,ignore
     /// let config = NodeRegistration::new(Box::new(MyNode::new()))
     ///     .order(0)
-    ///     .rate_hz(100.0);
+    ///     .rate(100.hz());
     /// ```
     pub fn new(node: Box<dyn Node>) -> Self {
         Self {
@@ -70,6 +72,7 @@ impl NodeRegistration {
             failure_policy: None,
             miss_policy: Miss::default(),
             execution_class: ExecutionClass::BestEffort,
+            source_freq: None,
         }
     }
 
@@ -93,20 +96,6 @@ impl NodeRegistration {
         self
     }
 
-    /// Set a node-specific tick rate in Hz.
-    ///
-    /// If not set, the node uses the scheduler's global tick rate.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// NodeRegistration::new(sensor_node)
-    ///     .rate_hz(1000.0)  // 1kHz for sensor polling
-    /// ```
-    pub fn rate_hz(mut self, rate: f64) -> Self {
-        self.rate_hz = Some(rate);
-        self
-    }
-
     /// Mark this as a compute node for parallel execution.
     ///
     /// Compute nodes run in a parallel thread pool, isolated from RT nodes.
@@ -116,7 +105,7 @@ impl NodeRegistration {
     /// ```rust,ignore
     /// NodeRegistration::new(path_planner)
     ///     .compute()
-    ///     .rate_hz(10.0)
+    ///     .rate(10.hz())
     /// ```
     pub fn compute(mut self) -> Self {
         self.execution_class = ExecutionClass::Compute;
@@ -148,35 +137,39 @@ impl NodeRegistration {
     /// ```rust,ignore
     /// NodeRegistration::new(telemetry_uploader)
     ///     .async_io()
-    ///     .rate_hz(1.0)  // Upload once per second
+    ///     .rate(1.hz())  // Upload once per second
     /// ```
     pub fn async_io(mut self) -> Self {
         self.execution_class = ExecutionClass::AsyncIo;
         self
     }
 
-    /// Set the node's tick rate from a `Frequency`.
+    /// Set the node's tick rate.
     ///
-    /// Setting a rate implies real-time scheduling. Budget and deadline
-    /// are auto-derived (80% and 95% of period) if not explicitly set.
+    /// For nodes with default execution class (`BestEffort`), this auto-enables
+    /// RT scheduling and derives budget (80%) and deadline (95%) from the period.
+    /// For nodes already assigned an execution class (`.compute()`, `.on()`,
+    /// `.async_io()`), this sets rate-limiting without RT implications.
+    ///
+    /// Method call order does not matter — auto-derivation is deferred to
+    /// `.build()` time.
     ///
     /// # Example
     /// ```rust,ignore
     /// use horus::prelude::*;
     ///
+    /// // RT node — auto-derives budget & deadline
     /// NodeRegistration::new(Box::new(motor_ctrl))
     ///     .rate(100.hz())
+    ///
+    /// // Compute node — rate-limited, no RT
+    /// NodeRegistration::new(Box::new(planner))
+    ///     .compute()
+    ///     .rate(10.hz())
     /// ```
     pub fn rate(mut self, freq: Frequency) -> Self {
         self.rate_hz = Some(freq.value());
-        self.is_rt = true;
-        if self.tick_budget.is_none() {
-            self.tick_budget = Some(freq.budget_default());
-        }
-        if self.deadline.is_none() {
-            self.deadline = Some(freq.deadline_default());
-        }
-        self.execution_class = ExecutionClass::Rt;
+        self.source_freq = Some(freq);
         self
     }
 
@@ -245,12 +238,42 @@ impl NodeRegistration {
         self
     }
 
+    /// Apply deferred auto-derivation from `.rate(Frequency)`.
+    ///
+    /// Called automatically by [`NodeBuilder::build()`] before validation.
+    /// If `.rate()` was called and no explicit execution class was set,
+    /// this auto-enables RT scheduling and derives budget/deadline from
+    /// the frequency. For non-RT execution classes, only the rate is kept
+    /// for rate-limiting.
+    pub(crate) fn finalize(&mut self) {
+        if let Some(freq) = self.source_freq {
+            // Auto-derive budget/deadline if RT or will become RT
+            let will_be_rt =
+                self.is_rt || matches!(self.execution_class, ExecutionClass::BestEffort);
+            if will_be_rt {
+                if self.tick_budget.is_none() {
+                    self.tick_budget = Some(freq.budget_default());
+                }
+                if self.deadline.is_none() {
+                    self.deadline = Some(freq.deadline_default());
+                }
+            }
+            // Auto-enable RT if no explicit execution class was set
+            if matches!(self.execution_class, ExecutionClass::BestEffort) {
+                self.is_rt = true;
+                self.execution_class = ExecutionClass::Rt;
+            }
+        }
+    }
+
     /// Validate the node configuration, catching conflicts and invalid values.
     ///
-    /// Called automatically by [`NodeBuilder::build()`]. You only need to call
-    /// this manually if you're using `NodeRegistration` directly (e.g. from
+    /// Calls [`finalize()`](Self::finalize) first to apply deferred auto-derivation
+    /// from `.rate()`. Called automatically by [`NodeBuilder::build()`]. You only need
+    /// to call this manually if you're using `NodeRegistration` directly (e.g. from
     /// Python bindings).
-    pub fn validate(&self) -> HorusResult<()> {
+    pub fn validate(&mut self) -> HorusResult<()> {
+        self.finalize();
         let node_name = self.node.name();
 
         // Validate rate_hz: must be finite and positive
@@ -318,7 +341,7 @@ impl NodeRegistration {
 
         // Validate RT-specific constraints on non-RT nodes
         if !self.is_rt && (self.tick_budget.is_some() || self.deadline.is_some()) {
-            // This shouldn't happen since budget_us/deadline_* auto-set is_rt,
+            // This shouldn't happen since budget/deadline auto-set is_rt,
             // but guard against manual NodeRegistration construction.
             return Err(ValidationError::Conflict {
                 field_a: "tick_budget / deadline".into(),
@@ -345,7 +368,7 @@ impl NodeRegistration {
 ///
 /// scheduler.add(my_node)
 ///     .order(0)
-///     .rate_hz(100.0)
+///     .rate(100.hz())
 ///     .budget(500.us())
 ///     .build()?;
 /// ```
@@ -407,12 +430,6 @@ impl<'a> NodeBuilder<'a> {
         self
     }
 
-    /// Set a node-specific tick rate in Hz.
-    pub fn rate_hz(mut self, rate: f64) -> Self {
-        self.config = self.config.rate_hz(rate);
-        self
-    }
-
     /// Mark this as a compute node for parallel execution.
     pub fn compute(mut self) -> Self {
         self.config = self.config.compute();
@@ -443,7 +460,7 @@ impl<'a> NodeBuilder<'a> {
     ///
     /// Validates the configuration before registering. Returns an error if
     /// the configuration is contradictory (e.g. `.budget(N.us()).compute()`) or contains
-    /// invalid values (e.g. `rate_hz(NaN)`, `deadline(Duration::ZERO)`).
+    /// invalid values (e.g. `deadline(Duration::ZERO)`).
     ///
     /// # Example
     /// ```rust,ignore
@@ -451,20 +468,16 @@ impl<'a> NodeBuilder<'a> {
     ///     .order(0)
     ///     .build()?;
     /// ```
-    pub fn build(self) -> HorusResult<&'a mut super::scheduler::Scheduler> {
+    pub fn build(mut self) -> HorusResult<&'a mut super::scheduler::Scheduler> {
         self.config.validate()?;
         Ok(self.scheduler.add_configured(self.config))
-    }
-
-    /// Alias for [`build()`](Self::build) — kept for backward compatibility.
-    pub fn done(self) -> HorusResult<&'a mut super::scheduler::Scheduler> {
-        self.build()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::DurationExt;
     use crate::core::Node;
     use crate::scheduling::fault_tolerance::FailurePolicy;
 
@@ -514,51 +527,24 @@ mod tests {
         assert_eq!(reg.order, 10);
     }
 
-    // ── .rate_hz() ──
+    // ── .rate() ──
 
     #[test]
-    fn test_rate_hz_valid() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(100.0);
+    fn test_rate_valid() {
+        let reg = NodeRegistration::new(stub("n")).rate(100.hz());
         assert_eq!(reg.rate_hz, Some(100.0));
+        assert!(reg.source_freq.is_some());
     }
 
     #[test]
-    fn test_rate_hz_zero_stored() {
-        // Builder stores the value — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).rate_hz(0.0);
-        assert_eq!(reg.rate_hz, Some(0.0));
-    }
-
-    #[test]
-    fn test_rate_hz_negative_stored() {
-        // Builder stores the value — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).rate_hz(-1.0);
-        assert_eq!(reg.rate_hz, Some(-1.0));
-    }
-
-    #[test]
-    fn test_rate_hz_infinity_stored() {
-        // Builder stores the value — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::INFINITY);
-        assert_eq!(reg.rate_hz, Some(f64::INFINITY));
-    }
-
-    #[test]
-    fn test_rate_hz_nan_stored() {
-        // Builder stores the value — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::NAN);
-        assert!(reg.rate_hz.unwrap().is_nan());
-    }
-
-    #[test]
-    fn test_rate_hz_very_small() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(0.001);
+    fn test_rate_very_small() {
+        let reg = NodeRegistration::new(stub("n")).rate(0.001.hz());
         assert_eq!(reg.rate_hz, Some(0.001));
     }
 
     #[test]
-    fn test_rate_hz_very_large() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(1_000_000.0);
+    fn test_rate_very_large() {
+        let reg = NodeRegistration::new(stub("n")).rate(1_000_000.hz());
         assert_eq!(reg.rate_hz, Some(1_000_000.0));
     }
 
@@ -607,57 +593,48 @@ mod tests {
     // ── .budget() ──
 
     #[test]
-    fn test_budget_us_sets_budget_and_rt() {
-        let reg = NodeRegistration::new(stub("n")).budget(500);
+    fn test_budget_sets_budget_and_rt() {
+        let reg = NodeRegistration::new(stub("n")).budget(500.us());
         assert!(reg.is_rt);
         assert_eq!(reg.tick_budget, Some(Duration::from_micros(500)));
     }
 
     #[test]
-    fn test_budget_us_zero_stored() {
+    fn test_budget_zero_stored() {
         // Builder stores zero — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).budget(0);
-        assert_eq!(reg.tick_budget, Some(Duration::from_micros(0)));
+        let reg = NodeRegistration::new(stub("n")).budget(Duration::ZERO);
+        assert_eq!(reg.tick_budget, Some(Duration::ZERO));
         assert!(reg.is_rt);
     }
 
     #[test]
-    fn test_budget_us_max() {
-        let reg = NodeRegistration::new(stub("n")).budget(u64::MAX);
+    fn test_budget_max() {
+        let reg = NodeRegistration::new(stub("n")).budget(Duration::from_micros(u64::MAX));
         assert_eq!(reg.tick_budget, Some(Duration::from_micros(u64::MAX)));
     }
 
-    // ── .deadline_us() ──
+    // ── .deadline() ──
 
     #[test]
-    fn test_deadline_us_sets_deadline_and_rt() {
-        let reg = NodeRegistration::new(stub("n")).deadline_us(1000);
+    fn test_deadline_sets_deadline_and_rt() {
+        let reg = NodeRegistration::new(stub("n")).deadline(1000.us());
         assert!(reg.is_rt);
         assert_eq!(reg.deadline, Some(Duration::from_micros(1000)));
     }
 
     #[test]
-    fn test_deadline_us_zero_stored() {
+    fn test_deadline_zero_stored() {
         // Builder stores zero — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).deadline_us(0);
+        let reg = NodeRegistration::new(stub("n")).deadline(Duration::ZERO);
         assert_eq!(reg.deadline, Some(Duration::ZERO));
         assert!(reg.is_rt);
     }
-
-    // ── .deadline_ms() ──
 
     #[test]
     fn test_deadline_ms_sets_deadline_and_rt() {
-        let reg = NodeRegistration::new(stub("n")).deadline_ms(10);
+        let reg = NodeRegistration::new(stub("n")).deadline(10.ms());
         assert!(reg.is_rt);
         assert_eq!(reg.deadline, Some(Duration::from_millis(10)));
-    }
-
-    #[test]
-    fn test_deadline_ms_zero_stored() {
-        // Builder stores zero — validation catches it later in build()
-        let reg = NodeRegistration::new(stub("n")).deadline_ms(0);
-        assert_eq!(reg.deadline, Some(Duration::ZERO));
     }
 
     // ── .failure_policy() ──
@@ -702,14 +679,14 @@ mod tests {
 
     #[test]
     fn test_budget_then_compute_takes_last_class() {
-        let reg = NodeRegistration::new(stub("n")).budget(100).compute();
+        let reg = NodeRegistration::new(stub("n")).budget(100.us()).compute();
         assert_eq!(reg.execution_class, ExecutionClass::Compute);
-        assert!(reg.is_rt); // budget_us sets is_rt, compute overrides class
+        assert!(reg.is_rt); // budget sets is_rt, compute overrides class
     }
 
     #[test]
     fn test_compute_then_budget_takes_last_class() {
-        let reg = NodeRegistration::new(stub("n")).compute().budget(100);
+        let reg = NodeRegistration::new(stub("n")).compute().budget(100.us());
         assert_eq!(reg.execution_class, ExecutionClass::Rt);
         assert!(reg.is_rt);
     }
@@ -725,9 +702,9 @@ mod tests {
 
     #[test]
     fn test_budget_then_async_io_takes_last_class() {
-        let reg = NodeRegistration::new(stub("n")).budget(100).async_io();
+        let reg = NodeRegistration::new(stub("n")).budget(100.us()).async_io();
         assert_eq!(reg.execution_class, ExecutionClass::AsyncIo);
-        assert!(reg.is_rt); // budget_us sets is_rt, async_io overrides class
+        assert!(reg.is_rt); // budget sets is_rt, async_io overrides class
     }
 
     // ── Builder chain ordering independence ──
@@ -736,9 +713,9 @@ mod tests {
     fn test_order_rate_budget_chain() {
         let reg = NodeRegistration::new(stub("n"))
             .order(5)
-            .rate_hz(100.0)
-            .budget(200)
-            .deadline_ms(1)
+            .rate(100.hz())
+            .budget(200.us())
+            .deadline(1.ms())
             .failure_policy(FailurePolicy::Fatal);
 
         assert_eq!(reg.order, 5);
@@ -753,9 +730,9 @@ mod tests {
     fn test_reverse_chain_order() {
         let reg = NodeRegistration::new(stub("n"))
             .failure_policy(FailurePolicy::Ignore)
-            .deadline_ms(5)
-            .budget(100)
-            .rate_hz(50.0)
+            .deadline(5.ms())
+            .budget(100.us())
+            .rate(50.hz())
             .order(10);
 
         assert_eq!(reg.order, 10);
@@ -776,27 +753,12 @@ mod tests {
         scheduler
             .add(StubNode("builder_test".to_string()))
             .order(5)
-            .rate_hz(50.0)
+            .rate(50.hz())
             .build()
             .unwrap();
 
         let names = scheduler.node_list();
         assert!(names.contains(&"builder_test".to_string()));
-    }
-
-    #[test]
-    fn test_builder_done_alias() {
-        use crate::scheduling::Scheduler;
-
-        let mut scheduler = Scheduler::new();
-        scheduler
-            .add(StubNode("done_test".to_string()))
-            .order(0)
-            .done()
-            .unwrap();
-
-        let names = scheduler.node_list();
-        assert!(names.contains(&"done_test".to_string()));
     }
 
     #[test]
@@ -815,8 +777,8 @@ mod tests {
         scheduler
             .add(MinimalRt)
             .order(0)
-            .budget(100)
-            .deadline_dur(Duration::from_millis(1))
+            .budget(100.us())
+            .deadline(1.ms())
             .build()
             .unwrap();
 
@@ -859,7 +821,7 @@ mod tests {
         let mut scheduler = Scheduler::new();
         scheduler
             .add(StubNode("rt".into()))
-            .budget(500)
+            .budget(500.us())
             .build()
             .unwrap();
         scheduler
@@ -893,32 +855,32 @@ mod tests {
 
     #[test]
     fn validate_default_config_ok() {
-        let reg = NodeRegistration::new(stub("n"));
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n"));
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_budget_only_ok() {
-        let reg = NodeRegistration::new(stub("n")).budget(500);
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).budget(500.us());
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_compute_only_ok() {
-        let reg = NodeRegistration::new(stub("n")).compute();
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).compute();
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_event_only_ok() {
-        let reg = NodeRegistration::new(stub("n")).on("topic");
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).on("topic");
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_async_io_only_ok() {
-        let reg = NodeRegistration::new(stub("n")).async_io();
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).async_io();
+        reg.validate().unwrap();
     }
 
     #[test]
@@ -963,39 +925,39 @@ mod tests {
     /// .budget() auto-sets is_rt=true AND execution_class=Rt.
     #[test]
     fn budget_auto_sets_rt_flag_and_class() {
-        let reg = NodeRegistration::new(stub("n")).budget(500);
-        assert!(reg.is_rt, "budget_us should auto-set is_rt");
+        let reg = NodeRegistration::new(stub("n")).budget(500.us());
+        assert!(reg.is_rt, "budget should auto-set is_rt");
         assert_eq!(
             reg.execution_class,
             ExecutionClass::Rt,
-            "budget_us should set execution_class to Rt"
+            "budget should set execution_class to Rt"
         );
         assert_eq!(reg.tick_budget, Some(Duration::from_micros(500)));
     }
 
-    /// .deadline_ms() auto-sets is_rt=true and execution_class=Rt.
+    /// .deadline() auto-sets is_rt=true and execution_class=Rt.
     #[test]
     fn deadline_auto_sets_rt_flag_and_class() {
-        let reg = NodeRegistration::new(stub("n")).deadline_ms(10);
-        assert!(reg.is_rt, "deadline_ms should auto-set is_rt");
+        let reg = NodeRegistration::new(stub("n")).deadline(10.ms());
+        assert!(reg.is_rt, "deadline should auto-set is_rt");
         assert_eq!(reg.execution_class, ExecutionClass::Rt);
     }
 
-    /// .deadline_us() auto-sets is_rt=true.
+    /// .deadline() with microseconds auto-sets is_rt=true.
     #[test]
-    fn conflict_deadline_us_without_explicit_rt_auto_sets_flag() {
-        let reg = NodeRegistration::new(stub("n")).deadline_us(1000);
-        assert!(reg.is_rt, "deadline_us should auto-set is_rt");
+    fn deadline_us_without_explicit_rt_auto_sets_flag() {
+        let reg = NodeRegistration::new(stub("n")).deadline(1000.us());
+        assert!(reg.is_rt, "deadline should auto-set is_rt");
     }
 
     // -- Event + rate combination --
 
-    /// .on("topic").rate_hz(100.0) — both set, event class preserved.
-    /// Behavior: The rate_hz is recorded but the node is event-triggered.
-    /// The scheduler may use rate_hz as a minimum check interval.
+    /// .on("topic").rate(100.hz()) — both set, event class preserved.
+    /// Behavior: The rate is recorded but the node is event-triggered.
+    /// The scheduler may use rate as a minimum check interval.
     #[test]
-    fn conflict_event_with_rate_hz_both_stored() {
-        let reg = NodeRegistration::new(stub("n")).on("sensor").rate_hz(100.0);
+    fn conflict_event_with_rate_both_stored() {
+        let reg = NodeRegistration::new(stub("n")).on("sensor").rate(100.hz());
         assert_eq!(
             reg.execution_class,
             ExecutionClass::Event("sensor".to_string()),
@@ -1004,10 +966,10 @@ mod tests {
         assert_eq!(reg.rate_hz, Some(100.0), "rate_hz should still be stored");
     }
 
-    /// .rate_hz(100.0).on("topic") — same result, order doesn't matter.
+    /// .rate(100.hz()).on("topic") — same result, order doesn't matter.
     #[test]
-    fn conflict_rate_hz_then_event_both_stored() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(100.0).on("sensor");
+    fn conflict_rate_then_event_both_stored() {
+        let reg = NodeRegistration::new(stub("n")).rate(100.hz()).on("sensor");
         assert_eq!(
             reg.execution_class,
             ExecutionClass::Event("sensor".to_string())
@@ -1017,11 +979,11 @@ mod tests {
 
     // -- Deadline + async_io conflict --
 
-    /// .deadline_ms(1).async_io() — deadline requires RT guarantees but async_io
+    /// .deadline(1.ms()).async_io() — deadline requires RT guarantees but async_io
     /// cannot guarantee deadlines. The deadline is stored but may be meaningless.
     #[test]
     fn conflict_deadline_then_async_io_deadline_stored_class_overridden() {
-        let reg = NodeRegistration::new(stub("n")).deadline_ms(1).async_io();
+        let reg = NodeRegistration::new(stub("n")).deadline(1.ms()).async_io();
         assert_eq!(
             reg.execution_class,
             ExecutionClass::AsyncIo,
@@ -1035,12 +997,10 @@ mod tests {
         assert!(reg.is_rt, "is_rt flag from deadline should persist");
     }
 
-    /// .async_io().deadline_ms(1) — deadline auto-sets RT but class stays async_io
-    /// only if deadline doesn't change class. Actually deadline_ms sets is_rt=true
-    /// .async_io().deadline_ms(1) — deadline_ms sets execution_class to Rt (last wins).
+    /// .async_io().deadline(1.ms()) — deadline sets execution_class to Rt (last wins).
     #[test]
     fn conflict_async_io_then_deadline_class_becomes_rt() {
-        let reg = NodeRegistration::new(stub("n")).async_io().deadline_ms(1);
+        let reg = NodeRegistration::new(stub("n")).async_io().deadline(1.ms());
         assert!(reg.is_rt);
         assert_eq!(reg.deadline, Some(Duration::from_millis(1)));
         assert_eq!(reg.execution_class, ExecutionClass::Rt);
@@ -1048,11 +1008,11 @@ mod tests {
 
     // -- budget + compute conflict --
 
-    /// .budget(100).compute() — budget monitoring with compute class.
+    /// .budget(100.us()).compute() — budget monitoring with compute class.
     /// budget is stored but the compute pool won't enforce RT deadlines.
     #[test]
     fn conflict_budget_then_compute_budget_stored_class_compute() {
-        let reg = NodeRegistration::new(stub("n")).budget(100).compute();
+        let reg = NodeRegistration::new(stub("n")).budget(100.us()).compute();
         assert_eq!(reg.execution_class, ExecutionClass::Compute);
         assert!(reg.is_rt, "is_rt from budget persists");
         assert_eq!(reg.tick_budget, Some(Duration::from_micros(100)));
@@ -1064,19 +1024,19 @@ mod tests {
     #[test]
     fn conflict_triple_class_change_last_wins() {
         let reg = NodeRegistration::new(stub("n"))
-            .budget(100)
+            .budget(100.us())
             .compute()
             .async_io();
         assert_eq!(reg.execution_class, ExecutionClass::AsyncIo);
         assert!(reg.is_rt, "is_rt from .budget() persists through chain");
     }
 
-    /// .on("a").budget(100).compute().on("b") — ends as Event("b").
+    /// .on("a").budget(100.us()).compute().on("b") — ends as Event("b").
     #[test]
     fn conflict_four_class_changes_last_wins() {
-        let reg = NodeRegistration::new(stub("n"))
+        let mut reg = NodeRegistration::new(stub("n"))
             .on("a")
-            .budget(100)
+            .budget(100.us())
             .compute()
             .on("b");
         assert_eq!(reg.execution_class, ExecutionClass::Event("b".to_string()));
@@ -1084,47 +1044,49 @@ mod tests {
 
     #[test]
     fn validate_budget_with_deadline_ok() {
-        let reg = NodeRegistration::new(stub("n")).budget(200).deadline_ms(1);
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n"))
+            .budget(200.us())
+            .deadline(1.ms());
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_budget_alone_ok() {
-        // budget_us auto-sets is_rt, class stays BestEffort — allowed
-        let reg = NodeRegistration::new(stub("n")).budget(500);
-        assert!(reg.validate().is_ok());
+        // budget auto-sets is_rt, class stays BestEffort — allowed
+        let mut reg = NodeRegistration::new(stub("n")).budget(500.us());
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_deadline_alone_ok() {
-        let reg = NodeRegistration::new(stub("n")).deadline_ms(10);
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).deadline(10.ms());
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_event_with_rate_ok() {
         // Event + rate_hz is valid (rate used as minimum poll interval)
-        let reg = NodeRegistration::new(stub("n")).on("sensor").rate_hz(100.0);
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).on("sensor").rate(100.hz());
+        reg.validate().unwrap();
     }
 
     #[test]
-    fn validate_valid_rate_hz() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(100.0);
-        assert!(reg.validate().is_ok());
+    fn validate_valid_rate() {
+        let mut reg = NodeRegistration::new(stub("n")).rate(100.hz());
+        reg.validate().unwrap();
     }
 
     #[test]
-    fn validate_very_small_rate_hz_ok() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(0.001);
-        assert!(reg.validate().is_ok());
+    fn validate_very_small_rate_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).rate(0.001.hz());
+        reg.validate().unwrap();
     }
 
     // -- Execution class conflicts: is_rt + non-RT class → error --
 
     #[test]
     fn validate_budget_then_compute_rejects() {
-        let reg = NodeRegistration::new(stub("n")).budget(100).compute();
+        let mut reg = NodeRegistration::new(stub("n")).budget(100.us()).compute();
         let err = reg.validate().unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1136,7 +1098,7 @@ mod tests {
 
     #[test]
     fn validate_budget_then_async_io_rejects() {
-        let reg = NodeRegistration::new(stub("n")).budget(100).async_io();
+        let mut reg = NodeRegistration::new(stub("n")).budget(100.us()).async_io();
         let err = reg.validate().unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1148,7 +1110,9 @@ mod tests {
 
     #[test]
     fn validate_budget_then_event_rejects() {
-        let reg = NodeRegistration::new(stub("n")).budget(100).on("sensor");
+        let mut reg = NodeRegistration::new(stub("n"))
+            .budget(100.us())
+            .on("sensor");
         let err = reg.validate().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("event"), "error should mention event: {}", msg);
@@ -1156,7 +1120,7 @@ mod tests {
 
     #[test]
     fn validate_deadline_then_async_io_rejects() {
-        let reg = NodeRegistration::new(stub("n")).deadline_ms(1).async_io();
+        let mut reg = NodeRegistration::new(stub("n")).deadline(1.ms()).async_io();
         assert!(
             reg.validate().is_err(),
             "deadline + async_io should conflict"
@@ -1165,18 +1129,15 @@ mod tests {
 
     #[test]
     fn validate_async_io_then_deadline_ok() {
-        // deadline_ms overrides execution_class to Rt (last wins), so no conflict
-        let reg = NodeRegistration::new(stub("n")).async_io().deadline_ms(1);
-        assert!(
-            reg.validate().is_ok(),
-            "deadline_ms overrides async_io to Rt"
-        );
+        // deadline overrides execution_class to Rt (last wins), so no conflict
+        let mut reg = NodeRegistration::new(stub("n")).async_io().deadline(1.ms());
+        assert!(reg.validate().is_ok(), "deadline overrides async_io to Rt");
     }
 
     #[test]
     fn validate_triple_conflict_rejects() {
-        let reg = NodeRegistration::new(stub("n"))
-            .budget(100)
+        let mut reg = NodeRegistration::new(stub("n"))
+            .budget(100.us())
             .compute()
             .async_io();
         assert!(
@@ -1185,101 +1146,96 @@ mod tests {
         );
     }
 
-    /// .compute().budget() — budget_us called last, so class=Rt and is_rt=true — no conflict
+    /// .compute().budget() — budget called last, so class=Rt and is_rt=true — no conflict
     #[test]
     fn validate_compute_then_budget_ok() {
-        let reg = NodeRegistration::new(stub("n")).compute().budget(100);
+        let mut reg = NodeRegistration::new(stub("n")).compute().budget(100.us());
         assert!(
             reg.validate().is_ok(),
             ".compute().budget() should be valid (RT wins)"
         );
     }
 
-    /// .on("topic").budget() — budget_us called last, class=Rt — no conflict
+    /// .on("topic").budget() — budget called last, class=Rt — no conflict
     #[test]
     fn validate_event_then_budget_ok() {
-        let reg = NodeRegistration::new(stub("n")).on("sensor").budget(100);
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n"))
+            .on("sensor")
+            .budget(100.us());
+        reg.validate().unwrap();
     }
 
     /// Non-RT class changes without is_rt flag are fine
     #[test]
     fn validate_compute_then_event_ok() {
-        let reg = NodeRegistration::new(stub("n")).compute().on("topic");
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).compute().on("topic");
+        reg.validate().unwrap();
     }
 
     #[test]
     fn validate_async_io_then_compute_ok() {
-        let reg = NodeRegistration::new(stub("n")).async_io().compute();
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).async_io().compute();
+        reg.validate().unwrap();
     }
 
-    // -- Invalid rate_hz --
+    // -- Invalid rate values rejected at Frequency construction --
 
     #[test]
-    fn validate_rate_hz_nan_rejects() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::NAN);
-        let err = reg.validate().unwrap_err();
-        assert!(err.to_string().contains("rate_hz"));
-    }
-
-    #[test]
-    fn validate_rate_hz_negative_rejects() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(-1.0);
-        assert!(reg.validate().is_err());
+    #[should_panic(expected = "finite and positive")]
+    fn rate_nan_panics() {
+        f64::NAN.hz();
     }
 
     #[test]
-    fn validate_rate_hz_zero_rejects() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(0.0);
-        assert!(reg.validate().is_err());
+    #[should_panic(expected = "finite and positive")]
+    fn rate_negative_panics() {
+        (-1.0).hz();
     }
 
     #[test]
-    fn validate_rate_hz_infinity_rejects() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::INFINITY);
-        assert!(reg.validate().is_err());
+    #[should_panic(expected = "positive")]
+    fn rate_zero_panics() {
+        0.hz();
     }
 
     #[test]
-    fn validate_rate_hz_neg_infinity_rejects() {
-        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::NEG_INFINITY);
-        assert!(reg.validate().is_err());
+    #[should_panic(expected = "finite and positive")]
+    fn rate_infinity_panics() {
+        f64::INFINITY.hz();
+    }
+
+    #[test]
+    #[should_panic(expected = "finite and positive")]
+    fn rate_neg_infinity_panics() {
+        f64::NEG_INFINITY.hz();
     }
 
     // -- Invalid deadlines --
 
     #[test]
-    fn validate_deadline_us_zero_rejects() {
-        let reg = NodeRegistration::new(stub("n")).deadline_us(0);
+    fn validate_deadline_zero_rejects() {
+        let mut reg = NodeRegistration::new(stub("n")).deadline(Duration::ZERO);
         assert!(reg.validate().is_err(), "zero deadline should be rejected");
     }
 
     #[test]
-    fn validate_deadline_ms_zero_rejects() {
-        let reg = NodeRegistration::new(stub("n")).deadline_ms(0);
-        assert!(reg.validate().is_err(), "zero deadline should be rejected");
-    }
-
-    #[test]
-    fn validate_deadline_us_positive_ok() {
-        let reg = NodeRegistration::new(stub("n")).deadline_us(1);
-        assert!(reg.validate().is_ok());
+    fn validate_deadline_positive_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).deadline(1.us());
+        reg.validate().unwrap();
     }
 
     // -- Invalid budget --
 
     #[test]
     fn validate_budget_zero_rejects() {
-        let reg = NodeRegistration::new(stub("n")).budget(0);
+        let mut reg = NodeRegistration::new(stub("n")).budget(Duration::ZERO);
         assert!(reg.validate().is_err(), "zero budget should be rejected");
     }
 
     #[test]
     fn validate_budget_positive_ok() {
-        let reg = NodeRegistration::new(stub("n")).budget(1);
-        assert!(reg.validate().is_ok());
+        let mut reg = NodeRegistration::new(stub("n")).budget(1.us());
+        reg.validate().unwrap();
     }
 
     // -- Builder integration with validation --
@@ -1291,7 +1247,7 @@ mod tests {
         let mut scheduler = Scheduler::new();
         let result = scheduler
             .add(StubNode("conflict".into()))
-            .budget(100)
+            .budget(100.us())
             .compute()
             .build();
 
@@ -1299,16 +1255,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_builder_invalid_rate_rejects() {
-        use crate::scheduling::Scheduler;
-
-        let mut scheduler = Scheduler::new();
-        let result = scheduler
-            .add(StubNode("bad_rate".into()))
-            .rate_hz(-1.0)
-            .build();
-
-        assert!(result.is_err(), "negative rate should fail build()");
+    #[should_panic(expected = "finite and positive")]
+    fn validate_builder_invalid_rate_panics() {
+        // Frequency rejects negative values at construction time
+        let _freq = (-1.0).hz();
     }
 
     #[test]
@@ -1318,7 +1268,7 @@ mod tests {
         let mut scheduler = Scheduler::new();
         let result = scheduler
             .add(StubNode("bad_deadline".into()))
-            .deadline_ms(0)
+            .deadline(Duration::ZERO)
             .build();
 
         assert!(result.is_err(), "zero deadline should fail build()");
@@ -1328,14 +1278,14 @@ mod tests {
 
     #[test]
     fn validate_full_rt_chain_ok() {
-        let reg = NodeRegistration::new(stub("n"))
+        let mut reg = NodeRegistration::new(stub("n"))
             .order(5)
-            .rate_hz(100.0)
-            .budget(200)
-            .deadline_ms(1)
+            .rate(100.hz())
+            .budget(200.us())
+            .deadline(1.ms())
             .failure_policy(FailurePolicy::Fatal);
 
-        assert!(reg.validate().is_ok());
+        reg.validate().unwrap();
     }
 
     #[test]
@@ -1346,7 +1296,7 @@ mod tests {
         scheduler
             .add(StubNode("valid".into()))
             .order(0)
-            .rate_hz(50.0)
+            .rate(50.hz())
             .build()
             .unwrap();
 

@@ -38,3 +38,108 @@ pub fn to_py_err(err: HorusError) -> PyErr {
         _ => PyRuntimeError::new_err(err.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horus_core::error::{NotFoundError, TransformError};
+
+    /// Verify to_py_err routes each HorusError variant to the correct exception.
+    /// These tests avoid Python::attach since the test binary doesn't link libpython.
+    /// Instead, they verify the conversion doesn't panic and the error message is preserved.
+
+    #[test]
+    fn not_found_topic_converts() {
+        let err = HorusError::NotFound(NotFoundError::Topic {
+            name: "cmd_vel".into(),
+        });
+        assert!(err.to_string().contains("cmd_vel"));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn not_found_frame_converts() {
+        let err = HorusError::NotFound(NotFoundError::Frame {
+            name: "base_link".into(),
+        });
+        assert!(err.to_string().contains("base_link"));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn not_found_node_converts() {
+        let err = HorusError::NotFound(NotFoundError::Node {
+            name: "motor_ctrl".into(),
+        });
+        assert!(err.to_string().contains("motor_ctrl"));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn not_found_parent_frame_converts() {
+        let err = HorusError::NotFound(NotFoundError::ParentFrame {
+            name: "world".into(),
+        });
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn transform_extrapolation_converts() {
+        let err = HorusError::Transform(TransformError::Extrapolation {
+            frame: "lidar".into(),
+            requested_ns: 100,
+            oldest_ns: 200,
+            newest_ns: 300,
+        });
+        assert!(err.to_string().contains("lidar"));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn transform_stale_converts() {
+        let err = HorusError::Transform(TransformError::Stale {
+            frame: "odom".into(),
+            age: std::time::Duration::from_secs(5),
+            threshold: std::time::Duration::from_secs(1),
+        });
+        assert!(err.to_string().contains("odom"));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn timeout_converts() {
+        let err = HorusError::Timeout(horus_core::error::TimeoutError {
+            resource: "imu_topic".into(),
+            elapsed: std::time::Duration::from_millis(100),
+            deadline: Some(std::time::Duration::from_millis(50)),
+        });
+        assert!(err.to_string().contains("imu_topic"));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn io_error_falls_through() {
+        let err = HorusError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file missing",
+        ));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn internal_error_falls_through() {
+        let err = HorusError::Internal {
+            message: "something broke".into(),
+            file: file!(),
+            line: line!(),
+        };
+        assert!(err.to_string().contains("something broke"));
+        let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn invalid_descriptor_falls_through() {
+        let err = HorusError::InvalidDescriptor("bad tensor".into());
+        let _py_err = to_py_err(err);
+    }
+}

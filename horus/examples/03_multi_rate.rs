@@ -105,25 +105,25 @@ impl Node for LoggerNode {
 fn main() -> Result<()> {
     println!("=== HORUS Example 3: Multi-Rate Nodes ===\n");
 
-    let mut scheduler = Scheduler::new().tick_hz(10.0);
+    let mut scheduler = Scheduler::new().tick_rate(10.hz());
 
     // Each node gets its own rate
     scheduler
         .add(SensorNode { ticks: 0 })
         .order(0)
-        .rate_hz(10.0)
+        .rate(10.hz())
         .build()?;
 
     scheduler
         .add(ControlNode::new()?)
         .order(1)
-        .rate_hz(5.0)
+        .rate(5.hz())
         .build()?;
 
     scheduler
         .add(LoggerNode::new()?)
         .order(2)
-        .rate_hz(1.0)
+        .rate(1.hz())
         .build()?;
 
     scheduler.run_for(Duration::from_secs(3))?;

@@ -52,16 +52,16 @@ fn test_package_name_to_path_nested_scope() {
 
 #[test]
 fn test_validate_name_valid() {
-    assert!(validate_package_name("lidar-driver").is_ok());
-    assert!(validate_package_name("my_package").is_ok());
-    assert!(validate_package_name("nav2").is_ok());
-    assert!(validate_package_name("ab").is_ok()); // min length
+    validate_package_name("lidar-driver").unwrap();
+    validate_package_name("my_package").unwrap();
+    validate_package_name("nav2").unwrap();
+    validate_package_name("ab").unwrap(); // min length
 }
 
 #[test]
 fn test_validate_name_scoped_ok() {
-    assert!(validate_package_name("@org/pkg").is_ok());
-    assert!(validate_package_name("@my-team/sensor-driver").is_ok());
+    validate_package_name("@org/pkg").unwrap();
+    validate_package_name("@my-team/sensor-driver").unwrap();
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn test_validate_name_too_short() {
 
 #[test]
 fn test_validate_name_too_long() {
-    let long_name: String = std::iter::repeat('a').take(65).collect();
+    let long_name: String = std::iter::repeat_n('a', 65).collect();
     assert!(validate_package_name(&long_name).is_err());
 }
 
@@ -926,7 +926,7 @@ fn test_platform_filter_mixed_deps() {
 
     let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
 
-    let deps = vec![
+    let deps = [
         DependencySpec {
             name: "universal-pkg".to_string(),
             requirement: VersionReq::STAR,

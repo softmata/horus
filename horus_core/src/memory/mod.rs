@@ -77,7 +77,7 @@ macro_rules! impl_tensor_backed {
             /// Panics if the tensor descriptor is internally inconsistent.
             /// See [`data`](Self::data) for details.
             #[inline]
-            #[allow(clippy::mut_from_ref)]
+            #[allow(clippy::mut_from_ref)] // mmap'd shared memory: mutability is OS-level, not Rust borrow-level
             pub fn data_mut(&self) -> &mut [u8] {
                 self.pool.data_slice_mut(self.descriptor.tensor()).expect(
                     "tensor descriptor must be valid: pool_id matches and offset is in bounds",
@@ -124,7 +124,7 @@ macro_rules! impl_tensor_backed {
             /// Caller must ensure the dtype matches the requested type T.
             #[doc(hidden)]
             #[inline]
-            #[allow(clippy::mut_from_ref)]
+            #[allow(clippy::mut_from_ref)] // delegates to data_mut() — same mmap rationale
             pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
                 let bytes = self.data_mut();
                 let ptr = bytes.as_mut_ptr() as *mut T;

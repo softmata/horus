@@ -790,7 +790,7 @@ nodes:
         std::fs::write(&path, "nodes: []").unwrap();
         // Empty nodes with dry_run should succeed (prints "No nodes defined")
         let result = run_launch(&path, true, None, 5);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]

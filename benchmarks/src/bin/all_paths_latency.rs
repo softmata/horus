@@ -1336,6 +1336,9 @@ fn collect_pod_shm(
 
     // Snapshot producer head after warmup for freshness baseline
     let mut prev_head = if !seq_ptr.is_null() {
+        // SAFETY: seq_ptr is non-null (checked above) and points to an AtomicU64 inside
+        // the SHM-mapped TopicHeader. The SHM mapping remains live for the lifetime of
+        // `consumer`, which is borrowed for the duration of this function.
         unsafe { (*seq_ptr).load(Ordering::Acquire) }
     } else {
         0
@@ -1365,6 +1368,9 @@ fn collect_pod_shm(
 
             // Read current producer head for freshness calculation
             if !seq_ptr.is_null() {
+                // SAFETY: seq_ptr is non-null (checked above) and points to an AtomicU64
+                // inside the SHM-mapped TopicHeader. The SHM mapping remains live for the
+                // lifetime of `consumer`, which is borrowed for the duration of this function.
                 let head = unsafe { (*seq_ptr).load(Ordering::Acquire) };
                 let advance = head.saturating_sub(prev_head);
                 if advance > 0 {
@@ -1519,6 +1525,10 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
             skip_count: None,
         };
     }
+    // SAFETY: seq_ptr is non-null (null case returned early above) and points to an
+    // AtomicU64 inside the SHM-mapped TopicHeader. The SHM mapping remains live for
+    // the lifetime of `consumer`, which is in scope for the remainder of this function.
+    // AtomicU64 has the same layout as u64, so the pointer is correctly aligned.
     let atom = unsafe { &*seq_ptr };
 
     // Phase 1: Warmup
@@ -1581,6 +1591,10 @@ fn run_child_atomic_writer(topic_name: &str, count: u64) {
         eprintln!("  [raw-atomic] seq_ptr null, aborting");
         return;
     }
+    // SAFETY: seq_ptr is non-null (null case returned early above) and points to an
+    // AtomicU64 inside the SHM-mapped TopicHeader. The SHM mapping remains live for
+    // the lifetime of `topic`, which is in scope for the remainder of this function.
+    // AtomicU64 has the same layout as u64, so the pointer is correctly aligned.
     let atom = unsafe { &*seq_ptr };
 
     eprintln!(

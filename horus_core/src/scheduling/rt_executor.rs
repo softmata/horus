@@ -542,6 +542,8 @@ mod tests {
         // The panic node should log errors and continue (no longer stops scheduler)
         std::thread::sleep(Duration::from_millis(50));
 
+        // Signal the executor to stop before calling stop() (which joins the thread)
+        running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
         assert_eq!(returned.len(), 1);
     }
@@ -609,7 +611,7 @@ mod tests {
 
         // 10Hz for 200ms → ~2 ticks
         assert!(
-            slow_ticks >= 1 && slow_ticks <= 10,
+            (1..=10).contains(&slow_ticks),
             "10Hz node should tick 1-10 times in 200ms, got {}",
             slow_ticks
         );

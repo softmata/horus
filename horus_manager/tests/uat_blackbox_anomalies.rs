@@ -344,7 +344,7 @@ async fn filter_by_tick_range_returns_correct_window() {
     assert_eq!(events_arr.len(), 3, "tick range 3-5 should return 3 events");
     for event in events_arr {
         let tick = event["tick"].as_u64().unwrap();
-        assert!(tick >= 3 && tick <= 5, "tick {} out of range 3-5", tick);
+        assert!((3..=5).contains(&tick), "tick {} out of range 3-5", tick);
     }
 
     remove_wal();

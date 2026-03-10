@@ -576,61 +576,30 @@ impl Drop for ChildGuard {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_hex_string_valid_bytes() {
-        assert_eq!(
-            parse_hex_string("deadbeef").unwrap(),
-            vec![0xde, 0xad, 0xbe, 0xef]
-        );
-    }
-
-    #[test]
-    fn parse_hex_string_empty() {
-        assert_eq!(parse_hex_string("").unwrap(), Vec::<u8>::new());
-    }
-
-    #[test]
-    fn parse_hex_string_single_byte() {
-        assert_eq!(parse_hex_string("ff").unwrap(), vec![0xff]);
-    }
-
-    #[test]
-    fn parse_hex_string_odd_length_errors() {
-        assert!(parse_hex_string("abc").is_err());
-    }
-
-    #[test]
-    fn parse_hex_string_invalid_chars_errors() {
-        assert!(parse_hex_string("zzzz").is_err());
-    }
-
-    #[test]
-    fn parse_hex_string_trims_whitespace() {
-        assert_eq!(parse_hex_string("  0a0b  ").unwrap(), vec![0x0a, 0x0b]);
-    }
-
-    #[test]
-    fn parse_hex_string_uppercase() {
-        assert_eq!(parse_hex_string("AABB").unwrap(), vec![0xaa, 0xbb]);
-    }
+/// CLI arguments for `horus record inject`.
+pub struct InjectArgs {
+    pub session: String,
+    pub nodes: Vec<String>,
+    pub all: bool,
+    pub script: Option<PathBuf>,
+    pub start_tick: Option<u64>,
+    pub stop_tick: Option<u64>,
+    pub speed: f64,
+    pub loop_playback: bool,
 }
 
 /// Inject recorded nodes into a live/scripted run
-#[allow(clippy::too_many_arguments)]
-pub fn run_inject(
-    session: String,
-    nodes: Vec<String>,
-    all: bool,
-    script: Option<PathBuf>,
-    start_tick: Option<u64>,
-    stop_tick: Option<u64>,
-    speed: f64,
-    loop_playback: bool,
-) -> HorusResult<()> {
+pub fn run_inject(args: InjectArgs) -> HorusResult<()> {
+    let InjectArgs {
+        session,
+        nodes,
+        all,
+        script,
+        start_tick,
+        stop_tick,
+        speed,
+        loop_playback,
+    } = args;
     use horus_core::Scheduler;
 
     if speed <= 0.0 {
@@ -894,4 +863,47 @@ pub fn run_inject(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_string_valid_bytes() {
+        assert_eq!(
+            parse_hex_string("deadbeef").unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn parse_hex_string_empty() {
+        assert_eq!(parse_hex_string("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn parse_hex_string_single_byte() {
+        assert_eq!(parse_hex_string("ff").unwrap(), vec![0xff]);
+    }
+
+    #[test]
+    fn parse_hex_string_odd_length_errors() {
+        parse_hex_string("abc").unwrap_err();
+    }
+
+    #[test]
+    fn parse_hex_string_invalid_chars_errors() {
+        parse_hex_string("zzzz").unwrap_err();
+    }
+
+    #[test]
+    fn parse_hex_string_trims_whitespace() {
+        assert_eq!(parse_hex_string("  0a0b  ").unwrap(), vec![0x0a, 0x0b]);
+    }
+
+    #[test]
+    fn parse_hex_string_uppercase() {
+        assert_eq!(parse_hex_string("AABB").unwrap(), vec![0xaa, 0xbb]);
+    }
 }

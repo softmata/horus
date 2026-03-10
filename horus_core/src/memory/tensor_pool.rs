@@ -417,7 +417,7 @@ impl TensorPool {
     fn check_utilization(&self) {
         let count = self.alloc_count.fetch_add(1, Ordering::Relaxed);
         // Check every 64 allocations
-        if count % 64 != 0 {
+        if !count.is_multiple_of(64) {
             return;
         }
 
@@ -797,7 +797,7 @@ impl TensorPool {
     /// Returns [`HorusError::Memory`] if:
     /// - `tensor.pool_id` does not match this pool's ID (descriptor from a different pool)
     /// - `tensor.offset + tensor.size` exceeds the pool's data region (out-of-bounds access)
-    #[allow(clippy::mut_from_ref)]
+    #[allow(clippy::mut_from_ref)] // mmap'd shared memory: mutability is OS-level, not Rust borrow-level
     pub fn data_slice_mut(&self, tensor: &Tensor) -> HorusResult<&mut [u8]> {
         if tensor.pool_id != self.pool_id {
             return Err(HorusError::Memory(
@@ -1002,7 +1002,7 @@ impl TensorPool {
         unsafe { &*(self.mmap.as_ptr().add(offset) as *const SlotHeader) }
     }
 
-    #[allow(clippy::mut_from_ref)]
+    #[allow(clippy::mut_from_ref)] // mmap'd shared memory: mutability is OS-level, not Rust borrow-level
     fn slot_mut(&self, index: u32) -> &mut SlotHeader {
         let offset = self.slots_offset + (index as usize) * std::mem::size_of::<SlotHeader>();
         // SAFETY: offset is within bounds of mmap region; properly aligned for SlotHeader.
@@ -1278,8 +1278,9 @@ impl TensorPool {
     /// `ptr..ptr+len` must be a valid, exclusively-owned, writable region.
     #[inline]
     fn volatile_zero(ptr: *mut u8, len: usize) {
-        // SAFETY: caller guarantees ptr..ptr+len is valid and exclusively owned.
         for i in 0..len {
+            // SAFETY: caller guarantees ptr..ptr+len is valid and exclusively owned;
+            // i is always in 0..len so ptr.add(i) stays within that region.
             unsafe { ptr.add(i).write_volatile(0u8) };
         }
     }
@@ -1336,7 +1337,8 @@ impl Drop for TensorPool {
     }
 }
 
-// Thread safety
+// SAFETY: TensorPool's mmap region is shared memory accessed through atomics;
+// all mutable state uses atomic operations or is protected by the slot_mutex/condvar.
 unsafe impl Send for TensorPool {}
 unsafe impl Sync for TensorPool {}
 
@@ -1967,7 +1969,8 @@ mod tests {
             .expect("alloc t2");
 
         // Pool is now full — verify we can't allocate
-        assert!(pool.alloc(&[64], TensorDtype::U8, Device::cpu()).is_err());
+        pool.alloc(&[64], TensorDtype::U8, Device::cpu())
+            .unwrap_err();
 
         // Simulate process death: write a guaranteed-dead PID into slot 0's owner_pid.
         // PID 2^30 + 1 (1073741825) should not exist on any reasonable system.
@@ -2010,7 +2013,8 @@ mod tests {
             .expect("alloc t2");
 
         // Pool full, owner is alive → reclaim should find nothing → alloc fails
-        assert!(pool.alloc(&[64], TensorDtype::U8, Device::cpu()).is_err());
+        pool.alloc(&[64], TensorDtype::U8, Device::cpu())
+            .unwrap_err();
 
         // Verify refcount unchanged (no spurious reclamation)
         assert_eq!(pool.refcount(&t1), 1);
@@ -2738,7 +2742,7 @@ mod tests {
         let handles: Vec<_> = (0..num_threads)
             .map(|_| {
                 let pool = Arc::clone(&pool);
-                let t = tensor.clone();
+                let t = tensor;
                 std::thread::spawn(move || {
                     for _ in 0..ops_per_thread {
                         pool.release(&t);

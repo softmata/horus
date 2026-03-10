@@ -3,6 +3,11 @@
 //! Each Python class stores the Rust POD struct directly (`inner` field),
 //! enabling zero-extraction send and zero-construction recv in Topic.
 //!
+// PyO3 `#[new]` constructors expose struct fields as Python keyword arguments.
+// Python conventions expect `__init__` to accept all fields directly, so these
+// constructors inherently exceed Clippy's 7-argument threshold.
+#![allow(clippy::too_many_arguments)]
+//!
 //! ```python
 //! from horus import Topic, CmdVel, Pose2D
 //!
@@ -626,7 +631,7 @@ pub struct PyPose3D {
 impl PyPose3D {
     #[new]
     #[pyo3(signature = (x=0.0, y=0.0, z=0.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(x: f64, y: f64, z: f64, qx: f64, qy: f64, qz: f64, qw: f64, timestamp_ns: u64) -> Self {
         Self {
             inner: Pose3D {
@@ -1080,7 +1085,7 @@ pub struct PyTwist {
 impl PyTwist {
     #[new]
     #[pyo3(signature = (linear_x=0.0, linear_y=0.0, linear_z=0.0, angular_x=0.0, angular_y=0.0, angular_z=0.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         linear_x: f64,
         linear_y: f64,
@@ -1414,7 +1419,7 @@ pub struct PyTransformStamped {
 impl PyTransformStamped {
     #[new]
     #[pyo3(signature = (tx=0.0, ty=0.0, tz=0.0, rx=0.0, ry=0.0, rz=0.0, rw=1.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         tx: f64,
         ty: f64,
@@ -1534,7 +1539,7 @@ pub struct PyPoseStamped {
 impl PyPoseStamped {
     #[new]
     #[pyo3(signature = (x=0.0, y=0.0, z=0.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0, frame_id="", timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         x: f64,
         y: f64,
@@ -1679,7 +1684,7 @@ pub struct PyPoseWithCovariance {
 impl PyPoseWithCovariance {
     #[new]
     #[pyo3(signature = (x=0.0, y=0.0, z=0.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0, frame_id="", timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         x: f64,
         y: f64,
@@ -1833,7 +1838,7 @@ pub struct PyTwistWithCovariance {
 impl PyTwistWithCovariance {
     #[new]
     #[pyo3(signature = (linear_x=0.0, linear_y=0.0, linear_z=0.0, angular_x=0.0, angular_y=0.0, angular_z=0.0, frame_id="", timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         linear_x: f64,
         linear_y: f64,
@@ -1974,7 +1979,7 @@ pub struct PyAccel {
 impl PyAccel {
     #[new]
     #[pyo3(signature = (linear_x=0.0, linear_y=0.0, linear_z=0.0, angular_x=0.0, angular_y=0.0, angular_z=0.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         linear_x: f64,
         linear_y: f64,
@@ -2083,7 +2088,7 @@ pub struct PyAccelStamped {
 impl PyAccelStamped {
     #[new]
     #[pyo3(signature = (linear_x=0.0, linear_y=0.0, linear_z=0.0, angular_x=0.0, angular_y=0.0, angular_z=0.0, frame_id="", timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         linear_x: f64,
         linear_y: f64,
@@ -2229,7 +2234,7 @@ pub struct PyMotorCommand {
 impl PyMotorCommand {
     #[new]
     #[pyo3(signature = (motor_id=0, mode=0, target=0.0, max_velocity=f64::INFINITY, max_acceleration=f64::INFINITY, feed_forward=0.0, enable=true, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         motor_id: u8,
         mode: u8,
@@ -2547,7 +2552,7 @@ pub struct PyPidConfig {
 impl PyPidConfig {
     #[new]
     #[pyo3(signature = (kp=1.0, ki=0.0, kd=0.0, controller_id=0, integral_limit=f64::INFINITY, output_limit=f64::INFINITY, anti_windup=true, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         kp: f64,
         ki: f64,
@@ -2913,7 +2918,7 @@ pub struct PyPwmCommand {
 impl PyPwmCommand {
     #[new]
     #[pyo3(signature = (channel_id=0, duty_cycle=0.0, frequency=10000, enable=true, brake_mode=false, current_limit=0.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         channel_id: u8,
         duty_cycle: f32,
@@ -3036,7 +3041,7 @@ pub struct PyStepperCommand {
 impl PyStepperCommand {
     #[new]
     #[pyo3(signature = (motor_id=0, mode=0, target=0.0, max_velocity=0.0, acceleration=0.0, enable=true, microsteps=16, current_limit=0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         motor_id: u8,
         mode: u8,
@@ -4088,7 +4093,7 @@ pub struct PyWrenchStamped {
 impl PyWrenchStamped {
     #[new]
     #[pyo3(signature = (fx=0.0, fy=0.0, fz=0.0, tx=0.0, ty=0.0, tz=0.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(fx: f64, fy: f64, fz: f64, tx: f64, ty: f64, tz: f64, timestamp_ns: u64) -> Self {
         let mut w = WrenchStamped::new(Vector3::new(fx, fy, fz), Vector3::new(tx, ty, tz));
         w.timestamp_ns = timestamp_ns;
@@ -4185,7 +4190,7 @@ pub struct PyForceCommand {
 impl PyForceCommand {
     #[new]
     #[pyo3(signature = (fx=0.0, fy=0.0, fz=0.0, tx=0.0, ty=0.0, tz=0.0, timeout=0.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         fx: f64,
         fy: f64,
@@ -4393,7 +4398,7 @@ pub struct PyNavGoal {
 impl PyNavGoal {
     #[new]
     #[pyo3(signature = (x=0.0, y=0.0, theta=0.0, position_tolerance=0.1, angle_tolerance=0.1, timeout=30.0, timestamp_ns=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         x: f64,
         y: f64,
@@ -4981,7 +4986,9 @@ impl PyBoundingBox3D {
     ) -> Self {
         Self {
             inner: BoundingBox3D::with_rotation(
-                cx, cy, cz, length, width, height, roll, pitch, yaw,
+                [cx, cy, cz],
+                [length, width, height],
+                [roll, pitch, yaw],
             ),
         }
     }
@@ -5097,7 +5104,7 @@ pub struct PyDetectionMsg {
 impl PyDetectionMsg {
     #[new]
     #[pyo3(signature = (class_name="", confidence=0.0, x=0.0, y=0.0, width=0.0, height=0.0, class_id=0, instance_id=0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         class_name: &str,
         confidence: f32,
@@ -5194,7 +5201,7 @@ pub struct PyDetection3D {
 impl PyDetection3D {
     #[new]
     #[pyo3(signature = (class_name="", confidence=0.0, cx=0.0, cy=0.0, cz=0.0, length=0.0, width=0.0, height=0.0, yaw=0.0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         class_name: &str,
         confidence: f32,
@@ -5758,8 +5765,7 @@ impl PyLandmark3D {
     // Landmark3D is #[repr(C, packed)] — must copy fields to locals to avoid unaligned refs
     #[getter]
     fn x(&self) -> f32 {
-        let v = self.inner.x;
-        v
+        self.inner.x
     }
     #[setter]
     fn set_x(&mut self, v: f32) {
@@ -5767,8 +5773,7 @@ impl PyLandmark3D {
     }
     #[getter]
     fn y(&self) -> f32 {
-        let v = self.inner.y;
-        v
+        self.inner.y
     }
     #[setter]
     fn set_y(&mut self, v: f32) {
@@ -5776,8 +5781,7 @@ impl PyLandmark3D {
     }
     #[getter]
     fn z(&self) -> f32 {
-        let v = self.inner.z;
-        v
+        self.inner.z
     }
     #[setter]
     fn set_z(&mut self, v: f32) {
@@ -5785,8 +5789,7 @@ impl PyLandmark3D {
     }
     #[getter]
     fn visibility(&self) -> f32 {
-        let v = self.inner.visibility;
-        v
+        self.inner.visibility
     }
     #[setter]
     fn set_visibility(&mut self, v: f32) {
@@ -5794,8 +5797,7 @@ impl PyLandmark3D {
     }
     #[getter]
     fn index(&self) -> u32 {
-        let v = self.inner.index;
-        v
+        self.inner.index
     }
     #[setter]
     fn set_index(&mut self, v: u32) {
@@ -6045,7 +6047,7 @@ pub struct PyPlaneDetection {
 impl PyPlaneDetection {
     #[new]
     #[pyo3(signature = (a=0.0, b=0.0, c=1.0, d=0.0, cx=0.0, cy=0.0, cz=0.0, nx=0.0, ny=0.0, nz=1.0))]
-    #[allow(clippy::too_many_arguments)]
+
     fn new(
         a: f64,
         b: f64,
@@ -7946,10 +7948,13 @@ impl PyNodeHeartbeat {
     #[new]
     #[pyo3(signature = (state=0, health=0))]
     fn new(state: u8, health: u8) -> Self {
-        let mut inner = NodeHeartbeat::default();
-        inner.state = state;
-        inner.health = health;
-        Self { inner }
+        Self {
+            inner: NodeHeartbeat {
+                state,
+                health,
+                ..NodeHeartbeat::default()
+            },
+        }
     }
     #[getter]
     fn state(&self) -> u8 {

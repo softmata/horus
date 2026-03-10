@@ -162,6 +162,13 @@ pub fn fast_copy_to_shm(src: &[u8], dst: &mut [u8]) {
 /// AVX2 implementation of streaming copy TO shared memory.
 ///
 /// Uses _mm256_stream_si256 for non-temporal stores that bypass cache.
+///
+/// # Safety
+///
+/// Same as [`simd_copy_to_shm`]: `src` and `dst` must be valid for `len` bytes,
+/// must not overlap, and their backing memory must remain valid for the duration
+/// of the call. This function is only called after AVX2 feature detection
+/// confirms hardware support.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_copy_to_shm_avx2(src: *const u8, dst: *mut u8, len: usize) {
@@ -247,6 +254,13 @@ unsafe fn simd_copy_to_shm_avx2(src: *const u8, dst: *mut u8, len: usize) {
 /// AVX2 implementation of copy FROM shared memory.
 ///
 /// Uses regular loads (with prefetching) since data may be used multiple times.
+///
+/// # Safety
+///
+/// Same as [`simd_copy_from_shm`]: `src` and `dst` must be valid for `len`
+/// bytes, must not overlap, and their backing memory must remain valid for the
+/// duration of the call. This function is only called after AVX2 feature
+/// detection confirms hardware support.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn simd_copy_from_shm_avx2(src: *const u8, dst: *mut u8, len: usize) {
@@ -458,6 +472,7 @@ mod tests {
             // dst_storage is aligned to at least 8 bytes by Vec; starting at
             // `offset` gives us every alignment 0..31 relative to 32.
             let mut dst_storage = vec![0u8; BUF_SIZE + EXTRA];
+            // SAFETY: offset < 32 and dst_storage has BUF_SIZE + 32 bytes, so add(offset) is in bounds.
             let dst_ptr = unsafe { dst_storage.as_mut_ptr().add(offset) };
 
             // SAFETY: src is BUF_SIZE bytes; dst_ptr points into dst_storage with
@@ -475,7 +490,10 @@ mod tests {
 
             // Reset and test simd_copy_from_shm with the same offset.
             let mut dst_storage2 = vec![0u8; BUF_SIZE + EXTRA];
+            // SAFETY: offset < 32 and dst_storage2 has BUF_SIZE + 32 bytes, so add(offset) is in bounds.
             let dst_ptr2 = unsafe { dst_storage2.as_mut_ptr().add(offset) };
+            // SAFETY: src is BUF_SIZE bytes; dst_ptr2 points into dst_storage2 with
+            // BUF_SIZE bytes available from `offset`; regions don't overlap.
             unsafe {
                 simd_copy_from_shm(src.as_ptr(), dst_ptr2, BUF_SIZE);
             }

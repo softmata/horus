@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_service_client_with_custom_poll_interval() {
         let client = ServiceClient::<RtClientPoll>::with_poll_interval(Duration::from_micros(500));
-        assert!(client.is_ok());
+        client.unwrap();
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
     fn test_async_service_client_with_custom_poll_interval() {
         let client =
             AsyncServiceClient::<RtAsyncCreatePoll>::with_poll_interval(Duration::from_micros(100));
-        assert!(client.is_ok());
+        client.unwrap();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -368,7 +368,7 @@ mod tests {
         let server = ServiceServerBuilder::<RtServerHandler>::new()
             .on_request(|req| Ok(RtServerHandlerResponse { sum: req.a + req.b }))
             .build();
-        assert!(server.is_ok());
+        server.unwrap();
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
             .on_request(|req| Ok(RtServerPollResponse { sum: req.a + req.b }))
             .poll_interval(Duration::from_millis(10))
             .build();
-        assert!(server.is_ok());
+        server.unwrap();
     }
 
     #[test]
@@ -732,7 +732,7 @@ mod tests {
 
         let mut client = ServiceClient::<RtDropServer>::new().unwrap();
         let result = client.call(RtDropServerRequest {}, Duration::from_millis(100));
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

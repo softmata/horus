@@ -86,8 +86,8 @@ fn tf2_parity_static_never_extrapolates() {
     hf.register_static_frame("fixed", Some("world"), &Transform::xyz(1.0, 0.0, 0.0))
         .unwrap();
 
-    assert!(hf.tf_at_strict("fixed", "world", 0).is_ok());
-    assert!(hf.tf_at_strict("fixed", "world", u64::MAX).is_ok());
+    hf.tf_at_strict("fixed", "world", 0).unwrap();
+    hf.tf_at_strict("fixed", "world", u64::MAX).unwrap();
 }
 
 // ==========================================================================
@@ -170,7 +170,7 @@ fn tf2_parity_tolerance_within() {
         .unwrap();
 
     // Gap=500, tolerance=1000 → ok
-    assert!(hf.tf_at_with_tolerance("a", "world", 1500, 1000).is_ok());
+    hf.tf_at_with_tolerance("a", "world", 1500, 1000).unwrap();
 }
 
 #[test]
@@ -198,9 +198,8 @@ fn tf2_parity_tolerance_max_unlimited() {
         .unwrap();
 
     // u64::MAX tolerance = always succeed (same as tf_at)
-    assert!(hf
-        .tf_at_with_tolerance("a", "world", 999_999, u64::MAX)
-        .is_ok());
+    hf.tf_at_with_tolerance("a", "world", 999_999, u64::MAX)
+        .unwrap();
 }
 
 // ==========================================================================

@@ -1036,7 +1036,7 @@ mod tests {
         core.init_dynamic(1, 0);
         core.init_dynamic(2, 1);
 
-        assert!(core.validate().is_ok());
+        core.validate().unwrap();
     }
 
     /// A concurrent writer updating a parent frame's transform and a reader

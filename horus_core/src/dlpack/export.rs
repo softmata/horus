@@ -34,6 +34,13 @@ struct DLPackContext {
 /// context.  The `DLManagedTensor` itself is still freed once; the primary
 /// protection against double-free of `managed` is [`dlpack_capsule_destructor`]
 /// nulling the capsule pointer before invoking this deleter.
+///
+/// # Safety
+///
+/// `managed` must be either null (in which case this is a no-op) or a valid
+/// pointer previously created by `Box::into_raw` from the `to_dlpack` export
+/// path. It must not have been freed already. The `manager_ctx` field, if
+/// non-null, must likewise be a valid `Box::into_raw(DLPackContext)` pointer.
 unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensor) {
     if managed.is_null() {
         return;
@@ -179,6 +186,10 @@ mod tests {
         );
         let managed2_ptr = Box::into_raw(managed2);
 
+        // SAFETY: `managed2_ptr` was created by `Box::into_raw` above and has not
+        // been freed. We manually null `manager_ctx` and free the context to
+        // simulate a "first cleanup already happened" state, then call the
+        // deleter to verify the null-ctx guard path.
         unsafe {
             // Manually free the context (simulate what the first deleter call does)
             // and null manager_ctx to represent "already cleaned up".
@@ -194,6 +205,8 @@ mod tests {
         }
 
         // Clean up the first allocation normally.
+        // SAFETY: `managed_ptr` was created by `Box::into_raw` and has not been
+        // freed yet. The deleter frees both the context and the managed tensor.
         unsafe {
             if let Some(deleter) = (*managed_ptr).deleter {
                 deleter(managed_ptr);

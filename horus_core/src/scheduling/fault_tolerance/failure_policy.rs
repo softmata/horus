@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 /// ```rust,ignore
 /// scheduler.add(motor_node)
 ///     .failure_policy(FailurePolicy::Fatal)
-///     .done();
+///     .build();
 ///
 /// scheduler.add(logger_node)
 ///     .failure_policy(FailurePolicy::skip(10, 60_000))
-///     .done();
+///     .build();
 /// ```
 #[derive(Debug, Clone)]
 pub enum FailurePolicy {
@@ -78,7 +78,6 @@ impl FailurePolicy {
 /// Currently not wired into the scheduler's tick loop — `handle_tick_failure()`
 /// needs to consult this handler instead of unconditionally continuing.
 /// Tracked as a follow-up to re-integrate into `RegisteredNode`.
-#[allow(dead_code)]
 pub struct FailureHandler {
     /// The policy that governs behavior
     policy: FailurePolicy,
@@ -86,7 +85,6 @@ pub struct FailureHandler {
     state: FailureHandlerState,
 }
 
-#[allow(dead_code)]
 enum FailureHandlerState {
     /// Fatal: no state needed, first failure stops everything
     Fatal,
@@ -118,7 +116,6 @@ enum FailureHandlerState {
 /// ensuring it is returned from `record_failure()` entirely on the stack.
 /// **Never add a `String` or `Vec` payload to any variant** — that would
 /// introduce a heap allocation on the RT scheduling hot path.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureAction {
     /// Stop the scheduler immediately
@@ -148,7 +145,6 @@ pub struct FailureHandlerStats {
     pub is_suppressed: bool,
 }
 
-#[allow(dead_code)]
 impl FailureHandler {
     /// Create a new handler from a policy.
     pub fn new(policy: FailurePolicy) -> Self {

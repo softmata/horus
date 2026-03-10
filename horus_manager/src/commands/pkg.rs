@@ -1668,8 +1668,6 @@ pub fn run_add(name: String, ver: Option<String>, _driver: bool, _plugin: bool) 
         return Ok(());
     } else if languages.len() == 1 {
         languages[0]
-    } else if name.starts_with("horus_") && languages.contains(&Language::Rust) {
-        Language::Rust
     } else if languages.contains(&Language::Rust) {
         Language::Rust
     } else {
@@ -1796,8 +1794,6 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
         return Ok(());
     } else if languages.len() == 1 {
         languages[0]
-    } else if name.starts_with("horus_") && languages.contains(&Language::Rust) {
-        Language::Rust
     } else if languages.contains(&Language::Rust) {
         Language::Rust
     } else {

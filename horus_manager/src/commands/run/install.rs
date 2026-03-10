@@ -797,6 +797,41 @@ fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn create_system_reference_python_run(
+    package_name: &str,
+    system_version: &str,
+) -> Result<()> {
+    println!(
+        "  {} Creating reference to system package...",
+        cli_output::ICON_SUCCESS.green()
+    );
+
+    let packages_dir = PathBuf::from(".horus/packages");
+    fs::create_dir_all(&packages_dir)?;
+
+    let metadata_file = packages_dir.join(format!("{}.system.json", package_name));
+    let metadata = serde_json::json!({
+        "name": package_name,
+        "version": system_version,
+        "source": "System",
+        "package_type": "PyPI"
+    });
+
+    fs::write(&metadata_file, serde_json::to_string_pretty(&metadata)?)?;
+
+    println!(
+        "  {} Using system package",
+        cli_output::ICON_SUCCESS.green()
+    );
+    println!(
+        "  {} Reference created: {}",
+        cli_output::ICON_INFO.cyan(),
+        metadata_file.display()
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,39 +975,4 @@ mod tests {
         assert_ne!(use_system, cancel);
         assert_ne!(install_horus, cancel);
     }
-}
-
-pub(crate) fn create_system_reference_python_run(
-    package_name: &str,
-    system_version: &str,
-) -> Result<()> {
-    println!(
-        "  {} Creating reference to system package...",
-        cli_output::ICON_SUCCESS.green()
-    );
-
-    let packages_dir = PathBuf::from(".horus/packages");
-    fs::create_dir_all(&packages_dir)?;
-
-    let metadata_file = packages_dir.join(format!("{}.system.json", package_name));
-    let metadata = serde_json::json!({
-        "name": package_name,
-        "version": system_version,
-        "source": "System",
-        "package_type": "PyPI"
-    });
-
-    fs::write(&metadata_file, serde_json::to_string_pretty(&metadata)?)?;
-
-    println!(
-        "  {} Using system package",
-        cli_output::ICON_SUCCESS.green()
-    );
-    println!(
-        "  {} Reference created: {}",
-        cli_output::ICON_INFO.cyan(),
-        metadata_file.display()
-    );
-
-    Ok(())
 }

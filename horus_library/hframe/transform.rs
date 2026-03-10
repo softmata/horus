@@ -790,13 +790,13 @@ mod tests {
 
     #[test]
     fn test_validate_identity_ok() {
-        assert!(Transform::identity().validate().is_ok());
+        Transform::identity().validate().unwrap();
     }
 
     #[test]
     fn test_validate_normal_transform_ok() {
         let tf = Transform::from_euler([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
-        assert!(tf.validate().is_ok());
+        tf.validate().unwrap();
     }
 
     #[test]
@@ -935,7 +935,7 @@ mod tests {
             translation: [f64::NAN, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
         };
-        assert!(tf.validated().is_err());
+        tf.validated().unwrap_err();
     }
 
     // =====================================================================

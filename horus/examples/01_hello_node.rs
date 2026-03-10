@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     println!("=== HORUS Example 1: Hello Node ===\n");
 
     // Create a scheduler running at 2 Hz (slow enough to read output)
-    let mut scheduler = Scheduler::new().tick_hz(2.0);
+    let mut scheduler = Scheduler::new().tick_rate(2.hz());
 
     // Add the node with execution order 0 (first to run)
     scheduler.add(HelloNode { count: 0 }).order(0).build()?;

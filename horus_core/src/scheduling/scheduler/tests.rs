@@ -1,9 +1,8 @@
 // Scheduler tests
 
 use super::*;
-use crate::core::Node;
+use crate::core::{DurationExt, Node};
 use crate::scheduling::fault_tolerance::FailurePolicy;
-// DeterministicConfig only used indirectly through .deterministic() builder now
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -93,7 +92,10 @@ fn test_scheduler_with_name() {
 fn test_scheduler_add_node() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("test_node")).order(0).done();
+    scheduler
+        .add(CounterNode::new("test_node"))
+        .order(0)
+        .build();
 
     let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 1);
@@ -104,9 +106,9 @@ fn test_scheduler_add_node() {
 fn test_scheduler_add_multiple_nodes() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("node1")).order(0).done();
-    scheduler.add(CounterNode::new("node2")).order(1).done();
-    scheduler.add(CounterNode::new("node3")).order(2).done();
+    scheduler.add(CounterNode::new("node1")).order(0).build();
+    scheduler.add(CounterNode::new("node2")).order(1).build();
+    scheduler.add(CounterNode::new("node3")).order(2).build();
 
     let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 3);
@@ -120,15 +122,15 @@ fn test_scheduler_node_priority_ordering() {
     scheduler
         .add(CounterNode::new("low_priority"))
         .order(10)
-        .done();
+        .build();
     scheduler
         .add(CounterNode::new("high_priority"))
         .order(0)
-        .done();
+        .build();
     scheduler
         .add(CounterNode::new("medium_priority"))
         .order(5)
-        .done();
+        .build();
 
     // After sorting by priority, high_priority should come first
     let nodes = scheduler.node_list();
@@ -143,7 +145,7 @@ fn test_scheduler_add_basic() {
     scheduler
         .add(CounterNode::new("basic_node"))
         .order(0)
-        .done();
+        .build();
 
     let metrics = scheduler.metrics();
     assert_eq!(metrics.len(), 1);
@@ -187,16 +189,16 @@ fn test_scheduler_stop_and_check_multiple_times() {
 fn test_scheduler_set_node_rate() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::new().tick_hz(1000.0);
+    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
     scheduler
         .add(CounterNode::with_counter("sensor", counter.clone()))
         .order(0)
-        .done();
-    scheduler.set_node_rate("sensor", 100.0);
+        .build();
+    scheduler.set_node_rate("sensor", 100.hz());
 
     // Run for 500ms — at 100Hz expect ~50 ticks (wide tolerance for CI)
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
     let ticks = counter.load(Ordering::SeqCst);
     assert!(
         ticks >= 5,
@@ -209,9 +211,9 @@ fn test_scheduler_set_node_rate() {
 fn test_scheduler_set_node_rate_nonexistent() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("node1")).order(0).done();
+    scheduler.add(CounterNode::new("node1")).order(0).build();
     // Setting rate for nonexistent node should be a no-op
-    scheduler.set_node_rate("nonexistent", 50.0);
+    scheduler.set_node_rate("nonexistent", 50.hz());
     // Existing node list must be unchanged
     let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 1);
@@ -226,7 +228,10 @@ fn test_scheduler_set_node_rate_nonexistent() {
 fn test_scheduler_metrics_existing() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("info_node")).order(0).done();
+    scheduler
+        .add(CounterNode::new("info_node"))
+        .order(0)
+        .build();
 
     let metrics = scheduler.metrics();
     assert_eq!(metrics.len(), 1);
@@ -319,9 +324,9 @@ fn test_scheduler_add_rt_node() {
     scheduler
         .add(CounterNode::new("rt_node"))
         .order(0)
-        .budget_us(100)
-        .deadline_ms(1)
-        .done();
+        .budget(100.us())
+        .deadline(1.ms())
+        .build();
 
     let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 1);
@@ -340,11 +345,11 @@ fn test_scheduler_run_for_short_duration() {
     scheduler
         .add(CounterNode::with_counter("counter", counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     // Run for a short duration (100ms to handle scheduler init overhead under parallel test load)
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Counter should have been incremented at least once
     assert!(counter.load(Ordering::SeqCst) > 0);
@@ -362,7 +367,7 @@ fn test_scheduler_chainable_api() {
     scheduler
         .add(CounterNode::new("chain_node"))
         .order(0)
-        .done();
+        .build();
 
     assert!(scheduler.is_running());
     assert_eq!(scheduler.node_list().len(), 1);
@@ -514,7 +519,7 @@ fn test_rt_feature_display() {
 fn test_parallel_execution_all_nodes_tick() {
     let _guard = lock_scheduler();
     // Compute nodes are dispatched to the parallel compute executor automatically.
-    let mut scheduler = Scheduler::new().tick_hz(100.0);
+    let mut scheduler = Scheduler::new().tick_rate(100.hz());
 
     let c1 = Arc::new(AtomicUsize::new(0));
     let c2 = Arc::new(AtomicUsize::new(0));
@@ -524,21 +529,21 @@ fn test_parallel_execution_all_nodes_tick() {
         .add(CounterNode::with_counter("par_a", c1.clone()))
         .order(100)
         .compute()
-        .done();
+        .build();
     scheduler
         .add(CounterNode::with_counter("par_b", c2.clone()))
         .order(101)
         .compute()
-        .done();
+        .build();
     scheduler
         .add(CounterNode::with_counter("par_c", c3.clone()))
         .order(102)
         .compute()
-        .done();
+        .build();
 
     // Run for 300ms — all 3 compute nodes should tick at least once
     let result = scheduler.run_for(Duration::from_millis(300));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Every node must have ticked at least once
     assert!(c1.load(Ordering::SeqCst) > 0, "par_a never ticked");
@@ -550,7 +555,7 @@ fn test_parallel_execution_all_nodes_tick() {
 fn test_parallel_rt_nodes_run_sequentially() {
     let _guard = lock_scheduler();
     // RT nodes run on a dedicated thread; BestEffort nodes on main thread
-    let mut scheduler = Scheduler::new().tick_hz(10000.0);
+    let mut scheduler = Scheduler::new().tick_rate(10000.hz());
 
     let rt_counter = Arc::new(AtomicUsize::new(0));
     let normal_counter = Arc::new(AtomicUsize::new(0));
@@ -558,18 +563,18 @@ fn test_parallel_rt_nodes_run_sequentially() {
     scheduler
         .add(CounterNode::with_counter("rt_node", rt_counter.clone()))
         .order(0)
-        .budget_us(10_000)
-        .done();
+        .budget(10_000.us())
+        .build();
     scheduler
         .add(CounterNode::with_counter(
             "normal_node",
             normal_counter.clone(),
         ))
         .order(100)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Both should have ticked
     assert!(
@@ -598,8 +603,8 @@ fn test_rate_limiting_adjusts_tick_period() {
     scheduler
         .add(CounterNode::new("fast_node"))
         .order(0)
-        .rate_hz(500.0)
-        .done();
+        .rate(500.hz())
+        .build();
 
     // tick_period should now be <= 2000us (500Hz)
     assert!(
@@ -624,12 +629,12 @@ fn test_rate_limiting_node_ticks_at_declared_rate() {
     scheduler
         .add(CounterNode::with_counter("fast", counter.clone()))
         .order(0)
-        .rate_hz(500.0)
-        .done();
+        .rate(500.hz())
+        .build();
 
     // Run for 1s — expect ~500 ticks at 500Hz
     let result = scheduler.run_for(Duration::from_secs(1));
-    assert!(result.is_ok());
+    result.unwrap();
 
     let ticks = counter.load(Ordering::SeqCst);
     // Under heavy parallel test execution, CPU contention can reduce
@@ -653,8 +658,8 @@ fn test_rate_limiting_does_not_lower_tick_period() {
     scheduler
         .add(CounterNode::new("slow_node"))
         .order(0)
-        .rate_hz(10.0)
-        .done();
+        .rate(10.hz())
+        .build();
 
     assert_eq!(
         scheduler.tick.period, default_period,
@@ -663,78 +668,18 @@ fn test_rate_limiting_does_not_lower_tick_period() {
 }
 
 // ============================================================================
-// Fix 1: Deterministic Clock Wiring Tests
-// ============================================================================
-
-#[test]
-fn test_deterministic_config_wires_clock() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().tick_hz(1000.0).deterministic(42);
-    assert!(scheduler.is_simulation_mode());
-    assert!(scheduler.deterministic_clock().is_some());
-    assert_eq!(scheduler.virtual_tick(), Some(0));
-    assert_eq!(scheduler.seed(), Some(42));
-}
-
-#[test]
-fn test_deterministic_config_virtual_time() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().deterministic(123);
-
-    assert!(scheduler.is_simulation_mode());
-    assert_eq!(scheduler.seed(), Some(123));
-}
-
-#[test]
-fn test_deterministic_advances_on_run() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::new()
-        .tick_hz(1000.0)
-        .deterministic(42)
-        .with_recording();
-    scheduler
-        .add(CounterNode::with_counter("test", counter.clone()))
-        .order(0)
-        .done();
-
-    // run_for with deterministic mode (virtual time → runs as fast as possible)
-    let _ = scheduler.run_for(Duration::from_millis(200));
-
-    // Virtual tick should have advanced
-    let tick = scheduler.virtual_tick().unwrap();
-    assert!(tick > 0, "Virtual tick should advance, got {}", tick);
-
-    // Node should have been ticked
-    let ticks = counter.load(Ordering::SeqCst);
-    assert!(ticks > 0, "Node should have ticked, got {}", ticks);
-}
-
-#[test]
-fn test_standard_config_no_deterministic() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new();
-    assert!(!scheduler.is_simulation_mode());
-    assert!(scheduler.deterministic_clock().is_none());
-    assert!(scheduler.virtual_tick().is_none());
-}
-
-// ============================================================================
-// Fix 2: Recording Hooks Wiring Tests
+// Recording Hooks Wiring Tests
 // ============================================================================
 
 #[test]
 fn test_recording_hooks_wired() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::new()
-        .tick_hz(1000.0)
-        .deterministic(42)
-        .with_recording();
+    let mut scheduler = Scheduler::new().tick_rate(1000.hz()).with_recording();
     scheduler
         .add(CounterNode::with_counter("rec_node", counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     assert!(scheduler.is_recording());
 
@@ -745,7 +690,7 @@ fn test_recording_hooks_wired() {
 
     // stop_recording should succeed and return saved paths
     let paths = scheduler.stop_recording();
-    assert!(paths.is_ok());
+    paths.unwrap();
 }
 
 // ============================================================================
@@ -803,14 +748,14 @@ fn test_deploy_config_creates_blackbox_with_wal() {
 #[test]
 fn test_per_node_rates_work_without_dead_code() {
     let _guard = lock_scheduler();
-    // Per-node rates work through set_node_rate() / .rate_hz(), not the removed config flag
+    // Per-node rates work through set_node_rate() / .rate(), not the removed config flag
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::new().tick_hz(1000.0);
+    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
     scheduler
         .add(CounterNode::with_counter("rated", counter.clone()))
         .order(0)
-        .rate_hz(100.0)
-        .done();
+        .rate(100.hz())
+        .build();
 
     let _ = scheduler.run_for(Duration::from_secs(1));
 
@@ -911,7 +856,7 @@ fn test_scheduler_lifecycle_init_tick_shutdown() {
             tc_a.clone(),
         ))
         .order(0)
-        .done();
+        .build();
     scheduler
         .add(OrderTrackingNode::new(
             "node_b",
@@ -921,10 +866,10 @@ fn test_scheduler_lifecycle_init_tick_shutdown() {
             tc_b.clone(),
         ))
         .order(1)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // init must have been called for both
     assert!(init_a.load(Ordering::SeqCst), "node_a init() not called");
@@ -1038,11 +983,11 @@ fn test_scheduler_priority_execution_order_robotics() {
                 n.tc.clone(),
             ))
             .order(n.priority)
-            .done();
+            .build();
     }
 
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // All nodes must have ticked
     for n in &nodes {
@@ -1126,14 +1071,14 @@ fn test_scheduler_10_nodes_100_ticks_priority_order() {
                     tc.clone(),
                 ))
                 .order(*prio)
-                .done();
+                .build();
             tc
         })
         .collect();
 
     // Run for 500ms — should get many ticks at default ~60Hz
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // All nodes ticked
     for (i, (name, _)) in priorities.iter().enumerate() {
@@ -1197,11 +1142,11 @@ fn test_scheduler_all_nodes_init_called_once() {
                 tc,
             ))
             .order(0)
-            .done();
+            .build();
     }
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Every node must have init() called
     for (name, flag) in &init_flags {
@@ -1307,7 +1252,7 @@ fn test_fatal_policy_stops_scheduler_on_panic() {
             healthy_counter.clone(),
         ))
         .order(0)
-        .done();
+        .build();
 
     // Panicking node with Fatal policy (default for UltraFast tier)
     scheduler
@@ -1318,7 +1263,7 @@ fn test_fatal_policy_stops_scheduler_on_panic() {
         ))
         .order(1)
         .failure_policy(crate::scheduling::fault_tolerance::FailurePolicy::Fatal)
-        .done();
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(500));
     // Scheduler should have stopped due to fatal failure
@@ -1349,7 +1294,7 @@ fn test_restart_policy_reinitializes_after_panic() {
         .failure_policy(crate::scheduling::fault_tolerance::FailurePolicy::restart(
             3, 10,
         ))
-        .done();
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(500));
     // After 3 restarts are exhausted, it escalates to fatal
@@ -1384,7 +1329,7 @@ fn test_skip_policy_skips_node() {
             healthy_counter.clone(),
         ))
         .order(0)
-        .done();
+        .build();
 
     // Panicking node with Skip policy — circuit opens after failures
     scheduler
@@ -1397,10 +1342,10 @@ fn test_skip_policy_skips_node() {
         .failure_policy(crate::scheduling::fault_tolerance::FailurePolicy::skip(
             3, 5000,
         ))
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Scheduler should still be running (Skip policy doesn't stop it)
     // Note: run_for stops scheduler after duration, but it completed normally
@@ -1427,17 +1372,17 @@ fn test_ignore_policy_continues_after_failure() {
             healthy_counter.clone(),
         ))
         .order(0)
-        .done();
+        .build();
 
     // Node panics at tick 2 with Ignore policy
     scheduler
         .add(PanickingNode::new("diagnostics", 2, counter.clone()))
         .order(200)
         .failure_policy(crate::scheduling::fault_tolerance::FailurePolicy::Ignore)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Critical node should have ticked
     let healthy_ticks = healthy_counter.load(Ordering::SeqCst);
@@ -1462,8 +1407,8 @@ fn test_budget_violation_detected_for_slow_rt_node() {
     scheduler
         .add(CounterNode::with_counter("fast_ctrl", fast_counter.clone()))
         .order(0)
-        .budget_us(10_000) // 10ms budget (generous)
-        .done();
+        .budget(10_000.us()) // 10ms budget (generous)
+        .build();
 
     // Slow node that will exceed its tick budget
     scheduler
@@ -1473,8 +1418,8 @@ fn test_budget_violation_detected_for_slow_rt_node() {
             slow_counter.clone(),
         ))
         .order(1)
-        .budget_us(1_000) // 1ms budget — will be violated by 50ms sleep
-        .done();
+        .budget(1_000.us()) // 1ms budget — will be violated by 50ms sleep
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
@@ -1512,8 +1457,8 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
             slow_counter.clone(),
         ))
         .order(0)
-        .deadline_ms(5) // 5ms deadline — will be missed by 20ms sleep
-        .done();
+        .deadline(5.ms()) // 5ms deadline — will be missed by 20ms sleep
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(2));
 
@@ -1555,11 +1500,11 @@ fn test_scheduler_shutdown_called_for_all_nodes() {
                 tc,
             ))
             .order(0)
-            .done();
+            .build();
     }
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Every node must have shutdown() called
     for (name, flag) in &shutdown_flags {
@@ -1601,11 +1546,11 @@ fn test_duplicate_node_names_both_added() {
     scheduler
         .add(CounterNode::with_counter("motor_ctrl", counter1.clone()))
         .order(0)
-        .done();
+        .build();
     scheduler
         .add(CounterNode::with_counter("motor_ctrl", counter2.clone()))
         .order(1)
-        .done();
+        .build();
 
     // Both nodes should exist
     let nodes = scheduler.node_list();
@@ -1613,7 +1558,7 @@ fn test_duplicate_node_names_both_added() {
 
     // Both should tick
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
     assert!(
         counter1.load(Ordering::SeqCst) > 0,
         "First duplicate node should tick"
@@ -1624,18 +1569,23 @@ fn test_duplicate_node_names_both_added() {
     );
 }
 
-/// Node that panics in init(): scheduler catches it, other nodes continue.
+/// Node that fails in init(): scheduler catches it, other nodes continue.
 /// Robotics: one bad sensor driver must not crash the whole robot.
 #[test]
 fn test_panic_in_init_caught_others_continue() {
     let _guard = lock_scheduler();
-    struct PanicInitNode;
-    impl Node for PanicInitNode {
+    struct FailingInitNode;
+    impl Node for FailingInitNode {
         fn name(&self) -> &str {
-            "panic_init"
+            "failing_init"
         }
         fn init(&mut self) -> crate::error::HorusResult<()> {
-            panic!("init explosion");
+            Err(crate::HorusError::Node(
+                crate::error::NodeError::InitFailed {
+                    node: "failing_init".to_string(),
+                    reason: "init explosion".to_string(),
+                },
+            ))
         }
         fn tick(&mut self) {}
     }
@@ -1643,21 +1593,24 @@ fn test_panic_in_init_caught_others_continue() {
     let good_counter = Arc::new(AtomicUsize::new(0));
     let mut scheduler = Scheduler::new();
 
-    // Bad node that panics in init
-    scheduler.add(PanicInitNode).order(0).done();
+    // Bad node that fails in init — non-fatal error, scheduler continues
+    scheduler.add(FailingInitNode).order(0).build();
 
     // Good node that should still run
     scheduler
         .add(CounterNode::with_counter("good_node", good_counter.clone()))
         .order(1)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok(), "Scheduler should not crash from init panic");
+    assert!(
+        result.is_ok(),
+        "Scheduler should not crash from init failure"
+    );
 
     assert!(
         good_counter.load(Ordering::SeqCst) > 0,
-        "Good node should still tick despite bad node's init panic"
+        "Good node should still tick despite bad node's init failure"
     );
 }
 
@@ -1677,7 +1630,7 @@ fn test_panic_in_tick_caught_others_continue() {
         .add(PanickingNode::new("bad_sensor", 1, panic_counter.clone()))
         .order(0)
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     // Good node that should continue
     scheduler
@@ -1686,7 +1639,7 @@ fn test_panic_in_tick_caught_others_continue() {
             good_counter.clone(),
         ))
         .order(1)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok(), "Scheduler should not crash from tick panic");
@@ -1709,7 +1662,7 @@ fn test_immediate_stop_still_inits_and_shuts_down() {
     scheduler
         .add(CounterNode::with_counter("quick_node", counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     // Stop before running — run_for should exit almost immediately
     scheduler.stop();
@@ -1731,7 +1684,7 @@ fn test_many_nodes_50_plus() {
         scheduler
             .add(CounterNode::with_counter(name, counter.clone()))
             .order(i as u32)
-            .done();
+            .build();
     }
 
     assert_eq!(scheduler.node_list().len(), 50);
@@ -1761,7 +1714,7 @@ fn test_empty_scheduler_run() {
     let mut scheduler = Scheduler::new();
     // Running with zero nodes should succeed, not panic
     let result = scheduler.run_for(Duration::from_millis(50));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -1777,35 +1730,30 @@ fn test_empty_scheduler_metrics() {
 }
 
 #[test]
-fn test_tick_hz_zero() {
-    let _lock = lock_scheduler();
-    let mut scheduler = Scheduler::new().tick_hz(0.0);
-    scheduler.add(CounterNode::new("zero_hz")).build().unwrap();
-    // Should handle 0hz gracefully (no infinite loop, no division by zero)
-    let result = scheduler.run_for(Duration::from_millis(50));
-    assert!(result.is_ok());
+#[should_panic(expected = "positive")]
+fn test_tick_rate_zero_panics() {
+    // Frequency rejects zero at construction time
+    let _freq = 0.hz();
 }
 
 #[test]
-fn test_tick_hz_negative() {
-    let _lock = lock_scheduler();
-    let mut scheduler = Scheduler::new().tick_hz(-100.0);
-    scheduler.add(CounterNode::new("neg_hz")).build().unwrap();
-    let result = scheduler.run_for(Duration::from_millis(50));
-    assert!(result.is_ok());
+#[should_panic(expected = "finite and positive")]
+fn test_tick_rate_negative_panics() {
+    // Frequency rejects negative values at construction time
+    let _freq = (-100.0).hz();
 }
 
 #[test]
 fn test_tick_hz_very_large() {
     let _lock = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::new().tick_hz(1_000_000.0);
+    let mut scheduler = Scheduler::new().tick_rate(1_000_000.hz());
     scheduler
         .add(CounterNode::with_counter("fast", counter.clone()))
         .build()
         .unwrap();
     let result = scheduler.run_for(Duration::from_millis(10));
-    assert!(result.is_ok());
+    result.unwrap();
     assert!(counter.load(Ordering::SeqCst) > 0);
 }
 
@@ -1814,26 +1762,21 @@ fn test_set_node_rate_nonexistent() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
     // Setting rate on non-existent node should not panic
-    scheduler.set_node_rate("does_not_exist", 100.0);
+    scheduler.set_node_rate("does_not_exist", 100.hz());
 }
 
 #[test]
-fn test_set_node_rate_zero() {
-    let _lock = lock_scheduler();
-    let mut scheduler = Scheduler::new();
-    scheduler
-        .add(CounterNode::new("rate_zero"))
-        .build()
-        .unwrap();
-    scheduler.set_node_rate("rate_zero", 0.0);
+#[should_panic(expected = "positive")]
+fn test_set_node_rate_zero_panics() {
+    // Frequency rejects zero at construction time
+    let _freq = 0.hz();
 }
 
 #[test]
-fn test_set_node_rate_negative() {
-    let _lock = lock_scheduler();
-    let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("rate_neg")).build().unwrap();
-    scheduler.set_node_rate("rate_neg", -50.0);
+#[should_panic(expected = "finite and positive")]
+fn test_set_node_rate_negative_panics() {
+    // Frequency rejects negative values at construction time
+    let _freq = (-50.0).hz();
 }
 
 #[test]
@@ -1845,8 +1788,8 @@ fn test_tick_empty_node_names() {
         .build()
         .unwrap();
     // Tick with empty names should succeed (tick nothing)
-    let result = scheduler.tick(&[]);
-    assert!(result.is_ok());
+    let result = scheduler.tick_for(&[], Duration::from_millis(50));
+    result.unwrap();
 }
 
 #[test]
@@ -1858,8 +1801,8 @@ fn test_tick_nonexistent_node_names() {
         .build()
         .unwrap();
     // Tick with non-existent names should not panic
-    let result = scheduler.tick(&["fake_node_1", "fake_node_2"]);
-    assert!(result.is_ok());
+    let result = scheduler.tick_for(&["fake_node_1", "fake_node_2"], Duration::from_millis(50));
+    result.unwrap();
 }
 
 // test_circuit_state_nonexistent removed: circuit_state method was removed in refactor
@@ -1923,7 +1866,7 @@ fn test_max_deadline_misses_zero() {
         .build()
         .unwrap();
     let result = scheduler.run_for(Duration::from_millis(10));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -1932,7 +1875,7 @@ fn test_run_for_zero_duration() {
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("zero_dur")).build().unwrap();
     let result = scheduler.run_for(Duration::ZERO);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -1992,7 +1935,7 @@ fn test_shutdown_during_active_tick() {
             shutdown_called: sc,
         })
         .order(0)
-        .done();
+        .build();
 
     let running = scheduler.running_flag();
     // Spawn a thread that stops the scheduler after a brief delay
@@ -2002,7 +1945,7 @@ fn test_shutdown_during_active_tick() {
     });
 
     let result = scheduler.run_for(Duration::from_millis(500));
-    assert!(result.is_ok());
+    result.unwrap();
     assert!(
         tick_started.load(Ordering::SeqCst),
         "Node should have started ticking"
@@ -2053,18 +1996,18 @@ fn test_shutdown_panic_in_one_node_others_still_shutdown() {
             flag: shutdown_a.clone(),
         })
         .order(0)
-        .done();
-    scheduler.add(PanicShutdownNode).order(1).done();
+        .build();
+    scheduler.add(PanicShutdownNode).order(1).build();
     scheduler
         .add(FlagShutdownNode {
             node_name: "after_panic",
             flag: shutdown_c.clone(),
         })
         .order(2)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 
     assert!(
         shutdown_a.load(Ordering::SeqCst),
@@ -2103,7 +2046,7 @@ fn test_sigterm_causes_graceful_shutdown() {
             shutdown_called: sc,
         })
         .order(0)
-        .done();
+        .build();
 
     // Simulate SIGTERM after a brief delay
     std::thread::spawn(|| {
@@ -2112,7 +2055,7 @@ fn test_sigterm_causes_graceful_shutdown() {
     });
 
     let result = scheduler.run_for(Duration::from_secs(5));
-    assert!(result.is_ok());
+    result.unwrap();
     assert!(
         shutdown_called.load(Ordering::SeqCst),
         "Node must get shutdown() called on SIGTERM"
@@ -2130,7 +2073,7 @@ fn test_external_stop_via_running_flag() {
     scheduler
         .add(CounterNode::with_counter("ext_stop_node", tc))
         .order(0)
-        .done();
+        .build();
 
     let flag = scheduler.running_flag();
     std::thread::spawn(move || {
@@ -2139,7 +2082,7 @@ fn test_external_stop_via_running_flag() {
     });
 
     let result = scheduler.run_for(Duration::from_secs(5));
-    assert!(result.is_ok());
+    result.unwrap();
     // Node should have ticked at least once but stopped well before 5 seconds
     assert!(
         tick_count.load(Ordering::SeqCst) > 0,
@@ -2172,14 +2115,14 @@ fn test_shutdown_order_all_nodes_get_full_lifecycle() {
                 tc.clone(),
             ))
             .order(i as u32)
-            .done();
+            .build();
         inits.push(init);
         shuts.push(shut);
         tcs.push(tc);
     }
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     let entries = log.lock().unwrap();
 
@@ -2264,18 +2207,18 @@ fn test_shutdown_error_does_not_prevent_other_shutdowns() {
             flag: shutdown_ok_a.clone(),
         })
         .order(0)
-        .done();
-    scheduler.add(ErrShutdownNode).order(1).done();
+        .build();
+    scheduler.add(ErrShutdownNode).order(1).build();
     scheduler
         .add(FlagNode {
             node_name: "ok_after",
             flag: shutdown_ok_b.clone(),
         })
         .order(2)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 
     assert!(
         shutdown_ok_a.load(Ordering::SeqCst),
@@ -2297,10 +2240,10 @@ fn test_metrics_populated_after_shutdown() {
     scheduler
         .add(CounterNode::with_counter("metrics_node", counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     let metrics = scheduler.metrics();
     assert_eq!(metrics.len(), 1);
@@ -2321,10 +2264,10 @@ fn test_stop_then_check_state_is_consistent() {
     scheduler
         .add(CounterNode::with_counter("rapid_stop", counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // After run_for completes, scheduler should be stopped
     assert!(
@@ -2371,10 +2314,10 @@ fn test_uninitialised_node_not_shutdown() {
             shutdown_called: sc,
         })
         .order(0)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Node that failed init should NOT have shutdown called
     assert!(
@@ -2405,22 +2348,22 @@ fn test_multiple_simultaneous_panics_scheduler_survives() {
             healthy_counter.clone(),
         ))
         .order(0)
-        .done();
+        .build();
 
     // Two nodes that panic on first tick, both with Ignore policy
     scheduler
         .add(PanickingNode::new("sensor_a", 1, panic_a.clone()))
         .order(1)
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
     scheduler
         .add(PanickingNode::new("sensor_b", 1, panic_b.clone()))
         .order(2)
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     assert!(
         healthy_counter.load(Ordering::SeqCst) > 0,
@@ -2444,14 +2387,14 @@ fn test_fatal_among_ignore_nodes_still_stops() {
         .add(PanickingNode::new("logger", 1, ignore_counter.clone()))
         .order(0)
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     // Fatal policy node that panics on tick 3
     scheduler
         .add(PanickingNode::new("motor", 3, fatal_counter.clone()))
         .order(1)
         .failure_policy(FailurePolicy::Fatal)
-        .done();
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(500));
     assert!(
@@ -2475,17 +2418,17 @@ fn test_skip_policy_healthy_nodes_unaffected() {
             healthy_counter.clone(),
         ))
         .order(0)
-        .done();
+        .build();
 
     // Node that always panics (panic_at=1), with Skip policy (threshold=2)
     scheduler
         .add(PanickingNode::new("flaky_node", 1, panic_counter.clone()))
         .order(1)
         .failure_policy(FailurePolicy::skip(2, 5000))
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(300));
-    assert!(result.is_ok());
+    result.unwrap();
 
     let healthy_ticks = healthy_counter.load(Ordering::SeqCst);
     assert!(
@@ -2513,7 +2456,7 @@ fn test_restart_node_rejoins_tick_loop() {
         }
         fn tick(&mut self) {
             let c = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
-            if c % 2 == 0 {
+            if c.is_multiple_of(2) {
                 panic!("even tick panic at {}", c);
             }
         }
@@ -2525,7 +2468,7 @@ fn test_restart_node_rejoins_tick_loop() {
         .add(EveryOtherPanicNode { counter: tc })
         .order(0)
         .failure_policy(FailurePolicy::restart(5, 5))
-        .done();
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(500));
 
@@ -2556,24 +2499,24 @@ fn test_mixed_failure_policies_independent() {
             healthy_counter.clone(),
         ))
         .order(0)
-        .done();
+        .build();
 
     // Ignore-policy node that panics every tick
     scheduler
         .add(PanickingNode::new("ignore_node", 1, ignore_counter.clone()))
         .order(1)
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     // Skip-policy node that panics every tick (opens circuit after 2 failures)
     scheduler
         .add(PanickingNode::new("skip_node", 1, skip_counter.clone()))
         .order(2)
         .failure_policy(FailurePolicy::skip(2, 5000))
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(300));
-    assert!(result.is_ok());
+    result.unwrap();
 
     let h = healthy_counter.load(Ordering::SeqCst);
     assert!(h > 5, "Healthy node must keep running, got {} ticks", h);
@@ -2609,16 +2552,16 @@ fn test_panicking_node_doesnt_starve_others() {
     scheduler
         .add(CounterNode::with_counter("good", good_counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     scheduler
         .add(PanickingNode::new("bad", 1, bad_counter.clone()))
         .order(1)
         .failure_policy(FailurePolicy::Ignore)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     let good = good_counter.load(Ordering::SeqCst);
     let bad = bad_counter.load(Ordering::SeqCst);
@@ -2645,7 +2588,7 @@ fn test_restart_policy_stats_tracked() {
         .add(PanickingNode::new("restart_stats", 2, counter.clone()))
         .order(0)
         .failure_policy(FailurePolicy::restart(3, 5))
-        .done();
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(500));
 
@@ -2667,10 +2610,10 @@ fn test_fault_tolerance_reflected_in_scheduler_status() {
         .add(PanickingNode::new("circuit_node", 1, panic_counter.clone()))
         .order(0)
         .failure_policy(FailurePolicy::skip(2, 5000))
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Status should be non-empty and reflect the fault tolerance state
     let status = scheduler.status();
@@ -2691,8 +2634,8 @@ fn test_budget_no_violation_within_budget() {
     scheduler
         .add(CounterNode::with_counter("fast_node", counter.clone()))
         .order(0)
-        .budget_us(100_000) // 100ms budget — CounterNode takes nanoseconds
-        .done();
+        .budget(100_000.us()) // 100ms budget — CounterNode takes nanoseconds
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(200));
 
@@ -2726,8 +2669,8 @@ fn test_budget_multiple_simultaneous_violations() {
             slow_a.clone(),
         ))
         .order(0)
-        .budget_us(1_000) // 1ms budget — violated by 30ms sleep
-        .done();
+        .budget(1_000.us()) // 1ms budget — violated by 30ms sleep
+        .build();
 
     scheduler
         .add(SlowNode::new(
@@ -2736,8 +2679,8 @@ fn test_budget_multiple_simultaneous_violations() {
             slow_b.clone(),
         ))
         .order(1)
-        .budget_us(2_000) // 2ms budget — violated by 30ms sleep
-        .done();
+        .budget(2_000.us()) // 2ms budget — violated by 30ms sleep
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
@@ -2780,8 +2723,8 @@ fn test_budget_mixed_within_and_over_budget() {
     scheduler
         .add(CounterNode::with_counter("fast", fast.clone()))
         .order(0)
-        .budget_us(50_000) // 50ms — way more than needed
-        .done();
+        .budget(50_000.us()) // 50ms — way more than needed
+        .build();
 
     // Slow node with tight budget
     scheduler
@@ -2791,8 +2734,8 @@ fn test_budget_mixed_within_and_over_budget() {
             slow.clone(),
         ))
         .order(1)
-        .budget_us(1_000) // 1ms budget — violated
-        .done();
+        .budget(1_000.us()) // 1ms budget — violated
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
@@ -2813,7 +2756,7 @@ fn test_budget_mixed_within_and_over_budget() {
     }
 }
 
-/// Non-RT node with budget — should still track (if registered as RT via .budget_us()).
+/// Non-RT node with budget — should still track (if registered as RT via .budget()).
 #[test]
 fn test_budget_non_rt_node_no_crash() {
     let _guard = lock_scheduler();
@@ -2821,14 +2764,14 @@ fn test_budget_non_rt_node_no_crash() {
 
     let mut scheduler = Scheduler::deploy();
 
-    // Regular node (no .budget_us()) — no budget tracking
+    // Regular node (no .budget()) — no budget tracking
     scheduler
         .add(CounterNode::with_counter("regular", counter.clone()))
         .order(0)
-        .done();
+        .build();
 
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
+    result.unwrap();
     assert!(counter.load(Ordering::SeqCst) > 0);
 
     // rt_stats for non-RT node should return None
@@ -2854,8 +2797,8 @@ fn test_budget_worst_execution_tracked() {
             counter.clone(),
         ))
         .order(0)
-        .budget_us(100_000) // generous budget, just tracking
-        .done();
+        .budget(100_000.us()) // generous budget, just tracking
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(200));
 
@@ -2883,8 +2826,8 @@ fn test_deadline_no_miss_within_budget() {
     scheduler
         .add(CounterNode::with_counter("fast_rt", counter.clone()))
         .order(0)
-        .deadline_ms(500) // 500ms — CounterNode takes nanoseconds
-        .done();
+        .deadline(500.ms()) // 500ms — CounterNode takes nanoseconds
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
@@ -2917,8 +2860,8 @@ fn test_deadline_multiple_simultaneous_misses() {
             slow_a.clone(),
         ))
         .order(0)
-        .deadline_ms(5) // 5ms deadline — missed by 30ms
-        .done();
+        .deadline(5.ms()) // 5ms deadline — missed by 30ms
+        .build();
 
     scheduler
         .add(SlowNode::new(
@@ -2927,8 +2870,8 @@ fn test_deadline_multiple_simultaneous_misses() {
             slow_b.clone(),
         ))
         .order(1)
-        .deadline_ms(10) // 10ms deadline — missed by 30ms
-        .done();
+        .deadline(10.ms()) // 10ms deadline — missed by 30ms
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
@@ -2961,8 +2904,8 @@ fn test_deadline_mixed_meet_and_miss() {
     scheduler
         .add(CounterNode::with_counter("meets_deadline", fast.clone()))
         .order(0)
-        .deadline_ms(100)
-        .done();
+        .deadline(100.ms())
+        .build();
 
     // Slow node misses deadline
     scheduler
@@ -2972,8 +2915,8 @@ fn test_deadline_mixed_meet_and_miss() {
             slow.clone(),
         ))
         .order(1)
-        .deadline_ms(5) // 5ms — violated by 25ms sleep
-        .done();
+        .deadline(5.ms()) // 5ms — violated by 25ms sleep
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
@@ -3007,8 +2950,8 @@ fn test_deadline_miss_count_accumulates() {
             counter.clone(),
         ))
         .order(0)
-        .deadline_ms(5) // 5ms deadline — each tick misses
-        .done();
+        .deadline(5.ms()) // 5ms deadline — each tick misses
+        .build();
 
     let _result = scheduler.run_for(Duration::from_millis(500));
 
@@ -3040,9 +2983,9 @@ fn test_deadline_miss_and_budget_violation_both_tracked() {
             counter.clone(),
         ))
         .order(0)
-        .budget_us(1_000) // 1ms tick budget — violated by 30ms
-        .deadline_ms(5) // 5ms deadline — also violated
-        .done();
+        .budget(1_000.us()) // 1ms tick budget — violated by 30ms
+        .deadline(5.ms()) // 5ms deadline — also violated
+        .build();
 
     let _result = scheduler.run_for(Duration::from_secs(1));
 
