@@ -245,9 +245,7 @@ async fn chaos_api_status_without_nodes_dir() {
 #[tokio::test]
 async fn chaos_corrupt_wal_partial_read() {
     // Create blackbox dir
-    let bb_dir = dirs::home_dir()
-        .expect("home dir")
-        .join(".horus/blackbox");
+    let bb_dir = dirs::home_dir().expect("home dir").join(".horus/blackbox");
     std::fs::create_dir_all(&bb_dir).ok();
     let wal_path = bb_dir.join("blackbox.wal");
 
@@ -416,10 +414,7 @@ async fn chaos_very_large_presence_file_no_panic() {
 #[tokio::test]
 async fn chaos_missing_recordings_dir_returns_empty() {
     let app = builders::test_router();
-    let resp = app
-        .oneshot(get_request("/api/recordings"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/api/recordings")).await.unwrap();
     assert_eq!(
         resp.status(),
         axum::http::StatusCode::OK,

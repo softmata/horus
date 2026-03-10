@@ -7,7 +7,6 @@ run ML inference as part of the HORUS node graph.
 
 from typing import Optional, Union, Callable, Type, Any, Dict
 from pathlib import Path
-import functools
 import numpy as np
 
 from .model import Model

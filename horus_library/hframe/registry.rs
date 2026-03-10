@@ -4,7 +4,7 @@
 //! internally using integer IDs for performance.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use horus_core::error::{HorusError, NotFoundError, ResourceError, ValidationError};
 use horus_core::HorusResult;
@@ -57,7 +57,11 @@ impl FrameRegistry {
     ///   of returning an error when `max_frames` is reached
     pub fn with_overflow(core: Arc<HFrameCore>, max_frames: usize, enable_overflow: bool) -> Self {
         let physical = core.physical_capacity();
-        let initial_capacity = if enable_overflow { physical } else { max_frames };
+        let initial_capacity = if enable_overflow {
+            physical
+        } else {
+            max_frames
+        };
 
         Self {
             name_to_id: RwLock::new(HashMap::with_capacity(max_frames)),
@@ -76,10 +80,12 @@ impl FrameRegistry {
     pub fn register(&self, name: &str, parent_name: Option<&str>) -> HorusResult<FrameId> {
         // Resolve parent ID (short-lived read lock, released before write phase).
         let parent_id = if let Some(parent) = parent_name {
-            let name_map = self.name_to_id.read().unwrap();
-            *name_map
-                .get(parent)
-                .ok_or_else(|| HorusError::NotFound(NotFoundError::ParentFrame { name: parent.to_string() }))?
+            let name_map = Self::read_lock(&self.name_to_id);
+            *name_map.get(parent).ok_or_else(|| {
+                HorusError::NotFound(NotFoundError::ParentFrame {
+                    name: parent.to_string(),
+                })
+            })?
         } else {
             NO_PARENT
         };
@@ -90,7 +96,7 @@ impl FrameRegistry {
         // `try_reserve` and `insert`, and that `next_id` is only incremented
         // after all allocations succeed (no ID leak on OOM).
         let id = {
-            let mut name_map = self.name_to_id.write().unwrap();
+            let mut name_map = Self::write_lock(&self.name_to_id);
 
             // Duplicate check under write lock (eliminates the read→write
             // TOCTOU window of the old code).
@@ -104,11 +110,9 @@ impl FrameRegistry {
             // Pre-reserve HashMap capacity.  If this returns Err (OOM),
             // `next_id` has NOT been touched — no frame ID is leaked.
             name_map.try_reserve(1).map_err(|_| {
-                HorusError::Memory(
-                    horus_core::error::MemoryError::AllocationFailed {
-                        reason: format!("OOM: cannot allocate name-map entry for frame '{}'", name),
-                    },
-                )
+                HorusError::Memory(horus_core::error::MemoryError::AllocationFailed {
+                    reason: format!("OOM: cannot allocate name-map entry for frame '{}'", name),
+                })
             })?;
 
             // Allocate the frame ID.  `next_id` is incremented here; this is
@@ -122,7 +126,7 @@ impl FrameRegistry {
 
             // Update id_to_name (pre-allocated Vec, always in-bounds).
             {
-                let mut id_map = self.id_to_name.write().unwrap();
+                let mut id_map = Self::write_lock(&self.id_to_name);
                 if (id as usize) < id_map.len() {
                     id_map[id as usize] = Some(name.to_string());
                 }
@@ -141,10 +145,12 @@ impl FrameRegistry {
     pub fn register_static(&self, name: &str, parent_name: Option<&str>) -> HorusResult<FrameId> {
         // Resolve parent ID (short-lived read lock, released before write phase).
         let parent_id = if let Some(parent) = parent_name {
-            let name_map = self.name_to_id.read().unwrap();
-            *name_map
-                .get(parent)
-                .ok_or_else(|| HorusError::NotFound(NotFoundError::ParentFrame { name: parent.to_string() }))?
+            let name_map = Self::read_lock(&self.name_to_id);
+            *name_map.get(parent).ok_or_else(|| {
+                HorusError::NotFound(NotFoundError::ParentFrame {
+                    name: parent.to_string(),
+                })
+            })?
         } else {
             NO_PARENT
         };
@@ -152,7 +158,7 @@ impl FrameRegistry {
         // Same atomic reserve → allocate → insert sequence as `register()`.
         // See that function for the ordering rationale.
         let id = {
-            let mut name_map = self.name_to_id.write().unwrap();
+            let mut name_map = Self::write_lock(&self.name_to_id);
 
             if name_map.contains_key(name) {
                 return Err(HorusError::Resource(ResourceError::AlreadyExists {
@@ -162,11 +168,9 @@ impl FrameRegistry {
             }
 
             name_map.try_reserve(1).map_err(|_| {
-                HorusError::Memory(
-                    horus_core::error::MemoryError::AllocationFailed {
-                        reason: format!("OOM: cannot allocate name-map entry for frame '{}'", name),
-                    },
-                )
+                HorusError::Memory(horus_core::error::MemoryError::AllocationFailed {
+                    reason: format!("OOM: cannot allocate name-map entry for frame '{}'", name),
+                })
             })?;
 
             let id = self.allocate_id()?;
@@ -174,7 +178,7 @@ impl FrameRegistry {
             name_map.insert(name.to_string(), id);
 
             {
-                let mut id_map = self.id_to_name.write().unwrap();
+                let mut id_map = Self::write_lock(&self.id_to_name);
                 if (id as usize) < id_map.len() {
                     id_map[id as usize] = Some(name.to_string());
                 }
@@ -192,10 +196,12 @@ impl FrameRegistry {
     /// Unregister a frame (only dynamic frames can be unregistered)
     pub fn unregister(&self, name: &str) -> HorusResult<()> {
         let id = {
-            let name_map = self.name_to_id.read().unwrap();
-            *name_map
-                .get(name)
-                .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: name.to_string() }))?
+            let name_map = Self::read_lock(&self.name_to_id);
+            *name_map.get(name).ok_or_else(|| {
+                HorusError::NotFound(NotFoundError::Frame {
+                    name: name.to_string(),
+                })
+            })?
         };
 
         // Check if static
@@ -211,8 +217,8 @@ impl FrameRegistry {
 
         // Remove from mappings
         {
-            let mut name_map = self.name_to_id.write().unwrap();
-            let mut id_map = self.id_to_name.write().unwrap();
+            let mut name_map = Self::write_lock(&self.name_to_id);
+            let mut id_map = Self::write_lock(&self.id_to_name);
 
             name_map.remove(name);
             if (id as usize) < id_map.len() {
@@ -226,14 +232,14 @@ impl FrameRegistry {
     /// Look up frame ID by name
     #[inline]
     pub fn lookup(&self, name: &str) -> Option<FrameId> {
-        let name_map = self.name_to_id.read().unwrap();
+        let name_map = Self::read_lock(&self.name_to_id);
         name_map.get(name).copied()
     }
 
     /// Look up frame name by ID
     #[inline]
     pub fn lookup_name(&self, id: FrameId) -> Option<String> {
-        let id_map = self.id_to_name.read().unwrap();
+        let id_map = Self::read_lock(&self.id_to_name);
         if (id as usize) < id_map.len() {
             id_map[id as usize].clone()
         } else {
@@ -243,19 +249,19 @@ impl FrameRegistry {
 
     /// Check if a frame exists
     pub fn exists(&self, name: &str) -> bool {
-        let name_map = self.name_to_id.read().unwrap();
+        let name_map = Self::read_lock(&self.name_to_id);
         name_map.contains_key(name)
     }
 
     /// Get all registered frame names
     pub fn all_names(&self) -> Vec<String> {
-        let name_map = self.name_to_id.read().unwrap();
+        let name_map = Self::read_lock(&self.name_to_id);
         name_map.keys().cloned().collect()
     }
 
     /// Get number of registered frames
     pub fn count(&self) -> usize {
-        let name_map = self.name_to_id.read().unwrap();
+        let name_map = Self::read_lock(&self.name_to_id);
         name_map.len()
     }
 
@@ -276,7 +282,7 @@ impl FrameRegistry {
     pub fn rename(&self, old_name: &str, new_name: &str) -> HorusResult<()> {
         // Check new name doesn't exist
         {
-            let name_map = self.name_to_id.read().unwrap();
+            let name_map = Self::read_lock(&self.name_to_id);
             if name_map.contains_key(new_name) {
                 return Err(HorusError::Resource(ResourceError::AlreadyExists {
                     resource_type: "frame".to_string(),
@@ -287,16 +293,18 @@ impl FrameRegistry {
 
         // Get ID for old name
         let id = {
-            let name_map = self.name_to_id.read().unwrap();
-            *name_map
-                .get(old_name)
-                .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: old_name.to_string() }))?
+            let name_map = Self::read_lock(&self.name_to_id);
+            *name_map.get(old_name).ok_or_else(|| {
+                HorusError::NotFound(NotFoundError::Frame {
+                    name: old_name.to_string(),
+                })
+            })?
         };
 
         // Update mappings
         {
-            let mut name_map = self.name_to_id.write().unwrap();
-            let mut id_map = self.id_to_name.write().unwrap();
+            let mut name_map = Self::write_lock(&self.name_to_id);
+            let mut id_map = Self::write_lock(&self.id_to_name);
 
             name_map.remove(old_name);
             name_map.insert(new_name.to_string(), id);
@@ -311,9 +319,9 @@ impl FrameRegistry {
 
     /// Clear all frames
     pub fn clear(&self) {
-        let mut name_map = self.name_to_id.write().unwrap();
-        let mut id_map = self.id_to_name.write().unwrap();
-        let mut next_id = self.next_id.write().unwrap();
+        let mut name_map = Self::write_lock(&self.name_to_id);
+        let mut id_map = Self::write_lock(&self.id_to_name);
+        let mut next_id = Self::write_lock(&self.next_id);
 
         name_map.clear();
         for slot in id_map.iter_mut() {
@@ -329,19 +337,35 @@ impl FrameRegistry {
     // Internal
     // ========================================================================
 
+    /// Read a RwLock, recovering from poison (a prior thread panicked while
+    /// holding the write lock). The data may be inconsistent, but continuing
+    /// is preferable to cascading panics in a robotics runtime.
+    #[inline]
+    fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+        lock.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Write a RwLock, recovering from poison.
+    #[inline]
+    fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+        lock.write().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Allocate a new frame ID.
     ///
     /// When `enable_overflow` is true, auto-grows the logical limit
     /// (doubling up to the core's physical capacity) instead of failing.
     fn allocate_id(&self) -> HorusResult<FrameId> {
-        let mut next_id = self.next_id.write().unwrap();
-        let mut max_frames = self.max_frames.write().unwrap();
+        let mut next_id = Self::write_lock(&self.next_id);
+        let mut max_frames = Self::write_lock(&self.max_frames);
 
         // Warn at 80% utilization (once)
         let used = *next_id as usize;
         let threshold = *max_frames * 4 / 5;
         if used >= threshold
-            && !self.warned_80_pct.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .warned_80_pct
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             eprintln!(
                 "[horus::hframe] WARNING: Frame registry at {}% capacity ({}/{}). \
@@ -393,7 +417,7 @@ impl FrameRegistry {
 
     /// Find a free slot (from unregistered frames) within the given limit.
     fn find_free_slot_with_limit(&self, limit: usize) -> Option<FrameId> {
-        let id_map = self.id_to_name.read().unwrap();
+        let id_map = Self::read_lock(&self.id_to_name);
         for (idx, slot) in id_map.iter().enumerate().take(limit) {
             if slot.is_none() && !self.core.is_allocated(idx as FrameId) {
                 return Some(idx as FrameId);
@@ -447,9 +471,10 @@ mod tests {
         let registry = make_registry();
 
         let result = registry.register("orphan", Some("nonexistent"));
-        assert!(
-            matches!(result, Err(HorusError::NotFound(NotFoundError::ParentFrame { .. })))
-        );
+        assert!(matches!(
+            result,
+            Err(HorusError::NotFound(NotFoundError::ParentFrame { .. }))
+        ));
     }
 
     #[test]
@@ -458,7 +483,10 @@ mod tests {
 
         registry.register("world", None).unwrap();
         let result = registry.register("world", None);
-        assert!(matches!(result, Err(HorusError::Resource(ResourceError::AlreadyExists { .. }))));
+        assert!(matches!(
+            result,
+            Err(HorusError::Resource(ResourceError::AlreadyExists { .. }))
+        ));
     }
 
     #[test]
@@ -510,7 +538,10 @@ mod tests {
 
         // Duplicate registration must fail.
         let result = registry.register("a", None);
-        assert!(matches!(result, Err(HorusError::Resource(ResourceError::AlreadyExists { .. }))));
+        assert!(matches!(
+            result,
+            Err(HorusError::Resource(ResourceError::AlreadyExists { .. }))
+        ));
 
         // Parent-not-found must also fail without consuming an ID.
         let result2 = registry.register("orphan", Some("nonexistent"));

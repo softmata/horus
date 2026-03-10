@@ -101,9 +101,8 @@ impl Mdns {
     /// This starts the mDNS daemon which will handle multicast DNS queries
     /// and responses in a background thread.
     pub fn new() -> HorusResult<Self> {
-        let daemon = ServiceDaemon::new().map_err(|e| {
-            crate::error::HorusError::mdns_failed("create daemon", e.to_string())
-        })?;
+        let daemon = ServiceDaemon::new()
+            .map_err(|e| crate::error::HorusError::mdns_failed("create daemon", e.to_string()))?;
 
         Ok(Self {
             daemon,
@@ -156,9 +155,7 @@ impl Mdns {
             port,
             &properties[..],
         )
-        .map_err(|e| {
-            crate::error::HorusError::mdns_failed("create service info", e.to_string())
-        })?
+        .map_err(|e| crate::error::HorusError::mdns_failed("create service info", e.to_string()))?
         .enable_addr_auto();
 
         // Register the service
@@ -223,9 +220,10 @@ impl Mdns {
         let full_hostname = format!("{}.local.", hostname);
 
         // Browse for our service type to find the hostname
-        let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
-            crate::error::HorusError::mdns_failed("browse", e.to_string())
-        })?;
+        let receiver = self
+            .daemon
+            .browse(HORUS_SERVICE_TYPE)
+            .map_err(|e| crate::error::HorusError::mdns_failed("browse", e.to_string()))?;
 
         let start = Instant::now();
         while start.elapsed() < MDNS_TIMEOUT {
@@ -281,7 +279,10 @@ impl Mdns {
 
         Err(crate::error::HorusError::mdns_failed(
             "resolve hostname",
-            format!("'{}' not found (timeout after {:?})", hostname, MDNS_TIMEOUT),
+            format!(
+                "'{}' not found (timeout after {:?})",
+                hostname, MDNS_TIMEOUT
+            ),
         ))
     }
 
@@ -301,9 +302,10 @@ impl Mdns {
             }
         }
 
-        let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
-            crate::error::HorusError::mdns_failed("browse", e.to_string())
-        })?;
+        let receiver = self
+            .daemon
+            .browse(HORUS_SERVICE_TYPE)
+            .map_err(|e| crate::error::HorusError::mdns_failed("browse", e.to_string()))?;
 
         let full_hostname = format!("{}.local.", hostname);
         let start = Instant::now();
@@ -368,9 +370,10 @@ impl Mdns {
 
     /// Browse for services with a custom timeout
     pub fn browse_services_with_timeout(&self, timeout: Duration) -> HorusResult<Vec<ServiceInfo>> {
-        let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
-            crate::error::HorusError::mdns_failed("browse", e.to_string())
-        })?;
+        let receiver = self
+            .daemon
+            .browse(HORUS_SERVICE_TYPE)
+            .map_err(|e| crate::error::HorusError::mdns_failed("browse", e.to_string()))?;
 
         let start = Instant::now();
         let mut discovered: HashMap<String, ServiceInfo> = HashMap::new();
@@ -491,9 +494,9 @@ impl Mdns {
             }
         }
 
-        self.daemon.shutdown().map_err(|e| {
-            crate::error::HorusError::mdns_failed("shutdown daemon", e.to_string())
-        })?;
+        self.daemon
+            .shutdown()
+            .map_err(|e| crate::error::HorusError::mdns_failed("shutdown daemon", e.to_string()))?;
 
         Ok(())
     }
@@ -558,9 +561,11 @@ fn get_local_hostname() -> HorusResult<String> {
     let hostname = unsafe { CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
 
     hostname.to_str().map(|s| s.to_string()).map_err(|e| {
-        crate::error::HorusError::Communication(crate::error::CommunicationError::SerializationFailed {
-            reason: format!("Invalid hostname: {}", e),
-        })
+        crate::error::HorusError::Communication(
+            crate::error::CommunicationError::SerializationFailed {
+                reason: format!("Invalid hostname: {}", e),
+            },
+        )
     })
 }
 
@@ -947,18 +952,24 @@ pub fn find_node(name: &str) -> HorusResult<Option<DiscoveredNode>> {
 
 /// Convert discovery result to JSON string
 pub fn to_json(result: &DiscoveryResult) -> HorusResult<String> {
-    serde_json::to_string_pretty(result)
-        .map_err(|e| crate::error::HorusError::Communication(crate::error::CommunicationError::SerializationFailed {
-            reason: format!("JSON error: {}", e),
-        }))
+    serde_json::to_string_pretty(result).map_err(|e| {
+        crate::error::HorusError::Communication(
+            crate::error::CommunicationError::SerializationFailed {
+                reason: format!("JSON error: {}", e),
+            },
+        )
+    })
 }
 
 /// Convert node list to JSON string
 pub fn nodes_to_json(nodes: &[DiscoveredNode]) -> HorusResult<String> {
-    serde_json::to_string_pretty(nodes)
-        .map_err(|e| crate::error::HorusError::Communication(crate::error::CommunicationError::SerializationFailed {
-            reason: format!("JSON error: {}", e),
-        }))
+    serde_json::to_string_pretty(nodes).map_err(|e| {
+        crate::error::HorusError::Communication(
+            crate::error::CommunicationError::SerializationFailed {
+                reason: format!("JSON error: {}", e),
+            },
+        )
+    })
 }
 
 // ============================================================================

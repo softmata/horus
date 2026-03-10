@@ -4,6 +4,7 @@
 //! These are fixed-size types suitable for shared memory transport.
 
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 /// 2D landmark/keypoint
 ///
@@ -11,7 +12,7 @@ use bytemuck::{Pod, Zeroable};
 ///
 /// Size: 16 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
 pub struct Landmark {
     /// X coordinate (pixels or normalized 0-1)
     pub x: f32,
@@ -63,7 +64,7 @@ impl Landmark {
 ///
 /// Size: 20 bytes (packed)
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
 pub struct Landmark3D {
     /// X coordinate (meters or normalized)
     pub x: f32,
@@ -140,7 +141,7 @@ impl From<Landmark3D> for Landmark {
 ///
 /// Size: 40 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable, Serialize, Deserialize)]
 pub struct LandmarkArray {
     /// Number of landmarks in this array
     pub num_landmarks: u32,

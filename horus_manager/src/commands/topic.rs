@@ -217,57 +217,76 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
 /// For serde types the bytes are bincode-encoded; we try JSON (if the type
 /// happens to be JSON-compatible via a round-trip through `serde_json`),
 /// then fall back to a bincode hex dump showing the actual serialized form.
-fn print_message(data: &[u8], seq: usize, is_pod: bool) {
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
+/// Classification of how a message payload will be displayed.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+enum MessageFormat {
+    /// ASCII-safe text (POD that is valid UTF-8 printable)
+    PodText(String),
+    /// Binary POD → hex dump
+    PodHex,
+    /// Valid JSON payload → pretty-printed
+    Json(String),
+    /// Non-JSON serde (bincode) → hex dump
+    BincodeHex,
+}
 
+/// Classify how a message payload should be displayed without printing.
+fn classify_message(data: &[u8], is_pod: bool) -> MessageFormat {
     if is_pod {
-        // POD types: raw struct bytes — try text, then hex
         if let Ok(text) = std::str::from_utf8(data) {
             if text
                 .chars()
                 .all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
             {
-                println!("[{}] #{}: {}", timestamp.to_string().dimmed(), seq, text);
-                return;
+                return MessageFormat::PodText(text.to_string());
             }
         }
-        println!(
-            "[{}] #{}: {} bytes (POD)",
-            timestamp.to_string().dimmed(),
-            seq,
-            data.len()
-        );
-        print_hex_dump(data, 64);
-        return;
+        return MessageFormat::PodHex;
     }
 
-    // Non-POD / serde (bincode): attempt a JSON display via serde_json.
-    // Many robotics message types use field-by-field struct layout that maps
-    // cleanly to JSON when re-encoded.
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) {
-        // The payload happened to be valid JSON (e.g., JSON-serialized types).
-        println!("[{}] #{}:", timestamp.to_string().dimmed(), seq);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json).unwrap_or_default()
-        );
-        return;
+        return MessageFormat::Json(serde_json::to_string_pretty(&json).unwrap_or_default());
     }
 
-    // bincode payload — show the raw bytes as a hex dump.
-    println!(
-        "[{}] #{}: {} bytes (bincode)",
-        timestamp.to_string().dimmed(),
-        seq,
-        data.len()
-    );
-    print_hex_dump(data, 64);
+    MessageFormat::BincodeHex
 }
 
-/// Print hex dump of binary data (up to `max_bytes`).
-fn print_hex_dump(data: &[u8], max_bytes: usize) {
+fn print_message(data: &[u8], seq: usize, is_pod: bool) {
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
+
+    match classify_message(data, is_pod) {
+        MessageFormat::PodText(text) => {
+            println!("[{}] #{}: {}", timestamp.to_string().dimmed(), seq, text);
+        }
+        MessageFormat::PodHex => {
+            println!(
+                "[{}] #{}: {} bytes (POD)",
+                timestamp.to_string().dimmed(),
+                seq,
+                data.len()
+            );
+            print_hex_dump(data, 64);
+        }
+        MessageFormat::Json(pretty) => {
+            println!("[{}] #{}:", timestamp.to_string().dimmed(), seq);
+            println!("{}", pretty);
+        }
+        MessageFormat::BincodeHex => {
+            println!(
+                "[{}] #{}: {} bytes (bincode)",
+                timestamp.to_string().dimmed(),
+                seq,
+                data.len()
+            );
+            print_hex_dump(data, 64);
+        }
+    }
+}
+
+/// Format hex dump of binary data (up to `max_bytes`) as a plain string.
+fn format_hex_dump(data: &[u8], max_bytes: usize) -> String {
     let bytes_to_show = data.len().min(max_bytes);
-    let hex: String = data[..bytes_to_show]
+    let mut out = data[..bytes_to_show]
         .chunks(16)
         .map(|row| {
             row.iter()
@@ -278,15 +297,16 @@ fn print_hex_dump(data: &[u8], max_bytes: usize) {
         .collect::<Vec<_>>()
         .join("\n  ");
 
-    print!("  {}", hex.dimmed());
     if data.len() > max_bytes {
-        print!(
-            "\n  {} ... ({} more bytes)",
-            "".dimmed(),
-            data.len() - max_bytes
-        );
+        out.push_str(&format!("\n  ... ({} more bytes)", data.len() - max_bytes));
     }
-    println!();
+    out
+}
+
+/// Print hex dump of binary data (up to `max_bytes`).
+fn print_hex_dump(data: &[u8], max_bytes: usize) {
+    let hex = format_hex_dump(data, max_bytes);
+    println!("  {}", hex.dimmed());
 }
 
 /// Get detailed info about a topic
@@ -578,46 +598,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn print_hex_dump_small_payload() {
-        // Just verify it doesn't panic on various sizes
-        print_hex_dump(&[], 64);
-        print_hex_dump(&[0xAA], 64);
-        print_hex_dump(&[0x01, 0x02, 0x03, 0x04], 64);
+    fn hex_dump_empty_returns_empty() {
+        let hex = format_hex_dump(&[], 64);
+        assert!(
+            hex.is_empty(),
+            "Empty data should produce empty hex, got: '{}'",
+            hex
+        );
     }
 
     #[test]
-    fn print_hex_dump_truncated() {
+    fn hex_dump_single_byte() {
+        let hex = format_hex_dump(&[0xAA], 64);
+        assert_eq!(hex, "aa");
+    }
+
+    #[test]
+    fn hex_dump_multiple_bytes() {
+        let hex = format_hex_dump(&[0x01, 0x02, 0x03, 0x04], 64);
+        assert_eq!(hex, "01 02 03 04");
+    }
+
+    #[test]
+    fn hex_dump_truncated_shows_remainder() {
         let data: Vec<u8> = (0..128).collect();
-        // Should not panic, truncates to max_bytes
-        print_hex_dump(&data, 16);
+        let hex = format_hex_dump(&data, 16);
+        // Should only show first 16 bytes
+        assert!(
+            hex.starts_with("00 01 02 03"),
+            "Should start with first bytes, got: '{}'",
+            hex
+        );
+        // Should indicate truncation with remaining count
+        assert!(
+            hex.contains("... (112 more bytes)"),
+            "Should show truncation message, got: '{}'",
+            hex
+        );
     }
 
     #[test]
-    fn print_message_pod_text() {
-        // ASCII text should print as text, not crash
-        print_message(b"hello world", 1, true);
+    fn classify_pod_text_returns_pod_text() {
+        let fmt = classify_message(b"hello world", true);
+        assert_eq!(fmt, MessageFormat::PodText("hello world".to_string()));
     }
 
     #[test]
-    fn print_message_pod_binary() {
-        // Non-ASCII POD should fall back to hex
-        print_message(&[0xFF, 0x00, 0x01], 1, true);
+    fn classify_pod_binary_returns_pod_hex() {
+        let fmt = classify_message(&[0xFF, 0x00, 0x01], true);
+        assert_eq!(fmt, MessageFormat::PodHex);
     }
 
     #[test]
-    fn print_message_serde_valid_json() {
-        // Valid JSON payload
-        print_message(b"{\"x\":1.0}", 1, false);
+    fn classify_serde_valid_json_returns_json() {
+        let fmt = classify_message(b"{\"x\":1.0}", false);
+        match fmt {
+            MessageFormat::Json(pretty) => {
+                assert!(
+                    pretty.contains("\"x\""),
+                    "JSON should contain key 'x', got: '{}'",
+                    pretty
+                );
+                assert!(
+                    pretty.contains("1.0"),
+                    "JSON should contain value 1.0, got: '{}'",
+                    pretty
+                );
+            }
+            other => panic!("Expected Json variant, got {:?}", other),
+        }
     }
 
     #[test]
-    fn print_message_serde_non_json() {
-        // Non-JSON serde (bincode-like) should fall back to hex
-        print_message(
+    fn classify_serde_non_json_returns_bincode_hex() {
+        let fmt = classify_message(
             &[0x05, 0x00, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o'],
-            1,
             false,
         );
+        assert_eq!(fmt, MessageFormat::BincodeHex);
     }
 }
 

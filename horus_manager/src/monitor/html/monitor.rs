@@ -2715,58 +2715,22 @@ pub fn generate_html(port: u16) -> String {
 
                 if (data.local && data.local.length > 0) {{
                     html += data.local.map((env, index) => {{
-                        let expandableContent = '';
-
-                        const hasDependencies = env.dependencies && env.dependencies.length > 0;
-
-                        if (hasDependencies) {{
-                            expandableContent = `
-                                <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
-                                    <div style="color: var(--text-secondary); margin-bottom: 8px; font-size: 0.9em; font-weight: 600;">
-                                        Dependencies (horus.toml):
-                                    </div>
-                                    <div style="display: flex; flex-direction: column; gap: 4px;">
-                                        ${{env.dependencies.map(dep => `
-                                            <div style="padding: 6px 10px; background: var(--surface); border: 1px solid var(--success, #4ade80); border-radius: 4px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-                                                <div style="display: flex; align-items: center; gap: 10px; flex: 1;">
-                                                    <span style="color: var(--text-primary); font-size: 0.85em;">${{dep.name}}</span>
-                                                    <span style="color: var(--text-tertiary); font-size: 0.75em;">v${{dep.version}}</span>
-                                                </div>
-                                                <span style="color: var(--text-tertiary); font-size: 0.7em;">installed</span>
-                                            </div>
-                                        `).join('')}}
-                                    </div>
-                                </div>
-                            `;
-                        }} else {{
-                            expandableContent = `
-                                <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
-                                    <div style="color: var(--text-tertiary); font-size: 0.85em; font-style: italic;">
-                                        No dependencies declared in horus.toml
-                                    </div>
-                                </div>
-                            `;
-                        }}
-
-                        const depCount = env.dependencies?.length || 0;
-                        const hasContent = depCount > 0;
+                        const pkgCount = env.package_count || (env.packages ? env.packages.length : 0);
 
                         return `
-                            <div class="package-item" style="padding: 15px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; ${{hasContent ? 'cursor: pointer;' : ''}}">
-                                <div style="display: flex; justify-content: space-between; align-items: center;" onclick="${{hasContent ? `toggleEnvDetails(${{index}})` : ''}}">
+                            <div class="package-item" style="padding: 15px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <div style="flex: 1;">
                                         <div style="display: flex; align-items: center; gap: 8px;">
                                             <span style="font-weight: 600; color: var(--text-primary); font-size: 1.05em;">
                                                 ${{env.name}}
                                             </span>
-                                            ${{hasContent ? '<span id="arrow-' + index + '" style="color: var(--accent); font-size: 0.9em;">▶</span>' : ''}}
                                         </div>
                                         <div style="color: var(--text-secondary); margin-top: 5px; font-size: 0.85em;">
-                                            ${{env.path}} • ${{depCount}} dependencies
+                                            ${{env.path}} • ${{pkgCount}} packages
                                         </div>
                                     </div>
                                 </div>
-                                ${{expandableContent}}
                             </div>
                         `;
                     }}).join('');
@@ -2778,19 +2742,6 @@ pub fn generate_html(port: u16) -> String {
                 container.innerHTML = html;
             }} catch (error) {{
                 container.innerHTML = `<p style="color: var(--error);">Failed to load environments: ${{error.message}}</p>`;
-            }}
-        }}
-
-        function toggleEnvDetails(index) {{
-            const detailsDiv = document.getElementById(`env-details-${{index}}`);
-            const arrow = document.getElementById(`arrow-${{index}}`);
-
-            if (detailsDiv) {{
-                const isVisible = detailsDiv.style.display !== 'none';
-                detailsDiv.style.display = isVisible ? 'none' : 'block';
-                if (arrow) {{
-                    arrow.textContent = isVisible ? '▶' : '▼';
-                }}
             }}
         }}
 
@@ -3072,58 +3023,22 @@ pub fn generate_html(port: u16) -> String {
 
                 if (data.local && data.local.length > 0) {{
                     const html = data.local.map((env, index) => {{
-                        let expandableContent = '';
-
-                        const hasDependencies = env.dependencies && env.dependencies.length > 0;
-
-                        if (hasDependencies) {{
-                            expandableContent = `
-                                <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
-                                    <div style="color: var(--text-secondary); margin-bottom: 8px; font-size: 0.9em; font-weight: 600;">
-                                        Dependencies (horus.toml):
-                                    </div>
-                                    <div style="display: flex; flex-direction: column; gap: 4px;">
-                                        ${{env.dependencies.map(dep => `
-                                            <div style="padding: 6px 10px; background: var(--surface); border: 1px solid var(--success, #4ade80); border-radius: 4px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-                                                <div style="display: flex; align-items: center; gap: 10px; flex: 1;">
-                                                    <span style="color: var(--text-primary); font-size: 0.85em;">${{dep.name}}</span>
-                                                    <span style="color: var(--text-tertiary); font-size: 0.75em;">v${{dep.version}}</span>
-                                                </div>
-                                                <span style="color: var(--text-tertiary); font-size: 0.7em;">installed</span>
-                                            </div>
-                                        `).join('')}}
-                                    </div>
-                                </div>
-                            `;
-                        }} else {{
-                            expandableContent = `
-                                <div id="env-details-${{index}}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
-                                    <div style="color: var(--text-tertiary); font-size: 0.85em; font-style: italic;">
-                                        No dependencies declared in horus.toml
-                                    </div>
-                                </div>
-                            `;
-                        }}
-
-                        const depCount = env.dependencies?.length || 0;
-                        const hasContent = depCount > 0;
+                        const pkgCount = env.package_count || (env.packages ? env.packages.length : 0);
 
                         return `
-                            <div class="package-item" style="padding: 15px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; ${{hasContent ? 'cursor: pointer;' : ''}}">
-                                <div style="display: flex; justify-content: space-between; align-items: center;" onclick="${{hasContent ? `toggleEnvDetails(${{index}})` : ''}}">
+                            <div class="package-item" style="padding: 15px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <div style="flex: 1;">
                                         <div style="display: flex; align-items: center; gap: 8px;">
                                             <span style="font-weight: 600; color: var(--text-primary); font-size: 1.05em;">
                                                 ${{env.name}}
                                             </span>
-                                            ${{hasContent ? '<span id="arrow-' + index + '" style="color: var(--accent); font-size: 0.9em;">▶</span>' : ''}}
                                         </div>
                                         <div style="color: var(--text-secondary); margin-top: 5px; font-size: 0.85em;">
-                                            ${{env.path}} • ${{depCount}} dependencies
+                                            ${{env.path}} • ${{pkgCount}} packages
                                         </div>
                                     </div>
                                 </div>
-                                ${{expandableContent}}
                             </div>
                         `;
                     }}).join('');

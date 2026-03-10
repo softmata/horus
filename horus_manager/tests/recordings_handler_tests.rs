@@ -31,10 +31,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn recordings_list_returns_valid_json_with_array_and_count() {
     let app = builders::test_router();
-    let resp = app
-        .oneshot(get_request("/api/recordings"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/api/recordings")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
     assert!(
@@ -54,10 +51,7 @@ async fn recordings_list_empty_directory_returns_empty_array() {
     // Even if that directory doesn't exist, it should return an empty list,
     // not an error.
     let app = builders::test_router();
-    let resp = app
-        .oneshot(get_request("/api/recordings"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/api/recordings")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
     let recordings = json["recordings"]
@@ -68,7 +62,8 @@ async fn recordings_list_empty_directory_returns_empty_array() {
     // Whether or not there are real recordings on this machine, the structure
     // must be valid.  If no recordings exist, both should be 0.
     assert_eq!(
-        recordings.len() as u64, count,
+        recordings.len() as u64,
+        count,
         "count field must match the recordings array length"
     );
 }
@@ -77,10 +72,7 @@ async fn recordings_list_empty_directory_returns_empty_array() {
 #[tokio::test]
 async fn recordings_list_count_matches_array_length() {
     let app = builders::test_router();
-    let resp = app
-        .oneshot(get_request("/api/recordings"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/api/recordings")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
     let recordings = json["recordings"]
@@ -89,7 +81,8 @@ async fn recordings_list_count_matches_array_length() {
     let count = json["count"].as_u64().expect("count should be a number");
 
     assert_eq!(
-        recordings.len() as u64, count,
+        recordings.len() as u64,
+        count,
         "count must equal the number of items in the recordings array"
     );
 }
@@ -187,8 +180,7 @@ async fn recordings_info_empty_session_name_returns_400() {
 /// 7. Nonexistent session returns 404.
 #[tokio::test]
 async fn recordings_info_nonexistent_session_returns_404() {
-    let resp =
-        recordings_info_handler(Path("nonexistent_session_xyzzy_99999".to_string())).await;
+    let resp = recordings_info_handler(Path("nonexistent_session_xyzzy_99999".to_string())).await;
     let response = resp.into_response();
     assert_eq!(
         response.status(),
@@ -281,8 +273,7 @@ async fn recordings_delete_path_traversal_returns_400() {
 /// 9. Delete nonexistent session returns 404.
 #[tokio::test]
 async fn recordings_delete_nonexistent_session_returns_404() {
-    let resp =
-        recordings_delete_handler(Path("nonexistent_session_xyzzy_99999".to_string())).await;
+    let resp = recordings_delete_handler(Path("nonexistent_session_xyzzy_99999".to_string())).await;
     let response = resp.into_response();
     assert_eq!(
         response.status(),
@@ -369,7 +360,9 @@ async fn recordings_delete_error_mentions_session_name() {
         .expect("body read must succeed");
     let json: serde_json::Value =
         serde_json::from_slice(&body).expect("response must be valid JSON");
-    let error_msg = json["error"].as_str().expect("error field must be a string");
+    let error_msg = json["error"]
+        .as_str()
+        .expect("error field must be a string");
     assert!(
         error_msg.contains(session),
         "error message should mention the session name '{}', got: '{}'",
@@ -404,8 +397,11 @@ async fn recordings_with_temp_directory_data() {
     std::fs::create_dir_all(&session_dir).expect("must create test session directory");
 
     // Create mock .horus node recording files.
-    std::fs::write(session_dir.join("lidar_driver@abc123.horus"), b"fake recording data 1")
-        .expect("write mock node file 1");
+    std::fs::write(
+        session_dir.join("lidar_driver@abc123.horus"),
+        b"fake recording data 1",
+    )
+    .expect("write mock node file 1");
     std::fs::write(
         session_dir.join("camera_node@def456.horus"),
         b"fake recording data 2 with more bytes",
@@ -414,10 +410,7 @@ async fn recordings_with_temp_directory_data() {
 
     // Verify the list handler now includes our session.
     let app = builders::test_router();
-    let resp = app
-        .oneshot(get_request("/api/recordings"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/api/recordings")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
     let recordings = json["recordings"]
@@ -481,21 +474,14 @@ async fn recordings_with_temp_directory_data() {
         "info must contain node_recordings array"
     );
     let node_recs = info_json["node_recordings"].as_array().unwrap();
-    assert_eq!(
-        node_recs.len(),
-        2,
-        "should have 2 node recordings"
-    );
+    assert_eq!(node_recs.len(), 2, "should have 2 node recordings");
 
     // Each node recording should have the expected fields.
     for nr in node_recs {
         assert!(nr["filename"].is_string(), "filename must be a string");
         assert!(nr["node_name"].is_string(), "node_name must be a string");
         assert!(nr["size_bytes"].is_number(), "size_bytes must be a number");
-        assert!(
-            nr["size_human"].is_string(),
-            "size_human must be a string"
-        );
+        assert!(nr["size_human"].is_string(), "size_human must be a string");
     }
 
     assert!(
@@ -506,10 +492,7 @@ async fn recordings_with_temp_directory_data() {
         info_json["total_size_human"].is_string(),
         "total_size_human must be a string"
     );
-    assert!(
-        info_json["path"].is_string(),
-        "path must be a string"
-    );
+    assert!(info_json["path"].is_string(), "path must be a string");
 
     // Clean up: delete the test session directory.
     let app3 = builders::test_router();
@@ -558,18 +541,14 @@ async fn recordings_multiple_sessions_listed() {
     std::fs::create_dir_all(&dir_b).expect("create session B");
 
     // Put a file in each so they have non-zero size.
-    std::fs::write(dir_a.join("node_x@111.horus"), b"data_a")
-        .expect("write file in session A");
+    std::fs::write(dir_a.join("node_x@111.horus"), b"data_a").expect("write file in session A");
     std::fs::write(dir_b.join("node_y@222.horus"), b"data_b_longer")
         .expect("write file in session B");
     std::fs::write(dir_b.join("node_z@333.horus"), b"data_b2")
         .expect("write second file in session B");
 
     let app = builders::test_router();
-    let resp = app
-        .oneshot(get_request("/api/recordings"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/api/recordings")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
     let recordings = json["recordings"]
@@ -644,8 +623,7 @@ async fn recordings_info_temp_session_has_correct_fields() {
     std::fs::create_dir_all(&session_dir).expect("create test session");
 
     // Create a mock node file.
-    std::fs::write(session_dir.join("sensor@aaa.horus"), b"sensor data")
-        .expect("write mock file");
+    std::fs::write(session_dir.join("sensor@aaa.horus"), b"sensor data").expect("write mock file");
 
     let app = builders::test_router();
     let resp = app
@@ -660,10 +638,7 @@ async fn recordings_info_temp_session_has_correct_fields() {
         "session_name must match"
     );
     assert!(
-        json["path"]
-            .as_str()
-            .unwrap_or("")
-            .contains(&session_name),
+        json["path"].as_str().unwrap_or("").contains(&session_name),
         "path must contain the session name"
     );
     // scheduler is null when no scheduler@ file exists.
@@ -701,8 +676,7 @@ async fn recordings_delete_actually_removes_directory() {
 
     let _ = std::fs::remove_dir_all(&session_dir);
     std::fs::create_dir_all(&session_dir).expect("create test session");
-    std::fs::write(session_dir.join("dummy.horus"), b"to be deleted")
-        .expect("write dummy file");
+    std::fs::write(session_dir.join("dummy.horus"), b"to be deleted").expect("write dummy file");
 
     // Verify it exists before delete.
     assert!(session_dir.exists(), "session dir must exist before delete");

@@ -193,10 +193,7 @@ async fn rate_limit_different_ip_is_independent() {
     for _ in 0..5 {
         let _ = app
             .clone()
-            .oneshot(post_json_request(
-                "/api/login",
-                r#"{"password":"wrong"}"#,
-            ))
+            .oneshot(post_json_request("/api/login", r#"{"password":"wrong"}"#))
             .await
             .unwrap();
     }
@@ -340,7 +337,9 @@ async fn csrf_token_validation_works() {
 
     // Correct CSRF token should validate
     assert!(
-        state.auth_service.validate_csrf(&session_token, &csrf_token),
+        state
+            .auth_service
+            .validate_csrf(&session_token, &csrf_token),
         "correct CSRF token should validate"
     );
 
@@ -395,10 +394,7 @@ async fn login_response_consistent_json_format_failure() {
     let app = builders::test_router_with_state(state);
 
     let resp = app
-        .oneshot(post_json_request(
-            "/api/login",
-            r#"{"password":"wrong"}"#,
-        ))
+        .oneshot(post_json_request("/api/login", r#"{"password":"wrong"}"#))
         .await
         .unwrap();
 
@@ -450,10 +446,7 @@ async fn login_success_field_true_on_success_false_on_failure() {
 
     // Failure case
     let resp = app
-        .oneshot(post_json_request(
-            "/api/login",
-            r#"{"password":"bad"}"#,
-        ))
+        .oneshot(post_json_request("/api/login", r#"{"password":"bad"}"#))
         .await
         .unwrap();
     let json = assert_json_error(resp, StatusCode::UNAUTHORIZED).await;

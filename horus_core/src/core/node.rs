@@ -1,8 +1,6 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
-use super::rt_node::DeadlineMissPolicy;
+use std::time::Instant;
 
 /// Compact logging summary for message types.
 ///
@@ -592,58 +590,6 @@ pub trait Node: Send {
     /// Use `hlog!()` for logging instead of the old ctx parameter.
     fn on_error(&mut self, error: &str) {
         crate::hlog!(error, "Node error: {}", error);
-    }
-
-    /// Node's tick rate in Hz (optional)
-    ///
-    /// Override to specify this node's tick rate. The scheduler uses this
-    /// as the default when adding the node.
-    ///
-    /// Returns `None` by default, meaning use the scheduler's global rate.
-    /// Can be overridden at runtime via `Scheduler::set_node_rate()`.
-    ///
-    /// # Example
-    /// ```ignore
-    /// fn rate_hz(&self) -> Option<f64> {
-    ///     Some(100.0)  // This node runs at 100Hz
-    /// }
-    /// ```
-    fn rate_hz(&self) -> Option<f64> {
-        None
-    }
-
-    // ==================== Real-Time Support ====================
-    // Override tick_budget() to return Some(duration) to opt into RT scheduling.
-    // Nodes that return None (default) are treated as regular non-RT nodes.
-
-    /// Maximum allowed execution time per tick.
-    ///
-    /// Return `Some(duration)` to opt this node into real-time scheduling
-    /// with budget enforcement, deadline monitoring, and priority-based preemption.
-    /// Return `None` (default) for a regular non-RT node.
-    ///
-    /// # Example
-    /// ```ignore
-    /// fn tick_budget(&self) -> Option<Duration> {
-    ///     Some(Duration::from_micros(100)) // 100µs max execution
-    /// }
-    /// ```
-    fn tick_budget(&self) -> Option<Duration> {
-        None
-    }
-
-    /// Deadline for completion (from start of tick).
-    ///
-    /// Default: 2x tick budget. Only meaningful when `tick_budget()` returns `Some`.
-    fn deadline(&self) -> Duration {
-        self.tick_budget().unwrap_or_default() * 2
-    }
-
-    /// What to do if deadline is missed.
-    ///
-    /// Default: `Warn` (log and continue).
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Warn
     }
 
     /// Check if node is in safe state (for safety monitor).

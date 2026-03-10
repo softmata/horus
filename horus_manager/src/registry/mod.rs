@@ -9,8 +9,8 @@ mod tests;
 pub use helpers::generate_signing_keypair;
 
 use crate::config::CARGO_TOML;
-use crate::manifest::HORUS_TOML;
 use crate::dependency_resolver::{DependencySpec, PackageProvider};
+use crate::manifest::HORUS_TOML;
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
@@ -134,12 +134,6 @@ pub(crate) struct DriverMetadataResponse {
     pub driver_metadata: Option<DriverMetadata>,
 }
 
-/// Response from the driver list API endpoint (GET /api/drivers)
-#[derive(Debug, Deserialize)]
-pub(crate) struct DriverListResponse {
-    pub drivers: Vec<DriverListEntry>,
-}
-
 /// Response from the driver search API endpoint (GET /api/drivers/search)
 #[derive(Debug, Deserialize)]
 pub(crate) struct DriverSearchResponse {
@@ -158,17 +152,53 @@ pub struct DriverListEntry {
 }
 
 /// Validate a package name against registry rules (mirrors server-side validation).
-/// Scoped packages (@org/name) bypass normal validation.
+/// Supports both unscoped ("my-pkg") and scoped ("@org/my-pkg") package names.
 pub fn validate_package_name(name: &str) -> Result<()> {
-    // Scoped packages have their own format
+    // Scoped packages: @org/name
     if name.starts_with('@') {
-        if !name.contains('/') {
-            return Err(anyhow!("Scoped package name must be in @org/name format"));
+        // Total length check
+        if name.len() < 4 || name.len() > 128 {
+            return Err(anyhow!(
+                "Scoped package name must be between 4 and 128 characters (got {})",
+                name.len()
+            ));
         }
+
+        let rest = &name[1..]; // strip @
+        let Some((org, pkg)) = rest.split_once('/') else {
+            return Err(anyhow!("Scoped package name must be in @org/name format"));
+        };
+
+        // Validate org segment
+        if org.len() < 2 || org.len() > 64 {
+            return Err(anyhow!(
+                "Organization name must be between 2 and 64 characters (got {})",
+                org.len()
+            ));
+        }
+        validate_name_segment(org, "Organization name")?;
+
+        // Validate name segment
+        if pkg.len() < 2 || pkg.len() > 64 {
+            return Err(anyhow!(
+                "Package name must be between 2 and 64 characters (got {})",
+                pkg.len()
+            ));
+        }
+        validate_name_segment(pkg, "Package name")?;
+
+        // Reserved names on both segments
+        if RESERVED_NAMES.contains(&org) {
+            return Err(anyhow!("Organization name '{}' is reserved", org));
+        }
+        if RESERVED_NAMES.contains(&pkg) {
+            return Err(anyhow!("Package name '{}' is reserved", pkg));
+        }
+
         return Ok(());
     }
 
-    // Length check
+    // Unscoped packages
     if name.len() < 2 || name.len() > 64 {
         return Err(anyhow!(
             "Package name must be between 2 and 64 characters (got {})",
@@ -176,41 +206,79 @@ pub fn validate_package_name(name: &str) -> Result<()> {
         ));
     }
 
-    // Format check: must start with lowercase letter, only lowercase/digits/hyphens/underscores
-    let mut chars = name.chars();
-    if let Some(first) = chars.next() {
-        if !first.is_ascii_lowercase() {
-            return Err(anyhow!(
-                "Package name must start with a lowercase letter, got '{}'",
-                first
-            ));
-        }
-    }
-    for ch in name.chars() {
-        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' && ch != '_' {
-            return Err(anyhow!(
-                "Package name contains invalid character '{}'. Only lowercase letters, digits, hyphens, and underscores are allowed",
-                ch
-            ));
-        }
-    }
+    validate_name_segment(name, "Package name")?;
 
     // Path traversal check
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
+    if name.contains("..") || name.contains('\\') {
         return Err(anyhow!("Package name contains invalid path characters"));
     }
 
     // Reserved names
-    const RESERVED: &[&str] = &[
-        "horus", "core", "std", "lib", "test", "main", "mod", "pub", "use",
-        "crate", "self", "super", "extern", "fn", "let", "const", "static",
-        "mut", "ref", "type", "impl", "trait", "struct", "enum", "union",
-        "admin", "api", "www", "mail", "ftp", "localhost", "root", "system",
-    ];
-    if RESERVED.contains(&name) {
+    if RESERVED_NAMES.contains(&name) {
         return Err(anyhow!("Package name '{}' is reserved", name));
     }
 
+    Ok(())
+}
+
+/// Reserved names that cannot be used as package or organization names.
+const RESERVED_NAMES: &[&str] = &[
+    "horus",
+    "core",
+    "std",
+    "lib",
+    "test",
+    "main",
+    "mod",
+    "pub",
+    "use",
+    "crate",
+    "self",
+    "super",
+    "extern",
+    "fn",
+    "let",
+    "const",
+    "static",
+    "mut",
+    "ref",
+    "type",
+    "impl",
+    "trait",
+    "struct",
+    "enum",
+    "union",
+    "admin",
+    "api",
+    "www",
+    "mail",
+    "ftp",
+    "localhost",
+    "root",
+    "system",
+];
+
+/// Validate a name segment (org or package name part).
+/// Must start with lowercase letter, contain only lowercase letters, digits, hyphens, underscores.
+fn validate_name_segment(segment: &str, label: &str) -> Result<()> {
+    let mut chars = segment.chars();
+    if let Some(first) = chars.next() {
+        if !first.is_ascii_lowercase() {
+            return Err(anyhow!(
+                "{} must start with a lowercase letter, got '{}'",
+                label,
+                first
+            ));
+        }
+    }
+    for ch in segment.chars() {
+        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' && ch != '_' {
+            return Err(anyhow!(
+                "{} contains invalid character '{}'. Only lowercase letters, digits, hyphens, and underscores are allowed",
+                label, ch
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -228,8 +296,7 @@ pub fn url_encode_package_name(name: &str) -> String {
 /// Convert a package name to a safe filesystem path component
 /// Scoped names like @org/package become org__package
 pub fn package_name_to_path(name: &str) -> String {
-    name.replace('@', "")
-        .replace('/', "__")
+    name.replace('@', "").replace('/', "__")
 }
 
 pub struct RegistryClient {
@@ -254,10 +321,7 @@ impl RegistryClient {
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        Self {
-            client,
-            base_url,
-        }
+        Self { client, base_url }
     }
 
     /// Get a reference to the HTTP client

@@ -250,10 +250,7 @@ async fn install_deep_path_traversal_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Null byte in the package name should be caught by `is_safe_path_component`.
@@ -269,10 +266,7 @@ async fn install_null_byte_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Empty package name should be rejected by `is_safe_path_component` (which
@@ -289,10 +283,7 @@ async fn install_empty_package_name_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Backslash in the package name should be rejected.
@@ -308,10 +299,7 @@ async fn install_backslash_in_name_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Forward slash in the package name should be rejected.
@@ -327,10 +315,7 @@ async fn install_forward_slash_in_name_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// A valid-looking package name should pass the `is_safe_path_component` check
@@ -501,10 +486,7 @@ async fn uninstall_parent_path_traversal_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Path traversal in `package` (child) should be rejected with 400.
@@ -520,10 +502,7 @@ async fn uninstall_package_path_traversal_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Path traversal in BOTH fields should be rejected with 400 (the handler
@@ -540,10 +519,7 @@ async fn uninstall_both_fields_path_traversal_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Null byte in `parent_package` should be rejected.
@@ -559,10 +535,7 @@ async fn uninstall_null_byte_in_parent_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Null byte in `package` (child) should be rejected.
@@ -578,10 +551,7 @@ async fn uninstall_null_byte_in_package_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Empty `parent_package` should be rejected (is_safe_path_component rejects
@@ -598,10 +568,7 @@ async fn uninstall_empty_parent_package_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Empty `package` should be rejected.
@@ -617,10 +584,7 @@ async fn uninstall_empty_package_returns_400() {
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::BAD_REQUEST).await;
 
-    assert_eq!(
-        json["error"].as_str().unwrap_or(""),
-        "Invalid package name"
-    );
+    assert_eq!(json["error"].as_str().unwrap_or(""), "Invalid package name");
 }
 
 /// Missing required fields in the uninstall request body should be rejected by
@@ -806,7 +770,11 @@ async fn publish_response_has_expected_fields() {
 
     // Either 'message' (on success) or 'error' (on failure) should be a string.
     if let Some(msg) = json.get("message") {
-        assert!(msg.is_string(), "'message' should be a string, got: {}", msg);
+        assert!(
+            msg.is_string(),
+            "'message' should be a string, got: {}",
+            msg
+        );
     }
     if let Some(err) = json.get("error") {
         assert!(err.is_string(), "'error' should be a string, got: {}", err);

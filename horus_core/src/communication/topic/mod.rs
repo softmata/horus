@@ -405,9 +405,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// Create a new topic with custom capacity and optional slot size
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         if capacity == 0 {
-            return Err(crate::HorusError::InvalidInput(crate::error::ValidationError::Other(
-                "Topic capacity must be >= 1".to_string(),
-            )));
+            return Err(crate::HorusError::InvalidInput(
+                crate::error::ValidationError::Other("Topic capacity must be >= 1".to_string()),
+            ));
         }
         let is_pod = Self::check_is_pod();
         let type_size = mem::size_of::<T>() as u32;
@@ -2282,7 +2282,9 @@ impl Topic<Image> {
     /// Try to send an image without blocking. Returns `Err(img)` if the ring is full.
     pub fn try_send(&self, img: Image) -> Result<(), Image> {
         let wire = img.to_wire(&self.pool);
-        self.ring.try_send(wire).map_err(|w| Image::from_wire(w, &self.pool))
+        self.ring
+            .try_send(wire)
+            .map_err(|w| Image::from_wire(w, &self.pool))
     }
 
     /// Receive the next image.
@@ -2308,7 +2310,9 @@ impl Topic<PointCloud> {
     /// Try to send a point cloud without blocking. Returns `Err(pc)` if the ring is full.
     pub fn try_send(&self, pc: PointCloud) -> Result<(), PointCloud> {
         let wire = pc.to_wire(&self.pool);
-        self.ring.try_send(wire).map_err(|w| PointCloud::from_wire(w, &self.pool))
+        self.ring
+            .try_send(wire)
+            .map_err(|w| PointCloud::from_wire(w, &self.pool))
     }
 
     /// Receive the next point cloud.
@@ -2334,7 +2338,9 @@ impl Topic<DepthImage> {
     /// Try to send a depth image without blocking. Returns `Err(depth)` if the ring is full.
     pub fn try_send(&self, depth: DepthImage) -> Result<(), DepthImage> {
         let wire = depth.to_wire(&self.pool);
-        self.ring.try_send(wire).map_err(|w| DepthImage::from_wire(w, &self.pool))
+        self.ring
+            .try_send(wire)
+            .map_err(|w| DepthImage::from_wire(w, &self.pool))
     }
 
     /// Receive the next depth image.

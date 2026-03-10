@@ -67,6 +67,24 @@ pub enum PluginCategory {
     Other,
 }
 
+impl std::fmt::Display for PluginCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginCategory::Camera => write!(f, "camera"),
+            PluginCategory::Lidar => write!(f, "lidar"),
+            PluginCategory::Imu => write!(f, "imu"),
+            PluginCategory::Motor => write!(f, "motor"),
+            PluginCategory::Servo => write!(f, "servo"),
+            PluginCategory::Bus => write!(f, "bus"),
+            PluginCategory::Gps => write!(f, "gps"),
+            PluginCategory::ForceTorque => write!(f, "force-torque"),
+            PluginCategory::Simulation => write!(f, "simulation"),
+            PluginCategory::Cli => write!(f, "cli"),
+            PluginCategory::Other => write!(f, "other"),
+        }
+    }
+}
+
 /// Source type for plugin
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -79,6 +97,17 @@ pub enum PluginSourceType {
     CratesIo,
     /// Git repository
     Git,
+}
+
+impl std::fmt::Display for PluginSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginSourceType::Local => write!(f, "local"),
+            PluginSourceType::Registry => write!(f, "registry"),
+            PluginSourceType::CratesIo => write!(f, "crates.io"),
+            PluginSourceType::Git => write!(f, "git"),
+        }
+    }
 }
 
 /// Plugin discovery service

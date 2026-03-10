@@ -71,7 +71,7 @@ struct ImplSection {
 /// Optional rate section for preferred execution rate
 struct RateSection {
     _rate_token: Ident, // "rate" keyword
-    rate_hz: Expr,      // The rate value in Hz
+    _rate_hz: Expr,     // Parsed but no longer used (rate is set via builder)
 }
 
 /// Optional explicit name section for custom node naming
@@ -92,7 +92,7 @@ struct NodeDef {
     init_section: Option<InitSection>,
     shutdown_section: Option<ShutdownSection>,
     impl_section: Option<ImplSection>,
-    rate_section: Option<RateSection>, // Optional preferred rate
+    _rate_section: Option<RateSection>, // Parsed for compat, no longer emitted
 }
 
 impl Parse for NodeDef {
@@ -219,7 +219,7 @@ impl Parse for NodeDef {
             init_section,
             shutdown_section,
             impl_section,
-            rate_section,
+            _rate_section: rate_section,
         })
     }
 }
@@ -399,7 +399,7 @@ fn parse_rate_section(input: ParseStream, rate_token: Ident) -> Result<RateSecti
 
     Ok(RateSection {
         _rate_token: rate_token,
-        rate_hz,
+        _rate_hz: rate_hz,
     })
 }
 
@@ -605,18 +605,6 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    // Generate optional rate_hz implementation
-    let rate_impl = if let Some(ref rate_section) = node_def.rate_section {
-        let rate_value = &rate_section.rate_hz;
-        quote! {
-            fn rate_hz(&self) -> Option<f64> {
-                Some(#rate_value)
-            }
-        }
-    } else {
-        quote! {}
-    };
-
     // Generate the complete output
     let expanded = quote! {
         pub struct #struct_name {
@@ -641,7 +629,6 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
             #shutdown_impl
             #publishers_impl
             #subscribers_impl
-            #rate_impl
         }
 
         impl Default for #struct_name {

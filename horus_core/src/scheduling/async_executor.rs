@@ -260,7 +260,7 @@ impl AsyncExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Node, NodeInfo};
+    use crate::core::{Miss, Node, NodeInfo};
     use std::sync::atomic::AtomicU64;
     use std::sync::Mutex;
 
@@ -304,7 +304,6 @@ mod tests {
     }
 
     fn make_async_node(name: &str, count: Arc<AtomicU64>) -> RegisteredNode {
-
         let node = CounterNode {
             name: name.to_string(),
             count,
@@ -324,12 +323,12 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::AsyncIo,
         }
     }
 
     fn make_slow_io_node(name: &str, sleep_ms: u64, count: Arc<AtomicU64>) -> RegisteredNode {
-
         let node = SlowIoNode {
             name: name.to_string(),
             sleep_ms,
@@ -350,6 +349,7 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::AsyncIo,
         }
     }

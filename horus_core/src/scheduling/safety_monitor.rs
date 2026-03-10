@@ -161,6 +161,8 @@ pub(crate) struct SafetyMonitor {
     deadline_misses: AtomicU64,
     /// Maximum allowed deadline misses before emergency
     max_deadline_misses: u64,
+    /// Safe mode activation counter
+    safe_mode_activations: AtomicU64,
 }
 
 impl SafetyMonitor {
@@ -173,6 +175,7 @@ impl SafetyMonitor {
             critical_nodes: Arc::new(RwLock::new(Vec::new())),
             deadline_misses: AtomicU64::new(0),
             max_deadline_misses,
+            safe_mode_activations: AtomicU64::new(0),
         }
     }
 
@@ -285,6 +288,11 @@ impl SafetyMonitor {
         }
     }
 
+    /// Record a safe mode activation (Miss::SafeMode triggered on a node).
+    pub(crate) fn record_safe_mode_activation(&self) {
+        self.safe_mode_activations.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Trigger emergency stop
     pub(crate) fn trigger_emergency_stop(&self, reason: String) {
         eprintln!(" EMERGENCY STOP: {}", reason);
@@ -314,6 +322,7 @@ impl SafetyMonitor {
                 .values()
                 .filter(|w| w.is_expired())
                 .count() as u64,
+            safe_mode_activations: self.safe_mode_activations.load(Ordering::SeqCst),
         }
     }
 }
@@ -325,6 +334,8 @@ pub struct SafetyStats {
     pub budget_overruns: u64,
     pub deadline_misses: u64,
     pub watchdog_expirations: u64,
+    /// Number of times a node entered safe mode via Miss::SafeMode
+    pub safe_mode_activations: u64,
 }
 
 #[cfg(test)]

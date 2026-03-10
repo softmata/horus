@@ -17,7 +17,9 @@ use tower::ServiceExt;
 /// Session middleware wrapper that extracts AuthService from AppState.
 /// Mirrors `monitor_session_middleware` in production.
 async fn test_session_middleware(
-    axum::extract::State(state): axum::extract::State<std::sync::Arc<horus_manager::monitor::AppState>>,
+    axum::extract::State(state): axum::extract::State<
+        std::sync::Arc<horus_manager::monitor::AppState>,
+    >,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
@@ -81,7 +83,11 @@ async fn do_login(app: &axum::Router) -> (String, String) {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), axum::http::StatusCode::OK, "login must succeed");
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::OK,
+        "login must succeed"
+    );
 
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
         .await
@@ -137,10 +143,7 @@ async fn unauthenticated_get_status_returns_401() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        axum::http::StatusCode::UNAUTHORIZED,
-    );
+    assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED,);
 }
 
 #[tokio::test]
@@ -172,7 +175,9 @@ async fn login_wrong_password_returns_401() {
                 .method("POST")
                 .uri("/api/login")
                 .header("Content-Type", "application/json")
-                .body(axum::body::Body::from(r#"{"password":"wrong_password_xyz"}"#))
+                .body(axum::body::Body::from(
+                    r#"{"password":"wrong_password_xyz"}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -235,7 +240,10 @@ async fn login_correct_password_returns_tokens() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["success"], true);
-    assert!(json["session_token"].is_string(), "must return session_token");
+    assert!(
+        json["session_token"].is_string(),
+        "must return session_token"
+    );
     assert!(json["csrf_token"].is_string(), "must return csrf_token");
 }
 
@@ -394,7 +402,11 @@ async fn logout_clears_session() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::OK, "pre-logout access must work");
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::OK,
+        "pre-logout access must work"
+    );
 
     // Logout (no CSRF required for /api/logout)
     let resp = app
@@ -414,7 +426,11 @@ async fn logout_clears_session() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), axum::http::StatusCode::OK, "logout must succeed");
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::OK,
+        "logout must succeed"
+    );
 
     // Check that the Set-Cookie clears the session
     let set_cookie = resp

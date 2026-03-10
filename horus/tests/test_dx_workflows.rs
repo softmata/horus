@@ -170,7 +170,11 @@ impl Node for CounterNode {
 #[test]
 fn scheduler_runs_node() {
     let mut scheduler = Scheduler::new().tick_hz(100.0);
-    scheduler.add(CounterNode { count: 0 }).order(0).build().unwrap();
+    scheduler
+        .add(CounterNode { count: 0 })
+        .order(0)
+        .build()
+        .unwrap();
 
     // Run for a short duration
     scheduler.run_for(Duration::from_millis(100)).unwrap();
@@ -185,10 +189,18 @@ fn node_builder_uses_build() {
     let mut scheduler = Scheduler::new();
 
     // .build() is the primary method (returns HorusResult)
-    scheduler.add(CounterNode { count: 0 }).order(0).build().unwrap();
+    scheduler
+        .add(CounterNode { count: 0 })
+        .order(0)
+        .build()
+        .unwrap();
 
     // .done() also works (backward compat alias)
-    scheduler.add(CounterNode { count: 0 }).order(1).done().unwrap();
+    scheduler
+        .add(CounterNode { count: 0 })
+        .order(1)
+        .done()
+        .unwrap();
 }
 
 // ============================================================================
@@ -198,9 +210,8 @@ fn node_builder_uses_build() {
 #[test]
 fn prelude_exports_rt_types() {
     // These should all be accessible from the prelude
-    let _policy = DeadlineMissPolicy::Warn;
+    let _policy = Miss::Warn;
     let _stats = RtStats::default();
-    let _tier = NodeTier::Fast;
     let _exec_class = ExecutionClass::BestEffort;
 }
 

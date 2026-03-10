@@ -264,7 +264,7 @@ pub(crate) fn load_params_from_project() -> Result<()> {
 
     if let Some(path) = params_file {
         // Initialize RuntimeParams (will also load from .horus/config/params.yaml if exists)
-        let params = RuntimeParams::init().map_err(|e| anyhow!("Failed to init params: {}", e))?;
+        let params = RuntimeParams::new().map_err(|e| anyhow!("Failed to init params: {}", e))?;
 
         // Load from the found file
         params

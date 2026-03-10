@@ -315,7 +315,6 @@ impl ConfigError {
     }
 }
 
-
 /// Structured input validation errors.
 ///
 /// Replaces `HorusError::InvalidInput(String)` and `HorusError::OutOfRange(String)`:
@@ -390,7 +389,6 @@ impl ValidationError {
         ValidationError::Other(msg.into())
     }
 }
-
 
 /// Structured timeout errors with resource and timing metadata.
 ///
@@ -511,10 +509,7 @@ pub enum TransformError {
 pub enum ResourceError {
     /// A resource with the given name already exists.
     #[error("{resource_type} '{name}' already exists")]
-    AlreadyExists {
-        resource_type: String,
-        name: String,
-    },
+    AlreadyExists { resource_type: String, name: String },
 
     /// Permission denied for a resource operation.
     #[error("Permission denied on '{resource}': requires {required_permission}")]
@@ -1342,7 +1337,10 @@ mod tests {
     #[test]
     fn variant_memory_offset_overflow() {
         let err = HorusError::Memory(MemoryError::OffsetOverflow);
-        assert!(matches!(&err, HorusError::Memory(MemoryError::OffsetOverflow)));
+        assert!(matches!(
+            &err,
+            HorusError::Memory(MemoryError::OffsetOverflow)
+        ));
         let msg = format!("{}", err);
         assert!(msg.contains("overflow"), "Display: {}", msg);
     }
@@ -1488,7 +1486,11 @@ mod tests {
         });
         let msg = format!("{}", err);
         assert!(msg.contains("lidar"), "Should contain frame name: {}", msg);
-        assert!(msg.contains("1000"), "Should contain requested timestamp: {}", msg);
+        assert!(
+            msg.contains("1000"),
+            "Should contain requested timestamp: {}",
+            msg
+        );
     }
 
     /// Transform::Stale for expired transform data.
@@ -1530,7 +1532,8 @@ mod tests {
         .into();
         assert!(
             matches!(err, HorusError::Config(ConfigError::MissingField { ref field, .. }) if field == "hz"),
-            "Expected Config(MissingField), got {:?}", err
+            "Expected Config(MissingField), got {:?}",
+            err
         );
         let msg = format!("{}", err);
         assert!(msg.contains("hz"), "Display: {}", msg);
@@ -1548,7 +1551,8 @@ mod tests {
         .into();
         assert!(
             matches!(err, HorusError::InvalidInput(ValidationError::OutOfRange { ref actual, .. }) if actual == "-10"),
-            "Expected InvalidInput(OutOfRange), got {:?}", err
+            "Expected InvalidInput(OutOfRange), got {:?}",
+            err
         );
         let msg = format!("{}", err);
         assert!(msg.contains("-10"), "Display: {}", msg);
@@ -1566,7 +1570,8 @@ mod tests {
         .into();
         assert!(
             matches!(err, HorusError::Transform(TransformError::Extrapolation { ref frame, .. }) if frame == "lidar"),
-            "Expected Transform(Extrapolation), got {:?}", err
+            "Expected Transform(Extrapolation), got {:?}",
+            err
         );
     }
 
@@ -1581,7 +1586,8 @@ mod tests {
         .into();
         assert!(
             matches!(err, HorusError::Transform(TransformError::Stale { ref frame, .. }) if frame == "imu"),
-            "Expected Transform(Stale), got {:?}", err
+            "Expected Transform(Stale), got {:?}",
+            err
         );
     }
 
@@ -1596,7 +1602,8 @@ mod tests {
         .into();
         assert!(
             matches!(err, HorusError::Timeout(ref t) if t.resource == "tensor_pool"),
-            "Expected Timeout, got {:?}", err
+            "Expected Timeout, got {:?}",
+            err
         );
     }
 
@@ -1610,7 +1617,8 @@ mod tests {
         .into();
         assert!(
             matches!(err, HorusError::Resource(ResourceError::AlreadyExists { ref name, .. }) if name == "base_link"),
-            "Expected Resource(AlreadyExists), got {:?}", err
+            "Expected Resource(AlreadyExists), got {:?}",
+            err
         );
     }
 
@@ -1623,8 +1631,12 @@ mod tests {
         }
         .into();
         assert!(
-            matches!(err, HorusError::Resource(ResourceError::PermissionDenied { .. })),
-            "Expected Resource(PermissionDenied), got {:?}", err
+            matches!(
+                err,
+                HorusError::Resource(ResourceError::PermissionDenied { .. })
+            ),
+            "Expected Resource(PermissionDenied), got {:?}",
+            err
         );
     }
 
@@ -1712,8 +1724,12 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("{{bad json").unwrap_err();
         let err: HorusError = json_err.into();
         assert!(
-            matches!(err, HorusError::Serialization(SerializationError::Json { .. })),
-            "Expected Serialization(Json), got {:?}", err
+            matches!(
+                err,
+                HorusError::Serialization(SerializationError::Json { .. })
+            ),
+            "Expected Serialization(Json), got {:?}",
+            err
         );
         let msg = format!("{}", err);
         assert!(msg.contains("Serialization error"), "Display: {}", msg);
@@ -1726,8 +1742,12 @@ mod tests {
         let toml_err: toml::de::Error = toml::from_str::<toml::Value>("{{bad").unwrap_err();
         let err: HorusError = toml_err.into();
         assert!(
-            matches!(err, HorusError::Config(ConfigError::ParseFailed { format: "TOML", .. })),
-            "Expected Config(ParseFailed), got {:?}", err
+            matches!(
+                err,
+                HorusError::Config(ConfigError::ParseFailed { format: "TOML", .. })
+            ),
+            "Expected Config(ParseFailed), got {:?}",
+            err
         );
         let msg = format!("{}", err);
         assert!(msg.contains("TOML"), "Display: {}", msg);
@@ -1906,7 +1926,8 @@ mod tests {
         let err = HorusError::config("bad config");
         assert!(
             matches!(err, HorusError::Config(ConfigError::Other(ref s)) if s == "bad config"),
-            "Expected Config(Other), got {:?}", err
+            "Expected Config(Other), got {:?}",
+            err
         );
     }
 
@@ -2021,7 +2042,11 @@ mod tests {
         });
         let help = err.help();
         assert!(help.is_some(), "Stale should have help text");
-        assert!(help.unwrap().contains("sensor driver"), "Help: {}", help.unwrap());
+        assert!(
+            help.unwrap().contains("sensor driver"),
+            "Help: {}",
+            help.unwrap()
+        );
     }
 
     /// InvalidDescriptor returns CRITICAL help text.
@@ -2030,7 +2055,11 @@ mod tests {
         let err = HorusError::InvalidDescriptor("bad magic".into());
         let help = err.help();
         assert!(help.is_some(), "InvalidDescriptor should have help text");
-        assert!(help.unwrap().contains("CRITICAL"), "Help: {}", help.unwrap());
+        assert!(
+            help.unwrap().contains("CRITICAL"),
+            "Help: {}",
+            help.unwrap()
+        );
     }
 
     /// Generic errors return None for help.
@@ -2149,8 +2178,10 @@ mod tests {
     /// horus_context preserves the error source chain.
     #[test]
     fn horus_context_preserves_source() {
-        let result: std::result::Result<(), std::io::Error> =
-            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "no access"));
+        let result: std::result::Result<(), std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "no access",
+        ));
 
         let err = result.horus_context("opening /dev/ttyUSB0").unwrap_err();
         let src = err.source();
@@ -2170,10 +2201,18 @@ mod tests {
 
         let err: HorusError = json_err.into();
         // Level 1: HorusError::Serialization → source is SerializationError::Json
-        let src1 = err.source().expect("HorusError should expose SerializationError as source");
+        let src1 = err
+            .source()
+            .expect("HorusError should expose SerializationError as source");
         // Level 2: SerializationError::Json → source is serde_json::Error
-        let src2 = src1.source().expect("SerializationError::Json should expose serde_json::Error as source");
-        assert_eq!(src2.to_string(), original_msg, "original error message must be preserved");
+        let src2 = src1
+            .source()
+            .expect("SerializationError::Json should expose serde_json::Error as source");
+        assert_eq!(
+            src2.to_string(),
+            original_msg,
+            "original error message must be preserved"
+        );
     }
 
     /// ConfigError::ParseFailed preserves original parse error source chain.
@@ -2184,10 +2223,18 @@ mod tests {
 
         let err: HorusError = toml_err.into();
         // Level 1: HorusError::Config → source is ConfigError
-        let src1 = err.source().expect("HorusError should expose ConfigError as source");
+        let src1 = err
+            .source()
+            .expect("HorusError should expose ConfigError as source");
         // Level 2: ConfigError::ParseFailed → source is Option<Box<dyn Error>>
-        let src2 = src1.source().expect("ConfigError::ParseFailed should expose original error as source");
-        assert_eq!(src2.to_string(), original_msg, "original TOML error must be preserved");
+        let src2 = src1
+            .source()
+            .expect("ConfigError::ParseFailed should expose original error as source");
+        assert_eq!(
+            src2.to_string(),
+            original_msg,
+            "original TOML error must be preserved"
+        );
     }
 
     /// ParseError::Int preserves std::num::ParseIntError source chain.
@@ -2198,10 +2245,18 @@ mod tests {
 
         let err: HorusError = parse_err.into();
         // Level 1: HorusError::Parse → source is ParseError
-        let src1 = err.source().expect("HorusError should expose ParseError as source");
+        let src1 = err
+            .source()
+            .expect("HorusError should expose ParseError as source");
         // Level 2: ParseError::Int → source is ParseIntError
-        let src2 = src1.source().expect("ParseError::Int should expose ParseIntError as source");
-        assert_eq!(src2.to_string(), original_msg, "original ParseIntError must be preserved");
+        let src2 = src1
+            .source()
+            .expect("ParseError::Int should expose ParseIntError as source");
+        assert_eq!(
+            src2.to_string(),
+            original_msg,
+            "original ParseIntError must be preserved"
+        );
     }
 
     /// Full 3-level chain: HorusError → SerializationError → serde_yaml::Error
@@ -2217,7 +2272,11 @@ mod tests {
             depth += 1;
             current = next;
         }
-        assert!(depth >= 2, "YAML error chain should be at least 2 levels deep, got {}", depth);
+        assert!(
+            depth >= 2,
+            "YAML error chain should be at least 2 levels deep, got {}",
+            depth
+        );
     }
 
     /// horus_context chains stack: Contextual wrapping another Contextual.
@@ -2230,13 +2289,23 @@ mod tests {
         let err1 = result.horus_context("reading sensor config").unwrap_err();
         // Second context layer by wrapping again
         let result2: std::result::Result<(), HorusError> = Err(err1);
-        let err2 = result2.horus_context("initializing sensor node").unwrap_err();
+        let err2 = result2
+            .horus_context("initializing sensor node")
+            .unwrap_err();
 
         // Walk the chain: Contextual → Contextual → io::Error
         let src1 = err2.source().expect("outer Contextual should have source");
-        assert!(src1.to_string().contains("reading sensor config"), "first context: {}", src1);
+        assert!(
+            src1.to_string().contains("reading sensor config"),
+            "first context: {}",
+            src1
+        );
         let src2 = src1.source().expect("inner Contextual should have source");
-        assert!(src2.to_string().contains("sensor.yaml not found"), "original: {}", src2);
+        assert!(
+            src2.to_string().contains("sensor.yaml not found"),
+            "original: {}",
+            src2
+        );
     }
 
     /// From<anyhow::Error> preserves chain via Contextual.
@@ -2247,7 +2316,9 @@ mod tests {
         let err: HorusError = anyhow_err.into();
 
         assert!(matches!(err, HorusError::Contextual { .. }));
-        let src = err.source().expect("anyhow conversion should preserve source");
+        let src = err
+            .source()
+            .expect("anyhow conversion should preserve source");
         // anyhow wraps the error, so source should eventually reach "disk full"
         assert!(src.to_string().contains("disk full"), "source: {}", src);
     }
@@ -2259,7 +2330,9 @@ mod tests {
         let err: HorusError = uuid_err.into();
 
         assert!(matches!(err, HorusError::Contextual { .. }));
-        let src = err.source().expect("uuid conversion should preserve source");
+        let src = err
+            .source()
+            .expect("uuid conversion should preserve source");
         // The source should be the original uuid::Error
         assert!(!src.to_string().is_empty(), "source should have a message");
     }
@@ -2282,7 +2355,9 @@ mod tests {
             oldest_ns: 200,
             newest_ns: 300,
         });
-        let src = err.source().expect("Transform variant should expose TransformError as source");
+        let src = err
+            .source()
+            .expect("Transform variant should expose TransformError as source");
         assert!(src.to_string().contains("lidar"), "source: {}", src);
     }
 
@@ -2294,7 +2369,9 @@ mod tests {
             elapsed: Duration::from_secs(5),
             deadline: Some(Duration::from_secs(3)),
         });
-        let src = err.source().expect("Timeout variant should expose TimeoutError as source");
+        let src = err
+            .source()
+            .expect("Timeout variant should expose TimeoutError as source");
         assert!(src.to_string().contains("sensor_pool"), "source: {}", src);
     }
 
@@ -2302,7 +2379,8 @@ mod tests {
     #[test]
     fn chain_walk_full_chain() {
         // Build: HorusError::Contextual → io::Error
-        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "/dev/shm/horus_pool");
+        let io_err =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "/dev/shm/horus_pool");
         let err = HorusError::Contextual {
             message: "creating tensor pool".to_string(),
             source: Box::new(io_err),
@@ -2318,8 +2396,16 @@ mod tests {
         }
 
         assert_eq!(chain.len(), 2, "chain should be 2 levels: {:?}", chain);
-        assert!(chain[0].contains("creating tensor pool"), "level 0: {}", chain[0]);
-        assert!(chain[1].contains("/dev/shm/horus_pool"), "level 1: {}", chain[1]);
+        assert!(
+            chain[0].contains("creating tensor pool"),
+            "level 0: {}",
+            chain[0]
+        );
+        assert!(
+            chain[1].contains("/dev/shm/horus_pool"),
+            "level 1: {}",
+            chain[1]
+        );
     }
 
     // =========================================================================

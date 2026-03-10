@@ -139,26 +139,7 @@ class AsyncTopic:
         return await loop.run_in_executor(None, self._topic.recv)
 
 
-# Simple async utilities
-async def sleep(seconds: float):
-    """Sleep without blocking - just use await!"""
-    await asyncio.sleep(seconds)
-
-
-async def gather(*tasks):
-    """Run multiple async operations concurrently"""
-    return await asyncio.gather(*tasks)
-
-
-async def wait_for(coro, timeout: float):
-    """Wait for async operation with timeout"""
-    return await asyncio.wait_for(coro, timeout=timeout)
-
-
 __all__ = [
     'AsyncNode',
     'AsyncTopic',
-    'sleep',
-    'gather',
-    'wait_for',
 ]

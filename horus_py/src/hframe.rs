@@ -2,8 +2,8 @@
 //!
 //! Provides Python access to HFrame's lock-free transform management system.
 
+use crate::errors::to_py_err;
 use horus_library::hframe::{timestamp_now, HFrame, HFrameConfig, Transform};
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Python wrapper for Transform
@@ -312,9 +312,7 @@ impl PyHFrame {
     ///     Frame ID (integer) for fast lookups
     #[pyo3(signature = (name, parent=None))]
     fn register_frame(&self, name: &str, parent: Option<&str>) -> PyResult<u32> {
-        self.inner
-            .register_frame(name, parent)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        self.inner.register_frame(name, parent).map_err(to_py_err)
     }
 
     /// Register a static frame (transform never changes)
@@ -335,14 +333,12 @@ impl PyHFrame {
     ) -> PyResult<u32> {
         self.inner
             .register_static_frame(name, parent, &transform.inner)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(to_py_err)
     }
 
     /// Unregister a dynamic frame
     fn unregister_frame(&self, name: &str) -> PyResult<()> {
-        self.inner
-            .unregister_frame(name)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        self.inner.unregister_frame(name).map_err(to_py_err)
     }
 
     /// Get frame ID by name
@@ -386,7 +382,7 @@ impl PyHFrame {
         let ts = timestamp_ns.unwrap_or_else(timestamp_now);
         self.inner
             .update_transform(name, &transform.inner, ts)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(to_py_err)
     }
 
     /// Update a frame's transform by ID (faster)
@@ -402,7 +398,7 @@ impl PyHFrame {
         let ts = timestamp_ns.unwrap_or_else(timestamp_now);
         self.inner
             .update_transform_by_id(frame_id, &transform.inner, ts)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(to_py_err)
     }
 
     /// Get transform from src frame to dst frame
@@ -417,7 +413,7 @@ impl PyHFrame {
         self.inner
             .tf(src, dst)
             .map(|t| PyTransform { inner: t })
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(to_py_err)
     }
 
     /// Get transform at specific timestamp with interpolation
@@ -433,7 +429,7 @@ impl PyHFrame {
         self.inner
             .tf_at(src, dst, timestamp_ns)
             .map(|t| PyTransform { inner: t })
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(to_py_err)
     }
 
     /// Get transform by frame IDs (fastest)
@@ -452,7 +448,7 @@ impl PyHFrame {
     fn transform_point(&self, src: &str, dst: &str, point: [f64; 3]) -> PyResult<[f64; 3]> {
         self.inner
             .transform_point(src, dst, point)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(to_py_err)
     }
 
     /// Get the parent frame of a given frame
@@ -467,9 +463,210 @@ impl PyHFrame {
 
     /// Get the frame chain from src to dst
     fn frame_chain(&self, src: &str, dst: &str) -> PyResult<Vec<String>> {
+        self.inner.frame_chain(src, dst).map_err(to_py_err)
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // Phase 2: Waits & Staleness
+    // ════════════════════════════════════════════════════════════
+
+    /// Block until a transform between src and dst becomes available.
+    ///
+    /// Args:
+    ///     src: Source frame name
+    ///     dst: Destination frame name
+    ///     timeout_sec: Maximum wait time in seconds (default: 5.0)
+    ///
+    /// Returns:
+    ///     Transform once available
+    ///
+    /// Raises:
+    ///     ValueError: If timeout expires before transform is available
+    #[pyo3(signature = (src, dst, timeout_sec=5.0))]
+    fn wait_for_transform(
+        &self,
+        py: Python,
+        src: &str,
+        dst: &str,
+        timeout_sec: f64,
+    ) -> PyResult<PyTransform> {
+        let timeout = std::time::Duration::from_secs_f64(timeout_sec);
+        let inner = &self.inner;
+        let src_owned = src.to_string();
+        let dst_owned = dst.to_string();
+        // Release the GIL while waiting
+        py.detach(|| {
+            inner
+                .wait_for_transform(&src_owned, &dst_owned, timeout)
+                .map(|t| PyTransform { inner: t })
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Get transform at timestamp with time tolerance for interpolation.
+    ///
+    /// Args:
+    ///     src: Source frame name
+    ///     dst: Destination frame name
+    ///     timestamp_ns: Target timestamp in nanoseconds
+    ///     tolerance_ns: Tolerance window in nanoseconds (default: 100ms)
+    ///
+    /// Returns:
+    ///     Interpolated transform within tolerance window
+    #[pyo3(signature = (src, dst, timestamp_ns, tolerance_ns=100_000_000))]
+    fn tf_at_with_tolerance(
+        &self,
+        src: &str,
+        dst: &str,
+        timestamp_ns: u64,
+        tolerance_ns: u64,
+    ) -> PyResult<PyTransform> {
         self.inner
-            .frame_chain(src, dst)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .tf_at_with_tolerance(src, dst, timestamp_ns, tolerance_ns)
+            .map(|t| PyTransform { inner: t })
+            .map_err(to_py_err)
+    }
+
+    /// Check if a frame's transform data is stale.
+    ///
+    /// Args:
+    ///     name: Frame name
+    ///     max_age_sec: Maximum acceptable age in seconds (default: 1.0)
+    ///
+    /// Returns:
+    ///     True if the frame hasn't been updated within max_age_sec
+    #[pyo3(signature = (name, max_age_sec=1.0))]
+    fn is_stale(&self, name: &str, max_age_sec: f64) -> bool {
+        let max_age_ns = (max_age_sec * 1_000_000_000.0) as u64;
+        self.inner.is_stale_now(name, max_age_ns)
+    }
+
+    /// Get seconds since a frame was last updated.
+    ///
+    /// Args:
+    ///     name: Frame name
+    ///
+    /// Returns:
+    ///     Seconds since last update, or None if frame has never been updated
+    fn time_since_last_update(&self, name: &str) -> Option<f64> {
+        self.inner
+            .time_since_last_update_now(name)
+            .map(|ns| ns as f64 / 1_000_000_000.0)
+    }
+
+    /// Set a static transform (registered once, never expires).
+    ///
+    /// Use for fixed relationships like camera_link → base_link.
+    ///
+    /// Args:
+    ///     name: Frame name (must already be registered)
+    ///     transform: The static transform from parent to this frame
+    fn set_static_transform(&self, name: &str, transform: &PyTransform) -> PyResult<()> {
+        self.inner
+            .set_static_transform(name, &transform.inner)
+            .map_err(to_py_err)
+    }
+
+    /// Transform a 3D vector from one frame to another (rotation only).
+    ///
+    /// Unlike transform_point(), this only applies rotation without
+    /// translation. Use for directions, velocities, angular rates.
+    ///
+    /// Args:
+    ///     src: Source frame name
+    ///     dst: Destination frame name
+    ///     vector: [x, y, z] vector to transform
+    ///
+    /// Returns:
+    ///     Rotated [x, y, z] vector
+    fn transform_vector(&self, src: &str, dst: &str, vector: [f64; 3]) -> PyResult<[f64; 3]> {
+        self.inner
+            .transform_vector(src, dst, vector)
+            .map_err(to_py_err)
+    }
+
+    /// Check if a transform is available at a specific timestamp.
+    ///
+    /// Non-throwing alternative to tf_at() — returns bool instead of
+    /// raising an error.
+    ///
+    /// Args:
+    ///     src: Source frame name
+    ///     dst: Destination frame name
+    ///     timestamp_ns: Timestamp to check
+    ///
+    /// Returns:
+    ///     True if transform data exists at the given time
+    fn can_transform_at(&self, src: &str, dst: &str, timestamp_ns: u64) -> bool {
+        self.inner.can_transform_at(src, dst, timestamp_ns)
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // Phase 3: Debug & Diagnostics
+    // ════════════════════════════════════════════════════════════
+
+    /// Get frame tree statistics.
+    ///
+    /// Returns:
+    ///     Dict with total_frames, static_frames, dynamic_frames,
+    ///     max_frames, history_len, tree_depth, root_count
+    fn stats(&self) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
+        Python::attach(|py| {
+            let s = self.inner.stats();
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("total_frames", s.total_frames)?;
+            dict.set_item("static_frames", s.static_frames)?;
+            dict.set_item("dynamic_frames", s.dynamic_frames)?;
+            dict.set_item("max_frames", s.max_frames)?;
+            dict.set_item("history_len", s.history_len)?;
+            dict.set_item("tree_depth", s.tree_depth)?;
+            dict.set_item("root_count", s.root_count)?;
+            Ok(dict.into())
+        })
+    }
+
+    /// Validate the frame tree for consistency.
+    ///
+    /// Checks for cycles, orphan frames, and other structural issues.
+    ///
+    /// Returns:
+    ///     None if valid
+    ///
+    /// Raises:
+    ///     ValueError: Description of the consistency issue found
+    fn validate(&self) -> PyResult<()> {
+        self.inner.validate().map_err(to_py_err)
+    }
+
+    /// Get detailed info about a specific frame.
+    ///
+    /// Args:
+    ///     name: Frame name
+    ///
+    /// Returns:
+    ///     Dict with name, id, parent, is_static, children_count, depth,
+    ///     time_range (oldest_ns, newest_ns), or None if frame not found
+    fn frame_info(&self, name: &str) -> PyResult<Option<pyo3::Py<pyo3::types::PyDict>>> {
+        let info = match self.inner.frame_info(name) {
+            Some(i) => i,
+            None => return Ok(None),
+        };
+        Python::attach(|py| {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("name", &info.name)?;
+            dict.set_item("id", info.id)?;
+            dict.set_item("parent", &info.parent)?;
+            dict.set_item("is_static", info.is_static)?;
+            dict.set_item("children_count", info.children_count)?;
+            dict.set_item("depth", info.depth)?;
+            if let Some((oldest, newest)) = info.time_range {
+                let range = pyo3::types::PyTuple::new(py, &[oldest, newest])?;
+                dict.set_item("time_range", range)?;
+            } else {
+                dict.set_item("time_range", py.None())?;
+            }
+            Ok(Some(dict.into()))
+        })
     }
 
     fn __repr__(&self) -> String {

@@ -9,6 +9,9 @@ repository = "https://github.com/softmata/horus"
 keywords = ["robotics", "messages", "horus"]
 categories = ["science::robotics"]
 
+[lints]
+workspace = true
+
 [lib]
 name = "horus_library"
 path = "lib.rs"

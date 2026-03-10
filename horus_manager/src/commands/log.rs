@@ -82,9 +82,12 @@ fn parse_since(since: Option<&str>) -> HorusResult<Option<SystemTime>> {
         ))));
     };
 
-    let num: u64 = num_str
-        .parse()
-        .map_err(|_| HorusError::Config(ConfigError::Other(format!("Invalid number in time: {}", since))))?;
+    let num: u64 = num_str.parse().map_err(|_| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Invalid number in time: {}",
+            since
+        )))
+    })?;
 
     let secs = match unit {
         "s" => num,

@@ -31,9 +31,7 @@ async fn start_test_server() -> SocketAddr {
 /// Connect to the WebSocket endpoint and return the stream.
 async fn ws_connect(
     addr: SocketAddr,
-) -> tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-> {
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
     let url = format!("ws://{}/api/ws", addr);
     let (ws_stream, _resp) = tokio_tungstenite::connect_async(&url)
         .await
@@ -109,9 +107,11 @@ async fn ws_broadcast_node_fields() {
 
     // Create some SHM presence so there are nodes to broadcast
     let mut _rt = HorusTestRuntime::new();
-    _rt.add_node(
-        harness::TestNodeConfig::sensor("ws_test_node", "test.topic", "SensorData"),
-    );
+    _rt.add_node(harness::TestNodeConfig::sensor(
+        "ws_test_node",
+        "test.topic",
+        "SensorData",
+    ));
 
     let mut ws = ws_connect(addr).await;
 
@@ -123,20 +123,31 @@ async fn ws_broadcast_node_fields() {
             .unwrap()
             .unwrap()
             .unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&msg.into_text().unwrap()).unwrap();
         let nodes = json["data"]["nodes"].as_array().unwrap();
-        if let Some(node) = nodes.iter().find(|n| n["name"].as_str() == Some("ws_test_node")) {
+        if let Some(node) = nodes
+            .iter()
+            .find(|n| n["name"].as_str() == Some("ws_test_node"))
+        {
             // Validate node fields
             assert!(node["name"].is_string(), "node must have name");
             assert!(node["status"].is_string(), "node must have status");
             assert!(node["health"].is_string(), "node must have health");
-            assert!(node["health_color"].is_string(), "node must have health_color");
+            assert!(
+                node["health_color"].is_string(),
+                "node must have health_color"
+            );
             assert!(node["cpu"].is_string(), "node must have cpu");
             assert!(node["memory"].is_string(), "node must have memory");
-            assert!(node["scheduler_name"].is_string(), "node must have scheduler_name");
+            assert!(
+                node["scheduler_name"].is_string(),
+                "node must have scheduler_name"
+            );
             // PID must NOT be present
-            assert!(node.get("pid").is_none() || node["pid"].is_null(), "node must NOT expose PID");
+            assert!(
+                node.get("pid").is_none() || node["pid"].is_null(),
+                "node must NOT expose PID"
+            );
             assert!(
                 node.get("process_id").is_none() || node["process_id"].is_null(),
                 "node must NOT expose process_id"
@@ -145,7 +156,10 @@ async fn ws_broadcast_node_fields() {
             break;
         }
     }
-    assert!(found, "ws_test_node must appear in WS broadcast within 5 cycles");
+    assert!(
+        found,
+        "ws_test_node must appear in WS broadcast within 5 cycles"
+    );
 }
 
 #[tokio::test]
@@ -153,9 +167,11 @@ async fn ws_broadcast_topic_fields() {
     let addr = start_test_server().await;
 
     let mut _rt = HorusTestRuntime::new();
-    _rt.add_node(
-        harness::TestNodeConfig::sensor("ws_topic_pub", "ws_test_topic", "SensorData"),
-    );
+    _rt.add_node(harness::TestNodeConfig::sensor(
+        "ws_topic_pub",
+        "ws_test_topic",
+        "SensorData",
+    ));
 
     let mut ws = ws_connect(addr).await;
 
@@ -166,11 +182,12 @@ async fn ws_broadcast_topic_fields() {
             .unwrap()
             .unwrap()
             .unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&msg.into_text().unwrap()).unwrap();
         let topics = json["data"]["topics"].as_array().unwrap();
         if let Some(topic) = topics.iter().find(|t| {
-            t["name"].as_str().map_or(false, |n| n.contains("ws_test_topic"))
+            t["name"]
+                .as_str()
+                .map_or(false, |n| n.contains("ws_test_topic"))
         }) {
             assert!(topic["name"].is_string(), "topic must have name");
             assert!(topic["size"].is_string(), "topic must have size");
@@ -252,8 +269,7 @@ async fn ws_broadcast_graph_node_fields() {
             .unwrap()
             .unwrap()
             .unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&msg.into_text().unwrap()).unwrap();
         let graph_nodes = json["data"]["graph"]["nodes"].as_array().unwrap();
         if !graph_nodes.is_empty() {
             let gn = &graph_nodes[0];
@@ -266,7 +282,10 @@ async fn ws_broadcast_graph_node_fields() {
                 "graph node type must be 'process' or 'topic', got '{}'",
                 node_type
             );
-            assert!(gn["active"].is_boolean(), "graph node must have boolean active");
+            assert!(
+                gn["active"].is_boolean(),
+                "graph node must have boolean active"
+            );
             return;
         }
     }
@@ -284,8 +303,7 @@ async fn ws_broadcast_graph_edge_fields() {
             .unwrap()
             .unwrap()
             .unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&msg.into_text().unwrap()).unwrap();
         let edges = json["data"]["graph"]["edges"].as_array().unwrap();
         if !edges.is_empty() {
             let edge = &edges[0];
@@ -347,8 +365,7 @@ async fn ws_broadcast_timestamps_increase() {
             .unwrap()
             .unwrap()
             .unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&msg.into_text().unwrap()).unwrap();
         timestamps.push(json["timestamp"].as_str().unwrap().to_string());
     }
 

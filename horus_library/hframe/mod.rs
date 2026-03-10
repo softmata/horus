@@ -170,7 +170,9 @@ pub use messages::{
 };
 pub use transform::Transform;
 
-use horus_core::error::{HorusError, NotFoundError, TimeoutError, TransformError};
+#[cfg(any(feature = "wait", feature = "async-wait"))]
+use horus_core::error::TimeoutError;
+use horus_core::error::{HorusError, NotFoundError};
 use horus_core::HorusResult;
 use std::sync::Arc;
 
@@ -486,10 +488,11 @@ impl HFrame {
         transform: &Transform,
         timestamp_ns: u64,
     ) -> HorusResult<()> {
-        let id = self
-            .registry
-            .lookup(name)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: name.to_string() }))?;
+        let id = self.registry.lookup(name).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: name.to_string(),
+            })
+        })?;
         self.core.update(id, transform, timestamp_ns)?;
         #[cfg(feature = "wait")]
         self.notifier.notify();
@@ -502,10 +505,11 @@ impl HFrame {
     ///
     /// Validates the transform before storing.
     pub fn set_static_transform(&self, name: &str, transform: &Transform) -> HorusResult<()> {
-        let id = self
-            .registry
-            .lookup(name)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: name.to_string() }))?;
+        let id = self.registry.lookup(name).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: name.to_string(),
+            })
+        })?;
         self.core.set_static_transform(id, transform)
     }
 
@@ -524,14 +528,16 @@ impl HFrame {
     /// let point_in_base = tf.transform_point(point_in_camera);
     /// ```
     pub fn tf(&self, src: &str, dst: &str) -> HorusResult<Transform> {
-        let src_id = self
-            .registry
-            .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
-        let dst_id = self
-            .registry
-            .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
+        let src_id = self.registry.lookup(src).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: src.to_string(),
+            })
+        })?;
+        let dst_id = self.registry.lookup(dst).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: dst.to_string(),
+            })
+        })?;
 
         self.core.resolve(src_id, dst_id).ok_or_else(|| {
             HorusError::Communication(
@@ -547,14 +553,16 @@ impl HFrame {
     /// the two nearest samples using linear interpolation for translation
     /// and SLERP for rotation.
     pub fn tf_at(&self, src: &str, dst: &str, timestamp_ns: u64) -> HorusResult<Transform> {
-        let src_id = self
-            .registry
-            .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
-        let dst_id = self
-            .registry
-            .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
+        let src_id = self.registry.lookup(src).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: src.to_string(),
+            })
+        })?;
+        let dst_id = self.registry.lookup(dst).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: dst.to_string(),
+            })
+        })?;
 
         self.core
             .resolve_at(src_id, dst_id, timestamp_ns)
@@ -582,14 +590,16 @@ impl HFrame {
     /// }
     /// ```
     pub fn tf_at_strict(&self, src: &str, dst: &str, timestamp_ns: u64) -> HorusResult<Transform> {
-        let src_id = self
-            .registry
-            .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
-        let dst_id = self
-            .registry
-            .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
+        let src_id = self.registry.lookup(src).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: src.to_string(),
+            })
+        })?;
+        let dst_id = self.registry.lookup(dst).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: dst.to_string(),
+            })
+        })?;
 
         self.core.resolve_at_strict(src_id, dst_id, timestamp_ns)
     }
@@ -613,14 +623,16 @@ impl HFrame {
         timestamp_ns: u64,
         tolerance_ns: u64,
     ) -> HorusResult<Transform> {
-        let src_id = self
-            .registry
-            .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
-        let dst_id = self
-            .registry
-            .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
+        let src_id = self.registry.lookup(src).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: src.to_string(),
+            })
+        })?;
+        let dst_id = self.registry.lookup(dst).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: dst.to_string(),
+            })
+        })?;
 
         self.core
             .resolve_at_with_tolerance(src_id, dst_id, timestamp_ns, tolerance_ns)
@@ -741,14 +753,16 @@ impl HFrame {
 
     /// Get the frame chain from src to dst
     pub fn frame_chain(&self, src: &str, dst: &str) -> HorusResult<Vec<String>> {
-        let src_id = self
-            .registry
-            .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
-        let dst_id = self
-            .registry
-            .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
+        let src_id = self.registry.lookup(src).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: src.to_string(),
+            })
+        })?;
+        let dst_id = self.registry.lookup(dst).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: dst.to_string(),
+            })
+        })?;
 
         let chain = self
             .core
@@ -1205,7 +1219,7 @@ impl HFrame {
             };
             let is_static = self.core.is_static(id);
             let time_info = match self.core.time_range(id) {
-                Some((oldest, newest)) if newest == u64::MAX => "static".to_string(),
+                Some((_oldest, newest)) if newest == u64::MAX => "static".to_string(),
                 Some((oldest, newest)) => format!("t=[{}..{}]ns", oldest, newest),
                 None => "no data".to_string(),
             };
@@ -1280,7 +1294,7 @@ impl HFrame {
             ));
 
             match self.core.time_range(id) {
-                Some((oldest, newest)) if newest == u64::MAX => {
+                Some((_oldest, newest)) if newest == u64::MAX => {
                     yaml.push_str("  last_update: static\n");
                     yaml.push_str("  buffer_range: [0, inf]\n");
                 }
@@ -1467,6 +1481,7 @@ pub fn timestamp_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horus_core::error::TransformError;
 
     #[test]
     fn test_basic_usage() {
@@ -1737,7 +1752,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, HorusError::Transform(TransformError::Extrapolation { .. })),
+            matches!(
+                err,
+                HorusError::Transform(TransformError::Extrapolation { .. })
+            ),
             "Expected Extrapolation, got: {:?}",
             err
         );
@@ -1757,7 +1775,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, HorusError::Transform(TransformError::Extrapolation { .. })),
+            matches!(
+                err,
+                HorusError::Transform(TransformError::Extrapolation { .. })
+            ),
             "Expected Extrapolation, got: {:?}",
             err
         );
@@ -1801,7 +1822,10 @@ mod tests {
         // ts=3000 is within b's range but outside a's range → Extrapolation
         let result = hf.tf_at_strict("b", "world", 3000);
         assert!(
-            matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))),
+            matches!(
+                result,
+                Err(HorusError::Transform(TransformError::Extrapolation { .. }))
+            ),
             "Expected Extrapolation because frame 'a' can't reach ts=3000, got: {:?}",
             result
         );
@@ -1983,7 +2007,10 @@ mod tests {
         // Query at ts=5000, data at 1000, gap=4000, tolerance=1000 → Extrapolation
         let result = hf.tf_at_with_tolerance("a", "world", 5000, 1000);
         assert!(
-            matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))),
+            matches!(
+                result,
+                Err(HorusError::Transform(TransformError::Extrapolation { .. }))
+            ),
             "Expected Extrapolation, got: {:?}",
             result
         );
@@ -2014,7 +2041,10 @@ mod tests {
 
         // Query at ts=1000, data starts at 5000, gap=4000, tolerance=1000
         let result = hf.tf_at_with_tolerance("a", "world", 1000, 1000);
-        assert!(matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))));
+        assert!(matches!(
+            result,
+            Err(HorusError::Transform(TransformError::Extrapolation { .. }))
+        ));
 
         // Same but tolerance=5000 → ok
         let result = hf.tf_at_with_tolerance("a", "world", 1000, 5000);

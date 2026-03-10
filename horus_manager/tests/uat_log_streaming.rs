@@ -44,12 +44,7 @@ async fn logs_all_returns_valid_json() {
 async fn logs_all_contains_injected_entries() {
     let _rt = HorusTestRuntime::new();
     push_log("uat_log_nodeA", LogType::Info, "test info message", None);
-    push_log(
-        "uat_log_nodeB",
-        LogType::Error,
-        "test error message",
-        None,
-    );
+    push_log("uat_log_nodeB", LogType::Error, "test error message", None);
     push_log(
         "uat_log_nodeC",
         LogType::Warning,
@@ -81,12 +76,7 @@ async fn logs_all_contains_injected_entries() {
 
 #[tokio::test]
 async fn logs_have_correct_fields() {
-    push_log(
-        "uat_log_fields",
-        LogType::Info,
-        "field check message",
-        None,
-    );
+    push_log("uat_log_fields", LogType::Info, "field check message", None);
 
     let app = builders::test_router();
     let resp = app.oneshot(get_request("/api/logs/all")).await.unwrap();
@@ -117,12 +107,7 @@ async fn logs_have_correct_fields() {
 
 #[tokio::test]
 async fn logs_node_filter_returns_only_matching() {
-    push_log(
-        "uat_log_sensor",
-        LogType::Info,
-        "sensor reading 42",
-        None,
-    );
+    push_log("uat_log_sensor", LogType::Info, "sensor reading 42", None);
     push_log(
         "uat_log_motor",
         LogType::Info,
@@ -222,24 +207,9 @@ async fn logs_topic_filter_returns_matching() {
 
 #[tokio::test]
 async fn log_severity_correctly_classified() {
-    push_log(
-        "uat_log_sev",
-        LogType::Info,
-        "sev_info_marker",
-        None,
-    );
-    push_log(
-        "uat_log_sev",
-        LogType::Warning,
-        "sev_warn_marker",
-        None,
-    );
-    push_log(
-        "uat_log_sev",
-        LogType::Error,
-        "sev_error_marker",
-        None,
-    );
+    push_log("uat_log_sev", LogType::Info, "sev_info_marker", None);
+    push_log("uat_log_sev", LogType::Warning, "sev_warn_marker", None);
+    push_log("uat_log_sev", LogType::Error, "sev_error_marker", None);
 
     let app = builders::test_router();
     let resp = app

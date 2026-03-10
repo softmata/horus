@@ -240,7 +240,10 @@ fn interactive_workspace_selector(
 
         // Create minimal horus.toml
         let horus_toml = current.join(HORUS_TOML);
-        let toml_content = format!("[package]\nname = \"{}\"\nversion = \"0.1.9\"\n", workspace_name);
+        let toml_content = format!(
+            "[package]\nname = \"{}\"\nversion = \"0.1.9\"\n",
+            workspace_name
+        );
         fs::write(&horus_toml, toml_content).context("Failed to create horus.toml")?;
 
         // Register in workspace registry
@@ -289,7 +292,10 @@ pub fn register_current_workspace(name: Option<String>) -> Result<()> {
     // Create minimal horus.toml if it doesn't exist
     let horus_toml = current.join(HORUS_TOML);
     if !horus_toml.exists() {
-        let toml_content = format!("[package]\nname = \"{}\"\nversion = \"0.1.9\"\n", workspace_name);
+        let toml_content = format!(
+            "[package]\nname = \"{}\"\nversion = \"0.1.9\"\n",
+            workspace_name
+        );
         fs::write(&horus_toml, toml_content)?;
         println!("  {} Created horus.toml", "".green());
     }
@@ -551,7 +557,11 @@ mod tests {
     #[test]
     fn find_workspace_root_with_horus_toml() {
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join(HORUS_TOML), "[package]\nname = \"test\"\nversion = \"0.1.0\"\n").unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
 
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -597,18 +607,35 @@ mod tests {
 
         let global = InstallTarget::Global;
         let cloned = global.clone();
-        matches!(cloned, InstallTarget::Global);
+        assert!(
+            matches!(cloned, InstallTarget::Global),
+            "Expected Global, got {:?}",
+            cloned
+        );
     }
 
     #[test]
     fn install_target_debug() {
         let local = InstallTarget::Local(PathBuf::from("/tmp/test"));
         let debug = format!("{:?}", local);
-        assert!(debug.contains("Local"));
+        assert!(
+            debug.contains("Local"),
+            "Debug of Local variant should contain 'Local', got: {}",
+            debug
+        );
+        assert!(
+            debug.contains("/tmp/test"),
+            "Debug of Local variant should contain path, got: {}",
+            debug
+        );
 
         let global = InstallTarget::Global;
         let debug = format!("{:?}", global);
-        assert!(debug.contains("Global"));
+        assert_eq!(
+            debug, "Global",
+            "Debug of Global variant should be exactly 'Global', got: {}",
+            debug
+        );
     }
 
     // ========================================================================
@@ -617,10 +644,25 @@ mod tests {
 
     #[test]
     fn discover_no_workspaces() {
-        // With no current workspace and no registry, should return empty
+        // With no current workspace, returns only globally-registered workspaces (if any)
         let result = discover_all_workspaces(&None);
-        // May find registered workspaces from global registry, so just check it doesn't panic
-        let _ = result;
+        // Every discovered workspace must have valid fields
+        for ws in &result {
+            assert!(!ws.name.is_empty(), "Workspace name must not be empty");
+            assert!(
+                !ws.path.as_os_str().is_empty(),
+                "Workspace path must not be empty"
+            );
+        }
+        // None of the discovered workspaces should be marked as current
+        // since we passed &None as current_workspace
+        for ws in &result {
+            assert!(
+                !ws.is_current,
+                "No workspace should be marked current when current_workspace is None, but '{}' is",
+                ws.name
+            );
+        }
     }
 
     #[test]
@@ -711,9 +753,22 @@ mod tests {
             is_current: true,
         };
         assert_eq!(dw.name, "my_robot");
+        assert_eq!(dw.path, PathBuf::from("/home/user/my_robot"));
         assert!(dw.is_current);
         let cloned = dw.clone();
         assert_eq!(cloned.name, "my_robot");
-        let _ = format!("{:?}", dw);
+        assert_eq!(cloned.path, dw.path);
+        assert_eq!(cloned.is_current, dw.is_current);
+        let debug = format!("{:?}", dw);
+        assert!(
+            debug.contains("my_robot"),
+            "Debug output should contain name, got: {}",
+            debug
+        );
+        assert!(
+            debug.contains("is_current"),
+            "Debug output should contain is_current field, got: {}",
+            debug
+        );
     }
 }

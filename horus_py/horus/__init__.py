@@ -41,6 +41,7 @@ try:
         Scheduler as _PyScheduler,
         NodeState,
         SchedulerConfig as _SchedulerConfig,
+        Miss,
         get_version,
         # GPU utility functions
         cuda_is_available,
@@ -55,10 +56,119 @@ try:
         Imu as _RustImu,
         Odometry as _RustOdometry,
         LaserScan as _RustLaserScan,
+        Pose3D as _RustPose3D,
+        JointState as _RustJointState,
+        Clock as _RustClock,
+        TimeReference as _RustTimeReference,
+        # Geometry types
+        Twist as _RustTwist,
+        Vector3 as _RustVector3,
+        Point3 as _RustPoint3,
+        Quaternion as _RustQuaternion,
+        TransformStamped as _RustTransformStamped,
+        PoseStamped as _RustPoseStamped,
+        PoseWithCovariance as _RustPoseWithCovariance,
+        TwistWithCovariance as _RustTwistWithCovariance,
+        Accel as _RustAccel,
+        AccelStamped as _RustAccelStamped,
+        # Control types
+        MotorCommand as _RustMotorCommand,
+        ServoCommand as _RustServoCommand,
+        DifferentialDriveCommand as _RustDifferentialDriveCommand,
+        PidConfig as _RustPidConfig,
+        TrajectoryPoint as _RustTrajectoryPoint,
+        JointCommand as _RustJointCommand,
+        PwmCommand as _RustPwmCommand,
+        StepperCommand as _RustStepperCommand,
+        # Sensor types
+        RangeSensor as _RustRangeSensor,
+        BatteryState as _RustBatteryState,
+        NavSatFix as _RustNavSatFix,
+        MagneticField as _RustMagneticField,
+        Temperature as _RustTemperature,
+        FluidPressure as _RustFluidPressure,
+        Illuminance as _RustIlluminance,
+        # Diagnostics types
+        Heartbeat as _RustHeartbeat,
+        DiagnosticStatus as _RustDiagnosticStatus,
+        EmergencyStop as _RustEmergencyStop,
+        ResourceUsage as _RustResourceUsage,
+        # Force types
+        WrenchStamped as _RustWrenchStamped,
+        ForceCommand as _RustForceCommand,
+        ContactInfo as _RustContactInfo,
+        # Navigation types
+        NavGoal as _RustNavGoal,
+        GoalResult as _RustGoalResult,
+        PathPlan as _RustPathPlan,
+        # Input types
+        JoystickInput as _RustJoystickInput,
+        KeyboardInput as _RustKeyboardInput,
+        # Detection/Perception types
+        BoundingBox2D as _RustBoundingBox2D,
+        BoundingBox3D as _RustBoundingBox3D,
+        Detection as _RustDetection,
+        Detection3D as _RustDetection3D,
+        SegmentationMask as _RustSegmentationMask,
+        # Tracking types
+        TrackedObject as _RustTrackedObject,
+        TrackingHeader as _RustTrackingHeader,
+        # Landmark types
+        Landmark as _RustLandmark,
+        Landmark3D as _RustLandmark3D,
+        LandmarkArray as _RustLandmarkArray,
+        # Perception helper types
+        PointField as _RustPointField,
+        PlaneDetection as _RustPlaneDetection,
+        PlaneArray as _RustPlaneArray,
+        # ML types
+        TensorData as _RustTensorData,
+        Predictions as _RustPredictions,
+        InferenceMetrics as _RustInferenceMetrics,
+        ModelInfo as _RustModelInfo,
+        FeatureVector as _RustFeatureVector,
+        Classification as _RustClassification,
+        ChatMessage as _RustChatMessage,
+        LLMRequest as _RustLLMRequest,
+        LLMResponse as _RustLLMResponse,
+        TrainingMetrics as _RustTrainingMetrics,
+        MlTrajectoryPoint as _RustMlTrajectoryPoint,
+        DeploymentConfig as _RustDeploymentConfig,
+        # Vision types
+        CompressedImage as _RustCompressedImage,
+        CameraInfo as _RustCameraInfo,
+        RegionOfInterest as _RustRegionOfInterest,
+        StereoInfo as _RustStereoInfo,
+        # Force types (additional)
+        TactileArray as _RustTactileArray,
+        ImpedanceParameters as _RustImpedanceParameters,
+        HapticFeedback as _RustHapticFeedback,
+        # Diagnostics types (additional)
+        DiagnosticValue as _RustDiagnosticValue,
+        DiagnosticReport as _RustDiagnosticReport,
+        NodeHeartbeat as _RustNodeHeartbeat,
+        SafetyStatus as _RustSafetyStatus,
+        # Navigation types (additional)
+        Waypoint as _RustWaypoint,
+        NavPath as _RustNavPath,
+        VelocityObstacle as _RustVelocityObstacle,
+        VelocityObstacles as _RustVelocityObstacles,
+        OccupancyGrid as _RustOccupancyGrid,
+        CostMap as _RustCostMap,
+        # Structured error types
+        HorusNotFoundError,
+        HorusTransformError,
+        HorusTimeoutError,
     )
 except ImportError:
     # Fallback for testing without Rust bindings
-    print("Warning: Rust bindings not available. Running in mock mode.")
+    import warnings
+    warnings.warn(
+        "horus Rust extension not available — running in mock mode. "
+        "Most functionality will not work. Install with: maturin develop",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     _PyNode = None
     _NodeInfo = None
     Topic = None  # Unified communication API
@@ -78,7 +188,7 @@ except ImportError:
     class _SchedulerConfig:
         def __init__(self):
             self.tick_rate = 60.0
-            self.circuit_breaker = False
+            self.fault_tolerance = False
             self.memory_locking = False
             self.rt_scheduling_class = False
             self.profiling = False
@@ -112,7 +222,20 @@ except ImportError:
     class DepthImage:
         pass
 
-__version__ = "0.1.9"
+    class HorusNotFoundError(Exception):
+        """Raised when a topic, frame, or node is not found."""
+
+    class HorusTransformError(Exception):
+        """Raised when a coordinate transform fails."""
+
+    class HorusTimeoutError(Exception):
+        """Raised when a blocking operation times out."""
+
+# Single source of truth: Cargo.toml via env!("CARGO_PKG_VERSION")
+try:
+    __version__ = get_version().split("v", 1)[-1]
+except Exception:
+    __version__ = "0.1.9"
 
 
 def _truncate_for_logging(data: Any, max_size: int = MAX_LOG_DATA_SIZE) -> str:
@@ -194,19 +317,19 @@ class Node:
         Args:
             name: Node name (auto-generated if None)
             pubs: Topics to publish to. Can be:
-                  - str: single topic (generic hub)
-                  - list: ["topic1", "topic2"] (generic hubs)
+                  - str: single topic (generic)
+                  - list: ["topic1", "topic2"] (generic topics)
                   - dict: {"topic1": {"type": CmdVel, "capacity": 2048}, "topic2": {}}
-                    Use 'type' to create typed hubs for proper message logging
+                    Use 'type' to create typed topics for proper message logging
             subs: Topics to subscribe to (same format as pubs)
             tick: Function to call on each tick - signature: tick(node)
             rate: Tick rate in Hz (default 30)
             init: Optional init function - signature: init(node)
             shutdown: Optional shutdown function - signature: shutdown(node)
             on_error: Optional error handler - signature: on_error(node, exception)
-            default_capacity: Default hub capacity (default: 1024)
+            default_capacity: Default topic capacity (default: 1024)
 
-        Example with typed hubs (recommended for proper logging):
+        Example with typed topics (recommended for proper logging):
             from horus import Node, Pose2D, CmdVel
 
             node = Node(
@@ -216,10 +339,10 @@ class Node:
                 tick=lambda n: None
             )
 
-        Example with generic hubs (shows <bytes> in logs):
+        Example with generic topics (shows <bytes> in logs):
             node = Node(
                 name="controller",
-                subs=["localization/pose"],  # Generic hub
+                subs=["localization/pose"],  # Generic topic
                 pubs=["control/cmd"],
                 tick=lambda n: None
             )
@@ -279,15 +402,15 @@ class Node:
         # Create underlying HORUS components if available
         if _PyNode:
             self._rust_available = True
-            self._setup_hubs()
+            self._setup_topics()
         else:
             # Mock mode for testing
             self._rust_available = False
-            self._hubs = {}
+            self._topics = {}
 
-    def _setup_hubs(self):
+    def _setup_topics(self):
         """Setup publish/subscribe hubs with configured capacities and types."""
-        self._hubs = {}
+        self._topics = {}
 
         # Create publisher hubs
         for topic in self.pub_topics:
@@ -295,13 +418,13 @@ class Node:
             capacity = config.get('capacity', self.default_capacity)
             msg_type = config.get('type', None)
 
-            # If type specified, create typed hub; otherwise generic hub
+            # If type specified, create typed topic; otherwise generic topic
             if msg_type is not None:
-                # Temporarily set __topic_name__ so Rust Hub uses correct topic
+                # Temporarily set __topic_name__ so Rust Topic uses correct name
                 original_topic = getattr(msg_type, '__topic_name__', None)
                 msg_type.__topic_name__ = topic
                 try:
-                    self._hubs[topic] = Topic(msg_type, capacity)
+                    self._topics[topic] = Topic(msg_type, capacity)
                 finally:
                     # Restore original or delete
                     if original_topic is not None:
@@ -309,7 +432,7 @@ class Node:
                     elif hasattr(msg_type, '__topic_name__'):
                         delattr(msg_type, '__topic_name__')
             else:
-                self._hubs[topic] = Topic(topic, capacity)
+                self._topics[topic] = Topic(topic, capacity)
 
         # Create subscriber hubs
         for topic in self.sub_topics:
@@ -317,13 +440,13 @@ class Node:
             capacity = config.get('capacity', self.default_capacity)
             msg_type = config.get('type', None)
 
-            # If type specified, create typed hub; otherwise generic hub
+            # If type specified, create typed topic; otherwise generic topic
             if msg_type is not None:
-                # Temporarily set __topic_name__ so Rust Hub uses correct topic
+                # Temporarily set __topic_name__ so Rust Topic uses correct name
                 original_topic = getattr(msg_type, '__topic_name__', None)
                 msg_type.__topic_name__ = topic
                 try:
-                    self._hubs[topic] = Topic(msg_type, capacity)
+                    self._topics[topic] = Topic(msg_type, capacity)
                 finally:
                     # Restore original or delete
                     if original_topic is not None:
@@ -331,7 +454,7 @@ class Node:
                     elif hasattr(msg_type, '__topic_name__'):
                         delattr(msg_type, '__topic_name__')
             else:
-                self._hubs[topic] = Topic(topic, capacity)
+                self._topics[topic] = Topic(topic, capacity)
 
     def has_msg(self, topic: str) -> bool:
         """
@@ -469,13 +592,13 @@ class Node:
                 capacity = config.get('capacity', self.default_capacity)
                 msg_type = config.get('type', None)
 
-                # If type specified, create typed hub; otherwise generic hub
+                # If type specified, create typed topic; otherwise generic topic
                 if msg_type is not None:
-                    # Temporarily set __topic_name__ so Rust Hub uses correct topic
+                    # Temporarily set __topic_name__ so Rust Topic uses correct name
                     original_topic = getattr(msg_type, '__topic_name__', None)
                     msg_type.__topic_name__ = topic
                     try:
-                        self._hubs[topic] = Topic(msg_type, capacity)
+                        self._topics[topic] = Topic(msg_type, capacity)
                     finally:
                         # Restore original or delete
                         if original_topic is not None:
@@ -483,17 +606,17 @@ class Node:
                         elif hasattr(msg_type, '__topic_name__'):
                             delattr(msg_type, '__topic_name__')
                 else:
-                    self._hubs[topic] = Topic(topic, capacity)
+                    self._topics[topic] = Topic(topic, capacity)
 
-        if self._rust_available and topic in self._hubs:
-            hub = self._hubs[topic]
+        if self._rust_available and topic in self._topics:
+            t = self._topics[topic]
 
             # Measure IPC timing
             import time
             start_ns = time.perf_counter_ns()
 
             # PyTopic.send() handles all serialization internally in Rust
-            result = hub.send(data, self)
+            result = t.send(data, self)
 
             end_ns = time.perf_counter_ns()
             ipc_ns = end_ns - start_ns
@@ -509,7 +632,7 @@ class Node:
         return True
 
     def _receive_messages(self, topic: str):
-        """Pull messages from hub into queue (Phase 2: with timestamps)."""
+        """Pull messages from topic into queue."""
         # Auto-detect topics: add topic if not already declared
         if topic not in self.sub_topics:
             self.sub_topics.append(topic)
@@ -518,13 +641,13 @@ class Node:
                 capacity = config.get('capacity', self.default_capacity)
                 msg_type = config.get('type', None)
 
-                # If type specified, create typed hub; otherwise generic hub
+                # If type specified, create typed topic; otherwise generic topic
                 if msg_type is not None:
-                    # Temporarily set __topic_name__ so Rust Hub uses correct topic
+                    # Temporarily set __topic_name__ so Rust Topic uses correct name
                     original_topic = getattr(msg_type, '__topic_name__', None)
                     msg_type.__topic_name__ = topic
                     try:
-                        self._hubs[topic] = Topic(msg_type, capacity)
+                        self._topics[topic] = Topic(msg_type, capacity)
                     finally:
                         # Restore original or delete
                         if original_topic is not None:
@@ -532,10 +655,10 @@ class Node:
                         elif hasattr(msg_type, '__topic_name__'):
                             delattr(msg_type, '__topic_name__')
                 else:
-                    self._hubs[topic] = Topic(topic, capacity)
+                    self._topics[topic] = Topic(topic, capacity)
 
-        if self._rust_available and topic in self._hubs:
-            hub = self._hubs[topic]
+        if self._rust_available and topic in self._topics:
+            t = self._topics[topic]
             import time
 
             # Receive all available messages
@@ -544,7 +667,7 @@ class Node:
                 start_ns = time.perf_counter_ns()
 
                 # PyTopic.recv() handles all deserialization internally in Rust
-                msg = hub.recv(self)
+                msg = t.recv(self)
                 end_ns = time.perf_counter_ns()
 
                 if msg is None:
@@ -696,7 +819,7 @@ class Scheduler:
     Scheduler for running HORUS nodes.
 
     Example (kwargs):
-        scheduler = Scheduler(tick_rate=500.0, circuit_breaker=True, rt=True)
+        scheduler = Scheduler(tick_rate=500.0, fault_tolerance=True, rt=True)
 
     Example (adding nodes):
         scheduler = Scheduler()
@@ -707,7 +830,7 @@ class Scheduler:
 
     def __init__(self, *,
                  tick_rate: float = 1000.0,
-                 circuit_breaker: bool = False,
+                 fault_tolerance: bool = False,
                  parallel: bool = False,
                  rt: bool = False,
                  profiling: bool = False,
@@ -721,7 +844,7 @@ class Scheduler:
 
         Args:
             tick_rate: Global tick rate in Hz (default: 1000.0)
-            circuit_breaker: Enable circuit breaker pattern (default: False)
+            fault_tolerance: Enable tier-based fault tolerance (default: False)
             parallel: Use parallel execution mode (default: False)
             rt: Enable real-time features (memory locking + RT scheduling class)
             profiling: Enable runtime profiling (default: False)
@@ -736,7 +859,7 @@ class Scheduler:
         elif _PyScheduler:
             cfg = _SchedulerConfig.minimal()
             cfg.tick_rate = tick_rate
-            cfg.circuit_breaker = circuit_breaker
+            cfg.fault_tolerance = fault_tolerance
             if rt:
                 cfg.memory_locking = True
                 cfg.rt_scheduling_class = True
@@ -754,10 +877,77 @@ class Scheduler:
             self._scheduler = None
         self._nodes = []
 
+    @classmethod
+    def deploy(cls, *, tick_rate: float = 100.0, **kwargs) -> 'Scheduler':
+        """Create a deploy-ready scheduler with safety features enabled.
+
+        Enables: safety monitor, fault tolerance, watchdog, blackbox.
+
+        Args:
+            tick_rate: Global tick rate in Hz (default: 100.0)
+            **kwargs: Additional overrides (same as Scheduler.__init__)
+
+        Example:
+            scheduler = Scheduler.deploy(tick_rate=500.0)
+            scheduler.add(motor_node, order=0, rate_hz=500.0)
+            scheduler.run()
+        """
+        if _SchedulerConfig:
+            cfg = _SchedulerConfig.deploy()
+            cfg.tick_rate = tick_rate
+            inner = _PyScheduler(cfg)
+            return cls(_inner=inner)
+        return cls(tick_rate=tick_rate, fault_tolerance=True,
+                   safety_monitor=True, watchdog_ms=500, **kwargs)
+
+    @classmethod
+    def hard_rt(cls, *, tick_rate: float = 1000.0, **kwargs) -> 'Scheduler':
+        """Create a hard real-time scheduler with all RT features.
+
+        Enables: all deploy features + memory locking + RT scheduling class.
+        Panics if the system lacks RT capabilities.
+
+        Args:
+            tick_rate: Global tick rate in Hz (default: 1000.0)
+            **kwargs: Additional overrides
+
+        Example:
+            scheduler = Scheduler.hard_rt(tick_rate=1000.0)
+        """
+        if _SchedulerConfig:
+            cfg = _SchedulerConfig.hard_rt()
+            cfg.tick_rate = tick_rate
+            inner = _PyScheduler(cfg)
+            return cls(_inner=inner)
+        return cls(tick_rate=tick_rate, rt=True, fault_tolerance=True,
+                   safety_monitor=True, watchdog_ms=500, **kwargs)
+
+    @classmethod
+    def safety_critical(cls, *, tick_rate: float = 1000.0, **kwargs) -> 'Scheduler':
+        """Create a safety-critical scheduler with strict deadline enforcement.
+
+        Enables: all hard_rt features + profiling + strict deadline limits.
+
+        Args:
+            tick_rate: Global tick rate in Hz (default: 1000.0)
+            **kwargs: Additional overrides
+
+        Example:
+            scheduler = Scheduler.safety_critical()
+        """
+        if _SchedulerConfig:
+            cfg = _SchedulerConfig.safety_critical()
+            cfg.tick_rate = tick_rate
+            inner = _PyScheduler(cfg)
+            return cls(_inner=inner)
+        return cls(tick_rate=tick_rate, rt=True, fault_tolerance=True,
+                   safety_monitor=True, watchdog_ms=500, profiling=True, **kwargs)
+
     def add(self, node: 'Node', order: int = 100, rate_hz: Optional[float] = None,
             rt: bool = False, deadline_ms: Optional[float] = None,
-            tier: Optional[str] = None,
-            failure_policy: Optional[str] = None) -> 'Scheduler':
+            budget_us: Optional[int] = None,
+            failure_policy: Optional[str] = None,
+            on_miss: Optional[str] = None) -> 'Scheduler':
         """
         Add a node to the scheduler.
 
@@ -767,26 +957,40 @@ class Scheduler:
             rate_hz: Node-specific tick rate in Hz (default: uses node.rate)
             rt: Mark as real-time node (default: False)
             deadline_ms: Soft deadline in milliseconds (default: None)
-            tier: Execution tier - "ultra_fast", "fast", "normal" (default: None)
+            budget_us: Tick budget in microseconds (default: None)
             failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
-                  (default: None, uses tier default)
+            on_miss: Deadline miss policy - Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, Miss.STOP
+                  (default: None = warn)
 
         Returns:
             self (for method chaining)
 
         Example:
             scheduler.add(sensor_node, order=0, rate_hz=1000.0)
-            scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
-            scheduler.add(logger_node, order=100, tier="normal", failure_policy="skip")
+            scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0, on_miss=Miss.SAFE_MODE)
+            scheduler.add(logger_node, order=100, failure_policy="skip")
         """
         self._nodes.append(node)
 
         if self._scheduler:
             # Use node.rate if rate_hz not specified
             actual_rate = rate_hz if rate_hz is not None else node.rate
-            self._scheduler.add(node, order, actual_rate, rt, deadline_ms, tier, failure_policy)
+            self._scheduler.add(node, order, actual_rate, rt, deadline_ms,
+                                budget_us, failure_policy, on_miss)
 
         return self
+
+    def node(self, node: 'Node') -> 'NodeBuilder':
+        """Start building a node configuration (fluent API).
+
+        Example:
+            scheduler.node(detector).on("lidar_scan").order(0).done()
+            scheduler.node(motor).rate_hz(500).budget_us(200).failure_policy("restart", max_retries=10).done()
+        """
+        self._nodes.append(node)
+        if self._scheduler:
+            return self._scheduler.node(node)
+        raise RuntimeError("Fluent node builder requires Rust scheduler (not available in mock mode)")
 
     def run(self, duration: Optional[float] = None) -> None:
         """
@@ -881,22 +1085,22 @@ class Scheduler:
         Returns:
             List of dictionaries containing node information:
             - name: Node name
-            - priority: Execution priority
+            - order: Execution order
             - rate_hz: Node execution rate
             - total_ticks: Total number of ticks executed
             - successful_ticks: Number of successful ticks
             - failed_ticks: Number of failed ticks
-            - failure_count: Total failure count
-            - consecutive_failures: Current consecutive failure count
-            - circuit_open: Whether circuit breaker is open
+            - errors_count: Number of errors encountered
             - avg_tick_duration_ms: Average tick duration
+            - min_tick_duration_ms: Minimum tick duration
+            - max_tick_duration_ms: Maximum tick duration
+            - last_tick_duration_ms: Last tick duration
             - uptime_seconds: Node uptime
-            - state: Node state
 
         Example:
             nodes = scheduler.get_all_nodes()
             for node in nodes:
-                print(f"{node['name']}: {node['total_ticks']} ticks, {node['failure_count']} failures")
+                print(f"{node['name']}: {node['total_ticks']} ticks, {node['errors_count']} errors")
         """
         if self._scheduler:
             return self._scheduler.get_all_nodes()
@@ -1036,31 +1240,6 @@ class Scheduler:
         if self._scheduler:
             return self._scheduler.safety_stats()
         return None
-
-    def circuit_state(self, node_name: str) -> Optional[str]:
-        """
-        Get circuit breaker state for a specific node.
-
-        Args:
-            node_name: Name of the node
-
-        Returns:
-            "closed", "open", or "half_open". None if node not found.
-        """
-        if self._scheduler:
-            return self._scheduler.circuit_state(node_name)
-        return None
-
-    def circuit_summary(self) -> Dict[str, int]:
-        """
-        Get circuit breaker summary across all nodes.
-
-        Returns:
-            Dict with keys: closed, open, half_open (counts)
-        """
-        if self._scheduler:
-            return self._scheduler.circuit_summary()
-        return {"closed": 0, "open": 0, "half_open": 0}
 
     # ========================================================================
     # Recording
@@ -1250,6 +1429,89 @@ except ImportError:
         Imu = _RustImu
         Odometry = _RustOdometry
         LaserScan = _RustLaserScan
+        Pose3D = _RustPose3D
+        JointState = _RustJointState
+        Clock = _RustClock
+        TimeReference = _RustTimeReference
+        Twist = _RustTwist
+        Vector3 = _RustVector3
+        Point3 = _RustPoint3
+        Quaternion = _RustQuaternion
+        TransformStamped = _RustTransformStamped
+        PoseStamped = _RustPoseStamped
+        PoseWithCovariance = _RustPoseWithCovariance
+        TwistWithCovariance = _RustTwistWithCovariance
+        Accel = _RustAccel
+        AccelStamped = _RustAccelStamped
+        MotorCommand = _RustMotorCommand
+        ServoCommand = _RustServoCommand
+        DifferentialDriveCommand = _RustDifferentialDriveCommand
+        PidConfig = _RustPidConfig
+        TrajectoryPoint = _RustTrajectoryPoint
+        JointCommand = _RustJointCommand
+        PwmCommand = _RustPwmCommand
+        StepperCommand = _RustStepperCommand
+        RangeSensor = _RustRangeSensor
+        BatteryState = _RustBatteryState
+        NavSatFix = _RustNavSatFix
+        MagneticField = _RustMagneticField
+        Temperature = _RustTemperature
+        FluidPressure = _RustFluidPressure
+        Illuminance = _RustIlluminance
+        Heartbeat = _RustHeartbeat
+        DiagnosticStatus = _RustDiagnosticStatus
+        EmergencyStop = _RustEmergencyStop
+        ResourceUsage = _RustResourceUsage
+        WrenchStamped = _RustWrenchStamped
+        ForceCommand = _RustForceCommand
+        ContactInfo = _RustContactInfo
+        NavGoal = _RustNavGoal
+        GoalResult = _RustGoalResult
+        PathPlan = _RustPathPlan
+        JoystickInput = _RustJoystickInput
+        KeyboardInput = _RustKeyboardInput
+        BoundingBox2D = _RustBoundingBox2D
+        BoundingBox3D = _RustBoundingBox3D
+        Detection = _RustDetection
+        Detection3D = _RustDetection3D
+        SegmentationMask = _RustSegmentationMask
+        TrackedObject = _RustTrackedObject
+        TrackingHeader = _RustTrackingHeader
+        Landmark = _RustLandmark
+        Landmark3D = _RustLandmark3D
+        LandmarkArray = _RustLandmarkArray
+        PointField = _RustPointField
+        PlaneDetection = _RustPlaneDetection
+        PlaneArray = _RustPlaneArray
+        TensorData = _RustTensorData
+        Predictions = _RustPredictions
+        InferenceMetrics = _RustInferenceMetrics
+        ModelInfo = _RustModelInfo
+        FeatureVector = _RustFeatureVector
+        Classification = _RustClassification
+        ChatMessage = _RustChatMessage
+        LLMRequest = _RustLLMRequest
+        LLMResponse = _RustLLMResponse
+        TrainingMetrics = _RustTrainingMetrics
+        MlTrajectoryPoint = _RustMlTrajectoryPoint
+        DeploymentConfig = _RustDeploymentConfig
+        CompressedImage = _RustCompressedImage
+        CameraInfo = _RustCameraInfo
+        RegionOfInterest = _RustRegionOfInterest
+        StereoInfo = _RustStereoInfo
+        TactileArray = _RustTactileArray
+        ImpedanceParameters = _RustImpedanceParameters
+        HapticFeedback = _RustHapticFeedback
+        DiagnosticValue = _RustDiagnosticValue
+        DiagnosticReport = _RustDiagnosticReport
+        NodeHeartbeat = _RustNodeHeartbeat
+        SafetyStatus = _RustSafetyStatus
+        Waypoint = _RustWaypoint
+        NavPath = _RustNavPath
+        VelocityObstacle = _RustVelocityObstacle
+        VelocityObstacles = _RustVelocityObstacles
+        OccupancyGrid = _RustOccupancyGrid
+        CostMap = _RustCostMap
         _has_messages = True
     except NameError:
         # Neither Python library nor Rust classes available
@@ -1261,6 +1523,7 @@ __all__ = [
     "Scheduler",
     "NodeState",
     "Topic",  # Unified communication API
+    "Miss",  # Deadline miss policy enum
     "run",
     # Custom message generation
     "msggen",  # horus.msggen module for custom typed messages
@@ -1276,19 +1539,10 @@ __all__ = [
     # Simple async API
     "AsyncNode",
     "AsyncTopic",
-    "sleep",
-    "gather",
-    "wait_for",
-    # ML utilities
-    "MLNodeBase",
-    "PyTorchInferenceNode",
-    "TensorFlowInferenceNode",
-    "ONNXInferenceNode",
-    "PerformanceMonitor",
-    "preprocess_image_imagenet",
-    "preprocess_image_yolo",
-    "nms",
-    "calculate_iou",
+    # Structured error types
+    "HorusNotFoundError",
+    "HorusTransformError",
+    "HorusTimeoutError",
 ]
 
 # Use Rust native message classes for zero-copy IPC only if the Python library
@@ -1300,34 +1554,183 @@ if not _has_messages:
         Imu = _RustImu
         Odometry = _RustOdometry
         LaserScan = _RustLaserScan
+        Pose3D = _RustPose3D
+        JointState = _RustJointState
+        Clock = _RustClock
+        TimeReference = _RustTimeReference
+        Twist = _RustTwist
+        Vector3 = _RustVector3
+        Point3 = _RustPoint3
+        Quaternion = _RustQuaternion
+        TransformStamped = _RustTransformStamped
+        PoseStamped = _RustPoseStamped
+        PoseWithCovariance = _RustPoseWithCovariance
+        TwistWithCovariance = _RustTwistWithCovariance
+        Accel = _RustAccel
+        AccelStamped = _RustAccelStamped
+        MotorCommand = _RustMotorCommand
+        ServoCommand = _RustServoCommand
+        DifferentialDriveCommand = _RustDifferentialDriveCommand
+        PidConfig = _RustPidConfig
+        TrajectoryPoint = _RustTrajectoryPoint
+        JointCommand = _RustJointCommand
+        PwmCommand = _RustPwmCommand
+        StepperCommand = _RustStepperCommand
+        RangeSensor = _RustRangeSensor
+        BatteryState = _RustBatteryState
+        NavSatFix = _RustNavSatFix
+        MagneticField = _RustMagneticField
+        Temperature = _RustTemperature
+        FluidPressure = _RustFluidPressure
+        Illuminance = _RustIlluminance
+        Heartbeat = _RustHeartbeat
+        DiagnosticStatus = _RustDiagnosticStatus
+        EmergencyStop = _RustEmergencyStop
+        ResourceUsage = _RustResourceUsage
+        WrenchStamped = _RustWrenchStamped
+        ForceCommand = _RustForceCommand
+        ContactInfo = _RustContactInfo
+        NavGoal = _RustNavGoal
+        GoalResult = _RustGoalResult
+        PathPlan = _RustPathPlan
+        JoystickInput = _RustJoystickInput
+        KeyboardInput = _RustKeyboardInput
+        BoundingBox2D = _RustBoundingBox2D
+        BoundingBox3D = _RustBoundingBox3D
+        Detection = _RustDetection
+        Detection3D = _RustDetection3D
+        SegmentationMask = _RustSegmentationMask
+        TrackedObject = _RustTrackedObject
+        TrackingHeader = _RustTrackingHeader
+        Landmark = _RustLandmark
+        Landmark3D = _RustLandmark3D
+        LandmarkArray = _RustLandmarkArray
+        PointField = _RustPointField
+        PlaneDetection = _RustPlaneDetection
+        PlaneArray = _RustPlaneArray
+        TensorData = _RustTensorData
+        Predictions = _RustPredictions
+        InferenceMetrics = _RustInferenceMetrics
+        ModelInfo = _RustModelInfo
+        FeatureVector = _RustFeatureVector
+        Classification = _RustClassification
+        ChatMessage = _RustChatMessage
+        LLMRequest = _RustLLMRequest
+        LLMResponse = _RustLLMResponse
+        TrainingMetrics = _RustTrainingMetrics
+        MlTrajectoryPoint = _RustMlTrajectoryPoint
+        DeploymentConfig = _RustDeploymentConfig
+        CompressedImage = _RustCompressedImage
+        CameraInfo = _RustCameraInfo
+        RegionOfInterest = _RustRegionOfInterest
+        StereoInfo = _RustStereoInfo
+        TactileArray = _RustTactileArray
+        ImpedanceParameters = _RustImpedanceParameters
+        HapticFeedback = _RustHapticFeedback
+        DiagnosticValue = _RustDiagnosticValue
+        DiagnosticReport = _RustDiagnosticReport
+        NodeHeartbeat = _RustNodeHeartbeat
+        SafetyStatus = _RustSafetyStatus
+        Waypoint = _RustWaypoint
+        NavPath = _RustNavPath
+        VelocityObstacle = _RustVelocityObstacle
+        VelocityObstacles = _RustVelocityObstacles
+        OccupancyGrid = _RustOccupancyGrid
+        CostMap = _RustCostMap
         _has_messages = True
     except NameError:
         pass
 
 # Import simple async API
-from .async_node import AsyncNode, AsyncTopic, sleep, gather, wait_for
-
-# Import ML utilities
-from .ml_utils import (
-    MLNodeBase,
-    PyTorchInferenceNode,
-    TensorFlowInferenceNode,
-    ONNXInferenceNode,
-    PerformanceMonitor,
-    preprocess_image_imagenet,
-    preprocess_image_yolo,
-    nms,
-    calculate_iou,
-)
-
-
-# NOTE: Topic is the unified communication API (replaces deprecated Hub/Link)
+from .async_node import AsyncNode, AsyncTopic
 
 # Import custom message generator module
 from . import msggen
 
 # Import AI/ML submodule (horus.ai)
 from . import ai
+
+# Always expose Rust-native types that have no horus.library Python equivalent.
+# These are available whether or not horus.library is installed.
+try:
+    Pose3D = _RustPose3D
+    JointState = _RustJointState
+    Clock = _RustClock
+    TimeReference = _RustTimeReference
+    TransformStamped = _RustTransformStamped
+    PoseStamped = _RustPoseStamped
+    PoseWithCovariance = _RustPoseWithCovariance
+    TwistWithCovariance = _RustTwistWithCovariance
+    Accel = _RustAccel
+    AccelStamped = _RustAccelStamped
+    TrajectoryPoint = _RustTrajectoryPoint
+    JointCommand = _RustJointCommand
+    # Sensor types only in Rust
+    MagneticField = _RustMagneticField
+    Temperature = _RustTemperature
+    FluidPressure = _RustFluidPressure
+    Illuminance = _RustIlluminance
+    RangeSensor = _RustRangeSensor
+    # Diagnostics types only in Rust
+    DiagnosticStatus = _RustDiagnosticStatus
+    # Force/Nav/Input types only in Rust
+    WrenchStamped = _RustWrenchStamped
+    ForceCommand = _RustForceCommand
+    ContactInfo = _RustContactInfo
+    NavGoal = _RustNavGoal
+    GoalResult = _RustGoalResult
+    PathPlan = _RustPathPlan
+    # Detection/Perception types only in Rust
+    BoundingBox2D = _RustBoundingBox2D
+    BoundingBox3D = _RustBoundingBox3D
+    Detection = _RustDetection
+    Detection3D = _RustDetection3D
+    SegmentationMask = _RustSegmentationMask
+    TrackedObject = _RustTrackedObject
+    TrackingHeader = _RustTrackingHeader
+    Landmark = _RustLandmark
+    Landmark3D = _RustLandmark3D
+    LandmarkArray = _RustLandmarkArray
+    # Perception helper types only in Rust
+    PointField = _RustPointField
+    PlaneDetection = _RustPlaneDetection
+    PlaneArray = _RustPlaneArray
+    # ML types only in Rust
+    TensorData = _RustTensorData
+    Predictions = _RustPredictions
+    InferenceMetrics = _RustInferenceMetrics
+    ModelInfo = _RustModelInfo
+    FeatureVector = _RustFeatureVector
+    Classification = _RustClassification
+    ChatMessage = _RustChatMessage
+    LLMRequest = _RustLLMRequest
+    LLMResponse = _RustLLMResponse
+    TrainingMetrics = _RustTrainingMetrics
+    MlTrajectoryPoint = _RustMlTrajectoryPoint
+    DeploymentConfig = _RustDeploymentConfig
+    # Vision types only in Rust
+    CompressedImage = _RustCompressedImage
+    CameraInfo = _RustCameraInfo
+    RegionOfInterest = _RustRegionOfInterest
+    StereoInfo = _RustStereoInfo
+    # Force types (additional) only in Rust
+    TactileArray = _RustTactileArray
+    ImpedanceParameters = _RustImpedanceParameters
+    HapticFeedback = _RustHapticFeedback
+    # Diagnostics types (additional) only in Rust
+    DiagnosticValue = _RustDiagnosticValue
+    DiagnosticReport = _RustDiagnosticReport
+    NodeHeartbeat = _RustNodeHeartbeat
+    SafetyStatus = _RustSafetyStatus
+    # Navigation types (additional) only in Rust
+    Waypoint = _RustWaypoint
+    NavPath = _RustNavPath
+    VelocityObstacle = _RustVelocityObstacle
+    VelocityObstacles = _RustVelocityObstacles
+    OccupancyGrid = _RustOccupancyGrid
+    CostMap = _RustCostMap
+except NameError:
+    pass
 
 # Add message types to __all__ if available
 if _has_messages:
@@ -1338,7 +1741,12 @@ if _has_messages:
         "Point3",
         "Vector3",
         "Quaternion",
-        "Transform",
+        "TransformStamped",
+        "PoseStamped",
+        "PoseWithCovariance",
+        "TwistWithCovariance",
+        "Accel",
+        "AccelStamped",
         # Control messages
         "CmdVel",
         "MotorCommand",
@@ -1347,21 +1755,90 @@ if _has_messages:
         "PwmCommand",
         "StepperCommand",
         "PidConfig",
+        "TrajectoryPoint",
+        "JointCommand",
         # Sensor messages
         "LaserScan",
         "Imu",
         "BatteryState",
         "NavSatFix",
         "Odometry",
-        "Range",
+        "Pose3D",
+        "JointState",
+        "Clock",
+        "TimeReference",
+        "RangeSensor",
+        "MagneticField",
+        "Temperature",
+        "FluidPressure",
+        "Illuminance",
         # Diagnostics messages
-        "Status",
         "EmergencyStop",
         "Heartbeat",
         "ResourceUsage",
+        "DiagnosticStatus",
+        # Force types
+        "WrenchStamped",
+        "ForceCommand",
+        "ContactInfo",
+        # Navigation types
+        "NavGoal",
+        "GoalResult",
+        "PathPlan",
         # Input messages
         "JoystickInput",
         "KeyboardInput",
+        # Detection/Perception types
+        "BoundingBox2D",
+        "BoundingBox3D",
+        "Detection",
+        "Detection3D",
+        "SegmentationMask",
+        # Tracking types
+        "TrackedObject",
+        "TrackingHeader",
+        # Landmark types
+        "Landmark",
+        "Landmark3D",
+        "LandmarkArray",
+        # Perception helper types
+        "PointField",
+        "PlaneDetection",
+        "PlaneArray",
+        # ML types
+        "TensorData",
+        "Predictions",
+        "InferenceMetrics",
+        "ModelInfo",
+        "FeatureVector",
+        "Classification",
+        "ChatMessage",
+        "LLMRequest",
+        "LLMResponse",
+        "TrainingMetrics",
+        "MlTrajectoryPoint",
+        "DeploymentConfig",
+        # Vision types
+        "CompressedImage",
+        "CameraInfo",
+        "RegionOfInterest",
+        "StereoInfo",
+        # Force types (additional)
+        "TactileArray",
+        "ImpedanceParameters",
+        "HapticFeedback",
+        # Diagnostics types (additional)
+        "DiagnosticValue",
+        "DiagnosticReport",
+        "NodeHeartbeat",
+        "SafetyStatus",
+        # Navigation types (additional)
+        "Waypoint",
+        "NavPath",
+        "VelocityObstacle",
+        "VelocityObstacles",
+        "OccupancyGrid",
+        "CostMap",
         # I/O messages
         "DigitalIO",
         "AnalogIO",

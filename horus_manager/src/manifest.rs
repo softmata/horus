@@ -1,8 +1,8 @@
 //! Typed manifest for HORUS projects (`horus.toml`).
 //!
-//! This module is the **single source of truth** for the manifest schema.
-//! Every command that needs project metadata loads a [`HorusManifest`] via
-//! [`HorusManifest::find_and_load`] or [`HorusManifest::load_from`].
+//! `horus.toml` is a **config-only** manifest for horus-specific settings.
+//! Dependencies live in native build files (`Cargo.toml`, `pyproject.toml`).
+//! Language is auto-detected from which build files exist in the project.
 //!
 //! ## File format
 //!
@@ -11,19 +11,21 @@
 //! name = "my-robot"
 //! version = "0.1.0"
 //! description = "A mobile robot controller"
-//! language = "rust"
+//! package-type = "node"
+//! categories = ["robotics", "navigation"]
 //!
-//! [dependencies]
-//! horus = "^0.2"
-//! numpy = { version = "^1.24", source = "pypi" }
+//! [drivers]
+//! camera = "opencv"
+//! lidar = "rplidar-a2"
 //!
-//! [dev-dependencies]
-//! proptest = "^1.4"
+//! [ignore]
+//! files = ["debug_*.py"]
+//!
+//! enable = ["cuda"]
 //! ```
 
 use anyhow::{anyhow, Context, Result};
 use colored::*;
-use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -33,52 +35,96 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "schema")]
 use schemars::JsonSchema;
 
-use crate::dependency_resolver::{DependencySource, DependencySpec};
-
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Primary manifest filename (new format).
+/// Primary manifest filename.
 pub const HORUS_TOML: &str = "horus.toml";
 
+// ─── Language detection ──────────────────────────────────────────────────────
+
+/// Project language, auto-detected from native build files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    Rust,
+    Python,
+    Cpp,
+    Ros2,
+}
+
+impl fmt::Display for Language {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rust => write!(f, "rust"),
+            Self::Python => write!(f, "python"),
+            Self::Cpp => write!(f, "cpp"),
+            Self::Ros2 => write!(f, "ros2"),
+        }
+    }
+}
+
+/// Detect project languages from native build files in the given directory.
+///
+/// Returns all detected languages. An empty Vec means no recognized build files exist.
+pub fn detect_languages(project_dir: &Path) -> Vec<Language> {
+    let mut languages = Vec::new();
+
+    if project_dir.join("Cargo.toml").exists() {
+        languages.push(Language::Rust);
+    }
+    if project_dir.join("pyproject.toml").exists()
+        || project_dir.join("setup.py").exists()
+        || project_dir.join("requirements.txt").exists()
+    {
+        languages.push(Language::Python);
+    }
+    if project_dir.join("CMakeLists.txt").exists() {
+        languages.push(Language::Cpp);
+    }
+    if project_dir.join("package.xml").exists() {
+        languages.push(Language::Ros2);
+    }
+
+    languages
+}
+
+/// Detect languages or return an error with a helpful message.
+pub fn detect_languages_or_error(project_dir: &Path) -> Result<Vec<Language>> {
+    let languages = detect_languages(project_dir);
+    if languages.is_empty() {
+        Err(anyhow!(
+            "No build files found in {}. Expected one of: {}, {}, {}, {}",
+            project_dir.display(),
+            "Cargo.toml".cyan(),
+            "pyproject.toml".cyan(),
+            "CMakeLists.txt".cyan(),
+            "package.xml".cyan(),
+        ))
+    } else {
+        Ok(languages)
+    }
+}
 
 // ─── Top-level manifest ─────────────────────────────────────────────────────
 
 /// The typed representation of a `horus.toml` manifest.
+///
+/// Contains horus-specific config only. Dependencies live in native build files
+/// (`Cargo.toml`, `pyproject.toml`, etc.).
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HorusManifest {
-    /// `[package]` — project metadata.
+    /// `[package]` -- project metadata.
     pub package: PackageInfo,
 
-    /// `[dependencies]` — runtime dependencies.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub dependencies: BTreeMap<String, DependencyValue>,
-
-    /// `[dev-dependencies]` — test/dev-only dependencies.
-    #[serde(
-        default,
-        rename = "dev-dependencies",
-        skip_serializing_if = "BTreeMap::is_empty"
-    )]
-    pub dev_dependencies: BTreeMap<String, DependencyValue>,
-
-    /// `[build-dependencies]` — build-time only dependencies.
-    #[serde(
-        default,
-        rename = "build-dependencies",
-        skip_serializing_if = "BTreeMap::is_empty"
-    )]
-    pub build_dependencies: BTreeMap<String, DependencyValue>,
-
-    /// `[drivers]` — hardware driver configuration.
+    /// `[drivers]` -- hardware driver configuration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drivers: BTreeMap<String, DriverValue>,
 
-    /// `[ignore]` — patterns to exclude during scanning.
+    /// `[ignore]` -- patterns to exclude during scanning.
     #[serde(default, skip_serializing_if = "IgnoreConfig::is_empty")]
     pub ignore: IgnoreConfig,
 
-    /// `enable = ["cuda", "editor"]` — capabilities to enable.
+    /// `enable = ["cuda", "editor"]` -- capabilities to enable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enable: Vec<String>,
 }
@@ -107,12 +153,11 @@ pub struct PackageInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
 
-    /// Primary language: `"rust"` or `"python"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
-
     /// Manifest schema edition for forward compatibility.
-    #[serde(default = "default_edition", skip_serializing_if = "is_default_edition")]
+    #[serde(
+        default = "default_edition",
+        skip_serializing_if = "is_default_edition"
+    )]
     pub edition: String,
 
     /// Source code repository URL.
@@ -120,7 +165,11 @@ pub struct PackageInfo {
     pub repository: Option<String>,
 
     /// Package type for the registry.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "package-type")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "package-type"
+    )]
     pub package_type: Option<PackageType>,
 
     /// Registry categories (comma-separated or array).
@@ -164,91 +213,6 @@ impl fmt::Display for PackageType {
     }
 }
 
-// ─── Dependency values ──────────────────────────────────────────────────────
-
-/// A dependency specification in the manifest.
-///
-/// Two forms:
-/// - **Simple**: `horus = "^0.2"` → [`DependencyValue::Simple`]
-/// - **Detailed**: `numpy = { version = "^1.24", source = "pypi" }` → [`DependencyValue::Detailed`]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum DependencyValue {
-    /// Version requirement string, e.g. `"^0.2"`, `"*"`, `"1.0"`.
-    Simple(String),
-
-    /// Structured dependency with optional source, path, git, features, etc.
-    Detailed(DetailedDependency),
-}
-
-/// Structured dependency with all possible fields.
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetailedDependency {
-    /// Version requirement (e.g., `"^1.24"`). Optional for path/git deps.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-
-    /// Dependency source override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<DepSource>,
-
-    /// Local filesystem path (relative to manifest directory).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-
-    /// Git repository URL.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git: Option<String>,
-
-    /// Git branch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-
-    /// Git tag.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
-
-    /// Git revision (commit hash).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rev: Option<String>,
-
-    /// Crate/package features to enable.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub features: Vec<String>,
-
-    /// Target platform filter (e.g., `"linux-x86_64"`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-}
-
-/// Dependency source identifier.
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DepSource {
-    /// HORUS registry (default).
-    Registry,
-    /// Python Package Index.
-    Pypi,
-    /// Rust crates.io.
-    CratesIo,
-    /// System package manager (apt, brew, etc.).
-    System,
-}
-
-impl fmt::Display for DepSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Registry => write!(f, "registry"),
-            Self::Pypi => write!(f, "pypi"),
-            Self::CratesIo => write!(f, "crates-io"),
-            Self::System => write!(f, "system"),
-        }
-    }
-}
-
 // ─── Driver values ──────────────────────────────────────────────────────────
 
 /// Driver configuration value.
@@ -267,7 +231,7 @@ pub enum DriverValue {
 
 // ─── [ignore] ───────────────────────────────────────────────────────────────
 
-/// Patterns to exclude during file scanning and dependency resolution.
+/// Patterns to exclude during file scanning.
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IgnoreConfig {
@@ -287,83 +251,6 @@ pub struct IgnoreConfig {
 impl IgnoreConfig {
     pub fn is_empty(&self) -> bool {
         self.files.is_empty() && self.directories.is_empty() && self.packages.is_empty()
-    }
-}
-
-// ─── Conversion: DependencyValue → DependencySpec ───────────────────────────
-
-impl DependencyValue {
-    /// Convert a named dependency value into a [`DependencySpec`] for the resolver.
-    pub fn to_spec(&self, name: &str) -> Result<DependencySpec> {
-        // Special case: horus_py always maps to pip:horus-robotics
-        if name == "horus_py" {
-            return Ok(DependencySpec {
-                name: "horus_py".to_string(),
-                requirement: VersionReq::STAR,
-                source: DependencySource::Pip {
-                    package_name: "horus-robotics".to_string(),
-                },
-                target: None,
-            });
-        }
-
-        match self {
-            DependencyValue::Simple(version_str) => {
-                let requirement = parse_version_req(version_str)?;
-                Ok(DependencySpec {
-                    name: name.to_string(),
-                    requirement,
-                    source: DependencySource::Registry,
-                    target: None,
-                })
-            }
-
-            DependencyValue::Detailed(detail) => {
-                let requirement = if let Some(ref v) = detail.version {
-                    parse_version_req(v)?
-                } else {
-                    VersionReq::STAR
-                };
-
-                let source = if let Some(ref path_str) = detail.path {
-                    DependencySource::Path(PathBuf::from(path_str))
-                } else if let Some(ref git_url) = detail.git {
-                    DependencySource::Git {
-                        url: git_url.clone(),
-                        branch: detail.branch.clone(),
-                        tag: detail.tag.clone(),
-                        rev: detail.rev.clone(),
-                    }
-                } else if let Some(ref src) = detail.source {
-                    match src {
-                        DepSource::Registry => DependencySource::Registry,
-                        DepSource::Pypi => DependencySource::Pip {
-                            package_name: name.to_string(),
-                        },
-                        DepSource::CratesIo => DependencySource::CratesIO,
-                        DepSource::System => DependencySource::System,
-                    }
-                } else {
-                    DependencySource::Registry
-                };
-
-                Ok(DependencySpec {
-                    name: name.to_string(),
-                    requirement,
-                    source,
-                    target: detail.target.clone(),
-                })
-            }
-        }
-    }
-}
-
-/// Parse a version requirement string, treating `"latest"` and `"*"` as `VersionReq::STAR`.
-fn parse_version_req(s: &str) -> Result<VersionReq> {
-    if s == "latest" || s == "*" {
-        Ok(VersionReq::STAR)
-    } else {
-        VersionReq::parse(s).map_err(|e| anyhow!("Invalid version constraint '{}': {}", s, e))
     }
 }
 
@@ -418,50 +305,17 @@ impl HorusManifest {
         ))
     }
 
-    /// Convert all `[dependencies]` to `Vec<DependencySpec>` for the resolver.
-    pub fn dependencies_as_specs(&self) -> Result<Vec<DependencySpec>> {
-        self.deps_to_specs(&self.dependencies)
-    }
-
-    /// Convert all `[dev-dependencies]` to `Vec<DependencySpec>`.
-    pub fn dev_dependencies_as_specs(&self) -> Result<Vec<DependencySpec>> {
-        self.deps_to_specs(&self.dev_dependencies)
-    }
-
-    /// Convert all `[build-dependencies]` to `Vec<DependencySpec>`.
-    pub fn build_dependencies_as_specs(&self) -> Result<Vec<DependencySpec>> {
-        self.deps_to_specs(&self.build_dependencies)
-    }
-
-    /// Convert all dependencies (runtime + dev) to specs. Used by `horus run` and `horus test`.
-    pub fn all_dependencies_as_specs(&self) -> Result<Vec<DependencySpec>> {
-        let mut specs = self.dependencies_as_specs()?;
-        specs.extend(self.dev_dependencies_as_specs()?);
-        Ok(specs)
-    }
-
-    fn deps_to_specs(&self, deps: &BTreeMap<String, DependencyValue>) -> Result<Vec<DependencySpec>> {
-        deps.iter()
-            .map(|(name, value)| {
-                value
-                    .to_spec(name)
-                    .with_context(|| format!("Invalid dependency '{}'", name))
-            })
-            .collect()
-    }
-
     /// Save manifest as TOML to a file path.
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize manifest to TOML")?;
-        fs::write(path, content)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        let content =
+            toml::to_string_pretty(self).context("Failed to serialize manifest to TOML")?;
+        fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
         Ok(())
     }
 
     // ── Validation ──────────────────────────────────────────────────────
 
-    /// Validate the manifest and return all errors (not fail-fast).
+    /// Validate the manifest and return warnings (errors are returned as Err).
     pub fn validate(&self) -> Result<Vec<String>> {
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
@@ -475,7 +329,14 @@ impl HorusManifest {
         }
 
         // Check for valid characters
-        if !self.package.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '@' || c == '/') {
+        if !self.package.name.chars().all(|c| {
+            c.is_ascii_lowercase()
+                || c.is_ascii_digit()
+                || c == '-'
+                || c == '_'
+                || c == '@'
+                || c == '/'
+        }) {
             errors.push(format!(
                 "Package name '{}' must contain only lowercase letters, digits, hyphens, and underscores",
                 self.package.name
@@ -484,14 +345,11 @@ impl HorusManifest {
 
         // Reserved names
         let reserved = [
-            "horus", "core", "std", "lib", "test", "main", "admin", "api",
-            "root", "system", "internal", "config", "setup", "install",
+            "horus", "core", "std", "lib", "test", "main", "admin", "api", "root", "system",
+            "internal", "config", "setup", "install",
         ];
         if reserved.contains(&self.package.name.as_str()) {
-            errors.push(format!(
-                "Package name '{}' is reserved",
-                self.package.name
-            ));
+            errors.push(format!("Package name '{}' is reserved", self.package.name));
         }
 
         // Version validation
@@ -512,23 +370,6 @@ impl HorusManifest {
             ));
         }
 
-        // Dependency validation
-        for (name, value) in &self.dependencies {
-            if let Err(e) = value.to_spec(name) {
-                errors.push(format!("[dependencies] {}: {}", name, e));
-            }
-        }
-        for (name, value) in &self.dev_dependencies {
-            if let Err(e) = value.to_spec(name) {
-                errors.push(format!("[dev-dependencies] {}: {}", name, e));
-            }
-        }
-        for (name, value) in &self.build_dependencies {
-            if let Err(e) = value.to_spec(name) {
-                errors.push(format!("[build-dependencies] {}: {}", name, e));
-            }
-        }
-
         if !errors.is_empty() {
             let msg = errors
                 .iter()
@@ -541,89 +382,6 @@ impl HorusManifest {
 
         Ok(warnings)
     }
-}
-
-// ─── Manifest editing with toml_edit (preserves comments) ───────────────────
-
-/// Add a dependency to a manifest file, preserving comments and formatting.
-pub fn add_dependency_to_file(
-    manifest_path: &Path,
-    name: &str,
-    value: &DependencyValue,
-    section: &str, // "dependencies", "dev-dependencies", or "build-dependencies"
-) -> Result<()> {
-    let content = fs::read_to_string(manifest_path)
-        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
-    let mut doc = content
-        .parse::<toml_edit::DocumentMut>()
-        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
-
-    // Ensure section exists
-    if doc.get(section).is_none() {
-        doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-
-    // Insert dependency
-    match value {
-        DependencyValue::Simple(version) => {
-            doc[section][name] = toml_edit::value(version.as_str());
-        }
-        DependencyValue::Detailed(detail) => {
-            let mut table = toml_edit::InlineTable::new();
-            if let Some(ref v) = detail.version {
-                table.insert("version", v.as_str().into());
-            }
-            if let Some(ref s) = detail.source {
-                table.insert("source", s.to_string().as_str().into());
-            }
-            if let Some(ref p) = detail.path {
-                table.insert("path", p.as_str().into());
-            }
-            if let Some(ref g) = detail.git {
-                table.insert("git", g.as_str().into());
-            }
-            if let Some(ref b) = detail.branch {
-                table.insert("branch", b.as_str().into());
-            }
-            if let Some(ref t) = detail.tag {
-                table.insert("tag", t.as_str().into());
-            }
-            if let Some(ref r) = detail.rev {
-                table.insert("rev", r.as_str().into());
-            }
-            doc[section][name] = toml_edit::value(table);
-        }
-    }
-
-    fs::write(manifest_path, doc.to_string())
-        .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
-    Ok(())
-}
-
-/// Remove a dependency from a manifest file, preserving comments and formatting.
-pub fn remove_dependency_from_file(
-    manifest_path: &Path,
-    name: &str,
-    section: &str,
-) -> Result<bool> {
-    let content = fs::read_to_string(manifest_path)
-        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
-    let mut doc = content
-        .parse::<toml_edit::DocumentMut>()
-        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
-
-    let removed = if let Some(table) = doc.get_mut(section).and_then(|v| v.as_table_mut()) {
-        table.remove(name).is_some()
-    } else {
-        false
-    };
-
-    if removed {
-        fs::write(manifest_path, doc.to_string())
-            .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
-    }
-
-    Ok(removed)
 }
 
 // ─── Schema generation ──────────────────────────────────────────────────────
@@ -643,7 +401,7 @@ fn schema_generation_works() {
     let schema = generate_manifest_schema();
     assert!(schema.contains("HorusManifest"));
     assert!(schema.contains("package"));
-    assert!(schema.contains("dependencies"));
+    assert!(schema.contains("drivers"));
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -665,41 +423,25 @@ version = "0.1.0"
         assert_eq!(manifest.package.name, "my-robot");
         assert_eq!(manifest.package.version, "0.1.0");
         assert_eq!(manifest.package.edition, "1");
-        assert!(manifest.dependencies.is_empty());
+        assert!(manifest.drivers.is_empty());
+        assert!(manifest.enable.is_empty());
     }
 
     #[test]
     fn parse_full_toml() {
         let toml = r#"
+enable = ["cuda", "editor"]
+
 [package]
 name = "advanced-robot"
 version = "1.0.0"
 description = "A mobile robot controller"
 authors = ["Jane Doe <jane@example.com>"]
 license = "Apache-2.0"
-language = "rust"
 edition = "1"
 repository = "https://github.com/org/robot"
 package-type = "node"
 categories = ["robotics", "navigation"]
-
-[dependencies]
-horus = "^0.2"
-horus_library = "^0.2"
-
-[dependencies.numpy]
-version = "^1.24"
-source = "pypi"
-
-[dependencies.my-driver]
-path = "../drivers/my-driver"
-
-[dependencies.my-algo]
-git = "https://github.com/org/algo.git"
-tag = "v2.0"
-
-[dev-dependencies]
-proptest = "^1.4"
 
 [drivers]
 camera = "opencv"
@@ -713,170 +455,32 @@ packages = ["ipython"]
         let manifest: HorusManifest = toml::from_str(toml).unwrap();
         assert_eq!(manifest.package.name, "advanced-robot");
         assert_eq!(manifest.package.package_type, Some(PackageType::Node));
-        assert_eq!(manifest.dependencies.len(), 5); // horus, horus_library, numpy, my-driver, my-algo
-        assert_eq!(manifest.dev_dependencies.len(), 1);
+        assert_eq!(manifest.package.categories, vec!["robotics", "navigation"]);
         assert_eq!(manifest.drivers.len(), 2);
         assert_eq!(manifest.ignore.files.len(), 1);
+        assert_eq!(manifest.ignore.directories.len(), 1);
+        assert_eq!(manifest.ignore.packages.len(), 1);
+        assert_eq!(manifest.enable, vec!["cuda", "editor"]);
     }
 
     #[test]
-    fn parse_simple_dependency() {
+    fn parse_drivers_both_forms() {
         let toml = r#"
 [package]
 name = "test"
 version = "0.1.0"
 
-[dependencies]
-horus = "^0.2"
+[drivers]
+camera = "opencv"
+gps = true
 "#;
         let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "horus");
-        assert_eq!(specs[0].source, DependencySource::Registry);
-    }
-
-    #[test]
-    fn parse_detailed_pypi_dependency() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies.numpy]
-version = "^1.24"
-source = "pypi"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "numpy");
-        assert!(matches!(specs[0].source, DependencySource::Pip { .. }));
-    }
-
-    #[test]
-    fn parse_path_dependency() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies.my-driver]
-path = "../drivers/my-driver"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert!(matches!(specs[0].source, DependencySource::Path(_)));
-    }
-
-    #[test]
-    fn parse_git_dependency() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies.my-algo]
-git = "https://github.com/org/algo.git"
-branch = "main"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert!(matches!(specs[0].source, DependencySource::Git { .. }));
-    }
-
-    #[test]
-    fn parse_crates_io_dependency() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies.serde]
-version = "1.0"
-source = "crates-io"
-features = ["derive"]
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].source, DependencySource::CratesIO);
-    }
-
-    #[test]
-    fn parse_system_dependency() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies.libusb]
-source = "system"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].source, DependencySource::System);
-    }
-
-    #[test]
-    fn parse_star_and_latest_versions() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies]
-a = "*"
-b = "latest"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].requirement, VersionReq::STAR);
-        assert_eq!(specs[1].requirement, VersionReq::STAR);
-    }
-
-    #[test]
-    fn horus_py_special_case() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies]
-horus_py = "*"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        let specs = manifest.dependencies_as_specs().unwrap();
-        assert_eq!(specs[0].name, "horus_py");
+        assert_eq!(manifest.drivers.len(), 2);
+        assert!(matches!(manifest.drivers["camera"], DriverValue::Backend(ref s) if s == "opencv"));
         assert!(matches!(
-            specs[0].source,
-            DependencySource::Pip { ref package_name } if package_name == "horus-robotics"
+            manifest.drivers["gps"],
+            DriverValue::Enabled(true)
         ));
-    }
-
-    #[test]
-    fn dev_dependencies_separate() {
-        let toml = r#"
-[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies]
-horus = "^0.2"
-
-[dev-dependencies]
-proptest = "^1.4"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        assert_eq!(manifest.dependencies.len(), 1);
-        assert_eq!(manifest.dev_dependencies.len(), 1);
-
-        let all = manifest.all_dependencies_as_specs().unwrap();
-        assert_eq!(all.len(), 2);
     }
 
     // ── Validation ──────────────────────────────────────────────────────
@@ -925,20 +529,6 @@ version = "not-semver"
         assert!(manifest.validate().is_err());
     }
 
-    #[test]
-    fn validate_rejects_bad_dependency() {
-        let toml = r#"
-[package]
-name = "my-robot"
-version = "0.1.0"
-
-[dependencies]
-bad-dep = "not>>a>>version"
-"#;
-        let manifest: HorusManifest = toml::from_str(toml).unwrap();
-        assert!(manifest.validate().is_err());
-    }
-
     // ── Round-trip ──────────────────────────────────────────────────────
 
     #[test]
@@ -950,79 +540,31 @@ bad-dep = "not>>a>>version"
                 description: Some("A test project".to_string()),
                 authors: vec!["Test Author".to_string()],
                 license: Some("MIT".to_string()),
-                language: Some("rust".to_string()),
                 edition: "1".to_string(),
                 repository: None,
                 package_type: None,
                 categories: vec![],
             },
-            dependencies: {
-                let mut deps = BTreeMap::new();
-                deps.insert("horus".to_string(), DependencyValue::Simple("^0.2".to_string()));
-                deps
+            drivers: {
+                let mut d = BTreeMap::new();
+                d.insert("camera".into(), DriverValue::Backend("opencv".into()));
+                d
             },
-            dev_dependencies: BTreeMap::new(),
-            build_dependencies: BTreeMap::new(),
-            drivers: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
-            enable: Vec::new(),
+            enable: vec!["cuda".into()],
         };
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();
         let deserialized: HorusManifest = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.package.name, "test-project");
-        assert_eq!(deserialized.dependencies.len(), 1);
-    }
-
-    // ── toml_edit operations ────────────────────────────────────────────
-
-    #[test]
-    fn add_and_remove_dependency() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("horus.toml");
-        fs::write(
-            &path,
-            r#"[package]
-name = "test"
-version = "0.1.0"
-
-[dependencies]
-horus = "^0.2"
-"#,
-        )
-        .unwrap();
-
-        // Add
-        add_dependency_to_file(
-            &path,
-            "numpy",
-            &DependencyValue::Detailed(DetailedDependency {
-                version: Some("^1.24".to_string()),
-                source: Some(DepSource::Pypi),
-                path: None, git: None, branch: None, tag: None, rev: None,
-                features: vec![], target: None,
-            }),
-            "dependencies",
-        )
-        .unwrap();
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("numpy"));
-        assert!(content.contains("horus")); // preserved
-
-        // Remove
-        let removed = remove_dependency_from_file(&path, "numpy", "dependencies").unwrap();
-        assert!(removed);
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(!content.contains("numpy"));
-        assert!(content.contains("horus")); // still preserved
+        assert_eq!(deserialized.drivers.len(), 1);
+        assert_eq!(deserialized.enable, vec!["cuda"]);
     }
 
     // ── E2E lifecycle ─────────────────────────────────────────────────
 
     #[test]
-    fn e2e_lifecycle_create_load_edit_save_reload() {
+    fn e2e_lifecycle_create_load_save_reload() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(HORUS_TOML);
 
@@ -1034,25 +576,11 @@ horus = "^0.2"
                 description: Some("E2E lifecycle test".to_string()),
                 authors: vec![],
                 license: None,
-                language: Some("rust".to_string()),
                 edition: "1".to_string(),
                 repository: None,
-                package_type: None,
-                categories: vec![],
+                package_type: Some(PackageType::Node),
+                categories: vec!["robotics".into()],
             },
-            dependencies: {
-                let mut deps = BTreeMap::new();
-                deps.insert("horus".into(), DependencyValue::Simple("^0.2".into()));
-                deps.insert("serde".into(), DependencyValue::Detailed(DetailedDependency {
-                    version: Some("1.0".into()),
-                    source: Some(DepSource::CratesIo),
-                    features: vec!["derive".into()],
-                    path: None, git: None, branch: None, tag: None, rev: None, target: None,
-                }));
-                deps
-            },
-            dev_dependencies: BTreeMap::new(),
-            build_dependencies: BTreeMap::new(),
             drivers: {
                 let mut d = BTreeMap::new();
                 d.insert("camera".into(), DriverValue::Enabled(true));
@@ -1069,41 +597,116 @@ horus = "^0.2"
         let (loaded, origin) = HorusManifest::load_from(&path).unwrap();
         assert!(matches!(origin, ManifestOrigin::Toml));
         assert_eq!(loaded.package.name, "lifecycle-test");
-        assert_eq!(loaded.dependencies.len(), 2);
         assert_eq!(loaded.drivers.len(), 2);
         assert_eq!(loaded.enable, vec!["cuda"]);
+        assert_eq!(loaded.package.package_type, Some(PackageType::Node));
 
         // 3. Validate
         let warnings = loaded.validate().unwrap();
         assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+    }
 
-        // 4. Convert to DependencySpecs
-        let specs = loaded.dependencies_as_specs().unwrap();
-        assert_eq!(specs.len(), 2);
-        let serde_spec = specs.iter().find(|s| s.name == "serde").unwrap();
-        assert_eq!(serde_spec.source, DependencySource::CratesIO);
+    // ── Language detection ───────────────────────────────────────────────
 
-        // 5. Edit via toml_edit: add a dependency
-        add_dependency_to_file(
-            &path, "tokio",
-            &DependencyValue::Simple("^1.35".into()),
-            "dependencies",
-        ).unwrap();
+    #[test]
+    fn detect_rust_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"\n",
+        )
+        .unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec![Language::Rust]);
+    }
 
-        // 6. Reload and verify edit preserved existing data
-        let (reloaded, _) = HorusManifest::load_from(&path).unwrap();
-        assert_eq!(reloaded.dependencies.len(), 3);
-        assert!(reloaded.dependencies.contains_key("tokio"));
-        assert!(reloaded.dependencies.contains_key("horus"));
-        assert!(reloaded.dependencies.contains_key("serde"));
-        assert_eq!(reloaded.package.description.as_deref(), Some("E2E lifecycle test"));
-        assert_eq!(reloaded.drivers.len(), 2);
+    #[test]
+    fn detect_python_project_pyproject() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"test\"\n",
+        )
+        .unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec![Language::Python]);
+    }
 
-        // 7. Remove a dependency
-        let removed = remove_dependency_from_file(&path, "tokio", "dependencies").unwrap();
-        assert!(removed);
-        let (final_manifest, _) = HorusManifest::load_from(&path).unwrap();
-        assert_eq!(final_manifest.dependencies.len(), 2);
-        assert!(!final_manifest.dependencies.contains_key("tokio"));
+    #[test]
+    fn detect_python_project_requirements() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("requirements.txt"), "numpy\n").unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec![Language::Python]);
+    }
+
+    #[test]
+    fn detect_mixed_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec![Language::Rust, Language::Python]);
+    }
+
+    #[test]
+    fn detect_cpp_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.20)\n",
+        )
+        .unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec![Language::Cpp]);
+    }
+
+    #[test]
+    fn detect_ros2_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.xml"), "<package>\n").unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec![Language::Ros2]);
+    }
+
+    #[test]
+    fn detect_no_build_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let langs = detect_languages(dir.path());
+        assert!(langs.is_empty());
+    }
+
+    #[test]
+    fn detect_languages_or_error_with_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_languages_or_error(dir.path()).is_err());
+    }
+
+    #[test]
+    fn detect_languages_or_error_with_cargo() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let langs = detect_languages_or_error(dir.path()).unwrap();
+        assert_eq!(langs, vec![Language::Rust]);
+    }
+
+    #[test]
+    fn old_format_with_dependencies_silently_ignored() {
+        let old_toml = r#"
+[package]
+name = "my-robot"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+
+[dev-dependencies]
+criterion = "0.5"
+"#;
+        let manifest: HorusManifest = toml::from_str(old_toml).unwrap();
+        assert_eq!(manifest.package.name, "my-robot");
+        assert_eq!(manifest.package.version, "0.1.0");
+        // [dependencies] and [dev-dependencies] are silently ignored — no error
     }
 }

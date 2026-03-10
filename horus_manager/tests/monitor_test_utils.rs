@@ -87,20 +87,14 @@ fn make_test_topic_creates_valid_topic() {
     assert_eq!(topic.size_bytes, 65536);
     assert!(topic.active);
     assert_eq!(topic.accessing_processes.len(), 3);
-    assert_eq!(
-        topic.status,
-        horus_manager::discovery::TopicStatus::Active
-    );
+    assert_eq!(topic.status, horus_manager::discovery::TopicStatus::Active);
 }
 
 #[test]
 fn make_test_topic_inactive() {
     let topic = monitor_tests::helpers::make_test_topic("horus_old_topic", 1024, false, 0);
     assert!(!topic.active);
-    assert_eq!(
-        topic.status,
-        horus_manager::discovery::TopicStatus::Stale
-    );
+    assert_eq!(topic.status, horus_manager::discovery::TopicStatus::Stale);
     assert_eq!(topic.accessing_processes.len(), 0);
 }
 
@@ -135,7 +129,6 @@ fn make_test_blackbox_event_all_types() {
         "scheduler_start",
         "scheduler_stop",
         "node_added",
-        "circuit_breaker",
         "emergency_stop",
         "custom",
     ];
@@ -184,10 +177,7 @@ fn get_request_authed_includes_cookie() {
 
 #[test]
 fn post_json_request_sets_content_type() {
-    let req = monitor_tests::helpers::post_json_request(
-        "/api/login",
-        r#"{"password":"test"}"#,
-    );
+    let req = monitor_tests::helpers::post_json_request("/api/login", r#"{"password":"test"}"#);
     assert_eq!(req.method(), "POST");
     assert!(req
         .headers()
@@ -213,11 +203,7 @@ fn post_json_request_authed_includes_csrf() {
 
 #[test]
 fn delete_request_authed_includes_headers() {
-    let req = monitor_tests::helpers::delete_request_authed(
-        "/api/recordings/old",
-        "sess",
-        "csrf",
-    );
+    let req = monitor_tests::helpers::delete_request_authed("/api/recordings/old", "sess", "csrf");
     assert_eq!(req.method(), "DELETE");
     assert!(req.headers().get("X-CSRF-Token").is_some());
     assert!(req.headers().get("Cookie").is_some());
@@ -371,7 +357,10 @@ async fn auth_router_login_and_access() {
     // works correctly in isolation.
     let req = monitor_tests::helpers::post_json_request(
         "/api/login",
-        &format!(r#"{{"password":"{}"}}"#, monitor_tests::builders::TEST_PASSWORD),
+        &format!(
+            r#"{{"password":"{}"}}"#,
+            monitor_tests::builders::TEST_PASSWORD
+        ),
     );
     let resp = app.clone().oneshot(req).await.unwrap();
     let json = monitor_tests::helpers::assert_json_ok(resp).await;
@@ -391,7 +380,8 @@ async fn auth_router_wrong_password_returns_401() {
         r#"{"password":"wrong_password_here"}"#,
     );
     let resp = app.oneshot(req).await.unwrap();
-    let json = monitor_tests::helpers::assert_json_error(resp, axum::http::StatusCode::UNAUTHORIZED).await;
+    let json =
+        monitor_tests::helpers::assert_json_error(resp, axum::http::StatusCode::UNAUTHORIZED).await;
 
     assert_eq!(json["success"], false);
     assert!(json["session_token"].is_null());
@@ -441,7 +431,10 @@ fn shm_guard_creates_topic_file() {
     assert_eq!(metadata.len(), 4096);
 
     drop(guard);
-    assert!(!path.exists(), "topic file should be removed after guard drop");
+    assert!(
+        !path.exists(),
+        "topic file should be removed after guard drop"
+    );
 }
 
 #[test]

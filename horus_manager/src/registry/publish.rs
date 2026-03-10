@@ -5,11 +5,7 @@ use walkdir::WalkDir;
 
 /// Build a user-friendly error from an HTTP response status and optional body text.
 /// `action` describes what the user was trying to do (e.g., "publish package", "search drivers").
-fn registry_error(
-    status: reqwest::StatusCode,
-    body: &str,
-    action: &str,
-) -> anyhow::Error {
+fn registry_error(status: reqwest::StatusCode, body: &str, action: &str) -> anyhow::Error {
     let hint = match status {
         s if s == reqwest::StatusCode::UNAUTHORIZED => {
             "Your API key is invalid or expired.\n  Fix: run `horus auth login` to get a new key."
@@ -91,7 +87,11 @@ const SECRET_PATTERNS: &[&str] = &[
 ];
 
 /// Check if a path component matches any exclude pattern
-fn should_exclude(path: &std::path::Path, base: &std::path::Path, custom_excludes: &[String]) -> bool {
+fn should_exclude(
+    path: &std::path::Path,
+    base: &std::path::Path,
+    custom_excludes: &[String],
+) -> bool {
     let relative = path.strip_prefix(base).unwrap_or(path);
 
     for component in relative.components() {
@@ -289,46 +289,9 @@ impl RegistryClient {
 
         match &manifest.manifest_format {
             ManifestFormat::HorusToml => {
-                let toml_path = current_dir.join(HORUS_TOML);
-                if toml_path.exists() {
-                    use crate::dependency_resolver::DependencySource;
-                    use crate::manifest::HorusManifest;
-
-                    match HorusManifest::load_from(&toml_path) {
-                        Ok((m, _)) => match m.dependencies_as_specs() {
-                            Ok(deps) => {
-                                let mut has_path_deps = false;
-                                for dep in deps {
-                                    if let DependencySource::Path(p) = dep.source {
-                                        println!(
-                                            "\n{} Cannot publish package with path dependencies!",
-                                            "Error:".red()
-                                        );
-                                        println!("  Path dependency: {} -> {}", dep.name, p.display());
-                                        println!(
-                                            "\n{}",
-                                            "Path dependencies are not reproducible and cannot be published."
-                                                .yellow()
-                                        );
-                                        println!("{}", "Please publish the path dependency to the registry first, then update horus.toml.".yellow());
-                                        has_path_deps = true;
-                                    }
-                                }
-                                if has_path_deps {
-                                    return Err(anyhow!(
-                                        "Cannot publish package with path dependencies"
-                                    ));
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to parse horus.toml dependencies: {}", e);
-                            }
-                        },
-                        Err(e) => {
-                            log::warn!("Failed to load horus.toml manifest: {}", e);
-                        }
-                    }
-                }
+                // Dependencies now live in native build files (Cargo.toml, pyproject.toml).
+                // horus.toml no longer has a [dependencies] section.
+                // Path dependency checks are handled by the Cargo.toml branch below.
             }
             ManifestFormat::CargoToml => {
                 let cargo_path = current_dir.join(CARGO_TOML);
@@ -455,20 +418,23 @@ impl RegistryClient {
         }
 
         // Safety scan: check for accidentally included secrets
+        // Uses SECRET_PATTERNS plus extension-based checks for comprehensive coverage
         let secret_files: Vec<&str> = included_files
             .iter()
             .filter(|(path, _)| {
                 let p = Path::new(path);
-                let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                name.starts_with(".env")
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default();
+                // Check all SECRET_PATTERNS
+                SECRET_PATTERNS.iter().any(|pat| {
+                    name == *pat || name.starts_with(&format!("{}.", pat))
+                })
+                // Also catch secret file extensions not in SECRET_PATTERNS
                     || name.ends_with(".pem")
                     || name.ends_with(".key")
                     || name.ends_with(".p12")
-                    || name == "signing_key"
-                    || name == "id_rsa"
-                    || name == "id_ed25519"
-                    || name == "id_ecdsa"
-                    || name == "credentials.json"
             })
             .map(|(path, _)| path.as_str())
             .collect();
@@ -502,34 +468,83 @@ impl RegistryClient {
             println!("   Consider adding exclusions to .horusignore");
         }
 
+        let resolved_license = match license {
+            Some(l) => l,
+            None => {
+                let default = "Apache-2.0".to_string();
+                println!(
+                    "  {} No license specified, defaulting to {}. Set 'license' in your manifest to change this.",
+                    crate::cli_output::ICON_WARN.yellow(),
+                    default.cyan()
+                );
+                default
+            }
+        };
+
         let mut form = reqwest::blocking::multipart::Form::new()
             .text("name", name.clone())
             .text("version", version.clone())
             .text("description", description.unwrap_or_default())
-            .text(
-                "license",
-                license.unwrap_or_else(|| "Apache-2.0".to_string()),
-            )
+            .text("license", resolved_license)
             .part(
                 "package",
                 reqwest::blocking::multipart::Part::bytes(package_data.clone())
                     .file_name(format!("{}-{}.tar.gz", safe_name, version)),
             );
 
-        if let Some(ref cats) = manifest.categories {
-            if !cats.is_empty() {
-                form = form.text("categories", cats.clone());
-            }
+        // Resolve metadata: manifest values as defaults, interactive prompts as overrides
+        let manifest_source_url = manifest.source_url.clone().unwrap_or_default();
+        let manifest_categories = manifest.categories.clone().unwrap_or_default();
+        let manifest_package_type = manifest.package_type.clone().unwrap_or_default();
+
+        let (docs_url, docs_type, final_source_url, final_categories, final_package_type) =
+            if std::io::stdin().is_terminal() && !dry_run {
+                println!("\n{}", "[#] Package Metadata (optional)".cyan().bold());
+                println!("   Help users discover and use your package by adding:");
+                let (du, dt, psu, pc, ppt) = prompt_package_metadata(current_dir)?;
+                (
+                    du,
+                    dt,
+                    if !psu.is_empty() {
+                        psu
+                    } else {
+                        manifest_source_url
+                    },
+                    if !pc.is_empty() {
+                        pc
+                    } else {
+                        manifest_categories
+                    },
+                    if !ppt.is_empty() {
+                        ppt
+                    } else {
+                        manifest_package_type
+                    },
+                )
+            } else {
+                (
+                    String::new(),
+                    String::new(),
+                    manifest_source_url,
+                    manifest_categories,
+                    manifest_package_type,
+                )
+            };
+
+        if !final_categories.is_empty() {
+            form = form.text("categories", final_categories.clone());
         }
-        if let Some(ref pt) = manifest.package_type {
-            if !pt.is_empty() {
-                form = form.text("package_type", pt.clone());
-            }
+        if !final_package_type.is_empty() {
+            form = form.text("package_type", final_package_type.clone());
         }
-        if let Some(ref src) = manifest.source_url {
-            if !src.is_empty() {
-                form = form.text("source_url", src.clone());
-            }
+        if !final_source_url.is_empty() {
+            form = form.text("source_url", final_source_url.clone());
+        }
+        if !docs_url.is_empty() {
+            form = form.text("docs_url", docs_url.clone());
+        }
+        if !docs_type.is_empty() {
+            form = form.text("docs_type", docs_type.clone());
         }
 
         if dry_run {
@@ -601,12 +616,34 @@ impl RegistryClient {
             }
         }
 
+        let upload_spinner = progress::spinner(&format!(
+            "Uploading {} v{} ({:.1} MB)...",
+            name, version, size_mb
+        ));
+
         let response = self
             .client
             .post(format!("{}/api/packages/upload", self.base_url))
             .header("Authorization", format!("Bearer {}", api_key))
             .multipart(form)
-            .send()?;
+            .send();
+
+        match response {
+            Ok(ref r) if r.status().is_success() => {
+                progress::finish_success(
+                    &upload_spinner,
+                    &format!("Uploaded {} v{}", name, version),
+                );
+            }
+            Ok(_) => {
+                progress::finish_error(&upload_spinner, "Upload failed");
+            }
+            Err(ref e) => {
+                progress::finish_error(&upload_spinner, &format!("Upload error: {}", e));
+            }
+        }
+
+        let response = response?;
 
         if !response.status().is_success() {
             let (status, body) = read_response_body(response);
@@ -628,18 +665,8 @@ impl RegistryClient {
                 .unwrap_or("Package verification failed");
 
             match error_type {
-                "duplicate_version" => {
-                    println!(
-                        "\n{} {}",
-                        "Error:".red(),
-                        message
-                    );
-                    println!(
-                        "\n{}",
-                        "Hint: Bump the version in your manifest before publishing again.".yellow()
-                    );
-                    return Err(anyhow!("Version already exists: {}", message));
-                }
+                // duplicate_version is now returned as HTTP 409 CONFLICT and caught
+                // by the status check above, handled via registry_error().
                 "verification_failed" => {
                     println!("\n{} Package verification failed!", "Error:".red());
                     println!("   {}", message);
@@ -649,8 +676,7 @@ impl RegistryClient {
                     );
                     println!("{}", "Please fix the issues above and try again.".yellow());
 
-                    if let Some(warnings) =
-                        response_json.get("warnings").and_then(|v| v.as_array())
+                    if let Some(warnings) = response_json.get("warnings").and_then(|v| v.as_array())
                     {
                         if !warnings.is_empty() {
                             println!("\n{}", "Warnings:".yellow());
@@ -733,131 +759,6 @@ impl RegistryClient {
         let encoded_name = url_encode_package_name(&name);
         println!("   View at: {}/packages/{}", self.base_url, encoded_name);
 
-        let manifest_source_url = manifest.source_url.unwrap_or_default();
-        let manifest_categories = manifest.categories.unwrap_or_default();
-        let manifest_package_type = manifest.package_type.unwrap_or_default();
-
-        if !manifest_source_url.is_empty()
-            || !manifest_categories.is_empty()
-            || !manifest_package_type.is_empty()
-        {
-            println!(
-                "\n{} Auto-detected metadata from {}:",
-                crate::cli_output::ICON_INFO.green(),
-                format!("{}", manifest.manifest_format).cyan()
-            );
-            if !manifest_source_url.is_empty() {
-                println!("   Source URL: {}", manifest_source_url);
-            }
-            if !manifest_categories.is_empty() {
-                println!("   Categories: {}", manifest_categories);
-            }
-            if !manifest_package_type.is_empty() {
-                println!("   Package type: {}", manifest_package_type);
-            }
-        }
-
-        // Auto-apply manifest metadata without prompting
-        let final_source_url = manifest_source_url;
-        let final_categories = manifest_categories;
-        let final_package_type = manifest_package_type;
-
-        // Only prompt interactively if stdin is a TTY (not CI/CD)
-        let (docs_url, docs_type, prompted_source_url, prompted_categories, prompted_package_type) =
-            if std::io::stdin().is_terminal() {
-                println!("\n{}", "[#] Package Metadata (optional)".cyan().bold());
-                println!("   Help users discover and use your package by adding:");
-                prompt_package_metadata(current_dir)?
-            } else {
-                (String::new(), String::new(), String::new(), String::new(), String::new())
-            };
-
-        let final_source_url = if !prompted_source_url.is_empty() {
-            prompted_source_url
-        } else {
-            final_source_url
-        };
-        let final_categories = if !prompted_categories.is_empty() {
-            prompted_categories
-        } else {
-            final_categories
-        };
-        let final_package_type = if !prompted_package_type.is_empty() {
-            prompted_package_type
-        } else {
-            final_package_type
-        };
-
-        if !docs_url.is_empty()
-            || !final_source_url.is_empty()
-            || !final_categories.is_empty()
-            || !final_package_type.is_empty()
-        {
-            println!(
-                "\n{} Updating package metadata...",
-                crate::cli_output::ICON_INFO.cyan()
-            );
-            self.update_package_metadata(
-                &name,
-                &version,
-                &docs_url,
-                &docs_type,
-                &final_source_url,
-                &final_categories,
-                &final_package_type,
-                &api_key,
-            )?;
-            println!(" Package metadata updated!");
-        }
-
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn update_package_metadata(
-        &self,
-        name: &str,
-        version: &str,
-        docs_url: &str,
-        docs_type: &str,
-        source_url: &str,
-        categories: &str,
-        package_type: &str,
-        api_key: &str,
-    ) -> Result<()> {
-        let categories_vec: Vec<String> = if categories.is_empty() {
-            vec![]
-        } else {
-            categories
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        };
-
-        let body = serde_json::json!({
-            "docs_url": if docs_url.is_empty() { None } else { Some(docs_url) },
-            "docs_type": if docs_type.is_empty() { None } else { Some(docs_type) },
-            "source_url": if source_url.is_empty() { None } else { Some(source_url) },
-            "categories": if categories_vec.is_empty() { None } else { Some(&categories_vec) },
-            "package_type": if package_type.is_empty() { None } else { Some(package_type) },
-        });
-
-        let response = self
-            .client
-            .post(format!(
-                "{}/api/packages/{}/{}/metadata",
-                self.base_url, name, version
-            ))
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&body)
-            .send()?;
-
-        if !response.status().is_success() {
-            let (status, body) = read_response_body(response);
-            return Err(registry_error(status, &body, "update package metadata"));
-        }
-
         Ok(())
     }
 
@@ -875,9 +776,10 @@ impl RegistryClient {
             }
         };
 
+        let encoded_name = url_encode_package_name(package_name);
         let url = format!(
             "{}/api/packages/{}/{}",
-            self.base_url, package_name, version
+            self.base_url, encoded_name, version
         );
         let response = self
             .client

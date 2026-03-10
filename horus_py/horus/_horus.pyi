@@ -1,225 +1,24 @@
-"""
-Type stubs for horus._horus module
+"""Type stubs for horus._horus (Rust extension module)."""
 
-This file provides type hints for IDE autocomplete and static type checking.
-"""
+from typing import Any, Dict, List, Optional, Tuple
 
-from typing import Any, Dict, List, Optional
+# ── Exceptions ────────────────────────────────────────────────────────────────
 
-class NodeInfo:
-    """
-    Python wrapper for NodeInfo - provides node state, metrics, and logging.
+class HorusNotFoundError(Exception):
+    """Raised when a topic, frame, or node is not found."""
+    ...
 
-    This class is used internally by the scheduler to track node execution
-    and provide logging capabilities to nodes during their tick cycle.
-    """
+class HorusTransformError(Exception):
+    """Raised when a coordinate transform fails (extrapolation, stale data)."""
+    ...
 
-    def __init__(self, name: str) -> None:
-        """
-        Create a new NodeInfo instance.
+class HorusTimeoutError(Exception):
+    """Raised when a blocking operation times out."""
+    ...
 
-        Args:
-            name: Unique node name
-        """
-        ...
-
-    @property
-    def name(self) -> str:
-        """Get the node name."""
-        ...
-
-    @property
-    def state(self) -> NodeState:
-        """Get the current node state."""
-        ...
-
-    def log_info(self, message: str) -> None:
-        """
-        Log an info message.
-
-        Logs are written to stdout and the shared memory log buffer
-        for monitor visibility.
-
-        Args:
-            message: Message to log
-        """
-        ...
-
-    def log_warning(self, message: str) -> None:
-        """
-        Log a warning message.
-
-        Logs are written to stdout and the shared memory log buffer
-        for monitor visibility.
-
-        Args:
-            message: Warning message to log
-        """
-        ...
-
-    def log_error(self, message: str) -> None:
-        """
-        Log an error message.
-
-        Logs are written to stdout and the shared memory log buffer
-        for monitor visibility.
-
-        Args:
-            message: Error message to log
-        """
-        ...
-
-    def log_debug(self, message: str) -> None:
-        """
-        Log a debug message.
-
-        Logs are written to stdout and the shared memory log buffer
-        for monitor visibility.
-
-        Args:
-            message: Debug message to log
-        """
-        ...
-
-    def log_pub(self, topic: str, data_repr: str, ipc_ns: int) -> None:
-        """
-        Log a publish operation with IPC timing.
-
-        Args:
-            topic: Topic name
-            data_repr: String representation of published data
-            ipc_ns: IPC operation latency in nanoseconds
-        """
-        ...
-
-    def log_sub(self, topic: str, data_repr: str, ipc_ns: int) -> None:
-        """
-        Log a subscribe operation with IPC timing.
-
-        Args:
-            topic: Topic name
-            data_repr: String representation of received data
-            ipc_ns: IPC operation latency in nanoseconds
-        """
-        ...
-
-    def get_metrics(self) -> Dict[str, float]:
-        """
-        Get comprehensive node metrics.
-
-        Returns:
-            Dictionary containing:
-            - total_ticks: Total number of ticks executed
-            - successful_ticks: Ticks completed without errors
-            - failed_ticks: Ticks that resulted in errors
-            - errors_count: Total number of errors
-            - avg_tick_duration_ms: Average tick duration in milliseconds
-            - min_tick_duration_ms: Minimum tick duration
-            - max_tick_duration_ms: Maximum tick duration
-            - last_tick_duration_ms: Most recent tick duration
-        """
-        ...
-
-    def get_uptime(self) -> float:
-        """
-        Get node uptime in seconds.
-
-        Returns:
-            Time in seconds since node was created
-        """
-        ...
-
-    def avg_tick_duration_ms(self) -> float:
-        """
-        Get average tick duration in milliseconds.
-
-        Returns:
-            Average tick duration
-        """
-        ...
-
-    def tick_count(self) -> int:
-        """
-        Get total tick count.
-
-        Returns:
-            Total number of ticks executed
-        """
-        ...
-
-    def error_count(self) -> int:
-        """
-        Get total error count.
-
-        Returns:
-            Total number of errors encountered
-        """
-        ...
-
-    def successful_ticks(self) -> int:
-        """
-        Get successful tick count.
-
-        Returns:
-            Number of ticks completed without errors
-        """
-        ...
-
-    def failed_ticks(self) -> int:
-        """
-        Get failed tick count.
-
-        Returns:
-            Number of ticks that resulted in errors
-        """
-        ...
-
-    def transition_to_error(self, error_msg: str) -> None:
-        """
-        Transition node to ERROR state.
-
-        Args:
-            error_msg: Error message describing why the transition occurred
-        """
-        ...
-
-    def get_custom_data(self, key: str) -> Optional[str]:
-        """
-        Get custom data by key.
-
-        Args:
-            key: Data key
-
-        Returns:
-            Value if key exists, None otherwise
-        """
-        ...
-
-    def set_custom_data(self, key: str, value: str) -> None:
-        """
-        Set custom data by key.
-
-        Args:
-            key: Data key
-            value: Data value
-        """
-        ...
-
+# ── Node ──────────────────────────────────────────────────────────────────────
 
 class NodeState:
-    """
-    Node state enum.
-
-    Possible states:
-    - UNINITIALIZED: Node created but not initialized
-    - INITIALIZING: Node initialization in progress
-    - RUNNING: Node actively running
-    - STOPPING: Node shutdown in progress
-    - STOPPED: Node stopped
-    - ERROR: Node in error state
-    - CRASHED: Node crashed unexpectedly
-    """
-
     UNINITIALIZED: str
     INITIALIZING: str
     RUNNING: str
@@ -227,209 +26,238 @@ class NodeState:
     STOPPED: str
     ERROR: str
     CRASHED: str
-
     @property
-    def name(self) -> str:
-        """Get the state name."""
-        ...
+    def name(self) -> str: ...
 
-
-class Scheduler:
-    """
-    Python wrapper for HORUS Scheduler.
-
-    Manages node execution, lifecycle, and coordination.
-    Supports per-node rate control for flexible scheduling.
-    """
-
-    def __init__(self, config: Optional['SchedulerConfig'] = None) -> None:
-        """Create a new Scheduler with optional config."""
-        ...
-
-    def add(
-        self,
-        node: Any,
-        order: int = 100,
-        rate_hz: Optional[float] = None,
-        rt: bool = False,
-        deadline_ms: Optional[float] = None,
-        tier: Optional[str] = None,
-        failure_policy: Optional[str] = None,
-    ) -> None:
-        """
-        Add a node to the scheduler.
-
-        Args:
-            node: Node instance (must have tick/init/shutdown methods)
-            order: Execution order (lower = earlier, 0 = highest priority)
-            rate_hz: Optional per-node rate in Hz (uses global rate if None)
-            rt: Mark as real-time node (default: False)
-            deadline_ms: Soft deadline in milliseconds (default: None)
-            tier: Execution tier - "ultra_fast", "fast", "normal" (default: None)
-            failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
-        """
-        ...
-
-    def set_node_rate(self, node_name: str, rate_hz: float) -> None:
-        """
-        Set per-node tick rate.
-
-        Args:
-            node_name: Name of the node
-            rate_hz: Target rate in Hz (must be 0-10000)
-        """
-        ...
-
-    def run(self) -> None:
-        """Run the scheduler indefinitely until stop() is called."""
-        ...
-
-    def run_for(self, duration: float) -> None:
-        """
-        Run the scheduler for a specific duration.
-
-        Args:
-            duration: Duration in seconds
-        """
-        ...
-
-    def stop(self) -> None:
-        """Stop the scheduler gracefully."""
-        ...
-
-    def get_node_stats(self, node_name: str) -> Dict[str, Any]:
-        """
-        Get statistics for a specific node.
-
-        Args:
-            node_name: Name of the node
-
-        Returns:
-            Dictionary with node stats:
-            - name: Node name
-            - priority: Priority level
-            - total_ticks: Total ticks executed
-            - errors_count: Number of errors
-        """
-        ...
-
-    def get_node_info(self, node_name: str) -> Optional[int]:
-        """
-        Get node order (priority) for a specific node.
-
-        Args:
-            node_name: Name of the node
-
-        Returns:
-            Order value (u32) if node exists, None otherwise
-        """
-        ...
-
-    def is_running(self) -> bool:
-        """
-        Check if scheduler is currently running.
-
-        Returns:
-            True if running, False otherwise
-        """
-        ...
-
-    def remove_node(self, node_name: str) -> bool:
-        """
-        Remove a node from the scheduler.
-
-        Args:
-            node_name: Name of the node to remove
-
-        Returns:
-            True if removed, False if node not found
-        """
-        ...
-
-    def tick(self, node_names: List[str]) -> None:
-        """
-        Run specific nodes continuously until stop() is called.
-
-        Args:
-            node_names: Names of nodes to run
-        """
-        ...
-
-    def tick_for(self, node_names: List[str], duration: float) -> None:
-        """
-        Run specific nodes for a duration.
-
-        Args:
-            node_names: Names of nodes to run
-            duration: Duration in seconds
-        """
-        ...
-
+class NodeInfo:
+    @property
+    def name(self) -> str: ...
+    @property
+    def state(self) -> NodeState: ...
+    def log_info(self, message: str) -> None: ...
+    def log_warning(self, message: str) -> None: ...
+    def log_error(self, message: str) -> None: ...
+    def log_debug(self, message: str) -> None: ...
+    def log_pub(self, topic: str, data_repr: str, ipc_ns: int) -> None: ...
+    def log_sub(self, topic: str, data_repr: str, ipc_ns: int) -> None: ...
+    def get_metrics(self) -> Dict[str, float]: ...
+    def get_uptime(self) -> float: ...
+    def avg_tick_duration_ms(self) -> float: ...
+    def tick_count(self) -> int: ...
+    def error_count(self) -> int: ...
+    def successful_ticks(self) -> int: ...
+    def failed_ticks(self) -> int: ...
+    def transition_to_error(self, error_msg: str) -> None: ...
+    def get_custom_data(self, key: str) -> Optional[str]: ...
+    def set_custom_data(self, key: str, value: str) -> None: ...
 
 class Node:
-    """
-    Base HORUS Node class.
-
-    Most users should use the horus.Node class from the Python
-    wrapper which provides a more Pythonic API.
-    """
-
-    def __init__(self, name: str) -> None:
-        """
-        Create a new Node.
-
-        Args:
-            name: Node name
-        """
-        ...
-
+    def __init__(self, name: str) -> None: ...
     @property
-    def name(self) -> str:
-        """Get the node name."""
-        ...
+    def name(self) -> str: ...
+    def tick(self, info: Optional[NodeInfo] = None) -> None: ...
+    def init(self, info: Optional[NodeInfo] = None) -> None: ...
+    def shutdown(self, info: Optional[NodeInfo] = None) -> None: ...
+    def set_callback(self, callback: Any) -> None: ...
 
-    def tick(self, info: Optional[NodeInfo] = None) -> None:
-        """
-        Execute one tick.
+# ── Topic ─────────────────────────────────────────────────────────────────────
 
-        Args:
-            info: Optional NodeInfo context
-        """
-        ...
+class Topic:
+    def __init__(self, endpoint: str, msg_type: str = "generic", capacity: int = 16) -> None: ...
+    @property
+    def name(self) -> str: ...
+    def send(self, data: Any, node: Optional[NodeInfo] = None) -> None: ...
+    def recv(self, py: Any = None, node: Optional[NodeInfo] = None) -> Optional[Any]: ...
+    def try_recv(self) -> Optional[Any]: ...
+    def read_latest(self) -> Optional[Any]: ...
+    def pending_count(self) -> int: ...
+    def pub_count(self) -> int: ...
+    def sub_count(self) -> int: ...
+    def backend_type(self) -> str: ...
+    def __repr__(self) -> str: ...
 
-    def init(self, info: Optional[NodeInfo] = None) -> None:
-        """
-        Initialize the node.
+# ── Scheduler ─────────────────────────────────────────────────────────────────
 
-        Args:
-            info: Optional NodeInfo context
-        """
-        ...
+class Miss:
+    WARN: str
+    SKIP: str
+    SAFE_MODE: str
+    STOP: str
 
-    def shutdown(self, info: Optional[NodeInfo] = None) -> None:
-        """
-        Shutdown the node.
+class SchedulerConfig:
+    tick_rate: float
+    fault_tolerance: bool
+    memory_locking: bool
+    rt_scheduling_class: bool
+    profiling: bool
+    black_box_enabled: bool
+    black_box_size_mb: int
+    budget_enforcement: bool
+    deadline_monitoring: bool
+    watchdog_enabled: bool
+    watchdog_timeout_ms: int
+    safety_monitor: bool
+    max_deadline_misses: int
+    numa_aware: bool
+    cpu_cores: Optional[List[int]]
+    metrics_interval_ms: int
+    telemetry_endpoint: Optional[str]
+    recording_enabled: bool
+    @staticmethod
+    def minimal() -> 'SchedulerConfig': ...
+    @staticmethod
+    def deploy() -> 'SchedulerConfig': ...
+    @staticmethod
+    def hard_rt() -> 'SchedulerConfig': ...
+    @staticmethod
+    def safety_critical() -> 'SchedulerConfig': ...
 
-        Args:
-            info: Optional NodeInfo context
-        """
-        ...
+class NodeBuilder:
+    def order(self, order: int) -> 'NodeBuilder': ...
+    def rate_hz(self, rate: float) -> 'NodeBuilder': ...
+    def deadline_ms(self, ms: float) -> 'NodeBuilder': ...
+    def budget_us(self, us: int) -> 'NodeBuilder': ...
+    def on_miss(self, policy: str) -> 'NodeBuilder': ...
+    def failure_policy(
+        self, name: str, *,
+        max_retries: Optional[int] = None,
+        backoff_ms: Optional[int] = None,
+        max_failures: Optional[int] = None,
+        cooldown_ms: Optional[int] = None,
+    ) -> 'NodeBuilder': ...
+    def on(self, topic: str) -> 'NodeBuilder': ...
+    def compute(self) -> 'NodeBuilder': ...
+    def async_io(self) -> 'NodeBuilder': ...
+    def done(self) -> 'Scheduler': ...
 
-    def set_callback(self, callback: Any) -> None:
-        """
-        Set tick callback.
+class Scheduler:
+    def __init__(self, config: Optional[SchedulerConfig] = None) -> None: ...
+    def node(self, node: Any) -> NodeBuilder: ...
+    def add(
+        self, node: Any, order: int = 100, rate_hz: Optional[float] = None,
+        rt: bool = False, deadline_ms: Optional[float] = None,
+        budget_us: Optional[int] = None, failure_policy: Optional[str] = None,
+        on_miss: Optional[str] = None,
+    ) -> None: ...
+    def set_node_rate(self, node_name: str, rate_hz: float) -> None: ...
+    def run(self) -> None: ...
+    def run_for(self, duration_seconds: float) -> None: ...
+    def tick(self, node_names: List[str]) -> None: ...
+    def tick_for(self, node_names: List[str], duration_seconds: float) -> None: ...
+    def stop(self) -> None: ...
+    def is_running(self) -> bool: ...
+    def get_node_stats(self, node_name: str) -> Dict[str, Any]: ...
+    def get_all_nodes(self) -> List[Dict[str, Any]]: ...
+    def get_node_count(self) -> int: ...
+    def has_node(self, name: str) -> bool: ...
+    def get_node_names(self) -> List[str]: ...
+    def get_node_info(self, name: str) -> Optional[int]: ...
+    def remove_node(self, name: str) -> bool: ...
+    def status(self) -> str: ...
+    def capabilities(self) -> Optional[Dict[str, Any]]: ...
+    def has_full_rt(self) -> bool: ...
+    def degradations(self) -> List[Dict[str, Any]]: ...
+    def current_tick(self) -> int: ...
+    def scheduler_name(self) -> str: ...
+    def safety_stats(self) -> Optional[Dict[str, Any]]: ...
+    def is_recording(self) -> bool: ...
+    def is_replaying(self) -> bool: ...
+    def stop_recording(self) -> List[str]: ...
+    @staticmethod
+    def list_recordings() -> List[str]: ...
+    @staticmethod
+    def delete_recording(session_name: str) -> None: ...
+    def set_tick_budget(self, node_name: str, us: int) -> None: ...
+    def add_critical_node(self, node_name: str, timeout_ms: int) -> None: ...
+    def __repr__(self) -> str: ...
 
-        Args:
-            callback: Callable to execute on each tick
-        """
-        ...
+# ── HFrame ────────────────────────────────────────────────────────────────────
 
+class Transform:
+    def __init__(self, translation: Optional[List[float]] = None, rotation: Optional[List[float]] = None) -> None: ...
+    @staticmethod
+    def identity() -> 'Transform': ...
+    @property
+    def translation(self) -> Tuple[float, float, float]: ...
+    @property
+    def rotation(self) -> Tuple[float, float, float, float]: ...
+    def inverse(self) -> 'Transform': ...
+    def compose(self, other: 'Transform') -> 'Transform': ...
+    def __mul__(self, other: 'Transform') -> 'Transform': ...
+    def __repr__(self) -> str: ...
 
-def get_version() -> str:
-    """
-    Get HORUS version information.
+class HFrameConfig:
+    def __init__(self, max_frames: int = 256, buffer_size: int = 64) -> None: ...
 
-    Returns:
-        Version string
-    """
-    ...
+class HFrame:
+    def __init__(self, config: Optional[HFrameConfig] = None) -> None: ...
+    def register_frame(self, name: str, parent: Optional[str] = None) -> int: ...
+    def register_static_frame(self, name: str, transform: Transform, parent: Optional[str] = None) -> int: ...
+    def unregister_frame(self, name: str) -> None: ...
+    def frame_id(self, name: str) -> Optional[int]: ...
+    def frame_name(self, id: int) -> Optional[str]: ...
+    def has_frame(self, name: str) -> bool: ...
+    def update(self, name: str, transform: Transform, timestamp_ns: Optional[int] = None) -> None: ...
+    def tf(self, src: str, dst: str) -> Transform: ...
+    def tf_at(self, src: str, dst: str, timestamp_ns: int) -> Transform: ...
+    def can_transform(self, src: str, dst: str) -> bool: ...
+    def frame_count(self) -> int: ...
+    def all_frames(self) -> List[str]: ...
+    def parent(self, name: str) -> Optional[str]: ...
+    def children(self, name: str) -> List[str]: ...
+    def depth(self, name: str) -> int: ...
+    # Phase 2: Waits & Staleness
+    def wait_for_transform(self, src: str, dst: str, timeout_sec: float = 5.0) -> Transform: ...
+    def tf_at_with_tolerance(self, src: str, dst: str, timestamp_ns: int, tolerance_ns: int = 100_000_000) -> Transform: ...
+    def is_stale(self, name: str, max_age_sec: float = 1.0) -> bool: ...
+    def time_since_last_update(self, name: str) -> float: ...
+    def set_static_transform(self, name: str, transform: Transform) -> None: ...
+    def transform_vector(self, src: str, dst: str, vector: List[float]) -> Tuple[float, float, float]: ...
+    def can_transform_at(self, src: str, dst: str, timestamp_ns: int) -> bool: ...
+    # Phase 3: Diagnostics
+    def stats(self) -> Dict[str, Any]: ...
+    def validate(self) -> None: ...
+    def frame_info(self, name: str) -> Optional[Dict[str, Any]]: ...
+    def __repr__(self) -> str: ...
+
+def get_timestamp_ns() -> int: ...
+
+# ── Domain Types ──────────────────────────────────────────────────────────────
+
+class Image:
+    def __init__(self, height: int, width: int, encoding: str = "rgb8") -> None: ...
+    @property
+    def height(self) -> int: ...
+    @property
+    def width(self) -> int: ...
+    @property
+    def encoding(self) -> str: ...
+    def to_numpy(self) -> Any: ...
+    @staticmethod
+    def from_numpy(array: Any, encoding: str = "rgb8") -> 'Image': ...
+
+class PointCloud:
+    def __init__(self) -> None: ...
+    def to_numpy(self) -> Any: ...
+
+class DepthImage:
+    def __init__(self, height: int, width: int) -> None: ...
+    def to_numpy(self) -> Any: ...
+    @staticmethod
+    def from_numpy(array: Any) -> 'DepthImage': ...
+
+# ── GPU Utilities ─────────────────────────────────────────────────────────────
+
+def cuda_is_available() -> bool: ...
+def cuda_device_count() -> int: ...
+
+# ── Priority ──────────────────────────────────────────────────────────────────
+
+class Priority:
+    CRITICAL: int  # 0
+    HIGH: int      # 10
+    NORMAL: int    # 50
+    LOW: int       # 80
+    BACKGROUND: int  # 100
+
+def get_version() -> str: ...

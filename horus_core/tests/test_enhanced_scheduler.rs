@@ -90,7 +90,7 @@ impl Node for IoNode {
     }
 }
 
-/// Test node that occasionally fails (to test circuit breaker)
+/// Test node that occasionally fails (to test skip policy)
 struct FlakyNode {
     name: &'static str,
     counter: Arc<AtomicUsize>,
@@ -207,7 +207,7 @@ fn test_enhanced_scheduler() {
     );
 
     // Flaky node should have some ticks despite failures
-    // Circuit breaker should protect it from crashing the system
+    // Skip policy should protect it from crashing the system
     assert!(
         flaky_counter.load(Ordering::SeqCst) > 0,
         "Flaky node should have executed at least once"
@@ -245,14 +245,14 @@ fn test_skip_policy_protection() {
         .run_for(Duration::from_secs(1))
         .expect("Scheduler failed");
 
-    // The node should have attempted a few times before circuit breaker opened
+    // The node should have attempted a few times before skip policy opened
     let attempts = counter.load(Ordering::SeqCst);
     println!(
         "Failed node attempted {} times before skip policy activated",
         attempts
     );
 
-    // Skip policy (circuit breaker) should have limited attempts (default threshold is 5)
+    // Skip policy (skip policy) should have limited attempts (default threshold is 5)
     assert!(
         attempts <= 10,
         "Skip policy should have limited attempts, got {}",

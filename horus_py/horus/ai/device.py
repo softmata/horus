@@ -6,7 +6,6 @@ and automatic device detection.
 """
 
 from typing import Optional, Union
-from contextlib import contextmanager
 
 # Thread-local default device
 import threading

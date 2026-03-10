@@ -332,7 +332,6 @@ impl SharedLogBuffer {
     }
 }
 
-#[cfg(test)]
 impl SharedLogBuffer {
     /// Create a SharedLogBuffer backed by a file at `path`.
     /// Used in tests to avoid touching the global log path.
@@ -467,6 +466,195 @@ mod tests {
                 e.tick_number
             );
         }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Push more than MAX_LOG_ENTRIES to verify wrap-around doesn't panic
+    /// and get_all() returns valid entries.
+    #[test]
+    fn test_ring_buffer_overflow_wrap() {
+        let (buf, path) = temp_buf(10);
+
+        let total = MAX_LOG_ENTRIES + 500;
+        for i in 0..total {
+            buf.push(make_entry("overflow_wrap_node", i as u64));
+        }
+
+        // write_idx must reflect total pushes
+        assert_eq!(buf.write_idx(), total as u64);
+
+        // get_all() returns at most MAX_LOG_ENTRIES (ring wrapped)
+        let all = buf.get_all();
+        assert!(
+            !all.is_empty(),
+            "get_all() must return entries after overflow"
+        );
+        assert!(
+            all.len() <= MAX_LOG_ENTRIES,
+            "get_all() must return at most MAX_LOG_ENTRIES entries, got {}",
+            all.len()
+        );
+
+        // All returned entries must have the correct node_name
+        for e in &all {
+            assert_eq!(e.node_name, "overflow_wrap_node");
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Push a LogEntry with a very long message and verify truncation at MAX_MESSAGE_LEN.
+    #[test]
+    fn test_message_truncation_at_limit() {
+        let (buf, path) = temp_buf(11);
+
+        let long_msg = "A".repeat(1000);
+        let entry = LogEntry {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            tick_number: 99,
+            node_name: "truncation_node".to_string(),
+            log_type: LogType::Warning,
+            topic: None,
+            message: long_msg,
+            tick_us: 0,
+            ipc_ns: 0,
+        };
+        buf.push(entry);
+
+        let all = buf.get_all();
+        assert_eq!(all.len(), 1);
+
+        // push() truncates at MAX_MESSAGE_LEN (300) and appends "..."
+        let msg = &all[0].message;
+        assert!(
+            msg.len() <= MAX_MESSAGE_LEN,
+            "message should be truncated to at most {} bytes, got {}",
+            MAX_MESSAGE_LEN,
+            msg.len()
+        );
+        assert!(
+            msg.ends_with("..."),
+            "truncated message should end with '...', got: {}",
+            msg
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Push entries with empty strings, unicode, and special characters.
+    #[test]
+    fn test_log_entry_serialization_edge_cases() {
+        let (buf, path) = temp_buf(12);
+
+        // Empty strings
+        buf.push(LogEntry {
+            timestamp: String::new(),
+            tick_number: 0,
+            node_name: "edge_case_empty".to_string(),
+            log_type: LogType::Debug,
+            topic: Some(String::new()),
+            message: String::new(),
+            tick_us: 0,
+            ipc_ns: 0,
+        });
+
+        // Unicode characters
+        buf.push(LogEntry {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            tick_number: 1,
+            node_name: "edge_case_unicode".to_string(),
+            log_type: LogType::Info,
+            topic: Some("topic/日本語".to_string()),
+            message: "Héllo wörld 🤖 Ωmega".to_string(),
+            tick_us: 42,
+            ipc_ns: 100,
+        });
+
+        // Special characters (newlines, tabs, null-ish)
+        buf.push(LogEntry {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            tick_number: 2,
+            node_name: "edge_case_special".to_string(),
+            log_type: LogType::Error,
+            topic: None,
+            message: "line1\nline2\ttab\r\nwindows".to_string(),
+            tick_us: 0,
+            ipc_ns: 0,
+        });
+
+        let all = buf.get_all();
+        assert_eq!(all.len(), 3, "all 3 edge-case entries must round-trip");
+
+        // Verify empty-string entry
+        let empty = all
+            .iter()
+            .find(|e| e.node_name == "edge_case_empty")
+            .unwrap();
+        assert_eq!(empty.message, "");
+        assert_eq!(empty.timestamp, "");
+        assert_eq!(empty.topic, Some(String::new()));
+
+        // Verify unicode entry
+        let uni = all
+            .iter()
+            .find(|e| e.node_name == "edge_case_unicode")
+            .unwrap();
+        assert_eq!(uni.message, "Héllo wörld 🤖 Ωmega");
+        assert_eq!(uni.topic.as_deref(), Some("topic/日本語"));
+
+        // Verify special chars entry
+        let spec = all
+            .iter()
+            .find(|e| e.node_name == "edge_case_special")
+            .unwrap();
+        assert!(spec.message.contains('\n'));
+        assert!(spec.message.contains('\t'));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A fresh buffer's get_all() must return an empty vec.
+    #[test]
+    fn test_empty_buffer_get_all() {
+        let (buf, path) = temp_buf(13);
+
+        let all = buf.get_all();
+        assert!(all.is_empty(), "fresh buffer get_all() must be empty");
+        assert_eq!(buf.write_idx(), 0, "fresh buffer write_idx must be 0");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Push one entry, verify get_all() returns it with correct fields.
+    #[test]
+    fn test_push_and_read_single_entry() {
+        let (buf, path) = temp_buf(14);
+
+        let entry = LogEntry {
+            timestamp: "12:34:56.789".to_string(),
+            tick_number: 777,
+            node_name: "single_entry_node".to_string(),
+            log_type: LogType::Error,
+            topic: Some("/sensors/imu".to_string()),
+            message: "sensor timeout detected".to_string(),
+            tick_us: 1234,
+            ipc_ns: 5678,
+        };
+        buf.push(entry);
+
+        let all = buf.get_all();
+        assert_eq!(all.len(), 1, "must have exactly one entry");
+
+        let e = &all[0];
+        assert_eq!(e.timestamp, "12:34:56.789");
+        assert_eq!(e.tick_number, 777);
+        assert_eq!(e.node_name, "single_entry_node");
+        assert_eq!(e.log_type, LogType::Error);
+        assert_eq!(e.topic.as_deref(), Some("/sensors/imu"));
+        assert_eq!(e.message, "sensor timeout detected");
+        assert_eq!(e.tick_us, 1234);
+        assert_eq!(e.ipc_ns, 5678);
 
         let _ = std::fs::remove_file(path);
     }

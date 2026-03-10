@@ -199,7 +199,7 @@ impl Scheduler {
     /// Create a scheduler with default configuration.
     ///
     /// Configuration is deferred until `run()` via builder methods.
-    /// Call `.tick_hz()`, `.safety_monitor()`, `.with_blackbox()`, etc. to configure.
+    /// Use presets (`hard_rt()`, `deploy()`, `safety_critical()`) or builder methods to configure.
     pub fn new() -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
@@ -248,6 +248,69 @@ impl Scheduler {
             deterministic: None,
             pending_config: config,
         }
+    }
+
+    /// Create a **hard real-time** scheduler — all RT features enabled, fails fast
+    /// if the system doesn't support them.
+    ///
+    /// Enables: budget enforcement, deadline monitoring, watchdog, safety monitor,
+    /// memory locking, RT scheduling class, fault tolerance.
+    ///
+    /// # Panics
+    /// Panics if the system lacks RT capabilities (no `SCHED_FIFO`, no `mlockall`).
+    /// Use `Scheduler::new()` for graceful degradation instead.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::Scheduler;
+    ///
+    /// let scheduler = Scheduler::hard_rt()
+    ///     .tick_hz(1000.0)
+    ///     .max_deadline_misses(3);
+    ///
+    /// scheduler.add(motor_node).order(0).budget_us(200).build()?;
+    /// scheduler.run()?;
+    /// ```
+    pub fn hard_rt() -> Self {
+        let mut s = Self::new();
+
+        // Verify the system can actually do hard RT
+        let can_rt =
+            s.rt.capabilities
+                .as_ref()
+                .map_or(false, |c| c.rt_priority_available || c.mlockall_permitted);
+        assert!(
+            can_rt,
+            "hard_rt() requires a system with RT capabilities (SCHED_FIFO or mlockall). \
+             Use Scheduler::new() for best-effort scheduling."
+        );
+
+        // Enable every RT knob
+        s.pending_config.realtime = super::config::RealTimeConfig {
+            budget_enforcement: true,
+            deadline_monitoring: true,
+            watchdog_enabled: true,
+            watchdog_timeout_ms: 500,
+            safety_monitor: true,
+            max_deadline_misses: 10,
+            memory_locking: true,
+            rt_scheduling_class: true,
+        };
+        s.pending_config.fault_tolerance = true;
+        s
+    }
+
+    /// Set CPU cores to pin the scheduler and RT threads to.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::hard_rt()
+    ///     .cores(&[2, 3])   // Pin to cores 2 and 3
+    ///     .tick_hz(1000.0);
+    /// ```
+    pub fn cores(mut self, cores: &[usize]) -> Self {
+        self.pending_config.resources.cpu_cores = Some(cores.to_vec());
+        self
     }
 
     // ========================================================================
@@ -332,90 +395,63 @@ impl Scheduler {
     }
 
     // ========================================================================
-    // NEW BUILDER METHODS — deferred to finalize_config() at run() time
+    // PROFILE PRESETS — preferred over individual boolean knobs
     // ========================================================================
 
-    /// Enable the safety monitor for RT nodes (budget enforcement, deadline monitoring, watchdogs).
+    /// Create a **deployment** scheduler — safety monitor, fault tolerance, and
+    /// blackbox flight recorder enabled. Suitable for production robots.
+    ///
+    /// Gracefully degrades if the system lacks full RT capabilities.
     ///
     /// # Example
     /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .tick_hz(1000.0)
-    ///     .safety_monitor(true);
+    /// let scheduler = Scheduler::deploy()
+    ///     .tick_hz(500.0)
+    ///     .cores(&[2, 3]);
     /// ```
-    pub fn safety_monitor(mut self, enabled: bool) -> Self {
-        self.pending_config.realtime.safety_monitor = enabled;
-        self.pending_config.realtime.budget_enforcement = enabled;
-        self.pending_config.realtime.deadline_monitoring = enabled;
-        self
+    pub fn deploy() -> Self {
+        let mut s = Self::new();
+        s.pending_config.realtime.safety_monitor = true;
+        s.pending_config.realtime.budget_enforcement = true;
+        s.pending_config.realtime.deadline_monitoring = true;
+        s.pending_config.realtime.watchdog_enabled = true;
+        s.pending_config.realtime.watchdog_timeout_ms = 500;
+        s.pending_config.fault_tolerance = true;
+        s.pending_config.monitoring.black_box_enabled = true;
+        s.pending_config.monitoring.black_box_size_mb = 64;
+        s
     }
 
-    /// Enable watchdog timers for RT nodes with the given timeout.
+    /// Create a **safety-critical** scheduler — all RT features plus strict
+    /// deadline enforcement. Panics if the system lacks RT capabilities.
+    ///
+    /// Equivalent to `hard_rt()` plus fault tolerance and blackbox.
     ///
     /// # Example
     /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .safety_monitor(true)
-    ///     .watchdog(Duration::from_millis(50));
+    /// let scheduler = Scheduler::safety_critical()
+    ///     .tick_hz(1000.0)
+    ///     .max_deadline_misses(3);
     /// ```
-    pub fn watchdog(mut self, timeout: Duration) -> Self {
-        self.pending_config.realtime.watchdog_enabled = true;
-        self.pending_config.realtime.watchdog_timeout_ms = timeout.as_millis() as u64;
-        self
+    pub fn safety_critical() -> Self {
+        let mut s = Self::hard_rt();
+        s.pending_config.fault_tolerance = true;
+        s.pending_config.monitoring.black_box_enabled = true;
+        s.pending_config.monitoring.black_box_size_mb = 64;
+        s.pending_config.monitoring.profiling_enabled = true;
+        s
     }
+
+    // ========================================================================
+    // INDIVIDUAL BUILDER METHODS
+    // ========================================================================
+    //
+    // For most use cases, prefer a profile preset (`hard_rt()`, `deploy()`,
+    // `safety_critical()`) instead of toggling these individually.
 
     /// Set the maximum number of deadline misses before emergency stop.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .safety_monitor(true)
-    ///     .max_deadline_misses(5);
-    /// ```
     pub fn max_deadline_misses(mut self, n: u64) -> Self {
         self.pending_config.realtime.max_deadline_misses = n;
-        self
-    }
-
-    /// Enable memory locking (mlockall) to prevent page faults.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .memory_locked(true);
-    /// ```
-    pub fn memory_locked(mut self, enabled: bool) -> Self {
-        self.pending_config.realtime.memory_locking = enabled;
-        self
-    }
-
-    /// Enable real-time scheduling class (SCHED_FIFO/RR).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .rt_scheduling(true);
-    /// ```
-    pub fn rt_scheduling(mut self, enabled: bool) -> Self {
-        self.pending_config.realtime.rt_scheduling_class = enabled;
-        self
-    }
-
-    /// Set CPU core affinity for the scheduler thread.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .cpu_affinity(&[0, 1]);
-    /// ```
-    pub fn cpu_affinity(mut self, cores: &[usize]) -> Self {
-        self.pending_config.resources.cpu_cores = Some(cores.to_vec());
-        self
-    }
-
-    /// Enable circuit breaker behavior for fault tolerance.
-    pub fn circuit_breaker(mut self, enabled: bool) -> Self {
-        self.pending_config.circuit_breaker = enabled;
         self
     }
 
@@ -443,8 +479,7 @@ impl Scheduler {
         self.pending_config.monitoring.black_box_size_mb = size_mb;
         // Eagerly create the blackbox so it's accessible before run()
         let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
-        let bb = super::blackbox::BlackBox::new(size_mb)
-            .with_path(bb_dir);
+        let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
         self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
         self
     }
@@ -524,7 +559,7 @@ impl Scheduler {
     /// - Node additions
     /// - Deadline misses
     /// - budget violations
-    /// - Circuit breaker state changes
+    /// - Fault tolerance state changes
     /// - Emergency stops
     ///
     /// # Example
@@ -545,25 +580,6 @@ impl Scheduler {
         self.monitor.blackbox.as_ref()
     }
 
-    ///
-    /// Returns the current circuit state (Closed, Open, or HalfOpen) for
-    /// the node with the given name.
-    ///
-    /// # Arguments
-    /// - `node_name` - The name of the node to check
-    ///
-    /// # Returns
-    /// - `Some(CircuitState)` - The circuit state if the node exists
-    /// - `None` - If no node with that name exists
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    /// use horus_core::scheduling::CircuitState;
-    ///
-    /// let mut scheduler = Scheduler::new();
-    /// scheduler.add(my_node).order(10).build()?;
-    ///
     /// Get safety statistics including budget overruns, deadline misses, and watchdog expirations.
     ///
     /// Returns `None` if the safety monitor is not enabled.
@@ -764,7 +780,10 @@ impl Scheduler {
                 lines.push(thin_sep.to_string());
                 lines.push("budget / Deadline Statistics:".to_string());
                 if stats.budget_overruns > 0 {
-                    lines.push(format!("  [WARN] {} budget overruns", stats.budget_overruns));
+                    lines.push(format!(
+                        "  [WARN] {} budget overruns",
+                        stats.budget_overruns
+                    ));
                 } else {
                     lines.push("  [OK] No budget overruns".to_string());
                 }
@@ -802,10 +821,7 @@ impl Scheduler {
                 ));
                 for node in &self.nodes {
                     if node.is_stopped {
-                        lines.push(format!(
-                            "    - {}: STOPPED",
-                            node.name.as_ref(),
-                        ));
+                        lines.push(format!("    - {}: STOPPED", node.name.as_ref(),));
                     }
                 }
             }
@@ -1002,7 +1018,6 @@ impl Scheduler {
                 }
             }
         }
-
     }
 
     /// Apply monitoring configuration (profiling, blackbox, telemetry).
@@ -1019,8 +1034,8 @@ impl Scheduler {
         // Black box flight recorder
         if monitoring.black_box_enabled && monitoring.black_box_size_mb > 0 {
             let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
-            let mut bb = super::blackbox::BlackBox::new(monitoring.black_box_size_mb)
-                .with_path(bb_dir);
+            let mut bb =
+                super::blackbox::BlackBox::new(monitoring.black_box_size_mb).with_path(bb_dir);
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
                 name: self.scheduler_name.clone(),
                 node_count: self.nodes.len(),
@@ -1104,8 +1119,7 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::new()
-    ///     .safety_monitor(true);
+    /// let mut scheduler = Scheduler::deploy();
     /// // ... after run() starts, safety monitor is active
     /// ```
     ///
@@ -1122,8 +1136,10 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                crate::error::ConfigError::Other("Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
-                    .to_string()),
+                crate::error::ConfigError::Other(
+                    "Safety monitor not enabled. Use Scheduler::deploy() or Scheduler::hard_rt()."
+                        .to_string(),
+                ),
             ))
         }
     }
@@ -1139,8 +1155,7 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::new()
-    ///     .safety_monitor(true);
+    /// let mut scheduler = Scheduler::deploy();
     /// // tick budgets are typically set via .budget_us() on the node builder
     /// ```
     ///
@@ -1157,8 +1172,10 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                crate::error::ConfigError::Other("Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
-                    .to_string()),
+                crate::error::ConfigError::Other(
+                    "Safety monitor not enabled. Use Scheduler::deploy() or Scheduler::hard_rt()."
+                        .to_string(),
+                ),
             ))
         }
     }
@@ -1314,7 +1331,7 @@ impl Scheduler {
         let is_rt_node = config.is_rt;
         let tick_budget = config.tick_budget;
         let deadline = config.deadline;
-        let _resolved_tier = config.tier.unwrap_or_default();
+        let miss_policy = config.miss_policy;
         let execution_class = config.execution_class;
 
         let node_name = node.name().to_string();
@@ -1343,9 +1360,8 @@ impl Scheduler {
             None
         };
 
-        // Use custom rate or node's declared rate
-        let node_rate = custom_rate.or_else(|| node.rate_hz());
-
+        // Rate comes from builder config only (Node trait no longer declares rate)
+        let node_rate = custom_rate;
 
         // Allocate RtStats for RT nodes
         let rt_stats = if is_rt_node {
@@ -1373,6 +1389,7 @@ impl Scheduler {
             is_stopped: false,
             is_paused: false,
             rt_stats,
+            miss_policy: miss_policy,
             execution_class,
         });
 
@@ -1511,6 +1528,11 @@ impl Scheduler {
                 Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
         }
 
+        // Auto-derive: if any node's rate exceeds the global tick rate, bump it up.
+        // This ensures the scheduler is always fast enough for its fastest node,
+        // even when tick_hz() wasn't explicitly set high enough.
+        self.adjust_tick_period_for_node_rates();
+
         // Safety config runs here so it sees ALL nodes (added after builder methods)
         self.apply_safety_config(&config.realtime);
 
@@ -1543,10 +1565,7 @@ impl Scheduler {
             if let Some(ref endpoint_str) = config.monitoring.telemetry_endpoint {
                 if self.monitor.telemetry.is_none() {
                     let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
-                    let mut tm = super::telemetry::TelemetryManager::new(
-                        endpoint,
-                        1000u64,
-                    );
+                    let mut tm = super::telemetry::TelemetryManager::new(endpoint, 1000u64);
                     tm.set_scheduler_name(&self.scheduler_name);
                     self.monitor.telemetry = Some(tm);
                 }
@@ -1844,9 +1863,11 @@ impl Scheduler {
                     // Convert panic to error
                     let init_result = match init_result {
                         Ok(result) => result,
-                        Err(_) => Err(crate::HorusError::Node(crate::error::NodeError::InitPanic {
-                            node: node_name.to_string(),
-                        })),
+                        Err(_) => Err(crate::HorusError::Node(
+                            crate::error::NodeError::InitPanic {
+                                node: node_name.to_string(),
+                            },
+                        )),
                     };
 
                     match init_result {
@@ -1898,7 +1919,10 @@ impl Scheduler {
                                 self.stop();
                                 return;
                             } else if severity == crate::error::Severity::Transient {
-                                ctx.transition_to_error(format!("Init failed (transient, will retry): {}", e));
+                                ctx.transition_to_error(format!(
+                                    "Init failed (transient, will retry): {}",
+                                    e
+                                ));
                             } else {
                                 ctx.transition_to_error(format!("Initialization failed: {}", e));
                             }
@@ -1953,9 +1977,11 @@ impl Scheduler {
                     // Convert panic to error
                     let init_result = match init_result {
                         Ok(result) => result,
-                        Err(_) => Err(crate::HorusError::Node(crate::error::NodeError::ReInitPanic {
-                            node: node_name.to_string(),
-                        })),
+                        Err(_) => Err(crate::HorusError::Node(
+                            crate::error::NodeError::ReInitPanic {
+                                node: node_name.to_string(),
+                            },
+                        )),
                     };
 
                     match init_result {
@@ -1981,7 +2007,10 @@ impl Scheduler {
                                 registered.is_stopped = true;
                                 ctx.transition_to_crashed(format!("Fatal re-init: {}", e));
                             } else if severity == crate::error::Severity::Transient {
-                                ctx.transition_to_error(format!("Re-init failed (transient, will retry): {}", e));
+                                ctx.transition_to_error(format!(
+                                    "Re-init failed (transient, will retry): {}",
+                                    e
+                                ));
                             } else {
                                 registered.is_stopped = true;
                                 ctx.transition_to_error(format!("Re-initialization failed: {}", e));
@@ -2133,9 +2162,11 @@ impl Scheduler {
                     // Convert panic to error
                     let shutdown_result = match shutdown_result {
                         Ok(result) => result,
-                        Err(_) => Err(crate::HorusError::Node(crate::error::NodeError::ShutdownPanic {
-                            node: node_name.to_string(),
-                        })),
+                        Err(_) => Err(crate::HorusError::Node(
+                            crate::error::NodeError::ShutdownPanic {
+                                node: node_name.to_string(),
+                            },
+                        )),
                     };
 
                     match shutdown_result {
@@ -2689,13 +2720,13 @@ impl Scheduler {
 
                     // Record in blackbox
                     if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock()
-                            .unwrap()
-                            .record(super::blackbox::BlackBoxEvent::BudgetViolation {
+                        bb.lock().unwrap().record(
+                            super::blackbox::BlackBoxEvent::BudgetViolation {
                                 name: node_name.to_string(),
                                 budget_us: violation.budget.as_micros() as u64,
                                 actual_us: violation.actual.as_micros() as u64,
-                            });
+                            },
+                        );
                     }
 
                     // Also report to safety monitor if available
@@ -2709,10 +2740,9 @@ impl Scheduler {
         // Check deadline for RT nodes via TimingEnforcer
         if self.nodes[i].is_rt_node {
             if let Some(deadline) = self.nodes[i].deadline {
-                // Get policy from Node trait (defaults to Warn)
-                let policy = self.nodes[i].node.deadline_miss_policy();
-
-                if let Some(dm) = TimingEnforcer::check_deadline(tick_start, deadline, policy) {
+                if let Some(dm) =
+                    TimingEnforcer::check_deadline(tick_start, deadline, self.nodes[i].miss_policy)
+                {
                     if let Some(ref monitor) = self.monitor.safety {
                         monitor.record_deadline_miss(&node_name);
                     }
@@ -2748,6 +2778,16 @@ impl Scheduler {
                                 " Deadline policy: skipping '{}' for one tick",
                                 node_name
                             ));
+                        }
+                        DeadlineAction::SafeMode => {
+                            print_line(&format!(
+                                " Deadline policy: '{}' entering safe state",
+                                node_name
+                            ));
+                            self.nodes[i].node.enter_safe_state();
+                            if let Some(ref monitor) = self.monitor.safety {
+                                monitor.record_safe_mode_activation();
+                            }
                         }
                         DeadlineAction::EmergencyStop => {
                             print_line(&format!(

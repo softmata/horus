@@ -4,9 +4,7 @@ HORUS Message Builder - Compile Generated Messages
 Builds the generated Rust message code into the horus Python module.
 """
 
-import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import List, Optional
 import hashlib
@@ -183,12 +181,3 @@ def build_messages(force: bool = False, verbose: bool = True) -> bool:
     except FileNotFoundError:
         print("Error: maturin not found. Install with: pip install maturin")
         return False
-
-
-def clean_custom_messages():
-    """Remove all generated custom message files."""
-    custom_dir = get_custom_messages_dir()
-    if custom_dir.exists():
-        import shutil
-        shutil.rmtree(custom_dir)
-        print(f"Cleaned: {custom_dir}")

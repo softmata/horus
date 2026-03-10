@@ -13,7 +13,6 @@ use crate::terminal::print_line;
 use super::super::record_replay::{
     NodeReplayer, Recording, RecordingManager, ReplayNode, SchedulerRecording,
 };
-use super::super::types::NodeTier;
 use super::super::types::RegisteredNode;
 use super::{ReplayState, Scheduler};
 
@@ -36,8 +35,9 @@ impl Scheduler {
     /// ).expect("Failed to load recording");
     /// ```
     pub fn add_replay(&mut self, recording_path: PathBuf, priority: u32) -> HorusResult<&mut Self> {
-        let replayer = NodeReplayer::load(&recording_path)
-            .horus_context_with(|| format!("loading recording from {}", recording_path.display()))?;
+        let replayer = NodeReplayer::load(&recording_path).horus_context_with(|| {
+            format!("loading recording from {}", recording_path.display())
+        })?;
 
         let node_name = replayer.recording().node_name.clone();
         let _node_id = replayer.recording().node_id.clone();
@@ -66,7 +66,6 @@ impl Scheduler {
             .nodes
             .insert(node_name.clone(), replayer);
 
-        let _replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
             node: super::super::types::NodeKind::new(Box::new(replay_node)),
             name: Arc::from(node_name.as_str()),
@@ -82,6 +81,7 @@ impl Scheduler {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: crate::core::Miss::Warn,
             execution_class: super::super::types::ExecutionClass::BestEffort,
         });
 
@@ -104,8 +104,13 @@ impl Scheduler {
     /// scheduler.run();
     /// ```
     pub fn replay_from(scheduler_path: PathBuf) -> HorusResult<Self> {
-        let scheduler_recording = SchedulerRecording::load(&scheduler_path)
-            .horus_context_with(|| format!("loading scheduler recording from {}", scheduler_path.display()))?;
+        let scheduler_recording =
+            SchedulerRecording::load(&scheduler_path).horus_context_with(|| {
+                format!(
+                    "loading scheduler recording from {}",
+                    scheduler_path.display()
+                )
+            })?;
 
         let session_dir = scheduler_path.parent().unwrap_or(&scheduler_path);
         let mut scheduler =

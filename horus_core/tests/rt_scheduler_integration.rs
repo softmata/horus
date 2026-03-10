@@ -1,5 +1,5 @@
 // Integration test for real-time scheduler features
-use horus_core::core::{DeadlineMissPolicy, Node};
+use horus_core::core::{DurationExt, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
@@ -57,19 +57,6 @@ impl Node for CriticalControlNode {
         );
         Ok(())
     }
-
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_micros(self.execution_time_us + 20))
-    }
-
-    fn deadline(&self) -> Duration {
-        Duration::from_millis(1)
-    }
-
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::EmergencyStop
-    }
-
 }
 
 #[test]
@@ -81,8 +68,8 @@ fn test_scheduler_with_rt_nodes() {
     scheduler
         .add(CriticalControlNode::new("motor_control", 50)) // 50μs execution
         .order(0) // Highest priority
-        .budget_us(100) // 100μs tick budget
-        .deadline_ms(1) // 1ms deadline
+        .budget(100.us()) // 100μs tick budget
+        .deadline(1.ms()) // 1ms deadline
         .done();
 
     // Add another RT node
@@ -134,7 +121,7 @@ fn test_scheduler_with_safety_critical_config() {
 fn test_budget_violation_detection() {
     cleanup_stale_shm();
     // Enable RT monitoring
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Add node that will violate budget
     // Execution time (100μs) > tick budget (50μs)
@@ -154,7 +141,7 @@ fn test_budget_violation_detection() {
 fn test_deadline_miss_detection() {
     cleanup_stale_shm();
     // Enable deadline monitoring
-    let mut scheduler = Scheduler::new().safety_monitor(true).max_deadline_misses(5);
+    let mut scheduler = Scheduler::deploy().max_deadline_misses(5);
 
     // Add node with tight deadline that might be missed
     scheduler
@@ -208,9 +195,7 @@ fn test_mixed_rt_and_normal_nodes() {
 fn test_watchdog_functionality() {
     cleanup_stale_shm();
     // Enable watchdog monitoring
-    let mut scheduler = Scheduler::new()
-        .safety_monitor(true)
-        .watchdog(Duration::from_millis(50));
+    let mut scheduler = Scheduler::deploy();
 
     // Add RT node that will be monitored by watchdog
     scheduler

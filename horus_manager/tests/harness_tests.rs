@@ -59,11 +59,7 @@ fn harness_cleanup_on_drop() {
         );
     }
     for p in &topic_paths {
-        assert!(
-            !p.exists(),
-            "topic file should be removed: {}",
-            p.display()
-        );
+        assert!(!p.exists(), "topic file should be removed: {}", p.display());
     }
 }
 
@@ -146,23 +142,19 @@ fn harness_log_injection() {
 #[test]
 fn harness_multi_node() {
     let mut rt = HorusTestRuntime::new();
-    rt.add_node(TestNodeConfig::sensor(
-        "harness_camera",
-        "image",
-        "Image",
-    ))
-    .add_node(TestNodeConfig::processor(
-        "harness_detector",
-        "image",
-        "Image",
-        "detections",
-        "BBoxArray",
-    ))
-    .add_node(TestNodeConfig::actuator(
-        "harness_arm",
-        "detections",
-        "BBoxArray",
-    ));
+    rt.add_node(TestNodeConfig::sensor("harness_camera", "image", "Image"))
+        .add_node(TestNodeConfig::processor(
+            "harness_detector",
+            "image",
+            "Image",
+            "detections",
+            "BBoxArray",
+        ))
+        .add_node(TestNodeConfig::actuator(
+            "harness_arm",
+            "detections",
+            "BBoxArray",
+        ));
 
     assert!(rt.wait_ready(Duration::from_secs(2)));
     assert_eq!(rt.node_names().len(), 3);

@@ -4,7 +4,6 @@ use crate::cli_output;
 use crate::commands::check::{
     check_system_package_exists, prompt_missing_system_package, MissingSystemChoice,
 };
-use crate::manifest::{DependencyValue, HORUS_TOML};
 use crate::{registry, workspace};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
@@ -25,8 +24,10 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
 
     // Save to local file
     let freeze_file = output.unwrap_or_else(|| PathBuf::from("horus-freeze.toml"));
-    let toml_str = toml::to_string_pretty(&manifest).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-    fs::write(&freeze_file, toml_str).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let toml_str = toml::to_string_pretty(&manifest)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    fs::write(&freeze_file, toml_str)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!("  Environment frozen to {}", freeze_file.display());
     println!("   ID: {}", manifest.horus_id);
@@ -89,21 +90,26 @@ pub fn run_restore(source: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
 
     // Check if source is a file path or environment ID
-    if source.ends_with(".toml") || source.ends_with(".yaml") || source.ends_with(".yml") || PathBuf::from(&source).exists() {
+    if source.ends_with(".toml") || PathBuf::from(&source).exists() {
         // It's a file path
-        let content = fs::read_to_string(&source)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to read freeze file: {}", e))))?;
+        let content = fs::read_to_string(&source).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to read freeze file: {}",
+                e
+            )))
+        })?;
 
-        let manifest: registry::EnvironmentManifest = toml::from_str(&content)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse freeze file: {}", e))))?;
+        let manifest: registry::EnvironmentManifest = toml::from_str(&content).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "failed to parse freeze file: {}",
+                e
+            )))
+        })?;
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
-        // Get workspace path for horus.toml updates
-        let workspace_path = workspace::find_workspace_root();
-
         // Install each package from the manifest
-        restore_packages(&client, &manifest, &workspace_path)?;
+        restore_packages(&client, &manifest)?;
 
         println!("  Environment restored from {}", source);
         println!("   ID: {}", manifest.horus_id);
@@ -133,11 +139,8 @@ pub fn run_restore(source: String) -> HorusResult<()> {
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
-        // Get workspace path for horus.toml updates
-        let workspace_path = workspace::find_workspace_root();
-
         // Install each package
-        restore_packages(&client, &manifest, &workspace_path)?;
+        restore_packages(&client, &manifest)?;
 
         println!("  Environment {} restored successfully!", source);
     }
@@ -149,7 +152,6 @@ pub fn run_restore(source: String) -> HorusResult<()> {
 fn restore_packages(
     client: &registry::RegistryClient,
     manifest: &registry::EnvironmentManifest,
-    workspace_path: &Option<PathBuf>,
 ) -> HorusResult<()> {
     for pkg in &manifest.packages {
         // Handle different package sources
@@ -187,16 +189,18 @@ fn restore_packages(
                                     Some(&pkg.version),
                                     workspace::InstallTarget::Global,
                                 )
-                                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                                .map_err(|e| {
+                                    HorusError::Config(ConfigError::Other(e.to_string()))
+                                })?;
                         }
                         MissingSystemChoice::InstallLocal => {
                             println!(
                                 "  {} Installing to HORUS local...",
                                 cli_output::ICON_INFO.cyan()
                             );
-                            client
-                                .install(&pkg.name, Some(&pkg.version))
-                                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                            client.install(&pkg.name, Some(&pkg.version)).map_err(|e| {
+                                HorusError::Config(ConfigError::Other(e.to_string()))
+                            })?;
                         }
                         MissingSystemChoice::Skip => {
                             println!("  {} Skipped {}", cli_output::ICON_WARN.yellow(), pkg.name);
@@ -232,20 +236,8 @@ fn restore_packages(
             }
         }
 
-        // Update horus.toml if in a workspace
-        if let Some(ref ws_path) = workspace_path {
-            let toml_path = ws_path.join(HORUS_TOML);
-            if toml_path.exists() {
-                if let Err(e) = crate::manifest::add_dependency_to_file(
-                    &toml_path,
-                    &pkg.name,
-                    &DependencyValue::Simple(pkg.version.clone()),
-                    "dependencies",
-                ) {
-                    log::warn!("Failed to update horus.toml: {}", e);
-                }
-            }
-        }
+        // Dependencies are installed to .horus/packages/ — native build files
+        // (Cargo.toml, pyproject.toml) handle dependency tracking.
     }
     Ok(())
 }

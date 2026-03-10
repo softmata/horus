@@ -37,9 +37,12 @@ async fn set_and_get_parameter() {
         ))
         .await
         .unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap())
-            .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(json["success"], true, "set must succeed");
 
     // Get the parameter
@@ -68,9 +71,12 @@ async fn set_string_parameter() {
         ))
         .await
         .unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap())
-            .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(json["success"], true);
 
     let resp = app
@@ -96,9 +102,12 @@ async fn set_json_object_parameter() {
         ))
         .await
         .unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap())
-            .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(json["success"], true);
 
     let resp = app
@@ -130,9 +139,12 @@ async fn update_parameter_increments_version() {
         ))
         .await
         .unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap())
-            .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let v1 = json["version"].as_u64().unwrap_or(0);
 
     // Update
@@ -144,12 +156,20 @@ async fn update_parameter_increments_version() {
         ))
         .await
         .unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap())
-            .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let v2 = json["version"].as_u64().unwrap_or(0);
 
-    assert!(v2 > v1, "version must increment after update: v1={}, v2={}", v1, v2);
+    assert!(
+        v2 > v1,
+        "version must increment after update: v1={}, v2={}",
+        v1,
+        v2
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

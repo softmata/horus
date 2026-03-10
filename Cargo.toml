@@ -67,6 +67,20 @@ bytemuck = { version = "1.0", features = ["derive"] }
 # Testing
 approx = "0.5"
 
+# ─── Workspace Lints ──────────────────────────────────────────────────────────
+# Prevent stub tests and common test quality issues across all crates.
+[workspace.lints.clippy]
+# Catch `let _ = expr` that silently discards Results/Options in tests
+let_underscore_must_use = "warn"
+# Catch `assert!(result.is_ok())` — prefer unwrap() or match for better errors
+assertions_on_result_states = "warn"
+
+[workspace.lints.rust]
+# Catch bare `matches!()` expressions whose bool return is unused
+unused_must_use = "warn"
+# Allow loom cfg in horus_core
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
 # Enable LTO for release builds (affects all packages)
 # Use "thin" LTO for faster builds or "fat" for smallest size
 [profile.release]

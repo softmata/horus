@@ -5,71 +5,14 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-
 use super::profiler::RuntimeProfiler;
 use super::record_replay::NodeRecorder;
-use crate::core::{Node, NodeInfo, RtStats};
-
-/// Node tier for explicit annotation by developers
-///
-/// Use this to declare a node's execution characteristics at compile time.
-/// The tier influences the default failure policy applied to the node.
-///
-/// # Example
-/// ```ignore
-/// use horus_core::scheduling::{NodeTier, Scheduler};
-///
-/// let mut scheduler = Scheduler::new();
-/// scheduler.add(pid_node).order(0).tier(NodeTier::UltraFast).done();
-/// scheduler.add(sensor_node).order(1).tier(NodeTier::Fast).done();
-/// scheduler.add(logger_node).order(5).tier(NodeTier::Normal).done();
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum NodeTier {
-    /// Ultra-fast nodes (<1us) - highest priority inline execution
-    /// Use for: PID controllers, simple math, data transformations
-    UltraFast,
-
-    /// Fast nodes (<10us) - high priority inline execution
-    /// Use for: Sensor readers, filter calculations, state machines
-    #[default]
-    Fast,
-
-    /// Normal nodes (<100us+) - standard scheduling
-    /// Use for: Complex algorithms, data processing, logging, diagnostics
-    Normal,
-}
-
-impl NodeTier {
-    /// Get the default failure policy for this tier.
-    ///
-    /// Each tier has a sensible default that matches its criticality:
-    /// - **UltraFast/Fast**: `Fatal` — these are control-loop nodes; failure = stop.
-    /// - **Normal**: `Restart` with exponential backoff (5 attempts, 100ms initial).
-    pub fn default_failure_policy(&self) -> super::fault_tolerance::failure_policy::FailurePolicy {
-        use super::fault_tolerance::failure_policy::FailurePolicy;
-        match self {
-            NodeTier::UltraFast | NodeTier::Fast => FailurePolicy::Fatal,
-            NodeTier::Normal => FailurePolicy::restart(5, 100),
-        }
-    }
-}
-
-#[cfg(test)]
-mod node_tier_tests {
-    use super::*;
-
-    #[test]
-    fn test_node_tier_default() {
-        assert_eq!(NodeTier::default(), NodeTier::Fast);
-    }
-}
+use crate::core::{Miss, Node, NodeInfo, RtStats};
 
 #[cfg(test)]
 mod execution_class_tests {
     use super::*;
-    use crate::core::{Node, NodeInfo};
+    use crate::core::{Miss, Node, NodeInfo};
 
     #[test]
     fn test_execution_class_default() {
@@ -100,6 +43,7 @@ mod execution_class_tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: class,
         }
     }
@@ -305,6 +249,8 @@ pub(crate) struct RegisteredNode {
     pub(crate) is_paused: bool,
     /// Per-node real-time statistics (populated for RT nodes)
     pub(crate) rt_stats: Option<RtStats>,
+    /// What to do when this node misses its deadline.
+    pub(crate) miss_policy: Miss,
     /// Execution class — determines which group this node belongs to.
     pub(crate) execution_class: ExecutionClass,
 }

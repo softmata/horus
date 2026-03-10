@@ -173,7 +173,6 @@ struct WorkspaceData {
     name: String,
     path: String,
     packages: Vec<PackageData>,
-    dependencies: Vec<DependencyData>, // Declared in horus.toml but not installed
     is_current: bool, // True if this is the current workspace (detected via find_workspace_root)
 }
 
@@ -182,12 +181,6 @@ struct PackageData {
     name: String,
     version: String,
     installed_packages: Vec<(String, String)>, // (name, version) pairs
-}
-
-#[derive(Debug, Clone)]
-struct DependencyData {
-    name: String,
-    declared_version: String, // Version string from horus.toml (e.g., "package@1.0.0" or just "package")
 }
 
 #[derive(Debug, Clone)]
@@ -259,7 +252,7 @@ impl TuiDashboard {
     pub fn new() -> Self {
         // Initialize real RuntimeParams
         let params = std::sync::Arc::new(
-            horus_core::RuntimeParams::init()
+            horus_core::RuntimeParams::new()
                 .unwrap_or_else(|_| horus_core::RuntimeParams::default()),
         );
 
@@ -467,7 +460,7 @@ impl TuiDashboard {
                         {
                             // Refresh parameters from disk
                             self.params = std::sync::Arc::new(
-                                horus_core::RuntimeParams::init()
+                                horus_core::RuntimeParams::new()
                                     .unwrap_or_else(|_| horus_core::RuntimeParams::default()),
                             );
                         }

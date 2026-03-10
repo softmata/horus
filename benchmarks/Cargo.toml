@@ -6,6 +6,9 @@ authors = ["HORUS Team"]
 description = "Performance benchmarks for HORUS robotics framework"
 license = "Apache-2.0"
 
+[lints]
+workspace = true
+
 [lib]
 name = "horus_benchmarks"
 path = "src/lib.rs"

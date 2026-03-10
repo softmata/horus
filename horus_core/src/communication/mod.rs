@@ -42,7 +42,7 @@
 //! ```
 
 mod macros;
-pub(crate) mod network;
+pub mod network;
 pub mod pod;
 pub mod topic;
 

@@ -1102,3 +1102,609 @@ fn test_copy_dir_all_nested_structure() {
         "pub struct LidarNode;"
     );
 }
+
+// ============================================================================
+// Publish pipeline tests
+// ============================================================================
+
+#[test]
+fn test_publish_tarball_creation_roundtrip() {
+    // Simulate the publish flow: create project files, tar+gz, then extract and verify
+    let project = TempDir::new().unwrap();
+    let project_dir = project.path();
+
+    // Create a minimal horus project
+    fs::write(
+        project_dir.join("horus.toml"),
+        "[package]\nname = \"test-pkg\"\nenable = true\n",
+    )
+    .unwrap();
+    fs::create_dir_all(project_dir.join("src")).unwrap();
+    fs::write(project_dir.join("src/main.rs"), "fn main() {}").unwrap();
+
+    // Build tarball (same logic as publish.rs)
+    let tar_path = project_dir.join("test-pkg.tar.gz");
+    {
+        let tar_file = fs::File::create(&tar_path).unwrap();
+        let enc = flate2::write::GzEncoder::new(tar_file, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        tar.append_path_with_name(project_dir.join("horus.toml"), "horus.toml")
+            .unwrap();
+        tar.append_path_with_name(project_dir.join("src/main.rs"), "src/main.rs")
+            .unwrap();
+        tar.finish().unwrap();
+    }
+
+    // Verify tarball can be extracted and contains expected files
+    let extract_dir = TempDir::new().unwrap();
+    let tar_data = fs::read(&tar_path).unwrap();
+    let decoder = flate2::read::GzDecoder::new(&tar_data[..]);
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(extract_dir.path()).unwrap();
+
+    assert!(extract_dir.path().join("horus.toml").exists());
+    assert!(extract_dir.path().join("src/main.rs").exists());
+
+    let toml_content = fs::read_to_string(extract_dir.path().join("horus.toml")).unwrap();
+    assert!(toml_content.contains("test-pkg"));
+}
+
+#[test]
+fn test_publish_detect_info_from_project() {
+    let project = TempDir::new().unwrap();
+    let project_dir = project.path();
+
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my-robot-driver"
+version = "2.1.0"
+description = "A test driver"
+license = "MIT"
+"#,
+    )
+    .unwrap();
+
+    let info = detect_package_info(project_dir).unwrap();
+    assert_eq!(info.name, "my-robot-driver");
+    assert_eq!(info.version, "2.1.0");
+    assert_eq!(info.description, Some("A test driver".to_string()));
+    assert_eq!(info.license, Some("MIT".to_string()));
+}
+
+#[test]
+fn test_publish_sha256_matches_downloaded() {
+    // Verify that checksum computed during publish matches one computed on download
+    let data = b"package binary contents here";
+    let checksum1 = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        format!("{:x}", hasher.finalize())
+    };
+    let checksum2 = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        format!("{:x}", hasher.finalize())
+    };
+    assert_eq!(checksum1, checksum2);
+    assert_eq!(checksum1.len(), 64); // SHA256 hex = 64 chars
+}
+
+// ============================================================================
+// Version-aware global cache check tests
+// ============================================================================
+
+#[test]
+fn test_check_global_version_satisfies_any() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("my-pkg@1.0.0")).unwrap();
+    assert!(check_global_version_satisfies(tmp.path(), "my-pkg", None).unwrap());
+}
+
+#[test]
+fn test_check_global_version_satisfies_matching() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("my-pkg@1.2.3")).unwrap();
+    let req = semver::VersionReq::parse(">=1.0.0, <2.0.0").unwrap();
+    assert!(check_global_version_satisfies(tmp.path(), "my-pkg", Some(&req)).unwrap());
+}
+
+#[test]
+fn test_check_global_version_satisfies_not_matching() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("my-pkg@1.2.3")).unwrap();
+    let req = semver::VersionReq::parse(">=2.0.0").unwrap();
+    assert!(!check_global_version_satisfies(tmp.path(), "my-pkg", Some(&req)).unwrap());
+}
+
+#[test]
+fn test_check_global_version_satisfies_multiple_versions() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("my-pkg@1.0.0")).unwrap();
+    fs::create_dir(tmp.path().join("my-pkg@2.5.0")).unwrap();
+    let req = semver::VersionReq::parse(">=2.0.0").unwrap();
+    assert!(check_global_version_satisfies(tmp.path(), "my-pkg", Some(&req)).unwrap());
+}
+
+#[test]
+fn test_check_global_version_unversioned_dir_matches_any_req() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("my-pkg")).unwrap();
+    let req = semver::VersionReq::parse(">=5.0.0").unwrap();
+    // Unversioned directory always matches (legacy/manual installs)
+    assert!(check_global_version_satisfies(tmp.path(), "my-pkg", Some(&req)).unwrap());
+}
+
+// ============================================================================
+// semver_req_to_pip conversion tests
+// ============================================================================
+
+#[test]
+fn test_semver_req_to_pip_star_returns_none() {
+    let req = semver::VersionReq::STAR;
+    assert_eq!(super::install::semver_req_to_pip(&req), None);
+}
+
+#[test]
+fn test_semver_req_to_pip_caret() {
+    // semver crate preserves ^1.2 as "^1.2" in to_string()
+    let req = semver::VersionReq::parse("^1.2").unwrap();
+    let pip = super::install::semver_req_to_pip(&req).unwrap();
+    assert!(!pip.is_empty());
+    assert!(pip.contains("1.2"), "expected 1.2 in: {}", pip);
+}
+
+#[test]
+fn test_semver_req_to_pip_tilde() {
+    // semver crate preserves ~1.2 as "~1.2" in to_string()
+    let req = semver::VersionReq::parse("~1.2").unwrap();
+    let pip = super::install::semver_req_to_pip(&req).unwrap();
+    assert!(!pip.is_empty());
+    assert!(pip.contains("1.2"), "expected 1.2 in: {}", pip);
+}
+
+#[test]
+fn test_semver_req_to_pip_exact() {
+    let req = semver::VersionReq::parse("=3.0.0").unwrap();
+    let pip = super::install::semver_req_to_pip(&req).unwrap();
+    assert!(pip.contains("3.0.0"), "expected 3.0.0 in: {}", pip);
+}
+
+#[test]
+fn test_semver_req_to_pip_range() {
+    let req = semver::VersionReq::parse(">=2.0.0, <3.0.0").unwrap();
+    let pip = super::install::semver_req_to_pip(&req).unwrap();
+    assert!(pip.contains(">=2.0.0"), "expected >=2.0.0 in: {}", pip);
+    assert!(pip.contains("<3.0.0"), "expected <3.0.0 in: {}", pip);
+}
+
+// ============================================================================
+// TempDirGuard RAII tests
+// ============================================================================
+
+#[test]
+fn test_temp_dir_guard_armed_cleans_up() {
+    let tmp = TempDir::new().unwrap();
+    let guard_dir = tmp.path().join("guard_test");
+    fs::create_dir(&guard_dir).unwrap();
+    fs::write(guard_dir.join("file.txt"), "test").unwrap();
+
+    let saved_path = guard_dir.clone();
+    {
+        let _guard = super::install::TempDirGuard::new(guard_dir);
+        assert!(saved_path.exists());
+        // guard drops here — should clean up
+    }
+    assert!(!saved_path.exists(), "armed guard should clean up on drop");
+}
+
+#[test]
+fn test_temp_dir_guard_disarmed_does_not_clean() {
+    let tmp = TempDir::new().unwrap();
+    let guard_dir = tmp.path().join("guard_test_disarm");
+    fs::create_dir(&guard_dir).unwrap();
+    fs::write(guard_dir.join("file.txt"), "test").unwrap();
+
+    let saved_path = guard_dir.clone();
+    {
+        let mut guard = super::install::TempDirGuard::new(guard_dir);
+        guard.disarm();
+        // guard drops here — should NOT clean up
+    }
+    assert!(
+        saved_path.exists(),
+        "disarmed guard should not clean up on drop"
+    );
+}
+
+#[test]
+fn test_temp_dir_guard_nonexistent_path_no_panic() {
+    // Dropping a guard for a non-existent path should not panic
+    let _guard = super::install::TempDirGuard::new(PathBuf::from("/nonexistent/path/xyz"));
+    // drops silently
+}
+
+// ============================================================================
+// Ed25519 signature verification tests
+// ============================================================================
+
+#[test]
+fn test_verify_signature_valid() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let mut csprng = OsRng;
+    let signing_key = SigningKey::generate(&mut csprng);
+    let verifying_key = signing_key.verifying_key();
+
+    let data = b"package tarball contents";
+    let signature = signing_key.sign(data);
+    let sig_hex = hex::encode(signature.to_bytes());
+
+    // Write public key to temp file
+    let tmp = TempDir::new().unwrap();
+    let pub_key_path = tmp.path().join("signing_key.pub");
+    fs::write(&pub_key_path, hex::encode(verifying_key.to_bytes())).unwrap();
+
+    let result = super::install::verify_package_signature(data, &sig_hex, &pub_key_path).unwrap();
+    assert!(result, "valid signature should verify");
+}
+
+#[test]
+fn test_verify_signature_invalid() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let mut csprng = OsRng;
+    let signing_key = SigningKey::generate(&mut csprng);
+    let verifying_key = signing_key.verifying_key();
+
+    let data = b"package tarball contents";
+    let tampered_data = b"TAMPERED tarball contents";
+    let signature = signing_key.sign(data);
+    let sig_hex = hex::encode(signature.to_bytes());
+
+    let tmp = TempDir::new().unwrap();
+    let pub_key_path = tmp.path().join("signing_key.pub");
+    fs::write(&pub_key_path, hex::encode(verifying_key.to_bytes())).unwrap();
+
+    // Verify against tampered data — should return false
+    let result =
+        super::install::verify_package_signature(tampered_data, &sig_hex, &pub_key_path).unwrap();
+    assert!(!result, "signature of different data should not verify");
+}
+
+#[test]
+fn test_verify_signature_bad_hex() {
+    let tmp = TempDir::new().unwrap();
+    let pub_key_path = tmp.path().join("signing_key.pub");
+    fs::write(
+        &pub_key_path,
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
+
+    let result =
+        super::install::verify_package_signature(b"data", "not-valid-hex!!!", &pub_key_path);
+    assert!(result.is_err(), "invalid hex should return error");
+}
+
+#[test]
+fn test_verify_signature_missing_key_file() {
+    let result = super::install::verify_package_signature(
+        b"data",
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        Path::new("/nonexistent/key.pub"),
+    );
+    assert!(result.is_err(), "missing key file should return error");
+}
+
+#[test]
+fn test_verify_signature_wrong_key() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let mut csprng = OsRng;
+    let signing_key = SigningKey::generate(&mut csprng);
+    let other_key = SigningKey::generate(&mut csprng);
+
+    let data = b"package data";
+    let signature = signing_key.sign(data);
+    let sig_hex = hex::encode(signature.to_bytes());
+
+    let tmp = TempDir::new().unwrap();
+    let pub_key_path = tmp.path().join("signing_key.pub");
+    // Write the OTHER key's public key — should fail verification
+    fs::write(
+        &pub_key_path,
+        hex::encode(other_key.verifying_key().to_bytes()),
+    )
+    .unwrap();
+
+    let result = super::install::verify_package_signature(data, &sig_hex, &pub_key_path).unwrap();
+    assert!(!result, "wrong key should not verify");
+}
+
+// ============================================================================
+// Tarball extraction security tests
+// ============================================================================
+
+#[test]
+fn test_extract_tarball_normal_files() {
+    // Normal tarball should extract without issues
+    let tmp = TempDir::new().unwrap();
+    let tar_path = tmp.path().join("normal.tar.gz");
+
+    {
+        let file = fs::File::create(&tar_path).unwrap();
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_size(5);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "src/main.rs", b"hello" as &[u8])
+            .unwrap();
+        tar.finish().unwrap();
+    }
+
+    let extract_dir = tmp.path().join("extracted");
+    fs::create_dir(&extract_dir).unwrap();
+    let data = fs::read(&tar_path).unwrap();
+    let decoder = flate2::read::GzDecoder::new(&data[..]);
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(&extract_dir).unwrap();
+
+    assert!(extract_dir.join("src/main.rs").exists());
+    assert_eq!(
+        fs::read_to_string(extract_dir.join("src/main.rs")).unwrap(),
+        "hello"
+    );
+}
+
+#[test]
+fn test_corrupt_tarball_fails_gracefully() {
+    // Random bytes should fail decompression
+    let corrupt_data = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let decoder = flate2::read::GzDecoder::new(&corrupt_data[..]);
+    let mut archive = tar::Archive::new(decoder);
+
+    let tmp = TempDir::new().unwrap();
+    let result = archive.unpack(tmp.path());
+    assert!(result.is_err(), "corrupt tarball should fail extraction");
+}
+
+#[test]
+fn test_empty_tarball_extracts_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let tar_path = tmp.path().join("empty.tar.gz");
+
+    {
+        let file = fs::File::create(&tar_path).unwrap();
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        tar.finish().unwrap();
+    }
+
+    let extract_dir = tmp.path().join("extracted");
+    fs::create_dir(&extract_dir).unwrap();
+    let data = fs::read(&tar_path).unwrap();
+    let decoder = flate2::read::GzDecoder::new(&data[..]);
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(&extract_dir).unwrap();
+
+    // Should be an empty directory
+    let entries: Vec<_> = fs::read_dir(&extract_dir).unwrap().collect();
+    assert!(entries.is_empty(), "empty tarball should extract no files");
+}
+
+#[test]
+fn test_signing_keypair_roundtrip_with_verify() {
+    // Simulate generate_signing_keypair() format + verify_package_signature() compatibility
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    let tmp = TempDir::new().unwrap();
+
+    // Write keys in the same format as generate_signing_keypair()
+    let secret_path = tmp.path().join("signing_key");
+    let public_path = tmp.path().join("signing_key.pub");
+    fs::write(&secret_path, signing_key.to_bytes()).unwrap();
+    fs::write(&public_path, hex::encode(verifying_key.to_bytes())).unwrap();
+
+    // Sign data using the secret key (simulating publish)
+    let package_data = b"full package tarball binary data here";
+    let signature = signing_key.sign(package_data);
+    let sig_hex = hex::encode(signature.to_bytes());
+
+    // Verify using verify_package_signature (simulating install)
+    let result =
+        super::install::verify_package_signature(package_data, &sig_hex, &public_path).unwrap();
+    assert!(result, "keypair roundtrip should verify successfully");
+
+    // Also verify that reading back the secret key works
+    let secret_bytes = fs::read(&secret_path).unwrap();
+    assert_eq!(secret_bytes.len(), 32, "secret key should be 32 bytes");
+    let pub_hex = fs::read_to_string(&public_path).unwrap();
+    assert_eq!(pub_hex.len(), 64, "public key hex should be 64 chars");
+}
+
+// ============================================================================
+// Package name validation parity test matrix (client == server rules)
+// ============================================================================
+// Both client (mod.rs:validate_package_name) and server (main.rs:validate_package_name)
+// enforce identical rules. This matrix documents and tests all edge cases.
+// If you change validation rules, update BOTH implementations and this matrix.
+
+#[test]
+fn test_validation_parity_matrix() {
+    let cases: Vec<(&str, bool)> = vec![
+        // --- Valid unscoped names ---
+        ("lidar-driver", true),
+        ("my_package", true),
+        ("nav2", true),
+        ("ab", true), // min length (2)
+        ("a-b", true),
+        ("sensor-fusion-v2", true),
+        ("ros2-bridge", true),
+        ("horus-nav-stack", true), // contains "horus" but not equal
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            true,
+        ), // 64 chars = max
+        // --- Valid scoped names ---
+        ("@org/pkg", true),
+        ("@my-team/sensor-driver", true),
+        ("@ab/cd", true), // min segments (2 chars each)
+        ("@org/my-package-v2", true),
+        ("@my_org/my_pkg", true), // underscores ok
+        // --- Invalid: too short ---
+        ("a", false), // 1 char
+        ("", false),  // empty
+        // --- Invalid: too long ---
+        // 65 chars for unscoped
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            false,
+        ),
+        // --- Invalid: starts with digit ---
+        ("1package", false),
+        ("2nav", false),
+        // --- Invalid: uppercase ---
+        ("MyPackage", false),
+        ("ALLCAPS", false),
+        ("camelCase", false),
+        // --- Invalid: special characters ---
+        ("my package", false), // space
+        ("my.package", false), // dot
+        ("my+package", false), // plus
+        ("my@package", false), // @ in middle
+        ("my!pkg", false),     // exclamation
+        ("pkg#1", false),      // hash
+        // --- Invalid: path traversal ---
+        ("../etc/passwd", false),
+        ("my..pkg", false),
+        ("pkg\\name", false),
+        // --- Invalid: reserved names ---
+        ("horus", false),
+        ("core", false),
+        ("admin", false),
+        ("test", false),
+        ("main", false),
+        ("api", false),
+        ("root", false),
+        ("system", false),
+        ("std", false),
+        ("lib", false),
+        // --- Invalid: scoped format errors ---
+        ("@orgpkg", false), // missing slash
+        ("@/pkg", false),   // empty org (1 char)
+        ("@a/pkg", false),  // org too short (1 char)
+        ("@org/a", false),  // pkg too short (1 char)
+        // --- Invalid: scoped reserved segments ---
+        ("@admin/pkg", false),  // org is reserved
+        ("@org/core", false),   // pkg is reserved
+        ("@horus/test", false), // both reserved
+        // --- Invalid: scoped with bad chars ---
+        ("@Org/pkg", false), // uppercase org
+        ("@org/Pkg", false), // uppercase pkg
+        // --- Invalid: unicode ---
+        ("pàckage", false), // accented char
+        ("日本語", false),  // CJK
+    ];
+
+    for (name, expected_valid) in &cases {
+        let result = validate_package_name(name);
+        assert_eq!(
+            result.is_ok(),
+            *expected_valid,
+            "validate_package_name({:?}) = {:?}, expected valid={}",
+            name,
+            result,
+            expected_valid
+        );
+    }
+}
+
+#[test]
+fn test_validation_parity_reserved_names_complete() {
+    // All reserved names must be rejected
+    let reserved = &[
+        "horus",
+        "core",
+        "std",
+        "lib",
+        "test",
+        "main",
+        "mod",
+        "pub",
+        "use",
+        "crate",
+        "self",
+        "super",
+        "extern",
+        "fn",
+        "let",
+        "const",
+        "static",
+        "mut",
+        "ref",
+        "type",
+        "impl",
+        "trait",
+        "struct",
+        "enum",
+        "union",
+        "admin",
+        "api",
+        "www",
+        "mail",
+        "ftp",
+        "localhost",
+        "root",
+        "system",
+    ];
+    for name in reserved {
+        assert!(
+            validate_package_name(name).is_err(),
+            "reserved name {:?} should be rejected",
+            name
+        );
+    }
+}
+
+#[test]
+fn test_validation_parity_scoped_reserved_as_org() {
+    // Reserved names as org segment should be rejected
+    let reserved = &["horus", "core", "admin", "api", "root", "system"];
+    for name in reserved {
+        let scoped = format!("@{}/my-pkg", name);
+        assert!(
+            validate_package_name(&scoped).is_err(),
+            "reserved org {:?} in {:?} should be rejected",
+            name,
+            scoped
+        );
+    }
+}
+
+#[test]
+fn test_validation_parity_scoped_reserved_as_pkg() {
+    // Reserved names as package segment should be rejected
+    let reserved = &["horus", "core", "admin", "test", "main", "std"];
+    for name in reserved {
+        let scoped = format!("@my-org/{}", name);
+        assert!(
+            validate_package_name(&scoped).is_err(),
+            "reserved pkg {:?} in @my-org/{:?} should be rejected",
+            name,
+            name
+        );
+    }
+}

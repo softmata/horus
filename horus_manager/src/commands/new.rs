@@ -1,8 +1,7 @@
-use crate::manifest::{DependencyValue, HorusManifest, PackageInfo, HORUS_TOML};
+use crate::manifest::{HorusManifest, PackageInfo, HORUS_TOML};
 use crate::{cli_output, version};
 use anyhow::{Context, Result};
 use colored::*;
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -57,22 +56,19 @@ pub fn create_new_project(
     // Create .gitignore in project root
     create_gitignore(&project_path, &language)?;
 
-    // Generate horus.toml with dependencies
-    create_horus_toml(
-        &project_path,
-        &name,
-        &description,
-        &author,
-        &language,
-        use_macro,
-    )?;
+    // Generate horus.toml (slim — no deps, no language)
+    create_horus_toml(&project_path, &name, &description, &author)?;
 
-    // Generate main file based on language
+    // Generate native build file + main source based on language
     match language.as_str() {
         "rust" => {
+            create_cargo_toml(&project_path, &name, &author, use_macro)?;
             create_main_rs(&project_path, use_macro)?;
         }
-        "python" => create_main_py(&project_path)?,
+        "python" => {
+            create_pyproject_toml(&project_path, &name, &description, &author)?;
+            create_main_py(&project_path)?;
+        }
         other => anyhow::bail!("Unsupported language: {}", other),
     }
 
@@ -225,34 +221,7 @@ fn create_horus_toml(
     name: &str,
     description: &str,
     author: &str,
-    language: &str,
-    use_macro: bool,
 ) -> Result<()> {
-    let mut dependencies = BTreeMap::new();
-
-    match language {
-        "rust" => {
-            dependencies.insert("horus".to_string(), DependencyValue::Simple("*".to_string()));
-            if use_macro {
-                dependencies.insert(
-                    "horus_macros".to_string(),
-                    DependencyValue::Simple("*".to_string()),
-                );
-            }
-            dependencies.insert(
-                "horus_library".to_string(),
-                DependencyValue::Simple("*".to_string()),
-            );
-        }
-        "python" => {
-            dependencies.insert(
-                "horus-robotics".to_string(),
-                DependencyValue::Simple("*".to_string()),
-            );
-        }
-        _ => {}
-    }
-
     let manifest = HorusManifest {
         package: PackageInfo {
             name: name.to_string(),
@@ -260,22 +229,77 @@ fn create_horus_toml(
             description: Some(description.to_string()),
             authors: vec![author.to_string()],
             license: Some("Apache-2.0".to_string()),
-            language: Some(language.to_string()),
             edition: "1".to_string(),
             repository: None,
             package_type: None,
             categories: Vec::new(),
         },
-        dependencies,
-        dev_dependencies: BTreeMap::new(),
-        build_dependencies: BTreeMap::new(),
-        drivers: BTreeMap::new(),
+        drivers: Default::default(),
         ignore: Default::default(),
         enable: Vec::new(),
     };
 
     manifest.save_to(&project_path.join(HORUS_TOML))?;
 
+    Ok(())
+}
+
+/// Create a user-owned Cargo.toml for Rust projects.
+fn create_cargo_toml(project_path: &Path, name: &str, author: &str, use_macro: bool) -> Result<()> {
+    let mut deps = String::from(
+        r#"horus = "*"
+horus_library = "*"
+"#,
+    );
+    if use_macro {
+        deps.push_str("horus_macros = \"*\"\n");
+    }
+
+    let content = format!(
+        r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+authors = ["{author}"]
+
+[[bin]]
+name = "{name}"
+path = "main.rs"
+
+[dependencies]
+{deps}"#,
+    );
+
+    fs::write(project_path.join("Cargo.toml"), content)?;
+    Ok(())
+}
+
+/// Create a user-owned pyproject.toml for Python projects.
+fn create_pyproject_toml(
+    project_path: &Path,
+    name: &str,
+    description: &str,
+    author: &str,
+) -> Result<()> {
+    let content = format!(
+        r#"[project]
+name = "{name}"
+version = "0.1.0"
+description = "{description}"
+authors = [{{ name = "{author}" }}]
+requires-python = ">=3.10"
+
+dependencies = [
+    "horus-robotics",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+"#,
+    );
+
+    fs::write(project_path.join("pyproject.toml"), content)?;
     Ok(())
 }
 

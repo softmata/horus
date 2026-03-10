@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::transform::Transform;
 
@@ -153,6 +153,20 @@ impl HFrameCore {
     }
 
     // ========================================================================
+    // Lock helpers (poison-recovery)
+    // ========================================================================
+
+    #[inline]
+    fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+        lock.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[inline]
+    fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+        lock.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // ========================================================================
     // Slot Management
     // ========================================================================
 
@@ -166,7 +180,7 @@ impl HFrameCore {
 
             // Update children list
             if parent != NO_PARENT && (parent as usize) < self.slots.len() {
-                let mut children = self.children.write().unwrap();
+                let mut children = Self::write_lock(&self.children);
                 children[parent as usize].push(id);
             }
 
@@ -188,7 +202,7 @@ impl HFrameCore {
 
             // Update children list
             if parent != NO_PARENT && (parent as usize) < self.slots.len() {
-                let mut children = self.children.write().unwrap();
+                let mut children = Self::write_lock(&self.children);
                 children[parent as usize].push(id);
             }
 
@@ -215,7 +229,7 @@ impl HFrameCore {
 
             // Remove from parent's children list
             if old_parent != NO_PARENT && (old_parent as usize) < self.slots.len() {
-                let mut children = self.children.write().unwrap();
+                let mut children = Self::write_lock(&self.children);
                 children[old_parent as usize].retain(|&child| child != id);
             }
 
@@ -233,7 +247,7 @@ impl HFrameCore {
             parent.store(NO_PARENT, Ordering::Release);
         }
         {
-            let mut children = self.children.write().unwrap();
+            let mut children = Self::write_lock(&self.children);
             for child_list in children.iter_mut() {
                 child_list.clear();
             }
@@ -243,7 +257,7 @@ impl HFrameCore {
         // Bump generation AND clear the cache map (reset_all is a full tear-down;
         // there is no point keeping entries in memory).
         self.global_generation.fetch_add(1, Ordering::Release);
-        self.chain_cache.write().unwrap().invalidate();
+        Self::write_lock(&self.chain_cache).invalidate();
     }
 
     /// Check if a slot is allocated
@@ -290,7 +304,7 @@ impl HFrameCore {
     /// Get children of a frame
     pub fn children(&self, id: FrameId) -> Vec<FrameId> {
         let idx = id as usize;
-        let children = self.children.read().unwrap();
+        let children = Self::read_lock(&self.children);
         if idx < children.len() {
             children[idx].clone()
         } else {
@@ -335,9 +349,9 @@ impl HFrameCore {
         }
 
         // Validate and auto-normalize the transform
-        let validated = transform
-            .validated()
-            .map_err(|e| HorusError::InvalidInput(ValidationError::Other(format!("Transform: {}", e))))?;
+        let validated = transform.validated().map_err(|e| {
+            HorusError::InvalidInput(ValidationError::Other(format!("Transform: {}", e)))
+        })?;
 
         self.slots[idx].update(&validated, timestamp_ns);
         // Increment AFTER the slot write so the Release fence publishes
@@ -358,9 +372,9 @@ impl HFrameCore {
         }
 
         // Validate and auto-normalize the transform
-        let validated = transform
-            .validated()
-            .map_err(|e| HorusError::InvalidInput(ValidationError::Other(format!("Transform: {}", e))))?;
+        let validated = transform.validated().map_err(|e| {
+            HorusError::InvalidInput(ValidationError::Other(format!("Transform: {}", e)))
+        })?;
 
         self.slots[idx].set_static_transform(&validated);
         self.global_generation.fetch_add(1, Ordering::Release);
@@ -706,7 +720,7 @@ impl HFrameCore {
 
         // Cache hit: valid only when the stored generation matches.
         {
-            let cache = self.chain_cache.read().unwrap();
+            let cache = Self::read_lock(&self.chain_cache);
             if let Some((cached_gen, chain)) = cache.get(src, dst) {
                 if cached_gen == gen {
                     return Some(chain.clone());
@@ -722,7 +736,7 @@ impl HFrameCore {
         // another writer bumped the generation concurrently, the next reader
         // will see a mismatch and recompute — that is safe and correct.
         {
-            let mut cache = self.chain_cache.write().unwrap();
+            let mut cache = Self::write_lock(&self.chain_cache);
             cache.insert(src, dst, gen, chain.clone());
         }
 

@@ -229,11 +229,6 @@ jobs:
         env:
           RUST_LOG: loom=debug
 
-      - name: Loom — circuit breaker (horus_core)
-        run: cargo test -p horus_core --test loom_circuit_breaker -- --nocapture
-        env:
-          RUST_LOG: loom=debug
-
       - name: Loom — watchdog / PRNG / deterministic clock (horus_core)
         run: cargo test -p horus_core --test loom_concurrency -- --nocapture
         env:
@@ -244,10 +239,60 @@ jobs:
         env:
           RUST_LOG: loom=debug
 
+  test-quality:
+    name: Test Quality Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for stub test anti-patterns
+        run: |
+          FAILED=0
+
+          echo "=== Checking for tautological assertions ==="
+          # is_ok() || is_err() — always true, never tests anything
+          if grep -rn 'is_ok().*||.*is_err()\|is_err().*||.*is_ok()' --include='*.rs' .; then
+            echo "::error::Found tautological is_ok() || is_err() assertions"
+            FAILED=1
+          fi
+
+          echo "=== Checking for standalone matches!() with semicolon ==="
+          # matches!(...); as a statement — result is silently discarded
+          # Multi-line assert!(matches!(...)) is fine and excluded
+          BARE_MATCHES=$(grep -rn '^\s*matches!(' --include='*.rs' . | grep -v 'assert' | while read line; do
+            file=$(echo "$line" | cut -d: -f1)
+            lineno=$(echo "$line" | cut -d: -f2)
+            prev=$(sed -n "$((lineno-1))p" "$file" 2>/dev/null)
+            if ! echo "$prev" | grep -q 'assert'; then
+              thisline=$(sed -n "${lineno}p" "$file")
+              if echo "$thisline" | grep -q ';$'; then
+                echo "$line"
+              fi
+            fi
+          done)
+          if [ -n "$BARE_MATCHES" ]; then
+            echo "$BARE_MATCHES"
+            echo "::error::Found standalone matches!() with semicolon — bool return is discarded"
+            FAILED=1
+          fi
+
+          echo "=== Checking for let _ = format!() in tests ==="
+          # let _ = format!("{:?}", x) in test code discards Debug output without checking
+          if grep -rn 'let _ = format!' --include='*.rs' . | grep -i 'test\|#\[cfg(test'; then
+            echo "::warning::Found 'let _ = format!()' in test code — assert the output instead"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::Test quality checks failed. See above for details."
+            exit 1
+          fi
+
+          echo "All test quality checks passed!"
+
   # Final status check
   ci-success:
     name: CI Success
-    needs: [check, fmt, clippy, test, doc, security, loom]
+    needs: [check, fmt, clippy, test, doc, security, loom, test-quality]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -259,7 +304,8 @@ jobs:
              [[ "${{ needs.clippy.result }}" == "success" ]] && \
              [[ "${{ needs.test.result }}" == "success" ]] && \
              [[ "${{ needs.doc.result }}" == "success" ]] && \
-             [[ "${{ needs.loom.result }}" == "success" ]]; then
+             [[ "${{ needs.loom.result }}" == "success" ]] && \
+             [[ "${{ needs.test-quality.result }}" == "success" ]]; then
             echo "All core checks passed!"
             # Security is informational (has continue-on-error)
             echo "Security audit: ${{ needs.security.result }}"
@@ -272,5 +318,6 @@ jobs:
             echo "test: ${{ needs.test.result }}"
             echo "doc: ${{ needs.doc.result }}"
             echo "loom: ${{ needs.loom.result }}"
+            echo "test-quality: ${{ needs.test-quality.result }}"
             exit 1
           fi

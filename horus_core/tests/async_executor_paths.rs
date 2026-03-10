@@ -1,6 +1,6 @@
 //! Integration tests for async I/O executor code paths.
 //!
-//! Covers: panic handling, mixed success/failure, circuit breaker,
+//! Covers: panic handling, mixed success/failure, skip policy,
 //! paused node, uninitialized node, restart failure.
 
 use horus_core::core::Node;
@@ -141,7 +141,7 @@ fn test_async_mixed_success_failure() {
 }
 
 #[test]
-fn test_async_circuit_breaker() {
+fn test_async_skip_policy() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
@@ -159,13 +159,13 @@ fn test_async_circuit_breaker() {
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
-    // The async executor may dispatch several ticks before the circuit breaker
-    // fully opens (tick dispatch is decoupled from result processing).
-    // Verify the node ticked at least 2 times (to trigger the breaker)
+    // The async executor may dispatch several ticks before the skip policy
+    // fully activates (tick dispatch is decoupled from result processing).
+    // Verify the node ticked at least 2 times (to trigger the skip)
     // and stopped well before filling all 200ms worth of ticks.
     assert!(
         ticks >= 2,
-        "Should tick at least 2 times to trigger circuit breaker, got {}",
+        "Should tick at least 2 times to trigger skip policy, got {}",
         ticks
     );
 }

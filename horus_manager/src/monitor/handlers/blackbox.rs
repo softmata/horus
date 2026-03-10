@@ -200,7 +200,6 @@ fn is_anomaly(event: &BlackBoxEvent) -> bool {
             | BlackBoxEvent::DeadlineMiss { .. }
             | BlackBoxEvent::BudgetViolation { .. }
             | BlackBoxEvent::EmergencyStop { .. }
-            | BlackBoxEvent::CircuitBreakerChange { .. }
     )
 }
 
@@ -212,7 +211,6 @@ fn event_node_name(event: &BlackBoxEvent) -> &str {
         BlackBoxEvent::NodeError { name, .. } => name,
         BlackBoxEvent::DeadlineMiss { name, .. } => name,
         BlackBoxEvent::BudgetViolation { name, .. } => name,
-        BlackBoxEvent::CircuitBreakerChange { name, .. } => name,
         _ => "",
     }
 }
@@ -540,7 +538,6 @@ fn event_type_name(event: &BlackBoxEvent) -> &'static str {
         BlackBoxEvent::NodeError { .. } => "NodeError",
         BlackBoxEvent::DeadlineMiss { .. } => "DeadlineMiss",
         BlackBoxEvent::BudgetViolation { .. } => "BudgetViolation",
-        BlackBoxEvent::CircuitBreakerChange { .. } => "CircuitBreakerChange",
         BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
         BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",
         BlackBoxEvent::Custom { .. } => "Custom",

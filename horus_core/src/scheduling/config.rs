@@ -147,22 +147,24 @@ impl RecordingConfigYaml {
     }
 }
 
-/// Internal scheduler configuration — use `Scheduler::new()` with builder methods instead.
+/// Internal scheduler configuration — use `Scheduler` presets or builder methods instead.
 ///
 /// ```rust,ignore
-/// let scheduler = Scheduler::new()
-///     .tick_hz(500.0)
-///     .safety_monitor(true);
+/// // Preferred: use a profile preset
+/// let scheduler = Scheduler::deploy().tick_hz(500.0);
+///
+/// // Or configure from scratch
+/// let scheduler = Scheduler::new().tick_hz(500.0);
 /// ```
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     /// Timing configuration
     pub timing: TimingConfig,
-    /// Enable tier-based fault tolerance (circuit breaker, restart policies)
+    /// Enable tier-based fault tolerance (restart, skip, fatal policies)
     ///
     /// When true, nodes use their tier's default FailurePolicy.
     /// When false, all nodes get FailurePolicy::Ignore.
-    pub circuit_breaker: bool,
+    pub fault_tolerance: bool,
     /// Real-time configuration
     pub realtime: RealTimeConfig,
     /// Resource management
@@ -181,7 +183,7 @@ impl Default for SchedulerConfig {
             timing: TimingConfig {
                 global_rate_hz: 60.0,
             },
-            circuit_breaker: false,
+            fault_tolerance: false,
             realtime: RealTimeConfig {
                 budget_enforcement: false,
                 deadline_monitoring: false,
@@ -309,7 +311,7 @@ mod tests {
         )
             .prop_map(|(timing, cb, realtime, monitoring)| SchedulerConfig {
                 timing,
-                circuit_breaker: cb,
+                fault_tolerance: cb,
                 realtime,
                 resources: ResourceConfig {
                     cpu_cores: None,
@@ -409,9 +411,9 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_config_default_circuit_breaker_off() {
+    fn scheduler_config_default_fault_tolerance_off() {
         let config = SchedulerConfig::default();
-        assert!(!config.circuit_breaker);
+        assert!(!config.fault_tolerance);
     }
 
     #[test]
@@ -651,10 +653,10 @@ mod tests {
         let config = SchedulerConfig::default();
         let mut cloned = config.clone();
         cloned.timing.global_rate_hz = 999.0;
-        cloned.circuit_breaker = true;
+        cloned.fault_tolerance = true;
         // Original should be unmodified
         assert_eq!(config.timing.global_rate_hz, 60.0);
-        assert!(!config.circuit_breaker);
+        assert!(!config.fault_tolerance);
     }
 
     #[test]
@@ -692,12 +694,12 @@ mod tests {
             prop_assert_eq!(config.max_size_mb, size);
         }
 
-        /// SchedulerConfig: circuit_breaker flag toggles independently
+        /// SchedulerConfig: fault_tolerance flag toggles independently
         #[test]
-        fn scheduler_config_circuit_breaker_independent(cb in any::<bool>()) {
+        fn scheduler_config_fault_tolerance_independent(cb in any::<bool>()) {
             let mut config = SchedulerConfig::default();
-            config.circuit_breaker = cb;
-            prop_assert_eq!(config.circuit_breaker, cb);
+            config.fault_tolerance = cb;
+            prop_assert_eq!(config.fault_tolerance, cb);
             // Other defaults unchanged
             prop_assert_eq!(config.timing.global_rate_hz, 60.0);
         }

@@ -64,9 +64,9 @@ pub use core::{
 };
 #[doc(hidden)]
 pub use error::{
-    CommunicationError, ConfigError, HorusContext, HorusError, HorusResult, MemoryError, NodeError,
-    NotFoundError, ParseError, ResourceError, Result, RetryConfig, SerializationError, Severity,
-    TimeoutError, TransformError, ValidationError, retry_transient,
+    retry_transient, CommunicationError, ConfigError, HorusContext, HorusError, HorusResult,
+    MemoryError, NodeError, NotFoundError, ParseError, ResourceError, Result, RetryConfig,
+    SerializationError, Severity, TimeoutError, TransformError, ValidationError,
 };
 #[doc(hidden)]
 pub use params::RuntimeParams;

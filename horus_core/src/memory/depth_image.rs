@@ -264,7 +264,10 @@ mod tests {
         let mut depth = DepthImage::new(4, 4, TensorDtype::U16).unwrap();
         let result = depth.set_depth(0, 0, 70.0);
         assert!(
-            matches!(result, Err(HorusError::InvalidInput(ValidationError::Other(_)))),
+            matches!(
+                result,
+                Err(HorusError::InvalidInput(ValidationError::Other(_)))
+            ),
             "Expected OutOfRange for 70m on U16 depth image, got {:?}",
             result
         );
@@ -302,7 +305,10 @@ mod tests {
         let mut depth = DepthImage::new(2, 2, TensorDtype::U16).unwrap();
         let result = depth.set_depth(0, 0, -1.0);
         assert!(
-            matches!(result, Err(HorusError::InvalidInput(ValidationError::Other(_)))),
+            matches!(
+                result,
+                Err(HorusError::InvalidInput(ValidationError::Other(_)))
+            ),
             "Negative depth should return OutOfRange, got {:?}",
             result
         );

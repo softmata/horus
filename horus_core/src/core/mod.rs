@@ -16,6 +16,7 @@
 //! 4. **Shutdown** - `shutdown()` is called to clean up resources
 
 pub mod discovery;
+pub mod duration_ext;
 pub mod hlog;
 pub mod log_bridge;
 pub mod log_buffer;
@@ -37,4 +38,5 @@ pub use node::{
 pub use presence::NodePresence;
 pub use timer::{Rate, Stopwatch};
 // rt_config types are pub(crate) — accessed directly by scheduling/ internals
-pub use rt_node::{BudgetViolation, DeadlineMissPolicy, RtStats};
+pub use duration_ext::{DurationExt, Frequency};
+pub use rt_node::{BudgetViolation, DeadlineMissPolicy, Miss, RtStats};

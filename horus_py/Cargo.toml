@@ -4,6 +4,9 @@ version = "0.1.9"
 edition = "2021"
 license = "Apache-2.0"
 
+[lints]
+workspace = true
+
 [lib]
 name = "horus_py"
 # `rlib` is added alongside `cdylib` so that `cargo test` can build a test
@@ -15,16 +18,16 @@ crate-type = ["cdylib", "rlib"]
 pyo3 = { version = "0.27", features = ["abi3-py39", "num-bigint", "num-complex"] }
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
-horus_library = { path = "../horus_library" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-rmp-serde = "1.1"  # MessagePack serialization (2-5x faster than JSON)
-chrono = "0.4"
+horus_library = { path = "../horus_library", features = ["wait"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+rmp-serde = "1.1"
 pythonize = "0.27"
 ctrlc = "3.4"
-tracing = { workspace = true }
-parking_lot = "0.12"  # Faster mutexes for buffer pool
-lazy_static = "1.4"  # For global pool registry
+lazy_static = "1.4"
 
 [build-dependencies]
 pyo3-build-config = "0.27"

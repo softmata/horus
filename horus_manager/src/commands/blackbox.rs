@@ -67,8 +67,11 @@ pub fn run_blackbox(
     }
 
     if json_output {
-        let json = serde_json::to_string_pretty(&records)
-            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
+        let json = serde_json::to_string_pretty(&records).map_err(|e| {
+            horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(
+                e.to_string(),
+            ))
+        })?;
         println!("{}", json);
     } else {
         println!(
@@ -90,7 +93,9 @@ fn resolve_blackbox_dir(custom_path: Option<PathBuf>) -> horus_core::error::Horu
     if let Some(p) = custom_path {
         return Ok(p);
     }
-    crate::paths::blackbox_dir().map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))
+    crate::paths::blackbox_dir().map_err(|e| {
+        horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string()))
+    })
 }
 
 /// Load BlackBoxRecords from the WAL file (preferred) or JSON snapshot (fallback).
@@ -254,11 +259,6 @@ fn format_event_detail(event: &BlackBoxEvent) -> String {
             actual_us,
             actual_us.saturating_sub(*budget_us)
         ),
-        BlackBoxEvent::CircuitBreakerChange {
-            name,
-            new_state,
-            failure_count,
-        } => format!("{} -> {} ({} failures)", name, new_state, failure_count),
         BlackBoxEvent::LearningComplete {
             duration_ms,
             tier_summary,
@@ -303,17 +303,21 @@ fn blackbox_tail(
     })
     .ok();
 
-    let mut file = std::fs::File::open(&wal_path)
-        .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
-    file.seek(SeekFrom::End(0))
-        .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
+    let mut file = std::fs::File::open(&wal_path).map_err(|e| {
+        horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string()))
+    })?;
+    file.seek(SeekFrom::End(0)).map_err(|e| {
+        horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string()))
+    })?;
 
     let mut buf = String::new();
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
-        let bytes_read = file
-            .read_to_string(&mut buf)
-            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
+        let bytes_read = file.read_to_string(&mut buf).map_err(|e| {
+            horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(
+                e.to_string(),
+            ))
+        })?;
 
         if bytes_read > 0 {
             for line in buf.lines() {
@@ -370,12 +374,18 @@ fn clear_blackbox(dir: &Path) -> horus_core::error::HorusResult<()> {
     }
 
     if wal_exists {
-        std::fs::remove_file(&wal_path)
-            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
+        std::fs::remove_file(&wal_path).map_err(|e| {
+            horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(
+                e.to_string(),
+            ))
+        })?;
     }
     if json_exists {
-        std::fs::remove_file(&json_path)
-            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
+        std::fs::remove_file(&json_path).map_err(|e| {
+            horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(
+                e.to_string(),
+            ))
+        })?;
     }
 
     println!("{} Blackbox data cleared.", "OK".green().bold());
@@ -394,7 +404,6 @@ fn event_node_name(event: &BlackBoxEvent) -> &str {
         BlackBoxEvent::NodeError { name, .. } => name,
         BlackBoxEvent::DeadlineMiss { name, .. } => name,
         BlackBoxEvent::BudgetViolation { name, .. } => name,
-        BlackBoxEvent::CircuitBreakerChange { name, .. } => name,
         BlackBoxEvent::LearningComplete { .. } => "",
         BlackBoxEvent::EmergencyStop { .. } => "",
         BlackBoxEvent::Custom { .. } => "",
@@ -411,7 +420,6 @@ fn event_type_name(event: &BlackBoxEvent) -> &'static str {
         BlackBoxEvent::NodeError { .. } => "NodeError",
         BlackBoxEvent::DeadlineMiss { .. } => "DeadlineMiss",
         BlackBoxEvent::BudgetViolation { .. } => "BudgetViolation",
-        BlackBoxEvent::CircuitBreakerChange { .. } => "CircuitBreakerChange",
         BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
         BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",
         BlackBoxEvent::Custom { .. } => "Custom",
@@ -426,7 +434,6 @@ fn is_anomaly(event: &BlackBoxEvent) -> bool {
             | BlackBoxEvent::DeadlineMiss { .. }
             | BlackBoxEvent::BudgetViolation { .. }
             | BlackBoxEvent::EmergencyStop { .. }
-            | BlackBoxEvent::CircuitBreakerChange { .. }
     )
 }
 
@@ -446,9 +453,7 @@ fn event_color(event: &BlackBoxEvent) -> EventColor {
         | BlackBoxEvent::LearningComplete { .. } => EventColor::Green,
 
         BlackBoxEvent::NodeTick { success, .. } if !success => EventColor::Yellow,
-        BlackBoxEvent::CircuitBreakerChange { .. } | BlackBoxEvent::BudgetViolation { .. } => {
-            EventColor::Yellow
-        }
+        BlackBoxEvent::BudgetViolation { .. } => EventColor::Yellow,
 
         BlackBoxEvent::NodeError { .. }
         | BlackBoxEvent::DeadlineMiss { .. }

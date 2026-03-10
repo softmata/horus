@@ -85,6 +85,16 @@ pub(crate) fn get_cuda_version() -> Option<String> {
 
 // Check if any version of a package exists in global cache
 pub(crate) fn check_global_versions(cache_dir: &Path, package_name: &str) -> Result<bool> {
+    check_global_version_satisfies(cache_dir, package_name, None)
+}
+
+/// Check if a globally cached package satisfies a version requirement.
+/// If `requirement` is None, returns true if any version exists.
+pub(crate) fn check_global_version_satisfies(
+    cache_dir: &Path,
+    package_name: &str,
+    requirement: Option<&semver::VersionReq>,
+) -> Result<bool> {
     if !cache_dir.exists() {
         return Ok(false);
     }
@@ -94,9 +104,23 @@ pub(crate) fn check_global_versions(cache_dir: &Path, package_name: &str) -> Res
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        // Match package@version pattern
-        if name_str == package_name || name_str.starts_with(&format!("{}@", package_name)) {
+        if name_str == package_name {
+            // Unversioned directory — matches any requirement
             return Ok(true);
+        }
+
+        if let Some(version_str) = name_str.strip_prefix(&format!("{}@", package_name)) {
+            match requirement {
+                None => return Ok(true), // Any version satisfies
+                Some(req) => {
+                    if let Ok(ver) = semver::Version::parse(version_str) {
+                        if req.matches(&ver) {
+                            return Ok(true);
+                        }
+                    }
+                    // Version exists but doesn't match — keep looking
+                }
+            }
         }
     }
 
@@ -471,8 +495,13 @@ pub(crate) fn add_cargo_deps_to_cargo_toml(workspace_path: &Path, deps: &[String
     Ok(())
 }
 
-// Copy directory recursively
+// Copy directory recursively with symlink safety
 pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    let canonical_src = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    copy_dir_all_inner(&canonical_src, src, dst)
+}
+
+fn copy_dir_all_inner(root_src: &Path, src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
 
     for entry in fs::read_dir(src)? {
@@ -481,8 +510,32 @@ pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
-        if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
+        if ty.is_symlink() {
+            // Resolve symlink target and verify it's within the source tree
+            match src_path.canonicalize() {
+                Ok(resolved) => {
+                    if !resolved.starts_with(root_src) {
+                        log::warn!(
+                            "Skipping symlink escaping source tree: {:?} -> {:?}",
+                            src_path,
+                            resolved
+                        );
+                        continue;
+                    }
+                    // Safe internal symlink — copy the resolved target
+                    if resolved.is_dir() {
+                        copy_dir_all_inner(root_src, &resolved, &dst_path)?;
+                    } else {
+                        fs::copy(&resolved, &dst_path)?;
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Skipping broken symlink {:?}: {}", src_path, e);
+                    continue;
+                }
+            }
+        } else if ty.is_dir() {
+            copy_dir_all_inner(root_src, &src_path, &dst_path)?;
         } else {
             fs::copy(&src_path, &dst_path)?;
         }
@@ -633,7 +686,11 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
     if horus_toml.exists() {
         let (manifest, _) = crate::manifest::HorusManifest::load_from(&horus_toml)?;
 
-        let package_type = manifest.package.package_type.as_ref().map(|t| t.to_string());
+        let package_type = manifest
+            .package
+            .package_type
+            .as_ref()
+            .map(|t| t.to_string());
         let categories = if manifest.package.categories.is_empty() {
             None
         } else {
@@ -841,19 +898,8 @@ pub(crate) fn extract_package_dependencies(dir: &Path) -> Result<Vec<DependencyS
         }
     }
 
-    // Try horus.toml
-    let horus_toml_path = dir.join(HORUS_TOML);
-    if horus_toml_path.exists() {
-        if let Ok((manifest, _)) = crate::manifest::HorusManifest::load_from(&horus_toml_path) {
-            if let Ok(specs) = manifest.dependencies_as_specs() {
-                for spec in specs {
-                    if spec.name.starts_with("horus") {
-                        dependencies.push(spec);
-                    }
-                }
-            }
-        }
-    }
+    // Dependencies now live in native build files (Cargo.toml, pyproject.toml).
+    // horus.toml no longer has a [dependencies] section — skip manifest dep check.
 
     Ok(dependencies)
 }
@@ -1397,25 +1443,24 @@ pub(crate) fn prompt_package_metadata(
 impl PackageProvider for RegistryClient {
     fn get_available_versions(&self, package: &str) -> Result<Vec<Version>> {
         // Query registry for available versions
-        let url = format!("{}/api/packages/{}/versions", self.base_url, package);
+        let encoded = crate::registry::url_encode_package_name(package);
+        let url = format!("{}/api/packages/{}/versions", self.base_url, encoded);
 
         let response = self.client.get(&url).send();
 
         match response {
             Ok(resp) if resp.status().is_success() => {
-                #[derive(Deserialize)]
-                struct VersionsResponse {
-                    versions: Vec<String>,
-                }
+                // Server returns a flat array of objects: [{"version": "1.0.0", ...}, ...]
+                let version_objects: Vec<serde_json::Value> = resp.json().unwrap_or_default();
 
-                let versions_resp: VersionsResponse =
-                    resp.json().unwrap_or(VersionsResponse { versions: vec![] });
-
-                // Parse version strings to semver::Version
-                let mut versions: Vec<Version> = versions_resp
-                    .versions
+                // Extract "version" field from each object
+                let mut versions: Vec<Version> = version_objects
                     .iter()
-                    .filter_map(|v| Version::parse(v).ok())
+                    .filter_map(|obj| {
+                        obj.get("version")
+                            .and_then(|v| v.as_str())
+                            .and_then(|v| Version::parse(v).ok())
+                    })
                     .collect();
 
                 versions.sort();
@@ -1587,142 +1632,6 @@ impl PackageProvider for RegistryClient {
 }
 
 // ============================================================================
-// Server-Side Dependency Resolution
-// ============================================================================
-
-/// A resolved dependency from the server's /resolve endpoint
-#[derive(Debug, Clone, Deserialize)]
-pub struct ServerResolvedDep {
-    pub name: String,
-    pub version: String,
-    pub checksum: Option<String>,
-    #[serde(default)]
-    pub dependencies: Vec<ServerResolvedDep>,
-}
-
-/// A lockfile entry from the server's /lockfile endpoint
-#[derive(Debug, Clone, Deserialize)]
-struct LockfileEntry {
-    name: String,
-    version: String,
-    checksum: Option<String>,
-    #[serde(default)]
-    dependencies: Vec<String>,
-}
-
-/// Server-generated lockfile
-#[derive(Debug, Deserialize)]
-struct ServerLockfile {
-    #[allow(dead_code)]
-    version: u32,
-    packages: Vec<LockfileEntry>,
-}
-
-impl RegistryClient {
-    /// Resolve all transitive dependencies via the server in a single roundtrip.
-    ///
-    /// This is much faster than the client-side BFS approach since it avoids
-    /// N+1 HTTP calls. Falls back to client-side resolution if the server
-    /// endpoint is unavailable (e.g., older registry versions).
-    pub fn resolve_dependencies_server(
-        &self,
-        package: &str,
-        version: &str,
-        include_dev: bool,
-    ) -> Result<Vec<ServerResolvedDep>> {
-        let encoded = url_encode_package_name(package);
-        let url = format!(
-            "{}/api/packages/{}/{}/resolve",
-            self.base_url, encoded, version
-        );
-
-        let mut request = self.client.get(&url);
-        if include_dev {
-            request = request.query(&[("include_dev", "true")]);
-        }
-
-        let response = request.send().map_err(|e| {
-            anyhow!("Failed to reach registry for dependency resolution: {}", e)
-        })?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Server-side dependency resolution not available (HTTP {}). \
-                 Falling back to client-side resolution.",
-                response.status().as_u16()
-            ));
-        }
-
-        let deps: Vec<ServerResolvedDep> = response.json().map_err(|e| {
-            anyhow!("Failed to parse dependency resolution response: {}", e)
-        })?;
-
-        Ok(deps)
-    }
-
-    /// Generate a lockfile via the server in a single roundtrip.
-    ///
-    /// Returns a flat list of all resolved packages with exact versions and checksums.
-    pub fn generate_lockfile_server(
-        &self,
-        package: &str,
-        version: &str,
-    ) -> Result<Vec<(String, String, Option<String>)>> {
-        let encoded = url_encode_package_name(package);
-        let url = format!(
-            "{}/api/packages/{}/{}/lockfile",
-            self.base_url, encoded, version
-        );
-
-        let response = self.client.get(&url).send().map_err(|e| {
-            anyhow!("Failed to reach registry for lockfile generation: {}", e)
-        })?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Server-side lockfile generation not available (HTTP {})",
-                response.status().as_u16()
-            ));
-        }
-
-        let lockfile: ServerLockfile = response.json().map_err(|e| {
-            anyhow!("Failed to parse lockfile response: {}", e)
-        })?;
-
-        Ok(lockfile
-            .packages
-            .into_iter()
-            .map(|p| (p.name, p.version, p.checksum))
-            .collect())
-    }
-}
-
-/// Flatten a recursive server resolution tree into a deduplicated list.
-pub fn flatten_resolved_deps(deps: &[ServerResolvedDep]) -> Vec<(String, String)> {
-    let mut result = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    fn walk(
-        dep: &ServerResolvedDep,
-        result: &mut Vec<(String, String)>,
-        seen: &mut std::collections::HashSet<String>,
-    ) {
-        let key = format!("{}@{}", dep.name, dep.version);
-        if seen.insert(key) {
-            result.push((dep.name.clone(), dep.version.clone()));
-            for child in &dep.dependencies {
-                walk(child, result, seen);
-            }
-        }
-    }
-
-    for dep in deps {
-        walk(dep, &mut result, &mut seen);
-    }
-    result
-}
-
-// ============================================================================
 // Package Update & Parallel Downloads
 // ============================================================================
 
@@ -1882,60 +1791,6 @@ impl RegistryClient {
         }
 
         println!("\n {} Update complete!", "".green());
-        Ok(())
-    }
-
-    /// Install dependencies in parallel using rayon
-    pub fn install_dependencies_parallel(
-        &self,
-        deps: &[crate::dependency_resolver::DependencySpec],
-        target: &crate::workspace::InstallTarget,
-    ) -> Result<()> {
-        use rayon::prelude::*;
-
-        if deps.is_empty() {
-            return Ok(());
-        }
-
-        println!(
-            "  {} Installing {} dependencies in parallel...",
-            "".cyan(),
-            deps.len()
-        );
-
-        // Cap at 8 parallel threads
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(8.min(deps.len()))
-            .build()
-            .map_err(|e| anyhow!("Failed to create thread pool: {}", e))?;
-
-        let results: Vec<Result<()>> = pool.install(|| {
-            deps.par_iter()
-                .map(|dep| {
-                    // Each thread gets its own RegistryClient (cheap — just a reqwest::blocking::Client)
-                    let client = RegistryClient::new();
-                    let version_req = dep.requirement.to_string();
-                    let version = if version_req == "*" {
-                        None
-                    } else {
-                        Some(version_req.as_str())
-                    };
-                    match client.install_from_registry(&dep.name, version, target.clone()) {
-                        Ok(_) => Ok(()),
-                        Err(e) => {
-                            log::error!("Failed to install {}: {}", dep.name, e);
-                            Err(e)
-                        }
-                    }
-                })
-                .collect()
-        });
-
-        let failures: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
-        if !failures.is_empty() {
-            log::warn!("{} dependencies failed to install", failures.len());
-        }
-
         Ok(())
     }
 }

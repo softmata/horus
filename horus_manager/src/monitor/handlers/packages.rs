@@ -115,19 +115,6 @@ pub async fn packages_environments_handler() -> impl IntoResponse {
             let env_name = ws.name;
             let horus_dir = env_path.join(".horus");
 
-            // Try to read dependencies from horus.toml
-            let horus_toml_path = env_path.join(crate::manifest::HORUS_TOML);
-            let toml_dependencies = if horus_toml_path.exists() {
-                crate::manifest::HorusManifest::load_from(&horus_toml_path)
-                    .ok()
-                    .map(|(manifest, _)| {
-                        manifest.dependencies.keys().cloned().collect::<Vec<String>>()
-                    })
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-
             // Get packages inside this environment (deduplicated)
             let packages_dir = horus_dir.join("packages");
             let mut packages = Vec::new();
@@ -181,55 +168,11 @@ pub async fn packages_environments_handler() -> impl IntoResponse {
                 }
             }
 
-            let workspace_dependencies: Vec<serde_json::Value> = toml_dependencies
-                .iter()
-                .filter_map(|dep_str| {
-                    let dep_name = dep_str.split('@').next().unwrap_or(dep_str);
-
-                    if local_packages_set.contains(dep_name) {
-                        return None;
-                    }
-
-                    let dep_path = packages_dir.join(dep_str);
-                    if dep_path.exists() || dep_path.read_link().is_ok() {
-                        let mut metadata_path = dep_path.join("metadata.json");
-
-                        if let Ok(real_path) = std::fs::canonicalize(&dep_path) {
-                            metadata_path = real_path.join("metadata.json");
-                        }
-
-                        let version = if metadata_path.exists() {
-                            fs::read_to_string(&metadata_path)
-                                .ok()
-                                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                                .and_then(|j| {
-                                    j.get("version")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string())
-                                })
-                                .unwrap_or_else(|| {
-                                    dep_str.split('@').nth(1).unwrap_or("unknown").to_string()
-                                })
-                        } else {
-                            dep_str.split('@').nth(1).unwrap_or("unknown").to_string()
-                        };
-
-                        Some(serde_json::json!({
-                            "name": dep_name,
-                            "version": version,
-                        }))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
             local_envs.push(serde_json::json!({
                 "name": env_name,
                 "path": env_path.to_string_lossy(),
                 "packages": packages,
                 "package_count": packages.len(),
-                "dependencies": workspace_dependencies,
             }));
         }
 
@@ -280,57 +223,24 @@ pub async fn packages_install_handler(Json(req): Json<InstallRequest>) -> impl I
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
         let client = RegistryClient::new();
 
-        let (horus_toml_path, version) = if let Some(target_str) = &target {
+        let version = if let Some(target_str) = &target {
             if target_str == "global" {
-                let version = client.install_to_target(
+                client.install_to_target(
                     &req.package,
                     None,
                     crate::workspace::InstallTarget::Global,
-                )?;
-                (None, version)
+                )?
             } else {
                 let target_path = PathBuf::from(target_str);
-
-                let parent_path = if target_path.ends_with(".horus/packages") {
-                    target_path.parent().and_then(|p| p.parent())
-                } else {
-                    target_path
-                        .parent()
-                        .and_then(|p| p.parent())
-                        .and_then(|p| p.parent())
-                        .and_then(|p| p.parent())
-                };
-
-                let toml_path = parent_path.map(|p| p.join(crate::manifest::HORUS_TOML));
-
-                let version = client.install_to_target(
+                client.install_to_target(
                     &req.package,
                     None,
                     crate::workspace::InstallTarget::Local(target_path),
-                )?;
-                (toml_path, version)
+                )?
             }
         } else {
-            let toml_path = PathBuf::from(crate::manifest::HORUS_TOML);
-            let toml_path = if toml_path.exists() {
-                Some(toml_path)
-            } else {
-                None
-            };
-            let version = client.install(&req.package, None)?;
-            (toml_path, version)
+            client.install(&req.package, None)?
         };
-
-        if let Some(toml_path) = horus_toml_path {
-            if toml_path.exists() {
-                crate::manifest::add_dependency_to_file(
-                    &toml_path,
-                    &req.package,
-                    &crate::manifest::DependencyValue::Simple(version.clone()),
-                    "dependencies",
-                )?;
-            }
-        }
 
         Ok((req.package.clone(), version))
     })
@@ -416,19 +326,6 @@ pub async fn packages_uninstall_handler(Json(req): Json<UninstallRequest>) -> im
                     let nested_pkg_path = parent_pkg_path.join(".horus/packages").join(&package);
                     if nested_pkg_path.exists() {
                         fs::remove_dir_all(&nested_pkg_path)?;
-
-                        let project_root = parent_pkg_path.parent().and_then(|p| p.parent());
-                        if let Some(root) = project_root {
-                            let horus_toml_path = root.join(crate::manifest::HORUS_TOML);
-                            if horus_toml_path.exists() {
-                                let _ = crate::manifest::remove_dependency_from_file(
-                                    &horus_toml_path,
-                                    &package,
-                                    "dependencies",
-                                );
-                            }
-                        }
-
                         return Ok(());
                     }
                 }

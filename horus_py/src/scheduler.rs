@@ -1,11 +1,12 @@
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
 use horus::core::{NodeInfo as CoreNodeInfo, TopicMetadata};
+use horus_core::core::Miss;
 use horus_core::core::Node as CoreNode;
 use horus_core::core::NodeMetrics;
 use horus_core::error::HorusError;
 use horus_core::scheduling::{
-    FailurePolicy, NodeRegistration, NodeTier, Scheduler as CoreScheduler,
+    ExecutionClass, FailurePolicy, NodeRegistration, Scheduler as CoreScheduler,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -63,7 +64,6 @@ struct PyNodeAdapter {
     scheduler_running: Arc<AtomicBool>,
     publishers_list: Vec<TopicMetadata>,
     subscribers_list: Vec<TopicMetadata>,
-    rate: Option<f64>,
 }
 
 impl CoreNode for PyNodeAdapter {
@@ -213,9 +213,50 @@ impl CoreNode for PyNodeAdapter {
     fn subscribers(&self) -> Vec<TopicMetadata> {
         self.subscribers_list.clone()
     }
+}
 
-    fn rate_hz(&self) -> Option<f64> {
-        self.rate
+// ─── PyMiss ─────────────────────────────────────────────────────────────────
+
+/// Deadline miss policy for a node.
+///
+/// Set via `.on_miss()` on the node builder.
+///
+/// Example:
+///     scheduler.node(motor).order(0).rate_hz(1000).on_miss(Miss.SAFE_MODE).done()
+#[pyclass(name = "Miss", module = "horus._horus")]
+#[derive(Debug, Clone, Copy)]
+pub struct PyMiss;
+
+#[pymethods]
+impl PyMiss {
+    /// Log warning and continue normally.
+    #[classattr]
+    const WARN: &'static str = "warn";
+
+    /// Skip this tick, resume next cycle.
+    #[classattr]
+    const SKIP: &'static str = "skip";
+
+    /// Enter safe mode — calls `enter_safe_state()` on the node.
+    #[classattr]
+    const SAFE_MODE: &'static str = "safe_mode";
+
+    /// Stop the entire scheduler (last resort).
+    #[classattr]
+    const STOP: &'static str = "stop";
+}
+
+/// Parse a miss policy string into a `Miss` enum.
+fn parse_miss_policy(name: &str) -> PyResult<Miss> {
+    match name {
+        "warn" => Ok(Miss::Warn),
+        "skip" => Ok(Miss::Skip),
+        "safe_mode" => Ok(Miss::SafeMode),
+        "stop" => Ok(Miss::Stop),
+        _ => Err(PyRuntimeError::new_err(format!(
+            "Unknown miss policy '{}'. Use Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, or Miss.STOP",
+            name
+        ))),
     }
 }
 
@@ -234,8 +275,9 @@ pub struct PyNodeBuilder {
     rt: bool,
     deadline_ms: Option<f64>,
     budget_us: Option<u64>,
-    tier: Option<String>,
-    failure_policy: Option<String>,
+    failure_policy: Option<FailurePolicy>,
+    miss_policy: Option<String>,
+    execution_class: Option<ExecutionClass>,
 }
 
 #[pymethods]
@@ -266,15 +308,67 @@ impl PyNodeBuilder {
         slf
     }
 
-    /// Set execution tier: "ultra_fast", "fast", "normal".
-    fn tier(mut slf: PyRefMut<'_, Self>, name: String) -> PyRefMut<'_, Self> {
-        slf.tier = Some(name);
+    /// Set deadline miss policy: Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, Miss.STOP.
+    fn on_miss(mut slf: PyRefMut<'_, Self>, policy: String) -> PyRefMut<'_, Self> {
+        slf.miss_policy = Some(policy);
         slf
     }
 
     /// Set failure policy: "fatal", "restart", "skip", "ignore".
-    fn failure_policy(mut slf: PyRefMut<'_, Self>, name: String) -> PyRefMut<'_, Self> {
-        slf.failure_policy = Some(name);
+    ///
+    /// For "restart" and "skip", optional keyword arguments control behavior:
+    ///   - restart: max_retries (default 5), backoff_ms (default 100)
+    ///   - skip: max_failures (default 5), cooldown_ms (default 30000)
+    ///
+    /// Examples:
+    ///     .failure_policy("restart")
+    ///     .failure_policy("restart", max_retries=10, backoff_ms=200)
+    ///     .failure_policy("skip", max_failures=3, cooldown_ms=5000)
+    #[pyo3(signature = (name, max_retries=None, backoff_ms=None, max_failures=None, cooldown_ms=None))]
+    fn failure_policy(
+        mut slf: PyRefMut<'_, Self>,
+        name: String,
+        max_retries: Option<u32>,
+        backoff_ms: Option<u64>,
+        max_failures: Option<u32>,
+        cooldown_ms: Option<u64>,
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        let policy = match name.as_str() {
+            "fatal" => FailurePolicy::Fatal,
+            "restart" => {
+                FailurePolicy::restart(max_retries.unwrap_or(5), backoff_ms.unwrap_or(100))
+            }
+            "skip" => FailurePolicy::skip(max_failures.unwrap_or(5), cooldown_ms.unwrap_or(30_000)),
+            "ignore" => FailurePolicy::Ignore,
+            _ => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "Unknown failure policy '{}'. Use 'fatal', 'restart', 'skip', or 'ignore'",
+                    name
+                )));
+            }
+        };
+        slf.failure_policy = Some(policy);
+        Ok(slf)
+    }
+
+    /// Set event-driven execution: node ticks when `topic` receives data.
+    ///
+    /// Example:
+    ///     scheduler.node(detector).on("lidar_scan").done()
+    fn on(mut slf: PyRefMut<'_, Self>, topic: String) -> PyRefMut<'_, Self> {
+        slf.execution_class = Some(ExecutionClass::Event(topic));
+        slf
+    }
+
+    /// Set compute execution class (CPU-bound work on thread pool).
+    fn compute(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        slf.execution_class = Some(ExecutionClass::Compute);
+        slf
+    }
+
+    /// Set async I/O execution class (I/O-bound work on tokio runtime).
+    fn async_io(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        slf.execution_class = Some(ExecutionClass::AsyncIo);
         slf
     }
 
@@ -286,8 +380,10 @@ impl PyNodeBuilder {
         let rate_hz = slf.rate_hz;
         let rt = slf.rt;
         let deadline_ms = slf.deadline_ms;
-        let tier = slf.tier.clone();
+        let budget_us = slf.budget_us;
         let failure_policy = slf.failure_policy.clone();
+        let miss_policy = slf.miss_policy.clone();
+        let execution_class = slf.execution_class.clone();
         drop(slf);
 
         {
@@ -299,8 +395,10 @@ impl PyNodeBuilder {
                 rate_hz,
                 rt,
                 deadline_ms,
-                tier,
+                budget_us,
                 failure_policy,
+                miss_policy,
+                execution_class,
             )?;
         }
 
@@ -312,7 +410,7 @@ impl PyNodeBuilder {
 
 /// Python wrapper for HORUS Scheduler wrapping horus_core::Scheduler.
 ///
-/// All scheduling logic (rate control, circuit breaker, watchdog, deadline,
+/// All scheduling logic (rate control, fault tolerance, watchdog, deadline,
 /// parallel execution, record/replay, telemetry, etc.) is handled by horus_core.
 /// Python API is preserved with zero breaking changes.
 #[pyclass(name = "Scheduler", module = "horus._horus")]
@@ -336,7 +434,6 @@ impl PyScheduler {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn add_node_internal(
         &self,
         py: Python,
@@ -345,8 +442,10 @@ impl PyScheduler {
         rate_hz: Option<f64>,
         rt: bool,
         deadline_ms: Option<f64>,
-        tier: Option<String>,
-        failure_policy: Option<String>,
+        budget_us: Option<u64>,
+        failure_policy: Option<FailurePolicy>,
+        miss_policy: Option<String>,
+        execution_class: Option<ExecutionClass>,
     ) -> PyResult<()> {
         let name: String = node.getattr(py, "name")?.extract(py)?;
 
@@ -357,7 +456,7 @@ impl PyScheduler {
             .into_iter()
             .map(|t| TopicMetadata {
                 topic_name: t,
-                type_name: "unknown".into(),
+                type_name: "dynamic".into(),
             })
             .collect();
 
@@ -368,7 +467,7 @@ impl PyScheduler {
             .into_iter()
             .map(|t| TopicMetadata {
                 topic_name: t,
-                type_name: "unknown".into(),
+                type_name: "dynamic".into(),
             })
             .collect();
 
@@ -388,7 +487,6 @@ impl PyScheduler {
             scheduler_running: self.scheduler_running.clone(),
             publishers_list: publishers,
             subscribers_list: subscribers,
-            rate: node_rate,
         };
 
         let mut config = NodeRegistration::new(Box::new(adapter)).order(order);
@@ -398,24 +496,31 @@ impl PyScheduler {
         if let Some(ms) = deadline_ms {
             config = config.deadline_ms(ms as u64);
         }
-        if let Some(ref tier_name) = tier {
-            let node_tier = match tier_name.as_str() {
-                "ultra_fast" => NodeTier::UltraFast,
-                "fast" => NodeTier::Fast,
-                "normal" => NodeTier::Normal,
-                _ => NodeTier::Fast,
-            };
-            config = config.tier(node_tier);
+        if let Some(us) = budget_us {
+            config = config.budget_us(us);
         }
-        if let Some(ref policy_name) = failure_policy {
-            let policy = match policy_name.as_str() {
-                "fatal" => FailurePolicy::Fatal,
-                "restart" => FailurePolicy::restart(5, 100),
-                "skip" => FailurePolicy::skip(5, 30_000),
-                "ignore" => FailurePolicy::Ignore,
-                _ => FailurePolicy::Fatal,
-            };
+        if let Some(ref miss_name) = miss_policy {
+            config = config.on_miss(parse_miss_policy(miss_name)?);
+        }
+        if let Some(policy) = failure_policy {
             config = config.failure_policy(policy);
+        }
+        if let Some(exec_class) = execution_class {
+            match exec_class {
+                ExecutionClass::Event(ref topic) => {
+                    config = config.on(topic);
+                }
+                ExecutionClass::Compute => {
+                    config = config.compute();
+                }
+                ExecutionClass::AsyncIo => {
+                    config = config.async_io();
+                }
+                ExecutionClass::Rt => {
+                    // RT is set implicitly via deadline_ms/budget_us
+                }
+                ExecutionClass::BestEffort => {} // default, no-op
+            }
         }
 
         let mut guard = self
@@ -431,23 +536,19 @@ impl PyScheduler {
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid node configuration: {}", e)))?;
         inner.add_configured(config);
 
-        println!(
-            "Added node '{}' (order={}, rate={}, rt={})",
-            name,
+        tracing::info!(
+            node = %name,
             order,
-            node_rate.map_or("scheduler".to_string(), |r| format!("{}Hz", r)),
-            rt
+            rate = %node_rate.map_or("scheduler".to_string(), |r| format!("{}Hz", r)),
+            rt,
+            "Added node",
         );
 
         Ok(())
     }
 
     /// Build a Python dict from a NodeMetrics.
-    fn metric_to_dict(
-        py: Python,
-        metric: &NodeMetrics,
-        tick_rate: f64,
-    ) -> PyResult<Py<PyAny>> {
+    fn metric_to_dict(py: Python, metric: &NodeMetrics, tick_rate: f64) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         dict.set_item("name", &metric.name)?;
         dict.set_item("order", metric.order)?;
@@ -461,18 +562,8 @@ impl PyScheduler {
         dict.set_item("max_tick_duration_ms", metric.max_tick_duration_ms)?;
         dict.set_item("last_tick_duration_ms", metric.last_tick_duration_ms)?;
         dict.set_item("uptime_seconds", metric.uptime_seconds)?;
-
-        dict.set_item("failure_count", metric.errors_count)?;
-        dict.set_item("consecutive_failures", 0u32)?;
-        dict.set_item("circuit_open", false)?;
-
-        dict.set_item("deadline_ms", py.None())?;
-        dict.set_item("deadline_misses", 0u64)?;
-        dict.set_item("watchdog_enabled", false)?;
-        dict.set_item("watchdog_timeout_ms", 0u64)?;
-        dict.set_item("watchdog_expired", false)?;
-        dict.set_item("watchdog_time_since_feed_ms", py.None())?;
-        dict.set_item("state", "running")?;
+        dict.set_item("messages_sent", metric.messages_sent)?;
+        dict.set_item("messages_received", metric.messages_received)?;
 
         Ok(dict.into())
     }
@@ -541,14 +632,14 @@ impl PyScheduler {
             rt: false,
             deadline_ms: None,
             budget_us: None,
-            tier: None,
             failure_policy: None,
+            miss_policy: None,
+            execution_class: None,
         })
     }
 
     /// Add a node to the scheduler.
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, tier=None, failure_policy=None))]
+    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, budget_us=None, failure_policy=None, on_miss=None))]
     fn add(
         &self,
         py: Python,
@@ -557,9 +648,23 @@ impl PyScheduler {
         rate_hz: Option<f64>,
         rt: bool,
         deadline_ms: Option<f64>,
-        tier: Option<String>,
+        budget_us: Option<u64>,
         failure_policy: Option<String>,
+        on_miss: Option<String>,
     ) -> PyResult<()> {
+        let parsed_policy = match failure_policy.as_deref() {
+            Some("fatal") => Some(FailurePolicy::Fatal),
+            Some("restart") => Some(FailurePolicy::restart(5, 100)),
+            Some("skip") => Some(FailurePolicy::skip(5, 30_000)),
+            Some("ignore") => Some(FailurePolicy::Ignore),
+            Some(other) => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "Unknown failure policy '{}'. Use 'fatal', 'restart', 'skip', or 'ignore'",
+                    other
+                )));
+            }
+            None => None,
+        };
         self.add_node_internal(
             py,
             node,
@@ -567,8 +672,10 @@ impl PyScheduler {
             rate_hz,
             rt,
             deadline_ms,
-            tier,
-            failure_policy,
+            budget_us,
+            parsed_policy,
+            on_miss,
+            None,
         )
     }
 
@@ -589,7 +696,7 @@ impl PyScheduler {
             .ok_or_else(|| PyRuntimeError::new_err("Cannot modify while scheduler is running"))?;
 
         inner.set_node_rate(&node_name, rate_hz);
-        println!("Set node '{}' rate to {}Hz", node_name, rate_hz);
+        tracing::info!(node = %node_name, rate_hz, "Set node rate");
         Ok(())
     }
 
@@ -655,7 +762,7 @@ impl PyScheduler {
             }
         }
 
-        Err(PyRuntimeError::new_err(format!(
+        Err(crate::errors::HorusNotFoundError::new_err(format!(
             "Node '{}' not found",
             node_name
         )))
@@ -690,11 +797,7 @@ impl PyScheduler {
             if removed.contains(&metric.name) {
                 continue;
             }
-            result.push(Self::metric_to_dict(
-                py,
-                &metric,
-                self.tick_rate_hz,
-            )?);
+            result.push(Self::metric_to_dict(py, &metric, self.tick_rate_hz)?);
         }
 
         Ok(result)
@@ -894,13 +997,12 @@ impl PyScheduler {
                 dict.set_item("budget_overruns", stats.budget_overruns)?;
                 dict.set_item("deadline_misses", stats.deadline_misses)?;
                 dict.set_item("watchdog_expirations", stats.watchdog_expirations)?;
+                dict.set_item("safe_mode_activations", stats.safe_mode_activations)?;
                 Ok(Some(dict.into()))
             }
             None => Ok(None),
         }
     }
-
-
 
     // ========================================================================
     // Recording

@@ -3,7 +3,7 @@
 //! Covers: budget critical violation, non-critical budget, multiple watchdog expiry,
 //! deadline miss threshold, safety stats accuracy, concurrent budget checks.
 
-use horus_core::core::{DeadlineMissPolicy, Node};
+use horus_core::core::Node;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -31,12 +31,6 @@ impl Node for TimedRtNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_micros(self.sleep_us));
     }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_micros(self.sleep_us + 50))
-    }
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Warn
-    }
 }
 
 /// Node that deliberately exceeds tick budget.
@@ -55,12 +49,6 @@ impl Node for BudgetViolatorNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_micros(self.actual_us));
     }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_micros(self.budget_us))
-    }
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Warn
-    }
 }
 
 /// Simple fast counter for non-critical testing.
@@ -76,9 +64,6 @@ impl Node for FastCounterNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(10))
-    }
 }
 
 // ============================================================================
@@ -91,9 +76,7 @@ fn test_budget_critical_violation_emergency_stop() {
     let tick_count = Arc::new(AtomicU64::new(0));
 
     // Safety monitor with watchdog auto-registers all RT nodes as critical
-    let mut scheduler = Scheduler::new()
-        .safety_monitor(true)
-        .watchdog(Duration::from_millis(100));
+    let mut scheduler = Scheduler::deploy();
 
     scheduler
         .add(BudgetViolatorNode {
@@ -124,7 +107,7 @@ fn test_budget_non_critical_no_emergency() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // This node is NOT registered as critical (no watchdog = no auto-critical)
     scheduler
@@ -156,9 +139,7 @@ fn test_multiple_watchdogs_expire_simultaneously() {
     cleanup_stale_shm();
 
     // Watchdog auto-registers all RT nodes as critical
-    let mut scheduler = Scheduler::new()
-        .safety_monitor(true)
-        .watchdog(Duration::from_millis(30));
+    let mut scheduler = Scheduler::deploy();
 
     // 3 RT nodes — auto-registered as critical via watchdog
     for i in 0..3 {
@@ -170,6 +151,7 @@ fn test_multiple_watchdogs_expire_simultaneously() {
                 sleep_us: 10,
             })
             .order(i)
+            .budget_us(60) // sleep_us(10) + margin
             .done();
     }
 
@@ -183,7 +165,7 @@ fn test_deadline_miss_threshold_triggers_stop() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true).max_deadline_misses(3); // Stop after 3 misses
+    let mut scheduler = Scheduler::deploy().max_deadline_misses(3); // Stop after 3 misses
 
     // Node that will miss deadlines
     scheduler
@@ -215,9 +197,7 @@ fn test_safety_stats_accurate() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new()
-        .safety_monitor(true)
-        .max_deadline_misses(100); // High threshold so we don't stop
+    let mut scheduler = Scheduler::deploy().max_deadline_misses(100); // High threshold so we don't stop
 
     // Node that violates budget and misses deadlines
     scheduler
@@ -244,9 +224,7 @@ fn test_concurrent_budget_check_and_add_critical() {
     cleanup_stale_shm();
 
     // Watchdog auto-registers all RT nodes as critical
-    let mut scheduler = Scheduler::new()
-        .safety_monitor(true)
-        .watchdog(Duration::from_millis(100));
+    let mut scheduler = Scheduler::deploy();
 
     // Add several RT nodes to exercise concurrent safety monitor checks
     for i in 0..5 {

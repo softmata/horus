@@ -6,7 +6,7 @@
 use crate::cargo_utils::is_executable;
 use crate::cli_output;
 use crate::config::CARGO_TOML;
-use crate::manifest::{DependencyValue, DetailedDependency, HorusManifest, HORUS_TOML};
+use crate::manifest::{HorusManifest, HORUS_TOML};
 use crate::plugins::{
     CommandInfo, Compatibility, PluginEntry, PluginRegistry, PluginResolver, PluginScope,
     PluginSource, VerificationStatus, HORUS_VERSION,
@@ -16,6 +16,7 @@ use chrono::Utc;
 use colored::*;
 use serde_json;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 /// Detect if a package has CLI plugin capabilities
@@ -25,11 +26,19 @@ pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
     // Check for horus.toml with plugin configuration
     let horus_toml_path = package_dir.join(HORUS_TOML);
     if horus_toml_path.exists() {
-        if let Ok(content) = fs::read_to_string(&horus_toml_path) {
-            if let Ok(toml_val) = content.parse::<toml::Table>() {
-                if let Some(plugin) = toml_val.get("plugin") {
-                    return parse_plugin_toml_manifest(plugin, &toml_val, package_dir);
+        match fs::read_to_string(&horus_toml_path) {
+            Ok(content) => match content.parse::<toml::Table>() {
+                Ok(toml_val) => {
+                    if let Some(plugin) = toml_val.get("plugin") {
+                        return parse_plugin_toml_manifest(plugin, &toml_val, package_dir);
+                    }
                 }
+                Err(e) => {
+                    log::warn!("Failed to parse {}: {}", horus_toml_path.display(), e);
+                }
+            },
+            Err(e) => {
+                log::warn!("Failed to read {}: {}", horus_toml_path.display(), e);
             }
         }
     }
@@ -37,15 +46,23 @@ pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
     // Check for Cargo.toml with [package.metadata.horus] plugin config
     let cargo_toml = package_dir.join(CARGO_TOML);
     if cargo_toml.exists() {
-        if let Ok(content) = fs::read_to_string(&cargo_toml) {
-            if let Ok(toml) = content.parse::<toml::Table>() {
-                if let Some(metadata) = toml
-                    .get("package")
-                    .and_then(|p| p.get("metadata"))
-                    .and_then(|m| m.get("horus"))
-                {
-                    return parse_plugin_toml(metadata, &toml, package_dir);
+        match fs::read_to_string(&cargo_toml) {
+            Ok(content) => match content.parse::<toml::Table>() {
+                Ok(toml) => {
+                    if let Some(metadata) = toml
+                        .get("package")
+                        .and_then(|p| p.get("metadata"))
+                        .and_then(|m| m.get("horus"))
+                    {
+                        return parse_plugin_toml(metadata, &toml, package_dir);
+                    }
                 }
+                Err(e) => {
+                    log::warn!("Failed to parse {}: {}", cargo_toml.display(), e);
+                }
+            },
+            Err(e) => {
+                log::warn!("Failed to read {}: {}", cargo_toml.display(), e);
             }
         }
     }
@@ -365,7 +382,7 @@ fn detect_version(package_dir: &Path) -> Option<String> {
 }
 
 /// Resolve the installed package directory after installation
-fn resolve_installed_package_dir(name: &str, version: &str, global: bool) -> Option<PathBuf> {
+pub fn resolve_installed_package_dir(name: &str, version: &str, global: bool) -> Option<PathBuf> {
     if global {
         let home = dirs::home_dir()?;
         let cache = home.join(".horus/cache");
@@ -419,30 +436,7 @@ pub fn register_plugin_after_install(
         permissions: metadata.permissions,
     };
 
-    // Create symlink in bin directory
-    let bin_dir = if is_global {
-        PluginRegistry::global_bin_dir()?
-    } else {
-        project_root
-            .map(PluginRegistry::project_bin_dir)
-            .ok_or_else(|| anyhow!("No project root for local plugin"))?
-    };
-
-    fs::create_dir_all(&bin_dir)?;
-    let symlink_path = bin_dir.join(format!("horus-{}", metadata.command));
-
-    // Remove existing symlink
-    if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
-        fs::remove_file(&symlink_path).ok();
-    }
-
-    // Create new symlink
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&metadata.binary, &symlink_path)?;
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_file(&metadata.binary, &symlink_path)?;
-
-    // Update plugin registry
+    // Update plugin registry FIRST (can be rolled back if symlink fails)
     let mut resolver = PluginResolver::new()?;
 
     if is_global {
@@ -460,6 +454,50 @@ pub fn register_plugin_after_install(
 
         let path = PluginRegistry::project_path(root);
         project_registry.save_to(&path)?;
+    }
+
+    // Create symlink in bin directory (after registry is updated)
+    let bin_dir = if is_global {
+        PluginRegistry::global_bin_dir()?
+    } else {
+        project_root
+            .map(PluginRegistry::project_bin_dir)
+            .ok_or_else(|| anyhow!("No project root for local plugin"))?
+    };
+
+    fs::create_dir_all(&bin_dir)?;
+    let symlink_path = bin_dir.join(format!("horus-{}", metadata.command));
+
+    // Remove existing symlink
+    if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
+        fs::remove_file(&symlink_path).ok();
+    }
+
+    // Create new symlink; roll back registry entry on failure
+    let symlink_result = {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&metadata.binary, &symlink_path)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(&metadata.binary, &symlink_path)
+        }
+    };
+    if let Err(e) = symlink_result {
+        // Roll back registry entry
+        log::warn!(
+            "Symlink creation failed, rolling back plugin registration: {}",
+            e
+        );
+        let mut rollback_resolver = PluginResolver::new().ok();
+        if is_global {
+            if let Some(ref mut r) = rollback_resolver {
+                r.global_mut().unregister_plugin(&metadata.command);
+                let _ = r.save_global();
+            }
+        }
+        return Err(anyhow!("Failed to create plugin symlink: {}", e));
     }
 
     println!(
@@ -484,23 +522,7 @@ pub fn unregister_plugin(
     is_global: bool,
     project_root: Option<&Path>,
 ) -> Result<()> {
-    let mut resolver = PluginResolver::new()?;
-
-    // Remove from registry
-    if is_global {
-        if resolver.global_mut().unregister_plugin(command).is_some() {
-            resolver.save_global()?;
-        }
-    } else if let Some(root) = project_root {
-        if let Some(project) = resolver.project_mut() {
-            if project.unregister_plugin(command).is_some() {
-                let path = PluginRegistry::project_path(root);
-                project.save_to(&path)?;
-            }
-        }
-    }
-
-    // Remove symlink from bin directory
+    // Remove symlink FIRST (harmless orphan registry entry if this fails)
     let bin_dir = if is_global {
         PluginRegistry::global_bin_dir()?
     } else {
@@ -512,6 +534,22 @@ pub fn unregister_plugin(
     let symlink_path = bin_dir.join(format!("horus-{}", command));
     if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
         fs::remove_file(&symlink_path)?;
+    }
+
+    // Then remove from registry (orphan symlinks are harmless, orphan registry entries aren't)
+    let mut resolver = PluginResolver::new()?;
+
+    if is_global {
+        if resolver.global_mut().unregister_plugin(command).is_some() {
+            resolver.save_global()?;
+        }
+    } else if let Some(root) = project_root {
+        if let Some(project) = resolver.project_mut() {
+            if project.unregister_plugin(command).is_some() {
+                let path = PluginRegistry::project_path(root);
+                project.save_to(&path)?;
+            }
+        }
     }
 
     println!(
@@ -859,7 +897,12 @@ fn read_package_name_from_path(path: &Path) -> Result<String> {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("Cannot determine package name from path: {}", path.display()))
+        .ok_or_else(|| {
+            anyhow!(
+                "Cannot determine package name from path: {}",
+                path.display()
+            )
+        })
 }
 
 /// Install a package from registry or local path
@@ -924,7 +967,10 @@ pub fn run_install(
             let registry = workspace::WorkspaceRegistry::load()
                 .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             let ws = registry.find_by_name(&target_name).ok_or_else(|| {
-                HorusError::Config(ConfigError::Other(format!("Workspace '{}' not found", target_name)))
+                HorusError::Config(ConfigError::Other(format!(
+                    "Workspace '{}' not found",
+                    target_name
+                )))
             })?;
             workspace::InstallTarget::Local(ws.path.clone())
         } else {
@@ -934,49 +980,16 @@ pub fn run_install(
 
         // Install using install_from_path
         let client = registry::RegistryClient::new();
-        let workspace_path = match &install_target {
-            workspace::InstallTarget::Local(p) => p.clone(),
-            _ => {
-                return Err(HorusError::Config(ConfigError::Other(
-                    "Expected local install target".to_string(),
-                )))
-            }
-        };
 
         // Pass None for base_dir - CLI paths are resolved relative to current_dir
         client
             .install_from_path(&package_name, &absolute_path, install_target, None)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-        // Update horus.toml with path dependency
-        let horus_toml_path = workspace_path.join(HORUS_TOML);
-        if horus_toml_path.exists() {
-            let dep_value = DependencyValue::Detailed(DetailedDependency {
-                path: Some(package.clone()), // Use original path as provided by user
-                version: None,
-                source: None,
-                git: None,
-                branch: None,
-                tag: None,
-                rev: None,
-                features: vec![],
-                target: None,
-            });
-            if let Err(e) = crate::manifest::add_dependency_to_file(
-                &horus_toml_path,
-                &package_name,
-                &dep_value,
-                "dependencies",
-            ) {
-                println!(
-                    "  {} Failed to update horus.toml: {}",
-                    cli_output::ICON_WARN.yellow(),
-                    e
-                );
-            } else {
-                println!("  {} Updated horus.toml", cli_output::ICON_SUCCESS.green());
-            }
-        }
+        println!(
+            "  {} horus.toml no longer tracks dependencies. Use your build tool to add path deps.",
+            cli_output::ICON_HINT.dimmed()
+        );
 
         println!(
             "{} Path dependency installed successfully!",
@@ -991,7 +1004,10 @@ pub fn run_install(
             let registry = workspace::WorkspaceRegistry::load()
                 .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             let ws = registry.find_by_name(&target_name).ok_or_else(|| {
-                HorusError::Config(ConfigError::Other(format!("Workspace '{}' not found", target_name)))
+                HorusError::Config(ConfigError::Other(format!(
+                    "Workspace '{}' not found",
+                    target_name
+                )))
             })?;
             workspace::InstallTarget::Local(ws.path.clone())
         } else {
@@ -1037,65 +1053,52 @@ pub fn run_install(
             }
         }
 
-        // Update horus.toml if installing locally
-        if let workspace::InstallTarget::Local(workspace_path) = install_target {
-            let horus_toml_path = workspace_path.join(HORUS_TOML);
-            if horus_toml_path.exists() {
-                let version = ver.as_deref().unwrap_or("*");
-                let dep_value = DependencyValue::Simple(version.to_string());
-                if let Err(e) = crate::manifest::add_dependency_to_file(
-                    &horus_toml_path,
-                    &package,
-                    &dep_value,
-                    "dependencies",
-                ) {
-                    println!(
-                        "  {} Failed to update horus.toml: {}",
-                        cli_output::ICON_WARN.yellow(),
-                        e
-                    );
-                }
-            }
-        }
-
         Ok(())
     }
 }
 
 /// Remove a package
 pub fn run_remove(package: String, global: bool, target: Option<String>) -> HorusResult<()> {
+    // Confirm before removing (skip if stdin is not a terminal, e.g. scripts)
+    if std::io::stdin().is_terminal() {
+        use std::io::Write;
+        let scope = if global { "globally" } else { "from workspace" };
+        print!(
+            "{} Remove {} {}? [y/N] ",
+            cli_output::ICON_WARN.yellow(),
+            package.yellow(),
+            scope
+        );
+        std::io::stdout().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!("Failed to read input: {}", e)))
+        })?;
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!("  Cancelled.");
+            return Ok(());
+        }
+    }
+
     println!(
         "{} Removing {}...",
         cli_output::ICON_INFO.cyan(),
         package.yellow()
     );
 
-    // Track workspace path for horus.toml update
-    let workspace_path = if global {
-        None
-    } else if let Some(target_name) = &target {
-        let reg =
-            workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        let ws = reg
-            .find_by_name(target_name)
-            .ok_or_else(|| HorusError::Config(ConfigError::Other(format!("Workspace '{}' not found", target_name))))?;
-        Some(ws.path.clone())
-    } else {
-        workspace::find_workspace_root()
-    };
-
     let remove_dir = if global {
         // Remove from global cache
-        let global_cache =
-            crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let global_cache = crate::paths::cache_dir()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         // Find versioned directory
         let mut found = None;
         if global_cache.exists() {
-            for entry in
-                fs::read_dir(&global_cache).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+            for entry in fs::read_dir(&global_cache)
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
             {
-                let entry = entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                let entry =
+                    entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name == package || name.starts_with(&format!("{}@", package)) {
                     found = Some(entry.path());
@@ -1104,15 +1107,21 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
             }
         }
         found.ok_or_else(|| {
-            HorusError::Config(ConfigError::Other(format!("Package {} not found in global cache", package)))
+            HorusError::Config(ConfigError::Other(format!(
+                "Package {} not found in global cache",
+                package
+            )))
         })?
     } else if let Some(target_name) = &target {
         // Remove from specific workspace
-        let reg =
-            workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        let ws = reg
-            .find_by_name(target_name)
-            .ok_or_else(|| HorusError::Config(ConfigError::Other(format!("Workspace '{}' not found", target_name))))?;
+        let reg = workspace::WorkspaceRegistry::load()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let ws = reg.find_by_name(target_name).ok_or_else(|| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Workspace '{}' not found",
+                target_name
+            )))
+        })?;
         ws.path.join(".horus/packages").join(&package)
     } else {
         // Remove from current workspace
@@ -1125,13 +1134,17 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
     // Check for system package reference first
     let packages_dir = if global {
-        crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+        crate::paths::cache_dir()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
     } else if let Some(target_name) = &target {
-        let reg =
-            workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        let ws = reg
-            .find_by_name(target_name)
-            .ok_or_else(|| HorusError::Config(ConfigError::Other(format!("Workspace '{}' not found", target_name))))?;
+        let reg = workspace::WorkspaceRegistry::load()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let ws = reg.find_by_name(target_name).ok_or_else(|| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Workspace '{}' not found",
+                target_name
+            )))
+        })?;
         ws.path.join(".horus/packages")
     } else if let Some(root) = workspace::find_workspace_root() {
         root.join(".horus/packages")
@@ -1142,14 +1155,26 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
     let system_ref = packages_dir.join(format!("{}.system.json", package));
     if system_ref.exists() {
         // Read to determine package type
-        let content = fs::read_to_string(&system_ref)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to read system reference: {}", e))))?;
-        let metadata: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse system reference: {}", e))))?;
+        let content = fs::read_to_string(&system_ref).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to read system reference: {}",
+                e
+            )))
+        })?;
+        let metadata: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "failed to parse system reference: {}",
+                e
+            )))
+        })?;
 
         // Remove reference file
-        fs::remove_file(&system_ref)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to remove system reference: {}", e))))?;
+        fs::remove_file(&system_ref).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to remove system reference: {}",
+                e
+            )))
+        })?;
 
         // If it's a cargo package, also remove bin symlink
         if let Some(pkg_type) = metadata.get("package_type") {
@@ -1162,7 +1187,10 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
                 let bin_link = bin_dir.join(&package);
                 if bin_link.exists() || bin_link.read_link().is_ok() {
                     fs::remove_file(&bin_link).map_err(|e| {
-                        HorusError::Config(ConfigError::Other(format!("Failed to remove binary link: {}", e)))
+                        HorusError::Config(ConfigError::Other(format!(
+                            "Failed to remove binary link: {}",
+                            e
+                        )))
                     })?;
                     println!("  Removed binary link for {}", package);
                 }
@@ -1171,23 +1199,7 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
         println!("  Removed system package reference for {}", package);
 
-        // Update horus.toml if removing from local workspace
-        if let Some(ws_path) = workspace_path {
-            let horus_toml_path = ws_path.join(HORUS_TOML);
-            if horus_toml_path.exists() {
-                if let Err(e) = crate::manifest::remove_dependency_from_file(
-                    &horus_toml_path,
-                    &package,
-                    "dependencies",
-                ) {
-                    println!(
-                        "  {} Failed to update horus.toml: {}",
-                        cli_output::ICON_WARN.yellow(),
-                        e
-                    );
-                }
-            }
-        }
+        // horus.toml no longer tracks dependencies; nothing to update there.
 
         return Ok(());
     }
@@ -1198,28 +1210,16 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
     }
 
     // Remove package directory
-    fs::remove_dir_all(&remove_dir)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to remove package: {}", e))))?;
+    fs::remove_dir_all(&remove_dir).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to remove package: {}",
+            e
+        )))
+    })?;
 
     println!("  Removed {} from {}", package, remove_dir.display());
 
-    // Update horus.toml if removing from local workspace
-    if let Some(ws_path) = workspace_path {
-        let horus_toml_path = ws_path.join(HORUS_TOML);
-        if horus_toml_path.exists() {
-            if let Err(e) = crate::manifest::remove_dependency_from_file(
-                &horus_toml_path,
-                &package,
-                "dependencies",
-            ) {
-                println!(
-                    "  {} Failed to update horus.toml: {}",
-                    cli_output::ICON_WARN.yellow(),
-                    e
-                );
-            }
-        }
-    }
+    // horus.toml no longer tracks dependencies; nothing to update there.
 
     Ok(())
 }
@@ -1261,8 +1261,8 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
         }
     } else if all {
         // List both local and global packages
-        let global_cache =
-            crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let global_cache = crate::paths::cache_dir()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         // Show local packages
         println!("{} Local packages:\n", cli_output::ICON_INFO.cyan());
@@ -1274,10 +1274,11 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
 
         if packages_dir.exists() {
             let mut has_local = false;
-            for entry in
-                fs::read_dir(&packages_dir).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+            for entry in fs::read_dir(&packages_dir)
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
             {
-                let entry = entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                let entry =
+                    entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
                 let entry_path = entry.path();
 
                 // Skip if it's a metadata file
@@ -1297,7 +1298,7 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
                     has_local = true;
                     let name = entry.file_name().to_string_lossy().to_string();
                     if !print_package_info(&packages_dir, &name, &entry_path) {
-                        println!("   {}", name.yellow());
+                        println!("  {}", name.yellow());
                     }
                 }
             }
@@ -1315,10 +1316,11 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
         );
         if global_cache.exists() {
             let mut has_global = false;
-            for entry in
-                fs::read_dir(&global_cache).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+            for entry in fs::read_dir(&global_cache)
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
             {
-                let entry = entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                let entry =
+                    entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
                 if entry
                     .file_type()
                     .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
@@ -1326,7 +1328,7 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
                 {
                     has_global = true;
                     let name = entry.file_name().to_string_lossy().to_string();
-                    println!("   {}", name.yellow());
+                    println!("  {}", name.yellow());
                 }
             }
             if !has_global {
@@ -1338,15 +1340,17 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
     } else if global {
         // List global cache packages
         println!("{} Global cache packages:\n", cli_output::ICON_INFO.cyan());
-        let global_cache =
-            crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let global_cache = crate::paths::cache_dir()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         if !global_cache.exists() {
             println!("  No global packages yet");
             return Ok(());
         }
 
-        for entry in fs::read_dir(&global_cache).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))? {
+        for entry in fs::read_dir(&global_cache)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+        {
             let entry = entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             if entry
                 .file_type()
@@ -1354,7 +1358,7 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
                 .is_dir()
             {
                 let name = entry.file_name().to_string_lossy().to_string();
-                println!("   {}", name.yellow());
+                println!("  {}", name.yellow());
             }
         }
     } else {
@@ -1372,7 +1376,9 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
             return Ok(());
         }
 
-        for entry in fs::read_dir(&packages_dir).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))? {
+        for entry in fs::read_dir(&packages_dir)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+        {
             let entry = entry.map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             let entry_path = entry.path();
 
@@ -1434,8 +1440,8 @@ fn run_list_json(_query: Option<String>, global: bool, all: bool) -> HorusResult
 
     // Collect global packages
     if global || all {
-        let global_cache =
-            crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let global_cache = crate::paths::cache_dir()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
         if global_cache.exists() {
             if let Ok(entries) = fs::read_dir(&global_cache) {
                 for entry in entries.flatten() {
@@ -1538,9 +1544,10 @@ pub fn run_publish(freeze: bool, dry_run: bool) -> HorusResult<()> {
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         let freeze_file = "horus-freeze.toml";
-        let toml_str =
-            toml::to_string_pretty(&manifest).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        fs::write(freeze_file, toml_str).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let toml_str = toml::to_string_pretty(&manifest)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        fs::write(freeze_file, toml_str)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         println!("  Environment also frozen to {}", freeze_file);
     }
@@ -1559,7 +1566,8 @@ pub fn run_update(package: Option<String>, global: bool, dry_run: bool) -> Horus
 
 /// Generate signing keypair
 pub fn run_keygen() -> HorusResult<()> {
-    registry::generate_signing_keypair().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    registry::generate_signing_keypair()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     Ok(())
 }
 
@@ -1593,9 +1601,9 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
         let _ = io::stdout().flush();
 
         let mut confirmation = String::new();
-        io::stdin()
-            .read_line(&mut confirmation)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to read input: {}", e))))?;
+        io::stdin().read_line(&mut confirmation).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!("Failed to read input: {}", e)))
+        })?;
 
         if confirmation.trim() != package {
             println!("  Package name mismatch. Unpublish cancelled.");
@@ -1614,104 +1622,266 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
         package.green(),
         version.green()
     );
-    println!("   The package is no longer available on the registry");
+    println!("  The package is no longer available on the registry");
 
     Ok(())
 }
 
-/// Add a dependency to horus.toml (does NOT install - deferred to `horus run`)
-pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) -> HorusResult<()> {
-    // Find horus.toml in current directory or workspace
-    let workspace_path = workspace::find_workspace_root()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let horus_toml_path = workspace_path.join(HORUS_TOML);
+/// Add a dependency.
+///
+/// Detects the project language from CWD and delegates to the native package
+/// manager (`cargo add` for Rust, `pip install` for Python).
+pub fn run_add(name: String, ver: Option<String>, _driver: bool, _plugin: bool) -> HorusResult<()> {
+    use crate::manifest::{detect_languages, Language};
+    use std::process::Command;
 
-    if !horus_toml_path.exists() {
-        return Err(HorusError::Config(ConfigError::Other(
-            "No horus.toml found. Run 'horus init' or 'horus new' first.".to_string(),
-        )));
-    }
+    let cwd = std::env::current_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to get CWD: {}", e))))?;
 
-    // Determine package type for display (registry already tracks type via package_type metadata)
-    let pkg_type = if driver {
-        "driver"
-    } else if plugin {
-        "plugin"
+    let languages = detect_languages(&cwd);
+
+    // Pick the best language to use.
+    // If the package name starts with "horus_", prefer Rust.
+    // If multiple languages detected, prefer Rust when Cargo.toml exists, else first.
+    let lang = if languages.is_empty() {
+        // No build files found -- fall back to helpful message.
+        println!(
+            "{} No build files detected in current directory.",
+            cli_output::ICON_INFO.cyan()
+        );
+        let version_suffix = ver.as_ref().map(|v| format!("@{}", v)).unwrap_or_default();
+        println!(
+            "  For Rust projects:   {}",
+            format!("cargo add {}{}", name, version_suffix).cyan()
+        );
+        println!(
+            "  For Python projects: {}",
+            format!(
+                "pip install {}{}",
+                name,
+                ver.as_deref()
+                    .map(|v| format!("=={}", v))
+                    .unwrap_or_default()
+            )
+            .cyan()
+        );
+        return Ok(());
+    } else if languages.len() == 1 {
+        languages[0]
+    } else if name.starts_with("horus_") && languages.contains(&Language::Rust) {
+        Language::Rust
+    } else if languages.contains(&Language::Rust) {
+        Language::Rust
     } else {
-        "node"
+        languages[0]
     };
 
-    let version = ver.as_deref().unwrap_or("*");
-    let dep_value = DependencyValue::Simple(version.to_string());
-
-    // Add to horus.toml
-    match crate::manifest::add_dependency_to_file(
-        &horus_toml_path,
-        &name,
-        &dep_value,
-        "dependencies",
-    ) {
-        Ok(_) => {
+    match lang {
+        Language::Rust => {
+            let pkg_spec = match &ver {
+                Some(v) => format!("{}@{}", name, v),
+                None => name.clone(),
+            };
+            let cmd_str = format!("cargo add {}", pkg_spec);
             println!(
-                "{} Added '{}' to horus.toml",
-                cli_output::ICON_SUCCESS.green(),
-                name.cyan()
+                "{} Running: {}",
+                cli_output::ICON_INFO.cyan(),
+                cmd_str.cyan()
             );
-            println!("  Type: {}", pkg_type.dimmed());
-            if version != "*" {
-                println!("  Version: {}", version.dimmed());
+            let status = Command::new("cargo")
+                .arg("add")
+                .arg(&pkg_spec)
+                .current_dir(&cwd)
+                .status()
+                .map_err(|e| {
+                    HorusError::Config(ConfigError::Other(format!("Failed to run cargo: {}", e)))
+                })?;
+            if !status.success() {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "cargo add failed with exit code {}",
+                    status.code().unwrap_or(-1)
+                ))));
             }
-            println!();
-            println!("Run {} to install dependencies.", "horus run".cyan().bold());
+            println!(
+                "{} Added {} via cargo",
+                cli_output::ICON_SUCCESS.green(),
+                name.green()
+            );
         }
-        Err(e) => {
-            return Err(HorusError::Config(ConfigError::Other(format!(
-                "Failed to update horus.toml: {}",
-                e
-            ))));
+        Language::Python => {
+            let pkg_spec = match &ver {
+                Some(v) => format!("{}=={}", name, v),
+                None => name.clone(),
+            };
+            let cmd_str = format!("pip install {}", pkg_spec);
+            println!(
+                "{} Running: {}",
+                cli_output::ICON_INFO.cyan(),
+                cmd_str.cyan()
+            );
+            let status = Command::new("pip")
+                .arg("install")
+                .arg(&pkg_spec)
+                .current_dir(&cwd)
+                .status()
+                .map_err(|e| {
+                    HorusError::Config(ConfigError::Other(format!("Failed to run pip: {}", e)))
+                })?;
+            if !status.success() {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "pip install failed with exit code {}",
+                    status.code().unwrap_or(-1)
+                ))));
+            }
+            println!(
+                "{} Added {} via pip",
+                cli_output::ICON_SUCCESS.green(),
+                name.green()
+            );
+        }
+        Language::Cpp => {
+            println!(
+                "{} C++ dependencies should be added via {}",
+                cli_output::ICON_INFO.cyan(),
+                "CMakeLists.txt".cyan()
+            );
+            println!(
+                "  Edit {} and add the dependency with find_package() or FetchContent.",
+                "CMakeLists.txt".cyan()
+            );
+        }
+        Language::Ros2 => {
+            println!(
+                "{} ROS2 dependencies should be added via {}",
+                cli_output::ICON_INFO.cyan(),
+                "package.xml".cyan()
+            );
+            println!(
+                "  Edit {} and add the appropriate <depend>{}</depend> entry.",
+                "package.xml".cyan(),
+                name
+            );
         }
     }
 
     Ok(())
 }
 
-/// Remove a dependency from horus.toml (does NOT delete from cache)
+/// Remove a dependency.
+///
+/// Detects the project language from CWD and delegates to the native package
+/// manager (`cargo remove` for Rust, `pip uninstall -y` for Python).
 pub fn run_remove_dep(name: String) -> HorusResult<()> {
-    // Find horus.toml in current directory or workspace
-    let workspace_path = workspace::find_workspace_root()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let horus_toml_path = workspace_path.join(HORUS_TOML);
+    use crate::manifest::{detect_languages, Language};
+    use std::process::Command;
 
-    if !horus_toml_path.exists() {
-        return Err(HorusError::Config(ConfigError::Other(
-            "No horus.toml found in current directory or workspace.".to_string(),
-        )));
-    }
+    let cwd = std::env::current_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to get CWD: {}", e))))?;
 
-    // Remove from horus.toml
-    match crate::manifest::remove_dependency_from_file(&horus_toml_path, &name, "dependencies") {
-        Ok(removed) => {
-            if removed {
-                println!(
-                    "{} Removed '{}' from horus.toml",
-                    cli_output::ICON_SUCCESS.green(),
-                    name.cyan()
-                );
-                println!();
-                println!("Note: Package remains in cache (~/.horus/cache/).");
-                println!(
-                    "Run {} to clean unused packages.",
-                    "horus cache clean".dimmed()
-                );
-            } else {
-                println!("{} '{}' is not in horus.toml", "!".yellow(), name);
+    let languages = detect_languages(&cwd);
+
+    let lang = if languages.is_empty() {
+        println!(
+            "{} No build files detected in current directory.",
+            cli_output::ICON_INFO.cyan()
+        );
+        println!(
+            "  For Rust projects:   {}",
+            format!("cargo remove {}", name).cyan()
+        );
+        println!(
+            "  For Python projects: {}",
+            format!("pip uninstall {}", name).cyan()
+        );
+        return Ok(());
+    } else if languages.len() == 1 {
+        languages[0]
+    } else if name.starts_with("horus_") && languages.contains(&Language::Rust) {
+        Language::Rust
+    } else if languages.contains(&Language::Rust) {
+        Language::Rust
+    } else {
+        languages[0]
+    };
+
+    match lang {
+        Language::Rust => {
+            let cmd_str = format!("cargo remove {}", name);
+            println!(
+                "{} Running: {}",
+                cli_output::ICON_INFO.cyan(),
+                cmd_str.cyan()
+            );
+            let status = Command::new("cargo")
+                .arg("remove")
+                .arg(&name)
+                .current_dir(&cwd)
+                .status()
+                .map_err(|e| {
+                    HorusError::Config(ConfigError::Other(format!("Failed to run cargo: {}", e)))
+                })?;
+            if !status.success() {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "cargo remove failed with exit code {}",
+                    status.code().unwrap_or(-1)
+                ))));
             }
+            println!(
+                "{} Removed {} via cargo",
+                cli_output::ICON_SUCCESS.green(),
+                name.green()
+            );
         }
-        Err(e) => {
-            return Err(HorusError::Config(ConfigError::Other(format!(
-                "Failed to update horus.toml: {}",
-                e
-            ))));
+        Language::Python => {
+            let cmd_str = format!("pip uninstall -y {}", name);
+            println!(
+                "{} Running: {}",
+                cli_output::ICON_INFO.cyan(),
+                cmd_str.cyan()
+            );
+            let status = Command::new("pip")
+                .arg("uninstall")
+                .arg("-y")
+                .arg(&name)
+                .current_dir(&cwd)
+                .status()
+                .map_err(|e| {
+                    HorusError::Config(ConfigError::Other(format!("Failed to run pip: {}", e)))
+                })?;
+            if !status.success() {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "pip uninstall failed with exit code {}",
+                    status.code().unwrap_or(-1)
+                ))));
+            }
+            println!(
+                "{} Removed {} via pip",
+                cli_output::ICON_SUCCESS.green(),
+                name.green()
+            );
+        }
+        Language::Cpp => {
+            println!(
+                "{} C++ dependencies should be removed via {}",
+                cli_output::ICON_INFO.cyan(),
+                "CMakeLists.txt".cyan()
+            );
+            println!(
+                "  Edit {} and remove the dependency entry.",
+                "CMakeLists.txt".cyan()
+            );
+        }
+        Language::Ros2 => {
+            println!(
+                "{} ROS2 dependencies should be removed via {}",
+                cli_output::ICON_INFO.cyan(),
+                "package.xml".cyan()
+            );
+            println!(
+                "  Edit {} and remove the <depend>{}</depend> entry.",
+                "package.xml".cyan(),
+                name
+            );
         }
     }
 

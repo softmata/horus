@@ -6,6 +6,9 @@ license = "Apache-2.0"
 description = "Unified manager for the HORUS robotics framework"
 authors = ["HORUS Team"]
 
+[lints]
+workspace = true
+
 [lib]
 name = "horus_manager"
 path = "src/lib.rs"

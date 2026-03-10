@@ -1,5 +1,5 @@
 // Test real-time node functionality
-use horus_core::core::{DeadlineMissPolicy, Node};
+use horus_core::core::{Miss, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
@@ -59,19 +59,6 @@ impl Node for MotorControlNode {
         );
         Ok(())
     }
-
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_micros(100))
-    }
-
-    fn deadline(&self) -> Duration {
-        Duration::from_millis(1)
-    }
-
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::EmergencyStop
-    }
-
 }
 
 /// Example: Sensor fusion node with firm real-time constraints
@@ -115,18 +102,6 @@ impl Node for SensorFusionNode {
         );
         Ok(())
     }
-
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_micros(500))
-    }
-
-    fn deadline(&self) -> Duration {
-        Duration::from_millis(10)
-    }
-
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Skip
-    }
 }
 
 /// Example: Logging node with soft real-time constraints
@@ -169,15 +144,6 @@ impl Node for LoggingNode {
         );
         Ok(())
     }
-
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(5))
-    }
-
-    fn deadline(&self) -> Duration {
-        Duration::from_millis(100)
-    }
-
 }
 
 #[test]
@@ -190,12 +156,23 @@ fn test_rt_node_basic() {
     scheduler
         .add(MotorControlNode::new("motor_ctrl"))
         .order(0)
+        .budget_us(100)
+        .deadline_ms(1)
+        .on_miss(Miss::Stop)
         .done();
     scheduler
         .add(SensorFusionNode::new("sensor_fusion"))
         .order(1)
+        .budget_us(500)
+        .deadline_ms(10)
+        .on_miss(Miss::Skip)
         .done();
-    scheduler.add(LoggingNode::new("logger")).order(10).done();
+    scheduler
+        .add(LoggingNode::new("logger"))
+        .order(10)
+        .budget_us(5000)
+        .deadline_ms(100)
+        .done();
 
     // Run for a short duration
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -219,9 +196,26 @@ fn test_rt_node_priority_ordering() {
     log_node.logs_written = logger.clone();
 
     let mut scheduler = Scheduler::new();
-    scheduler.add(log_node).order(10).done(); // Low priority
-    scheduler.add(sensor_node).order(1).done(); // High priority
-    scheduler.add(motor_node).order(0).done(); // Critical priority
+    scheduler
+        .add(log_node)
+        .order(10)
+        .budget_us(5000)
+        .deadline_ms(100)
+        .done(); // Low priority
+    scheduler
+        .add(sensor_node)
+        .order(1)
+        .budget_us(500)
+        .deadline_ms(10)
+        .on_miss(Miss::Skip)
+        .done(); // High priority
+    scheduler
+        .add(motor_node)
+        .order(0)
+        .budget_us(100)
+        .deadline_ms(1)
+        .on_miss(Miss::Stop)
+        .done(); // Critical priority
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
@@ -238,10 +232,16 @@ fn test_rt_node_with_safety_critical_config() {
     scheduler
         .add(MotorControlNode::new("critical_motor"))
         .order(0)
+        .budget_us(100)
+        .deadline_ms(1)
+        .on_miss(Miss::Stop)
         .done();
     scheduler
         .add(SensorFusionNode::new("critical_sensor"))
         .order(1)
+        .budget_us(500)
+        .deadline_ms(10)
+        .on_miss(Miss::Skip)
         .done();
 
     // Run briefly (safety-critical config runs at 1kHz)
@@ -249,28 +249,10 @@ fn test_rt_node_with_safety_critical_config() {
     assert!(result.is_ok());
 }
 
-#[test]
-fn test_rt_node_tick_budget() {
-    // Test that nodes respect their tick budget
-    let node = MotorControlNode::new("test_motor");
-    assert_eq!(node.tick_budget(), Some(Duration::from_micros(100)));
-    assert_eq!(node.deadline(), Duration::from_millis(1));
-    assert_eq!(node.deadline_miss_policy(), DeadlineMissPolicy::EmergencyStop);
-}
+// test_rt_node_tick_budget removed: tick_budget/deadline/deadline_miss_policy removed from Node trait;
+// budget and deadline are now set via builder methods on the scheduler.
 
 // test_rt_node_formal_verification removed: pre_condition/post_condition/invariant removed from Node trait
 
-#[test]
-fn test_deadline_miss_policies() {
-    let motor = MotorControlNode::new("motor");
-    assert_eq!(
-        motor.deadline_miss_policy(),
-        DeadlineMissPolicy::EmergencyStop
-    );
-
-    let sensor = SensorFusionNode::new("sensor");
-    assert_eq!(sensor.deadline_miss_policy(), DeadlineMissPolicy::Skip);
-
-    let logger = LoggingNode::new("logger");
-    assert_eq!(logger.deadline_miss_policy(), DeadlineMissPolicy::Warn);
-}
+// test_deadline_miss_policies removed: deadline_miss_policy removed from Node trait;
+// miss policy is now set via builder `.on_miss(Miss::X)` on the scheduler.

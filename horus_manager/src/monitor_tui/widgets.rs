@@ -903,18 +903,12 @@ impl TuiDashboard {
                     Style::default()
                 };
 
-                // Format package/dependency counts
+                // Format package count
                 let pkg_count = workspace.packages.len();
-                let missing_count = workspace.dependencies.len();
-                let count_display = if missing_count > 0 {
-                    format!("{} ({} missing)", pkg_count, missing_count)
-                } else {
-                    pkg_count.to_string()
-                };
 
                 Row::new(vec![
                     Cell::from(workspace_display),
-                    Cell::from(count_display),
+                    Cell::from(pkg_count.to_string()),
                     Cell::from(workspace.path.clone()),
                 ])
                 .style(style)
@@ -928,7 +922,7 @@ impl TuiDashboard {
         ];
         let workspace_table = Table::new(workspace_rows, workspace_widths)
             .header(
-                Row::new(vec!["Workspace", "Pkgs (Missing)", "Path"])
+                Row::new(vec!["Workspace", "Pkgs", "Path"])
                     .style(Style::default().add_modifier(Modifier::BOLD)),
             )
             .block(
@@ -1021,23 +1015,6 @@ impl TuiDashboard {
 
     fn draw_workspace_details(&self, f: &mut Frame, area: Rect) {
         if let Some(ref workspace) = self.selected_workspace {
-            // Split area into two sections: Installed Packages and Missing Dependencies
-            let has_missing = !workspace.dependencies.is_empty();
-
-            let chunks = if has_missing {
-                Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Percentage(60), // Installed packages
-                        Constraint::Percentage(40), // Missing dependencies
-                    ])
-                    .split(area)
-            } else {
-                // Create a single-element slice for consistency
-                use std::rc::Rc;
-                Rc::from(vec![area])
-            };
-
             // Display installed packages
             let package_rows: Vec<Row> = workspace
                 .packages
@@ -1094,44 +1071,7 @@ impl TuiDashboard {
                         .border_style(Style::default().fg(Color::Green)),
                 );
 
-            f.render_widget(package_table, chunks[0]);
-
-            // Display missing dependencies if any
-            if has_missing {
-                let dep_rows: Vec<Row> = workspace
-                    .dependencies
-                    .iter()
-                    .map(|dep| {
-                        Row::new(vec![
-                            Cell::from(dep.name.clone()).style(Style::default().fg(Color::Yellow)),
-                            Cell::from(dep.declared_version.clone()),
-                            Cell::from("MISSING").style(Style::default().fg(Color::Red)),
-                        ])
-                    })
-                    .collect();
-
-                let dep_widths = [
-                    Constraint::Length(25),
-                    Constraint::Length(30),
-                    Constraint::Min(15),
-                ];
-                let dep_table = Table::new(dep_rows, dep_widths)
-                    .header(
-                        Row::new(vec!["Package", "Declared (horus.toml)", "Status"])
-                            .style(Style::default().add_modifier(Modifier::BOLD)),
-                    )
-                    .block(
-                        Block::default()
-                            .title(format!(
-                                "Missing Dependencies ({}) - Run 'horus run' to install",
-                                workspace.dependencies.len()
-                            ))
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Red)),
-                    );
-
-                f.render_widget(dep_table, chunks[1]);
-            }
+            f.render_widget(package_table, area);
         } else {
             // Fallback: No workspace selected
             let block = Block::default()
@@ -1892,11 +1832,8 @@ impl TuiDashboard {
                 Style::default().fg(Color::Cyan),
             )]),
             Line::from("  ← →        - Switch between Local Workspaces and Global Packages"),
-            Line::from(
-                "  Enter      - Drill into selected workspace to view packages & dependencies",
-            ),
+            Line::from("  Enter      - Drill into selected workspace to view packages"),
             Line::from("  ESC        - Navigate back to workspace list"),
-            Line::from("  Note       - Missing dependencies (from horus.toml) shown in red"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Parameters Tab:",

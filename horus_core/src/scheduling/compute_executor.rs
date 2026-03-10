@@ -303,7 +303,7 @@ impl ComputeExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Node, NodeInfo};
+    use crate::core::{Miss, Node, NodeInfo};
     use std::sync::Mutex;
 
     fn test_monitors() -> SharedMonitors {
@@ -330,7 +330,6 @@ mod tests {
     }
 
     fn make_compute_node(name: &str, count: Arc<std::sync::atomic::AtomicU64>) -> RegisteredNode {
-
         let node = CounterNode {
             name: name.to_string(),
             count,
@@ -350,6 +349,7 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Compute,
         }
     }

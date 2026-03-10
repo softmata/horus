@@ -6,7 +6,9 @@
 use horus_core::core::HealthStatus;
 use horus_core::error::Severity;
 use horus_core::scheduling::{BlackBoxEvent, BlackBoxRecord};
-use horus_manager::discovery::{NodeStatus, ProcessCategory, SharedMemoryInfo, TopicInfo, TopicStatus};
+use horus_manager::discovery::{
+    NodeStatus, ProcessCategory, SharedMemoryInfo, TopicInfo, TopicStatus,
+};
 use std::time::SystemTime;
 
 // ─── NodeStatus factory ─────────────────────────────────────────────────────
@@ -149,7 +151,7 @@ pub fn make_test_topic_full(
 ///
 /// * `event_type` — One of: `"tick"`, `"error"`, `"deadline_miss"`,
 ///   `"budget_violation"`, `"scheduler_start"`, `"scheduler_stop"`,
-///   `"node_added"`, `"circuit_breaker"`, `"emergency_stop"`, `"custom"`.
+///   `"node_added"`, `"emergency_stop"`, `"custom"`.
 /// * `node` — Node name associated with the event.
 /// * `tick` — Tick number for the event's `BlackBoxRecord`.
 ///
@@ -188,11 +190,6 @@ pub fn make_test_blackbox_event(event_type: &str, node: &str, tick: u64) -> Blac
         "node_added" => BlackBoxEvent::NodeAdded {
             name: node.to_string(),
             order: 1,
-        },
-        "circuit_breaker" => BlackBoxEvent::CircuitBreakerChange {
-            name: node.to_string(),
-            new_state: "Open".to_string(),
-            failure_count: 3,
         },
         "emergency_stop" => BlackBoxEvent::EmergencyStop {
             reason: format!("test emergency from {}", node),

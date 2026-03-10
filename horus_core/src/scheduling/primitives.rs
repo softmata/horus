@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::types::NodeKind;
 use crate::core::rt_node::BudgetViolation;
-use crate::core::DeadlineMissPolicy;
+use crate::core::Miss;
 
 /// Result of a single node tick execution.
 ///
@@ -62,6 +62,8 @@ pub(crate) enum DeadlineAction {
     Warn,
     /// Pause the node for one tick.
     Skip,
+    /// Call `enter_safe_state()` on the node, continue ticking in degraded mode.
+    SafeMode,
     /// Trigger emergency stop — caller must stop the scheduler.
     EmergencyStop,
 }
@@ -110,22 +112,22 @@ impl TimingEnforcer {
     /// Check whether a tick missed its deadline.
     ///
     /// `tick_start` is the `Instant` when the tick began; the elapsed time since
-    /// then is compared against `deadline`. The `policy` is the `DeadlineMissPolicy`
-    /// from the node's `deadline_miss_policy()` method.
+    /// then is compared against `deadline`. The `miss` policy determines the action.
     ///
     /// Returns `Some(DeadlineMissResult)` if the deadline was missed, `None` otherwise.
     #[inline]
     pub fn check_deadline(
         tick_start: Instant,
         deadline: Duration,
-        policy: DeadlineMissPolicy,
+        miss: Miss,
     ) -> Option<DeadlineMissResult> {
         let elapsed = tick_start.elapsed();
         if elapsed > deadline {
-            let action = match policy {
-                DeadlineMissPolicy::Warn => DeadlineAction::Warn,
-                DeadlineMissPolicy::Skip => DeadlineAction::Skip,
-                DeadlineMissPolicy::EmergencyStop => DeadlineAction::EmergencyStop,
+            let action = match miss {
+                Miss::Warn => DeadlineAction::Warn,
+                Miss::Skip => DeadlineAction::Skip,
+                Miss::SafeMode => DeadlineAction::SafeMode,
+                Miss::Stop => DeadlineAction::EmergencyStop,
             };
             Some(DeadlineMissResult {
                 elapsed,
@@ -238,11 +240,8 @@ mod tests {
     fn test_check_deadline_no_miss() {
         // tick_start is now — elapsed is ~0, well within any deadline
         let tick_start = Instant::now();
-        let result = TimingEnforcer::check_deadline(
-            tick_start,
-            Duration::from_millis(100),
-            DeadlineMissPolicy::Warn,
-        );
+        let result =
+            TimingEnforcer::check_deadline(tick_start, Duration::from_millis(100), Miss::Warn);
         assert!(result.is_none());
     }
 
@@ -250,11 +249,8 @@ mod tests {
     fn test_check_deadline_miss() {
         // tick_start was 50ms ago — deadline is 10ms
         let tick_start = Instant::now() - Duration::from_millis(50);
-        let result = TimingEnforcer::check_deadline(
-            tick_start,
-            Duration::from_millis(10),
-            DeadlineMissPolicy::EmergencyStop,
-        );
+        let result =
+            TimingEnforcer::check_deadline(tick_start, Duration::from_millis(10), Miss::Stop);
         let dm = result.expect("should detect deadline miss");
         assert!(dm.elapsed >= Duration::from_millis(50));
         assert_eq!(dm.deadline, Duration::from_millis(10));
@@ -262,18 +258,19 @@ mod tests {
     }
 
     #[test]
-    fn test_check_deadline_policy_mapping() {
+    fn test_check_deadline_miss_policy_mapping() {
         let tick_start = Instant::now() - Duration::from_millis(50);
         let deadline = Duration::from_millis(10);
 
         let policies_and_expected = [
-            (DeadlineMissPolicy::Warn, "Warn"),
-            (DeadlineMissPolicy::Skip, "Skip"),
-            (DeadlineMissPolicy::EmergencyStop, "EmergencyStop"),
+            (Miss::Warn, "Warn"),
+            (Miss::Skip, "Skip"),
+            (Miss::SafeMode, "SafeMode"),
+            (Miss::Stop, "EmergencyStop"),
         ];
 
-        for (policy, expected_name) in policies_and_expected {
-            let result = TimingEnforcer::check_deadline(tick_start, deadline, policy);
+        for (miss, expected_name) in policies_and_expected {
+            let result = TimingEnforcer::check_deadline(tick_start, deadline, miss);
             let dm = result.unwrap_or_else(|| panic!("should detect miss for {}", expected_name));
             let action_name = format!("{:?}", dm.action);
             assert_eq!(action_name, expected_name);

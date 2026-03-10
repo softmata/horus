@@ -102,8 +102,7 @@ async fn concurrent_20_set_different_params() {
                 .unwrap();
             let status = resp.status();
             assert!(
-                status == axum::http::StatusCode::OK
-                    || status == axum::http::StatusCode::CREATED,
+                status == axum::http::StatusCode::OK || status == axum::http::StatusCode::CREATED,
                 "setting param {} must succeed, got {}",
                 key,
                 status
@@ -128,10 +127,7 @@ async fn concurrent_10_set_same_param_race() {
     // First set the param so it exists
     let resp = app
         .clone()
-        .oneshot(post_json_request(
-            "/api/params/race_key",
-            r#"{"value": 0}"#,
-        ))
+        .oneshot(post_json_request("/api/params/race_key", r#"{"value": 0}"#))
         .await
         .unwrap();
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
@@ -149,8 +145,7 @@ async fn concurrent_10_set_same_param_race() {
             let status = resp.status();
             // Some may get 409 Conflict due to version check, that's acceptable
             assert!(
-                status == axum::http::StatusCode::OK
-                    || status == axum::http::StatusCode::CONFLICT,
+                status == axum::http::StatusCode::OK || status == axum::http::StatusCode::CONFLICT,
                 "race write must return OK or Conflict, got {}",
                 status
             );
@@ -210,8 +205,8 @@ async fn concurrent_10_websocket_connections() {
                 .unwrap();
 
             let text = msg.into_text().unwrap();
-            let json: serde_json::Value = serde_json::from_str(&text)
-                .expect("WS broadcast must be valid JSON");
+            let json: serde_json::Value =
+                serde_json::from_str(&text).expect("WS broadcast must be valid JSON");
             assert_eq!(json["type"], "update", "client {}: type must be update", i);
         }));
     }
@@ -349,8 +344,7 @@ async fn concurrent_get_delete_params_no_corruption() {
             // May be 200 or 404 (if deleted first)
             let status = resp.status();
             assert!(
-                status == axum::http::StatusCode::OK
-                    || status == axum::http::StatusCode::NOT_FOUND,
+                status == axum::http::StatusCode::OK || status == axum::http::StatusCode::NOT_FOUND,
                 "concurrent get must return 200 or 404, got {}",
                 status
             );
@@ -373,8 +367,7 @@ async fn concurrent_get_delete_params_no_corruption() {
                 .unwrap();
             let status = resp.status();
             assert!(
-                status == axum::http::StatusCode::OK
-                    || status == axum::http::StatusCode::NOT_FOUND,
+                status == axum::http::StatusCode::OK || status == axum::http::StatusCode::NOT_FOUND,
                 "concurrent delete must return 200 or 404, got {}",
                 status
             );

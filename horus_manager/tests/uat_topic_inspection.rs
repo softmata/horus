@@ -77,7 +77,11 @@ async fn api_topics_lists_all_created_topics() {
         .expect("/api/topics must return a topics array");
 
     // Our topics should appear (possibly with horus_ prefix stripped)
-    for suffix in &[format!("{pfx}imu"), format!("{pfx}rgb"), format!("{pfx}points")] {
+    for suffix in &[
+        format!("{pfx}imu"),
+        format!("{pfx}rgb"),
+        format!("{pfx}points"),
+    ] {
         let found = topics.iter().any(|t| {
             let name = t["name"].as_str().unwrap_or("");
             name.contains(suffix.as_str())
@@ -104,13 +108,15 @@ async fn api_topics_have_non_zero_sizes() {
     let topics = json["topics"].as_array().unwrap();
 
     // Find our topics and check sizes
-    for suffix in &[format!("{pfx}imu"), format!("{pfx}rgb"), format!("{pfx}points")] {
-        if let Some(topic) = topics.iter().find(|t| {
-            t["name"]
-                .as_str()
-                .unwrap_or("")
-                .contains(suffix.as_str())
-        }) {
+    for suffix in &[
+        format!("{pfx}imu"),
+        format!("{pfx}rgb"),
+        format!("{pfx}points"),
+    ] {
+        if let Some(topic) = topics
+            .iter()
+            .find(|t| t["name"].as_str().unwrap_or("").contains(suffix.as_str()))
+        {
             // Size is formatted as "X KB" string
             let size_str = topic["size"].as_str().unwrap_or("0 KB");
             assert!(
@@ -144,10 +150,7 @@ async fn api_topics_different_sizes_reflect_actual() {
             if name.contains(name_contains) {
                 let size_str = t["size"].as_str().unwrap_or("0 KB");
                 // Parse "X KB" format
-                size_str
-                    .trim_end_matches(" KB")
-                    .parse::<u64>()
-                    .ok()
+                size_str.trim_end_matches(" KB").parse::<u64>().ok()
             } else {
                 None
             }
@@ -455,9 +458,7 @@ async fn graph_updates_after_node_addition() {
 
     let nodes = json["nodes"].as_array().unwrap();
     assert!(
-        nodes
-            .iter()
-            .any(|n| n["label"].as_str() == Some(&new_name)),
+        nodes.iter().any(|n| n["label"].as_str() == Some(&new_name)),
         "dynamically added node must appear in graph"
     );
 
@@ -465,9 +466,7 @@ async fn graph_updates_after_node_addition() {
     let edges = json["edges"].as_array().unwrap();
     let sub_to_new = edges.iter().any(|e| {
         e["type"].as_str() == Some("subscribe")
-            && e["to"]
-                .as_str()
-                .map_or(false, |s| s.contains(&new_name))
+            && e["to"].as_str().map_or(false, |s| s.contains(&new_name))
     });
     assert!(
         sub_to_new,

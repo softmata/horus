@@ -98,9 +98,13 @@ async fn churn_api_nodes_stable_during_lifecycle() {
         let body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body)
-            .expect("response must be valid JSON during churn");
-        assert!(json["nodes"].is_array(), "cycle {}: must have nodes array", cycle);
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("response must be valid JSON during churn");
+        assert!(
+            json["nodes"].is_array(),
+            "cycle {}: must have nodes array",
+            cycle
+        );
 
         // Remove transient node
         drop(transient);
@@ -113,25 +117,21 @@ async fn churn_api_graph_stable_during_lifecycle() {
 
     let mut stable_rt = HorusTestRuntime::new();
     for i in 0..5 {
-        stable_rt.add_node(
-            TestNodeConfig::sensor(
-                &format!("graph_churn_pub_{}", i),
-                &format!("churn_topic_{}", i),
-                "ChurnData",
-            ),
-        );
+        stable_rt.add_node(TestNodeConfig::sensor(
+            &format!("graph_churn_pub_{}", i),
+            &format!("churn_topic_{}", i),
+            "ChurnData",
+        ));
     }
     stable_rt.wait_ready(std::time::Duration::from_secs(5));
 
     for cycle in 0..15 {
         let mut transient = HorusTestRuntime::new();
-        transient.add_node(
-            TestNodeConfig::sensor(
-                &unique_churn_name("graph_transient"),
-                "transient_topic",
-                "Data",
-            ),
-        );
+        transient.add_node(TestNodeConfig::sensor(
+            &unique_churn_name("graph_transient"),
+            "transient_topic",
+            "Data",
+        ));
 
         let resp = app
             .clone()
@@ -148,8 +148,8 @@ async fn churn_api_graph_stable_during_lifecycle() {
         let body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body)
-            .expect("graph response must be valid JSON during churn");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("graph response must be valid JSON during churn");
         assert!(
             json["nodes"].is_array() || json["graph"].is_object(),
             "cycle {}: graph must have valid structure",
@@ -183,8 +183,8 @@ async fn churn_api_topics_stable_during_lifecycle() {
         let body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body)
-            .expect("topics response must be valid JSON during churn");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("topics response must be valid JSON during churn");
         assert!(
             json["topics"].is_array(),
             "cycle {}: must have topics array",
@@ -228,8 +228,8 @@ async fn churn_websocket_stable_during_lifecycle() {
             .unwrap();
 
         let text = msg.into_text().unwrap();
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .expect("WS broadcast must be valid JSON during churn");
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("WS broadcast must be valid JSON during churn");
         assert_eq!(json["type"], "update");
 
         drop(rt);

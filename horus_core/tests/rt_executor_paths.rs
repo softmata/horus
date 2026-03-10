@@ -1,10 +1,10 @@
 //! Integration tests for RT executor code paths.
 //!
 //! Covers: pre/post conditions, all DeadlineAction variants, panic downcasting
-//! (str, String, unknown), on_error callback, circuit breaker rejection,
+//! (str, String, unknown), on_error callback, skip policy rejection,
 //! and restart failure deinit.
 
-use horus_core::core::{DeadlineMissPolicy, Node};
+use horus_core::core::{Miss, Node};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -24,7 +24,7 @@ struct PolicyRtNode {
     name: String,
     tick_count: Arc<AtomicU64>,
     sleep_us: u64,
-    policy: DeadlineMissPolicy,
+    policy: Miss,
 }
 
 impl Node for PolicyRtNode {
@@ -36,15 +36,6 @@ impl Node for PolicyRtNode {
         if self.sleep_us > 0 {
             std::thread::sleep(Duration::from_micros(self.sleep_us));
         }
-    }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
-    }
-    fn deadline(&self) -> Duration {
-        Duration::from_micros(10)
-    }
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        self.policy
     }
 }
 
@@ -63,9 +54,6 @@ impl Node for StrPanicNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         panic!("literal str panic");
-    }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
     }
 }
 
@@ -87,9 +75,6 @@ impl Node for StringPanicNode {
         );
         panic!("{}", msg);
     }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
-    }
 }
 
 /// Node that panics with an unknown type (i32).
@@ -105,9 +90,6 @@ impl Node for UnknownPanicNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::panic::panic_any(42i32);
-    }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
     }
 }
 
@@ -132,12 +114,9 @@ impl Node for ErrorTrackingNode {
     fn on_error(&mut self, _error: &str) {
         self.error_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
-    }
 }
 
-/// Node that always panics (for circuit breaker / restart tests).
+/// Node that always panics (for skip policy / restart tests).
 struct AlwaysPanicRtNode {
     name: String,
     tick_count: Arc<AtomicU64>,
@@ -150,9 +129,6 @@ impl Node for AlwaysPanicRtNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         panic!("always panic");
-    }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
     }
 }
 
@@ -168,9 +144,6 @@ impl Node for SimpleRtNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-    }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(100))
     }
 }
 
@@ -192,10 +165,12 @@ fn test_deadline_emergency_stop() {
             name: "emergency_stop_node".to_string(),
             tick_count: tick_count.clone(),
             sleep_us: 500, // Slow enough to miss 10us deadline
-            policy: DeadlineMissPolicy::EmergencyStop,
+            policy: Miss::Stop,
         })
         .order(0)
+        .budget_us(100_000)
         .deadline_us(10)
+        .on_miss(Miss::Stop)
         .done();
 
     let result = scheduler.run_for(Duration::from_millis(500));
@@ -233,10 +208,12 @@ fn test_deadline_skip_pauses_node() {
             name: "skip_node".to_string(),
             tick_count: tick_count.clone(),
             sleep_us: 500,
-            policy: DeadlineMissPolicy::Skip,
+            policy: Miss::Skip,
         })
         .order(0)
+        .budget_us(100_000)
         .deadline_us(10)
+        .on_miss(Miss::Skip)
         .done();
 
     // Reference node to confirm scheduler is still running
@@ -246,6 +223,7 @@ fn test_deadline_skip_pauses_node() {
             tick_count: reference_count.clone(),
         })
         .order(1)
+        .budget_us(100_000)
         .done();
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
@@ -275,6 +253,7 @@ fn test_rt_panic_str_literal() {
             tick_count: tick_count.clone(),
         })
         .order(0)
+        .budget_us(100_000)
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -301,6 +280,7 @@ fn test_rt_panic_owned_string() {
             tick_count: tick_count.clone(),
         })
         .order(0)
+        .budget_us(100_000)
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -326,6 +306,7 @@ fn test_rt_panic_unknown_type() {
             tick_count: tick_count.clone(),
         })
         .order(0)
+        .budget_us(100_000)
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -354,6 +335,7 @@ fn test_rt_on_error_callback() {
             should_panic: AtomicBool::new(true),
         })
         .order(0)
+        .budget_us(100_000)
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -375,29 +357,30 @@ fn test_rt_on_error_callback() {
 }
 
 #[test]
-fn test_rt_circuit_breaker_rejection() {
+fn test_rt_skip_policy_rejection() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
     scheduler
         .add(AlwaysPanicRtNode {
-            name: "circuit_breaker_rt".to_string(),
+            name: "skip_policy_rt".to_string(),
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .failure_policy(FailurePolicy::skip(2, 5000)) // Opens after 2 failures, 5s cooldown
+        .budget_us(100_000)
+        .failure_policy(FailurePolicy::skip(2, 5000)) // Skips after 2 failures, 5s cooldown
         .done();
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
-    // Circuit breaker should open after 2 failures, preventing further ticks.
+    // Skip policy should suppress after 2 failures, preventing further ticks.
     // The RT executor tick loop is fast, so several ticks may fire before the
-    // breaker fully takes effect.
+    // policy fully takes effect.
     let ticks = tick_count.load(Ordering::SeqCst);
     assert!(
         ticks >= 2,
-        "Circuit breaker should allow at least 2 failures, got {} ticks",
+        "Skip policy should allow at least 2 failures, got {} ticks",
         ticks
     );
 }
@@ -414,6 +397,7 @@ fn test_rt_restart_failure_deinitializes() {
             tick_count: tick_count.clone(),
         })
         .order(0)
+        .budget_us(100_000)
         .failure_policy(FailurePolicy::restart(3, 10))
         .done();
 

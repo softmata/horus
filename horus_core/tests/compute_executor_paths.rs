@@ -2,7 +2,7 @@
 //!
 //! Covers: single-node optimization (no crossbeam), parallel execution,
 //! load shedding activation/cooldown, non-sheddable nodes, paused/uninitialized
-//! nodes, circuit breaker, restart failure, panic downcasting.
+//! nodes, skip policy, restart failure, panic downcasting.
 
 use horus_core::core::Node;
 use horus_core::error::HorusResult;
@@ -348,7 +348,7 @@ fn test_compute_uninitialized_node_skipped() {
 }
 
 #[test]
-fn test_compute_circuit_breaker() {
+fn test_compute_skip_policy() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
@@ -366,12 +366,12 @@ fn test_compute_circuit_breaker() {
     scheduler.run_for(Duration::from_millis(200)).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
-    // The compute executor may dispatch several ticks before the circuit breaker
-    // fully opens (result processing is decoupled from dispatch in crossbeam scope).
-    // Verify the node ticked at least 2 times (to trigger the breaker).
+    // The compute executor may dispatch several ticks before the skip policy
+    // fully activates (result processing is decoupled from dispatch in crossbeam scope).
+    // Verify the node ticked at least 2 times (to trigger the skip).
     assert!(
         ticks >= 2,
-        "Should tick at least 2 times to trigger circuit breaker, got {}",
+        "Should tick at least 2 times to trigger skip policy, got {}",
         ticks
     );
 }

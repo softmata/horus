@@ -308,7 +308,8 @@ fn clean_shared_memory(dry_run: bool, force: bool) -> HorusResult<bool> {
 
 /// Clean HORUS cache directory
 fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if cache_dir.exists() {
         let size = get_dir_size(&cache_dir);

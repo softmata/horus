@@ -94,8 +94,7 @@ impl HorusTestRuntime {
         });
 
         let path = nodes_dir.join(format!("{}.json", config.name));
-        let json = serde_json::to_string_pretty(&presence)
-            .expect("failed to serialise presence");
+        let json = serde_json::to_string_pretty(&presence).expect("failed to serialise presence");
 
         // Write with owner-only permissions on Unix (matches real writer).
         #[cfg(unix)]
@@ -252,9 +251,9 @@ impl HorusTestRuntime {
 
         while std::time::Instant::now() < deadline {
             let presences = NodePresence::read_all();
-            let found_all = expected_names.iter().all(|name| {
-                presences.iter().any(|p| p.name == *name)
-            });
+            let found_all = expected_names
+                .iter()
+                .all(|name| presences.iter().any(|p| p.name == *name));
             if found_all {
                 return true;
             }
@@ -371,4 +370,3 @@ fn read_pid_start_time(pid: u32) -> u64 {
         0
     }
 }
-

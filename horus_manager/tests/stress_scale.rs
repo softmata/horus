@@ -96,10 +96,7 @@ async fn stress_api_status_response_time() {
     let app = builders::test_router();
 
     let start = Instant::now();
-    let resp = app
-        .oneshot(get_request("/api/status"))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/api/status")).await.unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
@@ -247,8 +244,8 @@ async fn stress_large_nodes_response_parseable() {
         .unwrap();
 
     // Must be valid JSON
-    let json: serde_json::Value = serde_json::from_slice(&body)
-        .expect("large nodes response must be valid JSON");
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).expect("large nodes response must be valid JSON");
 
     assert!(json["nodes"].is_array(), "must have nodes array");
 }
@@ -285,8 +282,8 @@ async fn stress_websocket_broadcast_at_scale() {
             .unwrap();
 
         let text = msg.into_text().unwrap();
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .expect("WS broadcast at scale must be valid JSON");
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("WS broadcast at scale must be valid JSON");
 
         assert_eq!(json["type"], "update");
         assert!(json["data"]["nodes"].is_array());
@@ -306,7 +303,11 @@ fn stress_cleanup_1000_nodes() {
 
     // All files should exist
     for p in &presence_paths[..5] {
-        assert!(p.exists(), "presence file must exist before cleanup: {:?}", p);
+        assert!(
+            p.exists(),
+            "presence file must exist before cleanup: {:?}",
+            p
+        );
     }
     for p in &topic_paths[..5] {
         assert!(p.exists(), "topic file must exist before cleanup: {:?}", p);

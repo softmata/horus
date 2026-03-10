@@ -1,7 +1,7 @@
 //! UAT: Blackbox anomaly detection E2E.
 //!
 //! Verifies the blackbox correctly captures anomaly events (deadline misses,
-//! node errors, circuit breaker trips) and that the API filters them properly.
+//! node errors, fault tolerance events) and that the API filters them properly.
 //!
 //! These tests write directly to the blackbox WAL file that the handler reads,
 //! then verify via the HTTP API.
@@ -93,16 +93,6 @@ fn build_test_events() -> Vec<BlackBoxRecord> {
                 name: "flaky_node".to_string(),
                 error: "segmentation fault".to_string(),
                 severity: Severity::Permanent,
-            },
-        },
-        // Circuit breaker anomaly
-        BlackBoxRecord {
-            timestamp_us: 5000,
-            tick: 5,
-            event: BlackBoxEvent::CircuitBreakerChange {
-                name: "overloaded_node".to_string(),
-                new_state: "Open".to_string(),
-                failure_count: 5,
             },
         },
         // More normal ticks
@@ -214,33 +204,6 @@ async fn blackbox_captures_node_errors() {
     remove_wal();
 }
 
-#[tokio::test]
-async fn blackbox_captures_circuit_breaker() {
-    let events = build_test_events();
-    write_wal_events(&events);
-
-    let app = builders::test_router();
-    let resp = app
-        .oneshot(get_request("/api/blackbox?event=CircuitBreakerChange"))
-        .await
-        .unwrap();
-    let json = assert_json_ok(resp).await;
-
-    let events_arr = json["events"].as_array().unwrap();
-    assert_eq!(
-        events_arr.len(),
-        1,
-        "should have exactly 1 CircuitBreakerChange"
-    );
-    assert_eq!(events_arr[0]["tick"], 5);
-
-    let event_str = events_arr[0]["event"].to_string();
-    assert!(event_str.contains("overloaded_node"));
-    assert!(event_str.contains("Open"));
-
-    remove_wal();
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 //  GET /api/blackbox/anomalies — anomalies-only filter
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -258,11 +221,11 @@ async fn anomalies_endpoint_filters_out_normal_events() {
     let json = assert_json_ok(resp).await;
 
     let anomalies = json["anomalies"].as_array().unwrap();
-    // Should have: 1 DeadlineMiss + 2 NodeError + 1 CircuitBreakerChange + 1 BudgetViolation = 5
+    // Should have: 1 DeadlineMiss + 2 NodeError + 1 BudgetViolation = 4
     assert_eq!(
         anomalies.len(),
-        5,
-        "anomalies should contain exactly 5 anomaly events, got {}",
+        4,
+        "anomalies should contain exactly 4 anomaly events, got {}",
         anomalies.len()
     );
 
@@ -400,7 +363,10 @@ async fn clear_endpoint_removes_all_events() {
     let app = builders::test_router();
     let resp = app.oneshot(get_request("/api/blackbox")).await.unwrap();
     let json = assert_json_ok(resp).await;
-    assert!(json["count"].as_u64().unwrap() > 0, "events should exist before clear");
+    assert!(
+        json["count"].as_u64().unwrap() > 0,
+        "events should exist before clear"
+    );
 
     // Clear
     let app = builders::test_router();
@@ -528,7 +494,11 @@ async fn limit_parameter_caps_results() {
     let json = assert_json_ok(resp).await;
 
     let events_arr = json["events"].as_array().unwrap();
-    assert_eq!(events_arr.len(), 3, "limit=3 should return exactly 3 events");
+    assert_eq!(
+        events_arr.len(),
+        3,
+        "limit=3 should return exactly 3 events"
+    );
 
     remove_wal();
 }

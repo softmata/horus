@@ -3,7 +3,7 @@
 //! Tests scale, sustained operation, cascading failures, and
 //! resource management under load.
 
-use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo};
+use horus_core::core::{Node, NodeInfo};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -43,12 +43,6 @@ impl Node for RtCounterNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-    }
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_millis(10))
-    }
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Warn
     }
 }
 
@@ -119,6 +113,7 @@ fn test_50_nodes_startup_shutdown() {
                 tick_count: counts[i].clone(),
             })
             .order(i as u32)
+            .budget_us(10_000)
             .done();
     }
     for i in 17..34 {
@@ -177,6 +172,7 @@ fn test_50_rt_nodes_priority_order() {
                 tick_count: counts[i].clone(),
             })
             .order(i as u32)
+            .budget_us(10_000)
             .done();
     }
 
@@ -206,6 +202,7 @@ fn test_sustained_high_rate_1_second() {
             tick_count: tick_count.clone(),
         })
         .order(0)
+        .budget_us(10_000)
         .rate_hz(200.0)
         .done();
 
@@ -378,6 +375,7 @@ fn test_all_executors_simultaneously() {
             tick_count: rt_count.clone(),
         })
         .order(0)
+        .budget_us(10_000)
         .done();
 
     // Compute node

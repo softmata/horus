@@ -1,12 +1,8 @@
-use super::deps::{
-    split_dependencies_with_context, CargoPackage, GitPackage,
-    GitRef, PipPackage,
-};
+use super::deps::{split_dependencies_with_context, CargoPackage, PipPackage};
 use crate::cargo_utils::detect_system_cargo_binary;
 use crate::cli_output;
-use crate::config::CARGO_TOML;
-use crate::lockfile::{hash_manifest_deps, HorusLockfile, LockedPackage, HORUS_LOCK};
-use crate::manifest::{HorusManifest, HORUS_TOML};
+use crate::lockfile::{hash_config, HorusLockfile, HORUS_LOCK};
+use crate::manifest::HORUS_TOML;
 use crate::version;
 use anyhow::{anyhow, bail, Context, Result};
 use colored::*;
@@ -17,119 +13,6 @@ use std::io::{self, Write};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-pub(crate) fn clone_git_dependency(git_pkg: &GitPackage) -> Result<(String, PathBuf)> {
-    let global_cache = home_dir().join(".horus/cache");
-    let cache_dir_name = git_pkg.cache_dir_name();
-    let cache_path = global_cache.join(&cache_dir_name);
-
-    // Check if already cached
-    if cache_path.exists() && cache_path.join(CARGO_TOML).exists() {
-        println!(
-            "  {} Git dependency '{}' cached at: {}",
-            cli_output::ICON_SUCCESS.green(),
-            git_pkg.name,
-            cache_path.display()
-        );
-        return Ok((git_pkg.name.clone(), cache_path));
-    }
-
-    // Create cache directory
-    fs::create_dir_all(&global_cache)?;
-
-    // Clone the repository
-    println!(
-        "  {} Cloning git dependency: {} from {}",
-        "↓".cyan(),
-        git_pkg.name,
-        git_pkg.url
-    );
-
-    // Remove stale directory if exists
-    if cache_path.exists() {
-        fs::remove_dir_all(&cache_path)?;
-    }
-
-    // Build git clone command
-    let mut clone_cmd = Command::new("git");
-    clone_cmd.args(["clone", "--depth", "1"]);
-
-    // Add branch/tag/rev options
-    match &git_pkg.git_ref {
-        GitRef::Branch(branch) => {
-            clone_cmd.args(["--branch", branch]);
-        }
-        GitRef::Tag(tag) => {
-            clone_cmd.args(["--branch", tag]);
-        }
-        GitRef::Rev(_) => {
-            // For specific rev, we need full clone (can't use --depth 1)
-            clone_cmd.args(["--no-single-branch"]);
-        }
-        GitRef::Default => {}
-    }
-
-    clone_cmd.args([&git_pkg.url, &*cache_path.to_string_lossy()]);
-
-    let output = clone_cmd.output().context("Failed to run git clone")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("Git clone failed: {}", stderr));
-    }
-
-    // Checkout specific rev if specified
-    if let GitRef::Rev(rev) = &git_pkg.git_ref {
-        let checkout_output = Command::new("git")
-            .args(["checkout", rev])
-            .current_dir(&cache_path)
-            .output()
-            .context("Failed to checkout git revision")?;
-
-        if !checkout_output.status.success() {
-            let stderr = String::from_utf8_lossy(&checkout_output.stderr);
-            return Err(anyhow!("Git checkout failed: {}", stderr));
-        }
-    }
-
-    // Verify it's a valid Rust crate
-    if !cache_path.join(CARGO_TOML).exists() {
-        return Err(anyhow!(
-            "Git dependency '{}' doesn't contain a Cargo.toml file",
-            git_pkg.name
-        ));
-    }
-
-    println!(
-        "  {} Cloned git dependency: {}",
-        cli_output::ICON_SUCCESS.green(),
-        git_pkg.name
-    );
-
-    Ok((git_pkg.name.clone(), cache_path))
-}
-
-/// Clone all git dependencies and return them as path dependencies
-pub(crate) fn resolve_git_dependencies(git_deps: &[GitPackage]) -> Result<Vec<(String, PathBuf)>> {
-    let mut resolved = Vec::new();
-
-    for git_pkg in git_deps {
-        match clone_git_dependency(git_pkg) {
-            Ok((name, path)) => resolved.push((name, path)),
-            Err(e) => {
-                eprintln!(
-                    "  {} Failed to clone git dependency '{}': {}",
-                    cli_output::ICON_ERROR.red(),
-                    git_pkg.name,
-                    e
-                );
-                // Continue with other dependencies
-            }
-        }
-    }
-
-    Ok(resolved)
-}
 
 /// Install pip packages using global cache (HORUS philosophy)
 /// Packages stored at: ~/.horus/cache/pypi_{name}@{version}/
@@ -405,16 +288,24 @@ pub(crate) fn resolve_dependencies_with_context(
     // ── Lockfile: check if resolution can be skipped ──
     let lock_path = Path::new(HORUS_LOCK);
     let toml_path = Path::new(HORUS_TOML);
-    let manifest_hash = if toml_path.exists() {
-        let content = fs::read_to_string(toml_path).ok();
-        content.map(|c| hash_manifest_deps(&c))
-    } else {
-        None
+    let config_hash = {
+        let toml_content = if toml_path.exists() {
+            fs::read_to_string(toml_path).ok().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        // Include detected dependencies in the hash so that new imports
+        // (e.g. `import numpy`) invalidate the lockfile even when horus.toml
+        // hasn't changed.
+        let mut sorted_deps: Vec<&str> = dependencies.iter().map(String::as_str).collect();
+        sorted_deps.sort_unstable();
+        let hash_input = format!("{}\n{}", toml_content, sorted_deps.join("\n"));
+        Some(hash_config(&hash_input))
     };
 
     if lock_path.exists() {
         if let Ok(existing_lock) = HorusLockfile::load_from(lock_path) {
-            if let Some(ref hash) = manifest_hash {
+            if let Some(ref hash) = config_hash {
                 if !existing_lock.is_stale(hash) {
                     log::info!("Lockfile is up-to-date, using pinned versions");
                     eprintln!(
@@ -449,7 +340,7 @@ pub(crate) fn resolve_dependencies_with_context(
     }
 
     // ── Lockfile: write after successful resolution ──
-    write_lockfile(&dependencies, &manifest_hash)?;
+    write_lockfile(&config_hash)?;
 
     Ok(())
 }
@@ -576,94 +467,31 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
 
             // Import registry client
             use crate::registry::RegistryClient;
-            use crate::workspace;
             let client = RegistryClient::new();
-            let target = workspace::detect_or_select_workspace(true)?;
 
-            // Try to use structured dependencies from horus.toml
-            let toml_path = Path::new(HORUS_TOML);
-            let base_dir = toml_path.parent().or_else(|| Some(Path::new(".")));
+            // Dependencies now live in native build files (Cargo.toml, pyproject.toml).
+            // Install missing packages from the HORUS registry.
+            for package in &missing_packages {
+                print!(
+                    "  {} Installing {}... ",
+                    cli_output::ICON_INFO.cyan(),
+                    package.yellow()
+                );
+                io::stdout().flush()?;
 
-            if let Ok((manifest, _)) = HorusManifest::load_from(toml_path) {
-                // Build spec map from manifest
-                let dep_specs = manifest.dependencies_as_specs().unwrap_or_default();
-                let mut spec_map: std::collections::HashMap<
-                    String,
-                    crate::dependency_resolver::DependencySpec,
-                > = dep_specs
-                    .into_iter()
-                    .map(|spec| (spec.name.clone(), spec))
-                    .collect();
-
-                for package in &missing_packages {
-                    if let Some(spec) = spec_map.remove(package) {
-                        print!(
-                            "  {} Installing {}... ",
-                            cli_output::ICON_INFO.cyan(),
-                            package.yellow()
-                        );
-                        io::stdout().flush()?;
-
-                        match client.install_dependency_spec(
-                            &spec,
-                            target.clone(),
-                            base_dir,
-                        ) {
-                            Ok(_) => {
-                                println!("{}", cli_output::ICON_SUCCESS.green());
-                            }
-                            Err(e) => {
-                                println!("{}", cli_output::ICON_ERROR.red());
-                                eprintln!(
-                                    "    {} Failed to install {}: {}",
-                                    cli_output::ICON_ERROR.red(),
-                                    package,
-                                    e
-                                );
-                                bail!("Failed to install required dependency: {}", package);
-                            }
-                        }
-                    } else {
-                        // Fallback to registry install if spec not found
-                        print!(
-                            "  {} Installing {} (from registry)... ",
-                            cli_output::ICON_INFO.cyan(),
-                            package.yellow()
-                        );
-                        io::stdout().flush()?;
-                        match client.install(package, None) {
-                            Ok(_) => println!("{}", cli_output::ICON_SUCCESS.green()),
-                            Err(e) => {
-                                println!("{}", cli_output::ICON_ERROR.red());
-                                bail!("Failed to install {}: {}", package, e);
-                            }
-                        }
+                match client.install(package, None) {
+                    Ok(_) => {
+                        println!("{}", cli_output::ICON_SUCCESS.green());
                     }
-                }
-            } else {
-                // No horus.toml, use registry-only behavior
-                for package in &missing_packages {
-                    print!(
-                        "  {} Installing {}... ",
-                        cli_output::ICON_INFO.cyan(),
-                        package.yellow()
-                    );
-                    io::stdout().flush()?;
-
-                    match client.install(package, None) {
-                        Ok(_) => {
-                            println!("{}", cli_output::ICON_SUCCESS.green());
-                        }
-                        Err(e) => {
-                            println!("{}", cli_output::ICON_ERROR.red());
-                            eprintln!(
-                                "    {} Failed to install {}: {}",
-                                cli_output::ICON_ERROR.red(),
-                                package,
-                                e
-                            );
-                            bail!("Failed to install required dependency: {}", package);
-                        }
+                    Err(e) => {
+                        println!("{}", cli_output::ICON_ERROR.red());
+                        eprintln!(
+                            "    {} Failed to install {}: {}",
+                            cli_output::ICON_ERROR.red(),
+                            package,
+                            e
+                        );
+                        bail!("Failed to install required dependency: {}", package);
                     }
                 }
             }
@@ -943,59 +771,16 @@ pub(crate) fn prompt_system_package_choice_run(
     }
 }
 
-/// Write a lockfile capturing the resolved dependencies.
-fn write_lockfile(
-    dependencies: &HashSet<String>,
-    manifest_hash: &Option<String>,
-) -> Result<()> {
+/// Write a lockfile recording the current config hash.
+///
+/// Dependencies are tracked by native lockfiles (Cargo.lock, etc.).
+/// The horus lockfile only records whether the config has changed.
+fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     let lock_path = Path::new(HORUS_LOCK);
-    let toml_path = Path::new(HORUS_TOML);
-
-    // Build locked packages from manifest if available
-    let packages = if toml_path.exists() {
-        if let Ok((manifest, _)) = HorusManifest::load_from(toml_path) {
-            manifest
-                .dependencies
-                .iter()
-                .filter(|(name, _)| dependencies.contains(name.as_str()))
-                .map(|(name, value)| {
-                    let version = match value {
-                        crate::manifest::DependencyValue::Simple(v) => v.clone(),
-                        crate::manifest::DependencyValue::Detailed(d) => {
-                            d.version.clone().unwrap_or_else(|| "*".to_string())
-                        }
-                    };
-                    let source = match value {
-                        crate::manifest::DependencyValue::Detailed(d) => {
-                            d.source
-                                .as_ref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "registry".to_string())
-                        }
-                        _ => "registry".to_string(),
-                    };
-                    LockedPackage {
-                        name: name.clone(),
-                        version,
-                        source,
-                        checksum: None,
-                        dependencies: vec![],
-                    }
-                })
-                .collect()
-        } else {
-            // Can't read manifest, create entries from dependency names
-            deps_to_locked_packages(dependencies)
-        }
-    } else {
-        // No manifest, create entries from dependency names
-        deps_to_locked_packages(dependencies)
-    };
 
     let lockfile = HorusLockfile {
-        version: 1,
-        packages,
-        manifest_hash: manifest_hash.clone(),
+        version: 2,
+        config_hash: config_hash.clone(),
     };
 
     lockfile
@@ -1010,27 +795,6 @@ fn write_lockfile(
     );
 
     Ok(())
-}
-
-/// Convert a set of dependency strings into `LockedPackage` entries.
-fn deps_to_locked_packages(dependencies: &HashSet<String>) -> Vec<LockedPackage> {
-    dependencies
-        .iter()
-        .map(|dep| {
-            let (name, version) = if let Some((n, v)) = dep.split_once('@') {
-                (n.to_string(), v.to_string())
-            } else {
-                (dep.clone(), "*".to_string())
-            };
-            LockedPackage {
-                name,
-                version,
-                source: "registry".to_string(),
-                checksum: None,
-                dependencies: vec![],
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]

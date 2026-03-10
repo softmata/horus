@@ -4,6 +4,7 @@
 //! These are fixed-size types suitable for shared memory transport.
 
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 use crate::messages::detection::BoundingBox2D;
 
@@ -13,7 +14,7 @@ use crate::messages::detection::BoundingBox2D;
 ///
 /// Size: 96 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 pub struct TrackedObject {
     /// Bounding box (x, y, width, height)
     pub bbox: BoundingBox2D,
@@ -164,7 +165,7 @@ impl TrackedObject {
 ///
 /// Size: 32 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable, Serialize, Deserialize)]
 pub struct TrackingHeader {
     /// Number of tracked objects
     pub num_tracks: u32,

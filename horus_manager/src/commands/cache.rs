@@ -33,7 +33,8 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Show cache information (directory, size, package count)
 pub fn run_info(json: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     // Count packages and calculate size
     let mut total_size: u64 = 0;
@@ -86,7 +87,8 @@ pub fn run_info(json: bool) -> HorusResult<()> {
 
 /// List all cached packages
 pub fn run_list(json: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !cache_dir.exists() {
         if json {
@@ -150,7 +152,8 @@ pub fn run_list(json: bool) -> HorusResult<()> {
 
 /// Clean unused packages from cache
 pub fn run_clean(dry_run: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!(
         "{} Scanning for unused packages...",
@@ -162,20 +165,31 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
         return Ok(());
     }
 
-    // Find all workspaces and their dependencies
-    let registry =
-        workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    // Scan all workspaces for packages they actually use (symlinks in .horus/packages/).
+    let registry = workspace::WorkspaceRegistry::load()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     let mut used_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for ws in &registry.workspaces {
-        let toml_path = ws.path.join("horus.toml");
-        if toml_path.exists() {
-            if let Ok((manifest, _)) = crate::manifest::HorusManifest::load_from(&toml_path) {
-                if let Ok(deps) = manifest.dependencies_as_specs() {
-                    for dep in deps {
-                        used_packages.insert(dep.name.clone());
-                    }
+        let packages_dir = ws.path.join(".horus").join("packages");
+        if packages_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&packages_dir) {
+                for entry in entries.flatten() {
+                    // Resolve symlinks to find the actual cache entry name
+                    let target = if entry.path().is_symlink() {
+                        fs::read_link(entry.path())
+                            .ok()
+                            .and_then(|t| t.file_name().map(|n| n.to_string_lossy().to_string()))
+                    } else {
+                        None
+                    };
+
+                    let pkg_name =
+                        target.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+                    // Strip version suffix (e.g. "foo@1.0.0" → "foo")
+                    let base = pkg_name.split('@').next().unwrap_or(&pkg_name);
+                    used_packages.insert(base.to_string());
                 }
             }
         }
@@ -243,7 +257,8 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
 
 /// Purge the entire cache
 pub fn run_purge(yes: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !cache_dir.exists() {
         println!("Cache is already empty.");
@@ -275,8 +290,9 @@ pub fn run_purge(yes: bool) -> HorusResult<()> {
         }
     }
 
-    fs::remove_dir_all(&cache_dir)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to purge cache: {}", e))))?;
+    fs::remove_dir_all(&cache_dir).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!("Failed to purge cache: {}", e)))
+    })?;
 
     println!(
         "{} Cache purged. Freed {}.",

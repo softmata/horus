@@ -32,7 +32,9 @@ async fn status_baseline_returns_valid_json() {
 
     // Status should be one of the known values.
     let status = json["status"].as_str().expect("status should be a string");
-    let valid_statuses = ["Idle", "Healthy", "Warning", "Degraded", "Critical", "Unknown"];
+    let valid_statuses = [
+        "Idle", "Healthy", "Warning", "Degraded", "Critical", "Unknown",
+    ];
     assert!(
         valid_statuses.contains(&status),
         "status should be one of {:?}, got '{}'",
@@ -41,7 +43,9 @@ async fn status_baseline_returns_valid_json() {
     );
 
     // Health color should be a known color.
-    let color = json["health_color"].as_str().expect("health_color should be a string");
+    let color = json["health_color"]
+        .as_str()
+        .expect("health_color should be a string");
     let valid_colors = ["gray", "green", "yellow", "orange", "red"];
     assert!(
         valid_colors.contains(&color),
@@ -179,11 +183,7 @@ async fn nodes_empty_when_no_nodes() {
 async fn nodes_returns_all_added_nodes() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("handler_node_a"))
-        .add_node(TestNodeConfig::sensor(
-            "handler_node_b",
-            "topic_b",
-            "MsgB",
-        ))
+        .add_node(TestNodeConfig::sensor("handler_node_b", "topic_b", "MsgB"))
         .add_node(TestNodeConfig::actuator(
             "handler_node_c",
             "topic_c",
@@ -198,10 +198,7 @@ async fn nodes_returns_all_added_nodes() {
     let json = assert_json_ok(resp).await;
 
     let nodes = json["nodes"].as_array().expect("nodes should be an array");
-    let node_names: Vec<&str> = nodes
-        .iter()
-        .filter_map(|n| n["name"].as_str())
-        .collect();
+    let node_names: Vec<&str> = nodes.iter().filter_map(|n| n["name"].as_str()).collect();
 
     let my_pid = std::process::id();
 
@@ -286,9 +283,7 @@ async fn nodes_memory_formatted_as_mb() {
         .find(|n| n["name"].as_str() == Some("handler_mem_fmt_node"))
         .expect("node should appear");
 
-    let mem_str = entry["memory"]
-        .as_str()
-        .expect("memory should be a string");
+    let mem_str = entry["memory"].as_str().expect("memory should be a string");
     assert!(
         mem_str.ends_with(" MB"),
         "memory should end with ' MB', got: '{}'",
@@ -366,11 +361,10 @@ async fn topics_returns_added_topics() {
     let resp = app.oneshot(get_request("/api/topics")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
-    let topics = json["topics"].as_array().expect("topics should be an array");
-    let _topic_names: Vec<&str> = topics
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
+    let topics = json["topics"]
+        .as_array()
+        .expect("topics should be an array");
+    let _topic_names: Vec<&str> = topics.iter().filter_map(|t| t["name"].as_str()).collect();
 
     // Topics created via harness go under horus_topic/ subdirectory.
     // The discovery layer should pick them up; the name may or may not have
@@ -413,7 +407,9 @@ async fn topics_strips_horus_prefix() {
     let resp = app.oneshot(get_request("/api/topics")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
-    let topics = json["topics"].as_array().expect("topics should be an array");
+    let topics = json["topics"]
+        .as_array()
+        .expect("topics should be an array");
 
     // Look for our topic — the handler should have stripped the "horus_" prefix.
     let found = topics.iter().any(|t| {
@@ -449,7 +445,9 @@ async fn topics_size_formatted_as_kb() {
     let resp = app.oneshot(get_request("/api/topics")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
-    let topics = json["topics"].as_array().expect("topics should be an array");
+    let topics = json["topics"]
+        .as_array()
+        .expect("topics should be an array");
 
     // All topic entries should have size formatted as "X KB".
     for topic in topics {
@@ -604,10 +602,7 @@ async fn graph_edges_have_correct_types() {
 
     let edges = json["edges"].as_array().expect("edges should be an array");
 
-    let edge_types: Vec<&str> = edges
-        .iter()
-        .filter_map(|e| e["type"].as_str())
-        .collect();
+    let edge_types: Vec<&str> = edges.iter().filter_map(|e| e["type"].as_str()).collect();
 
     // We expect at least one "publish" edge (sensor -> topic) and one
     // "subscribe" edge (topic -> actuator).
@@ -910,16 +905,14 @@ async fn recordings_list_returns_valid_json() {
         json["recordings"].is_array(),
         "recordings should be an array"
     );
-    assert!(
-        json["count"].is_number(),
-        "count should be a number"
-    );
+    assert!(json["count"].is_number(), "count should be a number");
 
     // count should match the length of the recordings array.
     let recordings = json["recordings"].as_array().unwrap();
     let count = json["count"].as_u64().unwrap();
     assert_eq!(
-        recordings.len() as u64, count,
+        recordings.len() as u64,
+        count,
         "count field should match recordings array length"
     );
 }
@@ -956,7 +949,9 @@ async fn recordings_info_nonexistent_returns_404() {
 
     let app = builders::test_router();
     let resp = app
-        .oneshot(get_request("/api/recordings/nonexistent_session_integration_xyz"))
+        .oneshot(get_request(
+            "/api/recordings/nonexistent_session_integration_xyz",
+        ))
         .await
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::NOT_FOUND).await;
@@ -973,7 +968,9 @@ async fn recordings_delete_nonexistent_returns_404() {
 
     let app = builders::test_router();
     let resp = app
-        .oneshot(delete_request("/api/recordings/nonexistent_session_integration_xyz"))
+        .oneshot(delete_request(
+            "/api/recordings/nonexistent_session_integration_xyz",
+        ))
         .await
         .unwrap();
     let json = assert_json_error(resp, axum::http::StatusCode::NOT_FOUND).await;

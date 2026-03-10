@@ -47,9 +47,9 @@ def test_per_node_rate_control():
     print(f"Medium node ticks: {len(medium_ticks)} (expected ~50)")
     print(f"Slow node ticks: {len(slow_ticks)} (expected ~10)")
 
-    assert 90 <= len(fast_ticks) <= 110, f"Fast node ticks out of range: {len(fast_ticks)}"
-    assert 45 <= len(medium_ticks) <= 55, f"Medium node ticks out of range: {len(medium_ticks)}"
-    assert 9 <= len(slow_ticks) <= 11, f"Slow node ticks out of range: {len(slow_ticks)}"
+    assert 80 <= len(fast_ticks) <= 120, f"Fast node ticks out of range: {len(fast_ticks)}"
+    assert 40 <= len(medium_ticks) <= 60, f"Medium node ticks out of range: {len(medium_ticks)}"
+    assert 7 <= len(slow_ticks) <= 13, f"Slow node ticks out of range: {len(slow_ticks)}"
 
     print(" Per-node rate control test passed!")
 

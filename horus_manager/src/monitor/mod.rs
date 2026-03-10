@@ -255,7 +255,7 @@ pub async fn run(port: u16, no_auth: bool) -> anyhow::Result<()> {
     let auth_service = Arc::new(AuthService::new(password_hash)?);
 
     let params = Arc::new(
-        horus_core::RuntimeParams::init().unwrap_or_else(|_| horus_core::RuntimeParams::default()),
+        horus_core::RuntimeParams::new().unwrap_or_else(|_| horus_core::RuntimeParams::default()),
     );
 
     // Detect current workspace (if running from within a workspace)

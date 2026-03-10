@@ -15,7 +15,7 @@ pub(crate) use run_python::detect_python_interpreter;
 
 use crate::cli_output;
 use crate::config::CARGO_TOML;
-use crate::manifest::{HORUS_TOML, HorusManifest};
+use crate::manifest::{HorusManifest, HORUS_TOML};
 use crate::progress;
 use anyhow::{anyhow, bail, Context, Result};
 use colored::*;
@@ -224,9 +224,7 @@ fn execute_from_manifest(
     );
 
     match manifest_path.file_name().and_then(|s| s.to_str()) {
-        Some(HORUS_TOML) => {
-            execute_from_horus_manifest(manifest_path, args, release, clean)
-        }
+        Some(HORUS_TOML) => execute_from_horus_manifest(manifest_path, args, release, clean),
         Some(CARGO_TOML) => run_rust::execute_from_cargo_toml(manifest_path, args, release, clean),
         _ => bail!("Unsupported manifest type: {}", manifest_path.display()),
     }

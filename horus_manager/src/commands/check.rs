@@ -3,8 +3,7 @@
 use crate::cli_output;
 use crate::commands::run::check_hardware_requirements;
 use crate::config::CARGO_TOML;
-use crate::dependency_resolver::DependencySource;
-use crate::manifest::{HorusManifest, HORUS_TOML};
+use crate::manifest::{detect_languages, HorusManifest, Language, HORUS_TOML};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::has_native_shm;
@@ -38,7 +37,9 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
             cli_output::ICON_ERROR.red(),
             target_path.display()
         );
-        return Err(HorusError::Config(ConfigError::Other("Path not found".to_string())));
+        return Err(HorusError::Config(ConfigError::Other(
+            "Path not found".to_string(),
+        )));
     }
 
     // For JSON mode, capture check result and output as JSON only
@@ -169,47 +170,25 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                         }
                     }
 
-                    // Check main file exists based on language
-                    if let Some(ref lang) = manifest.package.language {
-                        let main_exists = match lang.as_str() {
-                            "rust" => {
+                    // Check main file exists based on detected language
+                    let languages = detect_languages(base_dir);
+                    for lang in &languages {
+                        let main_exists = match lang {
+                            Language::Rust => {
                                 base_dir.join("main.rs").exists()
                                     || base_dir.join("src/main.rs").exists()
                                     || base_dir.join(CARGO_TOML).exists()
                             }
-                            "python" => base_dir.join("main.py").exists(),
+                            Language::Python => base_dir.join("main.py").exists(),
                             _ => true,
                         };
                         if !main_exists {
-                            file_errors.push(format!("main file not found for '{}'", lang));
-                        }
-                    }
-
-                    // Validate path dependencies exist
-                    if let Ok(deps) = manifest.dependencies_as_specs() {
-                        for dep in &deps {
-                            if let DependencySource::Path(path_str) = &dep.source {
-                                let dep_path = if Path::new(path_str).is_absolute() {
-                                    PathBuf::from(path_str)
-                                } else {
-                                    base_dir.join(path_str)
-                                };
-                                if !dep_path.exists() {
-                                    file_errors.push(format!(
-                                        "dependency '{}' path not found: {}",
-                                        dep.name,
-                                        dep_path.display()
-                                    ));
-                                }
-                            }
+                            file_errors.push(format!("main file not found for '{:?}'", lang));
                         }
                     }
 
                     if file_errors.is_empty() {
-                        println!(
-                            "      {} manifest valid",
-                            cli_output::ICON_SUCCESS.green()
-                        );
+                        println!("      {} manifest valid", cli_output::ICON_SUCCESS.green());
                     } else {
                         for err in &file_errors {
                             println!("      {} {}", cli_output::ICON_ERROR.red(), err);
@@ -457,7 +436,10 @@ fn check_rust_file(path: &Path) -> HorusResult<()> {
             println!("{}", cli_output::ICON_ERROR.red());
             println!("\n{} Syntax error:", cli_output::ICON_ERROR.red().bold());
             println!("  {}", e);
-            return Err(HorusError::Config(ConfigError::Other(format!("Rust syntax error: {}", e))));
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Rust syntax error: {}",
+                e
+            ))));
         }
     }
 
@@ -526,6 +508,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     let mut errors = Vec::new();
     let mut warn_msgs = Vec::new();
     let base_dir = manifest_path.parent().unwrap_or(Path::new("."));
+    let languages = detect_languages(base_dir);
 
     // 1. TOML Syntax Validation
     print!("  {} Validating TOML syntax... ", "▸".cyan());
@@ -586,32 +569,42 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
             warn_msgs.push(missing_license_warning.to_string());
         }
 
-        // Language validation
-        print!("  {} Validating language field... ", "▸".cyan());
-        if let Some(ref language) = manifest.package.language {
-            if language == "rust" || language == "python" {
-                println!("{}", cli_output::ICON_SUCCESS.green());
-            } else {
-                println!("{}", cli_output::ICON_ERROR.red());
-                errors.push(format!(
-                    "Invalid language '{}' - must be: rust or python",
-                    language
-                ));
+        // Language detection
+        print!("  {} Detecting project language... ", "▸".cyan());
+        if languages.is_empty() {
+            println!("{}", cli_output::ICON_WARN.yellow());
+            if !quiet {
+                warn_msgs.push(
+                    "No language detected - no Cargo.toml, pyproject.toml, setup.py, or CMakeLists.txt found".to_string(),
+                );
             }
         } else {
-            println!("{}", cli_output::ICON_ERROR.red());
-            errors
-                .push("Missing 'language' field - must be: rust or python".to_string());
+            let lang_names: Vec<&str> = languages
+                .iter()
+                .map(|l| match l {
+                    Language::Rust => "rust",
+                    Language::Python => "python",
+                    Language::Cpp => "cpp",
+                    Language::Ros2 => "ros2",
+                })
+                .collect();
+            println!(
+                "{} ({})",
+                cli_output::ICON_SUCCESS.green(),
+                lang_names.join(", ")
+            );
         }
 
         // Main file existence check
         print!("  {} Checking for main file... ", "▸".cyan());
-        if let Some(ref language) = manifest.package.language {
-            let main_files = match language.as_str() {
-                "rust" => vec!["main.rs", "src/main.rs"],
-                "python" => vec!["main.py"],
-                _ => vec![],
-            };
+        if !languages.is_empty() {
+            let mut main_files: Vec<&str> = Vec::new();
+            if languages.contains(&Language::Rust) {
+                main_files.extend_from_slice(&["main.rs", "src/main.rs"]);
+            }
+            if languages.contains(&Language::Python) {
+                main_files.push("main.py");
+            }
 
             let mut found = false;
             for main_file in &main_files {
@@ -637,166 +630,8 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         }
     }
 
-    // 3. Parse Dependencies
-    print!("  {} Parsing dependencies... ", "▸".cyan());
-    let dep_specs = if let Some(ref manifest) = manifest {
-        match manifest.dependencies_as_specs() {
-            Ok(specs) => {
-                println!("{}", cli_output::ICON_SUCCESS.green());
-                specs
-            }
-            Err(e) => {
-                println!("{}", cli_output::ICON_ERROR.red());
-                errors.push(format!("Failed to parse dependencies: {}", e));
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
-
-    // 4. Check for Duplicates
-    if !dep_specs.is_empty() {
-        print!("  {} Checking for duplicates... ", "▸".cyan());
-        let mut seen = HashSet::new();
-        let mut duplicates = Vec::new();
-
-        for spec in &dep_specs {
-            if !seen.insert(&spec.name) {
-                duplicates.push(spec.name.clone());
-            }
-        }
-
-        if duplicates.is_empty() {
-            println!("{}", cli_output::ICON_SUCCESS.green());
-        } else {
-            println!("{}", cli_output::ICON_ERROR.red());
-            errors.push(format!("Duplicate dependencies: {}", duplicates.join(", ")));
-        }
-    }
-
-    // 5. Validate Path Dependencies
-    println!("\n  {} Checking path dependencies...", "▸".cyan());
-    let mut path_deps_found = false;
-
-    for spec in &dep_specs {
-        if let DependencySource::Path(ref path) = spec.source {
-            path_deps_found = true;
-            let resolved_path = if path.is_absolute() {
-                path.clone()
-            } else {
-                base_dir.join(path)
-            };
-
-            if resolved_path.exists() {
-                if resolved_path.is_dir() {
-                    println!(
-                        "    {} {} ({})",
-                        cli_output::ICON_SUCCESS.green(),
-                        spec.name,
-                        path.display()
-                    );
-                } else {
-                    println!(
-                        "    {} {} ({}) - Not a directory",
-                        cli_output::ICON_ERROR.red(),
-                        spec.name,
-                        path.display()
-                    );
-                    errors.push(format!(
-                        "Path dependency '{}' is not a directory: {}",
-                        spec.name,
-                        path.display()
-                    ));
-                }
-            } else {
-                println!(
-                    "    {} {} ({}) - Path not found",
-                    cli_output::ICON_ERROR.red(),
-                    spec.name,
-                    path.display()
-                );
-                errors.push(format!(
-                    "Path dependency '{}' not found: {}",
-                    spec.name,
-                    path.display()
-                ));
-            }
-        }
-    }
-
-    if !path_deps_found {
-        println!("    {} No path dependencies", "⊘".dimmed());
-    }
-
-    // 6. Circular Dependency Detection
-    println!("\n  {} Checking for circular dependencies...", "▸".cyan());
-    let mut circular_found = false;
-
-    for spec in &dep_specs {
-        if let DependencySource::Path(ref path) = spec.source {
-            let resolved_path = if path.is_absolute() {
-                path.clone()
-            } else {
-                base_dir.join(path)
-            };
-
-            let target_toml = resolved_path.join(HORUS_TOML);
-            if target_toml.exists() {
-                if let Ok((target_manifest, _)) = HorusManifest::load_from(&target_toml) {
-                    if let Ok(target_deps) = target_manifest.dependencies_as_specs() {
-                        let our_name = manifest
-                            .as_ref()
-                            .map(|m| m.package.name.as_str())
-                            .unwrap_or("");
-
-                        for target_dep in target_deps {
-                            if target_dep.name == our_name {
-                                if let DependencySource::Path(_) = target_dep.source {
-                                    circular_found = true;
-                                    errors.push(format!(
-                                        "Circular dependency detected: {} -> {} -> {}",
-                                        our_name, spec.name, our_name
-                                    ));
-                                    println!(
-                                        "    {} Circular: {} <-> {}",
-                                        cli_output::ICON_ERROR.red(),
-                                        our_name,
-                                        spec.name
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if !circular_found {
-        println!(
-            "    {} No circular dependencies",
-            cli_output::ICON_SUCCESS.green()
-        );
-    }
-
-    // 7. Version Constraint Validation
-    print!("\n  {} Validating version constraints... ", "▸".cyan());
-
-    for spec in &dep_specs {
-        if spec.requirement.to_string() == "*" && !quiet {
-            warn_msgs.push(format!(
-                "Dependency '{}' uses wildcard version (*) - consider pinning to a specific version",
-                spec.name
-            ));
-        }
-    }
-
-    println!("{}", cli_output::ICON_SUCCESS.green());
-
-    // 8. Workspace Structure Check
+    // 3. Workspace Structure Check
     print!("\n  {} Checking workspace structure... ", "▸".cyan());
-    let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let horus_dir = base_dir.join(".horus");
 
     if horus_dir.exists() && horus_dir.is_dir() {
@@ -810,163 +645,122 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         }
     }
 
-    // 9. Dependency Installation Check
-    print!("  {} Checking installed dependencies... ", "▸".cyan());
-    if horus_dir.exists() {
-        let packages_dir = horus_dir.join("packages");
-        if packages_dir.exists() {
-            let mut missing_deps = Vec::new();
-
-            for spec in &dep_specs {
-                match &spec.source {
-                    DependencySource::Registry => {
-                        let package_dir = packages_dir.join(&spec.name);
-                        if !package_dir.exists() {
-                            missing_deps.push(spec.name.clone());
-                        }
-                    }
-                    DependencySource::Path(_) => {}
-                    DependencySource::Git { .. } => {}
-                    DependencySource::Pip { package_name } => {
-                        let _ = package_name;
-                    }
-                    DependencySource::CratesIO | DependencySource::System => {}
-                }
-            }
-
-            if missing_deps.is_empty() {
-                println!("{}", cli_output::ICON_SUCCESS.green());
-            } else {
-                println!("{}", cli_output::ICON_WARN.yellow());
-                if !missing_deps.is_empty() && !quiet {
-                    warn_msgs.push(format!(
-                        "Missing dependencies: {} (run 'horus run' to install)",
-                        missing_deps.join(", ")
-                    ));
-                }
-            }
-        } else {
-            println!("{}", cli_output::ICON_WARN.yellow());
-            if !quiet {
-                warn_msgs
-                    .push("No packages directory - dependencies not installed yet".to_string());
-            }
-        }
-    } else {
-        println!("{}", "⊘".dimmed());
-    }
-
-    // 10. Toolchain Check
+    // 4. Toolchain Check
     print!("  {} Checking toolchain... ", "▸".cyan());
-    if let Some(ref m) = manifest {
-        if let Some(ref language) = m.package.language {
-            let language = language.as_str();
-            let toolchain_available = match language {
-                "rust" => std::process::Command::new("rustc")
+    if !languages.is_empty() {
+        let mut all_available = true;
+        for lang in &languages {
+            let toolchain_available = match lang {
+                Language::Rust => std::process::Command::new("rustc")
                     .arg("--version")
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false),
-                "python" => std::process::Command::new("python3")
+                Language::Python => std::process::Command::new("python3")
                     .arg("--version")
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false),
-                _ => false,
+                Language::Cpp => std::process::Command::new("cmake")
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
+                Language::Ros2 => std::process::Command::new("ros2")
+                    .arg("--help")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
             };
 
-            if toolchain_available {
-                println!("{}", cli_output::ICON_SUCCESS.green());
-            } else {
-                println!("{}", cli_output::ICON_ERROR.red());
+            if !toolchain_available {
+                all_available = false;
                 errors.push(format!(
-                    "Required toolchain for '{}' not found in PATH",
-                    language
+                    "Required toolchain for '{:?}' not found in PATH",
+                    lang
                 ));
             }
+        }
+
+        if all_available {
+            println!("{}", cli_output::ICON_SUCCESS.green());
         } else {
-            println!("{}", "⊘".dimmed());
+            println!("{}", cli_output::ICON_ERROR.red());
         }
     } else {
         println!("{}", "⊘".dimmed());
     }
 
-    // 11. Code Validation
+    // 5. Code Validation
     print!("  {} Validating code syntax... ", "▸".cyan());
-    if let Some(ref m) = manifest {
-        if let Some(ref lang) = m.package.language {
-            let language = lang.as_str();
-            match language {
-                "rust" => {
-                    let has_cargo = base_dir.join(CARGO_TOML).exists();
-                    let has_main =
-                        base_dir.join("main.rs").exists() || base_dir.join("src/main.rs").exists();
+    if !languages.is_empty() {
+        let mut validated = false;
+        if languages.contains(&Language::Rust) {
+            let has_cargo = base_dir.join(CARGO_TOML).exists();
+            let has_main =
+                base_dir.join("main.rs").exists() || base_dir.join("src/main.rs").exists();
 
-                    if has_cargo || has_main {
-                        let check_result = std::process::Command::new("cargo")
-                            .arg("build")
-                            .arg("--quiet")
-                            .current_dir(base_dir)
-                            .output();
+            if has_cargo || has_main {
+                validated = true;
+                let check_result = std::process::Command::new("cargo")
+                    .arg("build")
+                    .arg("--quiet")
+                    .current_dir(base_dir)
+                    .output();
 
-                        match check_result {
-                            Ok(output) if output.status.success() => {
-                                println!("{}", cli_output::ICON_SUCCESS.green());
-                            }
-                            Ok(_) => {
-                                println!("{}", cli_output::ICON_ERROR.red());
-                                errors.push(
-                                    "Rust code has compilation errors (run 'cargo build' for details)"
-                                        .to_string(),
-                                );
-                            }
-                            Err(_) => {
-                                println!("{}", cli_output::ICON_WARN.yellow());
-                                if !quiet {
-                                    warn_msgs.push(
-                                        "Could not run 'cargo build' - skipping code validation"
-                                            .to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        println!("{}", "⊘".dimmed());
+                match check_result {
+                    Ok(output) if output.status.success() => {
+                        println!("{}", cli_output::ICON_SUCCESS.green());
                     }
-                }
-                "python" => {
-                    let main_py = base_dir.join("main.py");
-                    if main_py.exists() {
-                        let check_result = std::process::Command::new("python3")
-                            .arg("-m")
-                            .arg("py_compile")
-                            .arg(&main_py)
-                            .output();
-
-                        match check_result {
-                            Ok(output) if output.status.success() => {
-                                println!("{}", cli_output::ICON_SUCCESS.green());
-                            }
-                            Ok(_) => {
-                                println!("{}", cli_output::ICON_ERROR.red());
-                                errors.push("Python code has syntax errors".to_string());
-                            }
-                            Err(_) => {
-                                println!("{}", cli_output::ICON_WARN.yellow());
-                                if !quiet {
-                                    warn_msgs.push("Could not validate Python syntax".to_string());
-                                }
-                            }
-                        }
-                    } else {
-                        println!("{}", "⊘".dimmed());
+                    Ok(_) => {
+                        println!("{}", cli_output::ICON_ERROR.red());
+                        errors.push(
+                            "Rust code has compilation errors (run 'cargo build' for details)"
+                                .to_string(),
+                        );
                     }
-                }
-                _ => {
-                    println!("{}", "⊘".dimmed());
+                    Err(_) => {
+                        println!("{}", cli_output::ICON_WARN.yellow());
+                        if !quiet {
+                            warn_msgs.push(
+                                "Could not run 'cargo build' - skipping code validation"
+                                    .to_string(),
+                            );
+                        }
+                    }
                 }
             }
-        } else {
+        }
+        if languages.contains(&Language::Python) {
+            let main_py = base_dir.join("main.py");
+            if main_py.exists() {
+                validated = true;
+                let check_result = std::process::Command::new("python3")
+                    .arg("-m")
+                    .arg("py_compile")
+                    .arg(&main_py)
+                    .output();
+
+                match check_result {
+                    Ok(output) if output.status.success() => {
+                        if !languages.contains(&Language::Rust) {
+                            println!("{}", cli_output::ICON_SUCCESS.green());
+                        }
+                    }
+                    Ok(_) => {
+                        println!("{}", cli_output::ICON_ERROR.red());
+                        errors.push("Python code has syntax errors".to_string());
+                    }
+                    Err(_) => {
+                        println!("{}", cli_output::ICON_WARN.yellow());
+                        if !quiet {
+                            warn_msgs.push("Could not validate Python syntax".to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if !validated {
             println!("{}", "⊘".dimmed());
         }
     } else {
@@ -1104,124 +898,95 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         println!("{}", "⊘".dimmed());
     }
 
-    // 15. API Usage Check
+    // 9. API Usage Check
     print!("  {} Checking API usage... ", "▸".cyan());
-    if let Some(ref m) = manifest {
-        if let Some(ref lang_str) = m.package.language {
-            let language = lang_str.as_str();
-            match language {
-                "rust" => {
-                    let uses_horus = dep_specs
-                        .iter()
-                        .any(|spec| spec.name == "horus" || spec.name == "horus_macros");
+    if languages.contains(&Language::Rust) {
+        // Check if Cargo.toml references horus
+        let cargo_toml_path = base_dir.join(CARGO_TOML);
+        let uses_horus = if cargo_toml_path.exists() {
+            std::fs::read_to_string(&cargo_toml_path)
+                .map(|c| c.contains("horus") || c.contains("horus_macros"))
+                .unwrap_or(false)
+        } else {
+            false
+        };
 
-                    if uses_horus {
-                        let main_paths =
-                            vec![base_dir.join("main.rs"), base_dir.join("src/main.rs")];
+        if uses_horus {
+            let main_paths = vec![base_dir.join("main.rs"), base_dir.join("src/main.rs")];
 
-                        let mut has_scheduler = false;
-                        for main_path in main_paths {
-                            if main_path.exists() {
-                                if let Ok(content) = std::fs::read_to_string(&main_path) {
-                                    has_scheduler = content.contains("Scheduler::new")
-                                        || content.contains("scheduler.register");
-                                    if has_scheduler {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
+            let mut has_scheduler = false;
+            for main_path in main_paths {
+                if main_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&main_path) {
+                        has_scheduler = content.contains("Scheduler::new")
+                            || content.contains("scheduler.register");
                         if has_scheduler {
-                            println!("{}", cli_output::ICON_SUCCESS.green());
-                        } else {
-                            println!("{}", cli_output::ICON_WARN.yellow());
-                            if !quiet {
-                                warn_msgs.push(
-                                    "HORUS dependency found but no Scheduler usage detected"
-                                        .to_string(),
-                                );
-                            }
+                            break;
                         }
-                    } else {
-                        println!("{}", "⊘".dimmed());
                     }
                 }
-                "python" => {
-                    let uses_horus = dep_specs.iter().any(|spec| spec.name == "horus_py");
+            }
 
-                    if uses_horus {
-                        let main_py = base_dir.join("main.py");
-                        if main_py.exists() {
-                            if let Ok(content) = std::fs::read_to_string(&main_py) {
-                                if content.contains("import horus")
-                                    || content.contains("from horus")
-                                {
-                                    println!("{}", cli_output::ICON_SUCCESS.green());
-                                } else {
-                                    println!("{}", cli_output::ICON_WARN.yellow());
-                                    if !quiet {
-                                        warn_msgs.push(
-                                            "horus_py dependency but no 'import horus' found"
-                                                .to_string(),
-                                        );
-                                    }
-                                }
-                            } else {
-                                println!("{}", "⊘".dimmed());
-                            }
-                        } else {
-                            println!("{}", "⊘".dimmed());
-                        }
-                    } else {
-                        println!("{}", "⊘".dimmed());
-                    }
-
-                    // Check external Python dependencies
-                    print!("  {} Checking Python external dependencies... ", "▸".cyan());
-                    let main_py = base_dir.join("main.py");
-                    if main_py.exists() {
-                        match parse_python_imports(&main_py) {
-                            Ok(imports) if !imports.is_empty() => {
-                                let mut missing_packages = Vec::new();
-                                for package in &imports {
-                                    if !check_system_package_exists(package) {
-                                        missing_packages.push(package.clone());
-                                    }
-                                }
-
-                                if missing_packages.is_empty() {
-                                    println!(
-                                        "{} ({})",
-                                        cli_output::ICON_SUCCESS.green(),
-                                        imports.len()
-                                    );
-                                } else {
-                                    println!("{}", cli_output::ICON_ERROR.red());
-                                    errors.push(format!(
-                                        "Missing Python packages: {} (install with: pip install {})",
-                                        missing_packages.join(", "),
-                                        missing_packages.join(" ")
-                                    ));
-                                }
-                            }
-                            Ok(_) => {
-                                println!("{}", "⊘".dimmed());
-                            }
-                            Err(e) => {
-                                println!("{}", cli_output::ICON_WARN.yellow());
-                                if !quiet {
-                                    warn_msgs
-                                        .push(format!("Could not parse Python imports: {}", e));
-                                }
-                            }
-                        }
-                    } else {
-                        println!("{}", "⊘".dimmed());
-                    }
+            if has_scheduler {
+                println!("{}", cli_output::ICON_SUCCESS.green());
+            } else {
+                println!("{}", cli_output::ICON_WARN.yellow());
+                if !quiet {
+                    warn_msgs
+                        .push("HORUS dependency found but no Scheduler usage detected".to_string());
                 }
-                _ => {
+            }
+        } else {
+            println!("{}", "⊘".dimmed());
+        }
+    } else if languages.contains(&Language::Python) {
+        let main_py = base_dir.join("main.py");
+        if main_py.exists() {
+            if let Ok(content) = std::fs::read_to_string(&main_py) {
+                if content.contains("import horus") || content.contains("from horus") {
+                    println!("{}", cli_output::ICON_SUCCESS.green());
+                } else {
                     println!("{}", "⊘".dimmed());
+                }
+            } else {
+                println!("{}", "⊘".dimmed());
+            }
+        } else {
+            println!("{}", "⊘".dimmed());
+        }
+
+        // Check external Python dependencies
+        print!("  {} Checking Python external dependencies... ", "▸".cyan());
+        let main_py = base_dir.join("main.py");
+        if main_py.exists() {
+            match parse_python_imports(&main_py) {
+                Ok(imports) if !imports.is_empty() => {
+                    let mut missing_packages = Vec::new();
+                    for package in &imports {
+                        if !check_system_package_exists(package) {
+                            missing_packages.push(package.clone());
+                        }
+                    }
+
+                    if missing_packages.is_empty() {
+                        println!("{} ({})", cli_output::ICON_SUCCESS.green(), imports.len());
+                    } else {
+                        println!("{}", cli_output::ICON_ERROR.red());
+                        errors.push(format!(
+                            "Missing Python packages: {} (install with: pip install {})",
+                            missing_packages.join(", "),
+                            missing_packages.join(" ")
+                        ));
+                    }
+                }
+                Ok(_) => {
+                    println!("{}", "⊘".dimmed());
+                }
+                Err(e) => {
+                    println!("{}", cli_output::ICON_WARN.yellow());
+                    if !quiet {
+                        warn_msgs.push(format!("Could not parse Python imports: {}", e));
+                    }
                 }
             }
         } else {
@@ -1261,7 +1026,9 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
             println!("  {}. {}", i + 1, err);
         }
         println!();
-        Err(HorusError::Config(ConfigError::Other("Validation failed".to_string())))
+        Err(HorusError::Config(ConfigError::Other(
+            "Validation failed".to_string(),
+        )))
     }
 }
 
@@ -1404,7 +1171,10 @@ mod tests {
     #[test]
     fn valid_toml_passes_check() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        write_toml(
+            &dir,
+            "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n",
+        );
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(
             result.is_ok(),
@@ -1434,7 +1204,7 @@ mod tests {
     #[test]
     fn missing_name_field_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        write_toml(&dir, "[package]\nversion = \"0.1.0\"\n");
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Missing 'name' should fail");
     }
@@ -1442,19 +1212,9 @@ mod tests {
     #[test]
     fn missing_version_field_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my-robot\"\nlanguage = \"rust\"\n");
+        write_toml(&dir, "[package]\nname = \"my-robot\"\n");
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Missing 'version' should fail");
-    }
-
-    #[test]
-    fn missing_language_field_returns_error() {
-        let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n");
-        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
-        // Note: language is optional in manifest schema, but check command warns about it
-        // This test may pass or fail depending on whether language is treated as required
-        assert!(result.is_err(), "Missing 'language' should fail");
     }
 
     // ─── Version Format Tests ───
@@ -1462,7 +1222,10 @@ mod tests {
     #[test]
     fn invalid_version_format_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"not_a_version\"\nlanguage = \"rust\"\n");
+        write_toml(
+            &dir,
+            "[package]\nname = \"my-robot\"\nversion = \"not_a_version\"\n",
+        );
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Invalid semver version should fail");
     }
@@ -1470,7 +1233,10 @@ mod tests {
     #[test]
     fn valid_semver_version_passes() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"1.2.3\"\nlanguage = \"rust\"\n");
+        write_toml(
+            &dir,
+            "[package]\nname = \"my-robot\"\nversion = \"1.2.3\"\n",
+        );
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(
             result.is_ok(),
@@ -1479,22 +1245,15 @@ mod tests {
         );
     }
 
-    // ─── Language Validation Tests ───
-
-    #[test]
-    fn invalid_language_returns_error() {
-        let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\nlanguage = \"javascript\"\n");
-        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
-        assert!(result.is_err(), "Invalid language 'javascript' should fail");
-    }
-
     // ─── Project Name Validation Tests ───
 
     #[test]
     fn name_with_spaces_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my robot\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        write_toml(
+            &dir,
+            "[package]\nname = \"my robot\"\nversion = \"0.1.0\"\n",
+        );
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Name with spaces should fail");
     }
@@ -1502,7 +1261,10 @@ mod tests {
     #[test]
     fn name_with_special_chars_returns_error() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my@robot!\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        write_toml(
+            &dir,
+            "[package]\nname = \"my@robot!\"\nversion = \"0.1.0\"\n",
+        );
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(result.is_err(), "Name with special chars should fail");
     }
@@ -1510,7 +1272,10 @@ mod tests {
     #[test]
     fn name_with_hyphens_and_underscores_passes() {
         let dir = TempDir::new().unwrap();
-        write_toml(&dir, "[package]\nname = \"my-robot_v2\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n");
+        write_toml(
+            &dir,
+            "[package]\nname = \"my-robot_v2\"\nversion = \"0.1.0\"\n",
+        );
         let result = run_check(Some(dir.path().join("horus.toml")), true, false);
         assert!(
             result.is_ok(),
@@ -1529,59 +1294,6 @@ mod tests {
             false,
         );
         assert!(result.is_err(), "Non-existent path should fail");
-    }
-
-    // ─── Circular Dependency Detection ───
-
-    #[test]
-    fn circular_dependency_detected() {
-        let dir = TempDir::new().unwrap();
-
-        // Create package A that depends on B
-        let pkg_a = dir.path().join("pkg_a");
-        let pkg_b = dir.path().join("pkg_b");
-        fs::create_dir_all(&pkg_a).unwrap();
-        fs::create_dir_all(&pkg_b).unwrap();
-
-        // A depends on B via path
-        fs::write(
-            pkg_a.join("horus.toml"),
-            format!(
-                "[package]\nname = \"pkg-aa\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n\n[dependencies.pkg-bb]\npath = \"{}\"\n",
-                pkg_b.display()
-            ),
-        )
-        .unwrap();
-
-        // B depends on A via path (circular!)
-        fs::write(
-            pkg_b.join("horus.toml"),
-            format!(
-                "[package]\nname = \"pkg-bb\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n\n[dependencies.pkg-aa]\npath = \"{}\"\n",
-                pkg_a.display()
-            ),
-        )
-        .unwrap();
-
-        // Check package A — should detect the circular dependency
-        let result = run_check(Some(pkg_a.join("horus.toml")), true, false);
-        assert!(result.is_err(), "Circular dependency A→B→A should fail");
-    }
-
-    // ─── Path Dependency to Non-existent Directory ───
-
-    #[test]
-    fn path_dependency_nonexistent_returns_error() {
-        let dir = TempDir::new().unwrap();
-        write_toml(
-            &dir,
-            "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\nlanguage = \"rust\"\n\n[dependencies.missing-dep]\npath = \"./nonexistent_dir\"\n",
-        );
-        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
-        assert!(
-            result.is_err(),
-            "Path dependency to non-existent dir should fail"
-        );
     }
 
     // ─── parse_python_imports Tests ───

@@ -61,7 +61,10 @@ impl TuiDashboard {
             _ => 0,
         };
 
-        if self.selected_index < max_index {
+        // Clamp first in case the list shrank since last navigation
+        if self.selected_index > max_index {
+            self.selected_index = max_index;
+        } else if self.selected_index < max_index {
             self.selected_index += 1;
         }
     }

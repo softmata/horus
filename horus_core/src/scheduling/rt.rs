@@ -53,19 +53,21 @@ pub enum RuntimeError {
 impl From<RuntimeError> for crate::error::HorusError {
     fn from(err: RuntimeError) -> Self {
         match err {
-            RuntimeError::PermissionDenied(msg) => crate::error::HorusError::Resource(
-                crate::error::ResourceError::PermissionDenied {
+            RuntimeError::PermissionDenied(msg) => {
+                crate::error::HorusError::Resource(crate::error::ResourceError::PermissionDenied {
                     resource: "RT scheduling".to_string(),
                     required_permission: msg,
-                },
-            ),
-            RuntimeError::NotSupported(msg) => crate::error::HorusError::Resource(
-                crate::error::ResourceError::Unsupported {
+                })
+            }
+            RuntimeError::NotSupported(msg) => {
+                crate::error::HorusError::Resource(crate::error::ResourceError::Unsupported {
                     feature: "RT scheduling".to_string(),
                     reason: msg,
-                },
-            ),
-            other => crate::error::HorusError::Config(crate::error::ConfigError::Other(other.to_string())),
+                })
+            }
+            other => crate::error::HorusError::Config(crate::error::ConfigError::Other(
+                other.to_string(),
+            )),
         }
     }
 }
@@ -196,6 +198,7 @@ pub fn set_realtime_priority(_priority: i32) -> RuntimeResult<()> {
 
 /// Get NUMA node count (returns 1 if NUMA not available)
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub fn get_numa_node_count() -> usize {
     // Try to read from /sys/devices/system/node/
     if let Ok(entries) = std::fs::read_dir("/sys/devices/system/node/") {
@@ -210,6 +213,7 @@ pub fn get_numa_node_count() -> usize {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 pub fn get_numa_node_count() -> usize {
     1
 }

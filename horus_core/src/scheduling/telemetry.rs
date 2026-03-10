@@ -458,13 +458,28 @@ mod tests {
             TelemetryEndpoint::from_string("stdout"),
             TelemetryEndpoint::Stdout
         ));
+        match TelemetryEndpoint::from_string("/tmp/metrics.json") {
+            TelemetryEndpoint::LocalFile(p) => {
+                assert_eq!(p, std::path::PathBuf::from("/tmp/metrics.json"));
+            }
+            other => panic!("Expected LocalFile, got {:?}", other),
+        }
+        match TelemetryEndpoint::from_string("udp://127.0.0.1:9999") {
+            TelemetryEndpoint::Udp(addr) => {
+                assert_eq!(addr, "127.0.0.1:9999");
+            }
+            other => panic!("Expected Udp, got {:?}", other),
+        }
+        match TelemetryEndpoint::from_string("http://localhost:8080/metrics") {
+            TelemetryEndpoint::Http(url) => {
+                assert_eq!(url, "http://localhost:8080/metrics");
+            }
+            other => panic!("Expected Http, got {:?}", other),
+        }
+        // Empty string → Disabled
         assert!(matches!(
-            TelemetryEndpoint::from_string("/tmp/metrics.json"),
-            TelemetryEndpoint::LocalFile(_)
-        ));
-        assert!(matches!(
-            TelemetryEndpoint::from_string("udp://127.0.0.1:9999"),
-            TelemetryEndpoint::Udp(_)
+            TelemetryEndpoint::from_string(""),
+            TelemetryEndpoint::Disabled
         ));
     }
 }

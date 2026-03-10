@@ -44,6 +44,9 @@ blackbox = ["horus_core/blackbox"]
 # Zero-config peer discovery via mDNS/DNS-SD
 mdns = ["horus_core/mdns"]
 
+[lints]
+workspace = true
+
 [lib]
 name = "horus"
 path = "src/lib.rs"

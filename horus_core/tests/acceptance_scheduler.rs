@@ -4,8 +4,8 @@
 //! so we test Node behavior directly
 
 use horus_core::core::Node;
-use horus_core::error::{ConfigError, HorusError};
 use horus_core::error::HorusResult as Result;
+use horus_core::error::{ConfigError, HorusError};
 use horus_core::hlog;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -92,7 +92,9 @@ impl Node for FailingInitNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        Err(HorusError::Config(ConfigError::Other("Initialization failed".to_string())))
+        Err(HorusError::Config(ConfigError::Other(
+            "Initialization failed".to_string(),
+        )))
     }
 
     fn tick(&mut self) {
@@ -214,13 +216,24 @@ fn test_hlog_macro_works() {
     // Scenario 15: Logging with hlog!
     // Given: hlog! macro is available
     // When: Node logs messages
-    // Then: All logging methods work without panicking
+    // Then: Entries are written to the global log buffer
 
-    // These should not panic
+    use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
+
+    let idx_before = GLOBAL_LOG_BUFFER.write_idx();
+
     hlog!(info, "Test info");
     hlog!(warn, "Test warning");
     hlog!(error, "Test error");
     hlog!(debug, "Test debug");
+
+    let idx_after = GLOBAL_LOG_BUFFER.write_idx();
+    assert!(
+        idx_after >= idx_before + 4,
+        "Expected at least 4 log entries written, write_idx went from {} to {}",
+        idx_before,
+        idx_after
+    );
 }
 
 #[test]

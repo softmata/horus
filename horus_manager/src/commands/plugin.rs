@@ -1,6 +1,6 @@
 //! Plugin command - search, discover, inspect, install, and remove HORUS plugins
 
-use crate::manifest::{DependencyValue, HORUS_TOML};
+use crate::manifest::HORUS_TOML;
 use crate::{cli_output, registry, workspace};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
@@ -47,7 +47,7 @@ pub fn run_search_with_category(
                 serde_json::json!({
                     "name": p.name,
                     "description": p.description,
-                    "category": format!("{:?}", p.category),
+                    "category": format!("{}", p.category),
                     "features": p.features,
                 })
             })
@@ -129,7 +129,7 @@ fn print_search_results(
             );
             println!(
                 "{}",
-                "Categories: camera, lidar, imu, motor, servo, bus, gps, simulation, cli".dimmed()
+                "Categories: camera, lidar, imu, motor, servo, bus, gps, force-torque, simulation, cli, other".dimmed()
             );
         }
     } else {
@@ -198,7 +198,7 @@ pub fn run_available(include_local: bool) -> HorusResult<()> {
         std::collections::HashMap::new();
 
     for plugin in all_plugins {
-        let cat_name = format!("{:?}", plugin.category);
+        let cat_name = format!("{}", plugin.category);
         by_category.entry(cat_name).or_default().push(plugin);
     }
 
@@ -252,8 +252,8 @@ pub fn run_info(name: String) -> HorusResult<()> {
             println!("{}", "=".repeat(plugin.name.len()).dimmed());
             println!();
             println!("  Version:     {}", plugin.version.white());
-            println!("  Category:    {:?}", plugin.category);
-            println!("  Source:      {:?}", plugin.source);
+            println!("  Category:    {}", plugin.category);
+            println!("  Source:      {}", plugin.source);
             println!("  Description: {}", plugin.description);
             println!();
             println!("  {}", "Compatibility".yellow());
@@ -311,7 +311,7 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
                 "name": plugin.name,
                 "description": plugin.description,
                 "source": "plugin",
-                "category": format!("{:?}", plugin.category),
+                "category": format!("{}", plugin.category),
                 "features": plugin.features,
             });
             println!(
@@ -463,27 +463,9 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
 }
 
 /// Resolve the package directory after installation for plugin registration
+/// Resolve package directory — delegates to shared implementation in pkg module.
 fn resolve_package_dir(name: &str, version: &str, global: bool) -> Option<PathBuf> {
-    if global {
-        let home = dirs::home_dir()?;
-        let versioned = home
-            .join(".horus/cache")
-            .join(format!("{}@{}", name, version));
-        if versioned.exists() {
-            return Some(versioned);
-        }
-        let plain = home.join(".horus/cache").join(name);
-        if plain.exists() {
-            return Some(plain);
-        }
-    } else {
-        let workspace_root = workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
-        let local = workspace_root.join(".horus/packages").join(name);
-        if local.exists() {
-            return Some(local);
-        }
-    }
-    None
+    super::pkg::resolve_installed_package_dir(name, version, global)
 }
 
 /// Install a plugin package from registry
@@ -558,29 +540,9 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
         }
     }
 
-    // Update horus.toml with plugin-prefixed dependency
-    if let workspace::InstallTarget::Local(workspace_path) = &install_target {
-        let horus_toml_path = workspace_path.join(HORUS_TOML);
-        if horus_toml_path.exists() {
-            let dep_string = format!("plugin:{}", plugin);
-            let version = ver.as_deref().unwrap_or(&installed_version);
-            if let Err(e) = crate::manifest::add_dependency_to_file(
-                &horus_toml_path,
-                &dep_string,
-                &DependencyValue::Simple(version.to_string()),
-                "dependencies",
-            ) {
-                println!(
-                    "  {} Failed to update {}: {}",
-                    cli_output::ICON_WARN.yellow(),
-                    HORUS_TOML,
-                    e
-                );
-            } else {
-                println!("  {} Updated {}", cli_output::ICON_SUCCESS.green(), HORUS_TOML);
-            }
-        }
-    }
+    // horus.toml no longer tracks dependencies; plugin registration is handled
+    // by the plugin registry (lock file + symlink) above.  Native dep tracking
+    // is delegated to `cargo add` / `pip install` via `horus add`.
 
     println!();
     println!(

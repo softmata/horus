@@ -1,6 +1,6 @@
 //! # Example 5: Real-Time Nodes
 //!
-//! Shows how to use real-time Node methods for time-critical applications like
+//! Shows how to use the builder API for time-critical applications like
 //! motor control, with tick budgets and deadline monitoring.
 //!
 //! ```bash
@@ -20,7 +20,7 @@ message! {
 
 /// A PID controller running as a real-time node.
 ///
-/// Real-time nodes get dedicated thread execution with deadline monitoring.
+/// RT scheduling (budget, deadline, miss policy) is configured via the builder API.
 struct PidController {
     publisher: Topic<MotorCmd>,
     setpoint: f64,
@@ -67,18 +67,6 @@ impl Node for PidController {
         }
 
         self.publisher.send(cmd);
-    }
-
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_micros(200)) // 200μs max execution time
-    }
-
-    fn deadline(&self) -> Duration {
-        Duration::from_millis(1) // 1ms deadline for 1kHz control
-    }
-
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Skip // Occasional miss tolerated
     }
 }
 
@@ -132,6 +120,9 @@ fn main() -> Result<()> {
         .add(PidController::new()?)
         .order(0)
         .rate_hz(100.0)
+        .budget(200.us()) // 200μs max execution time
+        .deadline(1.ms()) // 1ms deadline for 1kHz control
+        .on_miss(Miss::Skip) // Occasional miss tolerated
         .build()?;
 
     // Safety monitor: best-effort at 10 Hz
@@ -140,18 +131,6 @@ fn main() -> Result<()> {
         .order(10)
         .rate_hz(10.0)
         .build()?;
-
-    // Use NodeTier for explicit classification
-    println!("Node tiers:");
-    println!(
-        "  PID: UltraFast (default policy: {:?})",
-        NodeTier::UltraFast.default_failure_policy()
-    );
-    println!(
-        "  Safety: Normal (default policy: {:?})",
-        NodeTier::Normal.default_failure_policy()
-    );
-    println!();
 
     scheduler.run_for(Duration::from_secs(3))?;
 

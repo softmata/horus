@@ -308,7 +308,9 @@ impl TensorPool {
         let header = unsafe { &*(mmap.as_ptr() as *const PoolHeader) };
 
         if header.magic != POOL_MAGIC {
-            return Err(HorusError::Config(ConfigError::Other("Invalid tensor pool magic".to_string())));
+            return Err(HorusError::Config(ConfigError::Other(
+                "Invalid tensor pool magic".to_string(),
+            )));
         }
 
         let config = TensorPoolConfig {
@@ -387,7 +389,9 @@ impl TensorPool {
         let header = self.header();
 
         if header.magic != POOL_MAGIC {
-            return Err(HorusError::Config(ConfigError::Other("Invalid tensor pool magic".to_string())));
+            return Err(HorusError::Config(ConfigError::Other(
+                "Invalid tensor pool magic".to_string(),
+            )));
         }
 
         if header.version != POOL_VERSION {
@@ -419,7 +423,9 @@ impl TensorPool {
 
         let stats = self.stats();
         if stats.is_under_pressure()
-            && !self.warned_pressure.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .warned_pressure
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             eprintln!(
                 "[horus::tensor_pool] WARNING: {}\n  \
@@ -1285,9 +1291,9 @@ impl TensorPool {
             let current = header.next_alloc_offset.load(Ordering::Acquire) as usize;
             let aligned_current = Self::align_up(current, self.config.slot_alignment);
             // Checked add prevents offset overflow on pathological concurrent allocations.
-            let new_offset = aligned_current.checked_add(size).ok_or_else(|| {
-                HorusError::Memory(crate::error::MemoryError::OffsetOverflow)
-            })?;
+            let new_offset = aligned_current
+                .checked_add(size)
+                .ok_or_else(|| HorusError::Memory(crate::error::MemoryError::OffsetOverflow))?;
 
             if new_offset > self.config.pool_size {
                 return Err(HorusError::Memory(

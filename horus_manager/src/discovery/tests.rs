@@ -367,15 +367,49 @@ fn test_discover_shared_memory_with_real_topic() {
 
 #[test]
 fn test_discover_nodes_returns_vec() {
-    // Smoke test - should not panic even with no data
     let result = discover_nodes();
-    assert!(result.is_ok());
+    match result {
+        Ok(nodes) => {
+            for node in &nodes {
+                assert!(!node.name.is_empty(), "Node name must not be empty");
+            }
+        }
+        Err(e) => {
+            // No /dev/shm/horus data is acceptable in CI
+            let msg = format!("{}", e);
+            assert!(
+                msg.contains("not found") || msg.contains("No such") || msg.contains("shm"),
+                "Unexpected error from discover_nodes: {}",
+                msg
+            );
+        }
+    }
 }
 
 #[test]
 fn test_discover_shared_memory_handles_missing_dirs() {
-    // Smoke test - should not panic even if dirs don't exist
-    let _ = discover_shared_memory();
+    // When /dev/shm/horus dirs don't exist, should return Ok(empty) or Err
+    let result = discover_shared_memory();
+    match result {
+        Ok(shm_info) => {
+            // Each entry must have a valid non-empty topic name
+            for info in &shm_info {
+                assert!(
+                    !info.topic_name.is_empty(),
+                    "SHM topic name must not be empty"
+                );
+                assert!(
+                    info.size_bytes > 0,
+                    "SHM region size must be > 0, topic: {}",
+                    info.topic_name
+                );
+            }
+        }
+        Err(e) => {
+            let msg = format!("{}", e);
+            assert!(!msg.is_empty(), "Error message must not be empty");
+        }
+    }
 }
 
 #[test]
@@ -605,4 +639,296 @@ fn test_live_discovery() {
     } else {
         println!("Topics directory DOES NOT EXIST");
     }
+}
+
+// =====================
+// Phase 4: Cache TTL & Synchronization Tests
+// =====================
+
+#[test]
+fn test_cache_ttl_boundary_fresh_after_update() {
+    // A freshly updated cache should NOT be stale
+    let mut cache = DiscoveryCache::new();
+    assert!(cache.is_nodes_stale(), "new cache should be stale");
+
+    cache.update_nodes(vec![]);
+    assert!(
+        !cache.is_nodes_stale(),
+        "cache should be fresh after update"
+    );
+
+    cache.update_shared_memory(vec![]);
+    assert!(
+        !cache.is_shared_memory_stale(),
+        "shm cache should be fresh after update"
+    );
+}
+
+#[test]
+fn test_cache_nodes_and_shm_independent_staleness() {
+    // Updating nodes should NOT make shared_memory fresh (and vice versa)
+    let mut cache = DiscoveryCache::new();
+
+    cache.update_nodes(vec![]);
+    assert!(!cache.is_nodes_stale(), "nodes should be fresh");
+    assert!(cache.is_shared_memory_stale(), "shm should still be stale");
+
+    let mut cache2 = DiscoveryCache::new();
+    cache2.update_shared_memory(vec![]);
+    assert!(cache2.is_nodes_stale(), "nodes should still be stale");
+    assert!(!cache2.is_shared_memory_stale(), "shm should be fresh");
+}
+
+#[test]
+fn test_cache_update_replaces_data() {
+    let mut cache = DiscoveryCache::new();
+
+    // First update with 2 nodes
+    let nodes1 = vec![
+        NodeStatus {
+            name: "node_a".to_string(),
+            status: "Running".to_string(),
+            health: HealthStatus::Healthy,
+            priority: 0,
+            process_id: 1,
+            command_line: String::new(),
+            working_dir: String::new(),
+            cpu_usage: 0.0,
+            memory_usage: 0,
+            start_time: String::new(),
+            scheduler_name: String::new(),
+            category: ProcessCategory::Node,
+            tick_count: 0,
+            error_count: 0,
+            actual_rate_hz: 0,
+            publishers: vec![],
+            subscribers: vec![],
+        },
+        NodeStatus {
+            name: "node_b".to_string(),
+            status: "Running".to_string(),
+            health: HealthStatus::Healthy,
+            priority: 0,
+            process_id: 2,
+            command_line: String::new(),
+            working_dir: String::new(),
+            cpu_usage: 0.0,
+            memory_usage: 0,
+            start_time: String::new(),
+            scheduler_name: String::new(),
+            category: ProcessCategory::Node,
+            tick_count: 0,
+            error_count: 0,
+            actual_rate_hz: 0,
+            publishers: vec![],
+            subscribers: vec![],
+        },
+    ];
+    cache.update_nodes(nodes1);
+    assert_eq!(cache.nodes.len(), 2);
+
+    // Second update with 1 node — should REPLACE, not append
+    let nodes2 = vec![NodeStatus {
+        name: "node_c".to_string(),
+        status: "Running".to_string(),
+        health: HealthStatus::Healthy,
+        priority: 0,
+        process_id: 3,
+        command_line: String::new(),
+        working_dir: String::new(),
+        cpu_usage: 0.0,
+        memory_usage: 0,
+        start_time: String::new(),
+        scheduler_name: String::new(),
+        category: ProcessCategory::Node,
+        tick_count: 0,
+        error_count: 0,
+        actual_rate_hz: 0,
+        publishers: vec![],
+        subscribers: vec![],
+    }];
+    cache.update_nodes(nodes2);
+    assert_eq!(cache.nodes.len(), 1, "update should replace, not append");
+    assert_eq!(cache.nodes[0].name, "node_c");
+}
+
+#[test]
+fn test_cache_concurrent_read_write_safety() {
+    // Test that concurrent reads and writes don't panic
+    use std::sync::Arc;
+    use std::thread;
+
+    let cache = Arc::new(std::sync::RwLock::new(DiscoveryCache::new()));
+    let mut handles = vec![];
+
+    // Spawn 4 reader threads
+    for _ in 0..4 {
+        let cache_clone = Arc::clone(&cache);
+        handles.push(thread::spawn(move || {
+            for _ in 0..100 {
+                let c = cache_clone.read().unwrap();
+                let _stale = c.is_nodes_stale();
+                let _len = c.nodes.len();
+                drop(c);
+                std::thread::yield_now();
+            }
+        }));
+    }
+
+    // Spawn 2 writer threads
+    for i in 0..2 {
+        let cache_clone = Arc::clone(&cache);
+        handles.push(thread::spawn(move || {
+            for j in 0..50 {
+                let mut c = cache_clone.write().unwrap();
+                c.update_nodes(vec![NodeStatus {
+                    name: format!("thread_{}_iter_{}", i, j),
+                    status: "Running".to_string(),
+                    health: HealthStatus::Healthy,
+                    priority: 0,
+                    process_id: 0,
+                    command_line: String::new(),
+                    working_dir: String::new(),
+                    cpu_usage: 0.0,
+                    memory_usage: 0,
+                    start_time: String::new(),
+                    scheduler_name: String::new(),
+                    category: ProcessCategory::Node,
+                    tick_count: 0,
+                    error_count: 0,
+                    actual_rate_hz: 0,
+                    publishers: vec![],
+                    subscribers: vec![],
+                }]);
+                drop(c);
+                std::thread::yield_now();
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("thread should not panic");
+    }
+}
+
+#[test]
+fn test_cache_miss_refresh_hit_cycle() {
+    // Simulate the full cache lifecycle
+    let mut cache = DiscoveryCache::new();
+
+    // Step 1: Cache miss (stale)
+    assert!(
+        cache.is_nodes_stale(),
+        "initial state should be stale (miss)"
+    );
+
+    // Step 2: Refresh
+    cache.update_nodes(vec![NodeStatus {
+        name: "refreshed".to_string(),
+        status: "Running".to_string(),
+        health: HealthStatus::Healthy,
+        priority: 0,
+        process_id: 1,
+        command_line: String::new(),
+        working_dir: String::new(),
+        cpu_usage: 0.0,
+        memory_usage: 0,
+        start_time: String::new(),
+        scheduler_name: String::new(),
+        category: ProcessCategory::Node,
+        tick_count: 0,
+        error_count: 0,
+        actual_rate_hz: 0,
+        publishers: vec![],
+        subscribers: vec![],
+    }]);
+
+    // Step 3: Cache hit (fresh)
+    assert!(
+        !cache.is_nodes_stale(),
+        "should be fresh after refresh (hit)"
+    );
+    assert_eq!(cache.nodes.len(), 1);
+    assert_eq!(cache.nodes[0].name, "refreshed");
+}
+
+#[test]
+fn test_stale_data_dead_node_replaced_on_refresh() {
+    let mut cache = DiscoveryCache::new();
+
+    // Initial state: node with a "dead" PID
+    cache.update_nodes(vec![NodeStatus {
+        name: "dead_node".to_string(),
+        status: "Stopped".to_string(),
+        health: HealthStatus::Error,
+        priority: 0,
+        process_id: 999999999,
+        command_line: String::new(),
+        working_dir: String::new(),
+        cpu_usage: 0.0,
+        memory_usage: 0,
+        start_time: String::new(),
+        scheduler_name: String::new(),
+        category: ProcessCategory::Node,
+        tick_count: 0,
+        error_count: 0,
+        actual_rate_hz: 0,
+        publishers: vec![],
+        subscribers: vec![],
+    }]);
+    assert_eq!(cache.nodes.len(), 1);
+    assert_eq!(cache.nodes[0].name, "dead_node");
+
+    // On next refresh, the dead node is gone, replaced by live ones
+    cache.update_nodes(vec![NodeStatus {
+        name: "live_node".to_string(),
+        status: "Running".to_string(),
+        health: HealthStatus::Healthy,
+        priority: 0,
+        process_id: std::process::id(),
+        command_line: String::new(),
+        working_dir: String::new(),
+        cpu_usage: 10.0,
+        memory_usage: 1024,
+        start_time: String::new(),
+        scheduler_name: String::new(),
+        category: ProcessCategory::Node,
+        tick_count: 100,
+        error_count: 0,
+        actual_rate_hz: 50,
+        publishers: vec![],
+        subscribers: vec![],
+    }]);
+    assert_eq!(cache.nodes.len(), 1);
+    assert_eq!(cache.nodes[0].name, "live_node");
+    assert_eq!(cache.nodes[0].status, "Running");
+}
+
+#[test]
+fn test_topic_status_enum_values() {
+    // Verify all TopicStatus variants exist and are distinct
+    let active = TopicStatus::Active;
+    let idle = TopicStatus::Idle;
+    let stale = TopicStatus::Stale;
+
+    assert_ne!(active, idle);
+    assert_ne!(active, stale);
+    assert_ne!(idle, stale);
+
+    // Verify Copy semantics
+    let active2 = active;
+    assert_eq!(active, active2);
+}
+
+#[test]
+fn test_cache_empty_update_is_valid() {
+    // Updating cache with empty vec should work and mark as fresh
+    let mut cache = DiscoveryCache::new();
+    cache.update_nodes(vec![]);
+    assert!(!cache.is_nodes_stale());
+    assert_eq!(cache.nodes.len(), 0);
+
+    cache.update_shared_memory(vec![]);
+    assert!(!cache.is_shared_memory_stale());
+    assert_eq!(cache.shared_memory.len(), 0);
 }

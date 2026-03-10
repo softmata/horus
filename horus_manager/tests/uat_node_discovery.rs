@@ -41,29 +41,33 @@ fn unique_prefix() -> String {
 ///   - {pfx}planner (processor: image→cmd_vel)
 fn build_five_nodes(pfx: &str) -> HorusTestRuntime {
     let mut rt = HorusTestRuntime::new();
-    rt.add_node(TestNodeConfig::sensor(&format!("{pfx}camera"), "image", "Image"))
-        .add_node(TestNodeConfig::sensor(
-            &format!("{pfx}lidar"),
-            "scan",
-            "LaserScan",
-        ))
-        .add_node(TestNodeConfig::actuator(
-            &format!("{pfx}motor"),
-            "cmd_vel",
-            "Twist",
-        ))
-        .add_node(TestNodeConfig::actuator(
-            &format!("{pfx}gripper"),
-            "grip_cmd",
-            "GripCommand",
-        ))
-        .add_node(TestNodeConfig::processor(
-            &format!("{pfx}planner"),
-            "image",
-            "Image",
-            "cmd_vel",
-            "Twist",
-        ));
+    rt.add_node(TestNodeConfig::sensor(
+        &format!("{pfx}camera"),
+        "image",
+        "Image",
+    ))
+    .add_node(TestNodeConfig::sensor(
+        &format!("{pfx}lidar"),
+        "scan",
+        "LaserScan",
+    ))
+    .add_node(TestNodeConfig::actuator(
+        &format!("{pfx}motor"),
+        "cmd_vel",
+        "Twist",
+    ))
+    .add_node(TestNodeConfig::actuator(
+        &format!("{pfx}gripper"),
+        "grip_cmd",
+        "GripCommand",
+    ))
+    .add_node(TestNodeConfig::processor(
+        &format!("{pfx}planner"),
+        "image",
+        "Image",
+        "cmd_vel",
+        "Twist",
+    ));
     rt
 }
 
@@ -186,7 +190,10 @@ fn removed_node_disappears_from_discovery() {
     // The other 4 should still be present.
     for suffix in &["lidar", "motor", "gripper", "planner"] {
         let name = format!("{pfx}{suffix}");
-        assert!(all.iter().any(|p| p.name == name), "{name} must still exist");
+        assert!(
+            all.iter().any(|p| p.name == name),
+            "{name} must still exist"
+        );
     }
 }
 
@@ -234,9 +241,7 @@ async fn api_status_reports_correct_node_count() {
     let resp = app.oneshot(get_request("/api/status")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
-    let nodes = json["nodes"]
-        .as_u64()
-        .expect("nodes should be a number");
+    let nodes = json["nodes"].as_u64().expect("nodes should be a number");
     assert!(
         nodes >= 5,
         "expected at least 5 nodes in /api/status, got {}",
@@ -256,7 +261,10 @@ async fn api_status_healthy_with_all_nodes_alive() {
     let json = assert_json_ok(resp).await;
 
     let status = json["status"].as_str().expect("status should be a string");
-    assert_eq!(status, "Healthy", "all nodes alive → status must be Healthy");
+    assert_eq!(
+        status, "Healthy",
+        "all nodes alive → status must be Healthy"
+    );
 }
 
 #[tokio::test]
@@ -301,7 +309,10 @@ async fn api_nodes_have_valid_pid() {
     let nodes_array = json["nodes"].as_array().unwrap();
 
     for name in rt.node_names() {
-        if let Some(node) = nodes_array.iter().find(|n| n["name"].as_str() == Some(name)) {
+        if let Some(node) = nodes_array
+            .iter()
+            .find(|n| n["name"].as_str() == Some(name))
+        {
             let pid = node["process_id"]
                 .as_u64()
                 .or_else(|| node["pid"].as_u64())
@@ -329,13 +340,17 @@ async fn api_nodes_cpu_and_memory_plausible() {
     let nodes_array = json["nodes"].as_array().unwrap();
 
     for name in rt.node_names() {
-        if let Some(node) = nodes_array.iter().find(|n| n["name"].as_str() == Some(name)) {
+        if let Some(node) = nodes_array
+            .iter()
+            .find(|n| n["name"].as_str() == Some(name))
+        {
             // CPU: between 0 and 800 (multi-core can exceed 100%)
             if let Some(cpu) = node["cpu_usage"].as_f64() {
                 assert!(
                     cpu >= 0.0 && cpu <= 800.0,
                     "node '{}' CPU {}% is out of plausible range",
-                    name, cpu
+                    name,
+                    cpu
                 );
             }
         }

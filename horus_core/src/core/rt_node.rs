@@ -1,25 +1,56 @@
 // Real-time types for time-critical applications
 use std::time::Duration;
 
+/// What to do when a node misses its deadline.
+///
+/// Set via `.on_miss()` on the node builder.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use horus::prelude::*;
+///
+/// // Video encoder: drop frame, keep streaming
+/// scheduler.add(encoder).rate(30.hz()).on_miss(Miss::Skip).build()?;
+///
+/// // Motor controller: degrade to safe mode
+/// scheduler.add(motor).rate(1000.hz()).on_miss(Miss::SafeMode).build()?;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Miss {
+    /// Log warning and continue normally.
+    Warn,
+    /// Skip this tick, resume next cycle.
+    Skip,
+    /// Call `enter_safe_state()` on the node, continue ticking in degraded mode.
+    /// The scheduler checks `is_safe_state()` each tick for recovery.
+    SafeMode,
+    /// Stop the entire scheduler (last resort).
+    Stop,
+}
+
+impl Default for Miss {
+    fn default() -> Self {
+        Miss::Warn
+    }
+}
+
 /// Policy for handling deadline misses.
 ///
-/// Override `deadline_miss_policy()` on your `Node` impl to choose a policy.
+/// Configure via `.on_miss()` on the node builder, which accepts [`Miss`].
+/// This enum is the internal representation; prefer `Miss` in new code.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// use horus::prelude::*;
-/// use std::time::Duration;
 ///
-/// impl Node for VideoEncoder {
-///     fn tick(&mut self) { /* ... */ }
-///     fn tick_budget(&self) -> Option<Duration> { Some(Duration::from_millis(5)) }
-///
-///     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-///         DeadlineMissPolicy::Skip  // Drop frame, keep streaming
-///     }
-/// }
+/// scheduler.add(encoder)
+///     .rate(30.hz())
+///     .on_miss(Miss::Skip)  // Drop frame, keep streaming
+///     .build()?;
 /// ```
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeadlineMissPolicy {
     /// Log warning and continue
@@ -28,6 +59,31 @@ pub enum DeadlineMissPolicy {
     Skip,
     /// Emergency stop - trigger safety shutdown
     EmergencyStop,
+}
+
+// ── Conversions between Miss and DeadlineMissPolicy ──
+
+impl From<Miss> for DeadlineMissPolicy {
+    fn from(miss: Miss) -> Self {
+        match miss {
+            Miss::Warn => DeadlineMissPolicy::Warn,
+            Miss::Skip => DeadlineMissPolicy::Skip,
+            // SafeMode has no direct equivalent in old API — map to Warn
+            // (the executor handles SafeMode separately via Miss)
+            Miss::SafeMode => DeadlineMissPolicy::Warn,
+            Miss::Stop => DeadlineMissPolicy::EmergencyStop,
+        }
+    }
+}
+
+impl From<DeadlineMissPolicy> for Miss {
+    fn from(policy: DeadlineMissPolicy) -> Self {
+        match policy {
+            DeadlineMissPolicy::Warn => Miss::Warn,
+            DeadlineMissPolicy::Skip => Miss::Skip,
+            DeadlineMissPolicy::EmergencyStop => Miss::Stop,
+        }
+    }
 }
 
 /// Tick budget violation — node exceeded its allowed execution time.
@@ -137,55 +193,21 @@ mod tests {
     // Test helper: minimal RtNode implementation
     // =========================================================================
 
-    /// Minimal RT node for testing trait defaults.
-    /// Simulates a motor controller with a fixed tick budget.
-    struct TestMotorNode {
-        budget: Duration,
-    }
-
-    impl TestMotorNode {
-        fn new(budget_us: u64) -> Self {
-            Self {
-                budget: Duration::from_micros(budget_us),
-            }
-        }
-    }
+    /// Minimal node for testing trait defaults.
+    struct TestMotorNode;
 
     impl Node for TestMotorNode {
         fn tick(&mut self) {}
-        fn tick_budget(&self) -> Option<Duration> {
-            Some(self.budget)
-        }
     }
 
     // =========================================================================
-    // Section 1: RtNode trait default tests
+    // Section 1: Node trait default tests
     // =========================================================================
-
-    /// Default deadline is 2x tick budget.
-    /// Robotics: standard safety margin — motor controller with 100µs budget
-    /// gets a 200µs deadline, allowing for cache misses and interrupts.
-    #[test]
-    fn default_deadline_is_2x_budget() {
-        let node = TestMotorNode::new(100);
-        assert_eq!(node.deadline(), Duration::from_micros(200));
-
-        // 1ms budget → 2ms deadline
-        let node2 = TestMotorNode::new(1000);
-        assert_eq!(node2.deadline(), Duration::from_micros(2000));
-    }
-
-    /// Default deadline miss policy is Warn.
-    #[test]
-    fn default_deadline_miss_policy_is_warn() {
-        let node = TestMotorNode::new(100);
-        assert_eq!(node.deadline_miss_policy(), DeadlineMissPolicy::Warn);
-    }
 
     /// Default safe state: node reports safe, enter_safe_state is a no-op.
     #[test]
     fn default_safe_state() {
-        let mut node = TestMotorNode::new(100);
+        let mut node = TestMotorNode;
         assert!(node.is_safe_state());
         node.enter_safe_state(); // Should not panic
     }
@@ -390,5 +412,54 @@ mod tests {
         assert_eq!(v.budget, Duration::from_micros(100));
         assert_eq!(v.actual, Duration::from_micros(250));
         assert_eq!(v.overrun, Duration::from_micros(150));
+    }
+
+    // =========================================================================
+    // Section 5: Miss enum
+    // =========================================================================
+
+    #[test]
+    fn miss_default_is_warn() {
+        assert_eq!(Miss::default(), Miss::Warn);
+    }
+
+    #[test]
+    fn miss_to_deadline_miss_policy() {
+        assert_eq!(
+            DeadlineMissPolicy::from(Miss::Warn),
+            DeadlineMissPolicy::Warn
+        );
+        assert_eq!(
+            DeadlineMissPolicy::from(Miss::Skip),
+            DeadlineMissPolicy::Skip
+        );
+        assert_eq!(
+            DeadlineMissPolicy::from(Miss::SafeMode),
+            DeadlineMissPolicy::Warn
+        );
+        assert_eq!(
+            DeadlineMissPolicy::from(Miss::Stop),
+            DeadlineMissPolicy::EmergencyStop
+        );
+    }
+
+    #[test]
+    fn deadline_miss_policy_to_miss() {
+        assert_eq!(Miss::from(DeadlineMissPolicy::Warn), Miss::Warn);
+        assert_eq!(Miss::from(DeadlineMissPolicy::Skip), Miss::Skip);
+        assert_eq!(Miss::from(DeadlineMissPolicy::EmergencyStop), Miss::Stop);
+    }
+
+    #[test]
+    fn miss_roundtrip_preserves_identity() {
+        // Warn and Skip roundtrip cleanly
+        assert_eq!(Miss::from(DeadlineMissPolicy::from(Miss::Warn)), Miss::Warn);
+        assert_eq!(Miss::from(DeadlineMissPolicy::from(Miss::Skip)), Miss::Skip);
+        assert_eq!(Miss::from(DeadlineMissPolicy::from(Miss::Stop)), Miss::Stop);
+        // SafeMode maps to Warn in old API (no equivalent), so roundtrip loses info
+        assert_eq!(
+            Miss::from(DeadlineMissPolicy::from(Miss::SafeMode)),
+            Miss::Warn
+        );
     }
 }

@@ -4,6 +4,7 @@
 //! like YOLO, SSD, etc. Suitable for shared memory transport.
 
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 /// Generate `class_name()` and `set_class_name()` methods for types
 /// with a `class_name: [u8; 32]` field.
@@ -28,7 +29,7 @@ macro_rules! impl_class_name_field {
 /// 2D bounding box (x, y, width, height in pixels)///
 /// Size: 16 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
 pub struct BoundingBox2D {
     /// X coordinate of top-left corner (pixels)
     pub x: f32,
@@ -99,7 +100,7 @@ impl BoundingBox2D {
 ///
 /// Size: 48 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
 pub struct BoundingBox3D {
     /// Center X coordinate (meters)
     pub cx: f32,
@@ -179,7 +180,7 @@ impl BoundingBox3D {
 ///
 /// Size: 72 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 pub struct Detection {
     /// Bounding box (x, y, width, height)
     pub bbox: BoundingBox2D,
@@ -248,7 +249,7 @@ impl Detection {
 ///
 /// Size: 104 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, Serialize, Deserialize)]
 pub struct Detection3D {
     /// 3D bounding box
     pub bbox: BoundingBox3D,

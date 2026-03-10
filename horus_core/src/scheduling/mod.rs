@@ -140,11 +140,6 @@ pub(crate) mod blackbox {
             budget_us: u64,
             actual_us: u64,
         },
-        CircuitBreakerChange {
-            name: String,
-            new_state: String,
-            failure_count: u32,
-        },
         LearningComplete {
             duration_ms: u64,
             tier_summary: String,
@@ -240,7 +235,7 @@ pub use blackbox::{BlackBox, BlackBoxEvent, BlackBoxRecord};
 #[doc(hidden)]
 pub use config::{RecordingConfigYaml, SchedulerConfig};
 #[doc(hidden)]
-pub use fault_tolerance::{CircuitState, FailureHandlerStats, FailurePolicy};
+pub use fault_tolerance::{FailureHandlerStats, FailurePolicy};
 #[doc(hidden)]
 pub use node_builder::{NodeBuilder, NodeRegistration};
 #[doc(hidden)]
@@ -255,5 +250,3 @@ pub use safety_monitor::{SafetyState, SafetyStats};
 pub use scheduler::RtFeatureDegradation;
 #[doc(hidden)]
 pub use types::ExecutionClass;
-#[doc(hidden)]
-pub use types::NodeTier;

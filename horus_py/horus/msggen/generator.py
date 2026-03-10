@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
-import json
 
 try:
     import yaml
@@ -102,7 +101,7 @@ def generate_message(
 
     Args:
         name: Message class name (e.g., "RobotStatus")
-        topic: Topic name for Hub (e.g., "robot/status")
+        topic: Topic name (e.g., "robot/status")
         fields: List of (field_name, field_type) tuples
         doc: Optional docstring
         output_dir: Where to write the generated file

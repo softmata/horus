@@ -5,10 +5,8 @@ Tests that verify all message types work correctly through the
 Rust backend, ensuring data integrity across the Python-Rust boundary.
 """
 
-import pytest
 import horus
-from horus import Pose2D, Twist, Transform, Point3, Vector3, Quaternion, CmdVel, LaserScan
-import numpy as np
+from horus import Pose2D, Twist, Point3, Vector3, Quaternion, CmdVel, LaserScan
 
 
 class TestPose2D:
@@ -25,26 +23,28 @@ class TestPose2D:
         """Test Pose2D through pub/sub"""
         test_values = []
         received_values = []
+        tick_count = [0]
 
         def publisher(node):
-            tick = node.info.tick_count()
+            tick = tick_count[0]
+            tick_count[0] += 1
             if tick < 5:
                 x, y, theta = float(tick), float(tick) * 2.0, float(tick) * 0.5
                 pose = Pose2D(x=x, y=y, theta=theta)
-                node.send("pose_topic", pose)
+                node.send("Pose2D", pose)
                 test_values.append((x, y, theta))
             else:
                 node.request_stop()
 
         def subscriber(node):
-            msg = node.get("pose_topic")
+            msg = node.get("Pose2D")
             if msg:
                 received_values.append((msg.x, msg.y, msg.theta))
             if len(received_values) >= 5:
                 node.request_stop()
 
-        pub = horus.Node(name="pub", pubs="pose_topic", tick=publisher)
-        sub = horus.Node(name="sub", subs="pose_topic", tick=subscriber)
+        pub = horus.Node(name="pub", pubs="Pose2D", tick=publisher)
+        sub = horus.Node(name="sub", subs="Pose2D", tick=subscriber)
 
         horus.run(pub, sub, duration=1.0)
 
@@ -74,30 +74,32 @@ class TestTwist:
     """Test Twist message integrity"""
 
     def test_twist_2d(self):
-        """Test 2D twist creation"""
-        twist = Twist.new_2d(linear_x=1.5, angular_z=0.5)
-        assert twist.linear[0] == 1.5
-        assert twist.angular[2] == 0.5
+        """Test 2D twist creation via constructor kwargs"""
+        twist = Twist(linear_x=1.5, angular_z=0.5)
+        assert twist.linear_x == 1.5
+        assert twist.angular_z == 0.5
 
     def test_twist_pubsub(self):
         """Test Twist through pub/sub"""
         received = []
+        sent = [False]
 
         def pub_node(node):
-            if node.info.tick_count() == 0:
-                twist = Twist.new_2d(linear_x=2.5, angular_z=1.2)
-                node.send("twist_topic", twist)
-            elif node.info.tick_count() >= 5:
+            if not sent[0]:
+                twist = Twist(linear_x=2.5, angular_z=1.2)
+                node.send("Twist", twist)
+                sent[0] = True
+            elif sent[0]:
                 node.request_stop()
 
         def sub_node(node):
-            msg = node.get("twist_topic")
+            msg = node.get("Twist")
             if msg:
-                received.append((msg.linear[0], msg.angular[2]))
+                received.append((msg.linear_x, msg.angular_z))
                 node.request_stop()
 
-        pub = horus.Node(name="pub", pubs="twist_topic", tick=pub_node)
-        sub = horus.Node(name="sub", subs="twist_topic", tick=sub_node)
+        pub = horus.Node(name="pub", pubs="Twist", tick=pub_node)
+        sub = horus.Node(name="sub", subs="Twist", tick=sub_node)
 
         horus.run(pub, sub, duration=1.0)
 
@@ -124,25 +126,27 @@ class TestCmdVel:
             (2.0, 1.0),
         ]
         received_data = []
+        tick_count = [0]
 
         def pub_node(node):
-            tick = node.info.tick_count()
+            tick = tick_count[0]
+            tick_count[0] += 1
             if tick < len(test_data):
                 linear, angular = test_data[tick]
                 cmd = CmdVel(linear=linear, angular=angular)
-                node.send("cmd_topic", cmd)
+                node.send("CmdVel", cmd)
             else:
                 node.request_stop()
 
         def sub_node(node):
-            msg = node.get("cmd_topic")
+            msg = node.get("CmdVel")
             if msg:
                 received_data.append((msg.linear, msg.angular))
             if len(received_data) >= len(test_data):
                 node.request_stop()
 
-        pub = horus.Node(name="pub", pubs="cmd_topic", tick=pub_node)
-        sub = horus.Node(name="sub", subs="cmd_topic", tick=sub_node)
+        pub = horus.Node(name="pub", pubs="CmdVel", tick=pub_node)
+        sub = horus.Node(name="sub", subs="CmdVel", tick=sub_node)
 
         horus.run(pub, sub, duration=1.0)
 
@@ -155,98 +159,84 @@ class TestCmdVel:
 class TestLaserScan:
     """Test LaserScan message with NumPy integration"""
 
-    def test_laserscan_numpy_getter(self):
-        """Test LaserScan returns NumPy arrays"""
+    def test_laserscan_getter(self):
+        """Test LaserScan returns ranges as list"""
         scan = LaserScan()
         ranges = scan.ranges
-        assert isinstance(ranges, np.ndarray)
-        assert ranges.shape == (360,)
-        assert ranges.dtype == np.float32
+        assert isinstance(ranges, list)
+        assert len(ranges) == 360
 
-    def test_laserscan_numpy_setter(self):
-        """Test LaserScan accepts NumPy arrays"""
-        scan = LaserScan()
-        test_ranges = np.random.rand(360).astype(np.float32) * 10.0
-        scan.ranges = test_ranges
-
-        retrieved = scan.ranges
-        assert np.allclose(test_ranges, retrieved)
-
-    def test_laserscan_list_setter(self):
-        """Test LaserScan accepts Python lists (backward compat)"""
+    def test_laserscan_setter(self):
+        """Test LaserScan accepts lists"""
         scan = LaserScan()
         test_ranges = [float(i % 10) for i in range(360)]
         scan.ranges = test_ranges
 
         retrieved = scan.ranges
-        assert np.allclose(test_ranges, retrieved)
+        for a, b in zip(test_ranges, retrieved):
+            assert abs(a - b) < 1e-5
 
-    def test_laserscan_pubsub_numpy(self):
-        """Test LaserScan with NumPy through pub/sub"""
+    def test_laserscan_pubsub(self):
+        """Test LaserScan through pub/sub"""
         sent_ranges = None
         received_ranges = None
+        sent = [False]
 
         def pub_node(node):
             nonlocal sent_ranges
-            if node.info.tick_count() == 0:
+            if not sent[0]:
                 scan = LaserScan()
-                sent_ranges = np.random.rand(360).astype(np.float32) * 10.0
+                sent_ranges = [float(i) * 0.1 for i in range(360)]
                 scan.ranges = sent_ranges
-                node.send("scan_topic", scan)
-            elif node.info.tick_count() >= 5:
+                node.send("LaserScan", scan)
+                sent[0] = True
+            else:
                 node.request_stop()
 
         def sub_node(node):
             nonlocal received_ranges
-            msg = node.get("scan_topic")
+            msg = node.get("LaserScan")
             if msg:
-                received_ranges = msg.ranges.copy()
+                received_ranges = list(msg.ranges)
                 node.request_stop()
 
-        pub = horus.Node(name="pub", pubs="scan_topic", tick=pub_node)
-        sub = horus.Node(name="sub", subs="scan_topic", tick=sub_node)
+        pub = horus.Node(name="pub", pubs="LaserScan", tick=pub_node)
+        sub = horus.Node(name="sub", subs="LaserScan", tick=sub_node)
 
         horus.run(pub, sub, duration=1.0)
 
         assert sent_ranges is not None
         assert received_ranges is not None
-        assert np.allclose(sent_ranges, received_ranges)
-
-    def test_laserscan_wrong_size_error(self):
-        """Test LaserScan rejects wrong-sized arrays"""
-        scan = LaserScan()
-
-        with pytest.raises(ValueError, match="360"):
-            scan.ranges = np.zeros(100, dtype=np.float32)
-
-        with pytest.raises(ValueError, match="360"):
-            scan.ranges = [1.0] * 100
+        for a, b in zip(sent_ranges, received_ranges):
+            assert abs(a - b) < 1e-4
 
 
 class TestGeometricTypes:
-    """Test Point3, Vector3, Quaternion, Transform"""
+    """Test Point3, Vector3, Quaternion"""
 
     def test_point3(self):
         """Test Point3 through pub/sub"""
         sent = []
         received = []
+        done = [False]
 
         def pub_node(node):
-            if node.info.tick_count() == 0:
+            if not done[0]:
                 p = Point3(x=1.5, y=2.5, z=3.5)
-                node.send("point_topic", p)
+                node.send("Point3", p)
                 sent.append((p.x, p.y, p.z))
-            elif node.info.tick_count() >= 5:
+                done[0] = True
+            else:
                 node.request_stop()
 
         def sub_node(node):
-            msg = node.get("point_topic")
+            msg = node.get("Point3")
             if msg:
                 received.append((msg.x, msg.y, msg.z))
                 node.request_stop()
 
-        pub = horus.Node(name="pub", pubs="point_topic", tick=pub_node)
-        sub = horus.Node(name="sub", subs="point_topic", tick=sub_node)
+        pub = horus.Node(name="pub", pubs="Point3", tick=pub_node)
+        sub = horus.Node(name="sub", subs="Point3", tick=sub_node)
 
         horus.run(pub, sub, duration=1.0)
 
@@ -256,16 +246,18 @@ class TestGeometricTypes:
         assert abs(sent[0][2] - received[0][2]) < 1e-10
 
     def test_vector3(self):
-        """Test Vector3 operations"""
+        """Test Vector3 creation and field access"""
         v = Vector3(x=1.0, y=2.0, z=3.0)
-        assert abs(v.magnitude() - np.sqrt(14.0)) < 1e-10
+        assert v.x == 1.0
+        assert v.y == 2.0
+        assert v.z == 3.0
 
-        v2 = Vector3(x=1.0, y=0.0, z=0.0)
-        assert abs(v.dot(v2) - 1.0) < 1e-10
+        v2 = Vector3(x=4.0, y=5.0, z=6.0)
+        assert v2.x == 4.0
 
     def test_quaternion(self):
-        """Test Quaternion creation"""
-        q = Quaternion.identity()
+        """Test Quaternion identity creation"""
+        q = Quaternion()  # default is identity (0, 0, 0, 1)
         assert q.w == 1.0
         assert q.x == 0.0
         assert q.y == 0.0
@@ -282,19 +274,19 @@ class TestHighFrequency:
 
         def fast_pub(node):
             pose = Pose2D(x=float(sent_count[0]), y=0.0, theta=0.0)
-            node.send("high_freq", pose)
+            node.send("Pose2D", pose)
             sent_count[0] += 1
 
             if sent_count[0] >= 100:
                 node.request_stop()
 
         def fast_sub(node):
-            msg = node.get("high_freq")
+            msg = node.get("Pose2D")
             if msg:
                 received_count[0] += 1
 
-        pub = horus.Node(name="pub", pubs="high_freq", tick=fast_pub)
-        sub = horus.Node(name="sub", subs="high_freq", tick=fast_sub)
+        pub = horus.Node(name="pub", pubs="Pose2D", tick=fast_pub)
+        sub = horus.Node(name="sub", subs="Pose2D", tick=fast_sub)
 
         horus.run(pub, sub, duration=1.0)
 
@@ -311,9 +303,12 @@ class TestErrorHandling:
         """Test that errors don't crash the system"""
         error_count = [0]
         successful_ticks = [0]
+        tick_count = [0]
 
         def faulty_node(node):
-            if node.info.tick_count() % 3 == 0:
+            tick = tick_count[0]
+            tick_count[0] += 1
+            if tick % 3 == 0:
                 raise ValueError("Intentional error")
             successful_ticks[0] += 1
 
@@ -327,5 +322,3 @@ class TestErrorHandling:
         assert successful_ticks[0] > 0, "No successful ticks"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

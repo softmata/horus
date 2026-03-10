@@ -1,30 +1,25 @@
-//! Failure policies for tier-aware fault tolerance
+//! Failure policies for fault tolerance
 //!
-//! Defines how the scheduler responds when a node fails, with defaults
-//! that are appropriate for each execution tier:
+//! Defines how the scheduler responds when a node fails:
 //!
-//! - **Fatal**: Stops the scheduler. Default for `UltraFast` and `Fast` tiers.
-//! - **Restart**: Re-initializes the node with exponential backoff. Default for `Normal`.
-//! - **Skip**: Circuit breaker pattern — skip the node after repeated failures.
+//! - **Fatal**: Stops the scheduler.
+//! - **Restart**: Re-initializes the node with exponential backoff.
+//! - **Skip**: Skip the node after repeated failures with a cooldown period.
 //! - **Ignore**: Failures are swallowed; the node keeps ticking.
 
-use super::circuit_breaker::CircuitBreaker;
 use crate::error::Severity;
 use std::time::{Duration, Instant};
 
 /// How the scheduler should respond when a node fails.
 ///
-/// Each [`NodeTier`](super::super::types::NodeTier) has a sensible default policy,
-/// but it can be overridden per-node via the builder API:
+/// Set per-node via the builder API:
 ///
 /// ```rust,ignore
 /// scheduler.add(motor_node)
-///     .tier(NodeTier::Fast)
 ///     .failure_policy(FailurePolicy::Fatal)
 ///     .done();
 ///
 /// scheduler.add(logger_node)
-///     .tier(NodeTier::Normal)
 ///     .failure_policy(FailurePolicy::skip(10, 60_000))
 ///     .done();
 /// ```
@@ -33,25 +28,22 @@ pub enum FailurePolicy {
     /// Node failure stops the scheduler immediately.
     ///
     /// Use for: motor controllers, safety systems, anything in the control loop.
-    /// This is the default for `UltraFast` and `Fast` tiers.
     Fatal,
 
     /// Node failure triggers re-initialization with exponential backoff.
     /// After `max_restarts` exhausted, escalates to a fatal stop.
     ///
     /// Use for: sensor drivers, perception pipelines, recoverable nodes.
-    /// This is the default for `Normal`, `Isolated`, and `Auto` tiers.
     Restart {
         max_restarts: u32,
         initial_backoff_ms: u64,
     },
 
-    /// Node failure is tolerated via circuit breaker pattern.
+    /// Node failure is tolerated with a cooldown period.
     /// After `max_failures` consecutive failures, the node is skipped
     /// for `cooldown_ms` before being retried.
     ///
     /// Use for: logging, telemetry, diagnostics, non-critical tasks.
-    /// This is the default for `Background` and `AsyncIO` tiers.
     Skip { max_failures: u32, cooldown_ms: u64 },
 
     /// Failures are completely ignored. The node keeps ticking every cycle.
@@ -82,6 +74,11 @@ impl FailurePolicy {
 ///
 /// Created from a [`FailurePolicy`] and maintained by the scheduler
 /// during execution. This is the mutable counterpart to the immutable policy.
+///
+/// Currently not wired into the scheduler's tick loop — `handle_tick_failure()`
+/// needs to consult this handler instead of unconditionally continuing.
+/// Tracked as a follow-up to re-integrate into `RegisteredNode`.
+#[allow(dead_code)]
 pub struct FailureHandler {
     /// The policy that governs behavior
     policy: FailurePolicy,
@@ -89,6 +86,7 @@ pub struct FailureHandler {
     state: FailureHandlerState,
 }
 
+#[allow(dead_code)]
 enum FailureHandlerState {
     /// Fatal: no state needed, first failure stops everything
     Fatal,
@@ -100,8 +98,14 @@ enum FailureHandlerState {
         /// When the current backoff period expires (None = not in backoff)
         backoff_until: Option<Instant>,
     },
-    /// Skip: delegates to CircuitBreaker
-    Skip { breaker: CircuitBreaker },
+    /// Skip: tracks failures and suppresses the node after threshold
+    Skip {
+        failure_count: u32,
+        max_failures: u32,
+        cooldown_ms: u64,
+        /// When the cooldown period expires (None = not suppressed)
+        suppressed_until: Option<Instant>,
+    },
     /// Ignore: no state needed
     Ignore,
 }
@@ -114,13 +118,14 @@ enum FailureHandlerState {
 /// ensuring it is returned from `record_failure()` entirely on the stack.
 /// **Never add a `String` or `Vec` payload to any variant** — that would
 /// introduce a heap allocation on the RT scheduling hot path.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureAction {
     /// Stop the scheduler immediately
     StopScheduler,
     /// Re-initialize the node
     RestartNode,
-    /// Skip the node (circuit breaker opened)
+    /// Skip the node (failure threshold exceeded)
     SkipNode,
     /// Do nothing, continue as normal
     Continue,
@@ -143,6 +148,7 @@ pub struct FailureHandlerStats {
     pub is_suppressed: bool,
 }
 
+#[allow(dead_code)]
 impl FailureHandler {
     /// Create a new handler from a policy.
     pub fn new(policy: FailurePolicy) -> Self {
@@ -161,7 +167,10 @@ impl FailureHandler {
                 max_failures,
                 cooldown_ms,
             } => FailureHandlerState::Skip {
-                breaker: CircuitBreaker::new(*max_failures, 3, *cooldown_ms),
+                failure_count: 0,
+                max_failures: *max_failures,
+                cooldown_ms: *cooldown_ms,
+                suppressed_until: None,
             },
             FailurePolicy::Ignore => FailureHandlerState::Ignore,
         };
@@ -178,7 +187,12 @@ impl FailureHandler {
                 Some(until) => Instant::now() >= *until,
                 None => true,
             },
-            FailureHandlerState::Skip { breaker } => breaker.should_allow(),
+            FailureHandlerState::Skip {
+                suppressed_until, ..
+            } => match suppressed_until {
+                Some(until) => Instant::now() >= *until,
+                None => true,
+            },
             FailureHandlerState::Ignore => true,
         }
     }
@@ -198,7 +212,14 @@ impl FailureHandler {
                 // (not implemented yet — keep it simple for now)
                 let _ = restart_count;
             }
-            FailureHandlerState::Skip { breaker } => breaker.record_success(),
+            FailureHandlerState::Skip {
+                failure_count,
+                suppressed_until,
+                ..
+            } => {
+                *failure_count = 0;
+                *suppressed_until = None;
+            }
             FailureHandlerState::Ignore => {}
         }
     }
@@ -213,8 +234,7 @@ impl FailureHandler {
     /// - Returns `FailureAction` by value — `Copy` enum, stack-only.
     /// - All arithmetic uses saturating integer ops (no panics, no allocs).
     /// - `Instant::now()` is stack-allocated.
-    /// - `CircuitBreaker::record_failure()` uses atomics + `parking_lot::Mutex`
-    ///   (no heap allocation; the mutex is embedded in the breaker struct).
+    /// - Skip handler uses only integer ops and `Instant::now()` (no allocation).
     ///
     /// **Maintenance rule**: do not add `format!()`, `String::new()`,
     /// `Vec::new()`, `Box::new()`, or any other allocating call to this method
@@ -238,10 +258,16 @@ impl FailureHandler {
                 *backoff_until = Some(Instant::now() + Duration::from_millis(backoff_ms));
                 FailureAction::RestartNode
             }
-            FailureHandlerState::Skip { breaker } => {
-                breaker.record_failure();
-                // If the breaker just opened, return SkipNode to inform the scheduler
-                if !breaker.should_allow() {
+            FailureHandlerState::Skip {
+                failure_count,
+                max_failures,
+                cooldown_ms,
+                suppressed_until,
+            } => {
+                *failure_count += 1;
+                if *failure_count >= *max_failures {
+                    *suppressed_until = Some(Instant::now() + Duration::from_millis(*cooldown_ms));
+                    *failure_count = 0;
                     FailureAction::SkipNode
                 } else {
                     FailureAction::Continue
@@ -318,22 +344,24 @@ impl FailureHandler {
                     is_suppressed: in_backoff,
                 }
             }
-            FailureHandlerState::Skip { breaker } => {
-                let breaker_stats = breaker.stats();
-                let is_open = matches!(
-                    breaker_stats.state,
-                    super::circuit_breaker::CircuitState::Open
-                );
-                let is_half_open = matches!(
-                    breaker_stats.state,
-                    super::circuit_breaker::CircuitState::HalfOpen
-                );
+            FailureHandlerState::Skip {
+                failure_count,
+                suppressed_until,
+                ..
+            } => {
+                let is_suppressed = suppressed_until
+                    .map(|until| Instant::now() < until)
+                    .unwrap_or(false);
                 FailureHandlerStats {
                     policy: "Skip".to_string(),
-                    state: format!("{:?}", breaker_stats.state),
-                    failure_count: breaker_stats.failure_count,
+                    state: if is_suppressed {
+                        "suppressed".to_string()
+                    } else {
+                        "active".to_string()
+                    },
+                    failure_count: *failure_count,
                     restart_count: 0,
-                    is_suppressed: is_open || is_half_open,
+                    is_suppressed,
                 }
             }
             FailureHandlerState::Ignore => FailureHandlerStats {
@@ -363,7 +391,10 @@ impl FailureHandler {
                 max_failures,
                 cooldown_ms,
             } => FailureHandlerState::Skip {
-                breaker: CircuitBreaker::new(*max_failures, 3, *cooldown_ms),
+                failure_count: 0,
+                max_failures: *max_failures,
+                cooldown_ms: *cooldown_ms,
+                suppressed_until: None,
             },
             FailurePolicy::Ignore => FailureHandlerState::Ignore,
         };
@@ -419,14 +450,14 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_policy_uses_circuit_breaker() {
+    fn test_skip_policy_skips_after_threshold() {
         let mut handler = FailureHandler::new(FailurePolicy::skip(3, 100));
         assert!(handler.should_allow());
 
         // Record failures up to threshold
         handler.record_failure();
         handler.record_failure();
-        // Third failure should trip the breaker
+        // Third failure should suppress the node
         let action = handler.record_failure();
         assert_eq!(action, FailureAction::SkipNode);
         assert!(!handler.should_allow());
@@ -525,13 +556,12 @@ mod tests {
         );
     }
 
-    /// Skip policy with full circuit breaker cycle: fail → skip → cooldown →
-    /// half-open probe → recover.
+    /// Skip policy full cycle: fail → skip → cooldown → recover.
     ///
     /// Robotics: logging node fails to write to disk, gets skipped, disk
     /// recovers, logging resumes.
     #[test]
-    fn skip_policy_full_circuit_breaker_cycle() {
+    fn skip_policy_full_cycle() {
         let mut handler = FailureHandler::new(FailurePolicy::skip(2, 50));
 
         // Normal operation
@@ -546,16 +576,14 @@ mod tests {
         // Wait for cooldown
         std::thread::sleep(Duration::from_millis(60));
 
-        // should_allow transitions breaker to HalfOpen
+        // should_allow returns true after cooldown expires
         assert!(handler.should_allow());
 
-        // Success → circuit closes
+        // Success resets failure count
         handler.record_success();
-        handler.record_success();
-        handler.record_success(); // CircuitBreaker success_threshold=3 (default in Skip)
         assert!(handler.should_allow());
 
-        // Back to normal: record a failure doesn't immediately skip
+        // Back to normal: a single failure doesn't immediately skip
         let action = handler.record_failure();
         assert_eq!(action, FailureAction::Continue);
     }
@@ -595,13 +623,13 @@ mod tests {
         let stats = handler.stats();
         assert!(stats.is_suppressed, "Should be suppressed during backoff");
 
-        // Skip handler with open breaker is suppressed
+        // Skip handler suppressed after threshold
         let mut handler = FailureHandler::new(FailurePolicy::skip(1, 5000));
-        handler.record_failure(); // trips breaker (threshold=1)
+        handler.record_failure(); // exceeds threshold (max_failures=1)
         let stats = handler.stats();
         assert!(
             stats.is_suppressed,
-            "Should be suppressed when breaker is open"
+            "Should be suppressed after failure threshold"
         );
 
         // Fatal handler is never suppressed

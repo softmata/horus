@@ -15,8 +15,8 @@ pub struct PySchedulerConfig {
 
     // --- Fault ---
     #[pyo3(get, set)]
-    /// Enable circuit breaker pattern
-    pub circuit_breaker: bool,
+    /// Enable tier-based fault tolerance
+    pub fault_tolerance: bool,
 
     // --- Real-time ---
     #[pyo3(get, set)]
@@ -108,6 +108,66 @@ impl PySchedulerConfig {
     }
 
     // ========================================================================
+    // PROFILE PRESETS — recommended for common use cases
+    // ========================================================================
+
+    /// Deploy profile — safety monitor, fault tolerance, watchdog, and blackbox.
+    ///
+    /// Suitable for production robots. Gracefully degrades if RT not available.
+    ///
+    /// Example:
+    ///     cfg = SchedulerConfig.deploy()
+    ///     scheduler = Scheduler(config=cfg)
+    #[staticmethod]
+    pub fn deploy() -> Self {
+        let mut cfg = Self::minimal();
+        cfg.tick_rate = 100.0;
+        cfg.safety_monitor = true;
+        cfg.budget_enforcement = true;
+        cfg.deadline_monitoring = true;
+        cfg.watchdog_enabled = true;
+        cfg.watchdog_timeout_ms = 500;
+        cfg.fault_tolerance = true;
+        cfg.black_box_enabled = true;
+        cfg.black_box_size_mb = 64;
+        cfg.config_name = "Deploy".to_string();
+        cfg
+    }
+
+    /// Hard real-time profile — all RT features enabled.
+    ///
+    /// Suitable for hard real-time control loops with strict timing guarantees.
+    ///
+    /// Example:
+    ///     cfg = SchedulerConfig.hard_rt()
+    ///     scheduler = Scheduler(config=cfg)
+    #[staticmethod]
+    pub fn hard_rt() -> Self {
+        let mut cfg = Self::deploy();
+        cfg.memory_locking = true;
+        cfg.rt_scheduling_class = true;
+        cfg.max_deadline_misses = 10;
+        cfg.config_name = "HardRT".to_string();
+        cfg
+    }
+
+    /// Safety-critical profile — hard RT plus profiling and strict deadlines.
+    ///
+    /// Suitable for safety-critical systems that must never miss a deadline.
+    ///
+    /// Example:
+    ///     cfg = SchedulerConfig.safety_critical()
+    ///     scheduler = Scheduler(config=cfg)
+    #[staticmethod]
+    pub fn safety_critical() -> Self {
+        let mut cfg = Self::hard_rt();
+        cfg.profiling = true;
+        cfg.max_deadline_misses = 3;
+        cfg.config_name = "SafetyCritical".to_string();
+        cfg
+    }
+
+    // ========================================================================
     // COMPOUND BUILDER METHODS (set multiple fields or improve readability)
     // ========================================================================
 
@@ -151,12 +211,12 @@ impl PySchedulerConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "SchedulerConfig(config={}, tick_rate={:.1}Hz, circuit_breaker={}, \
+            "SchedulerConfig(config={}, tick_rate={:.1}Hz, fault_tolerance={}, \
              budget={}, deadline_monitoring={}, safety_monitor={}, memory_locking={}, \
              recording={})",
             self.config_name,
             self.tick_rate,
-            self.circuit_breaker,
+            self.fault_tolerance,
             self.budget_enforcement,
             self.deadline_monitoring,
             self.safety_monitor,
@@ -177,7 +237,7 @@ impl PySchedulerConfig {
 
         config.timing.global_rate_hz = self.tick_rate;
 
-        config.circuit_breaker = self.circuit_breaker;
+        config.fault_tolerance = self.fault_tolerance;
 
         config.realtime.budget_enforcement = self.budget_enforcement;
         config.realtime.deadline_monitoring = self.deadline_monitoring;
@@ -209,7 +269,7 @@ impl PySchedulerConfig {
     fn from_rust_config(rust_config: SchedulerConfig, name: &str) -> Self {
         PySchedulerConfig {
             tick_rate: rust_config.timing.global_rate_hz,
-            circuit_breaker: rust_config.circuit_breaker,
+            fault_tolerance: rust_config.fault_tolerance,
             budget_enforcement: rust_config.realtime.budget_enforcement,
             deadline_monitoring: rust_config.realtime.deadline_monitoring,
             watchdog_enabled: rust_config.realtime.watchdog_enabled,

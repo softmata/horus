@@ -42,7 +42,6 @@ pub(super) fn get_active_nodes() -> Result<Vec<NodeStatus>> {
 pub(super) fn get_local_workspaces(
     current_workspace_path: &Option<std::path::PathBuf>,
 ) -> Vec<WorkspaceData> {
-    use std::collections::HashSet;
     use std::fs;
 
     let mut workspaces = Vec::new();
@@ -54,23 +53,9 @@ pub(super) fn get_local_workspaces(
         let env_path_buf = ws.path;
         let horus_dir = env_path_buf.join(".horus");
 
-        // Read dependencies from horus.toml
-        let horus_toml_path = env_path_buf.join(crate::manifest::HORUS_TOML);
-        let toml_dependencies = if horus_toml_path.exists() {
-            crate::manifest::HorusManifest::load_from(&horus_toml_path)
-                .ok()
-                .map(|(manifest, _)| {
-                    manifest.dependencies.keys().cloned().collect::<Vec<String>>()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
         // Get packages inside this workspace
         let packages_dir = horus_dir.join("packages");
         let mut packages = Vec::new();
-        let mut installed_packages_set: HashSet<String> = HashSet::new();
 
         if packages_dir.exists() {
             if let Ok(pkg_entries) = fs::read_dir(&packages_dir) {
@@ -147,7 +132,6 @@ pub(super) fn get_local_workspaces(
                             }
                         }
 
-                        installed_packages_set.insert(pkg_name.clone());
                         packages.push(PackageData {
                             name: pkg_name,
                             version,
@@ -158,31 +142,11 @@ pub(super) fn get_local_workspaces(
             }
         }
 
-        // Process dependencies from horus.toml - only include those NOT already installed
-        let dependencies: Vec<DependencyData> = toml_dependencies
-            .iter()
-            .filter_map(|dep_str| {
-                let dep_name = dep_str.split('@').next().unwrap_or(dep_str);
-
-                // Skip if already in installed packages
-                if installed_packages_set.contains(dep_name) {
-                    return None;
-                }
-
-                // This dependency is declared but not installed
-                Some(DependencyData {
-                    name: dep_name.to_string(),
-                    declared_version: dep_str.clone(),
-                })
-            })
-            .collect();
-
         // Always add the workspace, even if it has no packages
         workspaces.push(WorkspaceData {
             name: ws.name,
             path: env_path_buf.to_string_lossy().to_string(),
             packages,
-            dependencies,
             is_current: ws.is_current,
         });
     }
@@ -327,8 +291,6 @@ pub(super) fn get_installed_packages() -> InstalledPackages {
 
     (local_packages, global_packages)
 }
-
-// Removed: get_runtime_parameters() - now using real RuntimeParams from horus_core
 
 /// Format bytes into human-readable string (B, KB, MB, GB)
 pub(super) fn format_bytes(bytes: u64) -> String {

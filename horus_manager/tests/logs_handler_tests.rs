@@ -28,13 +28,7 @@ fn uid(suffix: &str) -> String {
 }
 
 /// Push a log entry with full control over all fields.
-fn push_log(
-    node: &str,
-    log_type: LogType,
-    topic: Option<&str>,
-    message: &str,
-    tick_number: u64,
-) {
+fn push_log(node: &str, log_type: LogType, topic: Option<&str>, message: &str, tick_number: u64) {
     let entry = CoreLogEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         tick_number,
@@ -102,12 +96,7 @@ async fn logs_topic_empty_buffer_returns_empty_array() {
     let logs = json["logs"].as_array().unwrap();
     let matching: Vec<_> = logs
         .iter()
-        .filter(|e| {
-            e["topic"]
-                .as_str()
-                .map(|t| t == topic)
-                .unwrap_or(false)
-        })
+        .filter(|e| e["topic"].as_str().map(|t| t == topic).unwrap_or(false))
         .collect();
     assert!(
         matching.is_empty(),
@@ -193,7 +182,10 @@ async fn logs_node_filters_only_matching_node() {
     let found_no = logs
         .iter()
         .any(|e| e["message"].as_str().unwrap_or("").contains(&msg_no));
-    assert!(!found_no, "log for node_no must NOT appear in node_yes filter");
+    assert!(
+        !found_no,
+        "log for node_no must NOT appear in node_yes filter"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -234,7 +226,13 @@ async fn logs_topic_filters_by_topic_field() {
     let node = uid("topic_filter_node");
 
     push_log(&node, LogType::Publish, Some(&topic), &msg_match, 30);
-    push_log(&node, LogType::Subscribe, Some(&other_topic), &msg_other, 31);
+    push_log(
+        &node,
+        LogType::Subscribe,
+        Some(&other_topic),
+        &msg_other,
+        31,
+    );
 
     let app = builders::test_router();
     let resp = app
@@ -324,10 +322,7 @@ async fn logs_topic_without_prefix_works_directly() {
     let found = logs
         .iter()
         .any(|e| e["message"].as_str().unwrap_or("").contains(&msg));
-    assert!(
-        found,
-        "topic without horus_ prefix should be queried as-is"
-    );
+    assert!(found, "topic without horus_ prefix should be queried as-is");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -344,10 +339,7 @@ async fn logs_all_schema_has_logs_array() {
         json.get("logs").is_some(),
         "/api/logs/all must have a 'logs' key"
     );
-    assert!(
-        json["logs"].is_array(),
-        "'logs' must be an array"
-    );
+    assert!(json["logs"].is_array(), "'logs' must be an array");
 }
 
 #[tokio::test]
@@ -586,7 +578,9 @@ async fn logs_inject_via_harness_with_different_severities() {
     let json = assert_json_ok(resp).await;
     let logs = json["logs"].as_array().expect("logs must be an array");
 
-    for expected_msg in [&msg_info, &msg_err, &msg_warn, &msg_debug, &msg_pub, &msg_sub] {
+    for expected_msg in [
+        &msg_info, &msg_err, &msg_warn, &msg_debug, &msg_pub, &msg_sub,
+    ] {
         let found = logs
             .iter()
             .any(|e| e["message"].as_str().unwrap_or("").contains(expected_msg));

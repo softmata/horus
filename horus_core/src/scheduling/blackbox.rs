@@ -48,12 +48,6 @@ pub enum BlackBoxEvent {
         budget_us: u64,
         actual_us: u64,
     },
-    /// Circuit breaker state change
-    CircuitBreakerChange {
-        name: String,
-        new_state: String,
-        failure_count: u32,
-    },
     /// Learning phase complete
     LearningComplete {
         duration_ms: u64,
@@ -251,7 +245,6 @@ impl BlackBox {
                         | BlackBoxEvent::DeadlineMiss { .. }
                         | BlackBoxEvent::BudgetViolation { .. }
                         | BlackBoxEvent::EmergencyStop { .. }
-                        | BlackBoxEvent::CircuitBreakerChange { .. }
                 )
             })
             .cloned()

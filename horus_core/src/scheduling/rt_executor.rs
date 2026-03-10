@@ -153,9 +153,9 @@ impl RtExecutor {
 
         // Deadline check via TimingEnforcer
         if let Some(deadline) = node.deadline {
-            let policy = node.node.deadline_miss_policy();
-
-            if let Some(dm) = TimingEnforcer::check_deadline(tr.tick_start, deadline, policy) {
+            if let Some(dm) =
+                TimingEnforcer::check_deadline(tr.tick_start, deadline, node.miss_policy)
+            {
                 if monitors.verbose {
                     print_line(&format!(
                         "[RT-thread] Deadline miss in '{}': {:?} > {:?}",
@@ -179,6 +179,15 @@ impl RtExecutor {
                     DeadlineAction::Warn => {}
                     DeadlineAction::Skip => {
                         node.is_paused = true;
+                    }
+                    DeadlineAction::SafeMode => {
+                        if monitors.verbose {
+                            print_line(&format!(
+                                "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
+                                node.name
+                            ));
+                        }
+                        node.node.enter_safe_state();
                     }
                     DeadlineAction::EmergencyStop => {
                         print_line(&format!(
@@ -359,7 +368,7 @@ impl RtExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Node;
+    use crate::core::{Miss, Node};
     use std::sync::Mutex;
 
     fn test_monitors() -> SharedMonitors {
@@ -407,6 +416,7 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
         }
     }
@@ -516,6 +526,7 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
         };
 
@@ -548,9 +559,6 @@ mod tests {
         fn tick(&mut self) {
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        fn tick_budget(&self) -> Option<Duration> {
-            Some(Duration::from_millis(10))
         }
     }
 
@@ -766,6 +774,7 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
         };
 
@@ -866,6 +875,7 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
         };
 

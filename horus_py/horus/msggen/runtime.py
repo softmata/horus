@@ -156,7 +156,7 @@ def define_message(
 
     Args:
         name: Message class name (e.g., "RobotStatus")
-        topic: Topic name for Hub (e.g., "robot/status")
+        topic: Topic name (e.g., "robot/status")
         fields: List of (field_name, field_type) tuples
                 Types can be strings ('f32', 'i32') or numpy dtypes
 
@@ -307,7 +307,7 @@ if HAS_NUMPY:
 
         Args:
             name: Message class name
-            topic: Topic name for Hub
+            topic: Topic name
             fields: List of (field_name, numpy_dtype) tuples
 
         Example:

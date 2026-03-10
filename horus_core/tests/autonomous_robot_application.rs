@@ -840,7 +840,7 @@ impl BatteryMonitorNode {
     }
 
     fn read_battery(&mut self) -> std::result::Result<BatteryStatus, &'static str> {
-        // Simulate occasional failures (will trigger circuit breaker)
+        // Simulate occasional failures (will trigger skip policy)
         self.failure_count += 1;
 
         if self.failure_count.is_multiple_of(20) {
@@ -887,7 +887,7 @@ impl Node for BatteryMonitorNode {
                 self.battery_pub.send(status);
             }
             Err(e) => {
-                // This will trigger circuit breaker after 5 failures
+                // This will trigger skip policy after 5 failures
                 panic!("Battery monitor error: {}", e);
             }
         }
@@ -1052,7 +1052,7 @@ fn test_autonomous_robot_complete_system() {
         .order(50)
         .done();
 
-    // Battery monitor (prone to failures - will test circuit breaker)
+    // Battery monitor (prone to failures - will test skip policy)
     scheduler
         .add(BatteryMonitorNode::new().expect("Failed to create battery monitor"))
         .order(100) // Lower priority
@@ -1064,7 +1064,7 @@ fn test_autonomous_robot_complete_system() {
     println!("- Cameras: 2x at 30fps (will use async I/O)");
     println!("- Lidar: 360° at 10Hz (will use async I/O)");
     println!("- Navigation: Path planning + pure pursuit control");
-    println!("- Battery monitor: With simulated failures (tests circuit breaker)");
+    println!("- Battery monitor: With simulated failures (tests skip policy)");
     println!();
 
     // Run the robot for 5 seconds

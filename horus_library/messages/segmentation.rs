@@ -4,6 +4,7 @@
 //! The mask pixel data follows the header as a raw byte array.
 
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 /// Segmentation mask header
 ///
@@ -14,7 +15,7 @@ use bytemuck::{Pod, Zeroable};
 ///
 /// Size: 64 bytes
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable, Serialize, Deserialize)]
 pub struct SegmentationMask {
     /// Image width
     pub width: u32,

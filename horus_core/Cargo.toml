@@ -54,8 +54,8 @@ tempfile = "3.0"
 loom = "0.7"
 proptest = "1.4"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+[lints]
+workspace = true
 
 [features]
 default = ["macros", "telemetry", "blackbox"]

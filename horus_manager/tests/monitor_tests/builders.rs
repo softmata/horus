@@ -20,14 +20,13 @@ use horus_manager::{
         debug_reset_handler, debug_seek_handler, debug_session_create_handler,
         debug_session_delete_handler, debug_session_get_handler, debug_sessions_list_handler,
         debug_snapshot_handler, debug_step_backward_handler, debug_step_forward_handler,
-        debug_watches_values_handler, graph_handler, index_handler, login_handler,
-        logout_handler, logs_all_handler, logs_node_handler, logs_topic_handler,
-        network_handler, nodes_handler, packages_environments_handler,
-        packages_install_handler, packages_publish_handler, packages_registry_handler,
-        packages_uninstall_handler, params_delete_handler, params_export_handler,
-        params_get_handler, params_import_handler, params_list_handler, params_set_handler,
-        recordings_delete_handler, recordings_info_handler, recordings_list_handler,
-        status_handler, topics_handler, websocket_handler, AppState,
+        debug_watches_values_handler, graph_handler, index_handler, login_handler, logout_handler,
+        logs_all_handler, logs_node_handler, logs_topic_handler, network_handler, nodes_handler,
+        packages_environments_handler, packages_install_handler, packages_publish_handler,
+        packages_registry_handler, packages_uninstall_handler, params_delete_handler,
+        params_export_handler, params_get_handler, params_import_handler, params_list_handler,
+        params_set_handler, recordings_delete_handler, recordings_info_handler,
+        recordings_list_handler, status_handler, topics_handler, websocket_handler, AppState,
     },
     security::{auth::hash_password, AuthService},
 };
@@ -67,8 +66,7 @@ pub fn test_app_state() -> Arc<AppState> {
 /// Use this when testing login/logout flows, session validation, or
 /// middleware ordering.
 pub fn test_app_state_with_auth() -> Arc<AppState> {
-    let password_hash =
-        hash_password(TEST_PASSWORD).expect("hash_password must not fail in tests");
+    let password_hash = hash_password(TEST_PASSWORD).expect("hash_password must not fail in tests");
     let auth_service =
         Arc::new(AuthService::new(password_hash).expect("AuthService::new must not fail"));
     let params = Arc::new(horus_core::RuntimeParams::default());
@@ -240,10 +238,7 @@ pub async fn login(app: &Router) -> (String, String) {
                 .method("POST")
                 .uri("/api/login")
                 .header("Content-Type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"password":"{}"}}"#,
-                    TEST_PASSWORD
-                )))
+                .body(Body::from(format!(r#"{{"password":"{}"}}"#, TEST_PASSWORD)))
                 .unwrap(),
         )
         .await

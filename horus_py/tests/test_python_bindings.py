@@ -104,41 +104,41 @@ class TestNodeState:
     """Test NodeState class constants."""
 
     def test_uninitialized(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         assert NodeState.UNINITIALIZED == "uninitialized"
 
     def test_initializing(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         assert NodeState.INITIALIZING == "initializing"
 
     def test_running(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         assert NodeState.RUNNING == "running"
 
     def test_stopping(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         assert NodeState.STOPPING == "stopping"
 
     def test_stopped(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         assert NodeState.STOPPED == "stopped"
 
     def test_error(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         assert NodeState.ERROR == "error"
 
     def test_crashed(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         assert NodeState.CRASHED == "crashed"
 
     def test_create_and_repr(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         state = NodeState("running")
         assert repr(state) == "NodeState('running')"
         assert str(state) == "running"
 
     def test_equality(self):
-        from horus._horus import PyNodeState as NodeState
+        from horus._horus import NodeState
         s1 = NodeState("running")
         s2 = NodeState("running")
         s3 = NodeState("stopped")
@@ -369,13 +369,13 @@ class TestSchedulerConfig:
     """Test SchedulerConfig as a plain data bag."""
 
     def test_minimal_config(self):
-        from horus._horus import PySchedulerConfig as SchedulerConfig
+        from horus._horus import SchedulerConfig
         config = SchedulerConfig.minimal()
         assert config is not None
         assert config.tick_rate == 60.0
 
     def test_config_field_mutation(self):
-        from horus._horus import PySchedulerConfig as SchedulerConfig
+        from horus._horus import SchedulerConfig
         config = SchedulerConfig.minimal()
         config.tick_rate = 500.0
         config.budget_enforcement = True

@@ -148,18 +148,6 @@ impl Node for JointController {
 
         self.cmd_pub.send(self.current.clone());
     }
-
-    fn tick_budget(&self) -> Option<Duration> {
-        Some(Duration::from_micros(100))
-    }
-
-    fn deadline(&self) -> Duration {
-        Duration::from_micros(500)
-    }
-
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Skip
-    }
 }
 
 /// Monitors body orientation and logs balance status.
@@ -221,7 +209,13 @@ fn main() -> Result<()> {
 
     // RT nodes for gait + joint control
     scheduler.add(GaitGenerator::new()?).order(0).rate_hz(200.0).build()?;
-    scheduler.add(JointController::new()?).order(1).rate_hz(200.0).build()?;
+    scheduler.add(JointController::new()?)
+        .order(1)
+        .rate_hz(200.0)
+        .budget(100.us())          // 100μs max execution time
+        .deadline(500.us())        // 500μs deadline
+        .on_miss(Miss::Skip)       // Skip tick on deadline miss
+        .build()?;
 
     // Balance monitor at lower rate
     scheduler.add(BalanceMonitor::new()?).order(5).rate_hz(50.0).build()?;

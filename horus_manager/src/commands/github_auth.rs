@@ -28,7 +28,8 @@ fn auth_config_path() -> Result<PathBuf> {
 
 /// Load auth config from disk. Returns error if not logged in.
 fn load_auth_config() -> HorusResult<AuthConfig> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let config_path =
+        auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
         return Err(HorusError::Config(ConfigError::Other(
@@ -36,11 +37,19 @@ fn load_auth_config() -> HorusResult<AuthConfig> {
         )));
     }
 
-    let content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to read auth config: {}", e))))?;
+    let content = fs::read_to_string(&config_path).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "failed to read auth config: {}",
+            e
+        )))
+    })?;
 
-    serde_json::from_str(&content)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse auth config: {}", e))))
+    serde_json::from_str(&content).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "failed to parse auth config: {}",
+            e
+        )))
+    })
 }
 
 /// Login to the HORUS registry with GitHub.
@@ -60,19 +69,14 @@ pub fn login() -> HorusResult<()> {
     let port = listener.local_addr().unwrap().port();
 
     // Set a timeout so we don't hang forever if the user closes the browser
-    listener
-        .set_nonblocking(false)
-        .ok();
+    listener.set_nonblocking(false).ok();
 
     println!("Logging in to HORUS registry with GitHub...");
     println!();
 
     // Open browser with CLI port so the server redirects back to us
     let auth_url = format!("{}/auth/github?cli_port={}", registry_url, port);
-    println!(
-        "{} Opening browser for GitHub authentication...",
-        "".cyan()
-    );
+    println!("{} Opening browser for GitHub authentication...", "".cyan());
 
     if open::that(&auth_url).is_err() {
         println!(
@@ -84,10 +88,7 @@ pub fn login() -> HorusResult<()> {
 
     println!();
     println!("Waiting for authentication...");
-    println!(
-        "  {} Press Ctrl+C to cancel",
-        "Tip:".dimmed()
-    );
+    println!("  {} Press Ctrl+C to cancel", "Tip:".dimmed());
 
     // Wait for the OAuth callback (with timeout)
     let result = wait_for_oauth_callback(&listener, &registry_url);
@@ -135,9 +136,7 @@ fn wait_for_oauth_callback(
     registry_url: &str,
 ) -> std::result::Result<(String, String), String> {
     // Set a 5-minute timeout for the OAuth flow
-    listener
-        .set_nonblocking(false)
-        .ok();
+    listener.set_nonblocking(false).ok();
 
     // Accept one connection (the browser redirect)
     // Use a timeout via polling to avoid hanging indefinitely
@@ -162,7 +161,9 @@ fn wait_for_oauth_callback(
 
     // Read the HTTP request
     let mut buf = [0u8; 4096];
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
     let n = stream
         .read(&mut buf)
         .map_err(|e| format!("Failed to read request: {}", e))?;
@@ -233,44 +234,65 @@ fn wait_for_oauth_callback(
     Ok((api_key, user))
 }
 
+/// Decode a percent-encoded string per RFC 3986
+fn url_decode(input: &str) -> String {
+    let mut result = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
+                result.push(byte);
+                i += 3;
+                continue;
+            }
+        } else if bytes[i] == b'+' {
+            result.push(b' ');
+            i += 1;
+            continue;
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
 /// Extract a query parameter value from a URL path
 fn extract_query_param(path: &str, key: &str) -> Option<String> {
     let query = path.split('?').nth(1)?;
     for pair in query.split('&') {
         let mut parts = pair.splitn(2, '=');
         if parts.next() == Some(key) {
-            return parts.next().map(|v| {
-                // Basic URL decode
-                v.replace("%20", " ")
-                    .replace("%2F", "/")
-                    .replace("%40", "@")
-                    .replace("+", " ")
-            });
+            return parts.next().map(|v| url_decode(v));
         }
     }
     None
 }
 
 /// Save authentication config to disk
-fn save_auth_config(
-    api_key: &str,
-    registry_url: &str,
-    username: Option<&str>,
-) -> HorusResult<()> {
+fn save_auth_config(api_key: &str, registry_url: &str, username: Option<&str>) -> HorusResult<()> {
     let config = AuthConfig {
         api_key: api_key.to_string(),
         registry_url: registry_url.to_string(),
         github_username: username.map(|s| s.to_string()),
     };
 
-    let config_path = auth_config_path()
-        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let config_path =
+        auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-    let config_json = serde_json::to_string_pretty(&config)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to serialize config: {}", e))))?;
+    let config_json = serde_json::to_string_pretty(&config).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to serialize config: {}",
+            e
+        )))
+    })?;
 
-    fs::write(&config_path, config_json)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to save auth config: {}", e))))?;
+    fs::write(&config_path, config_json).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to save auth config: {}",
+            e
+        )))
+    })?;
 
     // Restrict permissions to owner-only (contains API token)
     #[cfg(unix)]
@@ -321,9 +343,9 @@ pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusR
     let _ = io::stdout().flush();
 
     let mut api_key = String::new();
-    io::stdin()
-        .read_line(&mut api_key)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to read input: {}", e))))?;
+    io::stdin().read_line(&mut api_key).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!("Failed to read input: {}", e)))
+    })?;
 
     let api_key = api_key.trim().to_string();
 
@@ -336,8 +358,8 @@ pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusR
 
     save_auth_config(&api_key, &registry_url, None)?;
 
-    let config_path = auth_config_path()
-        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let config_path =
+        auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!();
     println!("API key saved successfully!");
@@ -361,11 +383,16 @@ pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusR
 pub fn logout() -> HorusResult<()> {
     println!("Logging out from HORUS registry...");
 
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let config_path =
+        auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if config_path.exists() {
-        fs::remove_file(&config_path)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to remove auth config: {}", e))))?;
+        fs::remove_file(&config_path).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to remove auth config: {}",
+                e
+            )))
+        })?;
 
         println!("Successfully logged out!");
         println!("  {} API key removed from local storage", "•".dimmed());
@@ -381,7 +408,8 @@ pub fn logout() -> HorusResult<()> {
 
 /// Show current authenticated user
 pub fn whoami() -> HorusResult<()> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let config_path =
+        auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
         println!("{} Not logged in", crate::cli_output::ICON_WARN.yellow());
@@ -508,10 +536,7 @@ mod tests {
 
     #[test]
     fn extract_query_param_missing() {
-        assert_eq!(
-            extract_query_param("/callback?code=abc123", "user"),
-            None
-        );
+        assert_eq!(extract_query_param("/callback?code=abc123", "user"), None);
         assert_eq!(extract_query_param("/callback", "code"), None);
     }
 
@@ -521,6 +546,35 @@ mod tests {
             extract_query_param("/callback?name=hello%20world", "name"),
             Some("hello world".to_string())
         );
+        // Test all RFC 3986 percent-encoded characters
+        assert_eq!(
+            extract_query_param("/callback?val=a%26b%3Dc", "val"),
+            Some("a&b=c".to_string())
+        );
+        assert_eq!(
+            extract_query_param("/callback?email=user%40example.com", "email"),
+            Some("user@example.com".to_string())
+        );
+        assert_eq!(
+            extract_query_param("/callback?path=%2Fhome%2Fuser", "path"),
+            Some("/home/user".to_string())
+        );
+        // Test + as space (form encoding)
+        assert_eq!(
+            extract_query_param("/callback?q=hello+world", "q"),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn url_decode_comprehensive() {
+        assert_eq!(url_decode("hello%20world"), "hello world");
+        assert_eq!(url_decode("100%25"), "100%");
+        assert_eq!(url_decode("no+spaces"), "no spaces");
+        assert_eq!(url_decode("plain"), "plain");
+        // Invalid percent encoding passes through
+        assert_eq!(url_decode("%ZZ"), "%ZZ");
+        assert_eq!(url_decode("%2"), "%2");
     }
 }
 
@@ -553,7 +607,8 @@ pub fn get_registry_url() -> String {
 
 /// List API keys
 pub fn keys_list() -> HorusResult<()> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let config_path =
+        auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
         println!("{} Not logged in", crate::cli_output::ICON_WARN.yellow());
@@ -631,7 +686,8 @@ pub fn keys_list() -> HorusResult<()> {
 
 /// Revoke an API key
 pub fn keys_revoke(key_id: &str) -> HorusResult<()> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    let config_path =
+        auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
         println!("{} Not logged in", crate::cli_output::ICON_WARN.yellow());

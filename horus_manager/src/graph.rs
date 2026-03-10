@@ -456,22 +456,33 @@ mod tests {
     // =====================
     #[test]
     fn test_discover_graph_data_returns_tuple() {
-        // Should return (Vec<GraphNode>, Vec<GraphEdge>) without panicking
         let (nodes, edges) = discover_graph_data();
 
-        // May be empty if no nodes running, but should not panic
-        // Just verify the types are correct (vec length is always >= 0)
-        let _nodes_count = nodes.len();
-        let _edges_count = edges.len();
+        // Every node must have a non-empty id and label
+        for node in &nodes {
+            assert!(!node.id.is_empty(), "GraphNode id must not be empty");
+            assert!(!node.label.is_empty(), "GraphNode label must not be empty");
+        }
+        // Every edge must reference non-empty source/target names
+        for edge in &edges {
+            assert!(!edge.from.is_empty(), "GraphEdge 'from' must not be empty");
+            assert!(!edge.to.is_empty(), "GraphEdge 'to' must not be empty");
+        }
     }
 
     #[test]
-    fn test_discover_graph_data_no_panic_on_missing_dirs() {
-        // Even if /dev/shm/horus doesn't exist, should gracefully return empty
+    fn test_discover_graph_data_graceful_when_no_nodes() {
+        // In test environment with no running horus nodes, should return empty vecs
         let (nodes, edges) = discover_graph_data();
-        // Just ensure no panic - empty is fine
-        let _ = nodes;
-        let _ = edges;
+        // Graceful degradation: may be empty, but must be valid collections
+        // If nodes is empty, edges must also be empty (no orphan edges)
+        if nodes.is_empty() {
+            assert!(
+                edges.is_empty(),
+                "Edges must be empty when no nodes exist, got {} edges",
+                edges.len()
+            );
+        }
     }
 
     // =====================

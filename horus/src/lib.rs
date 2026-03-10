@@ -76,7 +76,7 @@
 //! ```rust,ignore
 //! let mut scheduler = Scheduler::new().tick_hz(100.0);
 //! scheduler.add(sensor).order(0).rate_hz(100.0).build()?;
-//! scheduler.add(controller).order(1).budget_us(200).build()?;
+//! scheduler.add(controller).order(1).budget(200.us()).build()?;
 //! scheduler.add(planner).order(5).compute().build()?;
 //! scheduler.add(logger).order(10).async_io().rate_hz(1.0).build()?;
 //! scheduler.run()?;
@@ -114,12 +114,15 @@
 //! ### Real-Time Nodes
 //! ```rust,ignore
 //! impl Node for MotorCtrl {
+//!     fn name(&self) -> &str { "MotorCtrl" }
 //!     fn tick(&mut self) { /* motor control logic */ }
-//!     fn tick_budget(&self) -> Option<Duration> { Some(Duration::from_micros(200)) }
-//!     fn deadline(&self) -> Duration { Duration::from_millis(1) }
-//!     fn deadline_miss_policy(&self) -> DeadlineMissPolicy { DeadlineMissPolicy::Skip }
 //! }
-//! scheduler.add(MotorCtrl::new()).order(0).build();
+//! scheduler.add(MotorCtrl::new())
+//!     .order(0)
+//!     .budget(200.us())        // 200μs tick budget (auto-marks as RT)
+//!     .deadline(1.ms())        // 1ms deadline
+//!     .on_miss(Miss::Skip)     // skip tick on deadline miss
+//!     .build()?;
 //! ```
 //!
 //! ### Key Message Types
@@ -186,7 +189,7 @@ pub mod prelude {
     pub use horus_core::core::{LogSummary, Node};
 
     // === Real-time node ===
-    pub use horus_core::core::{DeadlineMissPolicy, RtStats};
+    pub use horus_core::core::{DurationExt, Frequency, Miss, RtStats};
 
     // === Rate / Stopwatch ===
     pub use horus_core::core::timer::{Rate, Stopwatch};
@@ -198,7 +201,7 @@ pub mod prelude {
     pub use horus_core::scheduling::Scheduler;
 
     // === Execution configuration ===
-    pub use horus_core::scheduling::{ExecutionClass, FailurePolicy, NodeTier};
+    pub use horus_core::scheduling::{ExecutionClass, FailurePolicy};
 
     // === Runtime parameters ===
     pub use horus_core::params::RuntimeParams;
@@ -240,9 +243,9 @@ pub mod prelude {
     //   `use horus::prelude::*;`
     //   `if let Err(HorusError::InvalidDescriptor(msg)) = result { ... }`
     pub use horus_core::error::{
-        CommunicationError, ConfigError, Error, HorusContext, HorusError, MemoryError, NodeError,
-        NotFoundError, ParseError, ResourceError, Result, RetryConfig, SerializationError,
-        Severity, TimeoutError, TransformError, ValidationError, retry_transient,
+        retry_transient, CommunicationError, ConfigError, Error, HorusContext, HorusError,
+        MemoryError, NodeError, NotFoundError, ParseError, ResourceError, Result, RetryConfig,
+        SerializationError, Severity, TimeoutError, TransformError, ValidationError,
     };
 
     // === Macros ===

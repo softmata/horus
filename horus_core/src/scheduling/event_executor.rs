@@ -72,15 +72,19 @@ impl EventExecutor {
             let node_name = node.name.clone();
             let monitors = monitors.clone();
 
-            let handle = std::thread::Builder::new()
+            let handle = match std::thread::Builder::new()
                 .name(format!("horus-event-{}", node_name))
                 .spawn(move || Self::watcher_thread(node, topic_name, running, monitors))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to spawn event watcher thread for '{}': {}",
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    print_line(&format!(
+                        "[Event] ERROR: Failed to spawn watcher thread for '{}': {}",
                         node_name, e
-                    )
-                });
+                    ));
+                    continue;
+                }
+            };
 
             handles.push(handle);
         }
@@ -233,7 +237,7 @@ impl EventExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Node, NodeInfo};
+    use crate::core::{Miss, Node, NodeInfo};
     use std::sync::Mutex;
 
     fn test_monitors() -> SharedMonitors {
@@ -259,7 +263,6 @@ mod tests {
     }
 
     fn make_event_node(name: &str, topic: &str, count: Arc<AtomicU64>) -> RegisteredNode {
-
         let node = CounterNode {
             name: name.to_string(),
             count,
@@ -279,6 +282,7 @@ mod tests {
             is_stopped: false,
             is_paused: false,
             rt_stats: None,
+            miss_policy: Miss::Warn,
             execution_class: ExecutionClass::Event(topic.to_string()),
         }
     }

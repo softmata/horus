@@ -1715,7 +1715,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             };
 
             if plugin {
-                commands::plugin::run_install(pkg_name, pkg_ver, !global)
+                // Plugins default to global scope; --global is a no-op, only explicit --target overrides
+                let local = target.is_some();
+                commands::plugin::run_install(pkg_name, pkg_ver, local)
             } else if driver {
                 commands::pkg::run_add(pkg_name, pkg_ver, true, false)
             } else {

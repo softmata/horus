@@ -1,3 +1,5 @@
+// Scheduler tests
+
 use super::*;
 use crate::core::Node;
 use crate::scheduling::fault_tolerance::FailurePolicy;
@@ -78,8 +80,7 @@ fn test_scheduler_default() {
 fn test_scheduler_with_name() {
     let _guard = lock_scheduler();
     let scheduler = Scheduler::new().with_name("TestScheduler");
-    // The name is stored internally and used in logging
-    assert!(scheduler.is_running());
+    assert_eq!(scheduler.scheduler_name(), "TestScheduler");
 }
 
 // test_scheduler_with_capacity removed: with_capacity() was removed from Scheduler
@@ -185,12 +186,23 @@ fn test_scheduler_stop_and_check_multiple_times() {
 #[test]
 fn test_scheduler_set_node_rate() {
     let _guard = lock_scheduler();
-    let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("sensor")).order(0).done();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
+    scheduler
+        .add(CounterNode::with_counter("sensor", counter.clone()))
+        .order(0)
+        .done();
     scheduler.set_node_rate("sensor", 100.0);
 
-    // Just verify it doesn't panic
-    assert!(scheduler.is_running());
+    // Run for 500ms — at 100Hz expect ~50 ticks (wide tolerance for CI)
+    let result = scheduler.run_for(Duration::from_millis(500));
+    assert!(result.is_ok());
+    let ticks = counter.load(Ordering::SeqCst);
+    assert!(
+        ticks >= 5,
+        "Node at 100Hz should tick at least 5 times in 500ms, got {}",
+        ticks
+    );
 }
 
 #[test]
@@ -198,9 +210,12 @@ fn test_scheduler_set_node_rate_nonexistent() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("node1")).order(0).done();
-    // Setting rate for nonexistent node should not panic
+    // Setting rate for nonexistent node should be a no-op
     scheduler.set_node_rate("nonexistent", 50.0);
-    assert!(scheduler.is_running());
+    // Existing node list must be unchanged
+    let nodes = scheduler.node_list();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0], "node1");
 }
 
 // ============================================================================
@@ -280,10 +295,17 @@ fn test_scheduler_start_at_tick() {
 #[test]
 fn test_scheduler_with_safety_monitor() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::new()
-        .safety_monitor(true)
-        .max_deadline_misses(10);
+    let scheduler = Scheduler::deploy().max_deadline_misses(10);
     assert!(scheduler.is_running());
+    // deploy() sets safety_monitor=true in pending config (materialized at run time)
+    assert!(
+        scheduler.pending_config.realtime.safety_monitor,
+        "deploy() should enable safety_monitor in pending config"
+    );
+    assert_eq!(
+        scheduler.pending_config.realtime.max_deadline_misses, 10,
+        "max_deadline_misses should be 10"
+    );
 }
 
 // ============================================================================
@@ -335,8 +357,7 @@ fn test_scheduler_run_for_short_duration() {
 #[test]
 fn test_scheduler_chainable_api() {
     let _guard = lock_scheduler();
-    let mut scheduler = Scheduler::new()
-        .with_name("ChainedScheduler");
+    let mut scheduler = Scheduler::new().with_name("ChainedScheduler");
 
     scheduler
         .add(CounterNode::new("chain_node"))
@@ -354,10 +375,28 @@ fn test_scheduler_chainable_api() {
 #[test]
 fn test_scheduler_list_recordings() {
     let _guard = lock_scheduler();
-    // This might fail if no recordings exist, but shouldn't panic
-    let result = Scheduler::list_recordings();
-    // Just verify the function is callable
-    assert!(result.is_ok() || result.is_err());
+    // In test environment, recordings dir likely doesn't exist → Ok(empty vec)
+    // or Err if dir can't be created. Either way, verify the actual value.
+    match Scheduler::list_recordings() {
+        Ok(recordings) => {
+            // Each recording name should be non-empty if any exist
+            for name in &recordings {
+                assert!(!name.is_empty(), "Recording name must not be empty");
+            }
+        }
+        Err(e) => {
+            // Must be an IO-related error (dir not found), not a logic bug
+            let msg = format!("{}", e);
+            assert!(
+                msg.contains("No such file")
+                    || msg.contains("not found")
+                    || msg.contains("directory")
+                    || msg.contains("recording"),
+                "Unexpected error from list_recordings: {}",
+                msg
+            );
+        }
+    }
 }
 
 // ============================================================================
@@ -368,8 +407,7 @@ fn test_scheduler_list_recordings() {
 fn test_scheduler_name_builder() {
     let _guard = lock_scheduler();
     let scheduler = Scheduler::new().with_name("BuilderName");
-    // Verify the scheduler was created successfully
-    assert!(scheduler.is_running());
+    assert_eq!(scheduler.scheduler_name(), "BuilderName");
 }
 
 // ============================================================================
@@ -379,10 +417,17 @@ fn test_scheduler_name_builder() {
 #[test]
 fn test_scheduler_with_override() {
     let _guard = lock_scheduler();
+    // with_override without replay mode is a no-op — verify it doesn't corrupt state
     let scheduler = Scheduler::new().with_override("node1", "output1", vec![1, 2, 3, 4]);
 
-    // Should not panic and scheduler should still be running
     assert!(scheduler.is_running());
+    // Scheduler should still have zero nodes (override doesn't add nodes)
+    assert!(
+        scheduler.node_list().is_empty(),
+        "Override should not create nodes"
+    );
+    // Name should be default
+    assert_eq!(scheduler.scheduler_name(), "Scheduler");
 }
 
 // ============================================================================
@@ -744,7 +789,7 @@ fn test_blackbox_with_path() {
 #[test]
 fn test_deploy_config_creates_blackbox_with_wal() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().circuit_breaker(true).with_blackbox(16);
+    let scheduler = Scheduler::deploy().with_blackbox(16);
     assert!(
         scheduler.blackbox().is_some(),
         ".with_blackbox() should create a blackbox"
@@ -1322,10 +1367,10 @@ fn test_restart_policy_reinitializes_after_panic() {
     );
 }
 
-/// Skip policy uses circuit breaker — node is skipped after repeated failures.
+/// Skip policy — node is skipped after repeated failures.
 /// Robotics: logging node failure should not crash the system.
 #[test]
-fn test_skip_policy_circuit_breaker_skips_node() {
+fn test_skip_policy_skips_node() {
     let _guard = lock_scheduler();
     let panic_counter = Arc::new(AtomicUsize::new(0));
     let healthy_counter = Arc::new(AtomicUsize::new(0));
@@ -1411,7 +1456,7 @@ fn test_budget_violation_detected_for_slow_rt_node() {
     let fast_counter = Arc::new(AtomicUsize::new(0));
 
     // Enable budget enforcement via builder (deferred to run time)
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Fast node within budget
     scheduler
@@ -1457,7 +1502,7 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
     let slow_counter = Arc::new(AtomicUsize::new(0));
 
     // Enable deadline monitoring via builder (deferred to run time)
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Node with tight deadline that will be missed
     scheduler
@@ -1776,7 +1821,10 @@ fn test_set_node_rate_nonexistent() {
 fn test_set_node_rate_zero() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("rate_zero")).build().unwrap();
+    scheduler
+        .add(CounterNode::new("rate_zero"))
+        .build()
+        .unwrap();
     scheduler.set_node_rate("rate_zero", 0.0);
 }
 
@@ -1792,7 +1840,10 @@ fn test_set_node_rate_negative() {
 fn test_tick_empty_node_names() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("tick_test")).build().unwrap();
+    scheduler
+        .add(CounterNode::new("tick_test"))
+        .build()
+        .unwrap();
     // Tick with empty names should succeed (tick nothing)
     let result = scheduler.tick(&[]);
     assert!(result.is_ok());
@@ -1802,7 +1853,10 @@ fn test_tick_empty_node_names() {
 fn test_tick_nonexistent_node_names() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("real_node")).build().unwrap();
+    scheduler
+        .add(CounterNode::new("real_node"))
+        .build()
+        .unwrap();
     // Tick with non-existent names should not panic
     let result = scheduler.tick(&["fake_node_1", "fake_node_2"]);
     assert!(result.is_ok());
@@ -1831,7 +1885,10 @@ fn test_stop_before_run() {
 fn test_double_stop() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("double_stop")).build().unwrap();
+    scheduler
+        .add(CounterNode::new("double_stop"))
+        .build()
+        .unwrap();
     let _ = scheduler.run_for(Duration::from_millis(10));
     scheduler.stop();
     scheduler.stop(); // Double stop should not panic
@@ -1861,7 +1918,10 @@ fn test_with_blackbox_zero_size() {
 fn test_max_deadline_misses_zero() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new().max_deadline_misses(0);
-    scheduler.add(CounterNode::new("zero_miss")).build().unwrap();
+    scheduler
+        .add(CounterNode::new("zero_miss"))
+        .build()
+        .unwrap();
     let result = scheduler.run_for(Duration::from_millis(10));
     assert!(result.is_ok());
 }
@@ -2400,15 +2460,14 @@ fn test_fatal_among_ignore_nodes_still_stops() {
     );
 }
 
-/// Circuit breaker opens after threshold, healthy nodes unaffected.
-/// Verify circuit_summary() reflects the state.
+/// Skip policy: node suppressed after threshold, healthy nodes unaffected.
 #[test]
-fn test_circuit_breaker_opens_healthy_nodes_unaffected() {
+fn test_skip_policy_healthy_nodes_unaffected() {
     let _guard = lock_scheduler();
     let healthy_counter = Arc::new(AtomicUsize::new(0));
     let panic_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().circuit_breaker(true);
+    let mut scheduler = Scheduler::deploy();
 
     scheduler
         .add(CounterNode::with_counter(
@@ -2431,11 +2490,9 @@ fn test_circuit_breaker_opens_healthy_nodes_unaffected() {
     let healthy_ticks = healthy_counter.load(Ordering::SeqCst);
     assert!(
         healthy_ticks > 5,
-        "Healthy node should tick many times while flaky node is circuit-broken, got {}",
+        "Healthy node should tick many times while flaky node is skipped, got {}",
         healthy_ticks
     );
-
-    // circuit_summary assertion removed: method was removed in refactor
 }
 
 /// Restart policy: node gets re-init'd and ticks again after recovery.
@@ -2598,14 +2655,14 @@ fn test_restart_policy_stats_tracked() {
     assert_eq!(metrics[0].name, "restart_stats");
 }
 
-/// Node fails, gets skipped by circuit breaker, verify scheduler status
+/// Node fails, gets skipped by fault tolerance, verify scheduler status
 /// reflects the failure state.
 #[test]
-fn test_circuit_breaker_reflected_in_scheduler_status() {
+fn test_fault_tolerance_reflected_in_scheduler_status() {
     let _guard = lock_scheduler();
     let panic_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().circuit_breaker(true);
+    let mut scheduler = Scheduler::deploy();
     scheduler
         .add(PanickingNode::new("circuit_node", 1, panic_counter.clone()))
         .order(0)
@@ -2615,7 +2672,7 @@ fn test_circuit_breaker_reflected_in_scheduler_status() {
     let result = scheduler.run_for(Duration::from_millis(200));
     assert!(result.is_ok());
 
-    // Status should be non-empty and reflect the circuit breaker state
+    // Status should be non-empty and reflect the fault tolerance state
     let status = scheduler.status();
     assert!(!status.is_empty());
 }
@@ -2630,7 +2687,7 @@ fn test_budget_no_violation_within_budget() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
     scheduler
         .add(CounterNode::with_counter("fast_node", counter.clone()))
         .order(0)
@@ -2660,7 +2717,7 @@ fn test_budget_multiple_simultaneous_violations() {
     let slow_a = Arc::new(AtomicUsize::new(0));
     let slow_b = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     scheduler
         .add(SlowNode::new(
@@ -2717,7 +2774,7 @@ fn test_budget_mixed_within_and_over_budget() {
     let fast = Arc::new(AtomicUsize::new(0));
     let slow = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Fast node with generous budget
     scheduler
@@ -2762,7 +2819,7 @@ fn test_budget_non_rt_node_no_crash() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Regular node (no .budget_us()) — no budget tracking
     scheduler
@@ -2787,7 +2844,7 @@ fn test_budget_worst_execution_tracked() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Variable-speed node: takes 5ms per tick
     scheduler
@@ -2822,7 +2879,7 @@ fn test_deadline_no_miss_within_budget() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
     scheduler
         .add(CounterNode::with_counter("fast_rt", counter.clone()))
         .order(0)
@@ -2851,7 +2908,7 @@ fn test_deadline_multiple_simultaneous_misses() {
     let slow_a = Arc::new(AtomicUsize::new(0));
     let slow_b = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     scheduler
         .add(SlowNode::new(
@@ -2898,7 +2955,7 @@ fn test_deadline_mixed_meet_and_miss() {
     let fast = Arc::new(AtomicUsize::new(0));
     let slow = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Fast node meets deadline
     scheduler
@@ -2941,7 +2998,7 @@ fn test_deadline_miss_count_accumulates() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     scheduler
         .add(SlowNode::new(
@@ -2973,7 +3030,7 @@ fn test_deadline_miss_and_budget_violation_both_tracked() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().safety_monitor(true);
+    let mut scheduler = Scheduler::deploy();
 
     // Node with both tight deadline AND tight tick budget
     scheduler

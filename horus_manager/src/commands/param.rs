@@ -14,7 +14,7 @@ use std::path::Path;
 
 /// List all parameters
 pub fn list_params(verbose: bool, json: bool) -> HorusResult<()> {
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
     let all_params = params.get_all();
 
     if json {
@@ -97,7 +97,7 @@ pub fn list_params(verbose: bool, json: bool) -> HorusResult<()> {
 
 /// Get a single parameter value
 pub fn get_param(key: &str, json: bool) -> HorusResult<()> {
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
 
     if let Some(value) = params.get_all().get(key) {
         if json {
@@ -121,7 +121,7 @@ pub fn get_param(key: &str, json: bool) -> HorusResult<()> {
 
 /// Set a parameter value
 pub fn set_param(key: &str, value: &str) -> HorusResult<()> {
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
 
     // Try to parse as JSON first (for complex types)
     let json_value: Value = if let Ok(parsed) = serde_json::from_str(value) {
@@ -173,7 +173,7 @@ pub fn set_param(key: &str, value: &str) -> HorusResult<()> {
 
 /// Delete a parameter
 pub fn delete_param(key: &str) -> HorusResult<()> {
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
 
     if params.has(key) {
         let old_value = params.remove(key);
@@ -204,7 +204,7 @@ pub fn reset_params(force: bool) -> HorusResult<()> {
         return Ok(());
     }
 
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
     params.reset()?;
     params.save_to_disk()?;
 
@@ -221,7 +221,7 @@ pub fn load_params(file: &Path) -> HorusResult<()> {
         ))));
     }
 
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
     params.load_from_disk(file)?;
     params.save_to_disk()?;
 
@@ -238,7 +238,7 @@ pub fn load_params(file: &Path) -> HorusResult<()> {
 
 /// Save parameters to a YAML file
 pub fn save_params(file: Option<&Path>) -> HorusResult<()> {
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
 
     if let Some(path) = file {
         // Create parent directories if needed
@@ -269,7 +269,7 @@ pub fn save_params(file: Option<&Path>) -> HorusResult<()> {
 
 /// Dump all parameters as YAML to stdout
 pub fn dump_params() -> HorusResult<()> {
-    let params = RuntimeParams::init()?;
+    let params = RuntimeParams::new()?;
     let all_params = params.get_all();
     let yaml = serde_yaml::to_string(&all_params)?;
     println!("{}", yaml);

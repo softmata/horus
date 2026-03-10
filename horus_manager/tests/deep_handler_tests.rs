@@ -51,7 +51,10 @@ async fn blackbox_list_returns_valid_json() {
         );
     } else {
         // Internal error (e.g. blackbox dir not found) — still valid JSON.
-        assert!(json["error"].is_string(), "error response should have an error string");
+        assert!(
+            json["error"].is_string(),
+            "error response should have an error string"
+        );
     }
 }
 
@@ -72,10 +75,7 @@ async fn blackbox_anomalies_returns_valid_json() {
         serde_json::from_slice(&body).expect("response body must be valid JSON");
 
     if status == StatusCode::OK {
-        assert!(
-            json["anomalies"].is_array(),
-            "anomalies should be an array"
-        );
+        assert!(json["anomalies"].is_array(), "anomalies should be an array");
         assert!(json["count"].is_number(), "count should be a number");
         let anomalies = json["anomalies"].as_array().unwrap();
         assert_eq!(
@@ -84,7 +84,10 @@ async fn blackbox_anomalies_returns_valid_json() {
             "count should match anomalies array length"
         );
     } else {
-        assert!(json["error"].is_string(), "error response should have an error string");
+        assert!(
+            json["error"].is_string(),
+            "error response should have an error string"
+        );
     }
 }
 
@@ -180,7 +183,9 @@ async fn blackbox_list_with_limit_parses_ok() {
         "limit filter should not cause 422"
     );
     if status == StatusCode::OK {
-        let events = json["events"].as_array().expect("events should be an array");
+        let events = json["events"]
+            .as_array()
+            .expect("events should be an array");
         assert!(
             events.len() <= 3,
             "limit=3 should return at most 3 events, got {}",
@@ -338,8 +343,7 @@ async fn debug_add_watch_nonexistent_session_via_router() {
 #[tokio::test]
 async fn debug_add_watch_invalid_type_nonexistent_returns_404() {
     let app = builders::test_router();
-    let body =
-        r#"{"id":"w1","name":"vel","topic":"/cmd_vel","watch_type":"totally_invalid_type"}"#;
+    let body = r#"{"id":"w1","name":"vel","topic":"/cmd_vel","watch_type":"totally_invalid_type"}"#;
     let resp = app
         .oneshot(post_json_request(
             "/api/debug/sessions/nonexistent_xyz/watches",
@@ -461,9 +465,7 @@ async fn debug_reset_nonexistent_via_router() {
 async fn debug_snapshot_nonexistent_via_router() {
     let app = builders::test_router();
     let resp = app
-        .oneshot(get_request(
-            "/api/debug/sessions/nonexistent_xyz/snapshot",
-        ))
+        .oneshot(get_request("/api/debug/sessions/nonexistent_xyz/snapshot"))
         .await
         .unwrap();
     let json = assert_json_error(resp, StatusCode::NOT_FOUND).await;
@@ -705,10 +707,7 @@ async fn params_export_returns_yaml_data() {
 
     assert_eq!(json["success"], true, "success should be true");
     assert_eq!(json["format"], "yaml", "format should be yaml");
-    assert!(
-        json["data"].is_string(),
-        "data should be a YAML string"
-    );
+    assert!(json["data"].is_string(), "data should be a YAML string");
     // The data should be parseable YAML.
     let yaml_str = json["data"].as_str().unwrap();
     let parsed: Result<std::collections::BTreeMap<String, serde_json::Value>, _> =
@@ -875,7 +874,9 @@ async fn params_import_export_roundtrip() {
     let json_export = assert_params_ok(resp_export).await;
 
     assert_eq!(json_export["success"], true);
-    let exported_yaml = json_export["data"].as_str().expect("data should be a string");
+    let exported_yaml = json_export["data"]
+        .as_str()
+        .expect("data should be a string");
 
     // Parse the exported YAML and verify our imported keys are present.
     let exported: std::collections::BTreeMap<String, serde_json::Value> =

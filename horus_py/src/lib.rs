@@ -1,12 +1,9 @@
-// PyO3 methods MUST return PyResult<T> for Python bindings.
-// Clippy incorrectly flags this as "useless_conversion" but it's required by PyO3.
-// See: https://github.com/PyO3/pyo3/issues/2092
-
 use pyo3::prelude::*;
 
 mod config;
 mod depth_image;
 mod dlpack_utils;
+pub mod errors;
 mod hframe;
 mod image;
 mod messages;
@@ -21,56 +18,58 @@ mod types;
 use config::PySchedulerConfig;
 use hframe::{PyHFrame, PyHFrameConfig, PyTransform};
 use node::{PyNode, PyNodeInfo, PyNodeState};
-use scheduler::PyScheduler;
+use scheduler::{PyMiss, PyScheduler};
 use topic::PyTopic;
 use types::Priority;
 
 /// HORUS Python Bindings
-///
-/// This module provides Python bindings for the HORUS robotics framework,
-/// allowing Python developers to create and run distributed robotic systems.
 #[pymodule]
 fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    //  USER-FACING: Core classes that users interact with
+    // Core classes
     m.add_class::<PyNode>()?;
     m.add_class::<PyNodeInfo>()?;
-    m.add_class::<PyTopic>()?; // Unified communication API
+    m.add_class::<PyTopic>()?;
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyNodeState>()?;
-
-    // Configuration classes
     m.add_class::<PySchedulerConfig>()?;
-
-    // Priority constants
+    m.add_class::<PyMiss>()?;
     m.add_class::<Priority>()?;
 
-    // HFrame - High-Performance Transform System
+    // HFrame transform system
     m.add_class::<PyTransform>()?;
     m.add_class::<PyHFrame>()?;
     m.add_class::<PyHFrameConfig>()?;
     m.add_function(wrap_pyfunction!(hframe::get_timestamp_ns, m)?)?;
 
-    // GPU utility functions (tensor pool/handle internals are not exposed)
+    // GPU utility functions
     m.add_function(wrap_pyfunction!(tensor::cuda_is_available, m)?)?;
     m.add_function(wrap_pyfunction!(tensor::cuda_device_count, m)?)?;
 
-    // Domain types — clean API hiding DLPack/TensorPool internals
+    // Domain types
     m.add_class::<image::PyImage>()?;
     m.add_class::<pointcloud::PyPointCloud>()?;
     m.add_class::<depth_image::PyDepthImage>()?;
 
-    // Perception types - Detection, PointCloud, Landmark
+    // Perception types
     perception::register_perception_module(m)?;
 
-    // Message types for typed Topic communication
+    // Message types
     messages::register_message_classes(m)?;
 
-    //  CHANGED: Priority system now uses u32 instead of enum
-    // - Priority class provides constants: CRITICAL=0, HIGH=10, NORMAL=50, LOW=80, BACKGROUND=100
-    // - Users can pass any u32 value for fine-grained control
-    // - Old PyNodePriority enum removed for flexibility
+    // Custom exception types
+    m.add(
+        "HorusNotFoundError",
+        m.py().get_type::<errors::HorusNotFoundError>(),
+    )?;
+    m.add(
+        "HorusTransformError",
+        m.py().get_type::<errors::HorusTransformError>(),
+    )?;
+    m.add(
+        "HorusTimeoutError",
+        m.py().get_type::<errors::HorusTimeoutError>(),
+    )?;
 
-    //  VERSION: Utility function
     m.add_function(wrap_pyfunction!(get_version, m)?)?;
 
     Ok(())

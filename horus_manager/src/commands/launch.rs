@@ -104,8 +104,12 @@ pub fn run_launch(
     // Read and parse the launch file
     let content = std::fs::read_to_string(file).map_err(HorusError::Io)?;
 
-    let config: LaunchConfig = serde_yaml::from_str(&content)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse launch file: {}", e))))?;
+    let config: LaunchConfig = serde_yaml::from_str(&content).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "failed to parse launch file: {}",
+            e
+        )))
+    })?;
 
     if config.nodes.is_empty() {
         println!("{}", "No nodes defined in launch file.".yellow());
@@ -484,8 +488,12 @@ fn launch_node(
     cmd.stderr(Stdio::inherit());
 
     // Spawn the process
-    cmd.spawn()
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to launch node '{}': {}", node.name, e))))
+    cmd.spawn().map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to launch node '{}': {}",
+            node.name, e
+        )))
+    })
 }
 
 /// List nodes in a launch file
@@ -499,8 +507,12 @@ pub fn list_launch_nodes(file: &Path) -> HorusResult<()> {
 
     let content = std::fs::read_to_string(file).map_err(HorusError::Io)?;
 
-    let config: LaunchConfig = serde_yaml::from_str(&content)
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse launch file: {}", e))))?;
+    let config: LaunchConfig = serde_yaml::from_str(&content).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "failed to parse launch file: {}",
+            e
+        )))
+    })?;
 
     println!("{}", "Launch File Contents".green().bold());
     println!();

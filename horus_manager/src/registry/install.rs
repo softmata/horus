@@ -1,17 +1,60 @@
 use super::helpers::*;
 use super::*;
 
+/// Convert a semver `VersionReq` to a pip-compatible version specifier string.
+/// Returns `None` for `*` (any version), or a pip specifier like `>=3.0,<4.0`.
+///
+/// Semver `VersionReq` is rendered as a comma-separated list of comparators
+/// (e.g., `>=1.2.0, <2.0.0`). These are already pip-compatible since pip
+/// understands `>=`, `<=`, `>`, `<`, `==`, `!=` operators.
+pub(crate) fn semver_req_to_pip(req: &semver::VersionReq) -> Option<String> {
+    let s = req.to_string();
+    if s == "*" {
+        return None;
+    }
+    // semver crate renders `^1.2` as `>=1.2.0, <2.0.0` and `~1.2` as `>=1.2.0, <1.3.0`
+    // which are valid pip specifiers. Just return the rendered string.
+    Some(s)
+}
+
+/// RAII guard that cleans up a temporary directory when dropped.
+/// Call `disarm()` on success to prevent cleanup.
+pub(crate) struct TempDirGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempDirGuard {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if self.armed && self.path.exists() {
+            if let Err(e) = fs::remove_dir_all(&self.path) {
+                log::warn!("Failed to clean up temp dir {}: {}", self.path.display(), e);
+            }
+        }
+    }
+}
+
 /// Verify an Ed25519 signature against a local public key file.
 /// Returns Ok(true) if valid, Ok(false) if invalid, Err on format/IO errors.
-fn verify_package_signature(
+pub(crate) fn verify_package_signature(
     package_data: &[u8],
     signature_hex: &str,
     public_key_path: &Path,
 ) -> Result<bool> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-    let sig_bytes = hex::decode(signature_hex)
-        .map_err(|_| anyhow!("Invalid signature hex encoding"))?;
+    let sig_bytes =
+        hex::decode(signature_hex).map_err(|_| anyhow!("Invalid signature hex encoding"))?;
     let signature = Signature::from_bytes(
         sig_bytes
             .as_slice()
@@ -21,8 +64,8 @@ fn verify_package_signature(
 
     let pub_hex = fs::read_to_string(public_key_path)
         .map_err(|e| anyhow!("Failed to read public key: {}", e))?;
-    let pub_bytes = hex::decode(pub_hex.trim())
-        .map_err(|_| anyhow!("Invalid public key hex encoding"))?;
+    let pub_bytes =
+        hex::decode(pub_hex.trim()).map_err(|_| anyhow!("Invalid public key hex encoding"))?;
     let verifying_key = VerifyingKey::from_bytes(
         pub_bytes
             .as_slice()
@@ -70,8 +113,9 @@ impl RegistryClient {
                 "System packages not supported via horus pkg install"
             )),
             PackageSource::Path { .. } => Err(anyhow!(
-                "Path dependencies must be specified in horus.toml.\n\
-                     Use 'horus run' to install dependencies from horus.toml."
+                "Path dependencies should be added via native build tools.\n\
+                     For Rust: cargo add --path <path>\n\
+                     For Python: pip install -e <path>"
             )),
         }
     }
@@ -198,13 +242,33 @@ impl RegistryClient {
         target: crate::workspace::InstallTarget,
         base_dir: Option<&Path>,
     ) -> Result<()> {
-        use crate::dependency_resolver::DependencySource;
+        use crate::dependency_resolver::{DependencySource, PackageProvider};
 
         match &spec.source {
             DependencySource::Registry => {
-                // For registry dependencies, use version from requirement if specific
+                // For registry dependencies, resolve semver requirement to an exact version
                 let version_str = if spec.requirement.to_string() != "*" {
-                    Some(spec.requirement.to_string())
+                    // Query available versions and find best match
+                    match self.get_available_versions(&spec.name) {
+                        Ok(versions) if !versions.is_empty() => {
+                            let matching: Vec<&semver::Version> = versions
+                                .iter()
+                                .filter(|v| spec.requirement.matches(v))
+                                .collect();
+                            match matching.last() {
+                                Some(v) => Some(v.to_string()),
+                                None => {
+                                    return Err(anyhow::anyhow!(
+                                        "No version of '{}' satisfies requirement {}. Available: {}",
+                                        spec.name,
+                                        spec.requirement,
+                                        versions.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
+                                    ));
+                                }
+                            }
+                        }
+                        _ => None, // Fall back to "latest" if registry unreachable
+                    }
                 } else {
                     None
                 };
@@ -239,17 +303,13 @@ impl RegistryClient {
                 Ok(())
             }
             DependencySource::Pip { package_name } => {
-                // Install from PyPI
-                let version_str = if spec.requirement.to_string() != "*" {
-                    Some(spec.requirement.to_string())
-                } else {
-                    None
-                };
+                // Install from PyPI — convert semver requirement to pip specifier
+                let version_str = semver_req_to_pip(&spec.requirement);
                 self.install_from_pypi(package_name, version_str.as_deref(), target)
                     .map(|_| ()) // Ignore version for dependency spec
             }
             DependencySource::CratesIO => {
-                // Install from crates.io (source pinned in horus.toml)
+                // Install from crates.io — cargo install accepts semver @^1.2.3 syntax
                 let version_str = if spec.requirement.to_string() != "*" {
                     Some(spec.requirement.to_string())
                 } else {
@@ -338,7 +398,9 @@ impl RegistryClient {
                 return Err(anyhow!(
                     "Failed to download '{}' v{}: HTTP {}\n\
                      The registry may be temporarily unavailable. Try again in a few minutes.",
-                    package_name, version_str, status.as_u16()
+                    package_name,
+                    version_str,
+                    status.as_u16()
                 ));
             }
         }
@@ -350,8 +412,26 @@ impl RegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
+        // Maximum download size (100 MB) to prevent OOM from malicious Content-Length
+        const MAX_DOWNLOAD_SIZE: u64 = 100 * 1024 * 1024;
+
         // Download with progress bar for large packages (>512KB)
         let content_length = response.content_length();
+
+        // Reject downloads that claim to exceed the size limit
+        if let Some(total) = content_length {
+            if total > MAX_DOWNLOAD_SIZE {
+                return Err(anyhow!(
+                    "Package {}@{} is too large ({} bytes, max {} MB). \
+                     This may indicate a corrupted or malicious package.",
+                    package_name,
+                    version_str,
+                    total,
+                    MAX_DOWNLOAD_SIZE / (1024 * 1024)
+                ));
+            }
+        }
+
         let bytes = if let Some(total) = content_length.filter(|&s| s > 512 * 1024) {
             // Replace spinner with progress bar for large downloads
             spinner.finish_and_clear();
@@ -378,6 +458,12 @@ impl RegistryClient {
                     Ok(0) => break,
                     Ok(n) => {
                         downloaded.extend_from_slice(&buf[..n]);
+                        if downloaded.len() as u64 > MAX_DOWNLOAD_SIZE {
+                            return Err(anyhow!(
+                                "Download exceeded maximum size ({} MB)",
+                                MAX_DOWNLOAD_SIZE / (1024 * 1024)
+                            ));
+                        }
                         pb.set_position(downloaded.len() as u64);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -387,14 +473,24 @@ impl RegistryClient {
             pb.finish_and_clear();
             downloaded
         } else {
-            response.bytes()?.to_vec()
+            // Small download path — still enforce size limit
+            let bytes = response.bytes()?.to_vec();
+            if bytes.len() as u64 > MAX_DOWNLOAD_SIZE {
+                return Err(anyhow!(
+                    "Download exceeded maximum size ({} MB)",
+                    MAX_DOWNLOAD_SIZE / (1024 * 1024)
+                ));
+            }
+            bytes
         };
 
-        // Verify Ed25519 signature if present
+        // Verify Ed25519 signature
+        let pub_key_path = crate::paths::keys_dir()
+            .ok()
+            .map(|d| d.join("signing_key.pub"));
+        let has_public_key = pub_key_path.as_ref().map_or(false, |p| p.exists());
+
         if let Some(ref sig_hex) = pkg_signature {
-            let pub_key_path = crate::paths::keys_dir()
-                .ok()
-                .map(|d| d.join("signing_key.pub"));
             if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
                 match verify_package_signature(&bytes, sig_hex, &pub_path) {
                     Ok(true) => {
@@ -409,18 +505,82 @@ impl RegistryClient {
                         ));
                     }
                     Err(e) => {
-                        log::warn!("Could not verify signature for {}: {}", package_name, e);
+                        // Crypto/IO errors are hard failures — don't silently continue
+                        return Err(anyhow!(
+                            "Signature verification error for {}: {}. \
+                             Check your public key file at ~/.horus/signing_key.pub",
+                            package_name,
+                            e
+                        ));
                     }
                 }
             } else {
-                log::debug!("Package {} is signed but no local public key to verify against", package_name);
+                return Err(anyhow!(
+                    "Package {} is signed but no local public key found to verify the signature.\n\
+                     Install the publisher's public key to ~/.horus/signing_key.pub before installing.\n\
+                     If you trust this package without verification, use --skip-verify.",
+                    package_name
+                ));
             }
+        } else if has_public_key {
+            // Public key configured but package is unsigned — warn the user
+            log::warn!(
+                "Package {} is NOT signed, but you have a signing key configured. \
+                 This package's integrity cannot be verified.",
+                package_name
+            );
         }
 
-        // Calculate checksum
+        // Calculate checksum and verify against server
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let checksum = format!("{:x}", hasher.finalize());
+
+        // Fetch expected checksum from server and compare
+        let checksum_url = format!(
+            "{}/api/packages/{}/{}/checksum",
+            self.base_url, encoded_name, version_str
+        );
+        match self.client.get(&checksum_url).send() {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(json) = resp.json::<serde_json::Value>() {
+                    if let Some(expected) = json.get("checksum").and_then(|v| v.as_str()) {
+                        if !expected.is_empty() && expected != checksum {
+                            return Err(anyhow!(
+                                "Checksum mismatch for {}@{}!\n\
+                                 Expected: {}\n\
+                                 Got:      {}\n\n\
+                                 The download may be corrupted or tampered with.\n\
+                                 Try again, and if this persists, report it to the package maintainer.",
+                                package_name, version_str, expected, checksum
+                            ));
+                        }
+                        log::debug!("Checksum verified for {}@{}", package_name, version_str);
+                    }
+                }
+            }
+            _ => {
+                log::warn!(
+                    "Could not fetch checksum from server for {}@{}. \
+                     Package integrity cannot be verified.",
+                    package_name,
+                    version_str
+                );
+                eprintln!(
+                    "\n{} Warning: Could not verify package checksum for {}@{}.\n\
+                     The registry may be unreachable or the package may have been tampered with.\n\
+                     Use --skip-verify to install anyway.",
+                    crate::cli_output::ICON_WARN.yellow(),
+                    package_name,
+                    version_str
+                );
+                return Err(anyhow!(
+                    "Checksum verification failed: could not fetch checksum from server for {}@{}",
+                    package_name,
+                    version_str
+                ));
+            }
+        }
 
         // Convert scoped package name to safe path (e.g., @org/pkg -> org--pkg)
         let safe_pkg_name = package_name_to_path(package_name);
@@ -459,14 +619,91 @@ impl RegistryClient {
         let tar = GzDecoder::new(&bytes[..]);
         let mut archive = Archive::new(tar);
 
-        // Extract to temporary location first to detect version (use safe name)
-        let temp_dir = std::env::temp_dir().join(format!("horus_pkg_{}", safe_pkg_name));
+        // Extract to temporary location first to detect version.
+        // Use PID + random suffix to avoid collisions with concurrent installs.
+        let temp_dir = std::env::temp_dir().join(format!(
+            "horus_pkg_{}_{}_{}",
+            safe_pkg_name,
+            std::process::id(),
+            rand::random::<u32>()
+        ));
         fs::create_dir_all(&temp_dir)?;
-        archive.unpack(&temp_dir)?;
+        let mut temp_guard = TempDirGuard::new(temp_dir.clone());
+
+        // Safe extraction: validate each entry to prevent path traversal and symlink attacks
+        let canonical_temp = temp_dir.canonicalize()?;
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let entry_path = entry.path()?;
+            let entry_str = entry_path.to_string_lossy();
+
+            // Reject null bytes
+            if entry_str.contains('\0') {
+                log::warn!("Skipping tar entry with null byte in path: {:?}", entry_str);
+                continue;
+            }
+
+            // Reject absolute paths
+            if entry_path.is_absolute() {
+                log::warn!("Skipping absolute tar entry: {:?}", entry_str);
+                continue;
+            }
+
+            // Reject path traversal
+            if entry_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                log::warn!("Skipping tar entry with path traversal: {:?}", entry_str);
+                continue;
+            }
+
+            // Reject symlinks pointing outside the extraction directory
+            if entry.header().entry_type().is_symlink()
+                || entry.header().entry_type().is_hard_link()
+            {
+                if let Ok(link_target) = entry.link_name() {
+                    if let Some(target) = link_target {
+                        let target_path = target.to_path_buf();
+                        if target_path.is_absolute()
+                            || target_path
+                                .components()
+                                .any(|c| matches!(c, std::path::Component::ParentDir))
+                        {
+                            log::warn!(
+                                "Skipping symlink with unsafe target: {:?} -> {:?}",
+                                entry_str,
+                                target_path
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Resolve final path and verify it's within temp_dir
+            let dest = canonical_temp.join(
+                entry_path
+                    .components()
+                    .filter(|c| !matches!(c, std::path::Component::CurDir))
+                    .collect::<PathBuf>(),
+            );
+            if !dest.starts_with(&canonical_temp) {
+                log::warn!(
+                    "Skipping tar entry escaping extraction dir: {:?}",
+                    entry_str
+                );
+                continue;
+            }
+
+            entry.unpack(&dest)?;
+        }
 
         // Get actual version from package info (for "latest" downloads)
         let actual_version = if version_str == "latest" {
-            detect_package_version(&temp_dir).unwrap_or_else(|| version_str.to_string())
+            detect_package_version(&temp_dir).ok_or_else(|| {
+                anyhow!("Could not detect version for {}. The package may be malformed (missing horus.toml/Cargo.toml/package.json).", package_name)
+            })?
         } else {
             version_str.to_string()
         };
@@ -478,15 +715,25 @@ impl RegistryClient {
             install_dir.join(&safe_pkg_name)
         };
 
-        // Remove existing if present
+        // Atomic install: copy to staging dir, then rename into place.
+        // This prevents partial installs if copy fails mid-way.
+        let staging_dir = package_dir.with_extension("staging");
+        if staging_dir.exists() {
+            fs::remove_dir_all(&staging_dir)?;
+        }
+        fs::create_dir_all(&staging_dir)?;
+
+        // Copy from temp to staging
+        copy_dir_all(&temp_dir, &staging_dir)?;
+        // Temp dir successfully copied to staging — disarm the cleanup guard
+        temp_guard.disarm();
+        fs::remove_dir_all(&temp_dir)?;
+
+        // Swap staging into final location atomically
         if package_dir.exists() {
             fs::remove_dir_all(&package_dir)?;
         }
-        fs::create_dir_all(&package_dir)?;
-
-        // Move from temp to final location
-        copy_dir_all(&temp_dir, &package_dir)?;
-        fs::remove_dir_all(&temp_dir)?;
+        fs::rename(&staging_dir, &package_dir)?;
 
         // Create metadata.json for tracking
         let metadata = PackageMetadata {
@@ -505,22 +752,11 @@ impl RegistryClient {
                 let local_link = local_pkg_dir.join(&safe_pkg_name);
 
                 // Remove existing symlink/dir if present
+                // Try remove_file first (handles symlinks atomically without TOCTOU),
+                // fall back to remove_dir_all for actual directories.
                 if local_link.exists() || local_link.symlink_metadata().is_ok() {
-                    #[cfg(unix)]
-                    {
-                        if local_link.symlink_metadata()?.is_symlink() {
-                            fs::remove_file(&local_link)?;
-                        } else {
-                            fs::remove_dir_all(&local_link)?;
-                        }
-                    }
-                    #[cfg(windows)]
-                    {
-                        if local_link.is_dir() {
-                            fs::remove_dir_all(&local_link)?;
-                        } else {
-                            fs::remove_file(&local_link)?;
-                        }
+                    if fs::remove_file(&local_link).is_err() {
+                        fs::remove_dir_all(&local_link)?;
                     }
                 }
 
@@ -671,17 +907,46 @@ impl RegistryClient {
                     println!("    • {}", dep);
                 }
                 // Auto-install with pip
+                let mut failed_deps = Vec::new();
                 for dep in py_deps {
                     let status = std::process::Command::new("pip3")
                         .args(["install", "--quiet", dep])
                         .status();
-                    if status.is_ok() {
-                        println!(
-                            "  {} Installed {} via pip",
-                            crate::cli_output::ICON_SUCCESS.green(),
-                            dep
-                        );
+                    match status {
+                        Ok(s) if s.success() => {
+                            println!(
+                                "  {} Installed {} via pip",
+                                crate::cli_output::ICON_SUCCESS.green(),
+                                dep
+                            );
+                        }
+                        Ok(s) => {
+                            eprintln!(
+                                "  {} Failed to install {} via pip (exit code: {})",
+                                crate::cli_output::ICON_ERROR.red(),
+                                dep,
+                                s.code().unwrap_or(-1)
+                            );
+                            failed_deps.push(dep.as_str());
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "  {} Failed to run pip3 for {}: {}",
+                                crate::cli_output::ICON_ERROR.red(),
+                                dep,
+                                e
+                            );
+                            failed_deps.push(dep.as_str());
+                        }
                     }
+                }
+                if !failed_deps.is_empty() {
+                    return Err(anyhow!(
+                        "Failed to install {} Python dependenc{}: {}",
+                        failed_deps.len(),
+                        if failed_deps.len() == 1 { "y" } else { "ies" },
+                        failed_deps.join(", ")
+                    ));
                 }
             }
         }
@@ -749,18 +1014,36 @@ impl RegistryClient {
             }
         };
 
-        // Create temp venv for pip operations
-        let temp_venv = PathBuf::from(".horus/venv");
+        // Create temp venv for pip operations (with file lock to prevent concurrent races)
+        let venv_parent = PathBuf::from(".horus");
+        fs::create_dir_all(&venv_parent)?;
+        let temp_venv = venv_parent.join("venv");
         if !temp_venv.exists() {
-            fs::create_dir_all(&temp_venv)?;
-            let python_cmd = if Command::new("python3").arg("--version").output().is_ok() {
-                "python3"
-            } else {
-                "python"
-            };
-            Command::new(python_cmd)
-                .args(["-m", "venv", &*temp_venv.to_string_lossy()])
-                .status()?;
+            let lock_path = venv_parent.join(".venv.lock");
+            let lock_file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&lock_path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd;
+                unsafe {
+                    libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX);
+                }
+            }
+            // Double-check after acquiring lock (another process may have created it)
+            if !temp_venv.exists() {
+                let python_cmd = if Command::new("python3").arg("--version").output().is_ok() {
+                    "python3"
+                } else {
+                    "python"
+                };
+                Command::new(python_cmd)
+                    .args(["-m", "venv", &*temp_venv.to_string_lossy()])
+                    .status()?;
+            }
+            drop(lock_file);
         }
 
         let pip_path = temp_venv.join("bin/pip");
@@ -769,7 +1052,18 @@ impl RegistryClient {
         let version_str = version.unwrap_or("latest");
         let requirement = if version_str == "latest" {
             package_name.to_string()
+        } else if version_str.starts_with(">=")
+            || version_str.starts_with("<=")
+            || version_str.starts_with('>')
+            || version_str.starts_with('<')
+            || version_str.starts_with("==")
+            || version_str.starts_with("!=")
+            || version_str.contains(',')
+        {
+            // Already a pip-compatible specifier (e.g., ">=1.2.0, <2.0.0")
+            format!("{}{}", package_name, version_str)
         } else {
+            // Bare version number — pin exactly
             format!("{}=={}", package_name, version_str)
         };
 
@@ -1072,7 +1366,7 @@ impl RegistryClient {
                 println!("  {} Dependency resolution failed: {}", "".red(), e);
                 println!("  {} Falling back to simple installation...", "".yellow());
 
-                // Fallback: install without version resolution
+                // Fallback: install using dependency specs (preserves version constraints and source)
                 for dep in dependencies {
                     let dep_name = &dep.name;
 
@@ -1093,9 +1387,8 @@ impl RegistryClient {
                         continue;
                     }
 
-                    // Install latest version
                     println!("  {} Installing dependency: {}...", "".cyan(), dep_name);
-                    self.install_to_target(dep_name, None, target.clone())?;
+                    self.install_dependency_spec(&dep, target.clone(), None)?;
                 }
                 return Ok(());
             }
@@ -1107,17 +1400,27 @@ impl RegistryClient {
             let home = dirs::home_dir().ok_or_else(|| anyhow!("could not find home directory"))?;
             let global_cache = home.join(".horus/cache");
 
-            // Check if already installed
+            // Check if already installed at a version satisfying the requirement
+            let version_req = semver::VersionReq::parse(&format!("={}", resolved_dep.version))
+                .unwrap_or(semver::VersionReq::STAR);
             let (is_installed_local, is_installed_global) = match &target {
                 crate::workspace::InstallTarget::Global => {
-                    let has_global = check_global_versions(&global_cache, &resolved_dep.name)?;
+                    let has_global = check_global_version_satisfies(
+                        &global_cache,
+                        &resolved_dep.name,
+                        Some(&version_req),
+                    )?;
                     (has_global, has_global)
                 }
                 crate::workspace::InstallTarget::Local(workspace_path) => {
                     let local_packages = workspace_path.join(".horus/packages");
                     let has_local = local_packages.join(&resolved_dep.name).exists();
-                    let has_global =
-                        check_global_versions(&global_cache, &resolved_dep.name).unwrap_or(false);
+                    let has_global = check_global_version_satisfies(
+                        &global_cache,
+                        &resolved_dep.name,
+                        Some(&version_req),
+                    )
+                    .unwrap_or(false);
                     (has_local, has_global)
                 }
             };
@@ -1320,23 +1623,34 @@ impl RegistryClient {
             }
         }
 
-        // Fallback: check site-packages directly
-        let mut site_packages_paths = vec![
-            PathBuf::from(format!(
-                "/usr/lib/python3.12/site-packages/{}",
-                package_name
-            )),
-            PathBuf::from(format!(
-                "/usr/local/lib/python3.12/site-packages/{}",
-                package_name
-            )),
-        ];
-
+        // Fallback: check site-packages directly by globbing python3.* dirs
+        let mut site_packages_paths = Vec::new();
+        let site_pkg_roots = [PathBuf::from("/usr/lib"), PathBuf::from("/usr/local/lib")];
+        for root in &site_pkg_roots {
+            if let Ok(entries) = fs::read_dir(root) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("python3") && entry.path().is_dir() {
+                        site_packages_paths
+                            .push(entry.path().join("site-packages").join(package_name));
+                    }
+                }
+            }
+        }
+        // Also check user-local site-packages
         if let Some(home) = dirs::home_dir() {
-            site_packages_paths.push(home.join(format!(
-                ".local/lib/python3.12/site-packages/{}",
-                package_name
-            )));
+            let local_lib = home.join(".local/lib");
+            if let Ok(entries) = fs::read_dir(&local_lib) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("python3") && entry.path().is_dir() {
+                        site_packages_paths
+                            .push(entry.path().join("site-packages").join(package_name));
+                    }
+                }
+            }
         }
 
         for path in site_packages_paths {

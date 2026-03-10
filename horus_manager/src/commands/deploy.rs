@@ -383,12 +383,14 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
 
-    let status = cmd
-        .status()
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to run cargo: {}", e))))?;
+    let status = cmd.status().map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!("Failed to run cargo: {}", e)))
+    })?;
 
     if !status.success() {
-        return Err(HorusError::Config(ConfigError::Other("Build failed".to_string())));
+        return Err(HorusError::Config(ConfigError::Other(
+            "Build failed".to_string(),
+        )));
     }
 
     println!("  {} Build complete", cli_output::ICON_SUCCESS.green());
@@ -458,12 +460,14 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
 
-    let status = cmd
-        .status()
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to run rsync: {}", e))))?;
+    let status = cmd.status().map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!("Failed to run rsync: {}", e)))
+    })?;
 
     if !status.success() {
-        return Err(HorusError::Config(ConfigError::Other("rsync failed".to_string())));
+        return Err(HorusError::Config(ConfigError::Other(
+            "rsync failed".to_string(),
+        )));
     }
 
     println!("  {} Files synced", cli_output::ICON_SUCCESS.green());
@@ -817,10 +821,19 @@ targets:
 
     #[test]
     fn find_binary_name_no_cargo_toml() {
-        // When run from a directory without Cargo.toml, returns None
-        // (this is always the case in test cwd which is the workspace root)
-        // If it returns Some, that's also fine — just check it doesn't panic.
-        let _ = find_binary_name();
+        // Test runs from workspace root which is a virtual workspace (no [[bin]]).
+        // find_binary_name reads ./Cargo.toml for [[bin]] or [package].name.
+        let result = find_binary_name();
+        // Workspace root has no [[bin]] target, so expect None.
+        // If somehow Some, the name must be a valid non-empty identifier.
+        if let Some(ref name) = result {
+            assert!(!name.is_empty(), "Binary name must not be empty");
+            assert!(
+                !name.contains(' '),
+                "Binary name must not contain spaces: '{}'",
+                name
+            );
+        }
     }
 
     // ── Rust target strings ────────────────────────────────────────────

@@ -134,14 +134,6 @@ impl RuntimeParams {
         })
     }
 
-    /// Create new parameter store with defaults.
-    ///
-    /// Use [`new()`](Self::new) instead — follows Rust naming conventions.
-    #[deprecated(since = "0.2.0", note = "Use RuntimeParams::new() instead")]
-    pub fn init() -> HorusResult<Self> {
-        Self::new()
-    }
-
     /// Set default parameters
     fn set_defaults(&self) -> Result<(), HorusError> {
         for (key, value) in Self::default_params() {
@@ -376,7 +368,10 @@ impl RuntimeParams {
                 ValidationRule::RegexPattern(pattern) => {
                     if let Some(s) = value.as_str() {
                         let re = regex::Regex::new(pattern).map_err(|e| {
-                            HorusError::InvalidInput(ValidationError::Other(format!("Invalid regex: {}", e)))
+                            HorusError::InvalidInput(ValidationError::Other(format!(
+                                "Invalid regex: {}",
+                                e
+                            )))
                         })?;
                         if !re.is_match(s) {
                             return Err(HorusError::InvalidInput(ValidationError::Other(format!(
@@ -430,10 +425,12 @@ impl RuntimeParams {
                     if let Some(obj) = value.as_object() {
                         for req_key in required {
                             if !obj.contains_key(req_key) {
-                                return Err(HorusError::InvalidInput(ValidationError::Other(format!(
-                                    "Parameter '{}' missing required key '{}'",
-                                    key, req_key
-                                ))));
+                                return Err(HorusError::InvalidInput(ValidationError::Other(
+                                    format!(
+                                        "Parameter '{}' missing required key '{}'",
+                                        key, req_key
+                                    ),
+                                )));
                             }
                         }
                     }

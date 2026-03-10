@@ -1,10 +1,9 @@
 //! Loom-based exhaustive concurrency tests for Watchdog, PRNG, and
 //! DeterministicClock concurrency primitives.
 //!
-//! These tests complement the circuit-breaker tests in `loom_circuit_breaker.rs`
-//! and the ring-buffer tests in `loom_ring_buffers.rs`.  Together the three
-//! files provide loom coverage for all concurrency fixes in the HORUS Security
-//! & Safety Hardening audit.
+//! These tests complement the ring-buffer tests in `loom_ring_buffers.rs`.
+//! Together these files provide loom coverage for all concurrency fixes in
+//! the HORUS Security & Safety Hardening audit.
 //!
 //! Each primitive is re-implemented with loom's instrumented atomics so loom
 //! can track every load/store/CAS and exhaustively verify all interleavings.
@@ -13,7 +12,6 @@
 //!
 //! | File                     | Primitive          | Fix verified                                  |
 //! |:-------------------------|:-------------------|:----------------------------------------------|
-//! | `loom_circuit_breaker.rs`| CircuitBreaker     | CAS prevents double Open/Close transition     |
 //! | `loom_seqlock.rs`*       | HFrame seqlock     | Release/Acquire ordering, no torn reads       |
 //! | **this file**            | Watchdog           | AtomicU64 heartbeat, no TOCTOU false-positive |
 //! | **this file**            | PRNG (xorshift64)  | CAS loop, unique values across threads        |

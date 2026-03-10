@@ -65,9 +65,19 @@ impl DependencySpec {
 
         // Special case: horus_py always maps to pip:horus-robotics
         if spec == "horus_py" || spec.starts_with("horus_py@") {
+            let requirement = if let Some(pos) = spec.find('@') {
+                let constraint = &spec[pos + 1..];
+                if constraint == "latest" || constraint == "*" {
+                    VersionReq::STAR
+                } else {
+                    VersionReq::parse(constraint).unwrap_or(VersionReq::STAR)
+                }
+            } else {
+                VersionReq::STAR
+            };
             return Ok(Self {
                 name: "horus_py".to_string(),
-                requirement: VersionReq::STAR,
+                requirement,
                 source: DependencySource::Pip {
                     package_name: "horus-robotics".to_string(),
                 },
@@ -172,7 +182,6 @@ impl DependencySpec {
             })
         }
     }
-
 }
 
 /// Package metadata provider
@@ -745,4 +754,90 @@ mod tests {
         assert_eq!(spec.source, DependencySource::CratesIO);
     }
 
+    // ========================================================================
+    // Diamond conflict detection tests
+    // ========================================================================
+
+    #[test]
+    fn resolve_diamond_conflict_incompatible() {
+        // A -> C@^1.0, B -> C@^2.0 — no version of C satisfies both
+        let mut provider = MockProvider::new();
+        provider.add_package("app", vec!["1.0.0"]);
+        provider.add_package("left", vec!["1.0.0"]);
+        provider.add_package("right", vec!["1.0.0"]);
+        provider.add_package("base", vec!["1.0.0", "1.5.0", "2.0.0", "2.1.0"]);
+
+        // app depends on left and right
+        provider.add_deps("app", "1.0.0", vec![("left", "^1.0"), ("right", "^1.0")]);
+        // left requires base@^1.0 (1.x only)
+        provider.add_deps("left", "1.0.0", vec![("base", "^1.0")]);
+        // right requires base@^2.0 (2.x only)
+        provider.add_deps("right", "1.0.0", vec![("base", "^2.0")]);
+
+        let mut resolver = DependencyResolver::new(&provider);
+        let deps = vec![DependencySpec::parse("app@^1.0").unwrap()];
+        let result = resolver.resolve(deps);
+
+        assert!(result.is_err(), "incompatible diamond should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("base"),
+            "error should mention the conflicting package 'base': {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_diamond_compatible_picks_highest() {
+        // A -> C@^1.0, B -> C@>=1.2 — compatible, should pick highest match
+        let mut provider = MockProvider::new();
+        provider.add_package("app", vec!["1.0.0"]);
+        provider.add_package("left", vec!["1.0.0"]);
+        provider.add_package("right", vec!["1.0.0"]);
+        provider.add_package("base", vec!["1.0.0", "1.2.0", "1.5.0"]);
+
+        provider.add_deps("app", "1.0.0", vec![("left", "^1.0"), ("right", "^1.0")]);
+        provider.add_deps("left", "1.0.0", vec![("base", "^1.0")]);
+        provider.add_deps("right", "1.0.0", vec![("base", ">=1.2.0")]);
+
+        let mut resolver = DependencyResolver::new(&provider);
+        let deps = vec![DependencySpec::parse("app@^1.0").unwrap()];
+        let result = resolver.resolve(deps).unwrap();
+
+        let base = result.iter().find(|d| d.name == "base").unwrap();
+        // Must satisfy both ^1.0 and >=1.2.0 — highest is 1.5.0
+        assert_eq!(base.version, Version::new(1, 5, 0));
+    }
+
+    #[test]
+    fn resolve_direct_conflict_two_root_deps() {
+        // Root asks for pkg@^1.0 AND pkg@^2.0 directly — conflict
+        let mut provider = MockProvider::new();
+        provider.add_package("pkg", vec!["1.0.0", "1.5.0", "2.0.0"]);
+
+        let mut resolver = DependencyResolver::new(&provider);
+        let deps = vec![
+            DependencySpec {
+                name: "pkg".to_string(),
+                requirement: VersionReq::parse("^1.0").unwrap(),
+                source: DependencySource::Registry,
+                target: None,
+            },
+            DependencySpec {
+                name: "pkg".to_string(),
+                requirement: VersionReq::parse("^2.0").unwrap(),
+                source: DependencySource::Registry,
+                target: None,
+            },
+        ];
+        let result = resolver.resolve(deps);
+
+        assert!(result.is_err(), "direct conflict should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("pkg"),
+            "error should mention conflicting package: {}",
+            err
+        );
+    }
 }

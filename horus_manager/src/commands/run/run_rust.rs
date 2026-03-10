@@ -1,6 +1,5 @@
 use crate::cli_output;
 use crate::config::CARGO_TOML;
-use crate::manifest::{HorusManifest, HORUS_TOML};
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
 use colored::*;
@@ -93,36 +92,63 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
             );
         }
         "rust" => {
-            // Setup Rust build using Cargo in .horus workspace
-            println!(
-                "{} Setting up Cargo workspace...",
-                cli_output::ICON_INFO.cyan()
-            );
+            // If a root Cargo.toml exists, build directly from the project root
+            // with CARGO_TARGET_DIR=.horus/target. Dependencies live in Cargo.toml.
+            if Path::new(CARGO_TOML).exists() {
+                println!(
+                    "{} Building from root Cargo.toml...",
+                    cli_output::ICON_INFO.cyan()
+                );
 
-            // Parse horus.toml to get dependencies
-            let manifest = if Path::new(HORUS_TOML).exists() {
-                HorusManifest::load_from(Path::new(HORUS_TOML)).ok().map(|(m, _)| m)
+                let spinner = progress::robot_build_spinner("Building with cargo...");
+                let mut cmd = Command::new("cargo");
+                cmd.arg("build");
+                cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
+
+                if release {
+                    cmd.arg("--release");
+                }
+
+                // Add features from drivers and enable configuration
+                if let Some(features) = features::get_all_cargo_features() {
+                    cmd.arg("--features").arg(&features);
+                    eprintln!(
+                        "  {} Auto-enabling features: {}",
+                        "\u{f0cb1}".cyan(),
+                        features.green()
+                    );
+                }
+
+                let output = cmd.output()?;
+                if !output.status.success() {
+                    finish_error(&spinner, "Cargo build failed");
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.is_empty() {
+                        eprintln!("{}", stderr);
+                    }
+                    bail!("Cargo build failed");
+                }
+
+                let profile = if release { "release" } else { "debug" };
+                let project_name = get_project_name()?;
+                let binary_path = format!(".horus/target/{}/{}", profile, project_name);
+
+                finish_success(&spinner, &format!("Built: {}", binary_path));
             } else {
-                None
-            };
-            let dependencies = if let Some(ref m) = manifest {
-                deps::manifest_deps_to_string_set(m)
-            } else {
-                HashSet::new()
-            };
+                // No root Cargo.toml — generate a minimal .horus/Cargo.toml
+                // for standalone .rs file compilation.
+                println!(
+                    "{} Setting up Cargo workspace for standalone file...",
+                    cli_output::ICON_INFO.cyan()
+                );
 
-            // Split dependencies into HORUS packages, pip packages, cargo packages, path and git dependencies
-            let (horus_deps, _pip_packages, cargo_packages, path_deps, git_deps) =
-                deps::split_dependencies_with_path_context(dependencies.clone(), Some("rust"));
+                let cargo_toml_path = PathBuf::from(".horus/Cargo.toml");
+                let source_relative_path = format!("../{}", target_file.display());
 
-            // Generate Cargo.toml in .horus/ that references source files in parent directory
-            let cargo_toml_path = PathBuf::from(".horus/Cargo.toml");
-
-            // Get relative path from .horus/ to the source file
-            let source_relative_path = format!("../{}", target_file.display());
-
-            let mut cargo_toml = format!(
-                r#"[package]
+                let mut cargo_toml = format!(
+                    r#"[package]
 name = "horus-project"
 version = "0.1.9"
 edition = "2021"
@@ -136,242 +162,111 @@ path = "{}"
 
 [dependencies]
 "#,
-                source_relative_path
-            );
-
-            // Auto-detect nodes and required features
-            use crate::node_detector;
-            let auto_features =
-                node_detector::detect_features_from_file(target_file).unwrap_or_default();
-            if !auto_features.is_empty() {
-                eprintln!(
-                    "  {} Auto-detected hardware nodes (features: {})",
-                    cli_output::ICON_INFO.cyan(),
-                    auto_features.join(", ").yellow()
+                    source_relative_path
                 );
 
-                // Check system dependencies for detected features
-                use crate::system_deps;
-                let dep_result = system_deps::check_dependencies(&auto_features);
-                let report = system_deps::format_dependency_report(&dep_result, &auto_features);
-                if !report.is_empty() {
-                    eprintln!("{}", report);
+                // Auto-detect nodes and required features
+                use crate::node_detector;
+                let auto_features =
+                    node_detector::detect_features_from_file(target_file).unwrap_or_default();
+                if !auto_features.is_empty() {
+                    eprintln!(
+                        "  {} Auto-detected hardware nodes (features: {})",
+                        cli_output::ICON_INFO.cyan(),
+                        auto_features.join(", ").yellow()
+                    );
+
+                    use crate::system_deps;
+                    let dep_result = system_deps::check_dependencies(&auto_features);
+                    let report = system_deps::format_dependency_report(&dep_result, &auto_features);
+                    if !report.is_empty() {
+                        eprintln!("{}", report);
+                    }
                 }
-            }
 
-            // Find HORUS source directory
-            let horus_source = find_horus_source_dir()?;
-            println!(
-                "  {} Using HORUS source: {}",
-                cli_output::ICON_INFO.cyan(),
-                horus_source.display()
-            );
+                // Find HORUS source directory and add core path deps
+                let horus_source = find_horus_source_dir()?;
+                println!(
+                    "  {} Using HORUS source: {}",
+                    cli_output::ICON_INFO.cyan(),
+                    horus_source.display()
+                );
 
-            // Add HORUS dependencies from source
-            for dep in &horus_deps {
-                // Strip version from dependency name for path lookup
-                let dep_name = if let Some(at_pos) = dep.find('@') {
-                    &dep[..at_pos]
-                } else {
-                    dep.as_str()
-                };
-
-                let dep_path = horus_source.join(dep_name);
-
-                if dep_path.exists() && dep_path.join(CARGO_TOML).exists() {
-                    // Auto-inject features for horus or horus_library
-                    if (dep_name == "horus" || dep_name == "horus_library")
-                        && !auto_features.is_empty()
-                    {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ path = \"{}\", features = [{}] }}\n",
-                            dep_name,
-                            dep_path.display(),
-                            auto_features
-                                .iter()
-                                .map(|f| format!("\"{}\"", f))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                        println!(
-                            "  {} Added dependency: {} -> {} (auto-features: {})",
-                            cli_output::ICON_INFO.cyan(),
-                            dep,
-                            dep_path.display(),
-                            auto_features.join(", ").yellow()
-                        );
-                    } else {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ path = \"{}\" }}\n",
-                            dep_name,
-                            dep_path.display()
-                        ));
+                // Add default HORUS core path dependencies
+                for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
+                    let dep_path = horus_source.join(dep_name);
+                    if dep_path.exists() && dep_path.join(CARGO_TOML).exists() {
+                        if (*dep_name == "horus" || *dep_name == "horus_library")
+                            && !auto_features.is_empty()
+                        {
+                            cargo_toml.push_str(&format!(
+                                "{} = {{ path = \"{}\", features = [{}] }}\n",
+                                dep_name,
+                                dep_path.display(),
+                                auto_features
+                                    .iter()
+                                    .map(|f| format!("\"{}\"", f))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        } else {
+                            cargo_toml.push_str(&format!(
+                                "{} = {{ path = \"{}\" }}\n",
+                                dep_name,
+                                dep_path.display()
+                            ));
+                        }
                         println!(
                             "  {} Added dependency: {} -> {}",
                             cli_output::ICON_INFO.cyan(),
-                            dep,
+                            dep_name,
                             dep_path.display()
                         );
                     }
-                } else {
-                    eprintln!(
-                        "  {} Warning: dependency {} not found at {}",
-                        cli_output::ICON_WARN.yellow(),
-                        dep,
-                        dep_path.display()
-                    );
                 }
-            }
 
-            // Add cargo dependencies from crates.io
-            for pkg in &cargo_packages {
-                if !pkg.features.is_empty() {
-                    // With features
-                    if let Some(ref version) = pkg.version {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ version = \"{}\", features = [{}] }}\n",
-                            pkg.name,
-                            version,
-                            pkg.features
-                                .iter()
-                                .map(|f| format!("\"{}\"", f))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    } else {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ version = \"*\", features = [{}] }}\n",
-                            pkg.name,
-                            pkg.features
-                                .iter()
-                                .map(|f| format!("\"{}\"", f))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                        eprintln!(
-                            "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                            cli_output::ICON_WARN.yellow(),
-                            pkg.name
-                        );
-                    }
-                    println!(
-                        "  {} Added crates.io dependency: {} (features: {})",
-                        cli_output::ICON_INFO.cyan(),
-                        pkg.name,
-                        pkg.features.join(", ")
-                    );
-                } else if let Some(ref version) = pkg.version {
-                    cargo_toml.push_str(&format!("{} = \"{}\"\n", pkg.name, version));
-                    println!(
-                        "  {} Added crates.io dependency: {}@{}",
-                        cli_output::ICON_INFO.cyan(),
-                        pkg.name,
-                        version
-                    );
-                } else {
-                    cargo_toml.push_str(&format!("{} = \"*\"\n", pkg.name));
-                    eprintln!(
-                        "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                        cli_output::ICON_WARN.yellow(),
-                        pkg.name
-                    );
-                    eprintln!("     Example: add '{}' to [dependencies] in horus.toml", pkg.name);
-                    println!(
-                        "  {} Added crates.io dependency: {}",
-                        cli_output::ICON_INFO.cyan(),
-                        pkg.name
-                    );
-                }
-            }
-
-            // Add path dependencies
-            for (pkg_name, pkg_path) in &path_deps {
-                // Convert relative path from current directory to relative from .horus/
-                let full_path = PathBuf::from("..").join(pkg_path);
-                cargo_toml.push_str(&format!(
-                    "{} = {{ path = \"{}\" }}\n",
-                    pkg_name,
-                    full_path.display()
-                ));
+                fs::write(&cargo_toml_path, &cargo_toml)?;
                 println!(
-                    "  {} Added path dependency: {} -> {}",
-                    "\u{2713}".cyan(),
-                    pkg_name,
-                    pkg_path
+                    "  {} Generated Cargo.toml (no source copying needed)",
+                    cli_output::ICON_SUCCESS.green()
                 );
-            }
 
-            // Add git dependencies (clone to cache, then use as path dependencies)
-            if !git_deps.is_empty() {
-                println!("{} Resolving git dependencies...", "\u{1f4e6}".cyan());
-                let resolved_git_deps = install::resolve_git_dependencies(&git_deps)?;
-                for (pkg_name, pkg_path) in &resolved_git_deps {
-                    cargo_toml.push_str(&format!(
-                        "{} = {{ path = \"{}\" }}\n",
-                        pkg_name,
-                        pkg_path.display()
-                    ));
-                    println!(
-                        "  {} Added git dependency: {} -> {}",
-                        "\u{2713}".green(),
-                        pkg_name,
-                        pkg_path.display()
+                // Run cargo build in .horus directory
+                let spinner = progress::robot_build_spinner("Building with cargo...");
+                let mut cmd = Command::new("cargo");
+                cmd.arg("build");
+                cmd.current_dir(".horus");
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
+
+                if release {
+                    cmd.arg("--release");
+                }
+
+                if let Some(features) = features::get_all_cargo_features() {
+                    cmd.arg("--features").arg(&features);
+                    eprintln!(
+                        "  {} Auto-enabling features: {}",
+                        "\u{f0cb1}".cyan(),
+                        features.green()
                     );
                 }
-            }
 
-            // Also add dependencies from horus.toml (in case some weren't parsed by resolve_dependencies)
-            let added_cargo_deps: HashSet<String> =
-                cargo_packages.iter().map(|pkg| pkg.name.clone()).collect();
-
-            if let Some(ref m) = manifest {
-                deps::append_manifest_cargo_deps(&mut cargo_toml, m, &added_cargo_deps);
-            }
-
-            fs::write(&cargo_toml_path, cargo_toml)?;
-            println!(
-                "  {} Generated Cargo.toml (no source copying needed)",
-                cli_output::ICON_SUCCESS.green()
-            );
-
-            // Run cargo build in .horus directory
-            let spinner = progress::robot_build_spinner("Building with cargo...");
-            let mut cmd = Command::new("cargo");
-            cmd.arg("build");
-            cmd.current_dir(".horus");
-            // Capture output to avoid mixing with spinner
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-
-            if release {
-                cmd.arg("--release");
-            }
-
-            // Add features from drivers and enable configuration
-            if let Some(features) = features::get_all_cargo_features() {
-                cmd.arg("--features").arg(&features);
-                eprintln!(
-                    "  {} Auto-enabling features: {}",
-                    "\u{f0cb1}".cyan(),
-                    features.green()
-                );
-            }
-
-            let output = cmd.output()?;
-            if !output.status.success() {
-                finish_error(&spinner, "Cargo build failed");
-                // Print captured error output
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.is_empty() {
-                    eprintln!("{}", stderr);
+                let output = cmd.output()?;
+                if !output.status.success() {
+                    finish_error(&spinner, "Cargo build failed");
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.is_empty() {
+                        eprintln!("{}", stderr);
+                    }
+                    bail!("Cargo build failed");
                 }
-                bail!("Cargo build failed");
+
+                let profile = if release { "release" } else { "debug" };
+                let binary_path = format!(".horus/target/{}/horus-project", profile);
+
+                finish_success(&spinner, &format!("Built: {}", binary_path));
             }
-
-            let profile = if release { "release" } else { "debug" };
-            let binary_path = format!(".horus/target/{}/horus-project", profile);
-
-            finish_success(&spinner, &format!("Built: {}", binary_path));
         }
         _ => bail!("Unsupported language: {}", language),
     }
@@ -610,12 +505,7 @@ path = "{}"
         ));
     }
 
-    // Add dependencies from horus.toml
-    if Path::new(HORUS_TOML).exists() {
-        if let Ok((m, _)) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
-            deps::append_manifest_cargo_deps(&mut cargo_toml, &m, &HashSet::new());
-        }
-    }
+    // Dependencies now live in native build files (Cargo.toml) — no horus.toml bridge needed.
 
     // Write the unified Cargo.toml
     fs::write(&cargo_toml_path, cargo_toml)?;
@@ -756,12 +646,7 @@ path = "{}"
                 ));
             }
 
-            // Add dependencies from horus.toml
-            if Path::new(HORUS_TOML).exists() {
-                if let Ok((m, _)) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
-                    deps::append_manifest_cargo_deps(&mut cargo_toml, &m, &HashSet::new());
-                }
-            }
+            // Dependencies now live in native build files (Cargo.toml) — no horus.toml bridge needed.
 
             fs::write(&cargo_toml_path, cargo_toml)?;
 
@@ -823,43 +708,83 @@ pub(super) fn execute_with_scheduler(
 ) -> Result<()> {
     match language.as_str() {
         "rust" => {
-            // Use Cargo-based compilation (same as horus.toml path)
-            println!(
-                "{} Setting up Cargo workspace...",
-                cli_output::ICON_INFO.cyan()
-            );
+            // If a root Cargo.toml exists, build directly from the project root
+            // with CARGO_TARGET_DIR=.horus/target. Dependencies live in Cargo.toml.
+            if Path::new(CARGO_TOML).exists() {
+                println!(
+                    "{} Building from root Cargo.toml...",
+                    cli_output::ICON_INFO.cyan()
+                );
 
-            // Parse horus.toml to get dependencies
-            let manifest = if Path::new(HORUS_TOML).exists() {
-                HorusManifest::load_from(Path::new(HORUS_TOML)).ok().map(|(m, _)| m)
+                // Run cargo clean if requested
+                if clean {
+                    println!(
+                        "{} Cleaning build artifacts...",
+                        cli_output::ICON_INFO.cyan()
+                    );
+                    let mut clean_cmd = Command::new("cargo");
+                    clean_cmd.arg("clean");
+                    clean_cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                    clean_cmd.envs(child_env.iter().cloned());
+                    let status = clean_cmd.status()?;
+                    if !status.success() {
+                        log::warn!("cargo clean failed");
+                    }
+                }
+
+                println!("{} Building with Cargo...", cli_output::ICON_INFO.cyan());
+                let mut cmd = Command::new("cargo");
+                cmd.arg("build");
+                cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                cmd.envs(child_env.iter().cloned());
+                if release {
+                    cmd.arg("--release");
+                }
+
+                if let Some(features) = features::get_all_cargo_features() {
+                    cmd.arg("--features").arg(&features);
+                    println!(
+                        "  {} Auto-enabling features: {}",
+                        "\u{f0cb1}".cyan(),
+                        features.green()
+                    );
+                }
+
+                log::debug!("cargo build command: {:?}", cmd);
+
+                let status = cmd.status()?;
+                if !status.success() {
+                    bail!("Cargo build failed");
+                }
+
+                let profile = if release { "release" } else { "debug" };
+                let project_name = get_project_name()?;
+                let binary_path = format!(".horus/target/{}/{}", profile, project_name);
+
+                // Execute the binary
+                println!("{} Executing...\n", cli_output::ICON_INFO.cyan());
+                let mut cmd = Command::new(binary_path);
+                cmd.args(args);
+                cmd.envs(child_env.iter().cloned());
+
+                let status = cmd.status()?;
+
+                if !status.success() {
+                    bail!("Process exited with code {}", status.code().unwrap_or(1));
+                }
             } else {
-                None
-            };
-            let dep_set = manifest.as_ref()
-                .map(deps::manifest_deps_to_string_set)
-                .unwrap_or_default();
-            let (horus_deps, cargo_packages, path_deps, git_deps) = {
-                let (horus_pkgs, _pip_pkgs, cargo_pkgs, path_pkgs, git_pkgs) =
-                    deps::split_dependencies_with_path_context(dep_set, Some("rust"));
-                (horus_pkgs, cargo_pkgs, path_pkgs, git_pkgs)
-            };
+                // No root Cargo.toml — generate a minimal .horus/Cargo.toml
+                // for standalone .rs file compilation.
+                println!(
+                    "{} Setting up Cargo workspace for standalone file...",
+                    cli_output::ICON_INFO.cyan()
+                );
 
-            // Find HORUS source directory
-            let horus_source = find_horus_source_dir()?;
-            println!(
-                "  {} Using HORUS source: {}",
-                cli_output::ICON_INFO.cyan(),
-                horus_source.display()
-            );
+                let cargo_toml_path = PathBuf::from(".horus/Cargo.toml");
+                let source_relative_path = format!("../{}", file.display());
 
-            // Generate Cargo.toml in .horus/ that references the source file
-            let cargo_toml_path = PathBuf::from(".horus/Cargo.toml");
-
-            // Get relative path from .horus/ to the source file
-            let source_relative_path = format!("../{}", file.display());
-
-            let mut cargo_toml = format!(
-                r#"[package]
+                let mut cargo_toml = format!(
+                    r#"[package]
 name = "horus-project"
 version = "0.1.9"
 edition = "2021"
@@ -873,260 +798,131 @@ path = "{}"
 
 [dependencies]
 "#,
-                source_relative_path
-            );
-
-            // Auto-detect nodes and required features
-            use crate::node_detector;
-            let auto_features = node_detector::detect_features_from_file(&file).unwrap_or_default();
-            if !auto_features.is_empty() {
-                eprintln!(
-                    "  {} Auto-detected hardware nodes (features: {})",
-                    cli_output::ICON_INFO.cyan(),
-                    auto_features.join(", ").yellow()
+                    source_relative_path
                 );
 
-                // Check system dependencies for detected features
-                use crate::system_deps;
-                let dep_result = system_deps::check_dependencies(&auto_features);
-                let report = system_deps::format_dependency_report(&dep_result, &auto_features);
-                if !report.is_empty() {
-                    eprintln!("{}", report);
+                // Auto-detect nodes and required features
+                use crate::node_detector;
+                let auto_features =
+                    node_detector::detect_features_from_file(&file).unwrap_or_default();
+                if !auto_features.is_empty() {
+                    eprintln!(
+                        "  {} Auto-detected hardware nodes (features: {})",
+                        cli_output::ICON_INFO.cyan(),
+                        auto_features.join(", ").yellow()
+                    );
+
+                    use crate::system_deps;
+                    let dep_result = system_deps::check_dependencies(&auto_features);
+                    let report = system_deps::format_dependency_report(&dep_result, &auto_features);
+                    if !report.is_empty() {
+                        eprintln!("{}", report);
+                    }
                 }
-            }
 
-            // Add HORUS dependencies from horus.toml or defaults
-            let horus_packages_to_add = if !horus_deps.is_empty() {
-                horus_deps
-            } else {
-                // Default HORUS packages if no horus.toml
-                vec!["horus".to_string(), "horus_library".to_string()]
-            };
+                // Find HORUS source directory and add core path deps
+                let horus_source = find_horus_source_dir()?;
+                println!(
+                    "  {} Using HORUS source: {}",
+                    cli_output::ICON_INFO.cyan(),
+                    horus_source.display()
+                );
 
-            for dep in &horus_packages_to_add {
-                // Strip version from dependency name for path lookup
-                let dep_name = if let Some(at_pos) = dep.find('@') {
-                    &dep[..at_pos]
-                } else {
-                    dep.as_str()
-                };
-
-                let dep_path = horus_source.join(dep_name);
-                if dep_path.exists() && dep_path.join(CARGO_TOML).exists() {
-                    // Auto-inject features for horus or horus_library
-                    if (dep_name == "horus" || dep_name == "horus_library")
-                        && !auto_features.is_empty()
-                    {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ path = \"{}\", features = [{}] }}\n",
-                            dep_name,
-                            dep_path.display(),
-                            auto_features
-                                .iter()
-                                .map(|f| format!("\"{}\"", f))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                        println!(
-                            "  {} Added dependency: {} -> {} (auto-features: {})",
-                            cli_output::ICON_INFO.cyan(),
-                            dep,
-                            dep_path.display(),
-                            auto_features.join(", ").yellow()
-                        );
-                    } else {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ path = \"{}\" }}\n",
-                            dep_name,
-                            dep_path.display()
-                        ));
+                for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
+                    let dep_path = horus_source.join(dep_name);
+                    if dep_path.exists() && dep_path.join(CARGO_TOML).exists() {
+                        if (*dep_name == "horus" || *dep_name == "horus_library")
+                            && !auto_features.is_empty()
+                        {
+                            cargo_toml.push_str(&format!(
+                                "{} = {{ path = \"{}\", features = [{}] }}\n",
+                                dep_name,
+                                dep_path.display(),
+                                auto_features
+                                    .iter()
+                                    .map(|f| format!("\"{}\"", f))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        } else {
+                            cargo_toml.push_str(&format!(
+                                "{} = {{ path = \"{}\" }}\n",
+                                dep_name,
+                                dep_path.display()
+                            ));
+                        }
                         println!(
                             "  {} Added dependency: {} -> {}",
                             cli_output::ICON_INFO.cyan(),
-                            dep,
+                            dep_name,
                             dep_path.display()
                         );
                     }
-                } else {
-                    eprintln!(
-                        "  {} Warning: dependency {} not found at {}",
-                        cli_output::ICON_WARN.yellow(),
-                        dep,
-                        dep_path.display()
-                    );
                 }
-            }
 
-            // Add cargo dependencies from crates.io
-            for pkg in &cargo_packages {
-                if !pkg.features.is_empty() {
-                    // With features
-                    if let Some(ref version) = pkg.version {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ version = \"{}\", features = [{}] }}\n",
-                            pkg.name,
-                            version,
-                            pkg.features
-                                .iter()
-                                .map(|f| format!("\"{}\"", f))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    } else {
-                        cargo_toml.push_str(&format!(
-                            "{} = {{ version = \"*\", features = [{}] }}\n",
-                            pkg.name,
-                            pkg.features
-                                .iter()
-                                .map(|f| format!("\"{}\"", f))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                        eprintln!(
-                            "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                            cli_output::ICON_WARN.yellow(),
-                            pkg.name
-                        );
+                fs::write(&cargo_toml_path, &cargo_toml)?;
+                println!(
+                    "  {} Generated Cargo.toml",
+                    cli_output::ICON_SUCCESS.green()
+                );
+
+                // Run cargo clean if requested
+                if clean {
+                    println!(
+                        "{} Cleaning build artifacts...",
+                        cli_output::ICON_INFO.cyan()
+                    );
+                    let mut clean_cmd = Command::new("cargo");
+                    clean_cmd.arg("clean");
+                    clean_cmd.current_dir(".horus");
+                    let status = clean_cmd.status()?;
+                    if !status.success() {
+                        log::warn!("cargo clean failed");
                     }
+                }
+
+                println!("{} Building with Cargo...", cli_output::ICON_INFO.cyan());
+                let mut cmd = Command::new("cargo");
+                cmd.arg("build");
+                cmd.current_dir(".horus");
+                cmd.envs(child_env.iter().cloned());
+                if release {
+                    cmd.arg("--release");
+                }
+
+                if let Some(features) = features::get_all_cargo_features() {
+                    cmd.arg("--features").arg(&features);
                     println!(
-                        "  {} Added crates.io dependency: {} (features: {})",
-                        cli_output::ICON_INFO.cyan(),
-                        pkg.name,
-                        pkg.features.join(", ")
-                    );
-                } else if let Some(ref version) = pkg.version {
-                    cargo_toml.push_str(&format!("{} = \"{}\"\n", pkg.name, version));
-                    println!(
-                        "  {} Added crates.io dependency: {}@{}",
-                        cli_output::ICON_INFO.cyan(),
-                        pkg.name,
-                        version
-                    );
-                } else {
-                    cargo_toml.push_str(&format!("{} = \"*\"\n", pkg.name));
-                    eprintln!(
-                        "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                        cli_output::ICON_WARN.yellow(),
-                        pkg.name
-                    );
-                    eprintln!("     Example: add '{}' to [dependencies] in horus.toml", pkg.name);
-                    println!(
-                        "  {} Added crates.io dependency: {}",
-                        cli_output::ICON_INFO.cyan(),
-                        pkg.name
+                        "  {} Auto-enabling features: {}",
+                        "\u{f0cb1}".cyan(),
+                        features.green()
                     );
                 }
-            }
 
-            // Add path dependencies
-            for (pkg_name, pkg_path) in &path_deps {
-                // Convert relative path from current directory to relative from .horus/
-                let full_path = PathBuf::from("..").join(pkg_path);
-                cargo_toml.push_str(&format!(
-                    "{} = {{ path = \"{}\" }}\n",
-                    pkg_name,
-                    full_path.display()
-                ));
-                println!(
-                    "  {} Added path dependency: {} -> {}",
-                    "\u{2713}".cyan(),
-                    pkg_name,
-                    pkg_path
-                );
-            }
+                log::debug!("cargo build command: {:?}", cmd);
 
-            // Add git dependencies (clone to cache, then use as path dependencies)
-            if !git_deps.is_empty() {
-                println!("{} Resolving git dependencies...", "\u{1f4e6}".cyan());
-                let resolved_git_deps = install::resolve_git_dependencies(&git_deps)?;
-                for (pkg_name, pkg_path) in &resolved_git_deps {
-                    cargo_toml.push_str(&format!(
-                        "{} = {{ path = \"{}\" }}\n",
-                        pkg_name,
-                        pkg_path.display()
-                    ));
-                    println!(
-                        "  {} Added git dependency: {} -> {}",
-                        "\u{2713}".green(),
-                        pkg_name,
-                        pkg_path.display()
-                    );
-                }
-            }
-
-            // Also add dependencies from horus.toml (in case some weren't parsed by resolve_dependencies)
-            let added_cargo_deps: HashSet<String> =
-                cargo_packages.iter().map(|pkg| pkg.name.clone()).collect();
-
-            if let Some(ref m) = manifest {
-                deps::append_manifest_cargo_deps(&mut cargo_toml, m, &added_cargo_deps);
-            }
-
-            fs::write(&cargo_toml_path, cargo_toml)?;
-            println!(
-                "  {} Generated Cargo.toml",
-                cli_output::ICON_SUCCESS.green()
-            );
-
-            // Run cargo clean if requested
-            if clean {
-                println!(
-                    "{} Cleaning build artifacts...",
-                    cli_output::ICON_INFO.cyan()
-                );
-                let mut clean_cmd = Command::new("cargo");
-                clean_cmd.arg("clean");
-                clean_cmd.current_dir(".horus");
-                let status = clean_cmd.status()?;
+                let status = cmd.status()?;
                 if !status.success() {
-                    log::warn!("cargo clean failed");
+                    bail!("Cargo build failed");
                 }
-            }
 
-            // Run cargo build in .horus directory
-            println!("{} Building with Cargo...", cli_output::ICON_INFO.cyan());
-            let mut cmd = Command::new("cargo");
-            cmd.arg("build");
-            cmd.current_dir(".horus");
-            cmd.envs(child_env.iter().cloned());
-            if release {
-                cmd.arg("--release");
-            }
+                let binary_path = if release {
+                    ".horus/target/release/horus-project"
+                } else {
+                    ".horus/target/debug/horus-project"
+                };
 
-            // Add features from drivers and enable configuration
-            if let Some(features) = features::get_all_cargo_features() {
-                cmd.arg("--features").arg(&features);
-                println!(
-                    "  {} Auto-enabling features: {}",
-                    "\u{f0cb1}".cyan(),
-                    features.green()
-                );
-            }
+                // Execute the binary
+                println!("{} Executing...\n", cli_output::ICON_INFO.cyan());
+                let mut cmd = Command::new(binary_path);
+                cmd.args(args);
+                cmd.envs(child_env.iter().cloned());
 
-            log::debug!("cargo build command: {:?}", cmd);
+                let status = cmd.status()?;
 
-            let status = cmd.status()?;
-            if !status.success() {
-                bail!("Cargo build failed");
-            }
-
-            // Determine binary path
-            let binary_path = if release {
-                ".horus/target/release/horus-project"
-            } else {
-                ".horus/target/debug/horus-project"
-            };
-
-            // Execute the binary
-            println!("{} Executing...\n", cli_output::ICON_INFO.cyan());
-            let mut cmd = Command::new(binary_path);
-            cmd.args(args);
-            cmd.envs(child_env.iter().cloned());
-
-            let status = cmd.status()?;
-
-            if !status.success() {
-                bail!("Process exited with code {}", status.code().unwrap_or(1));
+                if !status.success() {
+                    bail!("Process exited with code {}", status.code().unwrap_or(1));
+                }
             }
         }
         "python" => {
