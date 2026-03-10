@@ -1378,8 +1378,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         unsafe { (*self.recv_fn.get())(self) }
     }
 
-
-
     /// Periodic migration check — reads migration_epoch from SHM header.
     ///
     /// Uses `self.header_ptr` (stable pointer to the SHM TopicHeader) instead

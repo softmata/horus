@@ -8347,7 +8347,7 @@ fn dispatch_complex_struct_roundtrip() {
     let state = RobotState {
         x: 1.5,
         y: -2.7,
-        theta: 3.14159,
+        theta: std::f64::consts::PI,
         velocities: vec![0.1, 0.2, 0.3],
         label: "base_link".to_string(),
     };
@@ -10218,7 +10218,7 @@ fn bincode_field_type_change_produces_wrong_data() {
         value: u32,
     }
 
-    let original = MsgF64 { value: 3.14 };
+    let original = MsgF64 { value: 3.125 };
     let bytes = bincode::serialize(&original).unwrap();
 
     // f64 is 8 bytes, u32 is 4 bytes — different sizes

@@ -176,6 +176,7 @@ fn stress_max_frames_exhaustion() {
     let config = HFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
+        .enable_overflow(false)
         .build()
         .unwrap();
     let hf = HFrame::with_config(config);
@@ -254,6 +255,7 @@ fn stress_mixed_static_dynamic_at_capacity() {
         .max_frames(16)
         .max_static_frames(8)
         .history_len(4)
+        .enable_overflow(false)
         .build()
         .unwrap();
     let hf = HFrame::with_config(config);

@@ -112,3 +112,5 @@ serde_json.workspace = true
 axum = { version = "0.7", features = ["ws"] }
 horus_core = { path = "../horus_core" }
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+futures-util = "0.3"
+tokio-tungstenite = "0.26"

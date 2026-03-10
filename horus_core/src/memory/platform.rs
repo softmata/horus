@@ -31,8 +31,8 @@ fn sanitize_namespace(ns: &str) -> String {
 /// Priority:
 /// 1. `HORUS_NAMESPACE` — set by `horus_manager` when it launches a node graph.
 /// 2. `HORUS_SHM_NAMESPACE` — legacy name, kept for backward compatibility.
-/// 3. Auto-generated from process-group ID + user ID on Unix
-///    (`pgid{PGID}_uid{UID}`), or from the process ID on non-Unix platforms
+/// 3. Auto-generated from session ID + user ID on Unix
+///    (`sid{SID}_uid{UID}`), or from the process ID on non-Unix platforms
 ///    (`pid{PID}`).  This ensures that independent HORUS applications running
 ///    on the same machine automatically use different SHM regions without any
 ///    explicit configuration.
@@ -220,17 +220,28 @@ pub fn shm_parent_dir() -> PathBuf {
     }
 }
 
-/// Parse a HORUS auto-generated namespace directory name.
+/// Parse a HORUS auto-generated namespace directory name (legacy PGID format).
 ///
 /// Returns `Some((pgid, uid))` for names matching `horus_pgid{N}_uid{N}`.
-/// Returns `None` for custom namespaces (e.g. `horus_my_robot`) which are
-/// never auto-cleaned.
+/// Returns `None` for other formats.
 pub fn parse_namespace_pgid(dir_name: &str) -> Option<(i32, u32)> {
     let suffix = dir_name.strip_prefix("horus_pgid")?;
     let (pgid_str, rest) = suffix.split_once("_uid")?;
     let pgid: i32 = pgid_str.parse().ok()?;
     let uid: u32 = rest.parse().ok()?;
     Some((pgid, uid))
+}
+
+/// Parse a HORUS auto-generated namespace directory name (SID format).
+///
+/// Returns `Some((sid, uid))` for names matching `horus_sid{N}_uid{N}`.
+/// Returns `None` for other formats.
+pub fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
+    let suffix = dir_name.strip_prefix("horus_sid")?;
+    let (sid_str, rest) = suffix.split_once("_uid")?;
+    let sid: i32 = sid_str.parse().ok()?;
+    let uid: u32 = rest.parse().ok()?;
+    Some((sid, uid))
 }
 
 /// Check whether any process in the given process group is still alive.
@@ -257,6 +268,28 @@ pub fn process_group_alive(pgid: i32) -> bool {
 pub fn process_group_alive(_pgid: i32) -> bool {
     // On non-Unix platforms, we can't check process groups.
     // Conservatively assume alive to avoid deleting active namespaces.
+    true
+}
+
+/// Check whether a session (by session leader PID) is still alive.
+///
+/// Uses `kill(sid, 0)` to check if the session leader process exists.
+#[cfg(unix)]
+pub fn session_alive(sid: i32) -> bool {
+    if sid <= 0 {
+        return false;
+    }
+    // SAFETY: kill with signal 0 checks existence without sending a signal.
+    let ret = unsafe { libc::kill(sid, 0) };
+    if ret == 0 {
+        return true;
+    }
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    errno == libc::EPERM
+}
+
+#[cfg(not(unix))]
+pub fn session_alive(_sid: i32) -> bool {
     true
 }
 
@@ -295,9 +328,9 @@ pub struct NamespaceInfo {
 /// Scan the SHM parent directory and remove stale HORUS namespace directories.
 ///
 /// A namespace is considered stale when:
-/// 1. Its name matches `horus_pgid{N}_uid{N}` (auto-generated, not custom)
+/// 1. Its name matches `horus_sid{N}_uid{N}` or `horus_pgid{N}_uid{N}` (auto-generated, not custom)
 /// 2. Its UID matches the current user (we never touch other users' dirs)
-/// 3. Its process group is no longer alive
+/// 3. Its session/process group is no longer alive
 /// 4. It's not the current process's namespace
 ///
 /// This is safe to call at any time. It only removes directories that belong
@@ -336,8 +369,8 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
     for entry in entries.flatten() {
         let dir_name = entry.file_name().to_string_lossy().to_string();
 
-        // Only look at horus_pgid* directories
-        if !dir_name.starts_with("horus_pgid") {
+        // Only look at auto-generated horus_sid* or legacy horus_pgid* directories
+        if !dir_name.starts_with("horus_sid") && !dir_name.starts_with("horus_pgid") {
             continue;
         }
 
@@ -347,13 +380,14 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
             continue;
         }
 
-        // Parse PGID and UID from the directory name
-        let (pgid, uid) = match parse_namespace_pgid(&dir_name) {
-            Some(parsed) => parsed,
-            None => {
-                result.skipped += 1;
-                continue;
-            }
+        // Parse ID and UID from the directory name (try SID first, then legacy PGID)
+        let (uid, alive) = if let Some((sid, uid)) = parse_namespace_sid(&dir_name) {
+            (uid, session_alive(sid))
+        } else if let Some((pgid, uid)) = parse_namespace_pgid(&dir_name) {
+            (uid, process_group_alive(pgid))
+        } else {
+            result.skipped += 1;
+            continue;
         };
 
         // Only clean our own user's directories
@@ -362,8 +396,8 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
             continue;
         }
 
-        // Check if the process group is still alive
-        if process_group_alive(pgid) {
+        // Check if the session/process group is still alive
+        if alive {
             result.skipped += 1;
             continue;
         }
@@ -431,9 +465,12 @@ pub fn list_all_horus_namespaces() -> Vec<NamespaceInfo> {
             continue;
         }
 
-        let (pgid, uid, alive) = match parse_namespace_pgid(&dir_name) {
-            Some((pgid, _uid)) => (Some(pgid), Some(_uid), process_group_alive(pgid)),
-            None => (None, None, true), // Custom namespaces assumed alive
+        let (pgid, uid, alive) = if let Some((sid, uid)) = parse_namespace_sid(&dir_name) {
+            (Some(sid), Some(uid), session_alive(sid))
+        } else if let Some((pgid, uid)) = parse_namespace_pgid(&dir_name) {
+            (Some(pgid), Some(uid), process_group_alive(pgid))
+        } else {
+            (None, None, true) // Custom namespaces assumed alive
         };
 
         let size_bytes = dir_size_bytes(&path);
@@ -649,11 +686,11 @@ mod tests {
         }
 
         assert!(!ns.is_empty(), "auto-generated namespace must not be empty");
-        // On Unix the format is "pgid<N>_uid<N>"; on non-Unix it's "pid<N>".
+        // On Unix the format is "sid<N>_uid<N>"; on non-Unix it's "pid<N>".
         #[cfg(unix)]
         assert!(
-            ns.starts_with("pgid"),
-            "auto-generated Unix namespace must start with 'pgid', got '{}'",
+            ns.starts_with("sid"),
+            "auto-generated Unix namespace must start with 'sid', got '{}'",
             ns
         );
         #[cfg(not(unix))]

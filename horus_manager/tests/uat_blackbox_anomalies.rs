@@ -95,6 +95,16 @@ fn build_test_events() -> Vec<BlackBoxRecord> {
                 severity: Severity::Permanent,
             },
         },
+        // Another normal tick
+        BlackBoxRecord {
+            timestamp_us: 5000,
+            tick: 5,
+            event: BlackBoxEvent::NodeTick {
+                name: "motor_node".to_string(),
+                duration_us: 280,
+                success: true,
+            },
+        },
         // More normal ticks
         BlackBoxRecord {
             timestamp_us: 6000,

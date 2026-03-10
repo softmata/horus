@@ -216,13 +216,13 @@ fn test_failure_policies_enabled_by_default() {
     let status = scheduler.status();
 
     assert!(
-        status.contains("Failure Policies"),
-        "status() should mention Failure Policies: {}",
+        status.contains("Error Handling"),
+        "status() should mention Error Handling: {}",
         status
     );
     assert!(
-        status.contains("[x] Failure Policies"),
-        "status() should show Failure Policies as enabled: {}",
+        status.contains("[x] Error Handling"),
+        "status() should show Error Handling as enabled: {}",
         status
     );
 }

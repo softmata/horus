@@ -202,8 +202,8 @@ fn cross_process_image_roundtrip() {
 
     // Send a dummy to register as producer
     {
-        let dummy = Image::new(IMAGE_WIDTH, IMAGE_HEIGHT, ImageEncoding::Rgb8)
-            .expect("parent: Image::new");
+        let dummy =
+            Image::new(IMAGE_WIDTH, IMAGE_HEIGHT, ImageEncoding::Rgb8).expect("parent: Image::new");
         topic.send(&dummy);
     }
 
@@ -285,8 +285,8 @@ fn cross_process_image_stress() {
 
     // Register as producer
     {
-        let dummy = Image::new(IMAGE_WIDTH, IMAGE_HEIGHT, ImageEncoding::Rgb8)
-            .expect("parent: Image::new");
+        let dummy =
+            Image::new(IMAGE_WIDTH, IMAGE_HEIGHT, ImageEncoding::Rgb8).expect("parent: Image::new");
         topic.send(&dummy);
     }
 
@@ -320,7 +320,12 @@ fn cross_process_image_stress() {
         eprintln!(
             "Child reported {} errors (first 5):\n{}",
             errors.len(),
-            errors.iter().take(5).cloned().collect::<Vec<_>>().join("\n")
+            errors
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 
@@ -355,17 +360,12 @@ fn cross_process_two_schedulers_image() {
 
     // Register
     {
-        let dummy =
-            Image::new(IMAGE_WIDTH, IMAGE_HEIGHT, ImageEncoding::Rgb8).expect("Image::new");
+        let dummy = Image::new(IMAGE_WIDTH, IMAGE_HEIGHT, ImageEncoding::Rgb8).expect("Image::new");
         topic.send(&dummy);
     }
 
     // Spawn scheduler 2 (subscriber) as separate process
-    let child = spawn_child(
-        "cross_process_two_schedulers_image",
-        &topic_name,
-        msg_count,
-    );
+    let child = spawn_child("cross_process_two_schedulers_image", &topic_name, msg_count);
 
     // Wait for cross-process detection and migration
     std::thread::sleep(Duration::from_millis(2000));
