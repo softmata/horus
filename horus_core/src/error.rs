@@ -1086,7 +1086,7 @@ impl HorusError {
 /// use horus::prelude::*;
 ///
 /// let config = RetryConfig::new(3, Duration::from_millis(10));
-/// let result = retry_transient(&config, || hframe.tf("camera", "base"));
+/// let result = retry_transient(&config, || tf.tf("camera", "base"));
 /// ```
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -1148,7 +1148,7 @@ impl Default for RetryConfig {
 ///
 /// // Retry stale transform lookups with default config
 /// let tf = retry_transient(&RetryConfig::default(), || {
-///     hframe.tf("camera", "base")
+///     tf.tf("camera", "base")
 /// })?;
 ///
 /// // Custom retry: 5 attempts, 50ms initial backoff
@@ -1475,7 +1475,7 @@ mod tests {
         assert!(msg.contains("abc"), "Display: {}", msg);
     }
 
-    /// Transform::Extrapolation for HFrame time-range violations.
+    /// Transform::Extrapolation for TransformFrame time-range violations.
     #[test]
     fn variant_extrapolation() {
         let err = HorusError::Transform(TransformError::Extrapolation {

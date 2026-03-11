@@ -1,7 +1,7 @@
-//! HFrame Benchmarks
+//! TransformFrame Benchmarks
 //!
-//! Simple benchmarks to measure HFrame performance.
-//! Run with: cargo test --release -p horus_library hframe_benchmark -- --nocapture --ignored
+//! Simple benchmarks to measure TransformFrame performance.
+//! Run with: cargo test --release -p horus_library transform_frame_benchmark -- --nocapture --ignored
 
 use super::*;
 use std::time::Instant;
@@ -12,8 +12,8 @@ const ITERATIONS: u64 = 100_000;
 /// Benchmark transform lookup by ID
 #[test]
 #[ignore]
-fn hframe_benchmark_lookup_by_id() {
-    let hf = HFrame::new();
+fn transform_frame_benchmark_lookup_by_id() {
+    let hf = TransformFrame::new();
 
     // Setup: create a chain of frames
     let world = hf.register_frame("world", None).unwrap();
@@ -39,7 +39,7 @@ fn hframe_benchmark_lookup_by_id() {
     let elapsed = start.elapsed();
 
     let ns_per_op = elapsed.as_nanos() / ITERATIONS as u128;
-    println!("HFrame lookup by ID (depth 2): {} ns/op", ns_per_op);
+    println!("TransformFrame lookup by ID (depth 2): {} ns/op", ns_per_op);
     println!("  Total time: {:?} for {} ops", elapsed, ITERATIONS);
     println!(
         "  Throughput: {:.2} M ops/sec",
@@ -50,8 +50,8 @@ fn hframe_benchmark_lookup_by_id() {
 /// Benchmark transform lookup by name
 #[test]
 #[ignore]
-fn hframe_benchmark_lookup_by_name() {
-    let hf = HFrame::new();
+fn transform_frame_benchmark_lookup_by_name() {
+    let hf = TransformFrame::new();
 
     // Setup
     hf.register_frame("world", None).unwrap();
@@ -84,7 +84,7 @@ fn hframe_benchmark_lookup_by_name() {
     let elapsed = start.elapsed();
 
     let ns_per_op = elapsed.as_nanos() / ITERATIONS as u128;
-    println!("HFrame lookup by name (depth 2): {} ns/op", ns_per_op);
+    println!("TransformFrame lookup by name (depth 2): {} ns/op", ns_per_op);
     println!("  Total time: {:?} for {} ops", elapsed, ITERATIONS);
     println!(
         "  Throughput: {:.2} M ops/sec",
@@ -95,8 +95,8 @@ fn hframe_benchmark_lookup_by_name() {
 /// Benchmark transform update
 #[test]
 #[ignore]
-fn hframe_benchmark_update() {
-    let hf = HFrame::new();
+fn transform_frame_benchmark_update() {
+    let hf = TransformFrame::new();
 
     // Setup
     hf.register_frame("world", None).unwrap();
@@ -117,7 +117,7 @@ fn hframe_benchmark_update() {
     let elapsed = start.elapsed();
 
     let ns_per_op = elapsed.as_nanos() / ITERATIONS as u128;
-    println!("HFrame update by ID: {} ns/op", ns_per_op);
+    println!("TransformFrame update by ID: {} ns/op", ns_per_op);
     println!("  Total time: {:?} for {} ops", elapsed, ITERATIONS);
     println!(
         "  Throughput: {:.2} M ops/sec",
@@ -128,12 +128,12 @@ fn hframe_benchmark_update() {
 /// Benchmark frame registration
 #[test]
 #[ignore]
-fn hframe_benchmark_register() {
+fn transform_frame_benchmark_register() {
     let count = 200; // Stay within default 256 frame limit
 
     let start = Instant::now();
     for _ in 0..100 {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         for i in 0..count {
             hf.register_frame(&format!("frame_{}", i), Some("world"))
@@ -144,7 +144,7 @@ fn hframe_benchmark_register() {
 
     let total_ops = 100 * (count + 1);
     let ns_per_op = elapsed.as_nanos() / total_ops as u128;
-    println!("HFrame register frame: {} ns/op", ns_per_op);
+    println!("TransformFrame register frame: {} ns/op", ns_per_op);
     println!("  Registered {} frames per iteration", count + 1);
     println!("  Total time: {:?} for {} ops", elapsed, total_ops);
 }
@@ -152,8 +152,8 @@ fn hframe_benchmark_register() {
 /// Benchmark deep chain lookup
 #[test]
 #[ignore]
-fn hframe_benchmark_deep_chain() {
-    let hf = HFrame::new();
+fn transform_frame_benchmark_deep_chain() {
+    let hf = TransformFrame::new();
 
     // Create a deep chain: world -> link_0 -> link_1 -> ... -> link_9
     hf.register_frame("world", None).unwrap();
@@ -183,7 +183,7 @@ fn hframe_benchmark_deep_chain() {
     let elapsed = start.elapsed();
 
     let ns_per_op = elapsed.as_nanos() / ITERATIONS as u128;
-    println!("HFrame lookup by ID (depth 10): {} ns/op", ns_per_op);
+    println!("TransformFrame lookup by ID (depth 10): {} ns/op", ns_per_op);
     println!("  Total time: {:?} for {} ops", elapsed, ITERATIONS);
     println!(
         "  Throughput: {:.2} M ops/sec",
@@ -194,11 +194,11 @@ fn hframe_benchmark_deep_chain() {
 /// Benchmark concurrent reads
 #[test]
 #[ignore]
-fn hframe_benchmark_concurrent_reads() {
+fn transform_frame_benchmark_concurrent_reads() {
     use std::sync::Arc;
     use std::thread;
 
-    let hf = Arc::new(HFrame::new());
+    let hf = Arc::new(TransformFrame::new());
 
     // Setup
     hf.register_frame("world", None).unwrap();
@@ -235,7 +235,7 @@ fn hframe_benchmark_concurrent_reads() {
     let total_ops = num_threads as u64 * ops_per_thread;
     let ns_per_op = elapsed.as_nanos() / total_ops as u128;
     println!(
-        "HFrame concurrent reads ({} threads): {} ns/op",
+        "TransformFrame concurrent reads ({} threads): {} ns/op",
         num_threads, ns_per_op
     );
     println!("  Total time: {:?} for {} ops", elapsed, total_ops);
@@ -248,23 +248,23 @@ fn hframe_benchmark_concurrent_reads() {
 /// Print all benchmark results
 #[test]
 #[ignore]
-fn hframe_benchmark_all() {
+fn transform_frame_benchmark_all() {
     println!("\n========================================");
-    println!("HFrame Performance Benchmarks");
+    println!("TransformFrame Performance Benchmarks");
     println!("========================================\n");
 
     // Re-run all benchmarks
-    hframe_benchmark_update();
+    transform_frame_benchmark_update();
     println!();
-    hframe_benchmark_lookup_by_id();
+    transform_frame_benchmark_lookup_by_id();
     println!();
-    hframe_benchmark_lookup_by_name();
+    transform_frame_benchmark_lookup_by_name();
     println!();
-    hframe_benchmark_deep_chain();
+    transform_frame_benchmark_deep_chain();
     println!();
-    hframe_benchmark_concurrent_reads();
+    transform_frame_benchmark_concurrent_reads();
     println!();
-    hframe_benchmark_register();
+    transform_frame_benchmark_register();
 
     println!("\n========================================");
     println!("Benchmark complete!");

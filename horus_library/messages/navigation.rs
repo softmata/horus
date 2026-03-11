@@ -38,7 +38,7 @@ impl NavGoal {
             timeout_seconds: 0.0,
             priority: 1,
             goal_id: 0,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -143,7 +143,7 @@ impl GoalResult {
             eta_seconds: 0.0,
             progress: 0.0,
             error_message: [0; 64],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -238,7 +238,7 @@ impl NavPath {
     /// Create a new empty path
     pub fn new() -> Self {
         Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         }
     }
@@ -348,7 +348,7 @@ impl OccupancyGrid {
             data: vec![-1; data_size], // Initialize as unknown
             frame_id: [0; 32],
             metadata: [0; 64],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -684,7 +684,7 @@ impl PathPlan {
     /// Create a new empty path plan
     pub fn new() -> Self {
         Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         }
     }

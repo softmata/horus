@@ -61,22 +61,32 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
             serde_json::to_string_pretty(&output).unwrap_or_default()
         );
         if !dry_run {
-            // Actually perform the cleaning
-            if !shm || all {
-                clean_build_cache(false)?;
-            }
-            if shm || all {
-                clean_shared_memory(false, force)?;
-            }
-            if all {
-                clean_horus_cache(false)?;
-            }
+            // Perform cleaning silently — JSON output was already emitted above.
+            // Suppress human-readable print calls from sub-functions.
+            let was_quiet = crate::progress::is_quiet();
+            crate::progress::set_quiet(true);
+            let result = (|| -> HorusResult<()> {
+                if !shm || all {
+                    clean_build_cache(false)?;
+                }
+                if shm || all {
+                    clean_shared_memory(false, force)?;
+                }
+                if all {
+                    clean_horus_cache(false)?;
+                }
+                Ok(())
+            })();
+            crate::progress::set_quiet(was_quiet);
+            result?;
         }
         return Ok(());
     }
 
     cli_output::header("Cleaning HORUS artifacts...");
-    println!();
+    if !crate::progress::is_quiet() {
+        println!();
+    }
 
     let mut cleaned_anything = false;
 
@@ -95,7 +105,9 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
         cleaned_anything |= clean_horus_cache(dry_run)?;
     }
 
-    println!();
+    if !crate::progress::is_quiet() {
+        println!();
+    }
     if cleaned_anything {
         if dry_run {
             cli_output::warn("Would clean the above items. Run without --dry-run to apply.");
@@ -103,7 +115,7 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
             cli_output::success("Clean complete!");
         }
     } else {
-        println!("{} Nothing to clean.", cli_output::ICON_SUCCESS.dimmed());
+        cli_output::info("Nothing to clean.");
     }
 
     Ok(())
@@ -117,27 +129,22 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
         let size = get_dir_size(target_dir);
 
         if dry_run {
-            println!(
-                "  {} Would remove {} ({})",
-                cli_output::ICON_INFO.cyan(),
+            cli_output::info(&format!(
+                "Would remove {} ({})",
                 "target/".white(),
                 format_size(size)
-            );
+            ));
         } else {
-            println!(
-                "  {} Removing {} ({})",
-                cli_output::ICON_INFO.cyan(),
+            cli_output::info(&format!(
+                "Removing {} ({})",
                 "target/".white(),
                 format_size(size)
-            );
+            ));
             std::fs::remove_dir_all(target_dir).map_err(HorusError::Io)?;
         }
         return Ok(true);
     } else {
-        println!(
-            "  {} No target/ directory found",
-            cli_output::ICON_SUCCESS.dimmed()
-        );
+        cli_output::info("No target/ directory found");
     }
 
     Ok(false)
@@ -148,10 +155,7 @@ fn clean_shared_memory(dry_run: bool, force: bool) -> HorusResult<bool> {
     let namespaces = list_all_horus_namespaces();
 
     if namespaces.is_empty() {
-        println!(
-            "  {} No HORUS shared memory namespaces found",
-            cli_output::ICON_SUCCESS.dimmed()
-        );
+        cli_output::info("No HORUS shared memory namespaces found");
         return Ok(false);
     }
 

@@ -1,18 +1,18 @@
-//! HFrame (hf) commands - Interact with HORUS coordinate transform frames
+//! Transform Frame (tf) commands - Interact with HORUS coordinate transform frames
 //!
 //! Provides commands for listing, echoing, and inspecting transform frames.
 //! HORUS equivalent to ROS2 tf2 tools (tf_echo, view_frames).
 //!
 //! Usage:
-//!   horus hf list          - List all frames
-//!   horus hf echo A B      - Echo transform from A to B
-//!   horus hf tree          - Show frame tree structure
-//!   horus hf info `<frame>`  - Show frame details
+//!   horus tf list          - List all frames
+//!   horus tf echo A B      - Echo transform from A to B
+//!   horus tf tree          - Show frame tree structure
+//!   horus tf info `<frame>`  - Show frame details
 
 use colored::*;
 use horus_core::communication::Topic;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
-use horus_library::hframe::{HFMessage, HFrame, Transform, TransformStamped};
+use horus_library::transform_frame::{TFMessage, TransformFrame, Transform, TransformStamped};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 
 use crate::discovery::discover_shared_memory;
 
-/// Standard HFrame topic names
-const HF_TOPIC: &str = "hf";
-const HF_STATIC_TOPIC: &str = "hf_static";
+/// Standard TransformFrame topic names
+const TF_TOPIC: &str = "tf";
+const TF_STATIC_TOPIC: &str = "tf_static";
 
 /// Frame data collected from shared memory
 #[derive(Debug, Clone)]
@@ -36,25 +36,25 @@ pub struct FrameData {
     pub update_count: u64,
 }
 
-/// Live HFrame reader that collects transforms from shared memory
-pub struct HFrameReader {
-    hframe: HFrame,
+/// Live TransformFrame reader that collects transforms from shared memory
+pub struct TransformFrameReader {
+    tf: TransformFrame,
     pub frame_data: HashMap<String, FrameData>,
     pub root_frames: HashSet<String>,
     /// Pending transforms: child -> (parent, transform, timestamp_ns, is_static)
     pending_transforms: HashMap<String, (String, Transform, u64, bool)>,
 }
 
-impl Default for HFrameReader {
+impl Default for TransformFrameReader {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HFrameReader {
+impl TransformFrameReader {
     pub fn new() -> Self {
         Self {
-            hframe: HFrame::new(),
+            tf: TransformFrame::new(),
             frame_data: HashMap::new(),
             root_frames: HashSet::new(),
             pending_transforms: HashMap::new(),
@@ -67,7 +67,7 @@ impl HFrameReader {
 
         // Try to read from dynamic tf topic
         // Use recv() for streaming (new messages only)
-        if let Ok(topic) = Topic::<HFMessage>::new(HF_TOPIC) {
+        if let Ok(topic) = Topic::<TFMessage>::new(TF_TOPIC) {
             if let Some(msg) = topic.recv() {
                 for tf in msg.iter() {
                     self.add_transform(tf, false);
@@ -79,7 +79,7 @@ impl HFrameReader {
         // Try to read from static tf topic
         // Use read_latest() since static transforms are published once and we need
         // to see them even if they were published before we opened the topic
-        if let Ok(topic) = Topic::<HFMessage>::new(HF_STATIC_TOPIC) {
+        if let Ok(topic) = Topic::<TFMessage>::new(TF_STATIC_TOPIC) {
             if let Some(msg) = topic.read_latest() {
                 for tf in msg.iter() {
                     self.add_transform(tf, true);
@@ -92,7 +92,7 @@ impl HFrameReader {
         if let Ok(topics) = discover_shared_memory() {
             for topic_info in topics {
                 if topic_info.topic_name.contains("transform")
-                    || topic_info.topic_name.contains("hframe")
+                    || topic_info.topic_name.contains("transform_frame")
                 {
                     if let Ok(topic) = Topic::<TransformStamped>::new(&topic_info.topic_name) {
                         if let Some(tf) = topic.recv() {
@@ -130,9 +130,9 @@ impl HFrameReader {
 
         // Register root frames first (they have no parent)
         for root in &roots {
-            if !self.hframe.has_frame(root) {
+            if !self.tf.has_frame(root) {
                 let _ = self
-                    .hframe
+                    .tf
                     .register_static_frame(root, None, &Transform::identity());
                 self.root_frames.insert(root.clone());
             }
@@ -149,23 +149,23 @@ impl HFrameReader {
 
             for (child, (parent, transform, timestamp, is_static)) in &remaining {
                 // Only process if parent is already registered
-                if self.hframe.has_frame(parent) {
-                    if !self.hframe.has_frame(child) {
+                if self.tf.has_frame(parent) {
+                    if !self.tf.has_frame(child) {
                         // Register new frame
                         if *is_static {
                             let _ =
-                                self.hframe
+                                self.tf
                                     .register_static_frame(child, Some(parent), transform);
                         } else {
-                            let _ = self.hframe.register_frame(child, Some(parent));
-                            let _ = self.hframe.update_transform(child, transform, *timestamp);
+                            let _ = self.tf.register_frame(child, Some(parent));
+                            let _ = self.tf.update_transform(child, transform, *timestamp);
                         }
                     } else {
                         // Update existing frame
                         if *is_static {
-                            let _ = self.hframe.set_static_transform(child, transform);
+                            let _ = self.tf.set_static_transform(child, transform);
                         } else {
-                            let _ = self.hframe.update_transform(child, transform, *timestamp);
+                            let _ = self.tf.update_transform(child, transform, *timestamp);
                         }
                     }
                     processed.push(child.clone());
@@ -180,9 +180,9 @@ impl HFrameReader {
             // If we didn't process anything, we might have a cycle or missing parent
             // Try to register any remaining frames' parents as roots
             for (parent, _transform, _, _is_static) in remaining.values() {
-                if !self.hframe.has_frame(parent) {
+                if !self.tf.has_frame(parent) {
                     let _ = self
-                        .hframe
+                        .tf
                         .register_static_frame(parent, None, &Transform::identity());
                 }
             }
@@ -284,10 +284,10 @@ fn quaternion_to_euler(rotation: [f64; 4]) -> (f64, f64, f64) {
     (roll, pitch, yaw)
 }
 
-/// List all coordinate frames in the HFrame tree
+/// List all coordinate frames in the TransformFrame tree
 pub fn list_frames(verbose: bool, json: bool) -> HorusResult<()> {
     // First try to read actual frame data from shared memory
-    let mut reader = HFrameReader::new();
+    let mut reader = TransformFrameReader::new();
     let found_live_data = reader.read_from_shm();
 
     // Also get topic discovery info
@@ -295,8 +295,8 @@ pub fn list_frames(verbose: bool, json: bool) -> HorusResult<()> {
     let tf_topics: Vec<_> = topics
         .iter()
         .filter(|t| {
-            t.topic_name.contains("hf")
-                || t.topic_name.contains("hframe")
+            t.topic_name.contains("tf")
+                || t.topic_name.contains("transform_frame")
                 || t.topic_name.contains("transform")
         })
         .collect();
@@ -346,11 +346,11 @@ pub fn list_frames(verbose: bool, json: bool) -> HorusResult<()> {
     if frames.is_empty() && tf_topics.is_empty() {
         println!("{}", "No active transform frames found.".yellow());
         println!(
-            "  {} Start a HORUS application with HFrame publishing enabled",
+            "  {} Start a HORUS application with TransformFrame publishing enabled",
             "Tip:".dimmed()
         );
         println!(
-            "  {} Use sim3d or add HFramePublisher to your nodes",
+            "  {} Use sim3d or add TransformFramePublisher to your nodes",
             "    ".dimmed()
         );
         return Ok(());
@@ -466,6 +466,7 @@ pub fn echo_transform(
     target_frame: &str,
     rate: Option<f64>,
     count: Option<usize>,
+    timeout: Option<f64>,
 ) -> HorusResult<()> {
     println!(
         "{} {} {} {}",
@@ -486,6 +487,7 @@ pub fn echo_transform(
     let interval = Duration::from_secs_f64(1.0 / rate_hz);
     let mut messages_received = 0;
     let max_messages = count.unwrap_or(usize::MAX);
+    let deadline = timeout.map(|secs| std::time::Instant::now() + Duration::from_secs_f64(secs));
 
     // Set up Ctrl+C handler
     let running = Arc::new(AtomicBool::new(true));
@@ -495,13 +497,16 @@ pub fn echo_transform(
     })
     .ok();
 
-    // Create HFrame reader
-    let mut reader = HFrameReader::new();
+    // Create TransformFrame reader
+    let mut reader = TransformFrameReader::new();
 
     // Initial read to populate frames
     reader.read_from_shm();
 
-    while running.load(Ordering::SeqCst) && messages_received < max_messages {
+    while running.load(Ordering::SeqCst)
+        && messages_received < max_messages
+        && deadline.map_or(true, |d| std::time::Instant::now() < d)
+    {
         // Read latest transforms
         reader.read_from_shm();
 
@@ -510,7 +515,7 @@ pub fn echo_transform(
             .unwrap_or_default();
 
         // Try to get the transform between frames
-        match reader.hframe.tf(source_frame, target_frame) {
+        match reader.tf.tf(source_frame, target_frame) {
             Ok(tf) => {
                 let (roll, pitch, yaw) = quaternion_to_euler(tf.rotation);
 
@@ -598,10 +603,10 @@ fn print_tree_recursive(
 
 /// Show the frame tree structure (like view_frames in ROS)
 pub fn view_frames(output_file: Option<&str>) -> HorusResult<()> {
-    let mut reader = HFrameReader::new();
+    let mut reader = TransformFrameReader::new();
     reader.read_from_shm();
 
-    println!("{}", "HFrame Tree Structure:".green().bold());
+    println!("{}", "TransformFrame Tree Structure:".green().bold());
     println!();
 
     let frames = reader.get_all_frames();
@@ -610,7 +615,7 @@ pub fn view_frames(output_file: Option<&str>) -> HorusResult<()> {
         println!("{}", "No frames found.".yellow());
         println!(
             "  {}",
-            "Start a HORUS application with HFrame publishing enabled".dimmed()
+            "Start a HORUS application with TransformFrame publishing enabled".dimmed()
         );
         return Ok(());
     }
@@ -681,7 +686,7 @@ pub fn view_frames(output_file: Option<&str>) -> HorusResult<()> {
 
     if let Some(file) = output_file {
         // Generate DOT file for graphviz
-        let mut dot = String::from("digraph HFrameTree {\n");
+        let mut dot = String::from("digraph TransformFrameTree {\n");
         dot.push_str("  rankdir=TB;\n");
         dot.push_str("  node [shape=box];\n\n");
 
@@ -712,7 +717,7 @@ pub fn view_frames(output_file: Option<&str>) -> HorusResult<()> {
 
 /// Show information about a specific frame
 pub fn frame_info(frame_name: &str) -> HorusResult<()> {
-    let mut reader = HFrameReader::new();
+    let mut reader = TransformFrameReader::new();
     reader.read_from_shm();
 
     println!(
@@ -781,7 +786,7 @@ pub fn frame_info(frame_name: &str) -> HorusResult<()> {
         );
 
         // Get children
-        let children = reader.hframe.children(frame_name);
+        let children = reader.tf.children(frame_name);
         if !children.is_empty() {
             println!();
             println!("  {} {}", "Children:".cyan(), children.join(", "));
@@ -792,7 +797,7 @@ pub fn frame_info(frame_name: &str) -> HorusResult<()> {
             println!("  {} {}", "Name:".cyan(), frame_name);
             println!("  {} {}", "Type:".cyan(), "root".green());
 
-            let children = reader.hframe.children(frame_name);
+            let children = reader.tf.children(frame_name);
             if !children.is_empty() {
                 println!("  {} {}", "Children:".cyan(), children.join(", "));
             }
@@ -817,7 +822,7 @@ pub fn frame_info(frame_name: &str) -> HorusResult<()> {
 
 /// Check if a transform is available between two frames
 pub fn can_transform(source_frame: &str, target_frame: &str) -> HorusResult<()> {
-    let mut reader = HFrameReader::new();
+    let mut reader = TransformFrameReader::new();
     reader.read_from_shm();
 
     println!(
@@ -829,7 +834,7 @@ pub fn can_transform(source_frame: &str, target_frame: &str) -> HorusResult<()> 
     );
     println!();
 
-    let can = reader.hframe.can_transform(source_frame, target_frame);
+    let can = reader.tf.can_transform(source_frame, target_frame);
 
     println!(
         "  {} {}",
@@ -843,12 +848,12 @@ pub fn can_transform(source_frame: &str, target_frame: &str) -> HorusResult<()> 
 
     if can {
         // Show the chain
-        if let Ok(chain) = reader.hframe.frame_chain(source_frame, target_frame) {
+        if let Ok(chain) = reader.tf.frame_chain(source_frame, target_frame) {
             println!("  {} {}", "Chain:".cyan(), chain.join(" → "));
         }
 
         // Show the transform
-        if let Ok(tf) = reader.hframe.tf(source_frame, target_frame) {
+        if let Ok(tf) = reader.tf.tf(source_frame, target_frame) {
             println!();
             println!("  {}", "Transform:".cyan());
             println!(
@@ -923,7 +928,7 @@ pub fn monitor_rates(window: Option<usize>) -> HorusResult<()> {
     let mut rate_trackers: HashMap<String, Vec<Instant>> = HashMap::new();
     let mut last_update_counts: HashMap<String, u64> = HashMap::new();
 
-    let mut reader = HFrameReader::new();
+    let mut reader = TransformFrameReader::new();
 
     while running.load(Ordering::SeqCst) {
         // Clear screen and move cursor to top
@@ -1054,8 +1059,8 @@ mod tests {
     }
 
     #[test]
-    fn test_hframe_reader_new() {
-        let reader = HFrameReader::new();
+    fn test_transform_frame_reader_new() {
+        let reader = TransformFrameReader::new();
         assert!(reader.frame_data.is_empty());
         assert!(reader.root_frames.is_empty());
     }

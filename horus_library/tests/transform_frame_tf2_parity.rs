@@ -1,10 +1,10 @@
-//! Integration tests for HFrame TF2 parity features.
+//! Integration tests for TransformFrame TF2 parity features.
 //!
-//! These tests mirror common ROS2 TF2 usage patterns to verify HFrame
+//! These tests mirror common ROS2 TF2 usage patterns to verify TransformFrame
 //! provides equivalent functionality.
 
 use horus_core::error::{HorusError, NotFoundError, TransformError};
-use horus_library::hframe::{HFrame, Transform};
+use horus_library::transform_frame::{TransformFrame, Transform};
 
 // ==========================================================================
 // 1. Extrapolation Detection
@@ -12,7 +12,7 @@ use horus_library::hframe::{HFrame, Transform};
 
 #[test]
 fn tf2_parity_extrapolation_past() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
     hf.update_transform("sensor", &Transform::xyz(1.0, 0.0, 0.0), 5000)
@@ -27,7 +27,7 @@ fn tf2_parity_extrapolation_past() {
 
 #[test]
 fn tf2_parity_extrapolation_future() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
     hf.update_transform("sensor", &Transform::xyz(1.0, 0.0, 0.0), 1000)
@@ -42,7 +42,7 @@ fn tf2_parity_extrapolation_future() {
 
 #[test]
 fn tf2_parity_interpolation_within_range() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("arm", Some("world")).unwrap();
     hf.update_transform("arm", &Transform::xyz(0.0, 0.0, 0.0), 1000)
@@ -56,7 +56,7 @@ fn tf2_parity_interpolation_within_range() {
 
 #[test]
 fn tf2_parity_extrapolation_chain_any_hop() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.register_frame("b", Some("a")).unwrap();
@@ -81,7 +81,7 @@ fn tf2_parity_extrapolation_chain_any_hop() {
 
 #[test]
 fn tf2_parity_static_never_extrapolates() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_static_frame("fixed", Some("world"), &Transform::xyz(1.0, 0.0, 0.0))
         .unwrap();
@@ -96,7 +96,7 @@ fn tf2_parity_static_never_extrapolates() {
 
 #[test]
 fn tf2_parity_is_stale_basic() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("imu", Some("world")).unwrap();
     hf.update_transform("imu", &Transform::identity(), 10_000)
@@ -110,7 +110,7 @@ fn tf2_parity_is_stale_basic() {
 
 #[test]
 fn tf2_parity_is_stale_never_updated() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -119,7 +119,7 @@ fn tf2_parity_is_stale_never_updated() {
 
 #[test]
 fn tf2_parity_is_stale_static_never_stale() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_static_frame("fixed", Some("world"), &Transform::identity())
         .unwrap();
@@ -129,7 +129,7 @@ fn tf2_parity_is_stale_static_never_stale() {
 
 #[test]
 fn tf2_parity_time_since_last_update() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("cam", Some("world")).unwrap();
     hf.update_transform("cam", &Transform::identity(), 10_000)
@@ -141,7 +141,7 @@ fn tf2_parity_time_since_last_update() {
 
 #[test]
 fn tf2_parity_time_range() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -163,7 +163,7 @@ fn tf2_parity_time_range() {
 
 #[test]
 fn tf2_parity_tolerance_within() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.update_transform("a", &Transform::xyz(1.0, 0.0, 0.0), 1000)
@@ -175,7 +175,7 @@ fn tf2_parity_tolerance_within() {
 
 #[test]
 fn tf2_parity_tolerance_exceeded() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.update_transform("a", &Transform::xyz(1.0, 0.0, 0.0), 1000)
@@ -191,7 +191,7 @@ fn tf2_parity_tolerance_exceeded() {
 
 #[test]
 fn tf2_parity_tolerance_max_unlimited() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.update_transform("a", &Transform::xyz(1.0, 0.0, 0.0), 1000)
@@ -208,7 +208,7 @@ fn tf2_parity_tolerance_max_unlimited() {
 
 #[test]
 fn tf2_parity_can_transform_in_range() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.update_transform("a", &Transform::identity(), 1000)
@@ -222,7 +222,7 @@ fn tf2_parity_can_transform_in_range() {
 
 #[test]
 fn tf2_parity_can_transform_no_path() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("isolated", None).unwrap();
     hf.update_transform("isolated", &Transform::identity(), 1000)
@@ -233,7 +233,7 @@ fn tf2_parity_can_transform_no_path() {
 
 #[test]
 fn tf2_parity_can_transform_with_tolerance() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.update_transform("a", &Transform::identity(), 1000)
@@ -249,7 +249,7 @@ fn tf2_parity_can_transform_with_tolerance() {
 
 #[test]
 fn tf2_parity_rejects_nan_translation() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -265,7 +265,7 @@ fn tf2_parity_rejects_nan_translation() {
 
 #[test]
 fn tf2_parity_rejects_inf_rotation() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     let id = hf.register_frame("a", Some("world")).unwrap();
 
@@ -281,7 +281,7 @@ fn tf2_parity_rejects_inf_rotation() {
 
 #[test]
 fn tf2_parity_rejects_zero_quaternion() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -301,14 +301,14 @@ fn tf2_parity_rejects_zero_quaternion() {
 
 #[test]
 fn tf2_parity_frames_as_dot() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("base", Some("world")).unwrap();
     hf.register_static_frame("cam", Some("base"), &Transform::xyz(0.0, 0.0, 0.5))
         .unwrap();
 
     let dot = hf.frames_as_dot();
-    assert!(dot.starts_with("digraph hframe {"));
+    assert!(dot.starts_with("digraph transform_frame {"));
     assert!(dot.contains("world"));
     assert!(dot.contains("base"));
     assert!(dot.contains("cam"));
@@ -318,7 +318,7 @@ fn tf2_parity_frames_as_dot() {
 
 #[test]
 fn tf2_parity_frames_as_yaml() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("arm", Some("world")).unwrap();
     hf.update_transform("arm", &Transform::identity(), 5000)
@@ -334,14 +334,14 @@ fn tf2_parity_frames_as_yaml() {
 
 #[test]
 fn tf2_parity_format_tree() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.register_frame("b", Some("a")).unwrap();
 
     let tree = hf.format_tree();
     assert!(tree.contains("world"));
-    assert!(tree.contains("HFrame Tree:"));
+    assert!(tree.contains("TransformFrame Tree:"));
     assert!(tree.contains("[D]")); // dynamic tag
 }
 
@@ -351,7 +351,7 @@ fn tf2_parity_format_tree() {
 
 #[test]
 fn tf2_parity_error_frame_not_registered() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
 
     let err = hf.tf("nonexistent", "world").unwrap_err();
@@ -365,7 +365,7 @@ fn tf2_parity_error_frame_not_registered() {
 
 #[test]
 fn tf2_parity_error_disconnected_trees() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("map", None).unwrap();
     hf.register_frame("robot", Some("world")).unwrap();
@@ -391,7 +391,7 @@ fn tf2_parity_error_disconnected_trees() {
 
 #[test]
 fn tf2_parity_frame_info_dynamic() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
     hf.update_transform("sensor", &Transform::identity(), 5000)
@@ -406,7 +406,7 @@ fn tf2_parity_frame_info_dynamic() {
 
 #[test]
 fn tf2_parity_frame_info_static() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_static_frame("fixed", Some("world"), &Transform::identity())
         .unwrap();
@@ -418,7 +418,7 @@ fn tf2_parity_frame_info_static() {
 
 #[test]
 fn tf2_parity_frame_info_all() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.register_frame("b", Some("world")).unwrap();
@@ -428,7 +428,7 @@ fn tf2_parity_frame_info_all() {
 
 #[test]
 fn tf2_parity_stats_depth_and_roots() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("base", Some("world")).unwrap();
     hf.register_frame("arm", Some("base")).unwrap();
@@ -447,7 +447,7 @@ fn tf2_parity_stats_depth_and_roots() {
 
 #[test]
 fn tf2_parity_query_builder_lookup() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("cam", Some("world")).unwrap();
     hf.update_transform("cam", &Transform::xyz(1.0, 2.0, 3.0), 1000)
@@ -461,7 +461,7 @@ fn tf2_parity_query_builder_lookup() {
 
 #[test]
 fn tf2_parity_query_builder_point() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("cam", Some("world")).unwrap();
     hf.update_transform("cam", &Transform::xyz(10.0, 0.0, 0.0), 1000)
@@ -473,7 +473,7 @@ fn tf2_parity_query_builder_point() {
 
 #[test]
 fn tf2_parity_query_builder_can_at() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.update_transform("a", &Transform::identity(), 1000)
@@ -491,7 +491,7 @@ fn tf2_parity_query_builder_can_at() {
 
 #[test]
 fn tf2_parity_frame_builder_dynamic() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.add_frame("world").build().unwrap();
     hf.add_frame("base").parent("world").build().unwrap();
 
@@ -502,7 +502,7 @@ fn tf2_parity_frame_builder_dynamic() {
 
 #[test]
 fn tf2_parity_frame_builder_static() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.add_frame("world").build().unwrap();
     hf.add_frame("cam")
         .parent("world")
@@ -556,7 +556,7 @@ fn tf2_parity_with_yaw_composition() {
 
 #[test]
 fn tf2_parity_pr2_arm_chain() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     // PR2-like chain: world -> base_link -> shoulder -> upper_arm -> forearm -> gripper
     hf.add_frame("world").build().unwrap();

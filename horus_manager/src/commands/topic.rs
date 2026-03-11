@@ -636,6 +636,13 @@ pub fn publish_topic(
     })
     .ok();
 
+    if topic.sub_count() == 0 {
+        cli_output::warn(&format!(
+            "No subscribers on topic '{}' — messages may be lost",
+            name
+        ));
+    }
+
     println!(
         "{} Publishing to: {}",
         cli_output::ICON_INFO.cyan(),

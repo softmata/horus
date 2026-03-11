@@ -107,25 +107,28 @@ pub fn run_info(session: String, json: bool) -> HorusResult<()> {
                 })
             })
             .collect();
+        let found = !recordings.is_empty();
         let output = serde_json::json!({
             "session": session,
-            "found": !recordings.is_empty(),
+            "found": found,
             "files": files,
         });
         println!(
             "{}",
             serde_json::to_string_pretty(&output).unwrap_or_default()
         );
-        return Ok(());
+        return if found {
+            Ok(())
+        } else {
+            Err(horus_internal!("Session '{}' not found", session))
+        };
     }
 
     if recordings.is_empty() {
-        println!(
-            "{} Session '{}' not found.",
-            cli_output::ICON_WARN.yellow(),
+        return Err(horus_internal!(
+            "Session '{}' not found. Use 'horus record list' to see available sessions.",
             session
-        );
-        return Ok(());
+        ));
     }
 
     println!(
@@ -162,6 +165,12 @@ pub fn run_info(session: String, json: bool) -> HorusResult<()> {
 /// Delete a recording session
 pub fn run_delete(session: String, force: bool) -> HorusResult<()> {
     let manager = RecordingManager::new();
+
+    // Check existence before prompting
+    let sessions = manager.list_sessions().unwrap_or_default();
+    if !sessions.iter().any(|s| s == &session) {
+        return Err(horus_internal!("Session '{}' not found", session));
+    }
 
     if !force {
         println!(

@@ -1,4 +1,4 @@
-//! Loom-based exhaustive concurrency tests for the HFrame seqlock.
+//! Loom-based exhaustive concurrency tests for the TransformFrame seqlock.
 //!
 //! These tests verify that a concurrent writer and reader using the
 //! seqlock (version-dance) protocol never produce a torn read. Loom

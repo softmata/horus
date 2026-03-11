@@ -209,10 +209,10 @@ pub mod prelude {
     // === Memory (domain types) ===
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
-    // === HFrame (coordinate transforms) ===
-    pub use horus_library::hframe::{
-        timestamp_now, FrameBuilder, FrameInfo, HFrame, HFrameConfig, HFrameStats, Transform,
-        TransformQuery, TransformQueryFrom,
+    // === Transform Frame (coordinate transforms) ===
+    pub use horus_library::transform_frame::{
+        timestamp_now, FrameBuilder, FrameInfo, TransformFrame, TransformFrameConfig,
+        TransformFrameStats, Transform, TransformQuery, TransformQueryFrom,
     };
 
     // === Message types (all standard robotics messages) ===

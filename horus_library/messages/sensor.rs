@@ -57,7 +57,7 @@ impl LaserScan {
     /// Create a new laser scan with default parameters
     pub fn new() -> Self {
         Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Self::default()
         }
     }
@@ -130,7 +130,7 @@ impl Imu {
             angular_velocity_covariance: [0.0; 9],
             linear_acceleration: [0.0; 3],
             linear_acceleration_covariance: [0.0; 9],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -220,7 +220,7 @@ impl Odometry {
             twist_covariance: [0.0; 36],
             frame_id: [0; 32],
             child_frame_id: [0; 32],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -243,7 +243,7 @@ impl Odometry {
     pub fn update(&mut self, pose: Pose2D, twist: Twist) {
         self.pose = pose;
         self.twist = twist;
-        self.timestamp_ns = crate::hframe::timestamp_now();
+        self.timestamp_ns = crate::transform_frame::timestamp_now();
     }
 
     /// Check if values are valid
@@ -285,7 +285,7 @@ impl RangeSensor {
             min_range: 0.02,
             max_range: 4.0,
             range,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -357,7 +357,7 @@ impl BatteryState {
             temperature: 25.0,
             cell_voltages: [0.0; 16],
             cell_count: 0,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -450,7 +450,7 @@ impl NavSatFix {
     /// Create a new GPS fix message
     pub fn new() -> Self {
         Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Self::default()
         }
     }
@@ -562,7 +562,7 @@ impl JointState {
     /// Create a new empty JointState
     pub fn new() -> Self {
         Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Self::default()
         }
     }
@@ -657,7 +657,7 @@ impl MagneticField {
             magnetic_field: field,
             magnetic_field_covariance: [-1.0; 9], // Unknown covariance
             frame_id: [0; 32],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -687,7 +687,7 @@ impl Temperature {
             temperature,
             variance: 0.0,
             frame_id: [0; 32],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -717,7 +717,7 @@ impl FluidPressure {
             fluid_pressure: pressure,
             variance: 0.0,
             frame_id: [0; 32],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 
@@ -747,7 +747,7 @@ impl Illuminance {
             illuminance,
             variance: 0.0,
             frame_id: [0; 32],
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 

@@ -5,7 +5,7 @@ Five complete robotics applications, ordered from simple to advanced. Each examp
 | Example | What you'll learn |
 |---------|-------------------|
 | [differential_drive](differential_drive/) | Nodes, topics, messages, scheduler basics |
-| [robot_arm](robot_arm/) | Services, frame transforms (HFrame), trajectory control |
+| [robot_arm](robot_arm/) | Services, frame transforms (TransformFrame), trajectory control |
 | [sensor_navigation](sensor_navigation/) | Multi-rate scheduling, sensor pipelines, reactive control |
 | [multi_robot](multi_robot/) | Namespaced topics, launch files, fleet coordination |
 | [quadruped](quadruped/) | Real-time nodes, budget budgets, deadlines, IMU feedback |

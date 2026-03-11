@@ -1,6 +1,6 @@
-//! HFrame Stress Tests — Scale, Capacity, Depth & Concurrency
+//! TransformFrame Stress Tests — Scale, Capacity, Depth & Concurrency
 //!
-//! Integration tests that push HFrame beyond typical operating conditions.
+//! Integration tests that push TransformFrame beyond typical operating conditions.
 //! These complement the unit tests in each module by exercising cross-cutting
 //! concerns at realistic and extreme scale.
 //!
@@ -11,7 +11,7 @@
 //! |------|--------------|
 //! | `stress_1000_frame_chain` | Deep sequential chain (1001 frames), verifies composed translation accuracy and `can_transform` across full depth |
 //! | `stress_1000_frame_wide_tree` | Wide tree (1000 siblings), verifies sibling-to-sibling resolution and `children()` correctness |
-//! | `stress_4096_frames_large_preset` | Large preset capacity fill (4096 frames), validates the `HFrame::large()` configuration under full load |
+//! | `stress_4096_frames_large_preset` | Large preset capacity fill (4096 frames), validates the `TransformFrame::large()` configuration under full load |
 //!
 //! ## Capacity Exhaustion & Slot Reuse (6 tests)
 //! | Test | Gap Addressed |
@@ -50,7 +50,7 @@
 //! - **No cross-process IPC tests**: These tests are in-process only. Shared-memory IPC
 //!   correctness (Pod safety, zero-copy) is validated at the type level but not end-to-end.
 
-use horus_library::hframe::{HFrame, HFrameConfig, Transform};
+use horus_library::transform_frame::{TransformFrame, TransformFrameConfig, Transform};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
@@ -62,12 +62,12 @@ use std::thread;
 /// Verify all frames are queryable and transforms resolve correctly.
 #[test]
 fn stress_1000_frame_chain() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(2048)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     // Register root
     let _world = hf.register_frame("world", None).unwrap();
@@ -104,12 +104,12 @@ fn stress_1000_frame_chain() {
 /// Tests breadth rather than depth.
 #[test]
 fn stress_1000_frame_wide_tree() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(2048)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     hf.register_frame("world", None).unwrap();
     hf.update_transform("world", &Transform::identity(), 1000)
@@ -146,7 +146,7 @@ fn stress_1000_frame_wide_tree() {
 /// Fill to the large preset limit (4096 frames).
 #[test]
 fn stress_4096_frames_large_preset() {
-    let hf = HFrame::large();
+    let hf = TransformFrame::large();
 
     hf.register_frame("world", None).unwrap();
 
@@ -173,13 +173,13 @@ fn stress_4096_frames_large_preset() {
 /// Should return error, not panic.
 #[test]
 fn stress_max_frames_exhaustion() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
         .enable_overflow(false)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     // Fill all 16 slots
     for i in 0..16 {
@@ -205,12 +205,12 @@ fn stress_max_frames_exhaustion() {
 /// Test slot reuse after unregistration at capacity.
 #[test]
 fn stress_slot_reuse_after_unregister() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     // Fill all 16 slots (all dynamic, so unregisterable)
     for i in 0..16 {
@@ -235,7 +235,7 @@ fn stress_slot_reuse_after_unregister() {
 /// Test static frame limit — static frames cannot be unregistered.
 #[test]
 fn stress_static_frame_cannot_unregister() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     hf.register_static_frame("static_world", None, &Transform::identity())
         .unwrap();
@@ -251,14 +251,14 @@ fn stress_static_frame_cannot_unregister() {
 /// Both types count towards the max_frames limit.
 #[test]
 fn stress_mixed_static_dynamic_at_capacity() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .max_static_frames(8)
         .history_len(4)
         .enable_overflow(false)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     // Register 8 static frames
     for i in 0..8 {
@@ -311,12 +311,12 @@ fn stress_mixed_static_dynamic_at_capacity() {
 /// Repeated unregister/re-register cycles at capacity — test slot reuse stability.
 #[test]
 fn stress_repeated_slot_reuse_cycles() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     // Fill to capacity, track current names per slot
     let mut slot_names: Vec<String> = (0..16).map(|i| format!("f{}", i)).collect();
@@ -356,7 +356,7 @@ fn stress_repeated_slot_reuse_cycles() {
 /// (no separate update_transform call needed).
 #[test]
 fn stress_static_frame_transform_immediate() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     hf.register_frame("world", None).unwrap();
     hf.update_transform("world", &Transform::identity(), 1000)
@@ -386,12 +386,12 @@ fn stress_static_frame_transform_immediate() {
 /// and compares against the chain-resolved result.
 #[test]
 fn stress_depth_chain_manual_verification() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(512)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     hf.register_frame("world", None).unwrap();
     hf.update_transform("world", &Transform::identity(), 1000)
@@ -477,13 +477,13 @@ fn stress_depth_chain_manual_verification() {
 /// Verifies that resolution time scales roughly linearly (not exponentially).
 #[test]
 fn stress_depth_timing_linear_scaling() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(1024)
         .history_len(4)
         .chain_cache_size(0) // Disable cache to measure raw resolution
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     hf.register_frame("world", None).unwrap();
     hf.update_transform("world", &Transform::identity(), 1000)
@@ -528,12 +528,12 @@ fn stress_depth_timing_linear_scaling() {
 /// Depth 100 chain resolution with accumulated translation verification.
 #[test]
 fn stress_depth_100_chain() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(256)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     hf.register_frame("world", None).unwrap();
 
@@ -559,12 +559,12 @@ fn stress_depth_100_chain() {
 /// Depth 200 chain with rotation — tests floating point accumulation.
 #[test]
 fn stress_depth_200_chain_with_rotation() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(512)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     hf.register_frame("world", None).unwrap();
 
@@ -616,7 +616,7 @@ fn stress_depth_200_chain_with_rotation() {
 /// Verify: no panics, no NaN, no torn reads.
 #[test]
 fn stress_concurrent_4_writers_8_readers() {
-    let hf = Arc::new(HFrame::new());
+    let hf = Arc::new(TransformFrame::new());
 
     // Setup: world -> base -> arm -> hand, world -> camera
     hf.register_frame("world", None).unwrap();
@@ -711,7 +711,7 @@ fn stress_concurrent_4_writers_8_readers() {
 /// Verify correctness under sustained load.
 #[test]
 fn stress_sustained_concurrent_load() {
-    let hf = Arc::new(HFrame::new());
+    let hf = Arc::new(TransformFrame::new());
 
     // Setup a realistic robot tree
     hf.register_frame("world", None).unwrap();
@@ -798,7 +798,7 @@ fn stress_sustained_concurrent_load() {
 /// Checks for torn reads, NaN/Inf, and quaternion norm drift under extreme load.
 #[test]
 fn stress_high_throughput_100k() {
-    let hf = Arc::new(HFrame::new());
+    let hf = Arc::new(TransformFrame::new());
 
     // Build a 6-frame robot arm: world -> base -> shoulder -> elbow -> wrist -> tool
     hf.register_frame("world", None).unwrap();

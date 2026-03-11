@@ -1,4 +1,4 @@
-//! HFrame Message types for inter-node communication
+//! TransformFrame Message types for inter-node communication
 //!
 //! Provides message types compatible with HORUS Topic for broadcasting
 //! and receiving transform updates.
@@ -158,7 +158,7 @@ impl StaticTransformStamped {
 /// Allows sending multiple transforms in a single message.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
-pub struct HFMessage {
+pub struct TFMessage {
     /// Array of transforms
     pub transforms: [TransformStamped; MAX_TRANSFORMS_PER_MESSAGE],
     /// Number of valid transforms in the array
@@ -167,13 +167,14 @@ pub struct HFMessage {
     _padding: [u8; 4],
 }
 
-unsafe impl Pod for HFMessage {}
-unsafe impl Zeroable for HFMessage {}
+unsafe impl Pod for TFMessage {}
+unsafe impl Zeroable for TFMessage {}
 
-/// Legacy alias for backwards compatibility
-pub type TFMessage = HFMessage;
+/// Legacy alias — use [`TFMessage`] directly.
+#[deprecated(note = "Renamed to TFMessage")]
+pub type HFMessage = TFMessage;
 
-impl Default for HFMessage {
+impl Default for TFMessage {
     fn default() -> Self {
         Self {
             transforms: [TransformStamped::default(); MAX_TRANSFORMS_PER_MESSAGE],
@@ -183,8 +184,8 @@ impl Default for HFMessage {
     }
 }
 
-impl HFMessage {
-    /// Create a new empty HFrame message
+impl TFMessage {
+    /// Create a new empty TF message batch
     pub fn new() -> Self {
         Self::default()
     }
@@ -277,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_hf_message_batch() {
-        let mut batch = HFMessage::new();
+        let mut batch = TFMessage::new();
         assert!(batch.is_empty());
 
         let tf1 = TransformStamped::new("a", "b", 1, Transform::identity());
@@ -295,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_hf_message_full() {
-        let mut batch = HFMessage::new();
+        let mut batch = TFMessage::new();
 
         for i in 0..MAX_TRANSFORMS_PER_MESSAGE {
             let tf = TransformStamped::new(
@@ -324,7 +325,7 @@ mod tests {
         let bytes: &[u8] = horus_core::bytemuck::bytes_of(&sts);
         assert!(!bytes.is_empty());
 
-        let msg = HFMessage::default();
+        let msg = TFMessage::default();
         let bytes: &[u8] = horus_core::bytemuck::bytes_of(&msg);
         assert!(!bytes.is_empty());
     }

@@ -61,7 +61,7 @@ pub struct Clock {
 impl Clock {
     /// Create a wall-clock time message (real-time, not simulated)
     pub fn wall_clock() -> Self {
-        let now = crate::hframe::timestamp_now();
+        let now = crate::transform_frame::timestamp_now();
         Self {
             clock_ns: now,
             realtime_ns: now,
@@ -75,7 +75,7 @@ impl Clock {
 
     /// Create a simulation time message
     pub fn sim_time(sim_ns: u64, speed: f64) -> Self {
-        let now = crate::hframe::timestamp_now();
+        let now = crate::transform_frame::timestamp_now();
         Self {
             clock_ns: sim_ns,
             realtime_ns: now,
@@ -89,7 +89,7 @@ impl Clock {
 
     /// Create a replay time message
     pub fn replay_time(replay_ns: u64, speed: f64) -> Self {
-        let now = crate::hframe::timestamp_now();
+        let now = crate::transform_frame::timestamp_now();
         Self {
             clock_ns: replay_ns,
             realtime_ns: now,
@@ -166,7 +166,7 @@ impl TimeReference {
             time_ref_ns,
             source,
             offset_ns,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 

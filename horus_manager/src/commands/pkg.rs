@@ -596,7 +596,18 @@ pub fn enable_plugin(command: &str) -> Result<()> {
         return Ok(());
     }
 
-    Err(anyhow!("Plugin '{}' is not disabled", command))
+    // Distinguish "not found" from "already enabled"
+    let exists_in_project = resolver
+        .project()
+        .map(|p| p.get_plugin(command).is_some())
+        .unwrap_or(false);
+    let exists_in_global = resolver.global().get_plugin(command).is_some();
+
+    if exists_in_project || exists_in_global {
+        Err(anyhow!("Plugin '{}' is already enabled", command))
+    } else {
+        Err(anyhow!("Plugin '{}' not found", command))
+    }
 }
 
 /// Disable a plugin without uninstalling

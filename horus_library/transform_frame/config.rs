@@ -1,12 +1,12 @@
-//! Configuration for HFrame system
+//! Configuration for Transform Frame system
 
 use super::types::MAX_SUPPORTED_FRAMES;
 
-/// Configuration for HFrame system
+/// Configuration for Transform Frame system
 ///
 /// Allows tuning memory usage vs capacity tradeoffs.
 #[derive(Debug, Clone)]
-pub struct HFrameConfig {
+pub struct TransformFrameConfig {
     /// Maximum number of frames (static + dynamic)
     ///
     /// Default: 256
@@ -46,13 +46,13 @@ pub struct HFrameConfig {
     pub chain_cache_size: usize,
 }
 
-impl Default for HFrameConfig {
+impl Default for TransformFrameConfig {
     fn default() -> Self {
         Self::small()
     }
 }
 
-impl HFrameConfig {
+impl TransformFrameConfig {
     /// Small robot preset (256 frames, auto-grows if needed)
     ///
     /// Suitable for:
@@ -166,8 +166,8 @@ impl HFrameConfig {
     }
 
     /// Custom configuration builder
-    pub fn custom() -> HFrameConfigBuilder {
-        HFrameConfigBuilder::new()
+    pub fn custom() -> TransformFrameConfigBuilder {
+        TransformFrameConfigBuilder::new()
     }
 
     /// Validate configuration
@@ -228,15 +228,15 @@ impl HFrameConfig {
     }
 }
 
-/// Builder for custom HFrame configuration
-pub struct HFrameConfigBuilder {
-    config: HFrameConfig,
+/// Builder for custom TransformFrame configuration
+pub struct TransformFrameConfigBuilder {
+    config: TransformFrameConfig,
 }
 
-impl HFrameConfigBuilder {
+impl TransformFrameConfigBuilder {
     pub fn new() -> Self {
         Self {
-            config: HFrameConfig::small(),
+            config: TransformFrameConfig::small(),
         }
     }
 
@@ -275,13 +275,13 @@ impl HFrameConfigBuilder {
     }
 
     /// Build and validate the configuration
-    pub fn build(self) -> Result<HFrameConfig, String> {
+    pub fn build(self) -> Result<TransformFrameConfig, String> {
         self.config.validate()?;
         Ok(self.config)
     }
 }
 
-impl Default for HFrameConfigBuilder {
+impl Default for TransformFrameConfigBuilder {
     fn default() -> Self {
         Self::new()
     }
@@ -293,19 +293,19 @@ mod tests {
 
     #[test]
     fn test_presets() {
-        let small = HFrameConfig::small();
+        let small = TransformFrameConfig::small();
         assert_eq!(small.max_frames, 256);
         small.validate().unwrap();
 
-        let medium = HFrameConfig::medium();
+        let medium = TransformFrameConfig::medium();
         assert_eq!(medium.max_frames, 1024);
         medium.validate().unwrap();
 
-        let large = HFrameConfig::large();
+        let large = TransformFrameConfig::large();
         assert_eq!(large.max_frames, 4096);
         large.validate().unwrap();
 
-        let massive = HFrameConfig::massive();
+        let massive = TransformFrameConfig::massive();
         assert_eq!(massive.max_frames, 16384);
         assert!(massive.enable_overflow);
         massive.validate().unwrap();
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let config = HFrameConfig::custom()
+        let config = TransformFrameConfig::custom()
             .max_frames(512)
             .history_len(64)
             .build()
@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn test_validation() {
         // Too few frames
-        let mut config = HFrameConfig::small();
+        let mut config = TransformFrameConfig::small();
         config.max_frames = 8;
         assert!(config.validate().is_err());
 
@@ -335,18 +335,18 @@ mod tests {
         assert!(config.validate().is_err());
 
         // Static > max
-        config = HFrameConfig::small();
+        config = TransformFrameConfig::small();
         config.max_static_frames = 1000;
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_memory_estimate() {
-        let small = HFrameConfig::small();
+        let small = TransformFrameConfig::small();
         let estimate = small.memory_estimate();
         assert!(estimate.contains("KB") || estimate.contains("MB"));
 
-        let large = HFrameConfig::large();
+        let large = TransformFrameConfig::large();
         let estimate = large.memory_estimate();
         assert!(estimate.contains("MB"));
     }

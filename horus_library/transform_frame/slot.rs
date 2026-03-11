@@ -202,7 +202,7 @@ impl FrameSlot {
     /// **Requires: only one writer per frame at a time.** Concurrent writers on
     /// the same frame will corrupt the seqlock (fetch_add makes one writer's
     /// version even while it's still writing, causing readers to see torn data).
-    /// The HFrame API enforces this by design: each frame has one logical owner.
+    /// The TransformFrame API enforces this by design: each frame has one logical owner.
     pub fn update(&self, transform: &Transform, timestamp_ns: u64) {
         // Step 1: Mark write in progress (odd version, outer seqlock)
         let v = self.version.fetch_add(1, Ordering::AcqRel) + 1;

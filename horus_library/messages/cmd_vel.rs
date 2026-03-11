@@ -37,7 +37,7 @@ impl CmdVel {
     /// Create a new CmdVel message with current timestamp
     pub fn new(linear: f32, angular: f32) -> Self {
         Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             linear,
             angular,
         }

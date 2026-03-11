@@ -1,4 +1,4 @@
-//! Core types for HFrame system
+//! Core types for Transform Frame system
 
 /// Frame identifier type
 ///

@@ -1,6 +1,6 @@
-//! # HFrame - High-Performance Transform System for HORUS
+//! # Transform Frame - High-Performance Transform System for HORUS
 //!
-//! HFrame is a hybrid, lock-free coordinate frame management system designed
+//! TransformFrame is a hybrid, lock-free coordinate frame management system designed
 //! to replace traditional TF implementations with better real-time performance.
 //!
 //! ## Key Features
@@ -16,10 +16,10 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │                     HFrame System                            │
+//! │                     Transform Frame System                            │
 //! ├─────────────────────────────────────────────────────────────┤
 //! │  ┌──────────────────┐   ┌────────────────────────────────┐ │
-//! │  │  FrameRegistry   │   │         HFrameCore             │ │
+//! │  │  FrameRegistry   │   │         TransformFrameCore             │ │
 //! │  │  (String ↔ ID)   │   │   (Lock-free Transform Store)  │ │
 //! │  │  - name_to_id    │   │   - slots: Vec<FrameSlot>      │ │
 //! │  │  - id_to_name    │   │   - parents: Vec<FrameId>      │ │
@@ -35,13 +35,13 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use horus_library::hframe::{HFrame, HFrameConfig};
+//! use horus_library::transform_frame::{TransformFrame, TransformFrameConfig};
 //!
 //! // Create with default config (256 frames, 32 history entries)
-//! let hf = HFrame::new();
+//! let hf = TransformFrame::new();
 //!
 //! // Or customize for large simulations
-//! let hf = HFrame::with_config(HFrameConfig {
+//! let hf = TransformFrame::with_config(TransformFrameConfig {
 //!     max_frames: 1024,
 //!     max_static_frames: 512,
 //!     history_len: 64,
@@ -66,7 +66,7 @@
 //!
 //! ## Performance Comparison
 //!
-//! | Operation | HFrame | ROS2 TF2 |
+//! | Operation | TransformFrame | ROS2 TF2 |
 //! |-----------|--------|----------|
 //! | Lookup by ID | ~50ns | N/A |
 //! | Lookup by name | ~200ns | ~2μs |
@@ -86,11 +86,11 @@
 //!
 //! ### Convention Mapping
 //!
-//! **Argument order is reversed**: HFrame uses `(source, destination)`,
+//! **Argument order is reversed**: TransformFrame uses `(source, destination)`,
 //! TF2 uses `(target, source)`. Both return a transform that maps
 //! points from source to destination.
 //!
-//! | TF2 (C++) | HFrame |
+//! | TF2 (C++) | TransformFrame |
 //! |-----------|--------|
 //! | `lookupTransform("dst", "src")` | `hf.tf("src", "dst")` |
 //! | `lookupTransform("dst", "src", time)` | `hf.tf_at("src", "dst", time_ns)` |
@@ -138,7 +138,7 @@
 //! 1. **Lock-free**: All reads/writes are wait-free; no mutex contention
 //! 2. **Input validation**: NaN/Inf transforms are rejected at write time
 //! 3. **Extrapolation is explicit**: Use `tf_at_strict()` for TF2-style errors
-//! 4. **No global singleton**: Each `HFrame` is independent and `Send + Sync`
+//! 4. **No global singleton**: Each `TransformFrame` is independent and `Send + Sync`
 //! 5. **Error types**: Uses `HorusError::Extrapolation`, `::NotFound`, `::InvalidInput`
 
 #[cfg(test)]
@@ -155,8 +155,8 @@ mod types;
 
 // Re-export public API
 pub use builder::FrameBuilder;
-pub use config::HFrameConfig;
-pub use core::HFrameCore;
+pub use config::TransformFrameConfig;
+pub use core::TransformFrameCore;
 pub use query::{TransformQuery, TransformQueryFrom};
 pub use registry::FrameRegistry;
 pub use slot::{FrameSlot, TransformEntry};
@@ -164,7 +164,7 @@ pub use types::{FrameId, INVALID_FRAME, NO_PARENT};
 
 // Re-export Transform and message types
 pub use messages::{
-    frame_id_to_string, string_to_frame_id, HFMessage, StaticTransformStamped, TFMessage,
+    frame_id_to_string, string_to_frame_id, StaticTransformStamped, TFMessage,
     TransformStamped, FRAME_ID_SIZE, MAX_TRANSFORMS_PER_MESSAGE,
 };
 pub use transform::Transform;
@@ -236,18 +236,18 @@ impl AsyncTransformNotifier {
     }
 }
 
-/// Main HFrame interface combining core storage and name registry
+/// Main TransformFrame interface combining core storage and name registry
 ///
 /// This is the primary type users interact with. It provides both
 /// high-performance ID-based access and convenient string-based access.
 #[derive(Clone)]
-pub struct HFrame {
+pub struct TransformFrame {
     /// Lock-free transform storage
-    core: Arc<HFrameCore>,
+    core: Arc<TransformFrameCore>,
     /// String ↔ ID mapping
     registry: Arc<FrameRegistry>,
     /// Configuration
-    config: HFrameConfig,
+    config: TransformFrameConfig,
     /// Optional notification for wait_for_transform (only with `wait` feature)
     #[cfg(feature = "wait")]
     notifier: Arc<TransformNotifier>,
@@ -256,17 +256,17 @@ pub struct HFrame {
     async_notifier: Arc<AsyncTransformNotifier>,
 }
 
-impl HFrame {
-    /// Create a new HFrame with default configuration
+impl TransformFrame {
+    /// Create a new TransformFrame with default configuration
     ///
     /// Default: 256 max frames, 128 static + 128 dynamic, 32 history entries
     pub fn new() -> Self {
-        Self::with_config(HFrameConfig::default())
+        Self::with_config(TransformFrameConfig::default())
     }
 
     /// Create with custom configuration
-    pub fn with_config(config: HFrameConfig) -> Self {
-        let core = Arc::new(HFrameCore::new(&config));
+    pub fn with_config(config: TransformFrameConfig) -> Self {
+        let core = Arc::new(TransformFrameCore::new(&config));
         let registry = Arc::new(FrameRegistry::with_overflow(
             core.clone(),
             config.max_frames,
@@ -286,41 +286,41 @@ impl HFrame {
 
     /// Access the underlying lock-free transform storage.
     ///
-    /// For advanced use only — prefer the high-level `HFrame` methods.
-    pub fn core(&self) -> &Arc<HFrameCore> {
+    /// For advanced use only — prefer the high-level `TransformFrame` methods.
+    pub fn core(&self) -> &Arc<TransformFrameCore> {
         &self.core
     }
 
     /// Access the string ↔ ID name registry.
     ///
-    /// For advanced use only — prefer the high-level `HFrame` methods.
+    /// For advanced use only — prefer the high-level `TransformFrame` methods.
     pub fn registry(&self) -> &Arc<FrameRegistry> {
         &self.registry
     }
 
-    /// Get the configuration this HFrame was created with.
-    pub fn config(&self) -> &HFrameConfig {
+    /// Get the configuration this TransformFrame was created with.
+    pub fn config(&self) -> &TransformFrameConfig {
         &self.config
     }
 
     /// Create with preset for small robots (256 frames)
     pub fn small() -> Self {
-        Self::with_config(HFrameConfig::small())
+        Self::with_config(TransformFrameConfig::small())
     }
 
     /// Create with preset for medium robots (1024 frames)
     pub fn medium() -> Self {
-        Self::with_config(HFrameConfig::medium())
+        Self::with_config(TransformFrameConfig::medium())
     }
 
     /// Create with preset for large simulations (4096 frames)
     pub fn large() -> Self {
-        Self::with_config(HFrameConfig::large())
+        Self::with_config(TransformFrameConfig::large())
     }
 
     /// Create with preset for massive simulations (16384 frames)
     pub fn massive() -> Self {
-        Self::with_config(HFrameConfig::massive())
+        Self::with_config(TransformFrameConfig::massive())
     }
 
     // ========================================================================
@@ -780,7 +780,7 @@ impl HFrame {
     /// Block until a transform between `src` and `dst` becomes available,
     /// or the timeout expires.
     ///
-    /// This is the HFrame equivalent of TF2's `waitForTransform`. Use it
+    /// This is the TransformFrame equivalent of TF2's `waitForTransform`. Use it
     /// during node startup to wait for sensor drivers to publish their
     /// first transforms.
     ///
@@ -1025,8 +1025,8 @@ impl HFrame {
     // Diagnostics
     // ========================================================================
 
-    /// Get statistics about HFrame usage
-    pub fn stats(&self) -> HFrameStats {
+    /// Get statistics about TransformFrame usage
+    pub fn stats(&self) -> TransformFrameStats {
         let names = self.all_frames();
         let mut root_count = 0;
         let mut max_depth = 0;
@@ -1043,7 +1043,7 @@ impl HFrame {
             }
         }
 
-        HFrameStats {
+        TransformFrameStats {
             total_frames: self.core.frame_count(),
             static_frames: self.core.static_frame_count(),
             dynamic_frames: self.core.dynamic_frame_count(),
@@ -1194,7 +1194,7 @@ impl HFrame {
     /// println!("{}", hf.frames_as_dot());
     /// ```
     pub fn frames_as_dot(&self) -> String {
-        let mut dot = String::from("digraph hframe {\n");
+        let mut dot = String::from("digraph transform_frame {\n");
         dot.push_str("  rankdir=TB;\n");
         dot.push_str("  node [shape=box, fontname=\"monospace\"];\n\n");
 
@@ -1256,7 +1256,7 @@ impl HFrame {
     /// println!("{}", hf.frames_as_yaml());
     /// ```
     pub fn frames_as_yaml(&self) -> String {
-        let mut yaml = String::from("# HFrame tree export\n");
+        let mut yaml = String::from("# TransformFrame tree export\n");
         let names = self.all_frames();
 
         for name in &names {
@@ -1315,7 +1315,7 @@ impl HFrame {
     /// Returns the same output as `print_tree()` but as a `String` instead
     /// of printing to stderr.
     pub fn format_tree(&self) -> String {
-        let mut output = String::from("HFrame Tree:\n");
+        let mut output = String::from("TransformFrame Tree:\n");
 
         // Find root frames (no parent)
         let names = self.all_frames();
@@ -1390,19 +1390,19 @@ impl HFrame {
     }
 }
 
-impl Default for HFrame {
+impl Default for TransformFrame {
     fn default() -> Self {
         Self::new()
     }
 }
 
-// Thread-safe: HFrame uses Arc internally and all operations are thread-safe
-unsafe impl Send for HFrame {}
-unsafe impl Sync for HFrame {}
+// Thread-safe: TransformFrame uses Arc internally and all operations are thread-safe
+unsafe impl Send for TransformFrame {}
+unsafe impl Sync for TransformFrame {}
 
-/// Statistics about HFrame usage
+/// Statistics about TransformFrame usage
 #[derive(Debug, Clone)]
-pub struct HFrameStats {
+pub struct TransformFrameStats {
     pub total_frames: usize,
     pub static_frames: usize,
     pub dynamic_frames: usize,
@@ -1414,11 +1414,11 @@ pub struct HFrameStats {
     pub root_count: usize,
 }
 
-impl std::fmt::Display for HFrameStats {
+impl std::fmt::Display for TransformFrameStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "HFrame: {}/{} frames ({} static, {} dynamic), {} history entries, \
+            "TransformFrame: {}/{} frames ({} static, {} dynamic), {} history entries, \
              depth {}, {} root(s)",
             self.total_frames,
             self.max_frames,
@@ -1471,7 +1471,7 @@ mod tests {
 
     #[test]
     fn test_basic_usage() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
 
         // Register frames
         let world = hf.register_frame("world", None).unwrap();
@@ -1497,7 +1497,7 @@ mod tests {
 
     #[test]
     fn test_frame_lookup() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
 
         assert!(hf.has_frame("world"));
@@ -1509,16 +1509,16 @@ mod tests {
 
     #[test]
     fn test_config_presets() {
-        let small = HFrame::small();
+        let small = TransformFrame::small();
         assert_eq!(small.config.max_frames, 256);
 
-        let large = HFrame::large();
+        let large = TransformFrame::large();
         assert_eq!(large.config.max_frames, 4096);
     }
 
     #[test]
     fn test_stats_tree_depth_and_root_count() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("base", Some("world")).unwrap();
         hf.register_frame("arm", Some("base")).unwrap();
@@ -1534,7 +1534,7 @@ mod tests {
 
     #[test]
     fn test_frame_info_dynamic() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("sensor", Some("world")).unwrap();
         hf.update_transform("sensor", &Transform::identity(), 5000)
@@ -1551,7 +1551,7 @@ mod tests {
 
     #[test]
     fn test_frame_info_static() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
@@ -1564,7 +1564,7 @@ mod tests {
 
     #[test]
     fn test_frame_info_all() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.register_frame("b", Some("world")).unwrap();
@@ -1575,7 +1575,7 @@ mod tests {
 
     #[test]
     fn test_frame_info_nonexistent() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         assert!(hf.frame_info("ghost").is_none());
     }
 
@@ -1585,7 +1585,7 @@ mod tests {
 
     #[test]
     fn test_query_lookup() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("cam", Some("world")).unwrap();
         hf.update_transform("cam", &Transform::from_translation([1.0, 2.0, 3.0]), 1000)
@@ -1600,7 +1600,7 @@ mod tests {
 
     #[test]
     fn test_query_at() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
@@ -1614,7 +1614,7 @@ mod tests {
 
     #[test]
     fn test_query_point() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([10.0, 0.0, 0.0]), 1000)
@@ -1626,7 +1626,7 @@ mod tests {
 
     #[test]
     fn test_query_can_at() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
@@ -1640,7 +1640,7 @@ mod tests {
 
     #[test]
     fn test_query_chain() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.register_frame("b", Some("a")).unwrap();
@@ -1655,7 +1655,7 @@ mod tests {
 
     #[test]
     fn test_add_frame_root() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         let id = hf.add_frame("world").build().unwrap();
         assert_eq!(id, 0);
         assert!(hf.has_frame("world"));
@@ -1663,7 +1663,7 @@ mod tests {
 
     #[test]
     fn test_add_frame_with_parent() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.add_frame("world").build().unwrap();
         let id = hf.add_frame("base").parent("world").build().unwrap();
         assert_eq!(id, 1);
@@ -1672,7 +1672,7 @@ mod tests {
 
     #[test]
     fn test_add_static_frame() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.add_frame("world").build().unwrap();
         let id = hf
             .add_frame("camera")
@@ -1696,11 +1696,11 @@ mod tests {
     #[test]
     fn test_add_frame_equivalence() {
         // Builder should produce identical results to register_frame
-        let hf1 = HFrame::new();
+        let hf1 = TransformFrame::new();
         hf1.register_frame("world", None).unwrap();
         hf1.register_frame("arm", Some("world")).unwrap();
 
-        let hf2 = HFrame::new();
+        let hf2 = TransformFrame::new();
         hf2.add_frame("world").build().unwrap();
         hf2.add_frame("arm").parent("world").build().unwrap();
 
@@ -1710,7 +1710,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_strict_in_range_ok() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1726,7 +1726,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_strict_extrapolation_past() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1749,7 +1749,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_strict_extrapolation_future() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1772,7 +1772,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_strict_static_always_ok() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_static_frame(
             "fixed",
@@ -1790,7 +1790,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_strict_chain_any_hop_extrapolates() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.register_frame("b", Some("a")).unwrap();
@@ -1819,7 +1819,7 @@ mod tests {
 
     #[test]
     fn test_time_range() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1838,7 +1838,7 @@ mod tests {
 
     #[test]
     fn test_update_transform_rejects_nan() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1856,7 +1856,7 @@ mod tests {
 
     #[test]
     fn test_update_transform_by_id_rejects_inf() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         let a = hf.register_frame("a", Some("world")).unwrap();
 
@@ -1878,7 +1878,7 @@ mod tests {
 
     #[test]
     fn test_is_stale_fresh_data() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1891,7 +1891,7 @@ mod tests {
 
     #[test]
     fn test_is_stale_old_data() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1904,7 +1904,7 @@ mod tests {
 
     #[test]
     fn test_is_stale_never_updated() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1914,14 +1914,14 @@ mod tests {
 
     #[test]
     fn test_is_stale_unknown_frame() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         // Unknown frame → stale
         assert!(hf.is_stale("nonexistent", 1000, 10_000));
     }
 
     #[test]
     fn test_is_stale_static_frame_never_stale() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
@@ -1932,7 +1932,7 @@ mod tests {
 
     #[test]
     fn test_time_since_last_update_basic() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1945,7 +1945,7 @@ mod tests {
 
     #[test]
     fn test_time_since_last_update_never_updated() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1954,7 +1954,7 @@ mod tests {
 
     #[test]
     fn test_time_since_last_update_static_always_zero() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
@@ -1969,7 +1969,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_with_tolerance_within() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -1983,7 +1983,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_with_tolerance_exceeded() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -2004,7 +2004,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_with_tolerance_max_is_unlimited() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -2018,7 +2018,7 @@ mod tests {
 
     #[test]
     fn test_tf_at_with_tolerance_past_direction() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -2043,7 +2043,7 @@ mod tests {
 
     #[test]
     fn test_can_transform_at_in_range() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
@@ -2056,7 +2056,7 @@ mod tests {
 
     #[test]
     fn test_can_transform_at_out_of_range() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
@@ -2067,7 +2067,7 @@ mod tests {
 
     #[test]
     fn test_can_transform_at_no_path() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("isolated", None).unwrap();
         hf.update_transform("isolated", &Transform::identity(), 1000)
@@ -2078,7 +2078,7 @@ mod tests {
 
     #[test]
     fn test_can_transform_at_with_tolerance_ok() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
@@ -2092,7 +2092,7 @@ mod tests {
 
     #[test]
     fn test_is_stale_exact_boundary() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -2111,7 +2111,7 @@ mod tests {
 
     #[test]
     fn test_frames_as_dot_basic() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("base_link", Some("world")).unwrap();
         hf.register_static_frame(
@@ -2128,7 +2128,7 @@ mod tests {
         .unwrap();
 
         let dot = hf.frames_as_dot();
-        assert!(dot.starts_with("digraph hframe {"));
+        assert!(dot.starts_with("digraph transform_frame {"));
         assert!(dot.contains("world"));
         assert!(dot.contains("base_link"));
         assert!(dot.contains("camera"));
@@ -2138,7 +2138,7 @@ mod tests {
 
     #[test]
     fn test_frames_as_yaml_basic() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("arm", Some("world")).unwrap();
         hf.update_transform("arm", &Transform::identity(), 5000)
@@ -2155,7 +2155,7 @@ mod tests {
 
     #[test]
     fn test_format_tree_basic() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("base", Some("world")).unwrap();
         hf.register_frame("left_arm", Some("base")).unwrap();
@@ -2174,7 +2174,7 @@ mod tests {
 
     #[test]
     fn test_frames_as_yaml_static_frame() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
@@ -2190,7 +2190,7 @@ mod tests {
 
     #[test]
     fn test_tf_error_frame_not_registered() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
 
         let err = hf.tf("nonexistent", "world").unwrap_err();
@@ -2208,7 +2208,7 @@ mod tests {
 
     #[test]
     fn test_tf_error_disconnected_trees() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("map", None).unwrap();
         hf.register_frame("robot", Some("world")).unwrap();
@@ -2235,7 +2235,7 @@ mod tests {
 
     #[test]
     fn test_tf_error_no_data_published() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("sensor", Some("world")).unwrap();
         // sensor registered but no transform published
@@ -2266,7 +2266,7 @@ mod tests {
     #[test]
     fn test_wait_for_transform_already_available() {
         // If the transform is already available, wait returns immediately
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
@@ -2282,7 +2282,7 @@ mod tests {
     #[test]
     fn test_wait_for_transform_timeout() {
         // If the transform never arrives, wait should return Timeout error
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         // Frame "a" is registered but never has a path to "world" via parents
         hf.register_frame("a", None).unwrap();
@@ -2302,7 +2302,7 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let hf = Arc::new(HFrame::new());
+        let hf = Arc::new(TransformFrame::new());
         hf.register_frame("world", None).unwrap();
         hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -2337,7 +2337,7 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let hf = Arc::new(HFrame::new());
+        let hf = Arc::new(TransformFrame::new());
         hf.register_frame("world", None).unwrap();
 
         // Spawn a thread that waits — frame "sensor" doesn't exist yet
@@ -2369,7 +2369,7 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let hf = Arc::new(HFrame::new());
+        let hf = Arc::new(TransformFrame::new());
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -2398,7 +2398,7 @@ mod tests {
     #[cfg(feature = "wait")]
     #[test]
     fn test_wait_for_transform_at_timeout() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -2422,7 +2422,7 @@ mod tests {
     #[cfg(feature = "async-wait")]
     #[tokio::test]
     async fn test_async_wait_already_available() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
         hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
@@ -2438,7 +2438,7 @@ mod tests {
     #[cfg(feature = "async-wait")]
     #[tokio::test]
     async fn test_async_wait_timeout() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", None).unwrap(); // No path to world
 
@@ -2458,7 +2458,7 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        let hf = Arc::new(HFrame::new());
+        let hf = Arc::new(TransformFrame::new());
         hf.register_frame("world", None).unwrap();
         hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -2491,7 +2491,7 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        let hf = Arc::new(HFrame::new());
+        let hf = Arc::new(TransformFrame::new());
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 
@@ -2520,7 +2520,7 @@ mod tests {
     #[cfg(feature = "async-wait")]
     #[tokio::test]
     async fn test_async_wait_at_timeout() {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("world", None).unwrap();
         hf.register_frame("a", Some("world")).unwrap();
 

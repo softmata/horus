@@ -30,7 +30,9 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
                 "{}",
                 serde_json::to_string_pretty(&output).unwrap_or_default()
             );
-            return Ok(());
+            return Err(HorusError::Config(ConfigError::Other(
+                "Path not found".to_string(),
+            )));
         }
         println!(
             "{} Path not found: {}",
@@ -42,17 +44,47 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
         )));
     }
 
-    // For JSON mode, capture check result and output as JSON only
+    // For JSON mode, capture check result and output as JSON only.
+    // Suppress all human-readable output by temporarily redirecting stdout.
     if json {
-        // Run the check and only care about its Ok/Err result for JSON output
-        let result = if target_path.is_dir() {
-            check_workspace(&target_path, true)
-        } else {
-            check_single_file(&target_path, true)
+        use std::io::Write;
+
+        // Run the validation, capturing stdout to suppress human-readable output
+        let result = {
+            // Redirect stdout to /dev/null during check
+            let devnull = std::fs::File::create("/dev/null").ok();
+            let saved_stdout = devnull.as_ref().and_then(|f| {
+                use std::os::unix::io::AsRawFd;
+                let saved = unsafe { libc::dup(1) };
+                if saved >= 0 {
+                    unsafe { libc::dup2(f.as_raw_fd(), 1) };
+                    Some(saved)
+                } else {
+                    None
+                }
+            });
+            // Flush any pending stdout before redirecting back
+            let _ = std::io::stdout().flush();
+
+            let r = if target_path.is_dir() {
+                check_workspace(&target_path, true)
+            } else {
+                check_single_file(&target_path, true)
+            };
+
+            // Restore stdout
+            let _ = std::io::stdout().flush();
+            if let Some(saved) = saved_stdout {
+                unsafe {
+                    libc::dup2(saved, 1);
+                    libc::close(saved);
+                }
+            }
+            r
         };
+
         let valid = result.is_ok();
         let error_msg = result.as_ref().err().map(|e| e.to_string());
-        // Use eprintln-free JSON output
         let output = serde_json::json!({
             "path": target_path.display().to_string(),
             "valid": valid,
@@ -74,14 +106,16 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
 
 /// Scan an entire workspace directory
 fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
-    println!(
-        "{} Scanning workspace: {}\n",
-        cli_output::ICON_INFO.cyan().bold(),
-        target_path
-            .canonicalize()
-            .unwrap_or(target_path.to_path_buf())
-            .display()
-    );
+    if !quiet {
+        println!(
+            "{} Scanning workspace: {}\n",
+            cli_output::ICON_INFO.cyan().bold(),
+            target_path
+                .canonicalize()
+                .unwrap_or(target_path.to_path_buf())
+                .display()
+        );
+    }
 
     let mut total_errors = 0;
     let mut total_warnings = 0;
@@ -94,12 +128,16 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     for entry in WalkDir::new(target_path)
         .into_iter()
         .filter_entry(|e| {
+            // Allow the root entry (depth 0) through unconditionally so
+            // `horus check .` doesn't get rejected by the dot-prefix rule.
+            if e.depth() == 0 {
+                return true;
+            }
             let name = e.file_name().to_string_lossy();
             !name.starts_with('.')
                 && name != "target"
                 && name != "node_modules"
                 && name != "__pycache__"
-                && name != ".horus"
         })
         .filter_map(|e| e.ok())
     {
@@ -118,15 +156,20 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
         }
     }
 
-    println!("  Found {} horus.toml file(s)", horus_manifests.len());
-    println!("  Found {} Rust file(s)", rust_files.len());
-    println!("  Found {} Python file(s)\n", python_files.len());
+    if !quiet {
+        println!("  Found {} horus.toml file(s)", horus_manifests.len());
+        println!("  Found {} Rust file(s)", rust_files.len());
+        println!("  Found {} Python file(s)\n", python_files.len());
+    }
 
     // Find Cargo.toml directories for deep Rust checking
     let mut cargo_dirs: HashSet<PathBuf> = HashSet::new();
     for entry in WalkDir::new(target_path)
         .into_iter()
         .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
             let name = e.file_name().to_string_lossy();
             !name.starts_with('.') && name != "target" && name != "node_modules"
         })
@@ -143,15 +186,19 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     // PHASE 1: Validate horus.toml manifests
     // ═══════════════════════════════════════════════════════════
     if !horus_manifests.is_empty() {
-        println!("{}", "━".repeat(60).dimmed());
-        println!(
-            "{} Phase 1: Validating horus.toml manifests...\n",
-            cli_output::ICON_INFO.cyan().bold()
-        );
+        if !quiet {
+            println!("{}", "━".repeat(60).dimmed());
+            println!(
+                "{} Phase 1: Validating horus.toml manifests...\n",
+                cli_output::ICON_INFO.cyan().bold()
+            );
+        }
 
         for toml_path in &horus_manifests {
             let rel_path = toml_path.strip_prefix(target_path).unwrap_or(toml_path);
-            println!("  {} {}", "▸".cyan(), rel_path.display());
+            if !quiet {
+                println!("  {} {}", "▸".cyan(), rel_path.display());
+            }
 
             match HorusManifest::load_from(toml_path) {
                 Ok((manifest, _)) => {
@@ -188,7 +235,9 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     }
 
                     if file_errors.is_empty() {
-                        println!("      {} manifest valid", cli_output::ICON_SUCCESS.green());
+                        if !quiet {
+                            println!("      {} manifest valid", cli_output::ICON_SUCCESS.green());
+                        }
                     } else {
                         for err in &file_errors {
                             println!("      {} {}", cli_output::ICON_ERROR.red(), err);
@@ -213,11 +262,13 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     // PHASE 2: Deep Rust compilation check (cargo check)
     // ═══════════════════════════════════════════════════════════
     if !cargo_dirs.is_empty() {
-        println!("\n{}", "━".repeat(60).dimmed());
-        println!(
-            "{} Phase 2: Deep Rust check (cargo check)...\n",
-            cli_output::ICON_INFO.cyan().bold()
-        );
+        if !quiet {
+            println!("\n{}", "━".repeat(60).dimmed());
+            println!(
+                "{} Phase 2: Deep Rust check (cargo check)...\n",
+                cli_output::ICON_INFO.cyan().bold()
+            );
+        }
 
         for cargo_dir in &cargo_dirs {
             let rel_path = cargo_dir.strip_prefix(target_path).unwrap_or(cargo_dir);
@@ -226,8 +277,10 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             } else {
                 rel_path.to_str().unwrap_or(".")
             };
-            print!("  {} {} ... ", "▸".cyan(), display_path);
-            std::io::Write::flush(&mut std::io::stdout()).ok();
+            if !quiet {
+                print!("  {} {} ... ", "▸".cyan(), display_path);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }
 
             let output = std::process::Command::new("cargo")
                 .arg("check")
@@ -237,7 +290,9 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
 
             match output {
                 Ok(result) if result.status.success() => {
-                    println!("{}", cli_output::ICON_SUCCESS.green());
+                    if !quiet {
+                        println!("{}", cli_output::ICON_SUCCESS.green());
+                    }
                 }
                 Ok(result) => {
                     println!("{}", cli_output::ICON_ERROR.red());
@@ -262,21 +317,25 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     // PHASE 3: Python validation (syntax + imports)
     // ═══════════════════════════════════════════════════════════
     if !python_files.is_empty() {
-        println!("\n{}", "━".repeat(60).dimmed());
-        println!(
-            "{} Phase 3: Python validation (syntax + imports)...\n",
-            cli_output::ICON_INFO.cyan().bold()
-        );
+        if !quiet {
+            println!("\n{}", "━".repeat(60).dimmed());
+            println!(
+                "{} Phase 3: Python validation (syntax + imports)...\n",
+                cli_output::ICON_INFO.cyan().bold()
+            );
+        }
 
         for py_path in &python_files {
-            print!(
-                "  {} {} ",
-                "▸".cyan(),
-                py_path
-                    .strip_prefix(target_path)
-                    .unwrap_or(py_path)
-                    .display()
-            );
+            if !quiet {
+                print!(
+                    "  {} {} ",
+                    "▸".cyan(),
+                    py_path
+                        .strip_prefix(target_path)
+                        .unwrap_or(py_path)
+                        .display()
+                );
+            }
 
             // Syntax check
             let syntax_check = std::process::Command::new("python3")
@@ -321,7 +380,9 @@ except ImportError as e:
 
                     match import_check {
                         Ok(r) if r.status.success() => {
-                            println!("{}", cli_output::ICON_SUCCESS.green());
+                            if !quiet {
+                                println!("{}", cli_output::ICON_SUCCESS.green());
+                            }
                         }
                         Ok(r) => {
                             println!("{}", cli_output::ICON_WARN.yellow());
@@ -335,7 +396,11 @@ except ImportError as e:
                             }
                             total_warnings += 1;
                         }
-                        Err(_) => println!("{}", cli_output::ICON_SUCCESS.green()),
+                        Err(_) => {
+                            if !quiet {
+                                println!("{}", cli_output::ICON_SUCCESS.green());
+                            }
+                        }
                     }
                 }
                 Ok(result) => {
@@ -362,18 +427,22 @@ except ImportError as e:
     }
 
     // Summary
-    println!("\n{}", "━".repeat(60).dimmed());
-    println!(
-        "{} Workspace Check Summary\n",
-        cli_output::ICON_INFO.cyan().bold()
-    );
-    println!("  Files checked: {}", files_checked);
+    if !quiet {
+        println!("\n{}", "━".repeat(60).dimmed());
+        println!(
+            "{} Workspace Check Summary\n",
+            cli_output::ICON_INFO.cyan().bold()
+        );
+        println!("  Files checked: {}", files_checked);
+    }
 
     if total_errors == 0 && total_warnings == 0 {
-        println!(
-            "  Status: {} All checks passed!",
-            cli_output::ICON_SUCCESS.green()
-        );
+        if !quiet {
+            println!(
+                "  Status: {} All checks passed!",
+                cli_output::ICON_SUCCESS.green()
+            );
+        }
     } else {
         if total_errors > 0 {
             println!(

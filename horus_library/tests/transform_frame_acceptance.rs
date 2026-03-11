@@ -1,24 +1,24 @@
 //! TF2 Behavioral Equivalence Acceptance Tests
 //!
-//! These tests validate that HFrame produces the **same results** as ROS2 TF2
+//! These tests validate that TransformFrame produces the **same results** as ROS2 TF2
 //! for common robot scenarios. All expected values are **hand-computed** using
-//! matrix math — never derived by running HFrame and recording output.
+//! matrix math — never derived by running TransformFrame and recording output.
 //!
 //! ## Convention Mapping
 //!
-//! | HFrame                          | TF2                                     |
+//! | TransformFrame                          | TF2                                     |
 //! |---------------------------------|-----------------------------------------|
 //! | `tf("src", "dst")`              | `lookupTransform("dst", "src")`         |
 //! | `update_transform("child", tf)` | `TransformBroadcaster.sendTransform()`  |
 //! | Quaternion: `[x, y, z, w]`      | Same: `[x, y, z, w]`                   |
 //! | `transform_point(src, dst, p)`  | Apply lookupTransform result to point   |
 //!
-//! **Argument order is reversed**: HFrame uses (source, destination),
+//! **Argument order is reversed**: TransformFrame uses (source, destination),
 //! TF2 uses (target/destination, source). The transform semantics are identical:
 //! both return T such that `T * p_source = p_destination`.
 
 use horus_core::error::HorusError;
-use horus_library::hframe::{HFrame, Transform};
+use horus_library::transform_frame::{TransformFrame, Transform};
 
 const EPSILON: f64 = 1e-10;
 const FRAC_1_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
@@ -98,8 +98,8 @@ fn assert_transform_eq(actual: &Transform, expected: &Transform, msg: &str) {
 //
 // Result: tf("laser", "map") = { t: [1.0, 0.2, 0.0], r: yaw(π/2) }
 
-fn setup_mobile_robot() -> HFrame {
-    let hf = HFrame::new();
+fn setup_mobile_robot() -> TransformFrame {
+    let hf = TransformFrame::new();
     hf.register_frame("map", None).unwrap();
     hf.register_frame("odom", Some("map")).unwrap();
     hf.register_frame("base_link", Some("odom")).unwrap();
@@ -191,8 +191,8 @@ fn accept_mobile_robot_reverse_direction() {
 //
 // The cameras are 10cm apart along the Y axis.
 
-fn setup_multi_sensor() -> HFrame {
-    let hf = HFrame::new();
+fn setup_multi_sensor() -> TransformFrame {
+    let hf = TransformFrame::new();
     hf.register_frame("base_link", None).unwrap();
     hf.register_frame("camera_rgb", Some("base_link")).unwrap();
     hf.register_frame("camera_depth", Some("base_link"))
@@ -271,8 +271,8 @@ fn accept_multi_sensor_point_projection() {
 // elbow bends up, gripper ends at [1.0, 0, 1.5] with identity orientation
 // because the two 90° rotations cancel.
 
-fn setup_arm() -> HFrame {
-    let hf = HFrame::new();
+fn setup_arm() -> TransformFrame {
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("shoulder", Some("world")).unwrap();
     hf.register_frame("elbow", Some("shoulder")).unwrap();
@@ -340,7 +340,7 @@ fn accept_arm_tool_tip_in_world() {
 #[test]
 fn accept_convention_bidirectional_inverse() {
     // tf("A", "B") must equal tf("B", "A").inverse()
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -356,7 +356,7 @@ fn accept_convention_bidirectional_inverse() {
 
 #[test]
 fn accept_convention_self_transform_is_identity() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
     hf.update_transform(
@@ -377,7 +377,7 @@ fn accept_convention_transitive_composition() {
     // For any point p in frame A:
     //   tf("A","C").transform_point(p)
     //     == tf("B","C").transform_point(tf("A","B").transform_point(p))
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("body", Some("world")).unwrap();
     hf.register_frame("sensor", Some("body")).unwrap();
@@ -409,7 +409,7 @@ fn accept_convention_transitive_composition() {
 #[test]
 fn accept_convention_point_round_trip() {
     // Transforming a point A→B then B→A must return the original
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("robot", Some("world")).unwrap();
 
@@ -435,7 +435,7 @@ fn accept_convention_point_round_trip() {
 
 #[test]
 fn accept_time_interpolation_midpoint() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("robot", Some("world")).unwrap();
 
@@ -450,7 +450,7 @@ fn accept_time_interpolation_midpoint() {
 
 #[test]
 fn accept_time_interpolation_quarter() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("robot", Some("world")).unwrap();
 
@@ -467,7 +467,7 @@ fn accept_time_interpolation_quarter() {
 fn accept_time_interpolation_with_rotation() {
     // Interpolating rotation uses SLERP.
     // From yaw=0 to yaw=π/2, at t=0.5 → yaw=π/4
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("robot", Some("world")).unwrap();
 
@@ -492,7 +492,7 @@ fn accept_static_available_at_any_time() {
     // Static transforms (like camera calibration) must be queryable
     // at any timestamp — past, present, or future.
     // This matches tf2_ros::StaticTransformBroadcaster behavior.
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("base_link", None).unwrap();
     hf.register_static_frame(
         "camera",
@@ -520,7 +520,7 @@ fn accept_static_available_at_any_time() {
 #[test]
 fn accept_static_strict_no_extrapolation() {
     // Static frames should never trigger extrapolation errors even with strict mode.
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_static_frame(
         "fixed_sensor",
@@ -549,8 +549,8 @@ fn accept_static_strict_no_extrapolation() {
 // tf("left", "right") goes through base_link (sibling traversal).
 // tf("left", "world_fixed") goes through map (cross-branch traversal).
 
-fn setup_branching_tree() -> HFrame {
-    let hf = HFrame::new();
+fn setup_branching_tree() -> TransformFrame {
+    let hf = TransformFrame::new();
     hf.register_frame("map", None).unwrap();
     hf.register_frame("odom", Some("map")).unwrap();
     hf.register_frame("world_fixed", Some("map")).unwrap();
@@ -671,7 +671,7 @@ fn accept_quaternion_composed_rotation() {
 
 #[test]
 fn accept_rejects_nan_in_transform() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("bad", Some("world")).unwrap();
 
@@ -685,7 +685,7 @@ fn accept_rejects_nan_in_transform() {
 
 #[test]
 fn accept_rejects_inf_in_rotation() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("bad", Some("world")).unwrap();
 
@@ -699,7 +699,7 @@ fn accept_rejects_inf_in_rotation() {
 
 #[test]
 fn accept_rejects_zero_quaternion() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("bad", Some("world")).unwrap();
 
@@ -718,7 +718,7 @@ fn accept_rejects_zero_quaternion() {
 #[test]
 fn accept_deterministic_repeated_queries() {
     // The same query must return bit-identical results every time
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("robot", Some("world")).unwrap();
 
@@ -746,7 +746,7 @@ fn accept_deterministic_repeated_queries() {
 #[test]
 fn accept_large_coordinate_precision() {
     // GPS-scale coordinates (hundreds of km) should maintain precision
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("earth", None).unwrap();
     hf.register_frame("utm_zone", Some("earth")).unwrap();
 
@@ -784,7 +784,7 @@ fn accept_large_coordinate_precision() {
 
 #[test]
 fn accept_mobile_manipulator_tool_in_map() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("map", None).unwrap();
     hf.register_frame("odom", Some("map")).unwrap();
     hf.register_frame("base_link", Some("odom")).unwrap();

@@ -1299,9 +1299,9 @@ fn test_frames_alias_works() {
 }
 
 #[test]
-fn test_hf_backward_compat() {
+fn test_tf_backward_compat() {
     horus_cmd()
-        .args(["hf", "--help"])
+        .args(["tf", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Coordinate frame"));

@@ -4,7 +4,7 @@ mod config;
 mod depth_image;
 mod dlpack_utils;
 pub mod errors;
-mod hframe;
+mod transform_frame;
 mod image;
 mod messages;
 mod node;
@@ -16,7 +16,7 @@ mod topic;
 mod types;
 
 use config::PySchedulerConfig;
-use hframe::{PyHFrame, PyHFrameConfig, PyTransform};
+use transform_frame::{PyTransformFrame, PyTransformFrameConfig, PyTransform};
 use node::{PyNode, PyNodeInfo, PyNodeState};
 use scheduler::{PyMiss, PyScheduler};
 use topic::PyTopic;
@@ -35,11 +35,11 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMiss>()?;
     m.add_class::<Priority>()?;
 
-    // HFrame transform system
+    // TransformFrame transform system
     m.add_class::<PyTransform>()?;
-    m.add_class::<PyHFrame>()?;
-    m.add_class::<PyHFrameConfig>()?;
-    m.add_function(wrap_pyfunction!(hframe::get_timestamp_ns, m)?)?;
+    m.add_class::<PyTransformFrame>()?;
+    m.add_class::<PyTransformFrameConfig>()?;
+    m.add_function(wrap_pyfunction!(transform_frame::get_timestamp_ns, m)?)?;
 
     // GPU utility functions
     m.add_function(wrap_pyfunction!(tensor::cuda_is_available, m)?)?;

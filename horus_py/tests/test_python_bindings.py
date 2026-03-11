@@ -5,7 +5,7 @@ Tests cover:
 - Priority constants and conversion methods
 - NodeState constants
 - Transform creation and field access
-- HFrame transform system
+- TransformFrame transform system
 - get_version() utility
 - Node creation and lifecycle
 - Topic creation and basic send/recv
@@ -207,47 +207,47 @@ class TestTransform:
 
 
 # ============================================================================
-# HFrame
+# TransformFrame
 # ============================================================================
 
-class TestHFrame:
-    """Test PyHFrame bindings."""
+class TestTransformFrame:
+    """Test PyTransformFrame bindings."""
 
-    def test_create_hframe(self):
-        from horus._horus import HFrame
-        hf = HFrame()
+    def test_create_transform_frame(self):
+        from horus._horus import TransformFrame
+        tf = TransformFrame()
         # Should not raise
         assert hf is not None
 
     def test_register_frame(self):
-        from horus._horus import HFrame, Transform
-        hf = HFrame()
-        world_id = hf.register_frame("world")
-        base_id = hf.register_frame("base_link", parent="world")
-        assert hf.has_frame("world")
-        assert hf.has_frame("base_link")
-        assert hf.frame_count() == 2
+        from horus._horus import TransformFrame, Transform
+        tf = TransformFrame()
+        world_id = tf.register_frame("world")
+        base_id = tf.register_frame("base_link", parent="world")
+        assert tf.has_frame("world")
+        assert tf.has_frame("base_link")
+        assert tf.frame_count() == 2
 
     def test_update_and_query_transform(self):
-        from horus._horus import HFrame, Transform
-        hf = HFrame()
-        hf.register_frame("world")
-        hf.register_frame("base_link", parent="world")
+        from horus._horus import TransformFrame, Transform
+        tf = TransformFrame()
+        tf.register_frame("world")
+        tf.register_frame("base_link", parent="world")
         tf = Transform(translation=[1.0, 2.0, 3.0])
-        hf.update_transform("base_link", tf)
+        tf.update_transform("base_link", tf)
         # tf(base_link, world) = transform from child to parent = the direct transform
-        result = hf.tf("base_link", "world")
+        result = tf.tf("base_link", "world")
         assert result is not None
         assert abs(result.translation[0] - 1.0) < 0.001
         assert abs(result.translation[1] - 2.0) < 0.001
         assert abs(result.translation[2] - 3.0) < 0.001
 
     def test_all_frames(self):
-        from horus._horus import HFrame
-        hf = HFrame()
-        hf.register_frame("world")
-        hf.register_frame("base_link", parent="world")
-        frames = hf.all_frames()
+        from horus._horus import TransformFrame
+        tf = TransformFrame()
+        tf.register_frame("world")
+        tf.register_frame("base_link", parent="world")
+        frames = tf.all_frames()
         assert "world" in frames
         assert "base_link" in frames
 

@@ -46,7 +46,7 @@ impl TuiDashboard {
                     Tab::Nodes => self.draw_nodes_simple(f, horizontal_chunks[0]),
                     Tab::Topics => self.draw_topics_simple(f, horizontal_chunks[0]),
                     Tab::Network => self.draw_network(f, horizontal_chunks[0]),
-                    Tab::HFrame => self.draw_hframe(f, horizontal_chunks[0]),
+                    Tab::TransformFrame => self.draw_transform_frame(f, horizontal_chunks[0]),
                     Tab::Packages => self.draw_packages(f, horizontal_chunks[0]),
                     Tab::Parameters => self.draw_parameters(f, horizontal_chunks[0]),
                     Tab::Recordings => self.draw_recordings(f, horizontal_chunks[0]),
@@ -65,7 +65,7 @@ impl TuiDashboard {
                     Tab::Nodes => self.draw_nodes(f, content_area),
                     Tab::Topics => self.draw_topics(f, content_area),
                     Tab::Network => self.draw_network(f, content_area),
-                    Tab::HFrame => self.draw_hframe(f, content_area),
+                    Tab::TransformFrame => self.draw_transform_frame(f, content_area),
                     Tab::Packages => self.draw_packages(f, content_area),
                     Tab::Parameters => self.draw_parameters(f, content_area),
                     Tab::Recordings => self.draw_recordings(f, content_area),
@@ -604,13 +604,13 @@ impl TuiDashboard {
         f.render_widget(table, chunks[1]);
     }
 
-    /// Draw the HFrame (coordinate transform) visualization
-    fn draw_hframe(&self, f: &mut Frame, area: Rect) {
-        use crate::commands::hf::HFrameReader;
+    /// Draw the TransformFrame (coordinate transform) visualization
+    fn draw_transform_frame(&self, f: &mut Frame, area: Rect) {
+        use crate::commands::tf::TransformFrameReader;
         use std::collections::{HashMap, HashSet};
 
         // Read live frame data from shared memory
-        let mut reader = HFrameReader::new();
+        let mut reader = TransformFrameReader::new();
         let has_data = reader.read_from_shm();
 
         // Split into summary and frame tree
@@ -619,7 +619,7 @@ impl TuiDashboard {
             .constraints([Constraint::Length(10), Constraint::Min(10)])
             .split(area);
 
-        // Draw HFrame summary panel
+        // Draw TransformFrame summary panel
         let summary_text = if !has_data || reader.frame_data.is_empty() {
             vec![
                 Line::from(vec![
@@ -635,17 +635,17 @@ impl TuiDashboard {
                             .add_modifier(Modifier::ITALIC),
                     ),
                     Span::styled(
-                        "Start a HORUS application with HFrame publishing enabled",
+                        "Start a HORUS application with TransformFrame publishing enabled",
                         Style::default().fg(Color::Gray),
                     ),
                 ]),
                 Line::from(vec![Span::styled(
-                    "     Use sim3d or add HFramePublisher to your nodes",
+                    "     Use sim3d or add TransformFramePublisher to your nodes",
                     Style::default().fg(Color::Gray),
                 )]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "CLI: horus hf list | horus hf tree | horus hf echo <src> <dst>",
+                    "CLI: horus tf list | horus tf tree | horus tf echo <src> <dst>",
                     Style::default().fg(Color::DarkGray),
                 )]),
             ]
@@ -721,7 +721,7 @@ impl TuiDashboard {
 
         let summary_paragraph = Paragraph::new(summary_text).block(
             Block::default()
-                .title("HFrame - Coordinate Transforms")
+                .title("TransformFrame - Coordinate Transforms")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Magenta)),
         );
@@ -775,7 +775,7 @@ impl TuiDashboard {
             fn build_tree_lines(
                 frame: &str,
                 tree: &HashMap<String, Vec<String>>,
-                frame_data: &HashMap<String, crate::commands::hf::FrameData>,
+                frame_data: &HashMap<String, crate::commands::tf::FrameData>,
                 prefix: &str,
                 is_last: bool,
                 lines: &mut Vec<Line<'static>>,

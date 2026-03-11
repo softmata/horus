@@ -12,14 +12,14 @@
 //!     .build()?;
 //! ```
 
-use super::HFrame;
-use crate::hframe::transform::Transform;
-use crate::hframe::types::FrameId;
+use super::TransformFrame;
+use crate::transform_frame::transform::Transform;
+use crate::transform_frame::types::FrameId;
 use horus_core::HorusResult;
 
 /// Builder for registering frames (both dynamic and static).
 ///
-/// Created by [`HFrame::add_frame`].
+/// Created by [`TransformFrame::add_frame`].
 ///
 /// # Examples
 ///
@@ -37,14 +37,14 @@ use horus_core::HorusResult;
 ///     .build()?;
 /// ```
 pub struct FrameBuilder<'a> {
-    hf: &'a HFrame,
+    hf: &'a TransformFrame,
     name: &'a str,
     parent: Option<&'a str>,
     static_tf: Option<Transform>,
 }
 
 impl<'a> FrameBuilder<'a> {
-    pub(crate) fn new(hf: &'a HFrame, name: &'a str) -> Self {
+    pub(crate) fn new(hf: &'a TransformFrame, name: &'a str) -> Self {
         Self {
             hf,
             name,

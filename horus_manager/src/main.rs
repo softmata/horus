@@ -32,11 +32,11 @@ Project:
 Introspection:
   topic, t          Topic interaction (list, echo, publish, bw)
   node, n           Node management (list, info, kill)
-  service, srv      Service interaction (list, call, type, find)
-  action, a         Action interaction (list, info, send_goal, cancel_goal)
+  service, srv      Service interaction (list, call, info, find)
+  action, a         Action interaction (list, info, send-goal, cancel-goal)
   param, p          Parameter management (get, set, list, delete)
   frame, frames     Coordinate frame operations (list, echo, tree)
-  msg               Message type introspection
+  msg, m            Message type introspection
   log               View and filter logs
   blackbox, bb      Inspect the BlackBox flight recorder
   monitor, mon      Monitor nodes, topics, and system health
@@ -81,9 +81,9 @@ struct Cli {
     #[arg(short = 'v', long = "verbose", global = true)]
     verbose: bool,
 
-    /// Suppress informational output
-    #[arg(short = 'Q', long = "quiet-all", global = true)]
-    quiet_all: bool,
+    /// Suppress progress and informational output
+    #[arg(short = 'q', long = "quiet", global = true)]
+    quiet: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -110,7 +110,7 @@ enum Commands {
         #[arg(short = 'p', long = "python", conflicts_with = "rust")]
         python: bool,
         /// Use Rust
-        #[arg(short = 'r', long = "rust", conflicts_with = "python")]
+        #[arg(short = 'R', long = "rust", conflicts_with = "python")]
         rust: bool,
         /// Use Rust with macros
         #[arg(short = 'm', long = "macro", conflicts_with = "python")]
@@ -130,10 +130,6 @@ enum Commands {
         /// Clean build (remove cache)
         #[arg(short = 'c', long = "clean")]
         clean: bool,
-
-        /// Suppress progress indicators
-        #[arg(short = 'q', long = "quiet")]
-        quiet: bool,
 
         /// Override detected drivers (comma-separated list)
         /// Example: --drivers camera,lidar,imu
@@ -167,10 +163,6 @@ enum Commands {
         /// Clean build (remove cache)
         #[arg(short = 'c', long = "clean")]
         clean: bool,
-
-        /// Suppress progress indicators
-        #[arg(short = 'q', long = "quiet")]
-        quiet: bool,
 
         /// Override detected drivers (comma-separated list)
         /// Example: --drivers camera,lidar,imu
@@ -221,8 +213,8 @@ enum Commands {
         #[arg(long = "no-cleanup")]
         no_cleanup: bool,
 
-        /// Verbose output
-        #[arg(short = 'v', long = "verbose")]
+        /// Show test stdout/stderr (verbose output)
+        #[arg(long = "verbose")]
         verbose: bool,
 
         /// Override detected drivers (comma-separated list)
@@ -242,10 +234,6 @@ enum Commands {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
 
-        /// Only show errors, suppress warnings
-        #[arg(short = 'q', long = "quiet")]
-        quiet: bool,
-
         /// Output as JSON
         #[arg(long = "json")]
         json: bool,
@@ -254,7 +242,7 @@ enum Commands {
     /// Clean build artifacts and shared memory
     Clean {
         /// Only clean shared memory
-        #[arg(long = "shm", conflicts_with = "all")]
+        #[arg(long = "shm")]
         shm: bool,
 
         /// Clean everything (build cache + shared memory + horus cache)
@@ -320,20 +308,20 @@ enum Commands {
     },
 
     /// Coordinate frame operations (list, echo, tree)
-    #[command(name = "frame", visible_alias = "frames", alias = "hf")]
+    #[command(name = "frame", visible_alias = "frames", alias = "tf")]
     Frame {
         #[command(subcommand)]
-        command: HfCommands,
+        command: TfCommands,
     },
 
-    /// Service interaction (list, call, type, find)
+    /// Service interaction (list, call, info, find)
     #[command(visible_alias = "srv")]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
     },
 
-    /// Action interaction (list, info, send_goal, cancel_goal)
+    /// Action interaction (list, info, send-goal, cancel-goal)
     #[command(visible_alias = "a")]
     Action {
         #[command(subcommand)]
@@ -341,6 +329,7 @@ enum Commands {
     },
 
     /// Message type introspection
+    #[command(visible_alias = "m")]
     Msg {
         #[command(subcommand)]
         command: MsgCommands,
@@ -385,8 +374,8 @@ enum Commands {
         anomalies: bool,
 
         /// Follow mode — stream new events as they arrive (like tail -f)
-        #[arg(short = 'f', long = "tail")]
-        tail: bool,
+        #[arg(short = 'f', long = "follow")]
+        follow: bool,
 
         /// Filter by tick range (e.g. "4500-4510" or single tick "4500")
         #[arg(short = 't', long = "tick")]
@@ -429,7 +418,7 @@ enum Commands {
         tui: bool,
 
         /// Reset password before starting
-        #[arg(short = 'r', long = "reset-password")]
+        #[arg(long = "reset-password")]
         reset_password: bool,
 
         /// Disable authentication (no password required).
@@ -566,7 +555,7 @@ enum Commands {
         /// Plugin command name to disable
         command: String,
         /// Reason for disabling
-        #[arg(short = 'r', long = "reason")]
+        #[arg(long = "reason")]
         reason: Option<String>,
     },
 
@@ -621,7 +610,7 @@ enum Commands {
         arch: Option<String>,
 
         /// Run the project after deploying
-        #[arg(short = 'r', long = "run")]
+        #[arg(long = "run")]
         run_after: bool,
 
         /// Build in debug mode instead of release
@@ -656,14 +645,6 @@ enum Commands {
         #[command(subcommand)]
         command: AuthCommands,
     },
-
-    /// Login to the HORUS registry (alias for `auth login`)
-    #[command(hide = true)]
-    Login,
-
-    /// Logout from the HORUS registry (alias for `auth logout`)
-    #[command(hide = true)]
-    Logout,
 
     /// Cache management (info, clean, purge)
     Cache {
@@ -728,7 +709,7 @@ enum EnvCommands {
     },
 
     /// Show details of an environment
-    Show {
+    Info {
         /// Environment ID (e.g., horus-env-abc123)
         id: String,
         /// Output as JSON
@@ -977,7 +958,7 @@ enum TopicCommands {
 }
 
 #[derive(Subcommand)]
-enum HfCommands {
+enum TfCommands {
     /// List all coordinate frames
     List {
         /// Show detailed information
@@ -1004,6 +985,14 @@ enum HfCommands {
         /// Number of transforms to echo (optional)
         #[arg(short = 'n', long = "count")]
         count: Option<usize>,
+
+        /// Print one result and exit
+        #[arg(long = "once", conflicts_with = "count")]
+        once: bool,
+
+        /// Exit after N seconds
+        #[arg(short = 't', long = "timeout")]
+        timeout: Option<f64>,
     },
 
     /// Show frame tree structure (like view_frames)
@@ -1142,7 +1131,7 @@ enum ParamCommands {
     /// Save parameters to a YAML file
     Save {
         /// Path to YAML file (default: .horus/config/params.yaml)
-        #[arg(short = 'o', long = "output")]
+        #[arg(value_name = "PATH")]
         file: Option<std::path::PathBuf>,
     },
 
@@ -1170,7 +1159,7 @@ enum ActionCommands {
     },
 
     /// Send a goal to an action server
-    #[command(name = "send_goal")]
+    #[command(name = "send-goal")]
     SendGoal {
         /// Action name
         name: String,
@@ -1188,7 +1177,7 @@ enum ActionCommands {
     },
 
     /// Cancel a goal on an action server
-    #[command(name = "cancel_goal")]
+    #[command(name = "cancel-goal")]
     CancelGoal {
         /// Action name
         name: String,
@@ -1226,7 +1215,7 @@ enum ServiceCommands {
     },
 
     /// Show type info for a service
-    Type {
+    Info {
         /// Service name
         name: String,
     },
@@ -1256,7 +1245,7 @@ enum MsgCommands {
     },
 
     /// Show message type definition
-    Show {
+    Info {
         /// Message type name
         name: String,
         /// Output as JSON
@@ -1264,8 +1253,8 @@ enum MsgCommands {
         json: bool,
     },
 
-    /// Show message type MD5 hash
-    Md5 {
+    /// Show message type definition hash
+    Hash {
         /// Message type name
         name: String,
         /// Output as JSON
@@ -1350,12 +1339,17 @@ fn main() {
     // to being mirrored to stderr for console visibility.
     let log_level = if cli.verbose {
         "debug"
-    } else if cli.quiet_all {
+    } else if cli.quiet {
         "error"
     } else {
         "warn"
     };
     horus_core::core::log_bridge::try_init_log_bridge(log_level);
+
+    // Propagate --quiet to the progress/cli_output quiet mode
+    if cli.quiet {
+        horus_manager::progress::set_quiet(true);
+    }
 
     log::debug!("HORUS CLI v{}", env!("CARGO_PKG_VERSION"));
 
@@ -1368,8 +1362,40 @@ fn main() {
         if let Some(hint) = e.help() {
             eprintln!("  {} {}", "hint:".yellow().bold(), hint);
         }
-        std::process::exit(1);
+        // Propagate the child process exit code if available, otherwise default to 1.
+        // Error messages from run_rust carry patterns like:
+        //   "Process exited with code 42"
+        //   "One or more processes failed (worst exit code: 42)"
+        let exit_code = extract_exit_code(&e.to_string()).unwrap_or(1);
+        std::process::exit(exit_code);
     }
+}
+
+/// Extract a process exit code from an error message.
+///
+/// Recognises two patterns produced by the run subsystem:
+///   - "Process exited with code <N>"         (single-file mode)
+///   - "worst exit code: <N>"                 (multi-file mode)
+fn extract_exit_code(msg: &str) -> Option<i32> {
+    // Single-file: "Process exited with code 42"
+    if let Some(pos) = msg.find("Process exited with code ") {
+        let after = &msg[pos + "Process exited with code ".len()..];
+        if let Some(num_str) = after.split(|c: char| !c.is_ascii_digit() && c != '-').next() {
+            if let Ok(code) = num_str.parse::<i32>() {
+                return Some(code);
+            }
+        }
+    }
+    // Multi-file: "worst exit code: 42)"
+    if let Some(pos) = msg.find("worst exit code: ") {
+        let after = &msg[pos + "worst exit code: ".len()..];
+        if let Some(num_str) = after.split(|c: char| !c.is_ascii_digit() && c != '-').next() {
+            if let Ok(code) = num_str.parse::<i32>() {
+                return Some(code);
+            }
+        }
+    }
+    None
 }
 
 fn run_command(command: Commands) -> HorusResult<()> {
@@ -1399,15 +1425,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
             files,
             release,
             clean,
-            quiet,
             drivers,
             enable,
             args,
             record,
         } => {
-            // Set quiet mode for progress indicators
-            horus_manager::progress::set_quiet(quiet);
-
             // SAFETY: These set_var calls run in single-threaded main() before
             // any child processes or threads are spawned. They configure env vars
             // that child processes inherit via process environment.
@@ -1434,13 +1456,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             files,
             release,
             clean,
-            quiet,
             drivers,
             enable,
         } => {
-            // Set quiet mode for progress indicators
-            horus_manager::progress::set_quiet(quiet);
-
             // SAFETY: Single-threaded main() context, before any child processes.
             if let Some(ref driver_list) = drivers {
                 std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
@@ -1453,7 +1471,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             commands::run::execute_build_only(files, release, clean).map_err(HorusError::from)
         }
 
-        Commands::Check { path, quiet, json } => commands::check::run_check(path, quiet, json),
+        Commands::Check { path, json } => {
+            commands::check::run_check(path, horus_manager::progress::is_quiet(), json)
+        }
 
         Commands::Test {
             filter,
@@ -1580,7 +1600,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 request,
                 timeout,
             } => commands::service::call_service(&name, &request, timeout),
-            ServiceCommands::Type { name } => commands::service::service_type(&name),
+            ServiceCommands::Info { name } => commands::service::service_type(&name),
             ServiceCommands::Find { filter } => commands::service::find_services(&filter),
         },
 
@@ -1609,17 +1629,22 @@ fn run_command(command: Commands) -> HorusResult<()> {
         },
 
         Commands::Frame { command } => match command {
-            HfCommands::List { verbose, json } => commands::hf::list_frames(verbose, json),
-            HfCommands::Echo {
+            TfCommands::List { verbose, json } => commands::tf::list_frames(verbose, json),
+            TfCommands::Echo {
                 source,
                 target,
                 rate,
                 count,
-            } => commands::hf::echo_transform(&source, &target, rate, count),
-            HfCommands::Tree { output } => commands::hf::view_frames(output.as_deref()),
-            HfCommands::Info { name } => commands::hf::frame_info(&name),
-            HfCommands::Can { source, target } => commands::hf::can_transform(&source, &target),
-            HfCommands::Hz { window } => commands::hf::monitor_rates(window),
+                once,
+                timeout,
+            } => {
+                let effective_count = if once { Some(1) } else { count };
+                commands::tf::echo_transform(&source, &target, rate, effective_count, timeout)
+            }
+            TfCommands::Tree { output } => commands::tf::view_frames(output.as_deref()),
+            TfCommands::Info { name } => commands::tf::frame_info(&name),
+            TfCommands::Can { source, target } => commands::tf::can_transform(&source, &target),
+            TfCommands::Hz { window } => commands::tf::monitor_rates(window),
         },
 
         #[cfg(feature = "mdns")]
@@ -1641,7 +1666,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 "  Reinstall with: {}",
                 "cargo install horus_manager --features mdns".cyan()
             );
-            Ok(())
+            Err(HorusError::Config(horus_core::error::ConfigError::Other(
+                "The 'discover' command requires the 'mdns' feature".to_string(),
+            )))
         }
 
         Commands::Clean {
@@ -1672,8 +1699,8 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 filter,
                 json,
             } => commands::msg::list_messages(verbose, filter.as_deref(), json),
-            MsgCommands::Show { name, json } => commands::msg::show_message(&name, json),
-            MsgCommands::Md5 { name, json } => commands::msg::message_hash(&name, json),
+            MsgCommands::Info { name, json } => commands::msg::show_message(&name, json),
+            MsgCommands::Hash { name, json } => commands::msg::message_hash(&name, json),
         },
 
         Commands::Log {
@@ -1779,7 +1806,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             EnvCommands::Freeze { output, publish } => commands::env::run_freeze(output, publish),
             EnvCommands::Restore { source } => commands::env::run_restore(source),
             EnvCommands::List { json } => commands::env::run_list(json),
-            EnvCommands::Show { id, json } => commands::env::run_show(id, json),
+            EnvCommands::Info { id, json } => commands::env::run_show(id, json),
         },
 
         Commands::Auth { command } => match command {
@@ -1794,10 +1821,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 AuthKeysCommands::Revoke { key_id } => commands::github_auth::keys_revoke(&key_id),
             },
         },
-
-        // Top-level aliases for common auth commands
-        Commands::Login => commands::github_auth::login(),
-        Commands::Logout => commands::github_auth::logout(),
 
         Commands::Deploy {
             target,
@@ -1905,7 +1928,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::Blackbox {
             anomalies,
-            tail,
+            follow,
             tick,
             node,
             event,
@@ -1915,7 +1938,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             clear,
         } => commands::blackbox::run_blackbox(commands::blackbox::BlackboxArgs {
             anomalies_only: anomalies,
-            tail,
+            tail: follow,
             tick_range: tick,
             node_filter: node,
             event_filter: event,

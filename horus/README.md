@@ -19,7 +19,7 @@ use horus::prelude::*;
 The `horus` crate re-exports everything you need:
 
 - **Core Framework** - Node trait, Scheduler, Topic communication
-- **Standard Library** - Message types (CmdVel, Imu, LaserScan, Pose2D, Twist, etc.) and HFrame coordinate transforms
+- **Standard Library** - Message types (CmdVel, Imu, LaserScan, Pose2D, Twist, etc.) and TransformFrame coordinate transforms
 - **Macros** - `node!` and `message!` macros for zero-boilerplate development
 - **Common Types** - Result/Error types, Duration, Arc, Mutex, Serde traits
 

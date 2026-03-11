@@ -4,7 +4,7 @@
 //! import from `horus::prelude::*`.
 
 #[doc(hidden)]
-pub mod hframe;
+pub mod transform_frame;
 #[doc(hidden)]
 pub mod messages;
 

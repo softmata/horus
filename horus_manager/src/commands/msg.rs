@@ -297,10 +297,15 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
         }
     }
 
-    // 3. Known install paths
+    // 3. Known install/development paths
     if let Some(home) = dirs::home_dir() {
         search_paths.push(home.join(".horus/library/messages"));
         search_paths.push(home.join("horus/horus_library/messages"));
+        search_paths.push(home.join("softmata/horus/horus_library/messages"));
+    }
+    // 3b. HORUS_SOURCE env var (used by horus run for workspace resolution)
+    if let Ok(source_root) = std::env::var("HORUS_SOURCE") {
+        search_paths.push(Path::new(&source_root).join("horus_library/messages"));
     }
     search_paths.push(Path::new("/opt/horus/library/messages").to_path_buf());
     search_paths.push(Path::new("/usr/local/share/horus/messages").to_path_buf());

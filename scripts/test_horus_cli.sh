@@ -277,7 +277,7 @@ test_param_dump() {
 }
 
 #######################################
-# HFrame Tests
+# TransformFrame Tests
 #######################################
 
 test_hf_list() {
@@ -674,7 +674,7 @@ run_full_tests() {
     test_param_dump
 
     echo ""
-    echo "--- HFrame ---"
+    echo "--- TransformFrame ---"
     test_hf_list
     test_hf_tree
     test_hf_can_invalid

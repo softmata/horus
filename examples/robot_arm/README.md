@@ -6,7 +6,7 @@ A 6-DOF manipulator that sweeps through predefined waypoints. Demonstrates joint
 
 - Complex URDF loading (7 links, 6 revolute joints with limits)
 - Joint-space trajectory interpolation
-- Frame transform trees with `HFrame`
+- Frame transform trees with `TransformFrame`
 - Defining services with `service!`
 - Querying transforms between frames
 

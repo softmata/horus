@@ -11,7 +11,7 @@
 //!
 //! | File                     | Primitive          | Fix verified                                  |
 //! |:-------------------------|:-------------------|:----------------------------------------------|
-//! | `loom_seqlock.rs`*       | HFrame seqlock     | Release/Acquire ordering, no torn reads       |
+//! | `loom_seqlock.rs`*       | TransformFrame seqlock     | Release/Acquire ordering, no torn reads       |
 //! | **this file**            | Watchdog           | AtomicU64 heartbeat, no TOCTOU false-positive |
 //!
 //! *`loom_seqlock.rs` is in `horus_library/tests/`, not `horus_core/tests/`.

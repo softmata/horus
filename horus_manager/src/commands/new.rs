@@ -12,6 +12,9 @@ pub fn create_new_project(
     language: String,
     use_macro: bool,
 ) -> Result<()> {
+    // Validate project name before doing anything
+    validate_project_name(&name)?;
+
     // Check version compatibility before creating project
     version::check_and_prompt_update()?;
 
@@ -245,15 +248,40 @@ fn create_horus_toml(
 }
 
 /// Create a user-owned Cargo.toml for Rust projects.
+///
+/// Uses path dependencies pointing to the local horus source tree (resolved via
+/// `find_horus_source_dir`). This ensures scaffolded projects build immediately
+/// without requiring horus crates to be published on crates.io.
 fn create_cargo_toml(project_path: &Path, name: &str, author: &str, use_macro: bool) -> Result<()> {
-    let mut deps = String::from(
-        r#"horus = "*"
-horus_library = "*"
-"#,
-    );
-    if use_macro {
-        deps.push_str("horus_macros = \"*\"\n");
-    }
+    // Resolve horus source to generate path dependencies
+    let deps = match super::run::find_horus_source_dir() {
+        Ok(horus_source) => {
+            let mut d = format!(
+                "horus = {{ path = \"{}\" }}\nhorus_library = {{ path = \"{}\" }}\n",
+                horus_source.join("horus").display(),
+                horus_source.join("horus_library").display(),
+            );
+            if use_macro {
+                d.push_str(&format!(
+                    "horus_macros = {{ path = \"{}\" }}\n",
+                    horus_source.join("horus_macros").display(),
+                ));
+            }
+            d
+        }
+        Err(_) => {
+            // Fallback: use wildcard deps (user will need to configure manually)
+            cli_output::warn(
+                "Could not locate HORUS source tree. Using wildcard dependencies.\n  \
+                 Set HORUS_SOURCE env var or install horus crates to fix.",
+            );
+            let mut d = String::from("horus = \"*\"\nhorus_library = \"*\"\n");
+            if use_macro {
+                d.push_str("horus_macros = \"*\"\n");
+            }
+            d
+        }
+    };
 
     let content = format!(
         r#"[package]
@@ -390,6 +418,53 @@ fn main() -> Result<()> {
     };
 
     fs::write(project_path.join("main.rs"), content)?;
+    Ok(())
+}
+
+/// Validate project name against Cargo crate naming rules.
+///
+/// Rules: non-empty, ASCII alphanumeric + hyphens + underscores, must start
+/// with a letter or underscore. Rejects empty, spaces, special chars, etc.
+fn validate_project_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!(
+            "Project name cannot be empty.\n  \
+             Usage: horus new <name> [--rust|--python]\n  \
+             Example: horus new my_robot --rust"
+        );
+    }
+
+    if name.len() > 64 {
+        anyhow::bail!(
+            "Project name '{}...' is too long ({} chars, max 64).",
+            &name[..20],
+            name.len()
+        );
+    }
+
+    // Must start with letter or underscore
+    let first = name.chars().next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        anyhow::bail!(
+            "Project name '{}' must start with a letter or underscore.\n  \
+             Valid examples: my_robot, _internal, robot2",
+            name
+        );
+    }
+
+    // Only allow ASCII alphanumeric, hyphens, underscores
+    for ch in name.chars() {
+        if !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
+            anyhow::bail!(
+                "Project name '{}' contains invalid character '{}'.\n  \
+                 Only ASCII letters, digits, hyphens (-), and underscores (_) are allowed.\n  \
+                 Valid examples: my_robot, diff-drive, robot2",
+                name,
+                ch
+            );
+        }
+    }
+
     Ok(())
 }
 

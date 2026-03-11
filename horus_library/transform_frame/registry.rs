@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use horus_core::error::{HorusError, NotFoundError, ResourceError, ValidationError};
 use horus_core::HorusResult;
 
-use super::core::HFrameCore;
+use super::core::TransformFrameCore;
 use super::types::{FrameId, NO_PARENT};
 
 /// Frame name registry
@@ -28,7 +28,7 @@ pub struct FrameRegistry {
     id_to_name: RwLock<Vec<Option<String>>>,
 
     /// Reference to core storage
-    core: Arc<HFrameCore>,
+    core: Arc<TransformFrameCore>,
 
     /// Next available ID for allocation
     next_id: RwLock<FrameId>,
@@ -45,7 +45,7 @@ pub struct FrameRegistry {
 
 impl FrameRegistry {
     /// Create a new frame registry
-    pub fn new(core: Arc<HFrameCore>, max_frames: usize) -> Self {
+    pub fn new(core: Arc<TransformFrameCore>, max_frames: usize) -> Self {
         Self::with_overflow(core, max_frames, false)
     }
 
@@ -55,7 +55,7 @@ impl FrameRegistry {
     /// - Logs a warning at 80% utilization
     /// - Auto-grows the logical limit (up to the core's physical capacity) instead
     ///   of returning an error when `max_frames` is reached
-    pub fn with_overflow(core: Arc<HFrameCore>, max_frames: usize, enable_overflow: bool) -> Self {
+    pub fn with_overflow(core: Arc<TransformFrameCore>, max_frames: usize, enable_overflow: bool) -> Self {
         let physical = core.physical_capacity();
         let initial_capacity = if enable_overflow {
             physical
@@ -368,8 +368,8 @@ impl FrameRegistry {
                 .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             eprintln!(
-                "[horus::hframe] WARNING: Frame registry at {}% capacity ({}/{}). \
-                 Consider using HFrameConfig::medium() or HFrameConfig::large().",
+                "[horus::transform_frame] WARNING: Frame registry at {}% capacity ({}/{}). \
+                 Consider using TransformFrameConfig::medium() or TransformFrameConfig::large().",
                 used * 100 / *max_frames,
                 used,
                 *max_frames,
@@ -388,7 +388,7 @@ impl FrameRegistry {
                 if *max_frames < physical {
                     let new_max = (*max_frames * 2).min(physical);
                     eprintln!(
-                        "[horus::hframe] Auto-growing frame registry: {} → {} (physical capacity: {})",
+                        "[horus::transform_frame] Auto-growing frame registry: {} → {} (physical capacity: {})",
                         *max_frames, new_max, physical,
                     );
                     *max_frames = new_max;
@@ -397,14 +397,14 @@ impl FrameRegistry {
                 } else {
                     return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                         "Maximum frame limit ({}) reached (physical capacity exhausted). \
-                         Increase max_frames in HFrameConfig.",
+                         Increase max_frames in TransformFrameConfig.",
                         *max_frames
                     ))));
                 }
             } else {
                 return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                     "Maximum frame limit ({}) reached. Enable overflow or use a larger \
-                     HFrameConfig preset (medium/large/massive).",
+                     TransformFrameConfig preset (medium/large/massive).",
                     *max_frames
                 ))));
             }
@@ -434,11 +434,11 @@ unsafe impl Sync for FrameRegistry {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hframe::config::HFrameConfig;
+    use crate::transform_frame::config::TransformFrameConfig;
 
     fn make_registry() -> FrameRegistry {
-        let config = HFrameConfig::small();
-        let core = Arc::new(HFrameCore::new(&config));
+        let config = TransformFrameConfig::small();
+        let core = Arc::new(TransformFrameCore::new(&config));
         FrameRegistry::new(core, config.max_frames)
     }
 

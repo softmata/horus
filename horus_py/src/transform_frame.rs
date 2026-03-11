@@ -1,9 +1,9 @@
-//! Python bindings for HFrame - High-Performance Transform System
+//! Python bindings for TransformFrame - High-Performance Transform System
 //!
-//! Provides Python access to HFrame's lock-free transform management system.
+//! Provides Python access to TransformFrame's lock-free transform management system.
 
 use crate::errors::to_py_err;
-use horus_library::hframe::{timestamp_now, HFrame, HFrameConfig, Transform};
+use horus_library::transform_frame::{timestamp_now, TransformFrame, TransformFrameConfig, Transform};
 use pyo3::prelude::*;
 
 /// Python wrapper for Transform
@@ -158,21 +158,21 @@ impl PyTransform {
     }
 }
 
-/// Python wrapper for HFrameConfig
-#[pyclass(name = "HFrameConfig")]
+/// Python wrapper for TransformFrameConfig
+#[pyclass(name = "TransformFrameConfig")]
 #[derive(Clone)]
-pub struct PyHFrameConfig {
-    inner: HFrameConfig,
+pub struct PyTransformFrameConfig {
+    inner: TransformFrameConfig,
 }
 
 #[pymethods]
-impl PyHFrameConfig {
+impl PyTransformFrameConfig {
     /// Create configuration with specified parameters
     #[new]
     #[pyo3(signature = (max_frames=256, history_len=32))]
     fn new(max_frames: usize, history_len: usize) -> Self {
-        PyHFrameConfig {
-            inner: HFrameConfig {
+        PyTransformFrameConfig {
+            inner: TransformFrameConfig {
                 max_frames,
                 max_static_frames: max_frames / 2,
                 history_len,
@@ -185,32 +185,32 @@ impl PyHFrameConfig {
     /// Small robot preset (256 frames, ~550KB memory)
     #[staticmethod]
     fn small() -> Self {
-        PyHFrameConfig {
-            inner: HFrameConfig::small(),
+        PyTransformFrameConfig {
+            inner: TransformFrameConfig::small(),
         }
     }
 
     /// Medium robot preset (1024 frames, ~2.2MB memory)
     #[staticmethod]
     fn medium() -> Self {
-        PyHFrameConfig {
-            inner: HFrameConfig::medium(),
+        PyTransformFrameConfig {
+            inner: TransformFrameConfig::medium(),
         }
     }
 
     /// Large simulation preset (4096 frames, ~9MB memory)
     #[staticmethod]
     fn large() -> Self {
-        PyHFrameConfig {
-            inner: HFrameConfig::large(),
+        PyTransformFrameConfig {
+            inner: TransformFrameConfig::large(),
         }
     }
 
     /// Massive simulation preset (16384 frames, ~35MB memory)
     #[staticmethod]
     fn massive() -> Self {
-        PyHFrameConfig {
-            inner: HFrameConfig::massive(),
+        PyTransformFrameConfig {
+            inner: TransformFrameConfig::massive(),
         }
     }
 
@@ -231,7 +231,7 @@ impl PyHFrameConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "HFrameConfig(max_frames={}, history_len={}, memory={})",
+            "TransformFrameConfig(max_frames={}, history_len={}, memory={})",
             self.inner.max_frames,
             self.inner.history_len,
             self.inner.memory_estimate()
@@ -239,66 +239,66 @@ impl PyHFrameConfig {
     }
 }
 
-/// Python wrapper for HFrame - High-Performance Transform System
+/// Python wrapper for TransformFrame - High-Performance Transform System
 ///
-/// HFrame provides lock-free coordinate frame management for robotics.
+/// TransformFrame provides lock-free coordinate frame management for robotics.
 /// It's designed as a high-performance alternative to ROS2 TF2.
 ///
 /// Example:
-///     >>> from horus import HFrame, Transform
-///     >>> hf = HFrame()
+///     >>> from horus import TransformFrame, Transform
+///     >>> hf = TransformFrame()
 ///     >>> hf.register_frame("world", None)
 ///     >>> hf.register_frame("base_link", "world")
 ///     >>> hf.update_transform("base_link", Transform.from_translation([1.0, 0.0, 0.0]))
 ///     >>> tf = hf.tf("base_link", "world")
 ///     >>> print(tf.translation)  # [1.0, 0.0, 0.0]
-#[pyclass(name = "HFrame")]
-pub struct PyHFrame {
-    inner: HFrame,
+#[pyclass(name = "TransformFrame")]
+pub struct PyTransformFrame {
+    inner: TransformFrame,
 }
 
 #[pymethods]
-impl PyHFrame {
-    /// Create a new HFrame with default configuration (256 frames)
+impl PyTransformFrame {
+    /// Create a new TransformFrame with default configuration (256 frames)
     #[new]
     #[pyo3(signature = (config=None))]
-    fn new(config: Option<PyHFrameConfig>) -> Self {
+    fn new(config: Option<PyTransformFrameConfig>) -> Self {
         let inner = match config {
-            Some(cfg) => HFrame::with_config(cfg.inner),
-            None => HFrame::new(),
+            Some(cfg) => TransformFrame::with_config(cfg.inner),
+            None => TransformFrame::new(),
         };
-        PyHFrame { inner }
+        PyTransformFrame { inner }
     }
 
     /// Create with small robot preset (256 frames)
     #[staticmethod]
     fn small() -> Self {
-        PyHFrame {
-            inner: HFrame::small(),
+        PyTransformFrame {
+            inner: TransformFrame::small(),
         }
     }
 
     /// Create with medium robot preset (1024 frames)
     #[staticmethod]
     fn medium() -> Self {
-        PyHFrame {
-            inner: HFrame::medium(),
+        PyTransformFrame {
+            inner: TransformFrame::medium(),
         }
     }
 
     /// Create with large simulation preset (4096 frames)
     #[staticmethod]
     fn large() -> Self {
-        PyHFrame {
-            inner: HFrame::large(),
+        PyTransformFrame {
+            inner: TransformFrame::large(),
         }
     }
 
     /// Create with massive simulation preset (16384 frames)
     #[staticmethod]
     fn massive() -> Self {
-        PyHFrame {
-            inner: HFrame::massive(),
+        PyTransformFrame {
+            inner: TransformFrame::massive(),
         }
     }
 
@@ -672,7 +672,7 @@ impl PyHFrame {
     fn __repr__(&self) -> String {
         let stats = self.inner.stats();
         format!(
-            "HFrame({} frames: {} static, {} dynamic)",
+            "TransformFrame({} frames: {} static, {} dynamic)",
             stats.total_frames, stats.static_frames, stats.dynamic_frames
         )
     }

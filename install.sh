@@ -1940,7 +1940,6 @@ build_with_recovery() {
         "horus_macros"
         "horus_core"
         "horus"
-        "horus_ai"
         "horus_manager"
         "horus_library"
         "horus_py"
@@ -1953,7 +1952,6 @@ build_with_recovery() {
         ["horus_macros"]=10
         ["horus_core"]=350
         ["horus"]=50
-        ["horus_ai"]=20
         ["horus_manager"]=150
         ["horus_library"]=50
         ["horus_py"]=20
@@ -2300,7 +2298,6 @@ HORUS_VERSION=$(grep -m1 '^version' horus/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_CORE_VERSION=$(grep -m1 '^version' horus_core/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_MACROS_VERSION=$(grep -m1 '^version' horus_macros/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_LIBRARY_VERSION=$(grep -m1 '^version' horus_library/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-HORUS_AI_VERSION=$(grep -m1 '^version' horus_ai/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_PY_VERSION=$(grep -m1 '^version' horus_py/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 
 echo -e "${CYAN}  ${NC} Detected versions:"
@@ -2308,7 +2305,6 @@ echo "    horus: $HORUS_VERSION"
 echo "    horus_core: $HORUS_CORE_VERSION"
 echo "    horus_macros: $HORUS_MACROS_VERSION"
 echo "    horus_library: $HORUS_LIBRARY_VERSION"
-echo "    horus_ai: $HORUS_AI_VERSION"
 echo "    horus_py: $HORUS_PY_VERSION"
 echo ""
 
@@ -2325,7 +2321,6 @@ if [ -f "$VERSION_FILE" ]; then
         rm -rf "$CACHE_DIR/horus_core@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_macros@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_library@$OLD_VERSION" 2>/dev/null || true
-        rm -rf "$CACHE_DIR/horus_ai@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_py@$OLD_VERSION" 2>/dev/null || true
 
         echo -e "${GREEN}${NC} Old versions removed"
@@ -2413,15 +2408,8 @@ cp -r horus_macros/src "$HORUS_DIR/horus_macros/" 2>/dev/null || true
 mkdir -p "$HORUS_DIR/horus_library"
 cp horus_library/Cargo.toml "$HORUS_DIR/horus_library/" 2>/dev/null || true
 cp horus_library/lib.rs "$HORUS_DIR/horus_library/" 2>/dev/null || true
-cp -r horus_library/nodes "$HORUS_DIR/horus_library/" 2>/dev/null || true
 cp -r horus_library/messages "$HORUS_DIR/horus_library/" 2>/dev/null || true
-cp -r horus_library/traits "$HORUS_DIR/horus_library/" 2>/dev/null || true
-cp -r horus_library/algorithms "$HORUS_DIR/horus_library/" 2>/dev/null || true
-
-# Copy horus_ai crate
-mkdir -p "$HORUS_DIR/horus_ai"
-cp horus_ai/Cargo.toml "$HORUS_DIR/horus_ai/" 2>/dev/null || true
-cp -r horus_ai/src "$HORUS_DIR/horus_ai/" 2>/dev/null || true
+cp -r horus_library/transform_frame "$HORUS_DIR/horus_library/" 2>/dev/null || true
 
 # Copy horus_manager crate (CLI binary source)
 mkdir -p "$HORUS_DIR/horus_manager"
@@ -2506,25 +2494,6 @@ cat > "$HORUS_LIBRARY_DIR/metadata.json" << EOF
 EOF
 
 echo -e "${GREEN}${NC} Installed horus_library"
-
-# Step 7b: Install horus_ai
-echo -e "${CYAN}${NC} Installing horus_ai@$HORUS_AI_VERSION..."
-HORUS_AI_DIR="$CACHE_DIR/horus_ai@$HORUS_AI_VERSION"
-mkdir -p "$HORUS_AI_DIR/lib"
-
-cp -r target/release/libhorus_ai.* "$HORUS_AI_DIR/lib/" 2>/dev/null || true
-cp -r target/release/deps/libhorus_ai*.rlib "$HORUS_AI_DIR/lib/" 2>/dev/null || true
-
-cat > "$HORUS_AI_DIR/metadata.json" << EOF
-{
-  "name": "horus_ai",
-  "version": "$HORUS_AI_VERSION",
-  "description": "HORUS AI - Tensor system with DLPack interop",
-  "install_type": "source"
-}
-EOF
-
-echo -e "${GREEN}${NC} Installed horus_ai"
 
 # ============================================================================
 # PYTHON VERSION SOLVER - Smart dependency resolution for horus_py
@@ -2873,12 +2842,6 @@ if [ -d "$HORUS_LIBRARY_DIR" ]; then
     echo -e "${GREEN}${NC} horus_library: OK"
 else
     echo -e "${RED}${NC} horus_library: Missing"
-fi
-
-if [ -d "$HORUS_AI_DIR" ]; then
-    echo -e "${GREEN}${NC} horus_ai: OK"
-else
-    echo -e "${RED}${NC} horus_ai: Missing"
 fi
 
 if [ "$PYTHON_AVAILABLE" = true ]; then

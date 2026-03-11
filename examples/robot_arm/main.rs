@@ -142,13 +142,13 @@ impl Node for TrajectoryController {
 
 /// Frame transform publisher — maintains the TF tree.
 struct FramePublisher {
-    hf: HFrame,
+    hf: TransformFrame,
     joint_sub: Topic<JointState>,
 }
 
 impl FramePublisher {
     fn new() -> Result<Self> {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.add_frame("world").build()?;
         hf.add_frame("base_link").parent("world").build()?;
         hf.add_frame("shoulder").parent("base_link").build()?;

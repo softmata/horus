@@ -325,7 +325,7 @@ impl Transform {
     /// valid rotation quaternion.
     ///
     /// Returns `Ok(())` if valid, or `Err(HorusError::InvalidInput)` describing
-    /// the problem. Called automatically by `HFrame::update_transform*` methods.
+    /// the problem. Called automatically by `TransformFrame::update_transform*` methods.
     ///
     /// # Validation rules
     /// 1. Translation must be finite (no NaN, no Inf)

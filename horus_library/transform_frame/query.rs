@@ -1,4 +1,4 @@
-//! Builder-pattern query API for HFrame transforms.
+//! Builder-pattern query API for TransformFrame transforms.
 //!
 //! Provides a fluent, direction-unambiguous API for transform lookups:
 //!
@@ -12,20 +12,20 @@
 //! All methods are zero-overhead wrappers that inline to the same code
 //! as calling `hf.tf()` directly.
 
-use super::HFrame;
-use crate::hframe::transform::Transform;
+use super::TransformFrame;
+use crate::transform_frame::transform::Transform;
 use horus_core::HorusResult;
 
 /// Intermediate builder holding the source frame.
 ///
-/// Created by [`HFrame::query`]. Call `.to()` to complete the query.
+/// Created by [`TransformFrame::query`]. Call `.to()` to complete the query.
 pub struct TransformQueryFrom<'a> {
-    hf: &'a HFrame,
+    hf: &'a TransformFrame,
     src: &'a str,
 }
 
 impl<'a> TransformQueryFrom<'a> {
-    pub(crate) fn new(hf: &'a HFrame, src: &'a str) -> Self {
+    pub(crate) fn new(hf: &'a TransformFrame, src: &'a str) -> Self {
         Self { hf, src }
     }
 
@@ -43,9 +43,9 @@ impl<'a> TransformQueryFrom<'a> {
 /// A fully-specified transform query between two frames.
 ///
 /// Created by [`TransformQueryFrom::to`]. All methods delegate to
-/// the corresponding [`HFrame`] methods with zero overhead.
+/// the corresponding [`TransformFrame`] methods with zero overhead.
 pub struct TransformQuery<'a> {
-    hf: &'a HFrame,
+    hf: &'a TransformFrame,
     src: &'a str,
     dst: &'a str,
 }

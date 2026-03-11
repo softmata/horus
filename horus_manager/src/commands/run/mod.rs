@@ -45,7 +45,7 @@ pub fn execute_run(
 
     // Handle clean build
     if clean {
-        eprintln!("{} Cleaning build cache...", cli_output::ICON_INFO.cyan());
+        cli_output::info("Cleaning build cache...");
         run_rust::clean_build_cache()?;
     }
 
@@ -61,11 +61,7 @@ pub fn execute_run(
     hardware::load_params_from_project()?;
 
     let mode = if release { "release" } else { "debug" };
-    eprintln!(
-        "{} Starting HORUS runtime in {} mode...",
-        cli_output::ICON_INFO.cyan(),
-        mode.yellow()
-    );
+    cli_output::info(&format!("Starting HORUS runtime in {} mode...", mode.yellow()));
 
     // Step 1: Resolve target(s) - file(s), directory, or pattern
     let execution_targets = if files.is_empty() {
@@ -106,12 +102,11 @@ fn execute_single_file(
 ) -> Result<()> {
     let language = deps::detect_language(&file_path)?;
 
-    eprintln!(
-        "{} Detected: {} ({})",
-        cli_output::ICON_INFO.cyan(),
+    cli_output::info(&format!(
+        "Detected: {} ({})",
         file_path.display().to_string().green(),
         language.yellow()
-    );
+    ));
 
     // Load ignore patterns from horus.toml
     let ignore = load_ignore_patterns();
@@ -121,7 +116,7 @@ fn execute_single_file(
 
     // Scan imports and resolve dependencies
     log::info!("Scanning imports for {}", file_path.display());
-    eprintln!("{} Scanning imports...", cli_output::ICON_INFO.cyan());
+    cli_output::info("Scanning imports...");
     let dependencies = deps::scan_imports(&file_path, &language, &ignore)?;
 
     // Check hardware requirements
@@ -166,7 +161,7 @@ fn execute_single_file(
     let child_env = build_child_env()?;
 
     // Execute
-    eprintln!("{} Executing...\n", cli_output::ICON_INFO.cyan());
+    cli_output::info("Executing...\n");
     run_rust::execute_with_scheduler(file_path, language, args, release, clean, &child_env)?;
 
     Ok(())
@@ -340,6 +335,7 @@ fn execute_multiple_files(
     );
 
     let running = Arc::new(AtomicBool::new(true));
+    let worst_exit_code = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let children: Arc<Mutex<Vec<(String, std::process::Child)>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Setup Ctrl+C handler — only sets the flag, main loop handles killing.
@@ -444,12 +440,15 @@ fn execute_multiple_files(
                 Ok(Some(status)) => {
                     // Process exited
                     if !status.success() {
+                        let code = status.code().unwrap_or(1);
                         eprintln!(
                             "\n{} Process [{}] exited with code: {}",
                             cli_output::ICON_WARN.yellow(),
                             name,
-                            status.code().unwrap_or(-1)
+                            code
                         );
+                        // Track the worst (highest) exit code
+                        worst_exit_code.fetch_max(code, Ordering::SeqCst);
                     }
                     false // Remove from list
                 }
@@ -495,6 +494,11 @@ fn execute_multiple_files(
             "\n{} All processes completed.",
             cli_output::ICON_SUCCESS.green()
         );
+    }
+
+    let exit_code = worst_exit_code.load(Ordering::SeqCst);
+    if exit_code != 0 {
+        bail!("One or more processes failed (worst exit code: {})", exit_code);
     }
 
     Ok(())

@@ -1,4 +1,4 @@
-//! HFrame Edge Case Tests — Boundary Conditions, Error Paths & Safety
+//! TransformFrame Edge Case Tests — Boundary Conditions, Error Paths & Safety
 //!
 //! Integration tests for corner cases that unit tests don't cover:
 //! timestamp boundaries, ring buffer wraparound, broken chains, validation,
@@ -73,7 +73,7 @@
 //! | Test | Gap Addressed |
 //! |------|--------------|
 //! | `edge_extreme_transform_values` | f64::MAX, f64::MIN, epsilon, negative zero in transforms — no panic |
-//! | `edge_empty_system` | Operations on empty HFrame (no frames registered) — graceful errors |
+//! | `edge_empty_system` | Operations on empty TransformFrame (no frames registered) — graceful errors |
 //!
 //! ## Message Serialization (8 tests)
 //! | Test | Gap Addressed |
@@ -81,10 +81,10 @@
 //! | `edge_frame_id_exact_boundary` | 63-byte name (max that fits in 64-byte buffer) roundtrips correctly |
 //! | `edge_frame_id_overflow` | 100-byte name silently truncates (no panic) |
 //! | `edge_frame_id_unicode` | Multi-byte UTF-8 names truncate at byte boundary, roundtrip if short enough |
-//! | `edge_batch_exact_capacity` | `HFMessage` with exactly `MAX_TRANSFORMS_PER_MESSAGE` entries |
-//! | `edge_batch_empty` | Empty `HFMessage` has count=0, `add()` works |
-//! | `edge_batch_clear` | `HFMessage::clear()` resets count to 0 |
-//! | `edge_batch_from_vec_overflow` | `HFMessage::from()` with more than capacity truncates |
+//! | `edge_batch_exact_capacity` | `TFMessage` with exactly `MAX_TRANSFORMS_PER_MESSAGE` entries |
+//! | `edge_batch_empty` | Empty `TFMessage` has count=0, `add()` works |
+//! | `edge_batch_clear` | `TFMessage::clear()` resets count to 0 |
+//! | `edge_batch_from_vec_overflow` | `TFMessage::from()` with more than capacity truncates |
 //! | `edge_pod_roundtrip` | `TransformStamped` survives `bytemuck` cast to `[u8]` and back |
 //!
 //! # Remaining Risks
@@ -97,8 +97,8 @@
 //! - **Ring buffer timestamp ordering**: The ring buffer does NOT enforce monotonic
 //!   timestamps. Out-of-order writes are accepted but may confuse `tf_at()` queries.
 
-use horus_library::hframe::{
-    frame_id_to_string, string_to_frame_id, HFMessage, HFrame, HFrameConfig, Transform,
+use horus_library::transform_frame::{
+    frame_id_to_string, string_to_frame_id, TFMessage, TransformFrame, TransformFrameConfig, Transform,
     TransformStamped, FRAME_ID_SIZE, MAX_TRANSFORMS_PER_MESSAGE,
 };
 
@@ -110,7 +110,7 @@ use horus_library::hframe::{
 /// The ring buffer should accept them (it doesn't enforce ordering).
 #[test]
 fn edge_backwards_timestamps() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -147,7 +147,7 @@ fn edge_backwards_timestamps() {
 /// Timestamp = 0 should not cause division-by-zero in interpolation.
 #[test]
 fn edge_timestamp_zero() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -179,7 +179,7 @@ fn edge_timestamp_zero() {
 /// Timestamp = u64::MAX should not cause overflow.
 #[test]
 fn edge_timestamp_u64_max() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -218,12 +218,12 @@ fn edge_timestamp_u64_max() {
 /// Two transforms with identical timestamps — latest write should win for read_latest.
 #[test]
 fn edge_duplicate_timestamps() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(8)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -249,7 +249,7 @@ fn edge_duplicate_timestamps() {
 /// Query at a timestamp before any stored data — should return the oldest entry.
 #[test]
 fn edge_query_before_earliest_timestamp() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -272,7 +272,7 @@ fn edge_query_before_earliest_timestamp() {
 /// Query at a timestamp after all stored data — should return latest entry.
 #[test]
 fn edge_query_after_latest_timestamp() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -294,12 +294,12 @@ fn edge_query_after_latest_timestamp() {
 /// Interpolation between two entries — verify linear interpolation is correct.
 #[test]
 fn edge_interpolation_midpoint() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(8)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -326,12 +326,12 @@ fn edge_interpolation_midpoint() {
 /// Verify oldest entries are evicted and newest are retained.
 #[test]
 fn edge_ring_buffer_overflow() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4) // Very small history
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -367,12 +367,12 @@ fn edge_ring_buffer_overflow() {
 /// Write exactly history_len entries — buffer should be full but not overflowed.
 #[test]
 fn edge_ring_buffer_exact_capacity() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -408,7 +408,7 @@ fn edge_ring_buffer_exact_capacity() {
 /// Should return error, not panic.
 #[test]
 fn edge_disconnected_trees() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     // Tree 1: world -> a
     hf.register_frame("world", None).unwrap();
@@ -439,7 +439,7 @@ fn edge_disconnected_trees() {
 /// Query involving a frame with no transform data yet.
 #[test]
 fn edge_frame_without_transform() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("sensor", Some("world")).unwrap();
 
@@ -457,7 +457,7 @@ fn edge_frame_without_transform() {
 /// Query with src == dst (identity transform).
 #[test]
 fn edge_self_transform() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
@@ -475,7 +475,7 @@ fn edge_self_transform() {
 /// Unregister a mid-chain frame, then query across the broken chain.
 #[test]
 fn edge_broken_chain_after_unregister() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.register_frame("b", Some("a")).unwrap();
@@ -513,7 +513,7 @@ fn edge_broken_chain_after_unregister() {
 /// validate() on a valid tree should pass.
 #[test]
 fn edge_validate_valid_tree() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.register_frame("b", Some("a")).unwrap();
@@ -534,7 +534,7 @@ fn edge_validate_valid_tree() {
 /// Cycles are the only invalid topology; multiple roots are valid.
 #[test]
 fn edge_validate_multi_root() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     // Root 1 with children
     hf.register_frame("root1", None).unwrap();
@@ -558,7 +558,7 @@ fn edge_validate_multi_root() {
 /// validate() after unregistering frames should still pass.
 #[test]
 fn edge_validate_after_unregister() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.register_frame("b", Some("a")).unwrap();
@@ -583,12 +583,12 @@ fn edge_validate_after_unregister() {
 /// validate() on a large valid tree (100 frames) should pass quickly.
 #[test]
 fn edge_validate_large_tree() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(256)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
 
     hf.register_frame("world", None).unwrap();
     for i in 0..99 {
@@ -608,7 +608,7 @@ fn edge_validate_large_tree() {
 /// before children. Verify this by trying various orderings.
 #[test]
 fn edge_registration_prevents_cycles() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     // A -> B -> C: each parent must be registered before child
     hf.register_frame("A", None).unwrap();
@@ -627,7 +627,7 @@ fn edge_registration_prevents_cycles() {
 /// Duplicate frame registration should be rejected.
 #[test]
 fn edge_duplicate_frame_name() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
 
     let result = hf.register_frame("world", None);
@@ -637,7 +637,7 @@ fn edge_duplicate_frame_name() {
 /// Register with nonexistent parent should fail.
 #[test]
 fn edge_nonexistent_parent() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     let result = hf.register_frame("child", Some("nonexistent_parent"));
     assert!(
@@ -649,7 +649,7 @@ fn edge_nonexistent_parent() {
 /// Extreme transform values — very large/small translations and rotations.
 #[test]
 fn edge_extreme_transform_values() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("far", Some("world")).unwrap();
 
@@ -673,10 +673,10 @@ fn edge_extreme_transform_values() {
     );
 }
 
-/// Empty HFrame — operations on empty system should not panic.
+/// Empty TransformFrame — operations on empty system should not panic.
 #[test]
 fn edge_empty_system() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
 
     assert_eq!(hf.frame_count(), 0);
     assert!(!hf.has_frame("anything"));
@@ -692,7 +692,7 @@ fn edge_empty_system() {
 /// Resolve with nonexistent frame names — should return error, not panic.
 #[test]
 fn edge_resolve_nonexistent_frames() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
 
     // Source doesn't exist
@@ -718,7 +718,7 @@ fn edge_resolve_nonexistent_frames() {
 /// Resolve by ID with invalid FrameId values.
 #[test]
 fn edge_resolve_invalid_frame_id() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
@@ -740,7 +740,7 @@ fn edge_resolve_invalid_frame_id() {
 /// Update transform on nonexistent frame — should return error.
 #[test]
 fn edge_update_nonexistent_frame() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
 
     let result = hf.update_transform("ghost", &Transform::identity(), 1000);
@@ -750,7 +750,7 @@ fn edge_update_nonexistent_frame() {
 /// Unregister nonexistent frame — should return error.
 #[test]
 fn edge_unregister_nonexistent_frame() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
 
     let result = hf.unregister_frame("ghost");
@@ -763,7 +763,7 @@ fn edge_unregister_nonexistent_frame() {
 /// can_transform after chain is broken by unregistration at multiple points.
 #[test]
 fn edge_can_transform_multi_break() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
     hf.register_frame("b", Some("a")).unwrap();
@@ -801,7 +801,7 @@ use std::thread;
 /// All registrations should succeed (unique names) with no panics.
 #[test]
 fn edge_concurrent_registration() {
-    let hf = Arc::new(HFrame::new());
+    let hf = Arc::new(TransformFrame::new());
     hf.register_frame("world", None).unwrap();
 
     let num_threads = 4;
@@ -844,12 +844,12 @@ fn edge_concurrent_registration() {
 /// No panics, consistent final state.
 #[test]
 fn edge_concurrent_register_unregister() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(512)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = Arc::new(HFrame::with_config(config));
+    let hf = Arc::new(TransformFrame::with_config(config));
     hf.register_frame("world", None).unwrap();
 
     // Pre-register frames that will be unregistered
@@ -914,7 +914,7 @@ fn edge_concurrent_register_unregister() {
 /// Resolves should either succeed or return clean errors — never panic.
 #[test]
 fn edge_concurrent_resolve_during_unregister() {
-    let hf = Arc::new(HFrame::new());
+    let hf = Arc::new(TransformFrame::new());
 
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
@@ -983,12 +983,12 @@ fn edge_concurrent_resolve_during_unregister() {
 /// history_len=4 (minimum): write 1 entry, read and interpolate should return it.
 #[test]
 fn edge_min_history_single_entry() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -1024,12 +1024,12 @@ fn edge_min_history_single_entry() {
 /// Query at exact timestamp matching a stored entry — no interpolation needed.
 #[test]
 fn edge_exact_timestamp_match() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -1062,12 +1062,12 @@ fn edge_exact_timestamp_match() {
 /// Verify oldest entry (index 0) is evicted and newest is at the wraparound position.
 #[test]
 fn edge_ring_buffer_wraparound_boundary() {
-    let config = HFrameConfig::custom()
+    let config = TransformFrameConfig::custom()
         .max_frames(16)
         .history_len(4)
         .build()
         .unwrap();
-    let hf = HFrame::with_config(config);
+    let hf = TransformFrame::with_config(config);
     hf.register_frame("world", None).unwrap();
     hf.register_frame("a", Some("world")).unwrap();
 
@@ -1109,7 +1109,7 @@ fn edge_ring_buffer_wraparound_boundary() {
 /// Read from frame with zero writes — should fail gracefully.
 #[test]
 fn edge_read_empty_history() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_frame("empty", Some("world")).unwrap();
 
@@ -1140,7 +1140,7 @@ fn edge_read_empty_history() {
 /// Multiple threads reading a static frame concurrently — all should get same value.
 #[test]
 fn edge_static_frame_concurrent_reads() {
-    let hf = Arc::new(HFrame::new());
+    let hf = Arc::new(TransformFrame::new());
     hf.register_frame("world", None).unwrap();
     hf.update_transform("world", &Transform::identity(), 0)
         .unwrap();
@@ -1186,7 +1186,7 @@ fn edge_static_frame_concurrent_reads() {
 /// update_transform on a static frame should fail.
 #[test]
 fn edge_static_frame_reject_update() {
-    let hf = HFrame::new();
+    let hf = TransformFrame::new();
     hf.register_frame("world", None).unwrap();
     hf.register_static_frame(
         "fixed",
@@ -1285,10 +1285,10 @@ fn edge_frame_id_unicode() {
     assert_eq!(ts.parent_frame_id(), unicode_name);
 }
 
-/// HFMessage batch at exact capacity (32 transforms).
+/// TFMessage batch at exact capacity (32 transforms).
 #[test]
 fn edge_batch_exact_capacity() {
-    let mut batch = HFMessage::new();
+    let mut batch = TFMessage::new();
     assert!(batch.is_empty());
     assert_eq!(batch.len(), 0);
 
@@ -1322,10 +1322,10 @@ fn edge_batch_exact_capacity() {
     );
 }
 
-/// Empty HFMessage (0 transforms) — valid state.
+/// Empty TFMessage (0 transforms) — valid state.
 #[test]
 fn edge_batch_empty() {
-    let batch = HFMessage::new();
+    let batch = TFMessage::new();
     assert!(batch.is_empty());
     assert!(!batch.is_full());
     assert_eq!(batch.len(), 0);
@@ -1337,10 +1337,10 @@ fn edge_batch_empty() {
     assert_eq!(batch.iter().count(), 0);
 }
 
-/// HFMessage clear resets count to 0.
+/// TFMessage clear resets count to 0.
 #[test]
 fn edge_batch_clear() {
-    let mut batch = HFMessage::new();
+    let mut batch = TFMessage::new();
     batch.add(TransformStamped::new("a", "b", 0, Transform::identity()));
     batch.add(TransformStamped::new("c", "d", 0, Transform::identity()));
     assert_eq!(batch.len(), 2);
@@ -1354,7 +1354,7 @@ fn edge_batch_clear() {
     assert_eq!(batch.len(), 1);
 }
 
-/// HFMessage from_vec with more than MAX_TRANSFORMS_PER_MESSAGE — should truncate.
+/// TFMessage from_vec with more than MAX_TRANSFORMS_PER_MESSAGE — should truncate.
 #[test]
 fn edge_batch_from_vec_overflow() {
     let transforms: Vec<TransformStamped> = (0..50)
@@ -1368,7 +1368,7 @@ fn edge_batch_from_vec_overflow() {
         })
         .collect();
 
-    let batch = HFMessage::from_vec(transforms);
+    let batch = TFMessage::from_vec(transforms);
     assert_eq!(batch.len(), MAX_TRANSFORMS_PER_MESSAGE);
     assert!(batch.is_full());
 }
@@ -1376,7 +1376,7 @@ fn edge_batch_from_vec_overflow() {
 /// Pod safety: round-trip through bytes.
 #[test]
 fn edge_pod_roundtrip() {
-    use horus_library::hframe::StaticTransformStamped;
+    use horus_library::transform_frame::StaticTransformStamped;
 
     let ts = TransformStamped::new(
         "world",
@@ -1401,11 +1401,11 @@ fn edge_pod_roundtrip() {
     assert_eq!(recovered.parent_frame_id(), "base");
     assert!((recovered.transform.translation[2] - 6.0).abs() < 1e-10);
 
-    // HFMessage pod roundtrip
-    let mut msg = HFMessage::new();
+    // TFMessage pod roundtrip
+    let mut msg = TFMessage::new();
     msg.add(ts);
     let bytes: &[u8] = horus_core::bytemuck::bytes_of(&msg);
-    let recovered: &HFMessage = horus_core::bytemuck::from_bytes(bytes);
+    let recovered: &TFMessage = horus_core::bytemuck::from_bytes(bytes);
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered.iter().next().unwrap().parent_frame_id(), "world");
 }

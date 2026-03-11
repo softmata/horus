@@ -172,12 +172,12 @@ impl Node for TelemetryLogger {
 
 /// Publishes static sensor transforms.
 struct SensorFrames {
-    hf: HFrame,
+    hf: TransformFrame,
 }
 
 impl SensorFrames {
     fn new() -> Result<Self> {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.add_frame("map").build()?;
         hf.add_frame("odom").parent("map").build()?;
         hf.add_frame("base_link").parent("odom").build()?;

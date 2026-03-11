@@ -43,14 +43,21 @@ impl Default for RecordingConfig {
             .unwrap_or_else(|| PathBuf::from("."))
             .join(RECORDINGS_DIR);
 
+        let session_name = std::env::var("HORUS_RECORD_SESSION")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "recording_{}",
+                    SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                )
+            });
+
         Self {
-            session_name: format!(
-                "recording_{}",
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            ),
+            session_name,
             base_dir,
             interval: 1,
             record_inputs: true,
@@ -91,15 +98,17 @@ impl From<super::config::RecordingConfigYaml> for RecordingConfig {
                 .join(RECORDINGS_DIR)
         });
 
-        let session_name = yaml.session_name.unwrap_or_else(|| {
-            format!(
-                "recording_{}",
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            )
-        });
+        let session_name = yaml.session_name
+            .or_else(|| std::env::var("HORUS_RECORD_SESSION").ok().filter(|s| !s.is_empty()))
+            .unwrap_or_else(|| {
+                format!(
+                    "recording_{}",
+                    SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                )
+            });
 
         Self {
             session_name,

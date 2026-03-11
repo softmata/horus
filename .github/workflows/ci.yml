@@ -234,7 +234,7 @@ jobs:
         env:
           RUST_LOG: loom=debug
 
-      - name: Loom — HFrame seqlock (horus_library)
+      - name: Loom — TransformFrame seqlock (horus_library)
         run: cargo test -p horus_library --test loom_seqlock -- --nocapture
         env:
           RUST_LOG: loom=debug

@@ -1,4 +1,4 @@
-//! HFrame core storage and chain resolution
+//! TransformFrame core storage and chain resolution
 //!
 //! This module contains the lock-free core data structure that stores
 //! all frame transforms and handles chain resolution.
@@ -9,20 +9,20 @@ use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::transform::Transform;
 
-use super::config::HFrameConfig;
+use super::config::TransformFrameConfig;
 use super::slot::{FrameSlot, TransformEntry};
 use horus_core::error::{HorusError, TransformError, ValidationError};
 use horus_core::HorusResult;
 
 use super::types::{FrameId, FrameType, NO_PARENT};
 
-/// Core HFrame storage with lock-free operations
+/// Core TransformFrame storage with lock-free operations
 ///
 /// Contains:
 /// - Pre-allocated slots for fast path (configurable size)
 /// - Parent relationship tracking
 /// - Chain cache for repeated lookups
-pub struct HFrameCore {
+pub struct TransformFrameCore {
     /// Pre-allocated frame slots (lock-free access)
     slots: Vec<FrameSlot>,
 
@@ -40,7 +40,7 @@ pub struct HFrameCore {
     chain_cache: RwLock<ChainCache>,
 
     /// Configuration
-    config: HFrameConfig,
+    config: TransformFrameConfig,
 
     /// Global generation counter for atomic cache invalidation.
     ///
@@ -111,14 +111,14 @@ impl ChainCache {
     }
 }
 
-impl HFrameCore {
-    /// Create a new HFrame core with the given configuration.
+impl TransformFrameCore {
+    /// Create a new TransformFrame core with the given configuration.
     ///
     /// When `enable_overflow` is true, pre-allocates up to 4x the configured
     /// `max_frames` (capped at [`MAX_SUPPORTED_FRAMES`]). This allows the
     /// registry to grow beyond the initial limit without reallocating the
     /// lock-free slot storage.
-    pub fn new(config: &HFrameConfig) -> Self {
+    pub fn new(config: &TransformFrameConfig) -> Self {
         let physical_capacity = if config.enable_overflow {
             (config.max_frames * 4).min(super::types::MAX_SUPPORTED_FRAMES)
         } else {
@@ -885,15 +885,15 @@ impl HFrameCore {
 }
 
 // Thread-safe
-unsafe impl Send for HFrameCore {}
-unsafe impl Sync for HFrameCore {}
+unsafe impl Send for TransformFrameCore {}
+unsafe impl Sync for TransformFrameCore {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_core() -> HFrameCore {
-        HFrameCore::new(&HFrameConfig::small())
+    fn make_core() -> TransformFrameCore {
+        TransformFrameCore::new(&TransformFrameConfig::small())
     }
 
     #[test]
@@ -1108,7 +1108,7 @@ mod tests {
         );
     }
 
-    /// get_loss_count equivalent for HFrame: verify generation increments on
+    /// get_loss_count equivalent for TransformFrame: verify generation increments on
     /// each update and that a stale cache entry is rejected.
     #[test]
     fn test_generation_increments_on_update() {

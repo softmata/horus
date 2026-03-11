@@ -452,14 +452,15 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
             "{}",
             serde_json::to_string_pretty(&output).unwrap_or_default()
         );
-        return Ok(());
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "'{}' not found",
+            name
+        ))));
     }
-    println!("{}", format!("'{}' not found", name).red());
-    println!(
-        "{}",
-        "Use 'horus search <query>' to find available packages and plugins".dimmed()
-    );
-    Ok(())
+    Err(HorusError::Config(ConfigError::Other(format!(
+        "'{}' not found. Use 'horus search <query>' to find available packages and plugins",
+        name
+    ))))
 }
 
 /// Resolve the package directory after installation for plugin registration

@@ -95,10 +95,7 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
             // If a root Cargo.toml exists, build directly from the project root
             // with CARGO_TARGET_DIR=.horus/target. Dependencies live in Cargo.toml.
             if Path::new(CARGO_TOML).exists() {
-                println!(
-                    "{} Building from root Cargo.toml...",
-                    cli_output::ICON_INFO.cyan()
-                );
+                cli_output::info("Building from root Cargo.toml...");
 
                 let spinner = progress::robot_build_spinner("Building with cargo...");
                 let mut cmd = Command::new("cargo");
@@ -139,10 +136,7 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
             } else {
                 // No root Cargo.toml — generate a minimal .horus/Cargo.toml
                 // for standalone .rs file compilation.
-                println!(
-                    "{} Setting up Cargo workspace for standalone file...",
-                    cli_output::ICON_INFO.cyan()
-                );
+                cli_output::info("Setting up Cargo workspace for standalone file...");
 
                 let cargo_toml_path = PathBuf::from(".horus/Cargo.toml");
                 let source_relative_path = format!("../{}", target_file.display());
@@ -186,11 +180,10 @@ path = "{}"
 
                 // Find HORUS source directory and add core path deps
                 let horus_source = find_horus_source_dir()?;
-                println!(
-                    "  {} Using HORUS source: {}",
-                    cli_output::ICON_INFO.cyan(),
+                cli_output::info(&format!(
+                    "Using HORUS source: {}",
                     horus_source.display()
-                );
+                ));
 
                 // Add default HORUS core path dependencies
                 for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
@@ -216,20 +209,16 @@ path = "{}"
                                 dep_path.display()
                             ));
                         }
-                        println!(
-                            "  {} Added dependency: {} -> {}",
-                            cli_output::ICON_INFO.cyan(),
+                        cli_output::info(&format!(
+                            "Added dependency: {} -> {}",
                             dep_name,
                             dep_path.display()
-                        );
+                        ));
                     }
                 }
 
                 fs::write(&cargo_toml_path, &cargo_toml)?;
-                println!(
-                    "  {} Generated Cargo.toml (no source copying needed)",
-                    cli_output::ICON_SUCCESS.green()
-                );
+                cli_output::success("Generated Cargo.toml (no source copying needed)");
 
                 // Run cargo build in .horus directory
                 let spinner = progress::robot_build_spinner("Building with cargo...");
@@ -711,17 +700,11 @@ pub(super) fn execute_with_scheduler(
             // If a root Cargo.toml exists, build directly from the project root
             // with CARGO_TARGET_DIR=.horus/target. Dependencies live in Cargo.toml.
             if Path::new(CARGO_TOML).exists() {
-                println!(
-                    "{} Building from root Cargo.toml...",
-                    cli_output::ICON_INFO.cyan()
-                );
+                cli_output::info("Building from root Cargo.toml...");
 
                 // Run cargo clean if requested
                 if clean {
-                    println!(
-                        "{} Cleaning build artifacts...",
-                        cli_output::ICON_INFO.cyan()
-                    );
+                    cli_output::info("Cleaning build artifacts...");
                     let mut clean_cmd = Command::new("cargo");
                     clean_cmd.arg("clean");
                     clean_cmd.env("CARGO_TARGET_DIR", ".horus/target");
@@ -732,7 +715,7 @@ pub(super) fn execute_with_scheduler(
                     }
                 }
 
-                println!("{} Building with Cargo...", cli_output::ICON_INFO.cyan());
+                cli_output::info("Building with Cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.env("CARGO_TARGET_DIR", ".horus/target");
@@ -762,7 +745,7 @@ pub(super) fn execute_with_scheduler(
                 let binary_path = format!(".horus/target/{}/{}", profile, project_name);
 
                 // Execute the binary
-                println!("{} Executing...\n", cli_output::ICON_INFO.cyan());
+                cli_output::info("Executing...\n");
                 let mut cmd = Command::new(binary_path);
                 cmd.args(args);
                 cmd.envs(child_env.iter().cloned());
@@ -775,10 +758,7 @@ pub(super) fn execute_with_scheduler(
             } else {
                 // No root Cargo.toml — generate a minimal .horus/Cargo.toml
                 // for standalone .rs file compilation.
-                println!(
-                    "{} Setting up Cargo workspace for standalone file...",
-                    cli_output::ICON_INFO.cyan()
-                );
+                cli_output::info("Setting up Cargo workspace for standalone file...");
 
                 let cargo_toml_path = PathBuf::from(".horus/Cargo.toml");
                 let source_relative_path = format!("../{}", file.display());
@@ -822,11 +802,10 @@ path = "{}"
 
                 // Find HORUS source directory and add core path deps
                 let horus_source = find_horus_source_dir()?;
-                println!(
-                    "  {} Using HORUS source: {}",
-                    cli_output::ICON_INFO.cyan(),
+                cli_output::info(&format!(
+                    "Using HORUS source: {}",
                     horus_source.display()
-                );
+                ));
 
                 for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
                     let dep_path = horus_source.join(dep_name);
@@ -851,27 +830,20 @@ path = "{}"
                                 dep_path.display()
                             ));
                         }
-                        println!(
-                            "  {} Added dependency: {} -> {}",
-                            cli_output::ICON_INFO.cyan(),
+                        cli_output::info(&format!(
+                            "Added dependency: {} -> {}",
                             dep_name,
                             dep_path.display()
-                        );
+                        ));
                     }
                 }
 
                 fs::write(&cargo_toml_path, &cargo_toml)?;
-                println!(
-                    "  {} Generated Cargo.toml",
-                    cli_output::ICON_SUCCESS.green()
-                );
+                cli_output::success("Generated Cargo.toml");
 
                 // Run cargo clean if requested
                 if clean {
-                    println!(
-                        "{} Cleaning build artifacts...",
-                        cli_output::ICON_INFO.cyan()
-                    );
+                    cli_output::info("Cleaning build artifacts...");
                     let mut clean_cmd = Command::new("cargo");
                     clean_cmd.arg("clean");
                     clean_cmd.current_dir(".horus");
@@ -881,7 +853,7 @@ path = "{}"
                     }
                 }
 
-                println!("{} Building with Cargo...", cli_output::ICON_INFO.cyan());
+                cli_output::info("Building with Cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.current_dir(".horus");
@@ -913,7 +885,7 @@ path = "{}"
                 };
 
                 // Execute the binary
-                println!("{} Executing...\n", cli_output::ICON_INFO.cyan());
+                cli_output::info("Executing...\n");
                 let mut cmd = Command::new(binary_path);
                 cmd.args(args);
                 cmd.envs(child_env.iter().cloned());

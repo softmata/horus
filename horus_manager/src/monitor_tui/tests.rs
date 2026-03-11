@@ -10,7 +10,7 @@ fn test_tab_as_str() {
     assert_eq!(Tab::Nodes.as_str(), "Nodes");
     assert_eq!(Tab::Topics.as_str(), "Topics");
     assert_eq!(Tab::Network.as_str(), "Network");
-    assert_eq!(Tab::HFrame.as_str(), "HFrame");
+    assert_eq!(Tab::TransformFrame.as_str(), "TransformFrame");
     assert_eq!(Tab::Packages.as_str(), "Packages");
     assert_eq!(Tab::Parameters.as_str(), "Params");
 }
@@ -23,7 +23,7 @@ fn test_tab_all_returns_all_tabs() {
     assert!(tabs.contains(&Tab::Nodes));
     assert!(tabs.contains(&Tab::Topics));
     assert!(tabs.contains(&Tab::Network));
-    assert!(tabs.contains(&Tab::HFrame));
+    assert!(tabs.contains(&Tab::TransformFrame));
     assert!(tabs.contains(&Tab::Packages));
     assert!(tabs.contains(&Tab::Parameters));
     assert!(tabs.contains(&Tab::Recordings));
@@ -84,7 +84,7 @@ fn test_next_tab_cycles_through_all() {
     assert_eq!(dashboard.active_tab, Tab::Network);
 
     dashboard.next_tab();
-    assert_eq!(dashboard.active_tab, Tab::HFrame);
+    assert_eq!(dashboard.active_tab, Tab::TransformFrame);
 
     dashboard.next_tab();
     assert_eq!(dashboard.active_tab, Tab::Packages);
@@ -116,7 +116,7 @@ fn test_prev_tab_cycles_backwards() {
     assert_eq!(dashboard.active_tab, Tab::Packages);
 
     dashboard.prev_tab();
-    assert_eq!(dashboard.active_tab, Tab::HFrame);
+    assert_eq!(dashboard.active_tab, Tab::TransformFrame);
 
     dashboard.prev_tab();
     assert_eq!(dashboard.active_tab, Tab::Network);

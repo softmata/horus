@@ -8,7 +8,7 @@ pub mod deploy;
 pub mod discover;
 pub mod env;
 pub mod github_auth;
-pub mod hf;
+pub mod tf;
 pub mod init;
 pub mod launch;
 pub mod log;

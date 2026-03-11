@@ -1,10 +1,10 @@
-//! Property-based tests for Transform and HFrame invariants.
+//! Property-based tests for Transform and TransformFrame invariants.
 //!
 //! Uses proptest to verify mathematical properties hold for random inputs,
 //! catching edge cases that hand-picked examples would miss: denormalized
 //! floats, near-antipodal quaternions, extreme scales, etc.
 
-use horus_library::hframe::{HFrame, Transform};
+use horus_library::transform_frame::{TransformFrame, Transform};
 use proptest::prelude::*;
 
 // ========================================================================
@@ -278,7 +278,7 @@ proptest! {
 // For a 4-frame chain A → B → C → D:
 //   tf("A", "D") ≈ tf("C", "D").compose(tf("B", "C").compose(tf("A", "B")))
 //
-// This tests the full HFrame pipeline with random transforms.
+// This tests the full TransformFrame pipeline with random transforms.
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
@@ -288,7 +288,7 @@ proptest! {
         t_c in arb_transform(),
         t_d in arb_transform(),
     ) {
-        let hf = HFrame::new();
+        let hf = TransformFrame::new();
         hf.register_frame("A", None).unwrap();
         hf.register_frame("B", Some("A")).unwrap();
         hf.register_frame("C", Some("B")).unwrap();

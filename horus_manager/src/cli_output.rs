@@ -1,6 +1,8 @@
 //! Standardized CLI output helpers for consistent HORUS CLI experience.
 //!
 //! All user-facing output should use these helpers instead of raw `println!`.
+//! Informational helpers (`info`, `success`, `hint`, `header`) respect quiet
+//! mode set via [`crate::progress::set_quiet`]. Errors and warnings always print.
 
 use colored::*;
 
@@ -10,34 +12,42 @@ pub const ICON_WARN: &str = "\u{26a0}"; // ⚠
 pub const ICON_INFO: &str = "\u{25b6}"; // ▶
 pub const ICON_HINT: &str = "\u{00b7}"; // ·
 
-/// Print a success message: ✓ message
+/// Print a success message: ✓ message (suppressed in quiet mode)
 pub fn success(msg: &str) {
-    println!("{} {}", ICON_SUCCESS.green(), msg);
+    if !crate::progress::is_quiet() {
+        println!("{} {}", ICON_SUCCESS.green(), msg);
+    }
 }
 
-/// Print an error message to stderr: ✗ message
+/// Print an error message to stderr: ✗ message (always prints)
 pub fn error(msg: &str) {
     eprintln!("{} {}", ICON_ERROR.red(), msg);
 }
 
-/// Print a warning message: ⚠ message
+/// Print a warning message: ⚠ message (always prints)
 pub fn warn(msg: &str) {
-    println!("{} {}", ICON_WARN.yellow(), msg);
+    eprintln!("{} {}", ICON_WARN.yellow(), msg);
 }
 
-/// Print an info/action message: ▶ message
+/// Print an info/action message: ▶ message (suppressed in quiet mode)
 pub fn info(msg: &str) {
-    println!("{} {}", ICON_INFO.cyan(), msg);
+    if !crate::progress::is_quiet() {
+        eprintln!("{} {}", ICON_INFO.cyan(), msg);
+    }
 }
 
-/// Print a dimmed hint: · message
+/// Print a dimmed hint: · message (suppressed in quiet mode)
 pub fn hint(msg: &str) {
-    println!("  {} {}", ICON_HINT.dimmed(), msg.dimmed());
+    if !crate::progress::is_quiet() {
+        println!("  {} {}", ICON_HINT.dimmed(), msg.dimmed());
+    }
 }
 
-/// Print a bold cyan header
+/// Print a bold cyan header (suppressed in quiet mode)
 pub fn header(msg: &str) {
-    println!("{}", msg.cyan().bold());
+    if !crate::progress::is_quiet() {
+        println!("{}", msg.cyan().bold());
+    }
 }
 
 /// Print an empty-state message with an optional tip

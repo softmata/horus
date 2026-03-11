@@ -53,7 +53,7 @@ impl Heartbeat {
             alive: 1,
             sequence: 0,
             uptime: 0.0,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         };
 
@@ -70,7 +70,7 @@ impl Heartbeat {
     pub fn update(&mut self, uptime: f64) {
         self.sequence += 1;
         self.uptime = uptime;
-        self.timestamp_ns = crate::hframe::timestamp_now();
+        self.timestamp_ns = crate::transform_frame::timestamp_now();
     }
 
     /// Get node name as string
@@ -135,7 +135,7 @@ impl DiagnosticStatus {
         let mut status = Self {
             level: level as u8,
             code,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         };
 
@@ -227,7 +227,7 @@ impl EmergencyStop {
         let mut estop = Self {
             engaged: 1,
             auto_reset: 0,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         };
 
@@ -245,7 +245,7 @@ impl EmergencyStop {
         Self {
             engaged: 0,
             auto_reset: 0,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         }
     }
@@ -298,7 +298,7 @@ impl ResourceUsage {
     /// Create a new resource usage message
     pub fn new() -> Self {
         Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         }
     }
@@ -424,7 +424,7 @@ impl DiagnosticReport {
     /// Create a new diagnostic report
     pub fn new(component: &str) -> Self {
         let mut report = Self {
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
             ..Default::default()
         };
 
@@ -639,7 +639,7 @@ impl SafetyStatus {
             comms_ok: 1,
             mode: Self::MODE_NORMAL,
             fault_code: 0,
-            timestamp_ns: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::transform_frame::timestamp_now(),
         }
     }
 

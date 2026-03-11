@@ -179,9 +179,9 @@ fn main() -> Result<()> {
 | Control | `CmdVel`, `MotorCommand`, `JointState`, `ServoCommand` |
 | AI/ML | `TensorData`, `Predictions`, `FeatureVector`, `LLMRequest` |
 
-**Transforms** — coordinate frame management via `HFrame`:
+**Transforms** — coordinate frame management via `TransformFrame`:
 ```rust
-let hf = HFrame::new();
+let tf = TransformFrame::new();
 hf.add_frame("laser").parent("base_link")
     .static_transform(&Transform::translation(0.2, 0.0, 0.1))
     .build()?;
