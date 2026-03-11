@@ -412,27 +412,31 @@ impl TopicHeader {
             }
         }
 
-        // Find empty slot or expired lease
+        // Find empty slot or expired lease.
+        //
+        // We use active=2 as an "initializing" sentinel so that a freshly
+        // claimed slot (whose lease_expires_ms is still 0) is not mistaken
+        // for an expired slot by another thread.
         for (i, p) in self.participants.iter().enumerate() {
-            let is_active = p.active.load(Ordering::Acquire) != 0;
+            let active_val = p.active.load(Ordering::Acquire);
+            if active_val == 2 {
+                continue; // Another thread is initializing this slot
+            }
+            let is_active = active_val != 0;
             let is_expired = is_active && p.is_lease_expired(now_ms);
 
             if !is_active || is_expired {
-                // Try to claim the slot FIRST via CAS, THEN decrement expired
-                // counters. This prevents a race where two threads both decrement
-                // counters for the same expired slot but only one wins the CAS,
-                // causing counter underflow.
-                let claimed = if !is_active {
-                    p.active
-                        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                } else {
-                    // Expired slot: atomically swap active 1→1 (acts as a claim fence)
-                    // We use swap instead of CAS(1,1) — if another thread cleared it
-                    // to 0 in the meantime, we'll detect that and skip.
-                    let prev = p.active.swap(1, Ordering::AcqRel);
-                    prev == 1 // Only claimed if it was still active (expired)
-                };
+                // Try to claim the slot via CAS → 2 (initializing).
+                // Exactly one thread wins per slot.
+                let claimed = p
+                    .active
+                    .compare_exchange(
+                        active_val,
+                        2,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok();
 
                 if claimed {
                     // Now that we own the slot, safely decrement the old role counters
@@ -454,6 +458,9 @@ impl TopicHeader {
                     self.total_participants.fetch_add(1, Ordering::AcqRel);
                     self.last_topology_change_ms
                         .store(now_ms, Ordering::Release);
+                    // Finalize: transition from initializing (2) to active (1).
+                    // This makes the slot visible with all fields properly set.
+                    p.active.store(1, Ordering::Release);
                     return Ok(i);
                 }
             }
