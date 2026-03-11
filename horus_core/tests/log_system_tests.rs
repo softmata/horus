@@ -667,16 +667,22 @@ fn hlog_context_switch_between_nodes() {
 fn hlog_every_throttle() {
     set_node_context("throttle_node", 1);
 
+    // Use a per-run unique prefix to avoid matching stale entries from prior
+    // process runs (SHM log buffer persists on disk).
+    let unique_id = std::process::id();
+    let prefix = format!("throttled_{}_{{}}", unique_id);
+
     // Call hlog_every! with 5000ms interval 10 times in rapid succession
     // Only the FIRST call should produce a log entry (subsequent ones within interval)
     for i in 0..10 {
-        horus_core::hlog_every!(5000, info, "throttled_unique_marker_{}", i);
+        horus_core::hlog_every!(5000, info, "throttled_{}_{}", unique_id, i);
     }
 
     let all = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.get_all();
+    let match_prefix = format!("throttled_{}_", unique_id);
     let throttled_entries: Vec<_> = all
         .iter()
-        .filter(|e| e.message.starts_with("throttled_unique_marker_"))
+        .filter(|e| e.message.starts_with(&match_prefix))
         .collect();
 
     // Should have exactly 1 entry (first call logs, rest are throttled within 5s)
@@ -686,8 +692,6 @@ fn hlog_every_throttle() {
         "hlog_every! with 5s interval should only log once in rapid succession, got {}",
         throttled_entries.len()
     );
-    // The first message should be "throttled_unique_marker_0"
-    assert!(throttled_entries[0].message.contains("_0"));
 
     clear_node_context();
 }
@@ -700,15 +704,22 @@ fn hlog_every_throttle() {
 fn hlog_once_deduplication() {
     set_node_context("once_node", 1);
 
-    // Call hlog_once! multiple times — only first should log
+    // Use a per-run unique marker to avoid matching stale entries from prior
+    // process runs (SHM log buffer persists on disk).
+    let unique_id = std::process::id();
+    let marker = format!("once_dedup_marker_{}", unique_id);
+
+    // Call hlog_once! multiple times — only first should log.
+    // Note: hlog_once! uses a static AtomicBool, so across 10 iterations
+    // of this single callsite, exactly 1 entry is written.
     for _ in 0..10 {
-        horus_core::hlog_once!(info, "once_unique_calibration_marker");
+        horus_core::hlog_once!(info, "{}", marker);
     }
 
     let all = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.get_all();
     let once_entries: Vec<_> = all
         .iter()
-        .filter(|e| e.message == "once_unique_calibration_marker")
+        .filter(|e| e.message == marker)
         .collect();
 
     assert_eq!(

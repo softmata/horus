@@ -1,141 +1,142 @@
 """
-Integration tests for the new RT API DX (profile-based scheduler configuration).
+Integration tests for the composable scheduler configuration API.
 
 Tests cover:
-- Scheduler profile presets (deploy, hard_rt, safety_critical)
-- SchedulerConfig profile factories
+- SchedulerConfig composable builders (with_monitoring, rate, blackbox, etc.)
+- Scheduler construction with builder params
 - Node rate via builder (not trait)
-- Profile chaining with overrides
+- Builder chaining with overrides
 """
 
 import pytest
 
 
 # ============================================================================
-# SchedulerConfig Profile Presets
+# SchedulerConfig Composable Builders
 # ============================================================================
 
-class TestSchedulerConfigProfiles:
-    """Test SchedulerConfig profile factory methods."""
+class TestSchedulerConfigBuilders:
+    """Test SchedulerConfig composable builder methods."""
 
     def test_minimal_config(self):
         from horus._horus import SchedulerConfig
         cfg = SchedulerConfig.minimal()
         assert cfg.tick_rate == 60.0
-        assert cfg.fault_tolerance is False
         assert cfg.safety_monitor is False
         assert cfg.memory_locking is False
 
-    def test_deploy_config(self):
+    def test_with_monitoring_config(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.deploy()
-        assert cfg.tick_rate == 100.0
-        assert cfg.fault_tolerance is True
+        cfg = SchedulerConfig.with_monitoring()
         assert cfg.safety_monitor is True
         assert cfg.budget_enforcement is True
         assert cfg.deadline_monitoring is True
         assert cfg.watchdog_enabled is True
         assert cfg.watchdog_timeout_ms == 500
-        assert cfg.black_box_enabled is True
-        assert cfg.black_box_size_mb == 64
 
-    def test_hard_rt_config(self):
+    def test_monitoring_config_repr(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.hard_rt()
-        # Has everything deploy has
-        assert cfg.fault_tolerance is True
+        cfg = SchedulerConfig.with_monitoring()
+        r = repr(cfg)
+        assert "Monitoring" in r
+
+    def test_monitoring_config_override_tick_rate(self):
+        from horus._horus import SchedulerConfig
+        cfg = SchedulerConfig.with_monitoring()
+        cfg.tick_rate = 500.0
+        assert cfg.tick_rate == 500.0
+        # Monitoring settings preserved
         assert cfg.safety_monitor is True
-        # Plus RT-specific features
+
+    def test_monitoring_config_chaining(self):
+        from horus._horus import SchedulerConfig
+        cfg = SchedulerConfig.with_monitoring()
+        cfg = cfg.rate(500.0).blackbox_mb(128)
+        assert cfg.tick_rate == 500.0
+        assert cfg.black_box_size_mb == 128
+        assert cfg.safety_monitor is True
+
+    def test_composable_rt_config(self):
+        """Compose an RT-like config from builder methods."""
+        from horus._horus import SchedulerConfig
+        cfg = SchedulerConfig.with_monitoring()
+        cfg = cfg.rate(100.0).blackbox_mb(64)
+        cfg.memory_locking = True
+        cfg.rt_scheduling_class = True
+        cfg.max_deadline_misses = 10
+        assert cfg.tick_rate == 100.0
+        assert cfg.safety_monitor is True
         assert cfg.memory_locking is True
         assert cfg.rt_scheduling_class is True
         assert cfg.max_deadline_misses == 10
 
-    def test_safety_critical_config(self):
+    def test_composable_strict_config(self):
+        """Compose a strict config with profiling and tight deadlines."""
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.safety_critical()
-        # Has everything hard_rt has
-        assert cfg.memory_locking is True
-        assert cfg.rt_scheduling_class is True
-        # Plus profiling and strict deadlines
+        cfg = SchedulerConfig.with_monitoring()
+        cfg.memory_locking = True
+        cfg.rt_scheduling_class = True
+        cfg.profiling = True
+        cfg.max_deadline_misses = 3
         assert cfg.profiling is True
         assert cfg.max_deadline_misses == 3
 
-    def test_deploy_config_repr(self):
+    def test_builder_methods_chain(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.deploy()
-        r = repr(cfg)
-        assert "Deploy" in r
-        assert "100.0Hz" in r
+        cfg = SchedulerConfig.minimal()
+        cfg = cfg.rate(50.0).watchdog_ms(200).blackbox_mb(32).cpu_affinity([0, 1])
+        assert cfg.tick_rate == 50.0
+        assert cfg.watchdog_enabled is True
+        assert cfg.watchdog_timeout_ms == 200
+        assert cfg.black_box_enabled is True
+        assert cfg.black_box_size_mb == 32
+        assert cfg.cpu_cores == [0, 1]
 
-    def test_hard_rt_config_repr(self):
+    def test_no_watchdog_disables(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.hard_rt()
-        r = repr(cfg)
-        assert "HardRT" in r
+        cfg = SchedulerConfig.with_monitoring().no_watchdog()
+        assert cfg.watchdog_enabled is False
 
-    def test_safety_critical_config_repr(self):
+    def test_telemetry_endpoint(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.safety_critical()
-        r = repr(cfg)
-        assert "SafetyCritical" in r
-
-    def test_deploy_config_override_tick_rate(self):
-        from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.deploy()
-        cfg.tick_rate = 500.0
-        assert cfg.tick_rate == 500.0
-        # Other deploy settings preserved
-        assert cfg.fault_tolerance is True
-        assert cfg.safety_monitor is True
-
-    def test_deploy_config_chaining(self):
-        from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.deploy()
-        cfg = cfg.rate(500.0).blackbox_mb(128)
-        assert cfg.tick_rate == 500.0
-        assert cfg.black_box_size_mb == 128
-        assert cfg.fault_tolerance is True
+        cfg = SchedulerConfig.minimal().telemetry("http://localhost:4317")
+        assert cfg.telemetry_endpoint == "http://localhost:4317"
 
 
 # ============================================================================
-# Python Scheduler Profile Presets
+# Python Scheduler Construction
 # ============================================================================
 
-class TestSchedulerProfiles:
-    """Test Scheduler class profile constructors."""
+class TestSchedulerConstruction:
+    """Test Scheduler creation with composable config."""
 
-    def test_deploy_creates_scheduler(self):
+    def test_default_creates_scheduler(self):
         from horus import Scheduler
-        s = Scheduler.deploy()
+        s = Scheduler()
         assert s is not None
 
-    def test_deploy_with_tick_rate(self):
+    def test_with_tick_rate(self):
         from horus import Scheduler
-        s = Scheduler.deploy(tick_rate=500.0)
+        s = Scheduler(tick_rate=500.0)
         assert s is not None
 
-    def test_hard_rt_creates_scheduler(self):
+    def test_with_monitoring_creates_scheduler(self):
         from horus import Scheduler
-        s = Scheduler.hard_rt()
+        s = Scheduler(tick_rate=100.0, safety_monitor=True)
         assert s is not None
 
-    def test_safety_critical_creates_scheduler(self):
-        from horus import Scheduler
-        s = Scheduler.safety_critical()
-        assert s is not None
-
-    def test_deploy_can_add_nodes(self):
+    def test_scheduler_can_add_nodes(self):
         from horus import Scheduler, Node
 
         class TestNode(Node):
-            name = "test_deploy_node"
+            name = "test_node"
             def tick(self, info=None):
                 pass
 
-        s = Scheduler.deploy(tick_rate=100.0)
+        s = Scheduler(tick_rate=100.0)
         s.add(TestNode(), order=0, rate=50.0)
 
-    def test_deploy_can_run_briefly(self):
+    def test_scheduler_can_run_briefly(self):
         from horus import Scheduler, Node
 
         class TickCounter(Node):
@@ -146,11 +147,23 @@ class TestSchedulerProfiles:
             def tick(self, info=None):
                 self.count += 1
 
-        s = Scheduler.deploy(tick_rate=100.0)
+        s = Scheduler(tick_rate=100.0)
         node = TickCounter()
         s.add(node, order=0)
         s.run(duration=0.1)
         assert node.count > 0
+
+    def test_monitoring_scheduler_can_run(self):
+        from horus import Scheduler, Node
+
+        class SimpleNode(Node):
+            name = "monitored_node"
+            def tick(self, info=None):
+                pass
+
+        s = Scheduler(tick_rate=100.0, safety_monitor=True)
+        s.add(SimpleNode(), order=0)
+        s.run(duration=0.05)
 
 
 # ============================================================================
@@ -246,7 +259,7 @@ class TestMissEnum:
         s = Scheduler(tick_rate=100.0)
         s.add(SimpleNode(), order=0, budget=500)
 
-    def test_safety_stats_has_safe_mode_activations(self):
+    def test_safety_stats_with_monitoring(self):
         from horus import Scheduler, Node
 
         class SimpleNode(Node):
@@ -254,7 +267,7 @@ class TestMissEnum:
             def tick(self, info=None):
                 pass
 
-        s = Scheduler.deploy(tick_rate=100.0)
+        s = Scheduler(tick_rate=100.0, safety_monitor=True)
         s.add(SimpleNode(), order=0)
         s.run(duration=0.05)
         stats = s._scheduler.safety_stats()

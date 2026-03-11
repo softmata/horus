@@ -30,8 +30,7 @@ fn sanitize_namespace(ns: &str) -> String {
 ///
 /// Priority:
 /// 1. `HORUS_NAMESPACE` — set by `horus_manager` when it launches a node graph.
-/// 2. `HORUS_SHM_NAMESPACE` — legacy name, kept for backward compatibility.
-/// 3. Auto-generated from session ID + user ID on Unix
+/// 2. Auto-generated from session ID + user ID on Unix
 ///    (`sid{SID}_uid{UID}`), or from the process ID on non-Unix platforms
 ///    (`pid{PID}`).  This ensures that independent HORUS applications running
 ///    on the same machine automatically use different SHM regions without any
@@ -43,13 +42,7 @@ pub fn generate_namespace() -> String {
             return sanitize_namespace(&ns);
         }
     }
-    // 2. HORUS_SHM_NAMESPACE — legacy fallback
-    if let Ok(ns) = std::env::var("HORUS_SHM_NAMESPACE") {
-        if !ns.is_empty() {
-            return sanitize_namespace(&ns);
-        }
-    }
-    // 3. Auto-generate from session ID (SID).
+    // 2. Auto-generate from session ID (SID).
     //
     //    SID is shared by all processes in the same terminal session, so
     //    independently launched processes (`./pub &`, `./sub &`) converge
@@ -333,18 +326,6 @@ pub fn shm_parent_dir() -> PathBuf {
     }
 }
 
-/// Parse a HORUS auto-generated namespace directory name (legacy PGID format).
-///
-/// Returns `Some((pgid, uid))` for names matching `horus_pgid{N}_uid{N}`.
-/// Returns `None` for other formats.
-pub fn parse_namespace_pgid(dir_name: &str) -> Option<(i32, u32)> {
-    let suffix = dir_name.strip_prefix("horus_pgid")?;
-    let (pgid_str, rest) = suffix.split_once("_uid")?;
-    let pgid: i32 = pgid_str.parse().ok()?;
-    let uid: u32 = rest.parse().ok()?;
-    Some((pgid, uid))
-}
-
 /// Parse a HORUS auto-generated namespace directory name (SID format).
 ///
 /// Returns `Some((sid, uid))` for names matching `horus_sid{N}_uid{N}`.
@@ -355,33 +336,6 @@ pub fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
     let sid: i32 = sid_str.parse().ok()?;
     let uid: u32 = rest.parse().ok()?;
     Some((sid, uid))
-}
-
-/// Check whether any process in the given process group is still alive.
-///
-/// Uses `kill(-pgid, 0)` which checks for existence without sending a signal.
-/// Returns `false` if the process group doesn't exist or we lack permission to signal it.
-#[cfg(unix)]
-pub fn process_group_alive(pgid: i32) -> bool {
-    if pgid <= 0 {
-        return false;
-    }
-    // SAFETY: kill with signal 0 is a standard existence check.
-    // Negative pid means "send to process group |pid|".
-    let ret = unsafe { libc::kill(-pgid, 0) };
-    if ret == 0 {
-        return true;
-    }
-    // EPERM means the process group exists but we can't signal it — still alive.
-    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    errno == libc::EPERM
-}
-
-#[cfg(not(unix))]
-pub fn process_group_alive(_pgid: i32) -> bool {
-    // On non-Unix platforms, we can't check process groups.
-    // Conservatively assume alive to avoid deleting active namespaces.
-    true
 }
 
 /// Check whether a session (by session leader PID) is still alive.
@@ -482,8 +436,8 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
     for entry in entries.flatten() {
         let dir_name = entry.file_name().to_string_lossy().to_string();
 
-        // Only look at auto-generated horus_sid* or legacy horus_pgid* directories
-        if !dir_name.starts_with("horus_sid") && !dir_name.starts_with("horus_pgid") {
+        // Only look at auto-generated horus_sid* directories
+        if !dir_name.starts_with("horus_sid") {
             continue;
         }
 
@@ -493,11 +447,9 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
             continue;
         }
 
-        // Parse ID and UID from the directory name (try SID first, then legacy PGID)
+        // Parse SID and UID from the directory name
         let (uid, alive) = if let Some((sid, uid)) = parse_namespace_sid(&dir_name) {
             (uid, session_alive(sid))
-        } else if let Some((pgid, uid)) = parse_namespace_pgid(&dir_name) {
-            (uid, process_group_alive(pgid))
         } else {
             result.skipped += 1;
             continue;
@@ -580,8 +532,6 @@ pub fn list_all_horus_namespaces() -> Vec<NamespaceInfo> {
 
         let (pgid, uid, alive) = if let Some((sid, uid)) = parse_namespace_sid(&dir_name) {
             (Some(sid), Some(uid), session_alive(sid))
-        } else if let Some((pgid, uid)) = parse_namespace_pgid(&dir_name) {
-            (Some(pgid), Some(uid), process_group_alive(pgid))
         } else {
             (None, None, true) // Custom namespaces assumed alive
         };
@@ -711,18 +661,14 @@ mod tests {
     /// generate_namespace() with HORUS_NAMESPACE set returns the sanitized value.
     #[test]
     fn test_generate_namespace_uses_horus_namespace_env() {
-        // Set both vars; HORUS_NAMESPACE must win.
         let prev = std::env::var("HORUS_NAMESPACE").ok();
-        let prev_legacy = std::env::var("HORUS_SHM_NAMESPACE").ok();
 
         // SAFETY: set_var/remove_var are process-wide mutations. This test must not run in
-        // parallel with other tests that read HORUS_NAMESPACE or HORUS_SHM_NAMESPACE. Each
-        // Rust test binary runs its tests sequentially by default within a single thread
-        // pool, and the env changes are bracketed by a restore block, so this is safe.
-        // In CI, use `--test-threads=1` if parallel env-var tests are added.
+        // parallel with other tests that read HORUS_NAMESPACE. Each Rust test binary runs
+        // its tests sequentially by default within a single thread pool, and the env changes
+        // are bracketed by a restore block, so this is safe.
         unsafe {
             std::env::set_var("HORUS_NAMESPACE", "test_robot_A");
-            std::env::remove_var("HORUS_SHM_NAMESPACE");
         }
         let ns = generate_namespace();
 
@@ -734,55 +680,20 @@ mod tests {
                 Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
                 None => std::env::remove_var("HORUS_NAMESPACE"),
             }
-            match prev_legacy {
-                Some(v) => std::env::set_var("HORUS_SHM_NAMESPACE", v),
-                None => std::env::remove_var("HORUS_SHM_NAMESPACE"),
-            }
         }
 
         assert_eq!(ns, "test_robot_A");
     }
 
-    /// generate_namespace() falls back to HORUS_SHM_NAMESPACE when HORUS_NAMESPACE unset.
-    #[test]
-    fn test_generate_namespace_legacy_fallback() {
-        let prev = std::env::var("HORUS_NAMESPACE").ok();
-        let prev_legacy = std::env::var("HORUS_SHM_NAMESPACE").ok();
-
-        // SAFETY: env var mutation is process-wide; test is single-threaded and
-        // restores original values before returning.
-        unsafe {
-            std::env::remove_var("HORUS_NAMESPACE");
-            std::env::set_var("HORUS_SHM_NAMESPACE", "legacy_ns");
-        }
-        let ns = generate_namespace();
-
-        // SAFETY: restoring env vars saved above; same single-threaded test context.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
-                None => std::env::remove_var("HORUS_NAMESPACE"),
-            }
-            match prev_legacy {
-                Some(v) => std::env::set_var("HORUS_SHM_NAMESPACE", v),
-                None => std::env::remove_var("HORUS_SHM_NAMESPACE"),
-            }
-        }
-
-        assert_eq!(ns, "legacy_ns");
-    }
-
-    /// generate_namespace() auto-generates a non-empty namespace when both env vars are absent.
+    /// generate_namespace() auto-generates a non-empty namespace when env var is absent.
     #[test]
     fn test_generate_namespace_auto_when_no_env() {
         let prev = std::env::var("HORUS_NAMESPACE").ok();
-        let prev_legacy = std::env::var("HORUS_SHM_NAMESPACE").ok();
 
         // SAFETY: env var mutation is process-wide; test is single-threaded and
         // restores original values before returning.
         unsafe {
             std::env::remove_var("HORUS_NAMESPACE");
-            std::env::remove_var("HORUS_SHM_NAMESPACE");
         }
         let ns = generate_namespace();
 
@@ -791,10 +702,6 @@ mod tests {
             match prev {
                 Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
                 None => std::env::remove_var("HORUS_NAMESPACE"),
-            }
-            match prev_legacy {
-                Some(v) => std::env::set_var("HORUS_SHM_NAMESPACE", v),
-                None => std::env::remove_var("HORUS_SHM_NAMESPACE"),
             }
         }
 
@@ -830,62 +737,33 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_parse_namespace_pgid_valid() {
+    fn test_parse_namespace_sid_valid() {
         assert_eq!(
-            parse_namespace_pgid("horus_pgid12345_uid1000"),
+            parse_namespace_sid("horus_sid12345_uid1000"),
             Some((12345, 1000))
         );
-        assert_eq!(parse_namespace_pgid("horus_pgid1_uid0"), Some((1, 0)));
+        assert_eq!(parse_namespace_sid("horus_sid1_uid0"), Some((1, 0)));
         assert_eq!(
-            parse_namespace_pgid("horus_pgid999999999_uid65534"),
+            parse_namespace_sid("horus_sid999999999_uid65534"),
             Some((999999999, 65534))
         );
     }
 
     #[test]
-    fn test_parse_namespace_pgid_custom_namespaces() {
-        // Custom namespaces should return None — never auto-cleaned
-        assert_eq!(parse_namespace_pgid("horus_my_robot"), None);
-        assert_eq!(parse_namespace_pgid("horus_test"), None);
-        assert_eq!(parse_namespace_pgid("horus_"), None);
-        assert_eq!(parse_namespace_pgid("not_horus_pgid1_uid1"), None);
+    fn test_parse_namespace_sid_custom_namespaces() {
+        assert_eq!(parse_namespace_sid("horus_my_robot"), None);
+        assert_eq!(parse_namespace_sid("horus_test"), None);
+        assert_eq!(parse_namespace_sid("horus_"), None);
+        assert_eq!(parse_namespace_sid("not_horus_sid1_uid1"), None);
     }
 
     #[test]
-    fn test_parse_namespace_pgid_malformed() {
-        assert_eq!(parse_namespace_pgid("horus_pgidabc_uid1000"), None);
-        assert_eq!(parse_namespace_pgid("horus_pgid123_uidabc"), None);
-        assert_eq!(parse_namespace_pgid("horus_pgid_uid"), None);
-        assert_eq!(parse_namespace_pgid("horus_pgid123"), None);
-        assert_eq!(parse_namespace_pgid(""), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_process_group_alive_current() {
-        // Our own process group should be alive
-        // SAFETY: getpgrp() is an always-succeeding, async-signal-safe POSIX syscall.
-        let pgid = unsafe { libc::getpgrp() };
-        assert!(
-            process_group_alive(pgid),
-            "current process group should be alive"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_process_group_alive_nonexistent() {
-        // PGID 999999999 is extremely unlikely to exist
-        assert!(
-            !process_group_alive(999999999),
-            "nonexistent process group should not be alive"
-        );
-    }
-
-    #[test]
-    fn test_process_group_alive_invalid_pgid() {
-        assert!(!process_group_alive(0));
-        assert!(!process_group_alive(-1));
+    fn test_parse_namespace_sid_malformed() {
+        assert_eq!(parse_namespace_sid("horus_sidabc_uid1000"), None);
+        assert_eq!(parse_namespace_sid("horus_sid123_uidabc"), None);
+        assert_eq!(parse_namespace_sid("horus_sid_uid"), None);
+        assert_eq!(parse_namespace_sid("horus_sid123"), None);
+        assert_eq!(parse_namespace_sid(""), None);
     }
 
     #[test]
@@ -911,22 +789,22 @@ mod tests {
 
     #[test]
     fn test_cleanup_stale_namespaces_with_simulated_stale_dir() {
-        // Create a fake stale namespace directory with a dead PGID
+        // Create a fake stale namespace directory with a dead SID
         let parent = shm_parent_dir();
-        // Use a unique dead PGID based on timestamp to avoid interference from parallel tests
+        // Use a unique dead SID based on timestamp to avoid interference from parallel tests
         let unique_suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
             % 100_000_000;
-        let dead_pgid = 900_000_000 + unique_suffix as i32;
+        let dead_sid = 900_000_000 + unique_suffix as i32;
         #[cfg(unix)]
         // SAFETY: getuid() is an always-succeeding, async-signal-safe POSIX syscall.
         let uid = unsafe { libc::getuid() };
         #[cfg(not(unix))]
         let uid: u32 = 0;
 
-        let stale_dir_name = format!("horus_pgid{}_uid{}", dead_pgid, uid);
+        let stale_dir_name = format!("horus_sid{}_uid{}", dead_sid, uid);
         let stale_path = parent.join(&stale_dir_name);
 
         // Ensure we start clean
@@ -953,20 +831,20 @@ mod tests {
 
     #[test]
     fn test_cleanup_does_not_remove_live_namespaces() {
-        // Create a directory matching the current process's PGID — should NOT be removed
+        // Create a directory matching the current session's SID — should NOT be removed
         let parent = shm_parent_dir();
         #[cfg(unix)]
-        // SAFETY: getpgrp() is an always-succeeding, async-signal-safe POSIX syscall.
-        let pgid = unsafe { libc::getpgrp() };
+        // SAFETY: getsid(0) is an always-succeeding, async-signal-safe POSIX syscall.
+        let sid = unsafe { libc::getsid(0) };
         #[cfg(not(unix))]
-        let pgid: i32 = std::process::id() as i32;
+        let sid: i32 = std::process::id() as i32;
         #[cfg(unix)]
         // SAFETY: getuid() is an always-succeeding, async-signal-safe POSIX syscall.
         let uid = unsafe { libc::getuid() };
         #[cfg(not(unix))]
         let uid: u32 = 0;
 
-        let live_dir_name = format!("horus_pgid{}_uid{}", pgid, uid);
+        let live_dir_name = format!("horus_sid{}_uid{}", sid, uid);
         let live_path = parent.join(&live_dir_name);
 
         // Might already exist from the current process's namespace

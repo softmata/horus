@@ -239,38 +239,6 @@ impl RegistryClient {
         None
     }
 
-    /// Search for drivers by query string and optional bus type
-    pub fn search_drivers(
-        &self,
-        query: &str,
-        bus_type: Option<&str>,
-    ) -> Result<Vec<DriverListEntry>> {
-        let url = format!("{}/api/drivers/search", self.base_url);
-        let mut params: Vec<(&str, &str)> = vec![("q", query)];
-        if let Some(bus) = bus_type {
-            params.push(("bus_type", bus));
-        }
-
-        let response = self
-            .client
-            .get(&url)
-            .query(&params)
-            .send()
-            .map_err(|e| anyhow!("Failed to search drivers: {}", e))?;
-
-        if !response.status().is_success() {
-            let (status, body) = read_response_body(response);
-            return Err(registry_error(status, &body, "search drivers"));
-        }
-
-        // Server returns { "results": [...], "total": N, "query": "..." }
-        let resp: DriverSearchResponse = response
-            .json()
-            .map_err(|e| anyhow!("Failed to parse driver search response: {}", e))?;
-
-        Ok(resp.results)
-    }
-
     pub fn publish(&self, path: Option<&Path>, dry_run: bool, org: Option<&str>) -> Result<()> {
         let current_dir = path.unwrap_or_else(|| Path::new("."));
 

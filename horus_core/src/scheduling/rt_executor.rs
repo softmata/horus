@@ -294,7 +294,7 @@ impl RtExecutor {
                     continue;
                 }
 
-                // Auto-unpause (DeadlineMissPolicy::Skip skips one tick)
+                // Auto-unpause (Miss::Skip skips one tick)
                 if node.is_paused {
                     node.is_paused = false;
                     continue;

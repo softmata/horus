@@ -233,7 +233,7 @@ fn dynamically_added_node_appears_in_discovery() {
 #[tokio::test]
 async fn api_status_reports_correct_node_count() {
     let pfx = unique_prefix();
-    let mut rt = build_five_nodes(&pfx);
+    let rt = build_five_nodes(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -252,7 +252,7 @@ async fn api_status_reports_correct_node_count() {
 #[tokio::test]
 async fn api_status_healthy_with_all_nodes_alive() {
     let pfx = unique_prefix();
-    let mut rt = build_five_nodes(&pfx);
+    let rt = build_five_nodes(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 

@@ -167,69 +167,6 @@ fn print_search_results(
     }
 }
 
-/// List all available plugins grouped by category
-pub fn run_available(include_local: bool) -> HorusResult<()> {
-    use crate::plugins::PluginDiscovery;
-
-    let mut discovery = PluginDiscovery::new();
-
-    if include_local {
-        if let Ok(cwd) = std::env::current_dir() {
-            if cwd.join("horus").exists() {
-                discovery.add_workspace_path(cwd);
-            } else if let Some(parent) = cwd.parent() {
-                if parent.join("horus").exists() {
-                    discovery.add_workspace_path(parent.to_path_buf());
-                }
-            }
-        }
-    }
-
-    let all_plugins = discovery
-        .discover_all()
-        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-    println!("{}", "Available HORUS Plugins".cyan().bold());
-    println!("{}", "=".repeat(50).dimmed());
-    println!();
-
-    // Group by category
-    let mut by_category: std::collections::HashMap<String, Vec<crate::plugins::AvailablePlugin>> =
-        std::collections::HashMap::new();
-
-    for plugin in all_plugins {
-        let cat_name = format!("{}", plugin.category);
-        by_category.entry(cat_name).or_default().push(plugin);
-    }
-
-    for (cat, plugins) in by_category.iter() {
-        println!(
-            "{}",
-            format!("  {} ({} plugins)", cat, plugins.len())
-                .yellow()
-                .bold()
-        );
-        for plugin in plugins {
-            let source = match plugin.source {
-                crate::plugins::PluginSourceType::Local => "local".yellow(),
-                crate::plugins::PluginSourceType::Registry => "registry".green(),
-                crate::plugins::PluginSourceType::CratesIo => "crates.io".blue(),
-                crate::plugins::PluginSourceType::Git => "git".magenta(),
-            };
-            println!(
-                "    {} {} ({})",
-                plugin.name.white(),
-                format!("v{}", plugin.version).dimmed(),
-                source
-            );
-        }
-        println!();
-    }
-
-    println!("{}", "Use 'horus info <name>' for details".dimmed());
-    Ok(())
-}
-
 /// Show detailed info about a specific plugin
 pub fn run_info(name: String) -> HorusResult<()> {
     use crate::plugins::PluginDiscovery;

@@ -207,11 +207,6 @@ impl PluginExecutor {
         &self.resolver
     }
 
-    /// Get mutable reference to resolver
-    pub fn resolver_mut(&mut self) -> &mut PluginResolver {
-        &mut self.resolver
-    }
-
     /// List all available plugin commands with info
     pub fn list_plugins(&self) -> Vec<PluginInfo> {
         let mut plugins = Vec::new();
@@ -238,37 +233,6 @@ impl PluginExecutor {
         plugins
     }
 
-    /// Print help including available plugins
-    pub fn print_plugin_help(&self) {
-        let plugins = self.list_plugins();
-        let active: Vec<_> = plugins.iter().filter(|p| !p.is_overridden).collect();
-
-        if active.is_empty() {
-            return;
-        }
-
-        println!("\n{}:", "INSTALLED PLUGINS".cyan().bold());
-
-        for plugin in active {
-            let scope_indicator = if plugin.scope == "project" {
-                "(project)".dimmed()
-            } else {
-                "(global)".dimmed()
-            };
-
-            println!(
-                "    {}    {}  {}",
-                plugin.command.green(),
-                plugin.description.dimmed(),
-                scope_indicator
-            );
-        }
-
-        println!(
-            "\nRun '{}' for more information on a plugin.",
-            "horus <plugin> --help".cyan()
-        );
-    }
 }
 
 impl Default for PluginExecutor {

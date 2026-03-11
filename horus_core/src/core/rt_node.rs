@@ -30,57 +30,6 @@ pub enum Miss {
     Stop,
 }
 
-/// Policy for handling deadline misses.
-///
-/// Configure via `.on_miss()` on the node builder, which accepts [`Miss`].
-/// This enum is the internal representation; prefer `Miss` in new code.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use horus::prelude::*;
-///
-/// scheduler.add(encoder)
-///     .rate(30.hz())
-///     .on_miss(Miss::Skip)  // Drop frame, keep streaming
-///     .build()?;
-/// ```
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeadlineMissPolicy {
-    /// Log warning and continue
-    Warn,
-    /// Skip the node for this tick
-    Skip,
-    /// Emergency stop - trigger safety shutdown
-    EmergencyStop,
-}
-
-// ── Conversions between Miss and DeadlineMissPolicy ──
-
-impl From<Miss> for DeadlineMissPolicy {
-    fn from(miss: Miss) -> Self {
-        match miss {
-            Miss::Warn => DeadlineMissPolicy::Warn,
-            Miss::Skip => DeadlineMissPolicy::Skip,
-            // SafeMode has no direct equivalent in old API — map to Warn
-            // (the executor handles SafeMode separately via Miss)
-            Miss::SafeMode => DeadlineMissPolicy::Warn,
-            Miss::Stop => DeadlineMissPolicy::EmergencyStop,
-        }
-    }
-}
-
-impl From<DeadlineMissPolicy> for Miss {
-    fn from(policy: DeadlineMissPolicy) -> Self {
-        match policy {
-            DeadlineMissPolicy::Warn => Miss::Warn,
-            DeadlineMissPolicy::Skip => Miss::Skip,
-            DeadlineMissPolicy::EmergencyStop => Miss::Stop,
-        }
-    }
-}
-
 /// Tick budget violation — node exceeded its allowed execution time.
 #[derive(Debug, Clone)]
 pub struct BudgetViolation {
@@ -139,8 +88,8 @@ impl BudgetViolation {
 /// stats.record_execution(Duration::from_micros(105));
 /// stats.record_execution(Duration::from_micros(100));
 ///
-/// assert_eq!(stats.total_ticks, 3);
-/// assert_eq!(stats.worst_execution, Duration::from_micros(105));
+/// assert_eq!(stats.total_ticks(), 3);
+/// assert_eq!(stats.worst_execution(), Duration::from_micros(105));
 /// println!("{}", stats.summary());
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -482,43 +431,4 @@ mod tests {
         assert_eq!(Miss::default(), Miss::Warn);
     }
 
-    #[test]
-    fn miss_to_deadline_miss_policy() {
-        assert_eq!(
-            DeadlineMissPolicy::from(Miss::Warn),
-            DeadlineMissPolicy::Warn
-        );
-        assert_eq!(
-            DeadlineMissPolicy::from(Miss::Skip),
-            DeadlineMissPolicy::Skip
-        );
-        assert_eq!(
-            DeadlineMissPolicy::from(Miss::SafeMode),
-            DeadlineMissPolicy::Warn
-        );
-        assert_eq!(
-            DeadlineMissPolicy::from(Miss::Stop),
-            DeadlineMissPolicy::EmergencyStop
-        );
-    }
-
-    #[test]
-    fn deadline_miss_policy_to_miss() {
-        assert_eq!(Miss::from(DeadlineMissPolicy::Warn), Miss::Warn);
-        assert_eq!(Miss::from(DeadlineMissPolicy::Skip), Miss::Skip);
-        assert_eq!(Miss::from(DeadlineMissPolicy::EmergencyStop), Miss::Stop);
-    }
-
-    #[test]
-    fn miss_roundtrip_preserves_identity() {
-        // Warn and Skip roundtrip cleanly
-        assert_eq!(Miss::from(DeadlineMissPolicy::from(Miss::Warn)), Miss::Warn);
-        assert_eq!(Miss::from(DeadlineMissPolicy::from(Miss::Skip)), Miss::Skip);
-        assert_eq!(Miss::from(DeadlineMissPolicy::from(Miss::Stop)), Miss::Stop);
-        // SafeMode maps to Warn in old API (no equivalent), so roundtrip loses info
-        assert_eq!(
-            Miss::from(DeadlineMissPolicy::from(Miss::SafeMode)),
-            Miss::Warn
-        );
-    }
 }

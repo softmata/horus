@@ -152,6 +152,7 @@ impl TickTimingRing {
     }
 
     /// Number of samples recorded (total, not just in buffer).
+    #[allow(dead_code)] // used by tests
     pub(crate) fn total_count(&self) -> u64 {
         self.count
     }
@@ -192,6 +193,7 @@ impl TickTimingRing {
 
 /// Timing statistics for a node.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // fields read by tests and print_timing_report
 pub struct TimingStats {
     pub min_us: u64,
     pub max_us: u64,
@@ -266,6 +268,7 @@ impl NodeTimingState {
     }
 
     /// Whether this node is chronically missing deadlines (3+ consecutive).
+    #[allow(dead_code)] // used by tests
     pub(crate) fn is_chronic(&self) -> bool {
         self.consecutive_misses >= 3
     }
@@ -278,6 +281,7 @@ impl NodeTimingState {
 #[derive(Debug, Clone)]
 pub enum DegradationPolicy {
     /// Log violations but take no corrective action (legacy behavior).
+    #[allow(dead_code)] // used by tests
     LogOnly,
     /// Graduated response with configurable thresholds.
     ///
@@ -423,6 +427,7 @@ impl BudgetEnforcer {
     }
 
     /// Get timing stats for a specific node.
+    #[allow(dead_code)] // used by tests
     pub(crate) fn node_stats(&self, node: &str) -> Option<TimingStats> {
         self.node_timing.get(node).map(|s| s.ring.stats())
     }
@@ -499,6 +504,7 @@ impl SafetyMonitor {
     }
 
     /// Set the degradation policy for this safety monitor.
+    #[allow(dead_code)] // used by tests
     pub(crate) fn set_degradation_policy(&mut self, policy: DegradationPolicy) {
         self.degradation_policy = policy;
     }
@@ -775,6 +781,7 @@ impl SafetyMonitor {
     }
 
     /// Get the current degradation stage for a node.
+    #[allow(dead_code)] // used by tests
     pub(crate) fn degradation_stage(&self, node_name: &str) -> DegradationStage {
         self.degradation_states
             .lock()
@@ -1515,6 +1522,78 @@ mod tests {
 
         monitor.record_deadline_miss_with_severity("motor", 600);
         assert_eq!(monitor.consecutive_misses("motor"), 2);
+    }
+
+    #[test]
+    fn test_timing_ring_total_count() {
+        let mut ring = TickTimingRing::new();
+        assert_eq!(ring.total_count(), 0);
+        ring.record(100);
+        ring.record(200);
+        ring.record(300);
+        assert_eq!(ring.total_count(), 3);
+    }
+
+    #[test]
+    fn test_timing_stats_fields() {
+        let mut ring = TickTimingRing::new();
+        ring.record(10);
+        ring.record(20);
+        ring.record(30);
+        ring.record(40);
+        ring.record(50);
+        let stats = ring.stats();
+        assert_eq!(stats.min_us, 10);
+        assert_eq!(stats.max_us, 50);
+        assert_eq!(stats.avg_us, 30);
+        assert_eq!(stats.total_ticks, 5);
+    }
+
+    #[test]
+    fn test_node_timing_is_chronic() {
+        let mut state = NodeTimingState::new(Some(Duration::from_millis(1)));
+        assert!(!state.is_chronic());
+        state.record_miss(100);
+        state.record_miss(200);
+        assert!(!state.is_chronic());
+        state.record_miss(300);
+        assert!(state.is_chronic());
+    }
+
+    #[test]
+    fn test_budget_enforcer_node_stats() {
+        let mut enforcer = BudgetEnforcer::new();
+        // No data yet
+        assert!(enforcer.node_stats("unknown").is_none());
+
+        // Set a budget and record some ticks
+        enforcer.set_budget("motor".to_string(), Duration::from_millis(10));
+        enforcer.check_budget("motor", Duration::from_micros(100)).ok();
+        enforcer.check_budget("motor", Duration::from_micros(200)).ok();
+        enforcer.check_budget("motor", Duration::from_micros(300)).ok();
+
+        let stats = enforcer.node_stats("motor");
+        assert!(stats.is_some());
+        let stats = stats.unwrap();
+        assert_eq!(stats.min_us, 100);
+        assert_eq!(stats.max_us, 300);
+        assert_eq!(stats.total_ticks, 3);
+    }
+
+    #[test]
+    fn test_set_degradation_policy_and_stage() {
+        let mut monitor = SafetyMonitor::new(100);
+
+        // Default stage is Normal
+        assert_eq!(monitor.degradation_stage("motor"), DegradationStage::Normal);
+
+        // Set LogOnly policy
+        monitor.set_degradation_policy(DegradationPolicy::LogOnly);
+
+        // Record misses — LogOnly always returns DegradationAction::None
+        monitor.record_deadline_miss_with_severity("motor", 500);
+        let action = monitor.evaluate_degradation("motor", 1, None);
+        assert_eq!(action, DegradationAction::None);
     }
 }
 

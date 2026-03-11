@@ -22,5 +22,7 @@
 mod fixtures;
 mod runtime;
 
+#[allow(unused_imports)]
 pub use fixtures::TestNodeConfig;
+#[allow(unused_imports)]
 pub use runtime::HorusTestRuntime;

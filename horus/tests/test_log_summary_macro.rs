@@ -1,3 +1,4 @@
+#![cfg(feature = "macros")]
 //! Integration tests for the `#[derive(LogSummary)]` proc macro.
 //!
 //! Verifies that the derive generates a `LogSummary` trait implementation

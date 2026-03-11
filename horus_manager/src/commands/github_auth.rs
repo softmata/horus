@@ -485,17 +485,6 @@ pub fn whoami() -> HorusResult<()> {
     Ok(())
 }
 
-/// Get the current auth token (used by other commands)
-pub fn get_auth_token() -> Option<String> {
-    // First check environment variable
-    if let Ok(token) = std::env::var("HORUS_API_KEY") {
-        return Some(token);
-    }
-
-    // Then check config file
-    load_auth_config().ok().map(|c| c.api_key)
-}
-
 /// Get the registry URL
 pub fn get_registry_url() -> String {
     // First check environment variable

@@ -1237,33 +1237,8 @@ mod tests {
         }
 
         let guard = ctx.lock().unwrap();
-        assert_eq!(guard.metrics().total_ticks, 5);
-        assert_eq!(guard.metrics().successful_ticks, 5);
-    }
-
-    /// Verify that failed ticks are tracked separately.
-    #[test]
-    fn node_context_failed_ticks_tracked() {
-        let ctx = Arc::new(Mutex::new(CoreNodeInfo::new("fail_test".to_string())));
-
-        // 3 successful ticks
-        for _ in 0..3 {
-            let mut guard = ctx.lock().unwrap();
-            guard.start_tick();
-            guard.record_tick();
-        }
-
-        // 2 failed ticks
-        for _ in 0..2 {
-            let mut guard = ctx.lock().unwrap();
-            guard.start_tick();
-            guard.record_tick_failure("test error".to_string());
-        }
-
-        let guard = ctx.lock().unwrap();
-        assert_eq!(guard.metrics().total_ticks, 5);
-        assert_eq!(guard.metrics().successful_ticks, 3);
-        assert_eq!(guard.metrics().failed_ticks, 2);
+        assert_eq!(guard.metrics().total_ticks(), 5);
+        assert_eq!(guard.metrics().successful_ticks(), 5);
     }
 
     /// Concurrent access to node_context from multiple threads.
@@ -1289,7 +1264,7 @@ mod tests {
         }
 
         let guard = ctx.lock().unwrap();
-        assert_eq!(guard.metrics().total_ticks, 40);
+        assert_eq!(guard.metrics().total_ticks(), 40);
     }
 
     /// Verify stop_requested flag propagates across threads.

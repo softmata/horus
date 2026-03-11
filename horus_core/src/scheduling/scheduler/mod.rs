@@ -2433,8 +2433,6 @@ impl Scheduler {
             .and_then(|n| n.rt_stats.as_ref())
     }
 
-    // circuit_state and circuit_summary methods removed: failure_handler was removed from RegisteredNode
-
     /// Write metadata to registry file for monitor to read
     fn update_registry(&self) {
         if let Ok(registry_path) = Self::get_registry_path() {
@@ -2719,7 +2717,7 @@ impl Scheduler {
             }
         }
 
-        // Auto-unpause nodes that were paused by DeadlineMissPolicy::Skip
+        // Auto-unpause nodes that were paused by Miss::Skip
         // (they skip exactly one tick, then resume)
         if self.nodes[i].is_paused {
             self.nodes[i].is_paused = false;

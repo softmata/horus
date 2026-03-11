@@ -93,8 +93,6 @@ fn test_new_records_degradations_gracefully() {
     let _ = degradations.len();
 }
 
-// test_new_with_capacity removed: with_capacity() was removed from Scheduler
-
 // =============================================================================
 // Status Introspection Tests
 // =============================================================================
@@ -226,9 +224,6 @@ fn test_failure_policies_enabled_by_default() {
         status
     );
 }
-
-// test_circuit_summary_empty_scheduler removed: circuit_summary() was removed from Scheduler
-// test_failure_stats_nonexistent_node removed: failure_stats() and circuit_state() were removed from Scheduler
 
 // =============================================================================
 // budget Enforcement Tests

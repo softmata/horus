@@ -17,6 +17,7 @@ use std::path::PathBuf;
 // BlackBox tests
 // ============================================================================
 
+#[cfg(feature = "blackbox")]
 #[test]
 fn test_blackbox_save_load_round_trip() {
     let tmp = TestTempDir::new("horus_bb_roundtrip");
@@ -70,6 +71,7 @@ fn test_blackbox_save_load_round_trip() {
     // tmp is cleaned up automatically on drop
 }
 
+#[cfg(feature = "blackbox")]
 #[test]
 fn test_blackbox_legacy_array_compat() {
     let tmp = TestTempDir::new("horus_bb_legacy");
@@ -103,9 +105,9 @@ fn test_blackbox_legacy_array_compat() {
         other => unreachable!("Should be a Custom event, got {:?}", other),
     }
 
-    // get_loss_count() removed
 }
 
+#[cfg(feature = "blackbox")]
 #[test]
 fn test_blackbox_wal_actual_io() {
     let tmp = TestTempDir::new("horus_bb_wal");

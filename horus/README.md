@@ -58,14 +58,21 @@ fn main() -> Result<()> {
 }
 ```
 
-## Scheduler Presets
+## Scheduler Configuration
 
 ```rust
-Scheduler::new()              // Lightweight default
-Scheduler::deploy()           // Production + flight recorder
-Scheduler::safety_critical()  // Watchdogs + sequential
-Scheduler::high_performance() // Parallel + 10kHz
-Scheduler::deterministic()    // Reproducible execution
+// Lightweight default
+Scheduler::new()
+
+// Composable builder methods — chain what you need
+Scheduler::new()
+    .monitoring(true)          // budget + deadline + watchdog + safety
+    .with_blackbox(64)         // flight recorder (64MB)
+    .with_profiling()          // runtime profiling
+    .tick_rate(1000.hz())      // 1kHz control loop
+    .deterministic(true)       // reproducible execution order
+    .prefer_rt()               // try RT, warn if unavailable
+    .max_deadline_misses(3)    // strict deadline enforcement
 ```
 
 ## License

@@ -1636,7 +1636,7 @@ pub fn tune_static_frame(
             current.translation[1] - original.translation[1],
             current.translation[2] - original.translation[2],
         ];
-        let current_euler = current.to_euler();
+        let _current_euler = current.to_euler();
         print!(
             "\r  Current: xyz=[{:.4}, {:.4}, {:.4}] delta=[{:.4}, {:.4}, {:.4}]  > ",
             current.translation[0], current.translation[1], current.translation[2],
@@ -1784,11 +1784,11 @@ pub fn calibrate_from_points(
     }
 
     // Center the points
-    let mut sensor_centered: Vec<[f64; 3]> = sensor_points
+    let sensor_centered: Vec<[f64; 3]> = sensor_points
         .iter()
         .map(|p| [p[0] - sensor_centroid[0], p[1] - sensor_centroid[1], p[2] - sensor_centroid[2]])
         .collect();
-    let mut world_centered: Vec<[f64; 3]> = world_points
+    let world_centered: Vec<[f64; 3]> = world_points
         .iter()
         .map(|p| [p[0] - world_centroid[0], p[1] - world_centroid[1], p[2] - world_centroid[2]])
         .collect();

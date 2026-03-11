@@ -259,31 +259,37 @@ mod tests {
     }
 
     #[test]
-    fn deploy_enables_safety_features() {
-        let cfg = PySchedulerConfig::deploy();
-        assert_eq!(cfg.tick_rate, 100.0);
+    fn with_monitoring_enables_safety_features() {
+        let cfg = PySchedulerConfig::with_monitoring();
         assert!(cfg.safety_monitor);
         assert!(cfg.budget_enforcement);
         assert!(cfg.deadline_monitoring);
         assert!(cfg.watchdog_enabled);
-        assert!(cfg.black_box_enabled);
-        assert_eq!(cfg.config_name, "Deploy");
+        assert_eq!(cfg.watchdog_timeout_ms, 500);
+        assert_eq!(cfg.config_name, "Monitoring");
     }
 
     #[test]
-    fn hard_rt_extends_deploy() {
-        let cfg = PySchedulerConfig::hard_rt();
-        // Inherits deploy features
+    fn composable_rt_config() {
+        // Compose RT-like config from builder methods
+        let cfg = PySchedulerConfig::with_monitoring()
+            .rate(100.0)
+            .blackbox_mb(64);
         assert!(cfg.safety_monitor);
-        // Adds RT features
-        assert!(cfg.memory_locking);
-        assert!(cfg.rt_scheduling_class);
-        assert_eq!(cfg.max_deadline_misses, 10);
+        assert!(cfg.budget_enforcement);
+        assert!(cfg.black_box_enabled);
+        assert_eq!(cfg.black_box_size_mb, 64);
+        assert_eq!(cfg.tick_rate, 100.0);
     }
 
     #[test]
-    fn safety_critical_extends_hard_rt() {
-        let cfg = PySchedulerConfig::safety_critical();
+    fn composable_strict_config() {
+        // Compose strict config via field overrides
+        let mut cfg = PySchedulerConfig::with_monitoring();
+        cfg.memory_locking = true;
+        cfg.rt_scheduling_class = true;
+        cfg.max_deadline_misses = 3;
+        cfg.profiling = true;
         assert!(cfg.memory_locking);
         assert!(cfg.profiling);
         assert_eq!(cfg.max_deadline_misses, 3);
@@ -291,7 +297,9 @@ mod tests {
 
     #[test]
     fn to_core_config_round_trip() {
-        let py_cfg = PySchedulerConfig::deploy();
+        let py_cfg = PySchedulerConfig::with_monitoring()
+            .rate(100.0)
+            .blackbox_mb(64);
         let core_cfg = py_cfg.to_core_config();
 
         assert_eq!(core_cfg.timing.global_rate_hz, 100.0);
@@ -320,7 +328,7 @@ mod tests {
 
     #[test]
     fn no_watchdog_disables_it() {
-        let cfg = PySchedulerConfig::deploy().no_watchdog();
+        let cfg = PySchedulerConfig::with_monitoring().no_watchdog();
         assert!(!cfg.watchdog_enabled);
     }
 

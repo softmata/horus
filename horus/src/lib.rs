@@ -22,7 +22,7 @@
 //!     fn name(&self) -> &str { "my_node" }
 //!
 //!     fn tick(&mut self) {
-//!         self.cmd_pub.send(&CmdVel { linear: 0.5, angular: 0.0 });
+//!         self.cmd_pub.send(CmdVel::new(0.5, 0.0));
 //!     }
 //! }
 //! ```

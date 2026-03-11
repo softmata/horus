@@ -76,15 +76,6 @@ impl Transform {
         }
     }
 
-    /// Create transform from axis-angle representation
-    pub fn from_axis_angle(translation: [f64; 3], axis: [f64; 3], angle: f64) -> Self {
-        let rotation = axis_angle_to_quaternion(axis, angle);
-        Self {
-            translation,
-            rotation,
-        }
-    }
-
     // ========================================================================
     // Short Constructors
     // ========================================================================
@@ -158,18 +149,6 @@ impl Transform {
     #[inline]
     pub fn with_yaw(self, angle: f64) -> Self {
         self.compose(&Self::yaw(angle))
-    }
-
-    /// Compose a pitch (Y-axis) rotation onto this transform.
-    #[inline]
-    pub fn with_pitch(self, angle: f64) -> Self {
-        self.compose(&Self::pitch(angle))
-    }
-
-    /// Compose a roll (X-axis) rotation onto this transform.
-    #[inline]
-    pub fn with_roll(self, angle: f64) -> Self {
-        self.compose(&Self::roll(angle))
     }
 
     /// Compose an RPY rotation onto this transform.
@@ -488,24 +467,6 @@ fn quaternion_to_euler(q: [f64; 4]) -> [f64; 3] {
     let yaw = siny_cosp.atan2(cosy_cosp);
 
     [roll, pitch, yaw]
-}
-
-fn axis_angle_to_quaternion(axis: [f64; 3], angle: f64) -> [f64; 4] {
-    let half_angle = angle / 2.0;
-    let s = half_angle.sin();
-
-    // Normalize axis
-    let norm = (axis[0].powi(2) + axis[1].powi(2) + axis[2].powi(2)).sqrt();
-    if norm < 1e-10 {
-        return [0.0, 0.0, 0.0, 1.0];
-    }
-
-    [
-        axis[0] / norm * s,
-        axis[1] / norm * s,
-        axis[2] / norm * s,
-        half_angle.cos(),
-    ]
 }
 
 fn matrix_to_quaternion(m: [[f64; 3]; 3]) -> [f64; 4] {

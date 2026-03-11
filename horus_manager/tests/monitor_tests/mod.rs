@@ -12,6 +12,9 @@
 //! - [`shm_fixtures`] — Functions to create and clean up real shared memory
 //!   presence and topic files for integration-level testing.
 
+#[allow(dead_code)]
 pub mod builders;
+#[allow(dead_code)]
 pub mod helpers;
+#[allow(dead_code)]
 pub mod shm_fixtures;

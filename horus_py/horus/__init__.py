@@ -37,11 +37,8 @@ MAX_LOG_DATA_SIZE = 200
 try:
     from horus._horus import (
         Node as _PyNode,
-        NodeInfo as _NodeInfo,
         Topic,  # Unified communication API
         Scheduler as _PyScheduler,
-        NodeState as _RustNodeState,
-        Priority as _RustPriority,
         SchedulerConfig as _SchedulerConfig,
         Miss,
         get_version,
@@ -176,12 +173,8 @@ except ImportError:
         stacklevel=2,
     )
     _PyNode = None
-    _NodeInfo = None
     Topic = None  # Unified communication API
     _PyScheduler = None
-
-    _RustNodeState = None
-    _RustPriority = None
 
     # Mock _SchedulerConfig for testing
     class _SchedulerConfig:
@@ -194,8 +187,6 @@ except ImportError:
             self.profiling = False
             self.black_box_enabled = False
             self.black_box_size_mb = 0
-            self.budget_enforcement = False
-            self.deadline_monitoring = False
             self.watchdog_enabled = False
             self.watchdog_timeout_ms = 0
             self.safety_monitor = False
@@ -229,7 +220,6 @@ except ImportError:
     class HorusTimeoutError(Exception):
         """Raised when a blocking operation times out."""
 
-    _RustPriority = None
 
 
 # ── Python enums wrapping Rust constants ─────────────────────────────────────

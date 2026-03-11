@@ -114,8 +114,6 @@ impl std::fmt::Display for PluginSourceType {
 pub struct PluginDiscovery {
     /// Local workspace paths to scan
     workspace_paths: Vec<PathBuf>,
-    /// Registry base URL
-    registry_url: String,
     /// Cached available plugins
     cache: HashMap<String, AvailablePlugin>,
     /// Cache timestamp
@@ -133,7 +131,6 @@ impl PluginDiscovery {
     pub fn new() -> Self {
         Self {
             workspace_paths: vec![],
-            registry_url: crate::config::plugin_registry_url(),
             cache: HashMap::new(),
             cache_time: None,
         }
@@ -142,11 +139,6 @@ impl PluginDiscovery {
     /// Add a workspace path to scan for local plugins
     pub fn add_workspace_path(&mut self, path: PathBuf) {
         self.workspace_paths.push(path);
-    }
-
-    /// Set custom registry URL
-    pub fn set_registry_url(&mut self, url: &str) {
-        self.registry_url = url.to_string();
     }
 
     /// Discover all available plugins
@@ -358,12 +350,6 @@ impl PluginDiscovery {
                         .any(|f| f.to_lowercase().contains(&query_lower))
             })
             .collect())
-    }
-
-    /// Search by category
-    pub fn search_by_category(&mut self, category: PluginCategory) -> Result<Vec<AvailablePlugin>> {
-        let all = self.discover_all()?;
-        Ok(all.into_iter().filter(|p| p.category == category).collect())
     }
 
     /// Get plugin by name

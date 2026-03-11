@@ -50,11 +50,20 @@ impl Node for LidarProcessor {
 
     fn tick(&mut self) {
         if let Some(scan) = self.scan_sub.recv() {
-            // Check if any range is below threshold
-            if scan.range < self.min_distance {
+            // Find the closest range reading
+            let min_range = scan.ranges.iter()
+                .copied()
+                .filter(|r| *r > scan.range_min)
+                .fold(f32::MAX, f32::min);
+
+            if min_range < self.min_distance {
+                let min_idx = scan.ranges.iter()
+                    .position(|&r| (r - min_range).abs() < 1e-6)
+                    .unwrap_or(0);
+                let angle = scan.angle_min + (min_idx as f32) * scan.angle_increment;
                 let alert = ObstacleAlert {
-                    angle_rad: scan.angle_min as f64,
-                    distance_m: scan.range as f64,
+                    angle_rad: angle as f64,
+                    distance_m: min_range as f64,
                     sector: 0,
                 };
                 self.alert_pub.send(alert);

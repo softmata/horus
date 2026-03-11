@@ -186,11 +186,6 @@ impl FrameSlot {
         self.parent.load(Ordering::Acquire)
     }
 
-    /// Set parent frame ID
-    pub fn set_parent(&self, parent: FrameId) {
-        self.parent.store(parent, Ordering::Release);
-    }
-
     // ========================================================================
     // Writer Protocol
     // ========================================================================

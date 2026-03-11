@@ -488,6 +488,7 @@ impl NodeInfo {
         Ok(())
     }
 
+    #[allow(dead_code)] // lifecycle method, used by restart()
     pub(crate) fn shutdown(&mut self) -> crate::error::HorusResult<()> {
         self.set_state(NodeState::Stopping);
         // Cleanup logic can be added here
@@ -507,6 +508,7 @@ impl NodeInfo {
         self.metrics.reset_timing();
     }
 
+    #[allow(dead_code)] // lifecycle method
     pub(crate) fn restart(&mut self) -> crate::error::HorusResult<()> {
         self.restart_count += 1;
         self.shutdown()?;

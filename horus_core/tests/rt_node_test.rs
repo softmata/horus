@@ -248,11 +248,3 @@ fn test_rt_node_with_safety_critical_config() {
     let result = scheduler.run_for(Duration::from_millis(200));
     result.unwrap();
 }
-
-// test_rt_node_tick_budget removed: tick_budget/deadline/deadline_miss_policy removed from Node trait;
-// budget and deadline are now set via builder methods on the scheduler.
-
-// test_rt_node_formal_verification removed: pre_condition/post_condition/invariant removed from Node trait
-
-// test_deadline_miss_policies removed: deadline_miss_policy removed from Node trait;
-// miss policy is now set via builder `.on_miss(Miss::X)` on the scheduler.

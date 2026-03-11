@@ -11,7 +11,7 @@ use horus::prelude::*;
 The core runtime for HORUS, providing:
 
 - **Node** - Simple trait with `init/tick/shutdown` lifecycle
-- **Scheduler** - Runs nodes in order with configurable rates and presets
+- **Scheduler** - Runs nodes in order with configurable rates and composable builders
 - **Topic** - Pub/sub communication that auto-selects the fastest transport
 - **Logging** - `hlog!()` macro with context capture
 
@@ -53,7 +53,8 @@ scheduler.add(planner).order(5).compute().build();
 scheduler.add(telemetry).order(10).async_io().rate(1.0.hz()).build();
 
 // Production-ready with safety monitor, watchdog, fault tolerance, blackbox
-let mut scheduler = Scheduler::deploy()
+let mut scheduler = Scheduler::new()
+    .monitoring(true)
     .tick_rate(1000.0.hz())
     .with_name("my_robot");
 

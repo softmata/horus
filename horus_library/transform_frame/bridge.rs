@@ -458,10 +458,6 @@ impl TFBridgeSubscriber {
         result
     }
 
-    /// Get packet loss estimate for a given source
-    pub fn packet_loss_for_source(&self, source_id: u32) -> Option<u32> {
-        self.source_sequences.get(&source_id).copied()
-    }
 }
 
 /// Apply namespace prefix to transforms
@@ -604,11 +600,6 @@ impl TFTreeMerger {
     /// Get all detected conflicts
     pub fn conflicts(&self) -> &[TFConflict] {
         &self.conflicts
-    }
-
-    /// Clear conflict log
-    pub fn clear_conflicts(&mut self) {
-        self.conflicts.clear();
     }
 
     /// Get frame ownership map

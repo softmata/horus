@@ -82,8 +82,6 @@ fn test_scheduler_with_name() {
     assert_eq!(scheduler.scheduler_name(), "TestScheduler");
 }
 
-// test_scheduler_with_capacity removed: with_capacity() was removed from Scheduler
-
 // ============================================================================
 // Node Addition Tests
 // ============================================================================
@@ -697,6 +695,7 @@ fn test_recording_hooks_wired() {
 // Fix 3: BlackBox WAL Persistence Tests
 // ============================================================================
 
+#[cfg(feature = "blackbox")]
 #[test]
 fn test_blackbox_with_path() {
     let _guard = lock_scheduler();
@@ -748,7 +747,7 @@ fn test_deploy_config_creates_blackbox_with_wal() {
 #[test]
 fn test_per_node_rates_work_without_dead_code() {
     let _guard = lock_scheduler();
-    // Per-node rates work through set_node_rate() / .rate(), not the removed config flag
+    // Per-node rates work through set_node_rate() / .rate()
     let counter = Arc::new(AtomicUsize::new(0));
     let mut scheduler = Scheduler::new().tick_rate(1000.hz());
     scheduler
@@ -1805,16 +1804,12 @@ fn test_tick_nonexistent_node_names() {
     result.unwrap();
 }
 
-// test_circuit_state_nonexistent removed: circuit_state method was removed in refactor
-
 #[test]
 fn test_rt_stats_nonexistent() {
     let _lock = lock_scheduler();
     let scheduler = Scheduler::new();
     assert!(scheduler.rt_stats("no_such_node").is_none());
 }
-
-// test_failure_stats_nonexistent removed: failure_stats method was removed in refactor
 
 #[test]
 fn test_stop_before_run() {
@@ -1892,8 +1887,6 @@ fn test_scheduler_capabilities_before_run() {
     // (or Some if pre-populated — either way, no panic)
     let _ = scheduler.capabilities();
 }
-
-// test_circuit_summary_empty removed: circuit_summary method was removed in refactor
 
 // ============================================================================
 // Graceful Shutdown Tests — verify shutdown correctness under various conditions
@@ -2993,4 +2986,599 @@ fn test_deadline_miss_and_budget_violation_both_tracked() {
         assert!(stats.budget_violations() > 0, "Should have budget violations");
         assert!(stats.deadline_misses() > 0, "Should have deadline misses");
     }
+}
+
+// ============================================================================
+// Phase 6: Comprehensive Tests — Builder Methods
+// ============================================================================
+
+#[test]
+fn test_prefer_rt_sets_config() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().prefer_rt();
+    assert!(scheduler.pending_config.realtime.memory_locking);
+    assert!(scheduler.pending_config.realtime.rt_scheduling_class);
+}
+
+#[test]
+fn test_require_rt_panics_or_succeeds() {
+    let _guard = lock_scheduler();
+    // require_rt() should either succeed (RT available) or panic (not available)
+    let result = std::panic::catch_unwind(|| Scheduler::new().require_rt());
+    // Both outcomes are valid — we just verify it doesn't silently do nothing
+    match result {
+        Ok(scheduler) => {
+            assert!(scheduler.pending_config.realtime.memory_locking);
+            assert!(scheduler.pending_config.realtime.rt_scheduling_class);
+        }
+        Err(_) => {
+            // Expected on non-RT systems
+        }
+    }
+}
+
+#[test]
+fn test_monitoring_true_sets_all_flags() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().monitoring(true);
+    assert!(scheduler.pending_config.realtime.budget_enforcement);
+    assert!(scheduler.pending_config.realtime.deadline_monitoring);
+    assert!(scheduler.pending_config.realtime.watchdog_enabled);
+    assert!(scheduler.pending_config.realtime.safety_monitor);
+    assert_eq!(scheduler.pending_config.realtime.watchdog_timeout_ms, 500);
+}
+
+#[test]
+fn test_monitoring_false_clears_all_flags() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().monitoring(true).monitoring(false);
+    assert!(!scheduler.pending_config.realtime.budget_enforcement);
+    assert!(!scheduler.pending_config.realtime.deadline_monitoring);
+    assert!(!scheduler.pending_config.realtime.watchdog_enabled);
+    assert!(!scheduler.pending_config.realtime.safety_monitor);
+}
+
+#[test]
+fn test_deterministic_sets_config() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().deterministic(true);
+    assert!(scheduler.pending_config.timing.deterministic_order);
+}
+
+#[test]
+fn test_deterministic_false_clears_config() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().deterministic(true).deterministic(false);
+    assert!(!scheduler.pending_config.timing.deterministic_order);
+}
+
+#[test]
+fn test_cores_sets_config() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().cores(&[0, 2, 4]);
+    assert_eq!(
+        scheduler.pending_config.resources.cpu_cores,
+        Some(vec![0, 2, 4])
+    );
+}
+
+#[test]
+fn test_with_profiling_sets_config() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().with_profiling();
+    assert!(scheduler.pending_config.monitoring.profiling_enabled);
+}
+
+#[test]
+fn test_with_blackbox_sets_config() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().with_blackbox(128);
+    assert!(scheduler.pending_config.monitoring.black_box_enabled);
+    assert_eq!(scheduler.pending_config.monitoring.black_box_size_mb, 128);
+    assert!(scheduler.monitor.blackbox.is_some());
+}
+
+#[test]
+fn test_max_deadline_misses_sets_config() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().max_deadline_misses(5);
+    assert_eq!(scheduler.pending_config.realtime.max_deadline_misses, 5);
+}
+
+#[test]
+fn test_builder_full_chain() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new()
+        .monitoring(true)
+        .with_blackbox(64)
+        .with_profiling()
+        .max_deadline_misses(3)
+        .tick_rate(500.hz())
+        .verbose(false)
+        .prefer_rt();
+
+    assert!(scheduler.pending_config.realtime.budget_enforcement);
+    assert!(scheduler.pending_config.realtime.safety_monitor);
+    assert!(scheduler.pending_config.monitoring.black_box_enabled);
+    assert!(scheduler.pending_config.monitoring.profiling_enabled);
+    assert_eq!(scheduler.pending_config.realtime.max_deadline_misses, 3);
+    assert_eq!(scheduler.pending_config.timing.global_rate_hz, 500.0);
+    assert!(!scheduler.pending_config.monitoring.verbose);
+    assert!(scheduler.pending_config.realtime.memory_locking);
+}
+
+// ============================================================================
+// Phase 6: tick_once() Tests
+// ============================================================================
+
+#[test]
+fn test_tick_once_basic() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100.hz());
+    scheduler
+        .add(CounterNode::with_counter("tick_once_node", counter.clone()))
+        .order(0)
+        .build();
+
+    // One tick
+    scheduler.tick_once().unwrap();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+    // Second tick
+    scheduler.tick_once().unwrap();
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn test_tick_once_multiple_nodes_execution_order() {
+    let _guard = lock_scheduler();
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct OrderTracker {
+        name: &'static str,
+        order: Arc<Mutex<Vec<String>>>,
+    }
+    impl Node for OrderTracker {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn tick(&mut self) {
+            self.order.lock().unwrap().push(self.name.to_string());
+        }
+    }
+
+    let mut scheduler = Scheduler::new().deterministic(true);
+
+    scheduler
+        .add(OrderTracker {
+            name: "third",
+            order: order.clone(),
+        })
+        .order(20)
+        .build();
+    scheduler
+        .add(OrderTracker {
+            name: "first",
+            order: order.clone(),
+        })
+        .order(0)
+        .build();
+    scheduler
+        .add(OrderTracker {
+            name: "second",
+            order: order.clone(),
+        })
+        .order(10)
+        .build();
+
+    scheduler.tick_once().unwrap();
+
+    let recorded = order.lock().unwrap().clone();
+    assert_eq!(recorded, vec!["first", "second", "third"]);
+}
+
+#[test]
+fn test_tick_once_nodes_filters_correctly() {
+    let _guard = lock_scheduler();
+    let c1 = Arc::new(AtomicUsize::new(0));
+    let c2 = Arc::new(AtomicUsize::new(0));
+    let c3 = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().deterministic(true);
+    scheduler
+        .add(CounterNode::with_counter("sensor", c1.clone()))
+        .order(0)
+        .build();
+    scheduler
+        .add(CounterNode::with_counter("motor", c2.clone()))
+        .order(1)
+        .build();
+    scheduler
+        .add(CounterNode::with_counter("logger", c3.clone()))
+        .order(2)
+        .build();
+
+    // Only tick sensor and motor
+    scheduler.tick_once_nodes(&["sensor", "motor"]).unwrap();
+
+    assert_eq!(c1.load(Ordering::SeqCst), 1, "sensor should have ticked");
+    assert_eq!(c2.load(Ordering::SeqCst), 1, "motor should have ticked");
+    assert_eq!(c3.load(Ordering::SeqCst), 0, "logger should NOT have ticked");
+}
+
+#[test]
+fn test_tick_once_nodes_nonexistent_ignored() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().deterministic(true);
+    scheduler
+        .add(CounterNode::with_counter("real_node", counter.clone()))
+        .order(0)
+        .build();
+
+    // Include nonexistent name — should not error
+    scheduler
+        .tick_once_nodes(&["real_node", "ghost_node"])
+        .unwrap();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_tick_once_lazy_init() {
+    let _guard = lock_scheduler();
+
+    struct InitTracker {
+        init_called: Arc<AtomicBool>,
+    }
+    impl Node for InitTracker {
+        fn name(&self) -> &str {
+            "init_tracker"
+        }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            self.init_called.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn tick(&mut self) {}
+    }
+
+    let init_flag = Arc::new(AtomicBool::new(false));
+    let mut scheduler = Scheduler::new().deterministic(true);
+    scheduler
+        .add(InitTracker {
+            init_called: init_flag.clone(),
+        })
+        .order(0)
+        .build();
+
+    // Before tick_once, init should NOT have been called
+    assert!(!init_flag.load(Ordering::SeqCst));
+
+    // First tick_once triggers lazy init
+    scheduler.tick_once().unwrap();
+    assert!(init_flag.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_tick_once_increments_tick_counter() {
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new().deterministic(true);
+    let counter = Arc::new(AtomicUsize::new(0));
+    scheduler
+        .add(CounterNode::with_counter("n", counter))
+        .order(0)
+        .build();
+
+    assert_eq!(scheduler.current_tick(), 0);
+    scheduler.tick_once().unwrap();
+    assert_eq!(scheduler.current_tick(), 1);
+    scheduler.tick_once().unwrap();
+    assert_eq!(scheduler.current_tick(), 2);
+}
+
+// ============================================================================
+// Phase 6: Deterministic Execution Stress Tests
+// ============================================================================
+
+#[test]
+fn test_deterministic_100_nodes_strict_order() {
+    let _guard = lock_scheduler();
+    let order = Arc::new(Mutex::new(Vec::<u32>::new()));
+
+    struct PriorityTracker {
+        name: String,
+        prio: u32,
+        order: Arc<Mutex<Vec<u32>>>,
+    }
+    impl Node for PriorityTracker {
+        fn name(&self) -> &str {
+            // Leak is fine for tests
+            Box::leak(self.name.clone().into_boxed_str())
+        }
+        fn tick(&mut self) {
+            self.order.lock().unwrap().push(self.prio);
+        }
+    }
+
+    let mut scheduler = Scheduler::new().deterministic(true);
+
+    // Add 100 nodes in REVERSE priority order
+    for i in (0..100u32).rev() {
+        let name = format!("node_{}", i);
+        scheduler
+            .add(PriorityTracker {
+                name,
+                prio: i,
+                order: order.clone(),
+            })
+            .order(i)
+            .build();
+    }
+
+    // Run 10 ticks
+    for _ in 0..10 {
+        scheduler.tick_once().unwrap();
+    }
+
+    let recorded = order.lock().unwrap().clone();
+    // Should be 10 repetitions of [0, 1, 2, ..., 99]
+    assert_eq!(recorded.len(), 1000);
+    for tick in 0..10 {
+        let slice = &recorded[tick * 100..(tick + 1) * 100];
+        let expected: Vec<u32> = (0..100).collect();
+        assert_eq!(slice, &expected[..], "Tick {} order violated", tick);
+    }
+}
+
+#[test]
+fn test_deterministic_repeated_ticks_identical() {
+    let _guard = lock_scheduler();
+    let order1 = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct NameTracker {
+        nm: &'static str,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+    impl Node for NameTracker {
+        fn name(&self) -> &str {
+            self.nm
+        }
+        fn tick(&mut self) {
+            self.log.lock().unwrap().push(self.nm.to_string());
+        }
+    }
+
+    let mut scheduler = Scheduler::new().deterministic(true);
+    for (name, prio) in [("alpha", 0), ("beta", 1), ("gamma", 2), ("delta", 3)] {
+        scheduler
+            .add(NameTracker {
+                nm: name,
+                log: order1.clone(),
+            })
+            .order(prio)
+            .build();
+    }
+
+    // 50 ticks
+    for _ in 0..50 {
+        scheduler.tick_once().unwrap();
+    }
+
+    let recorded = order1.lock().unwrap().clone();
+    // Every group of 4 should be identical
+    for tick in 0..50 {
+        let chunk = &recorded[tick * 4..(tick + 1) * 4];
+        assert_eq!(chunk, &["alpha", "beta", "gamma", "delta"]);
+    }
+}
+
+// ============================================================================
+// Phase 6: Edge Case Tests
+// ============================================================================
+
+#[test]
+fn test_tick_once_empty_scheduler() {
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new().deterministic(true);
+    // Empty scheduler should succeed
+    scheduler.tick_once().unwrap();
+    assert_eq!(scheduler.current_tick(), 1);
+}
+
+#[test]
+fn test_tick_once_single_node() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut scheduler = Scheduler::new().deterministic(true);
+    scheduler
+        .add(CounterNode::with_counter("solo", counter.clone()))
+        .order(0)
+        .build();
+
+    for _ in 0..100 {
+        scheduler.tick_once().unwrap();
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 100);
+}
+
+#[test]
+fn test_monitoring_scheduler_runs_without_nodes() {
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100.hz());
+    let result = scheduler.run_for(Duration::from_millis(50));
+    result.unwrap();
+}
+
+#[test]
+fn test_builder_order_independence() {
+    let _guard = lock_scheduler();
+    // Builder methods should be order-independent
+    let s1 = Scheduler::new()
+        .monitoring(true)
+        .with_blackbox(64)
+        .tick_rate(200.hz());
+
+    let s2 = Scheduler::new()
+        .tick_rate(200.hz())
+        .with_blackbox(64)
+        .monitoring(true);
+
+    assert_eq!(
+        s1.pending_config.realtime.safety_monitor,
+        s2.pending_config.realtime.safety_monitor
+    );
+    assert_eq!(
+        s1.pending_config.monitoring.black_box_enabled,
+        s2.pending_config.monitoring.black_box_enabled
+    );
+    assert_eq!(
+        s1.pending_config.timing.global_rate_hz,
+        s2.pending_config.timing.global_rate_hz
+    );
+}
+
+// ============================================================================
+// Phase 6: Budget Enforcement Under Overload
+// ============================================================================
+
+#[test]
+fn test_budget_enforcement_rapid_violations() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100.hz());
+
+    // Node that consistently exceeds its budget
+    scheduler
+        .add(SlowNode::new(
+            "overloaded",
+            Duration::from_millis(10),
+            counter.clone(),
+        ))
+        .order(0)
+        .budget(100.us()) // 100us budget, 10ms actual = 100x overbudget
+        .build();
+
+    let _ = scheduler.run_for(Duration::from_millis(500));
+
+    if let Some(stats) = scheduler.rt_stats("overloaded") {
+        assert!(
+            stats.budget_violations() > 0,
+            "Should detect budget violations under sustained overload"
+        );
+    }
+}
+
+#[test]
+fn test_budget_enforcement_multiple_overloaded_nodes() {
+    let _guard = lock_scheduler();
+    let c1 = Arc::new(AtomicUsize::new(0));
+    let c2 = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().monitoring(true);
+
+    scheduler
+        .add(SlowNode::new("slow_a", Duration::from_millis(5), c1.clone()))
+        .order(0)
+        .budget(100.us())
+        .build();
+    scheduler
+        .add(SlowNode::new("slow_b", Duration::from_millis(5), c2.clone()))
+        .order(1)
+        .budget(100.us())
+        .build();
+
+    let _ = scheduler.run_for(Duration::from_millis(500));
+
+    // Both should have violations tracked independently
+    if let Some(a) = scheduler.rt_stats("slow_a") {
+        assert!(a.budget_violations() > 0);
+    }
+    if let Some(b) = scheduler.rt_stats("slow_b") {
+        assert!(b.budget_violations() > 0);
+    }
+}
+
+// ============================================================================
+// Phase 6: Graduated Safety Monitor Response
+// ============================================================================
+
+#[test]
+fn test_monitoring_with_deterministic_tick_once() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new()
+        .monitoring(true)
+        .deterministic(true)
+        .tick_rate(100.hz());
+
+    scheduler
+        .add(CounterNode::with_counter("monitored_tick_once", counter.clone()))
+        .order(0)
+        .build();
+
+    // tick_once should work with monitoring enabled
+    for _ in 0..10 {
+        scheduler.tick_once().unwrap();
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 10);
+}
+
+// ============================================================================
+// Phase 6: Watchdog Health State Tests
+// ============================================================================
+
+#[test]
+fn test_watchdog_with_healthy_nodes() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100.hz());
+
+    scheduler
+        .add(CounterNode::with_counter("fast_node", counter.clone()))
+        .order(0)
+        .build();
+
+    // Fast node should never trigger watchdog
+    scheduler.run_for(Duration::from_millis(200)).unwrap();
+
+    let status = scheduler.status();
+    // Node Health section should show all healthy
+    assert!(
+        status.contains("All 1 nodes healthy"),
+        "Fast node should remain healthy. Status: {}",
+        status
+    );
+}
+
+// ============================================================================
+// Phase 6: Timing Report Tests
+// ============================================================================
+
+#[test]
+fn test_timing_report_does_not_crash() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new()
+        .monitoring(true)
+        .with_profiling()
+        .tick_rate(100.hz());
+
+    scheduler
+        .add(CounterNode::with_counter("report_node_a", counter.clone()))
+        .order(0)
+        .build();
+    scheduler
+        .add(CounterNode::with_counter("report_node_b", counter.clone()))
+        .order(1)
+        .build();
+
+    // Run and shut down — timing report is printed at shutdown
+    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    // If we got here, the timing report didn't crash
 }

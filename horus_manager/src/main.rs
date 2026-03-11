@@ -1029,6 +1029,80 @@ enum TfCommands {
         #[arg(short = 'w', long = "window")]
         window: Option<usize>,
     },
+
+    /// Record transforms to a .tfr file
+    Record {
+        /// Output file path
+        #[arg(short = 'o', long = "output")]
+        output: String,
+
+        /// Maximum recording duration in seconds
+        #[arg(short = 'd', long = "duration")]
+        duration: Option<f64>,
+    },
+
+    /// Replay a .tfr recording
+    Play {
+        /// Path to .tfr file
+        path: String,
+
+        /// Playback speed multiplier (default: 1.0)
+        #[arg(short = 's', long = "speed", default_value = "1.0")]
+        speed: f64,
+    },
+
+    /// Compare two .tfr recordings
+    Diff {
+        /// First recording file
+        file1: String,
+
+        /// Second recording file
+        file2: String,
+
+        /// Translation difference threshold in meters (default: 0.001)
+        #[arg(long = "threshold-m", default_value = "0.001")]
+        threshold_m: f64,
+
+        /// Rotation difference threshold in degrees (default: 0.1)
+        #[arg(long = "threshold-deg", default_value = "0.1")]
+        threshold_deg: f64,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Interactively tune a static frame's offset
+    Tune {
+        /// Frame name to tune
+        frame: String,
+
+        /// Translation step size in meters (default: 0.001)
+        #[arg(long = "step-m", default_value = "0.001")]
+        step_m: f64,
+
+        /// Rotation step size in degrees (default: 0.1)
+        #[arg(long = "step-deg", default_value = "0.1")]
+        step_deg: f64,
+    },
+
+    /// Compute sensor-to-base transform from point pairs (SVD registration)
+    Calibrate {
+        /// CSV file with point pairs (sensor_x,sensor_y,sensor_z,world_x,world_y,world_z)
+        #[arg(long = "points-file")]
+        points_file: String,
+    },
+
+    /// Solve hand-eye calibration (AX=XB) from pose pairs
+    HandEye {
+        /// CSV file with robot poses
+        #[arg(long = "robot-poses")]
+        robot_poses: String,
+
+        /// CSV file with sensor poses
+        #[arg(long = "sensor-poses")]
+        sensor_poses: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1651,6 +1725,30 @@ fn run_command(command: Commands) -> HorusResult<()> {
             TfCommands::Info { name } => commands::tf::frame_info(&name),
             TfCommands::Can { source, target } => commands::tf::can_transform(&source, &target),
             TfCommands::Hz { window } => commands::tf::monitor_rates(window),
+            TfCommands::Record { output, duration } => {
+                commands::tf::record_transforms(&output, duration)
+            }
+            TfCommands::Play { path, speed } => commands::tf::replay_transforms(&path, speed),
+            TfCommands::Diff {
+                file1,
+                file2,
+                threshold_m,
+                threshold_deg,
+                json,
+            } => commands::tf::diff_transforms(&file1, &file2, threshold_m, threshold_deg, json),
+            TfCommands::Tune {
+                frame,
+                step_m,
+                step_deg,
+            } => commands::tf::tune_static_frame(&frame, step_m, step_deg),
+            TfCommands::Calibrate { points_file } => {
+                commands::tf::calibrate_from_points(&points_file)
+            }
+            TfCommands::HandEye {
+                robot_poses,
+                sensor_poses,
+            } => commands::tf::hand_eye_calibration(&robot_poses, &sensor_poses)
+                .map_err(|e| horus_core::error::HorusError::Config(e)),
         },
 
         #[cfg(feature = "mdns")]

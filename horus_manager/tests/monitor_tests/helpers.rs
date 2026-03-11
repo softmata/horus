@@ -115,34 +115,6 @@ pub fn make_test_topic(
     }
 }
 
-/// Extended topic builder with full control over all fields.
-pub fn make_test_topic_full(
-    name: &str,
-    size: u64,
-    active: bool,
-    accessing_pids: Vec<u32>,
-    message_type: Option<&str>,
-    publishers: Vec<&str>,
-    subscribers: Vec<&str>,
-    rate_hz: f32,
-    status: TopicStatus,
-    age_string: &str,
-) -> SharedMemoryInfo {
-    SharedMemoryInfo {
-        topic_name: name.to_string(),
-        size_bytes: size,
-        active,
-        accessing_processes: accessing_pids,
-        last_modified: Some(SystemTime::now()),
-        message_type: message_type.map(|s| s.to_string()),
-        publishers: publishers.into_iter().map(|s| s.to_string()).collect(),
-        subscribers: subscribers.into_iter().map(|s| s.to_string()).collect(),
-        message_rate_hz: rate_hz,
-        status,
-        age_string: age_string.to_string(),
-    }
-}
-
 // ─── BlackBoxEvent factory ──────────────────────────────────────────────────
 
 /// Create a `BlackBoxEvent` of the given type for testing.

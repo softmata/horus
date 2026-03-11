@@ -922,8 +922,6 @@ async fn recordings_info_path_traversal_returns_400() {
     // Axum normalizes some path components, but the handler's
     // is_safe_path_component check should reject ".." even if it arrives
     // as the raw :session parameter.  We test with an encoded path.
-    use monitor_tests::helpers::assert_json_error;
-
     let app = builders::test_router();
 
     // Use a path traversal payload that won't get normalized away by Axum.

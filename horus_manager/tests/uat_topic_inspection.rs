@@ -64,7 +64,7 @@ fn build_topic_scenario(pfx: &str) -> HorusTestRuntime {
 #[tokio::test]
 async fn api_topics_lists_all_created_topics() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -97,7 +97,7 @@ async fn api_topics_lists_all_created_topics() {
 #[tokio::test]
 async fn api_topics_have_non_zero_sizes() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -132,7 +132,7 @@ async fn api_topics_have_non_zero_sizes() {
 #[tokio::test]
 async fn api_topics_different_sizes_reflect_actual() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -184,7 +184,7 @@ async fn api_topics_different_sizes_reflect_actual() {
 #[tokio::test]
 async fn destroyed_topic_disappears_from_listing() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -234,7 +234,7 @@ async fn destroyed_topic_disappears_from_listing() {
 #[tokio::test]
 async fn api_graph_returns_nodes_and_edges() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -249,7 +249,7 @@ async fn api_graph_returns_nodes_and_edges() {
 #[tokio::test]
 async fn api_graph_contains_process_nodes() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -279,7 +279,7 @@ async fn api_graph_contains_process_nodes() {
 #[tokio::test]
 async fn api_graph_contains_topic_nodes() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -309,7 +309,7 @@ async fn api_graph_contains_topic_nodes() {
 #[tokio::test]
 async fn api_graph_has_publish_edges() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -334,7 +334,7 @@ async fn api_graph_has_publish_edges() {
 #[tokio::test]
 async fn api_graph_has_subscribe_edges() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -359,7 +359,7 @@ async fn api_graph_has_subscribe_edges() {
 #[tokio::test]
 async fn api_graph_edges_reference_valid_node_ids() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 
@@ -399,7 +399,7 @@ async fn api_graph_edges_reference_valid_node_ids() {
 #[tokio::test]
 async fn graph_updates_after_node_removal() {
     let pfx = unique_prefix();
-    let mut rt = build_topic_scenario(&pfx);
+    let rt = build_topic_scenario(&pfx);
     assert!(rt.wait_ready(Duration::from_secs(3)));
     rt.refresh_discovery();
 

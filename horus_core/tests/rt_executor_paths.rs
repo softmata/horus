@@ -17,8 +17,6 @@ use common::cleanup_stale_shm;
 // Mock nodes
 // ============================================================================
 
-// ConditionalRtNode removed: pre_condition/post_condition were removed from Node trait
-
 /// RtNode that takes a configurable time, with a configurable deadline miss policy.
 struct PolicyRtNode {
     name: String,
@@ -38,8 +36,6 @@ impl Node for PolicyRtNode {
         }
     }
 }
-
-// FallbackPrimaryNode and FallbackSecondaryNode removed: DeadlineMissPolicy::Fallback and fallback_node() were removed from Node trait
 
 /// Node that panics with a &str literal.
 struct StrPanicNode {
@@ -151,9 +147,6 @@ impl Node for SimpleRtNode {
 // Tests
 // ============================================================================
 
-// test_rt_precondition_false_skips_tick removed: pre_condition was removed from Node trait
-// test_rt_postcondition_false_continues removed: post_condition was removed from Node trait
-
 #[test]
 fn test_deadline_emergency_stop() {
     cleanup_stale_shm();
@@ -237,9 +230,6 @@ fn test_deadline_skip_pauses_node() {
     // The skip node misses deadlines and gets paused, so it should tick fewer times
     // than a simple fast node would
 }
-
-// test_deadline_degrade_lowers_priority removed: DeadlineMissPolicy::Degrade was removed
-// test_deadline_fallback_swaps_node removed: DeadlineMissPolicy::Fallback and fallback_node() were removed
 
 #[test]
 fn test_rt_panic_str_literal() {

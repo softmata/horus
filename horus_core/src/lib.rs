@@ -59,7 +59,7 @@ pub use communication::{
 };
 #[doc(hidden)]
 pub use core::{
-    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate,
+    HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate,
     RtStats, Stopwatch, TopicMetadata,
 };
 #[doc(hidden)]

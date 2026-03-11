@@ -634,67 +634,6 @@ impl TransformFrameCore {
         self.path_to_root(start)
     }
 
-    /// Produce a detailed diagnostic message when chain resolution fails.
-    ///
-    /// This is called only on the error path (never on successful lookups),
-    /// so it is allowed to do more expensive work like walking both paths
-    /// to root and checking per-frame data availability.
-    pub fn diagnose_chain_failure(&self, src: FrameId, dst: FrameId) -> String {
-        let src_path = self.path_to_root(src);
-        let dst_path = self.path_to_root(dst);
-
-        // Check if either path is empty (frame allocated but no parent set)
-        if src_path.is_empty() {
-            return format!("Source frame {} is not initialized", src);
-        }
-        if dst_path.is_empty() {
-            return format!("Destination frame {} is not initialized", dst);
-        }
-
-        // Check for common ancestor
-        let src_root = *src_path.last().unwrap();
-        let dst_root = *dst_path.last().unwrap();
-
-        if src_root != dst_root {
-            return format!(
-                "Frames are in disconnected trees: frame {} has root {} (chain: {:?}), \
-                 frame {} has root {} (chain: {:?})",
-                src, src_root, src_path, dst, dst_root, dst_path
-            );
-        }
-
-        // They share a root but compute_chain returned None — shouldn't happen
-        // unless there's a concurrent modification. Report what we know.
-        let mut details = Vec::new();
-        for &fid in src_path.iter().chain(dst_path.iter()) {
-            let idx = fid as usize;
-            if idx >= self.slots.len() {
-                details.push(format!("  frame {}: slot out of range", fid));
-                continue;
-            }
-            let has_data = self.slots[idx].read_latest().is_some();
-            let is_static = self.slots[idx].is_static();
-            if !has_data && !is_static {
-                details.push(format!("  frame {}: no transform data published", fid));
-            }
-        }
-
-        if details.is_empty() {
-            format!(
-                "No transform path between frame {} and frame {} \
-                 (both share root {}, path may have been invalidated concurrently)",
-                src, dst, src_root
-            )
-        } else {
-            format!(
-                "No transform path between frame {} and frame {}:\n{}",
-                src,
-                dst,
-                details.join("\n")
-            )
-        }
-    }
-
     // ========================================================================
     // Internal
     // ========================================================================

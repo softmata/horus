@@ -1,3 +1,4 @@
+#![cfg(feature = "macros")]
 //! Integration tests for the `node!` macro.
 //!
 //! These tests verify that the macro correctly generates:
@@ -243,23 +244,21 @@ fn test_custom_name_override() {
 }
 
 // ============================================================================
-// 7. Node with rate specification
+// 7. Node with rate — rate is set via scheduler builder, not in macro
 // ============================================================================
 
 node! {
     HighFreqNode {
-        rate 100.0
-
         tick {
-            // 100Hz update rate
+            // Rate is set via .rate(100.hz()) on the scheduler builder
         }
     }
 }
 
 #[test]
-fn test_node_rate_specification() {
-    // rate is parsed by the macro but applied via the scheduler builder,
-    // not as a method on the node struct itself.
+fn test_node_rate_via_builder() {
+    // Rate is no longer specified in the node! macro.
+    // Use scheduler.add(node).rate(100.hz()).build() instead.
     let _node = HighFreqNode::new();
 }
 

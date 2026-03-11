@@ -499,10 +499,10 @@ mod tests {
         let info = PyNodeInfo::new("sensor".to_string());
         let inner = info.inner.lock().unwrap();
         let metrics = inner.metrics();
-        assert_eq!(metrics.total_ticks, 0);
-        assert_eq!(metrics.successful_ticks, 0);
-        assert_eq!(metrics.failed_ticks, 0);
-        assert_eq!(metrics.errors_count, 0);
+        assert_eq!(metrics.total_ticks(), 0);
+        assert_eq!(metrics.successful_ticks(), 0);
+        assert_eq!(metrics.failed_ticks(), 0);
+        assert_eq!(metrics.errors_count(), 0);
     }
 
     #[test]
@@ -514,8 +514,8 @@ mod tests {
             inner.record_tick();
         }
         let inner = info.inner.lock().unwrap();
-        assert_eq!(inner.metrics().total_ticks, 1);
-        assert_eq!(inner.metrics().successful_ticks, 1);
+        assert_eq!(inner.metrics().total_ticks(), 1);
+        assert_eq!(inner.metrics().successful_ticks(), 1);
     }
 
     #[test]

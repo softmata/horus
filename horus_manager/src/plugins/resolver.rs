@@ -175,37 +175,6 @@ impl PluginResolver {
         plugins
     }
 
-    /// Get disabled plugins
-    pub fn disabled_plugins(&self) -> Vec<DisabledPluginInfo> {
-        let mut disabled = Vec::new();
-
-        // Global disabled
-        for (cmd, info) in &self.global_registry.disabled {
-            disabled.push(DisabledPluginInfo {
-                command: cmd.clone(),
-                package: info.plugin.package.clone(),
-                version: info.plugin.version.clone(),
-                reason: info.reason.clone(),
-                scope: PluginScope::Global,
-            });
-        }
-
-        // Project disabled
-        if let Some(ref project) = self.project_registry {
-            for (cmd, info) in &project.disabled {
-                disabled.push(DisabledPluginInfo {
-                    command: cmd.clone(),
-                    package: info.plugin.package.clone(),
-                    version: info.plugin.version.clone(),
-                    reason: info.reason.clone(),
-                    scope: PluginScope::Project,
-                });
-            }
-        }
-
-        disabled
-    }
-
     /// Get reference to global registry
     pub fn global(&self) -> &PluginRegistry {
         &self.global_registry
@@ -360,16 +329,6 @@ pub struct ResolvedPlugin {
 
     /// Whether this is overridden by a project plugin
     pub is_overridden: bool,
-}
-
-/// Information about a disabled plugin
-#[derive(Debug, Clone)]
-pub struct DisabledPluginInfo {
-    pub command: String,
-    pub package: String,
-    pub version: String,
-    pub reason: String,
-    pub scope: PluginScope,
 }
 
 /// Result of plugin verification

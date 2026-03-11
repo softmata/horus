@@ -10,7 +10,6 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::{get_request, post_json_request};
 
-use std::sync::Arc;
 use tower::ServiceExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
