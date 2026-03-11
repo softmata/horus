@@ -27,6 +27,7 @@ __path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
 from typing import Optional, Any, Dict, List, Callable, Union
 from collections import defaultdict
+import enum
 import time
 
 # Maximum size for logged data representation (to prevent buffer overflows)
@@ -39,7 +40,8 @@ try:
         NodeInfo as _NodeInfo,
         Topic,  # Unified communication API
         Scheduler as _PyScheduler,
-        NodeState,
+        NodeState as _RustNodeState,
+        Priority as _RustPriority,
         SchedulerConfig as _SchedulerConfig,
         Miss,
         get_version,
@@ -178,21 +180,15 @@ except ImportError:
     Topic = None  # Unified communication API
     _PyScheduler = None
 
-    # Mock NodeState for testing
-    class NodeState:
-        UNINITIALIZED = "uninitialized"
-        INITIALIZING = "initializing"
-        RUNNING = "running"
-        STOPPING = "stopping"
-        STOPPED = "stopped"
-        ERROR = "error"
-        CRASHED = "crashed"
+    _RustNodeState = None
+    _RustPriority = None
 
     # Mock _SchedulerConfig for testing
     class _SchedulerConfig:
         def __init__(self):
             self.tick_rate = 60.0
-            self.fault_tolerance = False
+            self.budget_enforcement = False
+            self.deadline_monitoring = False
             self.memory_locking = False
             self.rt_scheduling_class = False
             self.profiling = False
@@ -204,9 +200,7 @@ except ImportError:
             self.watchdog_timeout_ms = 0
             self.safety_monitor = False
             self.max_deadline_misses = 0
-            self.numa_aware = False
             self.cpu_cores = None
-            self.metrics_interval_ms = 1000
             self.telemetry_endpoint = None
             self.recording_enabled = False
         @staticmethod
@@ -234,6 +228,75 @@ except ImportError:
 
     class HorusTimeoutError(Exception):
         """Raised when a blocking operation times out."""
+
+    _RustPriority = None
+
+
+# ── Python enums wrapping Rust constants ─────────────────────────────────────
+
+class NodeState(str, enum.Enum):
+    """Node lifecycle state (StrEnum for pattern matching and comparison).
+
+    Example:
+        if node.state == NodeState.RUNNING:
+            ...
+        match node.state:
+            case NodeState.RUNNING: ...
+            case NodeState.ERROR: ...
+    """
+    UNINITIALIZED = "uninitialized"
+    INITIALIZING = "initializing"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    ERROR = "error"
+    CRASHED = "crashed"
+
+
+class Priority(enum.IntEnum):
+    """Node priority levels (IntEnum — lower value = higher priority).
+
+    Example:
+        if node_priority < Priority.NORMAL:
+            print("high priority node")
+
+        # Compare directly with ints
+        assert Priority.CRITICAL == 0
+        assert Priority.HIGH < Priority.NORMAL
+    """
+    CRITICAL = 0
+    HIGH = 10
+    NORMAL = 50
+    LOW = 80
+    BACKGROUND = 100
+
+    @classmethod
+    def from_string(cls, s: str) -> 'Priority':
+        """Parse a priority from string name or numeric string.
+
+        Args:
+            s: Priority name ("critical", "high", "normal", "low", "background")
+               or numeric string ("42").
+
+        Raises:
+            ValueError: If the string is not a valid priority name or number.
+        """
+        try:
+            return cls[s.upper()]
+        except KeyError:
+            pass
+        try:
+            return cls(int(s))
+        except (ValueError, KeyError):
+            raise ValueError(
+                f"Invalid priority: {s!r}. "
+                f"Valid names: {', '.join(m.name.lower() for m in cls)}"
+            )
+
+    def to_string(self) -> str:
+        """Convert priority to lowercase string name."""
+        return self.name.lower()
+
 
 # Single source of truth: Cargo.toml via env!("CARGO_PKG_VERSION")
 try:
@@ -830,6 +893,11 @@ class Scheduler:
         scheduler.add(sensor_node, order=0, rate=100.0)
         scheduler.add(motor_node, order=1, rt=True, deadline=5.0)
         scheduler.run()
+
+    Example (context manager — auto-stop on exit):
+        with Scheduler(tick_rate=100.0) as sched:
+            sched.add(sensor_node, order=0, rate=100.0)
+            sched.run_for(10.0)
     """
 
     def __init__(self, *,
@@ -883,71 +951,9 @@ class Scheduler:
             self._scheduler = None
         self._nodes = []
 
-    @classmethod
-    def deploy(cls, *, tick_rate: float = 100.0, **kwargs) -> 'Scheduler':
-        """Create a deploy-ready scheduler with safety features enabled.
-
-        Enables: safety monitor, fault tolerance, watchdog, blackbox.
-
-        Args:
-            tick_rate: Global tick rate in Hz (default: 100.0)
-            **kwargs: Additional overrides (same as Scheduler.__init__)
-
-        Example:
-            scheduler = Scheduler.deploy(tick_rate=500.0)
-            scheduler.add(motor_node, order=0, rate=500.0)
-            scheduler.run()
-        """
-        if _SchedulerConfig:
-            cfg = _SchedulerConfig.deploy()
-            cfg.tick_rate = tick_rate
-            inner = _PyScheduler(cfg)
-            return cls(_inner=inner)
-        return cls(tick_rate=tick_rate, fault_tolerance=True,
-                   safety_monitor=True, watchdog_ms=500, **kwargs)
-
-    @classmethod
-    def hard_rt(cls, *, tick_rate: float = 1000.0, **kwargs) -> 'Scheduler':
-        """Create a hard real-time scheduler with all RT features.
-
-        Enables: all deploy features + memory locking + RT scheduling class.
-        Panics if the system lacks RT capabilities.
-
-        Args:
-            tick_rate: Global tick rate in Hz (default: 1000.0)
-            **kwargs: Additional overrides
-
-        Example:
-            scheduler = Scheduler.hard_rt(tick_rate=1000.0)
-        """
-        if _SchedulerConfig:
-            cfg = _SchedulerConfig.hard_rt()
-            cfg.tick_rate = tick_rate
-            inner = _PyScheduler(cfg)
-            return cls(_inner=inner)
-        return cls(tick_rate=tick_rate, rt=True, fault_tolerance=True,
-                   safety_monitor=True, watchdog_ms=500, **kwargs)
-
-    @classmethod
-    def safety_critical(cls, *, tick_rate: float = 1000.0, **kwargs) -> 'Scheduler':
-        """Create a safety-critical scheduler with strict deadline enforcement.
-
-        Enables: all hard_rt features + profiling + strict deadline limits.
-
-        Args:
-            tick_rate: Global tick rate in Hz (default: 1000.0)
-            **kwargs: Additional overrides
-
-        Example:
-            scheduler = Scheduler.safety_critical()
-        """
-        if _SchedulerConfig:
-            cfg = _SchedulerConfig.safety_critical()
-            cfg.tick_rate = tick_rate
-            inner = _PyScheduler(cfg)
-            return cls(_inner=inner)
-        return cls(tick_rate=tick_rate, rt=True, fault_tolerance=True,
-                   safety_monitor=True, watchdog_ms=500, profiling=True, **kwargs)
+    # Presets deploy(), hard_rt(), safety_critical() removed.
+    # Use Scheduler(safety_monitor=True, watchdog_ms=500) or
+    # Scheduler(config=SchedulerConfig.with_monitoring()) instead.
 
     def add(self, node: 'Node', order: int = 100, rate: Optional[float] = None,
             rt: bool = False, deadline: Optional[float] = None,
@@ -1038,6 +1044,21 @@ class Scheduler:
         """Stop the scheduler."""
         if self._scheduler:
             self._scheduler.stop()
+
+    def __enter__(self) -> 'Scheduler':
+        """Context manager entry — returns self for `with` usage.
+
+        Example:
+            with Scheduler(tick_rate=100.0) as sched:
+                sched.add(sensor_node, order=0)
+                sched.run()
+            # stop() called automatically on exit
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit — stops the scheduler."""
+        self.stop()
 
     def get_node_stats(self, node_name: str) -> Dict[str, Any]:
         """
@@ -1528,14 +1549,15 @@ __all__ = [
     "Node",
     "Scheduler",
     "NodeState",
-    "Topic",  # Unified communication API
-    "Miss",  # Deadline miss policy enum
+    "Priority",
+    "Topic",
+    "Miss",
     "run",
-    # Custom message generation
-    "msggen",  # horus.msggen module for custom typed messages
-    # AI/ML submodule
-    "ai",  # horus.ai module for ML integration
-    # Domain types — clean API hiding DLPack/TensorPool
+    # Submodules
+    "msggen",
+    "ai",
+    "perception",
+    # Domain types
     "Image",
     "PointCloud",
     "DepthImage",
@@ -1556,102 +1578,6 @@ __all__ = [
     # Utility
     "get_version",
 ]
-
-# Use Rust native message classes for zero-copy IPC only if the Python library
-# didn't already provide them (Python library classes have richer features)
-if not _has_messages:
-    try:
-        CmdVel = _RustCmdVel
-        Pose2D = _RustPose2D
-        Imu = _RustImu
-        Odometry = _RustOdometry
-        LaserScan = _RustLaserScan
-        Pose3D = _RustPose3D
-        JointState = _RustJointState
-        Clock = _RustClock
-        TimeReference = _RustTimeReference
-        Twist = _RustTwist
-        Vector3 = _RustVector3
-        Point3 = _RustPoint3
-        Quaternion = _RustQuaternion
-        TransformStamped = _RustTransformStamped
-        PoseStamped = _RustPoseStamped
-        PoseWithCovariance = _RustPoseWithCovariance
-        TwistWithCovariance = _RustTwistWithCovariance
-        Accel = _RustAccel
-        AccelStamped = _RustAccelStamped
-        MotorCommand = _RustMotorCommand
-        ServoCommand = _RustServoCommand
-        DifferentialDriveCommand = _RustDifferentialDriveCommand
-        PidConfig = _RustPidConfig
-        TrajectoryPoint = _RustTrajectoryPoint
-        JointCommand = _RustJointCommand
-        PwmCommand = _RustPwmCommand
-        StepperCommand = _RustStepperCommand
-        RangeSensor = _RustRangeSensor
-        BatteryState = _RustBatteryState
-        NavSatFix = _RustNavSatFix
-        MagneticField = _RustMagneticField
-        Temperature = _RustTemperature
-        FluidPressure = _RustFluidPressure
-        Illuminance = _RustIlluminance
-        Heartbeat = _RustHeartbeat
-        DiagnosticStatus = _RustDiagnosticStatus
-        EmergencyStop = _RustEmergencyStop
-        ResourceUsage = _RustResourceUsage
-        WrenchStamped = _RustWrenchStamped
-        ForceCommand = _RustForceCommand
-        ContactInfo = _RustContactInfo
-        NavGoal = _RustNavGoal
-        GoalResult = _RustGoalResult
-        PathPlan = _RustPathPlan
-        JoystickInput = _RustJoystickInput
-        KeyboardInput = _RustKeyboardInput
-        BoundingBox2D = _RustBoundingBox2D
-        BoundingBox3D = _RustBoundingBox3D
-        Detection = _RustDetection
-        Detection3D = _RustDetection3D
-        SegmentationMask = _RustSegmentationMask
-        TrackedObject = _RustTrackedObject
-        TrackingHeader = _RustTrackingHeader
-        Landmark = _RustLandmark
-        Landmark3D = _RustLandmark3D
-        LandmarkArray = _RustLandmarkArray
-        PointField = _RustPointField
-        PlaneDetection = _RustPlaneDetection
-        PlaneArray = _RustPlaneArray
-        TensorData = _RustTensorData
-        Predictions = _RustPredictions
-        InferenceMetrics = _RustInferenceMetrics
-        ModelInfo = _RustModelInfo
-        FeatureVector = _RustFeatureVector
-        Classification = _RustClassification
-        ChatMessage = _RustChatMessage
-        LLMRequest = _RustLLMRequest
-        LLMResponse = _RustLLMResponse
-        TrainingMetrics = _RustTrainingMetrics
-        MlTrajectoryPoint = _RustMlTrajectoryPoint
-        DeploymentConfig = _RustDeploymentConfig
-        CompressedImage = _RustCompressedImage
-        CameraInfo = _RustCameraInfo
-        RegionOfInterest = _RustRegionOfInterest
-        StereoInfo = _RustStereoInfo
-        TactileArray = _RustTactileArray
-        ImpedanceParameters = _RustImpedanceParameters
-        HapticFeedback = _RustHapticFeedback
-        DiagnosticValue = _RustDiagnosticValue
-        DiagnosticReport = _RustDiagnosticReport
-        NodeHeartbeat = _RustNodeHeartbeat
-        SafetyStatus = _RustSafetyStatus
-        Waypoint = _RustWaypoint
-        NavPath = _RustNavPath
-        VelocityObstacle = _RustVelocityObstacle
-        VelocityObstacles = _RustVelocityObstacles
-        OccupancyGrid = _RustOccupancyGrid
-        CostMap = _RustCostMap
-        _has_messages = True
-    except NameError:
-        pass
 
 # Import simple async API
 from .async_node import AsyncNode, AsyncTopic

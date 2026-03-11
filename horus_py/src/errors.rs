@@ -7,7 +7,9 @@
 
 use horus_core::error::HorusError;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyRuntimeError};
+use pyo3::exceptions::{
+    PyException, PyIOError, PyMemoryError, PyRuntimeError, PyTypeError, PyValueError,
+};
 use pyo3::PyErr;
 
 create_exception!(
@@ -35,6 +37,13 @@ pub fn to_py_err(err: HorusError) -> PyErr {
         HorusError::NotFound(_) => HorusNotFoundError::new_err(err.to_string()),
         HorusError::Transform(_) => HorusTransformError::new_err(err.to_string()),
         HorusError::Timeout(_) => HorusTimeoutError::new_err(err.to_string()),
+        HorusError::Io(_) => PyIOError::new_err(err.to_string()),
+        HorusError::Memory(_) => PyMemoryError::new_err(err.to_string()),
+        HorusError::InvalidInput(_) => PyValueError::new_err(err.to_string()),
+        HorusError::InvalidDescriptor(_) => PyValueError::new_err(err.to_string()),
+        HorusError::Parse(_) => PyValueError::new_err(err.to_string()),
+        HorusError::Serialization(_) => PyTypeError::new_err(err.to_string()),
+        HorusError::Config(_) => PyValueError::new_err(err.to_string()),
         _ => PyRuntimeError::new_err(err.to_string()),
     }
 }

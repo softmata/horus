@@ -1091,13 +1091,13 @@ impl HorusError {
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (not counting the initial attempt).
-    pub max_retries: u32,
+    max_retries: u32,
     /// Initial backoff duration before the first retry.
-    pub initial_backoff: Duration,
+    initial_backoff: Duration,
     /// Maximum backoff duration (caps exponential growth).
-    pub max_backoff: Duration,
+    max_backoff: Duration,
     /// Multiplier applied to backoff after each retry (default: 2.0).
-    pub backoff_multiplier: f64,
+    backoff_multiplier: f64,
 }
 
 impl RetryConfig {
@@ -1119,10 +1119,38 @@ impl RetryConfig {
         self
     }
 
-    /// Set the backoff multiplier.
+    /// Set the backoff multiplier. Must be a positive finite number.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `multiplier` is not positive or not finite.
     pub fn with_multiplier(mut self, multiplier: f64) -> Self {
+        assert!(
+            multiplier > 0.0 && multiplier.is_finite(),
+            "backoff multiplier must be positive and finite, got {multiplier}"
+        );
         self.backoff_multiplier = multiplier;
         self
+    }
+
+    /// Maximum number of retry attempts.
+    pub fn max_retries(&self) -> u32 {
+        self.max_retries
+    }
+
+    /// Initial backoff duration before the first retry.
+    pub fn initial_backoff(&self) -> Duration {
+        self.initial_backoff
+    }
+
+    /// Maximum backoff duration (caps exponential growth).
+    pub fn max_backoff(&self) -> Duration {
+        self.max_backoff
+    }
+
+    /// Multiplier applied to backoff after each retry.
+    pub fn backoff_multiplier(&self) -> f64 {
+        self.backoff_multiplier
     }
 }
 
@@ -1161,19 +1189,19 @@ pub fn retry_transient<T, F>(config: &RetryConfig, mut f: F) -> HorusResult<T>
 where
     F: FnMut() -> HorusResult<T>,
 {
-    let mut backoff = config.initial_backoff;
+    let mut backoff = config.initial_backoff();
 
-    for attempt in 0..=config.max_retries {
+    for attempt in 0..=config.max_retries() {
         match f() {
             Ok(val) => return Ok(val),
             Err(e) => {
-                if attempt == config.max_retries || e.severity() != Severity::Transient {
+                if attempt == config.max_retries() || e.severity() != Severity::Transient {
                     return Err(e);
                 }
                 std::thread::sleep(backoff);
                 backoff = Duration::from_secs_f64(
-                    (backoff.as_secs_f64() * config.backoff_multiplier)
-                        .min(config.max_backoff.as_secs_f64()),
+                    (backoff.as_secs_f64() * config.backoff_multiplier())
+                        .min(config.max_backoff().as_secs_f64()),
                 );
             }
         }
@@ -2479,9 +2507,9 @@ mod tests {
     #[test]
     fn retry_config_defaults() {
         let config = RetryConfig::default();
-        assert_eq!(config.max_retries, 3);
-        assert_eq!(config.initial_backoff, Duration::from_millis(10));
-        assert_eq!(config.max_backoff, Duration::from_secs(1));
-        assert_eq!(config.backoff_multiplier, 2.0);
+        assert_eq!(config.max_retries(), 3);
+        assert_eq!(config.initial_backoff(), Duration::from_millis(10));
+        assert_eq!(config.max_backoff(), Duration::from_secs(1));
+        assert_eq!(config.backoff_multiplier(), 2.0);
     }
 }

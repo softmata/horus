@@ -343,13 +343,13 @@ impl FailureHandler {
     /// Get statistics for monitoring/status output.
     pub fn stats(&self) -> FailureHandlerStats {
         match &self.state {
-            FailureHandlerState::Fatal => FailureHandlerStats {
-                policy: "Fatal".to_string(),
-                state: "armed".to_string(),
-                failure_count: 0,
-                restart_count: 0,
-                is_suppressed: false,
-            },
+            FailureHandlerState::Fatal => FailureHandlerStats::new(
+                "Fatal".to_string(),
+                "armed".to_string(),
+                0,
+                0,
+                false,
+            ),
             FailureHandlerState::Restart {
                 restart_count,
                 max_restarts,
@@ -359,19 +359,19 @@ impl FailureHandler {
                 let in_backoff = backoff_until
                     .map(|until| Instant::now() < until)
                     .unwrap_or(false);
-                FailureHandlerStats {
-                    policy: "Restart".to_string(),
-                    state: if in_backoff {
+                FailureHandlerStats::new(
+                    "Restart".to_string(),
+                    if in_backoff {
                         format!("backoff ({}/{})", restart_count, max_restarts)
                     } else if *restart_count > 0 {
                         format!("recovered ({}/{})", restart_count, max_restarts)
                     } else {
                         "healthy".to_string()
                     },
-                    failure_count: *restart_count,
-                    restart_count: *restart_count,
-                    is_suppressed: in_backoff,
-                }
+                    *restart_count,
+                    *restart_count,
+                    in_backoff,
+                )
             }
             FailureHandlerState::Skip {
                 failure_count,
@@ -381,25 +381,25 @@ impl FailureHandler {
                 let is_suppressed = suppressed_until
                     .map(|until| Instant::now() < until)
                     .unwrap_or(false);
-                FailureHandlerStats {
-                    policy: "Skip".to_string(),
-                    state: if is_suppressed {
+                FailureHandlerStats::new(
+                    "Skip".to_string(),
+                    if is_suppressed {
                         "suppressed".to_string()
                     } else {
                         "active".to_string()
                     },
-                    failure_count: *failure_count,
-                    restart_count: 0,
+                    *failure_count,
+                    0,
                     is_suppressed,
-                }
+                )
             }
-            FailureHandlerState::Ignore => FailureHandlerStats {
-                policy: "Ignore".to_string(),
-                state: "active".to_string(),
-                failure_count: 0,
-                restart_count: 0,
-                is_suppressed: false,
-            },
+            FailureHandlerState::Ignore => FailureHandlerStats::new(
+                "Ignore".to_string(),
+                "active".to_string(),
+                0,
+                0,
+                false,
+            ),
         }
     }
 

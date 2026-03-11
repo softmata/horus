@@ -121,7 +121,7 @@ fn test_scheduler_with_safety_critical_config() {
 fn test_budget_violation_detection() {
     cleanup_stale_shm();
     // Enable RT monitoring
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Add node that will violate budget
     // Execution time (100μs) > tick budget (50μs)
@@ -141,7 +141,7 @@ fn test_budget_violation_detection() {
 fn test_deadline_miss_detection() {
     cleanup_stale_shm();
     // Enable deadline monitoring
-    let mut scheduler = Scheduler::deploy().max_deadline_misses(5);
+    let mut scheduler = Scheduler::new().monitoring(true).max_deadline_misses(5);
 
     // Add node with tight deadline that might be missed
     scheduler
@@ -195,7 +195,7 @@ fn test_mixed_rt_and_normal_nodes() {
 fn test_watchdog_functionality() {
     cleanup_stale_shm();
     // Enable watchdog monitoring
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Add RT node that will be monitored by watchdog
     scheduler

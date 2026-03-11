@@ -340,7 +340,7 @@ impl RegistryClient {
             package_name,
             version
         );
-        let spinner = progress::robot_download_spinner(&format!(
+        let spinner = progress::download_spinner(&format!(
             "Downloading {} from HORUS registry...",
             package_name
         ));
@@ -967,7 +967,7 @@ impl RegistryClient {
     ) -> Result<String> {
         use std::process::Command;
         let spinner =
-            progress::robot_download_spinner(&format!("Installing {} from PyPI...", package_name));
+            progress::download_spinner(&format!("Installing {} from PyPI...", package_name));
 
         // Check if package exists in system first
         if let Ok(Some(system_version)) = self.detect_system_python_package(package_name) {
@@ -1170,7 +1170,7 @@ impl RegistryClient {
         target: crate::workspace::InstallTarget,
     ) -> Result<String> {
         use std::process::Command;
-        let spinner = progress::robot_download_spinner(&format!(
+        let spinner = progress::download_spinner(&format!(
             "Installing {} from crates.io...",
             package_name
         ));

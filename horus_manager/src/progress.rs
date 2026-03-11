@@ -76,15 +76,6 @@ pub fn finish_error(pb: &ProgressBar, message: &str) {
     pb.finish_with_message(format!("{} {}", STATUS_ERROR, style(message).red()));
 }
 
-/// Create a build spinner (legacy alias)
-pub fn robot_build_spinner(message: &str) -> ProgressBar {
-    build_spinner(message)
-}
-
-/// Create a download spinner (legacy alias)
-pub fn robot_download_spinner(message: &str) -> ProgressBar {
-    download_spinner(message)
-}
 
 /// Format bytes in a human-readable way
 pub fn format_bytes(bytes: u64) -> String {

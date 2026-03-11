@@ -113,7 +113,7 @@ fn test_space_robot_config() {
 fn test_custom_exotic_robot_config() {
     cleanup_stale_shm();
     // Create custom configuration using builder methods
-    let mut scheduler = Scheduler::deploy().tick_rate(500.hz());
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(500.hz());
 
     scheduler.add(TestNode::new("bio_sensor")).order(0).build();
     scheduler
@@ -208,8 +208,8 @@ fn test_high_performance_optimizer_nodes() {
 #[test]
 fn test_deploy_preset() {
     cleanup_stale_shm();
-    // Scheduler::deploy() enables safety monitor, fault tolerance, watchdog, blackbox
-    let mut scheduler = Scheduler::deploy().tick_rate(100.hz());
+    // Scheduler::new().monitoring(true) enables safety monitor, fault tolerance, watchdog, blackbox
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100.hz());
 
     scheduler
         .add(TestNode::new("motor"))
@@ -229,8 +229,8 @@ fn test_deploy_preset() {
 #[test]
 fn test_deploy_with_cores() {
     cleanup_stale_shm();
-    // deploy() + cores() is the typical production pattern
-    let mut scheduler = Scheduler::deploy().tick_rate(500.hz()).cores(&[0, 1]);
+    // monitoring(true) + cores() is the typical production pattern
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(500.hz()).cores(&[0, 1]);
 
     scheduler
         .add(TestNode::new("ctrl"))
@@ -244,29 +244,34 @@ fn test_deploy_with_cores() {
 #[test]
 fn test_safety_critical_preset() {
     cleanup_stale_shm();
-    // safety_critical() calls hard_rt() — may panic on systems without RT
-    let result = std::panic::catch_unwind(|| {
-        Scheduler::safety_critical()
-            .tick_rate(1000.hz())
-            .max_deadline_misses(3)
-    });
-    if let Ok(mut scheduler) = result {
-        scheduler
-            .add(TestNode::new("safety_node"))
-            .order(0)
-            .budget(500.us())
-            .build();
-        let _ = scheduler.run_for(std::time::Duration::from_millis(50));
-    }
-    // If panicked, that's expected on non-RT systems
+    // Composable equivalent of the old safety_critical() preset
+    // Omit require_rt() since it would panic in CI on non-RT systems
+    let mut scheduler = Scheduler::new()
+        .monitoring(true)
+        .with_blackbox(64)
+        .with_profiling()
+        .tick_rate(1000.hz())
+        .max_deadline_misses(3);
+
+    scheduler
+        .add(TestNode::new("safety_node"))
+        .order(0)
+        .budget(500.us())
+        .build();
+    let _ = scheduler.run_for(std::time::Duration::from_millis(50));
 }
 
 #[test]
 fn test_hard_rt_preset() {
     cleanup_stale_shm();
-    // hard_rt() verifies system capabilities and enables all RT features
+    // require_rt() verifies system capabilities and enables all RT features
     // May panic on systems without RT support — that's by design
-    let result = std::panic::catch_unwind(|| Scheduler::hard_rt().tick_rate(1000.hz()));
+    let result = std::panic::catch_unwind(|| {
+        Scheduler::new()
+            .require_rt()
+            .monitoring(true)
+            .tick_rate(1000.hz())
+    });
     // Either succeeds (system has RT) or panics (no RT) — both are valid
     if let Ok(mut scheduler) = result {
         scheduler
@@ -327,8 +332,9 @@ fn test_node_rate_via_builder_only() {
 #[test]
 fn test_preset_chaining() {
     cleanup_stale_shm();
-    // Presets return Self so they can be chained with builders
-    let mut scheduler = Scheduler::deploy()
+    // Builder methods return Self so they can be chained
+    let mut scheduler = Scheduler::new()
+        .monitoring(true)
         .tick_rate(200.hz())
         .verbose(false)
         .with_profiling();

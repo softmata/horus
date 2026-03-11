@@ -156,19 +156,19 @@ where
         timeout: Duration,
         config: RetryConfig,
     ) -> ServiceResult<S::Response> {
-        let mut backoff = config.initial_backoff;
+        let mut backoff = config.initial_backoff();
 
-        for attempt in 0..=config.max_retries {
+        for attempt in 0..=config.max_retries() {
             match self.call(request.clone(), timeout) {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
-                    if attempt == config.max_retries || !e.is_transient() {
+                    if attempt == config.max_retries() || !e.is_transient() {
                         return Err(e);
                     }
                     std::thread::sleep(backoff);
                     backoff = Duration::from_secs_f64(
-                        (backoff.as_secs_f64() * config.backoff_multiplier)
-                            .min(config.max_backoff.as_secs_f64()),
+                        (backoff.as_secs_f64() * config.backoff_multiplier())
+                            .min(config.max_backoff().as_secs_f64()),
                     );
                 }
             }

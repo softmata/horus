@@ -97,7 +97,7 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
             if Path::new(CARGO_TOML).exists() {
                 cli_output::info("Building from root Cargo.toml...");
 
-                let spinner = progress::robot_build_spinner("Building with cargo...");
+                let spinner = progress::build_spinner("Building with cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.env("CARGO_TARGET_DIR", ".horus/target");
@@ -221,7 +221,7 @@ path = "{}"
                 cli_output::success("Generated Cargo.toml (no source copying needed)");
 
                 // Run cargo build in .horus directory
-                let spinner = progress::robot_build_spinner("Building with cargo...");
+                let spinner = progress::build_spinner("Building with cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.current_dir(".horus");
@@ -306,7 +306,7 @@ pub(super) fn execute_from_cargo_toml(
         let binary = format!("target/{}/{}", build_dir, project_name);
 
         if !Path::new(&binary).exists() || clean {
-            let spinner = progress::robot_build_spinner(&format!(
+            let spinner = progress::build_spinner(&format!(
                 "Building Cargo project ({} mode)...",
                 build_dir
             ));

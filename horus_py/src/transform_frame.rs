@@ -503,6 +503,61 @@ impl PyTransformFrame {
         })
     }
 
+    /// Async-compatible wait for transform.
+    ///
+    /// Returns a callable that releases the GIL and blocks until the transform
+    /// is available. Use with asyncio.to_thread() for async/await support:
+    ///
+    ///     # In async code:
+    ///     transform = await asyncio.to_thread(tf.wait_for_transform, "src", "dst", 5.0)
+    ///
+    /// Or use this convenience method which returns a concurrent.futures.Future:
+    ///
+    ///     future = tf.wait_for_transform_async("src", "dst", 5.0)
+    ///     transform = await asyncio.wrap_future(future)
+    ///
+    /// Args:
+    ///     src: Source frame name
+    ///     dst: Destination frame name
+    ///     timeout_sec: Maximum wait time in seconds (default: 5.0)
+    ///
+    /// Returns:
+    ///     concurrent.futures.Future that resolves to Transform
+    #[pyo3(signature = (src, dst, timeout_sec=5.0))]
+    fn wait_for_transform_async(
+        &self,
+        py: Python,
+        src: &str,
+        dst: &str,
+        timeout_sec: f64,
+    ) -> PyResult<Py<PyAny>> {
+        let inner = self.inner.clone();
+
+        // Import concurrent.futures
+        let cf = py.import("concurrent.futures")?;
+        let executor = cf
+            .getattr("ThreadPoolExecutor")?
+            .call1((1,))?;
+
+        let tf_clone = PyTransformFrame { inner };
+
+        // Submit the blocking work to a thread pool
+        let locals = pyo3::types::PyDict::new(py);
+        locals.set_item("_tf", tf_clone.into_pyobject(py)?)?;
+        locals.set_item("_src", src)?;
+        locals.set_item("_dst", dst)?;
+        locals.set_item("_timeout", timeout_sec)?;
+        locals.set_item("_executor", executor)?;
+
+        let future = py.eval(
+            c"_executor.submit(_tf.wait_for_transform, _src, _dst, _timeout)",
+            None,
+            Some(&locals),
+        )?;
+
+        Ok(future.into())
+    }
+
     /// Get transform at timestamp with time tolerance for interpolation.
     ///
     /// Args:

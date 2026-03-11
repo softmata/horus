@@ -17,7 +17,8 @@ use std::time::Instant;
 /// // Produces: "SensorReading(temperature=23.5, humidity=0.65)"
 /// ```
 ///
-/// **2. `#[derive(LogSummary)]`** — uses `Debug` output (needs `#[derive(Debug)]`):
+/// **2. `#[derive(LogSummary)]`** — uses `Debug` output (needs `#[derive(Debug)]`).
+/// Requires the `macros` feature: `horus = { version = "0.1", features = ["macros"] }`
 /// ```rust,ignore
 /// #[derive(Debug, LogSummary)]
 /// pub struct MyType { pub x: f64 }

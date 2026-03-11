@@ -1830,8 +1830,8 @@ fn metrics_count_messages() {
     let t: Topic<u64> = Topic::new(unique("metrics")).expect("create");
 
     let initial = t.metrics();
-    assert_eq!(initial.messages_sent, 0);
-    assert_eq!(initial.messages_received, 0);
+    assert_eq!(initial.messages_sent(), 0);
+    assert_eq!(initial.messages_received(), 0);
 
     // Metrics are only tracked in the logging path, but migration metrics
     // always work
@@ -7745,10 +7745,10 @@ fn topic_metrics_initial() {
     let name = unique("metrics_init");
     let topic: Topic<u64> = Topic::new(&name).unwrap();
     let m = topic.metrics();
-    assert_eq!(m.messages_sent, 0);
-    assert_eq!(m.messages_received, 0);
-    assert_eq!(m.send_failures, 0);
-    assert_eq!(m.recv_failures, 0);
+    assert_eq!(m.messages_sent(), 0);
+    assert_eq!(m.messages_received(), 0);
+    assert_eq!(m.send_failures(), 0);
+    assert_eq!(m.recv_failures(), 0);
 }
 
 /// name() returns the correct name
@@ -9465,26 +9465,21 @@ fn migration_metrics_atomic_increments() {
 #[test]
 fn topic_metrics_default_all_zero() {
     let m = metrics::TopicMetrics::default();
-    assert_eq!(m.messages_sent, 0);
-    assert_eq!(m.messages_received, 0);
-    assert_eq!(m.send_failures, 0);
-    assert_eq!(m.recv_failures, 0);
+    assert_eq!(m.messages_sent(), 0);
+    assert_eq!(m.messages_received(), 0);
+    assert_eq!(m.send_failures(), 0);
+    assert_eq!(m.recv_failures(), 0);
 }
 
 /// TopicMetrics clone preserves values.
 #[test]
 fn topic_metrics_clone_preserves_values() {
-    let m = metrics::TopicMetrics {
-        messages_sent: 100,
-        messages_received: 90,
-        send_failures: 5,
-        recv_failures: 3,
-    };
+    let m = metrics::TopicMetrics::new(100, 90, 5, 3);
     let c = m.clone();
-    assert_eq!(c.messages_sent, 100);
-    assert_eq!(c.messages_received, 90);
-    assert_eq!(c.send_failures, 5);
-    assert_eq!(c.recv_failures, 3);
+    assert_eq!(c.messages_sent(), 100);
+    assert_eq!(c.messages_received(), 90);
+    assert_eq!(c.send_failures(), 5);
+    assert_eq!(c.recv_failures(), 3);
 }
 
 /// Topic::metrics() snapshot starts at zero (counters are not
@@ -9494,10 +9489,10 @@ fn topic_metrics_clone_preserves_values() {
 fn topic_metrics_snapshot_starts_at_zero() {
     let t: Topic<u64> = Topic::new(unique("metrics_snap")).expect("create");
     let m = t.metrics();
-    assert_eq!(m.messages_sent, 0);
-    assert_eq!(m.messages_received, 0);
-    assert_eq!(m.send_failures, 0);
-    assert_eq!(m.recv_failures, 0);
+    assert_eq!(m.messages_sent(), 0);
+    assert_eq!(m.messages_received(), 0);
+    assert_eq!(m.send_failures(), 0);
+    assert_eq!(m.recv_failures(), 0);
 }
 
 /// MigrationMetrics can be manually incremented and read back via snapshot.
@@ -9513,10 +9508,10 @@ fn migration_metrics_manual_increment_visible_in_snapshot() {
     mig.recv_failures.fetch_add(1, Ordering::Relaxed);
 
     let snap = t.metrics();
-    assert_eq!(snap.messages_sent, 10);
-    assert_eq!(snap.messages_received, 7);
-    assert_eq!(snap.send_failures, 2);
-    assert_eq!(snap.recv_failures, 1);
+    assert_eq!(snap.messages_sent(), 10);
+    assert_eq!(snap.messages_received(), 7);
+    assert_eq!(snap.send_failures(), 2);
+    assert_eq!(snap.recv_failures(), 1);
 }
 
 // ============================================================================

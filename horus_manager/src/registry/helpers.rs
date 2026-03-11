@@ -1762,7 +1762,7 @@ impl RegistryClient {
         // Perform updates
         println!();
         for (name, old_ver, new_ver, old_path) in &updates {
-            let spinner = progress::robot_download_spinner(&format!(
+            let spinner = progress::download_spinner(&format!(
                 "Updating {} {} -> {}...",
                 name, old_ver, new_ver
             ));

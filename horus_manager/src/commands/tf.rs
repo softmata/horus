@@ -10,6 +10,7 @@
 //!   horus tf info `<frame>`  - Show frame details
 
 use colored::*;
+use std::io::BufRead;
 use horus_core::communication::Topic;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_library::transform_frame::{TFMessage, TransformFrame, Transform, TransformStamped};
@@ -1900,6 +1901,425 @@ pub fn calibrate_from_points(
     }
 
     Ok(())
+}
+
+/// Perform hand-eye calibration (AX=XB) using the Tsai-Lenz method.
+///
+/// Given pairs of robot end-effector poses and corresponding sensor poses,
+/// computes the fixed transform X between the sensor and the end-effector.
+///
+/// Input: Two CSV files with rows of (x, y, z, qx, qy, qz, qw)
+///   - robot_poses: End-effector poses in robot base frame
+///   - sensor_poses: Sensor poses (e.g., camera from marker detection)
+///
+/// The Tsai-Lenz method works by:
+/// 1. Computing relative motions between consecutive pose pairs
+/// 2. Solving for rotation using modified Rodrigues parameters
+/// 3. Solving for translation given the known rotation
+pub fn hand_eye_calibration(
+    robot_poses_file: &str,
+    sensor_poses_file: &str,
+) -> Result<(), ConfigError> {
+    let robot_poses = read_poses_csv(robot_poses_file)?;
+    let sensor_poses = read_poses_csv(sensor_poses_file)?;
+
+    if robot_poses.len() != sensor_poses.len() {
+        return Err(ConfigError::other(format!(
+            "Pose count mismatch: {} robot poses vs {} sensor poses",
+            robot_poses.len(),
+            sensor_poses.len()
+        )));
+    }
+
+    if robot_poses.len() < 3 {
+        return Err(ConfigError::other(
+            "Need at least 3 pose pairs for hand-eye calibration".to_string(),
+        ));
+    }
+
+    let n = robot_poses.len();
+    println!(
+        "{}",
+        format!("Hand-eye calibration with {} pose pairs", n)
+            .bold()
+    );
+
+    // Compute relative motions between consecutive poses
+    let mut a_rotations: Vec<[[f64; 3]; 3]> = Vec::new(); // Robot relative rotations
+    let mut b_rotations: Vec<[[f64; 3]; 3]> = Vec::new(); // Sensor relative rotations
+    let mut a_translations: Vec<[f64; 3]> = Vec::new();
+    let mut b_translations: Vec<[f64; 3]> = Vec::new();
+
+    for i in 0..n - 1 {
+        // A_i = inv(robot_i) * robot_{i+1}
+        let a_inv = invert_pose(&robot_poses[i]);
+        let a_rel = multiply_poses(&a_inv, &robot_poses[i + 1]);
+        let a_rot = rotation_to_matrix(&a_rel);
+        a_rotations.push(a_rot);
+        a_translations.push([a_rel.0[0], a_rel.0[1], a_rel.0[2]]);
+
+        // B_i = inv(sensor_i) * sensor_{i+1}
+        let b_inv = invert_pose(&sensor_poses[i]);
+        let b_rel = multiply_poses(&b_inv, &sensor_poses[i + 1]);
+        let b_rot = rotation_to_matrix(&b_rel);
+        b_rotations.push(b_rot);
+        b_translations.push([b_rel.0[0], b_rel.0[1], b_rel.0[2]]);
+    }
+
+    let num_motions = a_rotations.len();
+
+    // Step 1: Solve for rotation using modified Rodrigues parameters
+    // For each motion pair: (I - Ra_i) * Rx = Rb_i - Ra_i (in Rodrigues form)
+    // Build overdetermined system: C * p_x = d
+    let mut c_rows: Vec<[f64; 3]> = Vec::new();
+    let mut d_rows: Vec<[f64; 3]> = Vec::new();
+
+    for i in 0..num_motions {
+        let p_a = rotation_to_modified_rodrigues(&a_rotations[i]);
+        let p_b = rotation_to_modified_rodrigues(&b_rotations[i]);
+
+        // skew(p_a + p_b)
+        let sum = [p_a[0] + p_b[0], p_a[1] + p_b[1], p_a[2] + p_b[2]];
+        let skew = [
+            [0.0, -sum[2], sum[1]],
+            [sum[2], 0.0, -sum[0]],
+            [-sum[1], sum[0], 0.0],
+        ];
+
+        for r in 0..3 {
+            c_rows.push(skew[r]);
+            d_rows.push([p_b[r] - p_a[r], 0.0, 0.0]); // Only first element used
+        }
+    }
+
+    // Solve C * p_x = d (each row: c[0]*x + c[1]*y + c[2]*z = d[0])
+    let p_x = solve_3x3_least_squares(&c_rows, &d_rows.iter().map(|d| d[0]).collect::<Vec<_>>());
+
+    // Convert modified Rodrigues back to rotation matrix
+    let p_sq = p_x[0] * p_x[0] + p_x[1] * p_x[1] + p_x[2] * p_x[2];
+    let scale = 1.0 / (1.0 + p_sq);
+    let rx = [
+        [
+            scale * (1.0 + p_x[0] * p_x[0] - p_x[1] * p_x[1] - p_x[2] * p_x[2]),
+            scale * 2.0 * (p_x[0] * p_x[1] - p_x[2]),
+            scale * 2.0 * (p_x[0] * p_x[2] + p_x[1]),
+        ],
+        [
+            scale * 2.0 * (p_x[0] * p_x[1] + p_x[2]),
+            scale * (1.0 - p_x[0] * p_x[0] + p_x[1] * p_x[1] - p_x[2] * p_x[2]),
+            scale * 2.0 * (p_x[1] * p_x[2] - p_x[0]),
+        ],
+        [
+            scale * 2.0 * (p_x[0] * p_x[2] - p_x[1]),
+            scale * 2.0 * (p_x[1] * p_x[2] + p_x[0]),
+            scale * (1.0 - p_x[0] * p_x[0] - p_x[1] * p_x[1] + p_x[2] * p_x[2]),
+        ],
+    ];
+
+    // Step 2: Solve for translation
+    // (Ra_i - I) * tx = Rx * tb_i - ta_i
+    let mut t_c_rows: Vec<[f64; 3]> = Vec::new();
+    let mut t_d_x: Vec<f64> = Vec::new();
+    let mut t_d_y: Vec<f64> = Vec::new();
+    let mut t_d_z: Vec<f64> = Vec::new();
+
+    for i in 0..num_motions {
+        let ra = &a_rotations[i];
+        let ta = &a_translations[i];
+        let tb = &b_translations[i];
+
+        // Rx * tb
+        let rx_tb = [
+            rx[0][0] * tb[0] + rx[0][1] * tb[1] + rx[0][2] * tb[2],
+            rx[1][0] * tb[0] + rx[1][1] * tb[1] + rx[1][2] * tb[2],
+            rx[2][0] * tb[0] + rx[2][1] * tb[1] + rx[2][2] * tb[2],
+        ];
+
+        // (Ra - I) rows
+        t_c_rows.push([ra[0][0] - 1.0, ra[0][1], ra[0][2]]);
+        t_d_x.push(rx_tb[0] - ta[0]);
+
+        t_c_rows.push([ra[1][0], ra[1][1] - 1.0, ra[1][2]]);
+        t_d_y.push(rx_tb[1] - ta[1]);
+
+        t_c_rows.push([ra[2][0], ra[2][1], ra[2][2] - 1.0]);
+        t_d_z.push(rx_tb[2] - ta[2]);
+    }
+
+    // Combine into single system
+    let mut t_rhs: Vec<f64> = Vec::new();
+    for i in 0..num_motions {
+        t_rhs.push(t_d_x[i]);
+        t_rhs.push(t_d_y[i]);
+        t_rhs.push(t_d_z[i]);
+    }
+
+    let tx = solve_3x3_least_squares(&t_c_rows, &t_rhs);
+
+    // Convert rotation matrix to quaternion for output
+    let trace = rx[0][0] + rx[1][1] + rx[2][2];
+    let (qw, qx, qy, qz) = if trace > 0.0 {
+        let s = 0.5 / (trace + 1.0).sqrt();
+        (
+            0.25 / s,
+            (rx[2][1] - rx[1][2]) * s,
+            (rx[0][2] - rx[2][0]) * s,
+            (rx[1][0] - rx[0][1]) * s,
+        )
+    } else if rx[0][0] > rx[1][1] && rx[0][0] > rx[2][2] {
+        let s = 2.0 * (1.0 + rx[0][0] - rx[1][1] - rx[2][2]).sqrt();
+        (
+            (rx[2][1] - rx[1][2]) / s,
+            0.25 * s,
+            (rx[0][1] + rx[1][0]) / s,
+            (rx[0][2] + rx[2][0]) / s,
+        )
+    } else if rx[1][1] > rx[2][2] {
+        let s = 2.0 * (1.0 + rx[1][1] - rx[0][0] - rx[2][2]).sqrt();
+        (
+            (rx[0][2] - rx[2][0]) / s,
+            (rx[0][1] + rx[1][0]) / s,
+            0.25 * s,
+            (rx[1][2] + rx[2][1]) / s,
+        )
+    } else {
+        let s = 2.0 * (1.0 + rx[2][2] - rx[0][0] - rx[1][1]).sqrt();
+        (
+            (rx[1][0] - rx[0][1]) / s,
+            (rx[0][2] + rx[2][0]) / s,
+            (rx[1][2] + rx[2][1]) / s,
+            0.25 * s,
+        )
+    };
+
+    let (roll, pitch, yaw) = quaternion_to_euler([qx, qy, qz, qw]);
+
+    println!("\n{}", "Hand-Eye Calibration Result (X: sensor → end-effector):".bold());
+    println!("  {}", "Translation:".cyan());
+    println!("    x: {:.6} m", tx[0]);
+    println!("    y: {:.6} m", tx[1]);
+    println!("    z: {:.6} m", tx[2]);
+    println!("  {}", "Rotation (quaternion):".cyan());
+    println!("    x: {:.6}", qx);
+    println!("    y: {:.6}", qy);
+    println!("    z: {:.6}", qz);
+    println!("    w: {:.6}", qw);
+    println!("  {}", "Rotation (euler deg):".cyan());
+    println!(
+        "    roll: {:.3}°  pitch: {:.3}°  yaw: {:.3}°",
+        roll.to_degrees(),
+        pitch.to_degrees(),
+        yaw.to_degrees()
+    );
+
+    // Compute residual error
+    let mut total_trans_err = 0.0f64;
+    for i in 0..num_motions {
+        // Check AX = XB consistency
+        // A * X translation part: Ra * tx + ta
+        let ax_t = [
+            a_rotations[i][0][0] * tx[0]
+                + a_rotations[i][0][1] * tx[1]
+                + a_rotations[i][0][2] * tx[2]
+                + a_translations[i][0],
+            a_rotations[i][1][0] * tx[0]
+                + a_rotations[i][1][1] * tx[1]
+                + a_rotations[i][1][2] * tx[2]
+                + a_translations[i][1],
+            a_rotations[i][2][0] * tx[0]
+                + a_rotations[i][2][1] * tx[1]
+                + a_rotations[i][2][2] * tx[2]
+                + a_translations[i][2],
+        ];
+        // X * B translation part: Rx * tb + tx
+        let xb_t = [
+            rx[0][0] * b_translations[i][0]
+                + rx[0][1] * b_translations[i][1]
+                + rx[0][2] * b_translations[i][2]
+                + tx[0],
+            rx[1][0] * b_translations[i][0]
+                + rx[1][1] * b_translations[i][1]
+                + rx[1][2] * b_translations[i][2]
+                + tx[1],
+            rx[2][0] * b_translations[i][0]
+                + rx[2][1] * b_translations[i][1]
+                + rx[2][2] * b_translations[i][2]
+                + tx[2],
+        ];
+        let dt = [ax_t[0] - xb_t[0], ax_t[1] - xb_t[1], ax_t[2] - xb_t[2]];
+        total_trans_err += (dt[0] * dt[0] + dt[1] * dt[1] + dt[2] * dt[2]).sqrt();
+    }
+
+    let avg_trans_err = total_trans_err / num_motions as f64;
+    println!("\n  {}", "Residual error:".cyan());
+    println!("    Avg translation: {:.4} mm", avg_trans_err * 1000.0);
+
+    Ok(())
+}
+
+/// Read poses from CSV file. Each line: x, y, z, qx, qy, qz, qw
+/// Returns Vec of (translation [x,y,z], quaternion [qx,qy,qz,qw])
+fn read_poses_csv(path: &str) -> Result<Vec<([f64; 3], [f64; 4])>, ConfigError> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| ConfigError::other(format!("Cannot open {}: {}", path, e)))?;
+    let reader = std::io::BufReader::new(file);
+    let mut poses = Vec::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| ConfigError::other(format!("Read error: {}", e)))?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<f64> = line
+            .split(',')
+            .map(|s| s.trim().parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                ConfigError::other(format!("Parse error line {}: {}", line_num + 1, e))
+            })?;
+        if parts.len() != 7 {
+            return Err(ConfigError::other(format!(
+                "Line {} has {} values, expected 7 (x,y,z,qx,qy,qz,qw)",
+                line_num + 1,
+                parts.len()
+            )));
+        }
+        poses.push(([parts[0], parts[1], parts[2]], [parts[3], parts[4], parts[5], parts[6]]));
+    }
+
+    Ok(poses)
+}
+
+/// Convert a rotation matrix to modified Rodrigues parameters
+fn rotation_to_modified_rodrigues(r: &[[f64; 3]; 3]) -> [f64; 3] {
+    let trace = r[0][0] + r[1][1] + r[2][2];
+    let theta = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+
+    if theta.abs() < 1e-10 {
+        return [0.0, 0.0, 0.0];
+    }
+
+    let k = 1.0 / (2.0 * theta.sin());
+    let axis = [
+        k * (r[2][1] - r[1][2]),
+        k * (r[0][2] - r[2][0]),
+        k * (r[1][0] - r[0][1]),
+    ];
+
+    let half_tan = (theta / 2.0).tan();
+    [
+        axis[0] * half_tan,
+        axis[1] * half_tan,
+        axis[2] * half_tan,
+    ]
+}
+
+/// Extract 3x3 rotation matrix from a pose (translation, quaternion)
+fn rotation_to_matrix(pose: &([f64; 3], [f64; 4])) -> [[f64; 3]; 3] {
+    let [qx, qy, qz, qw] = pose.1;
+    let n = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt();
+    let (qx, qy, qz, qw) = (qx / n, qy / n, qz / n, qw / n);
+
+    [
+        [
+            1.0 - 2.0 * (qy * qy + qz * qz),
+            2.0 * (qx * qy - qz * qw),
+            2.0 * (qx * qz + qy * qw),
+        ],
+        [
+            2.0 * (qx * qy + qz * qw),
+            1.0 - 2.0 * (qx * qx + qz * qz),
+            2.0 * (qy * qz - qx * qw),
+        ],
+        [
+            2.0 * (qx * qz - qy * qw),
+            2.0 * (qy * qz + qx * qw),
+            1.0 - 2.0 * (qx * qx + qy * qy),
+        ],
+    ]
+}
+
+/// Invert a pose (translation, quaternion)
+fn invert_pose(pose: &([f64; 3], [f64; 4])) -> ([f64; 3], [f64; 4]) {
+    let [qx, qy, qz, qw] = pose.1;
+    // Conjugate quaternion
+    let inv_q = [-qx, -qy, -qz, qw];
+    // Rotate negative translation by conjugate
+    let r_inv = rotation_to_matrix(&([0.0, 0.0, 0.0], inv_q));
+    let t = pose.0;
+    let inv_t = [
+        -(r_inv[0][0] * t[0] + r_inv[0][1] * t[1] + r_inv[0][2] * t[2]),
+        -(r_inv[1][0] * t[0] + r_inv[1][1] * t[1] + r_inv[1][2] * t[2]),
+        -(r_inv[2][0] * t[0] + r_inv[2][1] * t[1] + r_inv[2][2] * t[2]),
+    ];
+    (inv_t, inv_q)
+}
+
+/// Multiply two poses (composition)
+fn multiply_poses(a: &([f64; 3], [f64; 4]), b: &([f64; 3], [f64; 4])) -> ([f64; 3], [f64; 4]) {
+    let ra = rotation_to_matrix(a);
+    let t = [
+        ra[0][0] * b.0[0] + ra[0][1] * b.0[1] + ra[0][2] * b.0[2] + a.0[0],
+        ra[1][0] * b.0[0] + ra[1][1] * b.0[1] + ra[1][2] * b.0[2] + a.0[1],
+        ra[2][0] * b.0[0] + ra[2][1] * b.0[1] + ra[2][2] * b.0[2] + a.0[2],
+    ];
+    // Hamilton quaternion product
+    let [ax, ay, az, aw] = a.1;
+    let [bx, by, bz, bw] = b.1;
+    let q = [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ];
+    (t, q)
+}
+
+/// Solve overdetermined 3-unknown least squares: rows * [x,y,z]^T = rhs
+/// Uses normal equations (A^T A x = A^T b) with Cramer's rule
+fn solve_3x3_least_squares(rows: &[[f64; 3]], rhs: &[f64]) -> [f64; 3] {
+    let n = rows.len();
+    // A^T * A (3x3)
+    let mut ata = [[0.0f64; 3]; 3];
+    let mut atb = [0.0f64; 3];
+
+    for k in 0..n {
+        for i in 0..3 {
+            atb[i] += rows[k][i] * rhs[k];
+            for j in 0..3 {
+                ata[i][j] += rows[k][i] * rows[k][j];
+            }
+        }
+    }
+
+    // Cramer's rule for 3x3
+    let det = ata[0][0] * (ata[1][1] * ata[2][2] - ata[1][2] * ata[2][1])
+        - ata[0][1] * (ata[1][0] * ata[2][2] - ata[1][2] * ata[2][0])
+        + ata[0][2] * (ata[1][0] * ata[2][1] - ata[1][1] * ata[2][0]);
+
+    if det.abs() < 1e-15 {
+        return [0.0, 0.0, 0.0]; // Degenerate
+    }
+
+    let inv_det = 1.0 / det;
+
+    let x = inv_det
+        * (atb[0] * (ata[1][1] * ata[2][2] - ata[1][2] * ata[2][1])
+            - ata[0][1] * (atb[1] * ata[2][2] - ata[1][2] * atb[2])
+            + ata[0][2] * (atb[1] * ata[2][1] - ata[1][1] * atb[2]));
+
+    let y = inv_det
+        * (ata[0][0] * (atb[1] * ata[2][2] - ata[1][2] * atb[2])
+            - atb[0] * (ata[1][0] * ata[2][2] - ata[1][2] * ata[2][0])
+            + ata[0][2] * (ata[1][0] * atb[2] - atb[1] * ata[2][0]));
+
+    let z = inv_det
+        * (ata[0][0] * (ata[1][1] * atb[2] - atb[1] * ata[2][1])
+            - ata[0][1] * (ata[1][0] * atb[2] - atb[1] * ata[2][0])
+            + atb[0] * (ata[1][0] * ata[2][1] - ata[1][1] * ata[2][0]));
+
+    [x, y, z]
 }
 
 #[cfg(test)]

@@ -3,13 +3,14 @@ use pyo3::prelude::*;
 
 /// Full scheduler configuration for Python — plain data bag.
 ///
-/// All fields from the Rust config are exposed. For common use cases,
-/// prefer `Scheduler.deploy()`, `Scheduler.safety_critical()`, etc.
+/// All fields from the Rust config are exposed. Use builder methods
+/// like `.monitoring()`, `.prefer_rt()` on the Scheduler, or construct
+/// a config and pass it to `Scheduler(config=cfg)`.
 #[pyclass(name = "SchedulerConfig", module = "horus._horus")]
 #[derive(Clone, Debug)]
 pub struct PySchedulerConfig {
     // --- Timing ---
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     /// Global tick rate in Hz
     pub tick_rate: f64,
 
@@ -84,10 +85,21 @@ impl PySchedulerConfig {
         Self::minimal()
     }
 
-    /// Create a minimal configuration with sensible defaults.
+    /// Set the global tick rate in Hz.
     ///
-    /// For common use cases, prefer Scheduler presets:
-    /// `Scheduler.deploy()`, `Scheduler.safety_critical()`, etc.
+    /// Raises `ValueError` for zero, negative, NaN, or infinite values.
+    #[setter]
+    pub fn set_tick_rate(&mut self, value: f64) -> PyResult<()> {
+        if value <= 0.0 || !value.is_finite() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "tick_rate must be a positive finite number",
+            ));
+        }
+        self.tick_rate = value;
+        Ok(())
+    }
+
+    /// Create a minimal configuration with sensible defaults.
     #[staticmethod]
     pub fn minimal() -> Self {
         let rust_config = SchedulerConfig::default();
@@ -95,61 +107,24 @@ impl PySchedulerConfig {
     }
 
     // ========================================================================
-    // PROFILE PRESETS — recommended for common use cases
+    // CONFIG BUILDER METHODS — composable, explicit
     // ========================================================================
 
-    /// Deploy profile — safety monitor, watchdog, and blackbox.
-    ///
-    /// Suitable for production robots. Gracefully degrades if RT not available.
+    /// Enable all monitoring features: safety monitor, budget enforcement,
+    /// deadline monitoring, and watchdog (500ms default).
     ///
     /// Example:
-    ///     cfg = SchedulerConfig.deploy()
+    ///     cfg = SchedulerConfig.with_monitoring()
     ///     scheduler = Scheduler(config=cfg)
     #[staticmethod]
-    pub fn deploy() -> Self {
+    pub fn with_monitoring() -> Self {
         let mut cfg = Self::minimal();
-        cfg.tick_rate = 100.0;
         cfg.safety_monitor = true;
         cfg.budget_enforcement = true;
         cfg.deadline_monitoring = true;
         cfg.watchdog_enabled = true;
         cfg.watchdog_timeout_ms = 500;
-        cfg.black_box_enabled = true;
-        cfg.black_box_size_mb = 64;
-        cfg.config_name = "Deploy".to_string();
-        cfg
-    }
-
-    /// Hard real-time profile — all RT features enabled.
-    ///
-    /// Suitable for hard real-time control loops with strict timing guarantees.
-    ///
-    /// Example:
-    ///     cfg = SchedulerConfig.hard_rt()
-    ///     scheduler = Scheduler(config=cfg)
-    #[staticmethod]
-    pub fn hard_rt() -> Self {
-        let mut cfg = Self::deploy();
-        cfg.memory_locking = true;
-        cfg.rt_scheduling_class = true;
-        cfg.max_deadline_misses = 10;
-        cfg.config_name = "HardRT".to_string();
-        cfg
-    }
-
-    /// Safety-critical profile — hard RT plus profiling and strict deadlines.
-    ///
-    /// Suitable for safety-critical systems that must never miss a deadline.
-    ///
-    /// Example:
-    ///     cfg = SchedulerConfig.safety_critical()
-    ///     scheduler = Scheduler(config=cfg)
-    #[staticmethod]
-    pub fn safety_critical() -> Self {
-        let mut cfg = Self::hard_rt();
-        cfg.profiling = true;
-        cfg.max_deadline_misses = 3;
-        cfg.config_name = "SafetyCritical".to_string();
+        cfg.config_name = "Monitoring".to_string();
         cfg
     }
 

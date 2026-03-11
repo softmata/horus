@@ -300,12 +300,12 @@ fn test_scheduler_start_at_tick() {
 #[test]
 fn test_scheduler_with_safety_monitor() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::deploy().max_deadline_misses(10);
+    let scheduler = Scheduler::new().monitoring(true).max_deadline_misses(10);
     assert!(scheduler.is_running());
-    // deploy() sets safety_monitor=true in pending config (materialized at run time)
+    // monitoring(true) sets safety_monitor=true in pending config (materialized at run time)
     assert!(
         scheduler.pending_config.realtime.safety_monitor,
-        "deploy() should enable safety_monitor in pending config"
+        "monitoring(true) should enable safety_monitor in pending config"
     );
     assert_eq!(
         scheduler.pending_config.realtime.max_deadline_misses, 10,
@@ -734,7 +734,7 @@ fn test_blackbox_with_path() {
 #[test]
 fn test_deploy_config_creates_blackbox_with_wal() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::deploy().with_blackbox(16);
+    let scheduler = Scheduler::new().monitoring(true).with_blackbox(16);
     assert!(
         scheduler.blackbox().is_some(),
         ".with_blackbox() should create a blackbox"
@@ -1401,7 +1401,7 @@ fn test_budget_violation_detected_for_slow_rt_node() {
     let fast_counter = Arc::new(AtomicUsize::new(0));
 
     // Enable budget enforcement via builder (deferred to run time)
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Fast node within budget
     scheduler
@@ -1447,7 +1447,7 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
     let slow_counter = Arc::new(AtomicUsize::new(0));
 
     // Enable deadline monitoring via builder (deferred to run time)
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Node with tight deadline that will be missed
     scheduler
@@ -2410,7 +2410,7 @@ fn test_skip_policy_healthy_nodes_unaffected() {
     let healthy_counter = Arc::new(AtomicUsize::new(0));
     let panic_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     scheduler
         .add(CounterNode::with_counter(
@@ -2605,7 +2605,7 @@ fn test_fault_tolerance_reflected_in_scheduler_status() {
     let _guard = lock_scheduler();
     let panic_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
     scheduler
         .add(PanickingNode::new("circuit_node", 1, panic_counter.clone()))
         .order(0)
@@ -2630,7 +2630,7 @@ fn test_budget_no_violation_within_budget() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
     scheduler
         .add(CounterNode::with_counter("fast_node", counter.clone()))
         .order(0)
@@ -2660,7 +2660,7 @@ fn test_budget_multiple_simultaneous_violations() {
     let slow_a = Arc::new(AtomicUsize::new(0));
     let slow_b = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     scheduler
         .add(SlowNode::new(
@@ -2717,7 +2717,7 @@ fn test_budget_mixed_within_and_over_budget() {
     let fast = Arc::new(AtomicUsize::new(0));
     let slow = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Fast node with generous budget
     scheduler
@@ -2762,7 +2762,7 @@ fn test_budget_non_rt_node_no_crash() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Regular node (no .budget()) — no budget tracking
     scheduler
@@ -2787,7 +2787,7 @@ fn test_budget_worst_execution_tracked() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Variable-speed node: takes 5ms per tick
     scheduler
@@ -2822,7 +2822,7 @@ fn test_deadline_no_miss_within_budget() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
     scheduler
         .add(CounterNode::with_counter("fast_rt", counter.clone()))
         .order(0)
@@ -2851,7 +2851,7 @@ fn test_deadline_multiple_simultaneous_misses() {
     let slow_a = Arc::new(AtomicUsize::new(0));
     let slow_b = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     scheduler
         .add(SlowNode::new(
@@ -2898,7 +2898,7 @@ fn test_deadline_mixed_meet_and_miss() {
     let fast = Arc::new(AtomicUsize::new(0));
     let slow = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Fast node meets deadline
     scheduler
@@ -2941,7 +2941,7 @@ fn test_deadline_miss_count_accumulates() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     scheduler
         .add(SlowNode::new(
@@ -2973,7 +2973,7 @@ fn test_deadline_miss_and_budget_violation_both_tracked() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::deploy();
+    let mut scheduler = Scheduler::new().monitoring(true);
 
     // Node with both tight deadline AND tight tick budget
     scheduler

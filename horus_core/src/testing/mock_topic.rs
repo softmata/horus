@@ -184,12 +184,12 @@ impl<T: Clone> MockTopic<T> {
 
     /// Get topic metrics.
     pub fn metrics(&self) -> TopicMetrics {
-        TopicMetrics {
-            messages_sent: self.send_count.load(Ordering::Relaxed),
-            messages_received: self.recv_count.load(Ordering::Relaxed),
-            send_failures: self.send_failures.load(Ordering::Relaxed),
-            recv_failures: self.recv_failures.load(Ordering::Relaxed),
-        }
+        TopicMetrics::new(
+            self.send_count.load(Ordering::Relaxed),
+            self.recv_count.load(Ordering::Relaxed),
+            self.send_failures.load(Ordering::Relaxed),
+            self.recv_failures.load(Ordering::Relaxed),
+        )
     }
 
     /// Get the number of messages currently in the buffer.
@@ -291,8 +291,8 @@ mod tests {
         topic.send(2);
         topic.recv();
         let m = topic.metrics();
-        assert_eq!(m.messages_sent, 2);
-        assert_eq!(m.messages_received, 1);
+        assert_eq!(m.messages_sent(), 2);
+        assert_eq!(m.messages_received(), 1);
     }
 
     #[test]
@@ -339,7 +339,7 @@ mod tests {
         assert!(topic.try_send(6).is_err()); // 6th — fail
 
         let m = topic.metrics();
-        assert_eq!(m.send_failures, 2);
+        assert_eq!(m.send_failures(), 2);
     }
 
     #[test]

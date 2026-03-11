@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hf_message_batch() {
+    fn test_tf_message_batch() {
         let mut batch = TFMessage::new();
         assert!(batch.is_empty());
 
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hf_message_full() {
+    fn test_tf_message_full() {
         let mut batch = TFMessage::new();
 
         for i in 0..MAX_TRANSFORMS_PER_MESSAGE {

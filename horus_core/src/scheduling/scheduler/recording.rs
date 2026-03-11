@@ -83,6 +83,7 @@ impl Scheduler {
             rt_stats: None,
             miss_policy: crate::core::Miss::Warn,
             execution_class: super::super::types::ExecutionClass::BestEffort,
+            health_state: super::super::types::AtomicHealthState::default(),
         });
 
         self.nodes.sort_by_key(|n| n.priority);

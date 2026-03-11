@@ -60,7 +60,7 @@ pub fn list_params(verbose: bool, json: bool) -> HorusResult<()> {
                 if let Some(ref unit) = meta.unit {
                     println!("    {} {}", "Unit:".dimmed(), unit);
                 }
-                if meta.read_only {
+                if meta.read_only() {
                     println!("    {} {}", "Read-only:".dimmed(), "Yes".yellow());
                 }
             }

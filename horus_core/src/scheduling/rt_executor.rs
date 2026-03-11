@@ -418,6 +418,7 @@ mod tests {
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
         }
     }
 
@@ -528,6 +529,7 @@ mod tests {
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
         };
 
         let running = Arc::new(AtomicBool::new(true));
@@ -778,6 +780,7 @@ mod tests {
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
         };
 
         let normal_registered = make_rt_registered("survivor_node", normal_count.clone());
@@ -879,6 +882,7 @@ mod tests {
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
         };
 
         let normal_registered = make_rt_registered("quiet_normal", normal_count.clone());

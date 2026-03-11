@@ -53,12 +53,12 @@ fn discover_topics_from_presence() -> Vec<SharedMemoryInfo> {
 
     for presence in NodePresence::read_all() {
         // Add publishers
-        for pub_topic in &presence.publishers {
+        for pub_topic in presence.publishers() {
             let entry = topic_map
                 .entry(pub_topic.topic_name.clone())
                 .or_insert_with(|| (Vec::new(), Vec::new(), None));
-            if !entry.0.contains(&presence.name) {
-                entry.0.push(presence.name.clone());
+            if !entry.0.contains(&presence.name().to_string()) {
+                entry.0.push(presence.name().to_string());
             }
             // Capture type name if available
             if entry.2.is_none()
@@ -70,12 +70,12 @@ fn discover_topics_from_presence() -> Vec<SharedMemoryInfo> {
         }
 
         // Add subscribers
-        for sub_topic in &presence.subscribers {
+        for sub_topic in presence.subscribers() {
             let entry = topic_map
                 .entry(sub_topic.topic_name.clone())
                 .or_insert_with(|| (Vec::new(), Vec::new(), None));
-            if !entry.1.contains(&presence.name) {
-                entry.1.push(presence.name.clone());
+            if !entry.1.contains(&presence.name().to_string()) {
+                entry.1.push(presence.name().to_string());
             }
             // Capture type name if available
             if entry.2.is_none()
@@ -115,17 +115,11 @@ fn discover_topics_from_presence() -> Vec<SharedMemoryInfo> {
 
 /// Clean up stale topic files from the global topics directory.
 ///
-/// A topic is considered stale if:
-/// 1. No process holds a flock on it (primary signal — survives SIGKILL)
-/// 2. Fallback: no process has it mmap'd AND not modified in 5+ minutes
-///
-/// The flock check is O(1) per file and race-free.  The /proc fallback
-/// is kept for files created before flock support was added.
+/// A topic is considered stale if no process holds a flock on it.
+/// The flock check is O(1) per file and race-free (survives SIGKILL).
 ///
 /// Internal: Clean up stale topic files in a specific directory
 pub(super) fn cleanup_stale_topics_in_dir(shm_path: &Path) {
-    const STALE_THRESHOLD_SECS: u64 = 300; // 5 minutes
-
     if let Ok(entries) = std::fs::read_dir(shm_path) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -133,33 +127,8 @@ pub(super) fn cleanup_stale_topics_in_dir(shm_path: &Path) {
                 continue;
             }
 
-            // Primary: flock-based staleness check (O(1), survives SIGKILL)
             if horus_core::memory::is_shm_file_stale(&path) {
                 let _ = std::fs::remove_file(&path);
-                continue;
-            }
-
-            // Fallback for legacy files without flock: /proc + mtime check
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-
-            let accessing_procs = find_accessing_processes_fast(&path, name);
-            let has_live_processes = accessing_procs.iter().any(|pid| process_exists(*pid));
-
-            if has_live_processes {
-                continue; // Topic is in use
-            }
-
-            // Check modification time
-            if let Ok(metadata) = entry.metadata() {
-                if let Ok(modified) = metadata.modified() {
-                    if let Ok(elapsed) = modified.elapsed() {
-                        if elapsed.as_secs() > STALE_THRESHOLD_SECS {
-                            let _ = std::fs::remove_file(&path);
-                        }
-                    }
-                }
             }
         }
     }

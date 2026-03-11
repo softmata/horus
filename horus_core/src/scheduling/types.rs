@@ -2,12 +2,83 @@
 //!
 //! This module contains the public types used by the scheduler.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::profiler::RuntimeProfiler;
 use super::record_replay::NodeRecorder;
 use crate::core::{Miss, Node, NodeInfo, RtStats};
+
+/// Health state of a node, tracked by the watchdog system.
+///
+/// Transitions:
+/// - `Healthy` → `Warning` (1x timeout): node is slow, logged but still ticked
+/// - `Warning` → `Unhealthy` (2x timeout): node is skipped in tick loop
+/// - `Unhealthy` → `Isolated` (3x timeout, critical node): `enter_safe_state()` called
+/// - Any → `Healthy`: node ticks successfully (recovery)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NodeHealthState {
+    /// Normal operation — node is ticked every cycle.
+    Healthy = 0,
+    /// Watchdog warning (1x timeout elapsed) — node still ticks, but logged.
+    Warning = 1,
+    /// Unhealthy (2x timeout) — node is skipped in tick loop.
+    Unhealthy = 2,
+    /// Isolated (3x timeout on critical node) — `enter_safe_state()` called, node skipped.
+    Isolated = 3,
+}
+
+impl NodeHealthState {
+    /// Convert from raw u8 (for AtomicU8). Returns Healthy for unknown values.
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Healthy,
+            1 => Self::Warning,
+            2 => Self::Unhealthy,
+            3 => Self::Isolated,
+            _ => Self::Healthy,
+        }
+    }
+}
+
+impl std::fmt::Display for NodeHealthState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Healthy => write!(f, "Healthy"),
+            Self::Warning => write!(f, "Warning"),
+            Self::Unhealthy => write!(f, "Unhealthy"),
+            Self::Isolated => write!(f, "Isolated"),
+        }
+    }
+}
+
+/// Atomic wrapper for `NodeHealthState`, enabling lock-free per-node health tracking.
+///
+/// Uses `AtomicU8` internally — no lock contention on read or write.
+#[derive(Debug)]
+pub struct AtomicHealthState(AtomicU8);
+
+impl AtomicHealthState {
+    pub fn new(state: NodeHealthState) -> Self {
+        Self(AtomicU8::new(state as u8))
+    }
+
+    pub fn load(&self) -> NodeHealthState {
+        NodeHealthState::from_u8(self.0.load(Ordering::Acquire))
+    }
+
+    pub fn store(&self, state: NodeHealthState) {
+        self.0.store(state as u8, Ordering::Release);
+    }
+}
+
+impl Default for AtomicHealthState {
+    fn default() -> Self {
+        Self::new(NodeHealthState::Healthy)
+    }
+}
 
 #[cfg(test)]
 mod execution_class_tests {
@@ -45,6 +116,7 @@ mod execution_class_tests {
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: class,
+            health_state: AtomicHealthState::default(),
         }
     }
 
@@ -101,6 +173,55 @@ mod execution_class_tests {
         assert!(groups.rt_nodes.is_empty());
         assert!(groups.event_nodes.is_empty());
         assert!(groups.async_io_nodes.is_empty());
+    }
+
+    // ── NodeHealthState tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_health_state_default_is_healthy() {
+        let state = AtomicHealthState::default();
+        assert_eq!(state.load(), NodeHealthState::Healthy);
+    }
+
+    #[test]
+    fn test_health_state_store_load_roundtrip() {
+        let state = AtomicHealthState::new(NodeHealthState::Healthy);
+
+        state.store(NodeHealthState::Warning);
+        assert_eq!(state.load(), NodeHealthState::Warning);
+
+        state.store(NodeHealthState::Unhealthy);
+        assert_eq!(state.load(), NodeHealthState::Unhealthy);
+
+        state.store(NodeHealthState::Isolated);
+        assert_eq!(state.load(), NodeHealthState::Isolated);
+
+        state.store(NodeHealthState::Healthy);
+        assert_eq!(state.load(), NodeHealthState::Healthy);
+    }
+
+    #[test]
+    fn test_health_state_from_u8() {
+        assert_eq!(NodeHealthState::from_u8(0), NodeHealthState::Healthy);
+        assert_eq!(NodeHealthState::from_u8(1), NodeHealthState::Warning);
+        assert_eq!(NodeHealthState::from_u8(2), NodeHealthState::Unhealthy);
+        assert_eq!(NodeHealthState::from_u8(3), NodeHealthState::Isolated);
+        // Unknown values default to Healthy
+        assert_eq!(NodeHealthState::from_u8(255), NodeHealthState::Healthy);
+    }
+
+    #[test]
+    fn test_health_state_display() {
+        assert_eq!(NodeHealthState::Healthy.to_string(), "Healthy");
+        assert_eq!(NodeHealthState::Warning.to_string(), "Warning");
+        assert_eq!(NodeHealthState::Unhealthy.to_string(), "Unhealthy");
+        assert_eq!(NodeHealthState::Isolated.to_string(), "Isolated");
+    }
+
+    #[test]
+    fn test_registered_node_default_health() {
+        let node = make_node("test", ExecutionClass::BestEffort);
+        assert_eq!(node.health_state.load(), NodeHealthState::Healthy);
     }
 }
 
@@ -253,6 +374,8 @@ pub(crate) struct RegisteredNode {
     pub(crate) miss_policy: Miss,
     /// Execution class — determines which group this node belongs to.
     pub(crate) execution_class: ExecutionClass,
+    /// Per-node health state — lock-free AtomicU8 for zero-contention reads.
+    pub(crate) health_state: AtomicHealthState,
 }
 
 /// Shared monitoring references passed to executor threads.

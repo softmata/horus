@@ -604,7 +604,7 @@ mod tests {
         let data: Vec<u8> = vec![0xAB; MAX_GENERIC_PAYLOAD + 1];
         let result = GenericMessage::new(data);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("too large"));
+        assert!(result.unwrap_err().to_string().contains("out of range"));
     }
 
     #[test]
@@ -639,7 +639,7 @@ mod tests {
         let long_metadata = "x".repeat(256); // Exceeds 255 byte limit
         let result = GenericMessage::with_metadata(data, long_metadata);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Metadata too large"));
+        assert!(result.unwrap_err().to_string().contains("out of range"));
     }
 
     // ============================================================================

@@ -233,7 +233,6 @@ pub mod prelude {
         Action, ActionClient, ActionClientBuilder, ActionClientNode, ActionError, ActionResult,
         ActionServerBuilder, ActionServerNode, CancelResponse, ClientGoalHandle, GoalId,
         GoalOutcome, GoalPriority, GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle,
-        SyncActionClient,
     };
 
     // === Services (request/response RPC) ===

@@ -28,6 +28,22 @@ pub enum SafetyState {
     EmergencyStop,
 }
 
+/// Graduated watchdog severity level.
+///
+/// Returned by `Watchdog::check_graduated()` to indicate how far past the
+/// timeout the node is. The scheduler uses this to transition node health states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatchdogSeverity {
+    /// Within timeout — node is healthy.
+    Ok,
+    /// 1x timeout elapsed — warning, node is slow.
+    Warning,
+    /// 2x timeout elapsed — unhealthy, skip node in tick loop.
+    Expired,
+    /// 3x timeout elapsed — critical, trigger safety response for critical nodes.
+    Critical,
+}
+
 /// Watchdog for monitoring node health
 ///
 /// `last_heartbeat_ns` is stored as nanoseconds since the Unix epoch in an
@@ -65,7 +81,7 @@ impl Watchdog {
         self.expired.store(false, Ordering::SeqCst);
     }
 
-    /// Check if watchdog has expired
+    /// Check if watchdog has expired (simple boolean).
     pub(crate) fn check(&self) -> bool {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns().saturating_sub(last_ns);
@@ -76,17 +92,281 @@ impl Watchdog {
         expired
     }
 
+    /// Graduated check: returns severity based on how many timeout multiples elapsed.
+    ///
+    /// - `Ok`: within timeout
+    /// - `Warning`: 1x-2x timeout
+    /// - `Expired`: 2x-3x timeout
+    /// - `Critical`: 3x+ timeout
+    pub(crate) fn check_graduated(&self) -> WatchdogSeverity {
+        let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
+        let elapsed_ns = now_ns().saturating_sub(last_ns);
+        let timeout_ns = self.timeout.as_nanos() as u64;
+
+        if elapsed_ns <= timeout_ns {
+            WatchdogSeverity::Ok
+        } else if elapsed_ns <= timeout_ns * 2 {
+            self.expired.store(true, Ordering::SeqCst);
+            WatchdogSeverity::Warning
+        } else if elapsed_ns <= timeout_ns * 3 {
+            self.expired.store(true, Ordering::SeqCst);
+            WatchdogSeverity::Expired
+        } else {
+            self.expired.store(true, Ordering::SeqCst);
+            WatchdogSeverity::Critical
+        }
+    }
+
     pub(crate) fn is_expired(&self) -> bool {
         self.expired.load(Ordering::SeqCst)
     }
 }
 
-/// budget (Worst-Case Execution Time) enforcer
+/// Fixed-size ring buffer for per-node tick duration history.
+///
+/// Stores the last `CAPACITY` tick durations for a node, enabling
+/// min/max/avg/p99 calculations without unbounded memory growth.
+const TIMING_RING_CAPACITY: usize = 1024;
+
+#[derive(Debug)]
+pub(crate) struct TickTimingRing {
+    durations: Box<[u64; TIMING_RING_CAPACITY]>,
+    write_pos: usize,
+    count: u64,
+}
+
+impl TickTimingRing {
+    pub(crate) fn new() -> Self {
+        Self {
+            durations: Box::new([0u64; TIMING_RING_CAPACITY]),
+            write_pos: 0,
+            count: 0,
+        }
+    }
+
+    /// Record a tick duration in microseconds.
+    pub(crate) fn record(&mut self, duration_us: u64) {
+        self.durations[self.write_pos] = duration_us;
+        self.write_pos = (self.write_pos + 1) % TIMING_RING_CAPACITY;
+        self.count += 1;
+    }
+
+    /// Number of samples recorded (total, not just in buffer).
+    pub(crate) fn total_count(&self) -> u64 {
+        self.count
+    }
+
+    /// Number of valid samples in the ring (min of count and capacity).
+    fn valid_count(&self) -> usize {
+        (self.count as usize).min(TIMING_RING_CAPACITY)
+    }
+
+    /// Compute timing statistics from the ring buffer.
+    pub(crate) fn stats(&self) -> TimingStats {
+        let n = self.valid_count();
+        if n == 0 {
+            return TimingStats::default();
+        }
+
+        let samples = &self.durations[..n];
+        let min = *samples.iter().min().unwrap();
+        let max = *samples.iter().max().unwrap();
+        let sum: u64 = samples.iter().sum();
+        let avg = sum / n as u64;
+
+        // P99: sort a copy, take the 99th percentile
+        let mut sorted = samples.to_vec();
+        sorted.sort_unstable();
+        let p99_idx = ((n as f64 * 0.99) as usize).min(n - 1);
+        let p99 = sorted[p99_idx];
+
+        TimingStats {
+            min_us: min,
+            max_us: max,
+            avg_us: avg,
+            p99_us: p99,
+            total_ticks: self.count,
+        }
+    }
+}
+
+/// Timing statistics for a node.
+#[derive(Debug, Clone, Default)]
+pub struct TimingStats {
+    pub min_us: u64,
+    pub max_us: u64,
+    pub avg_us: u64,
+    pub p99_us: u64,
+    pub total_ticks: u64,
+}
+
+/// Per-node timing and overrun tracking.
+#[derive(Debug)]
+pub(crate) struct NodeTimingState {
+    /// Tick duration ring buffer
+    pub(crate) ring: TickTimingRing,
+    /// Budget for this node (None = no budget set)
+    pub(crate) budget: Option<Duration>,
+    /// Total overrun count
+    pub(crate) overrun_count: u64,
+    /// Worst overrun (actual - budget), zero if no overruns
+    pub(crate) worst_overrun_us: u64,
+    /// Deadline miss tracking
+    pub(crate) total_deadline_misses: u64,
+    /// Consecutive deadline misses (resets on successful tick)
+    pub(crate) consecutive_misses: u64,
+    /// Worst deadline miss severity (how far past deadline)
+    pub(crate) worst_miss_us: u64,
+}
+
+impl NodeTimingState {
+    pub(crate) fn new(budget: Option<Duration>) -> Self {
+        Self {
+            ring: TickTimingRing::new(),
+            budget,
+            overrun_count: 0,
+            worst_overrun_us: 0,
+            total_deadline_misses: 0,
+            consecutive_misses: 0,
+            worst_miss_us: 0,
+        }
+    }
+
+    /// Record a tick and check budget.
+    pub(crate) fn record_tick(&mut self, actual: Duration) -> Option<BudgetViolation> {
+        let actual_us = actual.as_micros() as u64;
+        self.ring.record(actual_us);
+        // Successful tick resets consecutive miss counter
+        self.consecutive_misses = 0;
+
+        if let Some(budget) = self.budget {
+            if actual > budget {
+                self.overrun_count += 1;
+                let overrun_us = actual_us.saturating_sub(budget.as_micros() as u64);
+                if overrun_us > self.worst_overrun_us {
+                    self.worst_overrun_us = overrun_us;
+                }
+                return Some(BudgetViolation::new(
+                    String::new(), // filled by caller
+                    budget,
+                    actual,
+                ));
+            }
+        }
+        None
+    }
+
+    /// Record a deadline miss with severity.
+    pub(crate) fn record_miss(&mut self, severity_us: u64) {
+        self.total_deadline_misses += 1;
+        self.consecutive_misses += 1;
+        if severity_us > self.worst_miss_us {
+            self.worst_miss_us = severity_us;
+        }
+    }
+
+    /// Whether this node is chronically missing deadlines (3+ consecutive).
+    pub(crate) fn is_chronic(&self) -> bool {
+        self.consecutive_misses >= 3
+    }
+}
+
+/// Policy for how nodes degrade under sustained timing violations.
+///
+/// `LogOnly` matches the old behavior (count misses, emergency stop after max).
+/// `Graduated` adds intermediate stages: warn → reduce rate → isolate → safe state.
+#[derive(Debug, Clone)]
+pub enum DegradationPolicy {
+    /// Log violations but take no corrective action (legacy behavior).
+    LogOnly,
+    /// Graduated response with configurable thresholds.
+    ///
+    /// On consecutive misses:
+    /// 1. After `warn_after` misses: log warning
+    /// 2. After `reduce_after` misses: reduce node rate to half
+    /// 3. After `isolate_after` misses: isolate node (skip in tick loop)
+    /// 4. Critical nodes at isolation → `enter_safe_state()`
+    ///
+    /// Recovery: after `recovery_ticks` successful ticks at reduced rate,
+    /// restore original rate.
+    Graduated {
+        /// Consecutive misses before logging a warning (default: 3)
+        warn_after: u64,
+        /// Consecutive misses before reducing node rate (default: 5)
+        reduce_after: u64,
+        /// Consecutive misses before isolating node (default: 10)
+        isolate_after: u64,
+        /// Successful ticks at reduced rate before restoring original (default: 100)
+        recovery_ticks: u64,
+    },
+}
+
+impl Default for DegradationPolicy {
+    fn default() -> Self {
+        Self::Graduated {
+            warn_after: 3,
+            reduce_after: 5,
+            isolate_after: 10,
+            recovery_ticks: 100,
+        }
+    }
+}
+
+/// Current degradation stage for a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DegradationStage {
+    /// Normal operation — no degradation applied.
+    Normal,
+    /// Warned — logging violations, no corrective action yet.
+    Warned,
+    /// Rate reduced — node running at half its original rate.
+    RateReduced,
+    /// Isolated — node skipped entirely in tick loop.
+    Isolated,
+}
+
+/// Per-node degradation tracking.
+#[derive(Debug)]
+pub(crate) struct NodeDegradationState {
+    /// Current degradation stage.
+    pub(crate) stage: DegradationStage,
+    /// Original rate_hz before degradation reduced it. None = no rate was set.
+    pub(crate) original_rate_hz: Option<f64>,
+    /// Consecutive successful ticks since rate was reduced (for recovery).
+    pub(crate) recovery_counter: u64,
+}
+
+impl Default for NodeDegradationState {
+    fn default() -> Self {
+        Self {
+            stage: DegradationStage::Normal,
+            original_rate_hz: None,
+            recovery_counter: 0,
+        }
+    }
+}
+
+/// Action the scheduler should take based on degradation evaluation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DegradationAction {
+    /// No action needed.
+    None,
+    /// Warn about the node (log only).
+    Warn(String),
+    /// Reduce node rate to the given Hz.
+    ReduceRate { node: String, new_rate_hz: f64 },
+    /// Isolate node — skip in tick loop.
+    Isolate(String),
+    /// Restore node to original rate (recovery).
+    RestoreRate { node: String, original_rate_hz: f64 },
+}
+
+/// budget (Worst-Case Execution Time) enforcer with real per-node metrics.
 #[derive(Debug)]
 pub(crate) struct BudgetEnforcer {
-    /// tick budgets per node
-    budgets: HashMap<String, Duration>,
-    /// Overrun counter
+    /// Per-node timing state with ring buffers
+    pub(crate) node_timing: HashMap<String, NodeTimingState>,
+    /// Global overrun counter (atomic for cross-thread access)
     pub(crate) overruns: AtomicU64,
     /// Critical overruns (that triggered emergency stop)
     critical_overruns: AtomicU64,
@@ -95,7 +375,7 @@ pub(crate) struct BudgetEnforcer {
 impl Default for BudgetEnforcer {
     fn default() -> Self {
         Self {
-            budgets: HashMap::new(),
+            node_timing: HashMap::new(),
             overruns: AtomicU64::new(0),
             critical_overruns: AtomicU64::new(0),
         }
@@ -107,24 +387,59 @@ impl BudgetEnforcer {
         Self::default()
     }
 
-    /// Set tick budget for a node
+    /// Set tick budget for a node.
     pub(crate) fn set_budget(&mut self, node: String, budget: Duration) {
-        self.budgets.insert(node, budget);
+        self.node_timing
+            .entry(node)
+            .or_insert_with(|| NodeTimingState::new(Some(budget)))
+            .budget = Some(budget);
     }
 
-    /// Check if execution time is within budget
-    pub(crate) fn check_budget(&self, node: &str, actual: Duration) -> Result<(), BudgetViolation> {
-        if let Some(&budget) = self.budgets.get(node) {
-            if actual > budget {
-                self.overruns.fetch_add(1, Ordering::SeqCst);
-                return Err(BudgetViolation::new(
-                    node.to_string(),
-                    budget,
-                    actual,
-                ));
-            }
+    /// Record a tick duration and check against budget.
+    ///
+    /// This is the real enforcement: tracks per-node timing history,
+    /// computes overrun severity, and updates the ring buffer.
+    pub(crate) fn check_budget(&mut self, node: &str, actual: Duration) -> Result<(), BudgetViolation> {
+        let state = self
+            .node_timing
+            .entry(node.to_string())
+            .or_insert_with(|| NodeTimingState::new(None));
+
+        if let Some(mut violation) = state.record_tick(actual) {
+            self.overruns.fetch_add(1, Ordering::SeqCst);
+            violation = BudgetViolation::new(node.to_string(), violation.budget(), violation.actual());
+            return Err(violation);
         }
         Ok(())
+    }
+
+    /// Record a deadline miss with severity for a node.
+    pub(crate) fn record_deadline_miss(&mut self, node: &str, severity_us: u64) {
+        let state = self
+            .node_timing
+            .entry(node.to_string())
+            .or_insert_with(|| NodeTimingState::new(None));
+        state.record_miss(severity_us);
+    }
+
+    /// Get timing stats for a specific node.
+    pub(crate) fn node_stats(&self, node: &str) -> Option<TimingStats> {
+        self.node_timing.get(node).map(|s| s.ring.stats())
+    }
+
+    /// Get all node timing states (for timing report).
+    pub(crate) fn all_node_stats(&self) -> Vec<(String, TimingStats, Option<Duration>, u64)> {
+        self.node_timing
+            .iter()
+            .map(|(name, state)| {
+                (
+                    name.clone(),
+                    state.ring.stats(),
+                    state.budget,
+                    state.overrun_count,
+                )
+            })
+            .collect()
     }
 
     pub(crate) fn get_overrun_count(&self) -> u64 {
@@ -161,6 +476,10 @@ pub(crate) struct SafetyMonitor {
     max_deadline_misses: u64,
     /// Safe mode activation counter
     safe_mode_activations: AtomicU64,
+    /// Degradation policy for timing violations
+    degradation_policy: DegradationPolicy,
+    /// Per-node degradation state
+    degradation_states: Mutex<HashMap<String, NodeDegradationState>>,
 }
 
 impl SafetyMonitor {
@@ -174,7 +493,14 @@ impl SafetyMonitor {
             deadline_misses: AtomicU64::new(0),
             max_deadline_misses,
             safe_mode_activations: AtomicU64::new(0),
+            degradation_policy: DegradationPolicy::default(),
+            degradation_states: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Set the degradation policy for this safety monitor.
+    pub(crate) fn set_degradation_policy(&mut self, policy: DegradationPolicy) {
+        self.degradation_policy = policy;
     }
 
     /// Add a critical node that must be monitored.
@@ -244,7 +570,45 @@ impl SafetyMonitor {
         }
     }
 
-    /// Check tick budget for a node
+    /// Graduated watchdog check: returns per-node severity levels.
+    ///
+    /// Unlike `check_watchdogs()` which only reports expired/not-expired,
+    /// this method returns graduated severity for each node, enabling the
+    /// scheduler to transition node health states progressively:
+    ///
+    /// - `Warning` (1x timeout): log, keep ticking
+    /// - `Expired` (2x timeout): mark Unhealthy, skip in tick loop
+    /// - `Critical` (3x timeout): trigger safety response for critical nodes
+    ///
+    /// The buffer is reused across ticks (caller-owned).
+    pub(crate) fn check_watchdogs_graduated(
+        &self,
+        results: &mut Vec<(String, WatchdogSeverity)>,
+    ) {
+        results.clear();
+        for (name, watchdog) in self.watchdogs.read().iter() {
+            let severity = watchdog.check_graduated();
+            if !matches!(severity, WatchdogSeverity::Ok) {
+                results.push((name.clone(), severity));
+            }
+        }
+
+        // For critical nodes at Critical severity: trigger emergency stop
+        if results.iter().any(|(_, s)| *s == WatchdogSeverity::Critical) {
+            let critical: Vec<String> = self.critical_nodes.read().clone();
+            for (name, severity) in results.iter() {
+                if *severity == WatchdogSeverity::Critical && critical.contains(name) {
+                    self.trigger_emergency_stop(format!(
+                        "Critical node {} watchdog at 3x timeout",
+                        name
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Check tick budget for a node — records timing data and checks overrun.
     pub(crate) fn check_tick_budget(
         &self,
         node_name: &str,
@@ -256,9 +620,6 @@ impl SafetyMonitor {
             .check_budget(node_name, execution_time);
 
         if let Err(ref violation) = result {
-            // Critical node budget violation triggers emergency stop.
-            // Read lock is acquired for the contains() check and released immediately
-            // after (before the budget_enforcer.lock() below — no lock ordering issue).
             let is_critical = self.critical_nodes.read().contains(&violation.node_name().to_string());
             if is_critical {
                 self.budget_enforcer.lock().mark_critical_overrun();
@@ -272,18 +633,154 @@ impl SafetyMonitor {
         result
     }
 
-    /// Record a deadline miss
+    /// Record a deadline miss with severity tracking.
+    ///
+    /// Tracks per-node: total misses, consecutive misses, worst miss duration.
+    /// Triggers emergency stop for critical nodes or when total exceeds max.
     pub(crate) fn record_deadline_miss(&self, node_name: &str) {
+        self.record_deadline_miss_with_severity(node_name, 0);
+    }
+
+    /// Record a deadline miss with a specific severity (how far past deadline, in μs).
+    pub(crate) fn record_deadline_miss_with_severity(&self, node_name: &str, severity_us: u64) {
         let misses = self.deadline_misses.fetch_add(1, Ordering::SeqCst) + 1;
 
-        // Read lock acquired for the contains() check, released before any
-        // further locking inside trigger_emergency_stop.
+        // Track per-node deadline miss data
+        self.budget_enforcer
+            .lock()
+            .record_deadline_miss(node_name, severity_us);
+
         let is_critical = self.critical_nodes.read().contains(&node_name.to_string());
         if is_critical {
             self.trigger_emergency_stop(format!("Critical node {} missed deadline", node_name));
         } else if misses >= self.max_deadline_misses {
             self.trigger_emergency_stop(format!("Too many deadline misses: {}", misses));
         }
+    }
+
+    /// Get per-node timing stats (for timing report).
+    pub(crate) fn all_node_timing(&self) -> Vec<(String, TimingStats, Option<Duration>, u64)> {
+        self.budget_enforcer.lock().all_node_stats()
+    }
+
+    /// Get consecutive miss count for a node.
+    pub(crate) fn consecutive_misses(&self, node_name: &str) -> u64 {
+        self.budget_enforcer
+            .lock()
+            .node_timing
+            .get(node_name)
+            .map(|s| s.consecutive_misses)
+            .unwrap_or(0)
+    }
+
+    /// Evaluate degradation for a node based on its consecutive miss count.
+    ///
+    /// Returns a `DegradationAction` that the scheduler should execute.
+    /// Call this after recording a deadline miss or budget violation.
+    pub(crate) fn evaluate_degradation(
+        &self,
+        node_name: &str,
+        consecutive_misses: u64,
+        current_rate_hz: Option<f64>,
+    ) -> DegradationAction {
+        match &self.degradation_policy {
+            DegradationPolicy::LogOnly => DegradationAction::None,
+            DegradationPolicy::Graduated {
+                warn_after,
+                reduce_after,
+                isolate_after,
+                ..
+            } => {
+                let mut states = self.degradation_states.lock();
+                let state = states
+                    .entry(node_name.to_string())
+                    .or_default();
+
+                if consecutive_misses >= *isolate_after && state.stage != DegradationStage::Isolated
+                {
+                    state.stage = DegradationStage::Isolated;
+                    state.recovery_counter = 0;
+                    DegradationAction::Isolate(node_name.to_string())
+                } else if consecutive_misses >= *reduce_after
+                    && state.stage != DegradationStage::RateReduced
+                    && state.stage != DegradationStage::Isolated
+                {
+                    state.stage = DegradationStage::RateReduced;
+                    state.recovery_counter = 0;
+                    // Save original rate before reducing
+                    if state.original_rate_hz.is_none() {
+                        state.original_rate_hz = current_rate_hz;
+                    }
+                    let new_rate = current_rate_hz.unwrap_or(100.0) / 2.0;
+                    DegradationAction::ReduceRate {
+                        node: node_name.to_string(),
+                        new_rate_hz: new_rate,
+                    }
+                } else if consecutive_misses >= *warn_after
+                    && state.stage == DegradationStage::Normal
+                {
+                    state.stage = DegradationStage::Warned;
+                    DegradationAction::Warn(node_name.to_string())
+                } else {
+                    DegradationAction::None
+                }
+            }
+        }
+    }
+
+    /// Record a successful tick for recovery tracking.
+    ///
+    /// When a node at `RateReduced` stage ticks successfully for `recovery_ticks`
+    /// consecutive times, it returns `RestoreRate` to signal the scheduler should
+    /// restore the original rate.
+    pub(crate) fn record_successful_tick(&self, node_name: &str) -> DegradationAction {
+        let recovery_ticks = match &self.degradation_policy {
+            DegradationPolicy::Graduated { recovery_ticks, .. } => *recovery_ticks,
+            DegradationPolicy::LogOnly => return DegradationAction::None,
+        };
+
+        let mut states = self.degradation_states.lock();
+        let Some(state) = states.get_mut(node_name) else {
+            return DegradationAction::None;
+        };
+
+        match state.stage {
+            DegradationStage::RateReduced => {
+                state.recovery_counter += 1;
+                if state.recovery_counter >= recovery_ticks {
+                    let original = state.original_rate_hz;
+                    state.stage = DegradationStage::Normal;
+                    state.recovery_counter = 0;
+                    state.original_rate_hz = None;
+                    if let Some(rate) = original {
+                        return DegradationAction::RestoreRate {
+                            node: node_name.to_string(),
+                            original_rate_hz: rate,
+                        };
+                    }
+                    // No original rate saved — just go back to Normal stage
+                    DegradationAction::None
+                } else {
+                    DegradationAction::None
+                }
+            }
+            DegradationStage::Warned => {
+                // Successful tick at Warned stage — reset to Normal
+                state.stage = DegradationStage::Normal;
+                state.recovery_counter = 0;
+                DegradationAction::None
+            }
+            _ => DegradationAction::None,
+        }
+    }
+
+    /// Get the current degradation stage for a node.
+    pub(crate) fn degradation_stage(&self, node_name: &str) -> DegradationStage {
+        self.degradation_states
+            .lock()
+            .get(node_name)
+            .map(|s| s.stage)
+            .unwrap_or(DegradationStage::Normal)
     }
 
     /// Record a safe mode activation (Miss::SafeMode triggered on a node).
@@ -582,6 +1079,442 @@ mod tests {
         monitor.record_deadline_miss("other_node");
         assert!(!monitor.is_emergency_stop());
         assert_eq!(monitor.get_stats().deadline_misses, 1);
+    }
+
+    // ── Graduated watchdog tests ─────────────────────────────────────────
+
+    /// Watchdog returns Ok immediately after feed.
+    #[test]
+    fn test_watchdog_graduated_ok_after_feed() {
+        let wd = Watchdog::new(Duration::from_millis(50));
+        wd.feed();
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
+    }
+
+    /// Watchdog returns Warning between 1x and 2x timeout.
+    #[test]
+    fn test_watchdog_graduated_warning() {
+        use std::thread;
+
+        // 10ms timeout, sleep 15ms → 1.5x → Warning
+        let wd = Watchdog::new(Duration::from_millis(10));
+        wd.feed();
+        thread::sleep(Duration::from_millis(15));
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Warning);
+    }
+
+    /// Watchdog returns Expired between 2x and 3x timeout.
+    #[test]
+    fn test_watchdog_graduated_expired() {
+        use std::thread;
+
+        // 10ms timeout, sleep 25ms → 2.5x → Expired
+        let wd = Watchdog::new(Duration::from_millis(10));
+        wd.feed();
+        thread::sleep(Duration::from_millis(25));
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Expired);
+    }
+
+    /// Watchdog returns Critical beyond 3x timeout.
+    #[test]
+    fn test_watchdog_graduated_critical() {
+        use std::thread;
+
+        // 10ms timeout, sleep 35ms → 3.5x → Critical
+        let wd = Watchdog::new(Duration::from_millis(10));
+        wd.feed();
+        thread::sleep(Duration::from_millis(35));
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Critical);
+    }
+
+    /// Feed resets graduated severity back to Ok.
+    #[test]
+    fn test_watchdog_graduated_feed_resets() {
+        use std::thread;
+
+        let wd = Watchdog::new(Duration::from_millis(10));
+        wd.feed();
+        thread::sleep(Duration::from_millis(25));
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Expired);
+
+        // Feed → should be Ok again
+        wd.feed();
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
+    }
+
+    /// SafetyMonitor::check_watchdogs_graduated returns graduated severities.
+    #[test]
+    fn test_monitor_graduated_watchdog() {
+        use std::thread;
+
+        let monitor = SafetyMonitor::new(100);
+        // 10ms timeout watchdog — we'll let it expire to Warning
+        monitor.add_critical_node("fast_node".to_string(), Duration::from_millis(10));
+        // 500ms timeout — will stay Ok
+        monitor.add_critical_node("slow_node".to_string(), Duration::from_millis(500));
+
+        thread::sleep(Duration::from_millis(15));
+
+        let mut results = Vec::new();
+        monitor.check_watchdogs_graduated(&mut results);
+
+        // fast_node should be Warning (1x-2x), slow_node should not appear (Ok)
+        assert!(
+            results.iter().any(|(n, s)| n == "fast_node" && *s == WatchdogSeverity::Warning),
+            "fast_node should be at Warning severity; got {:?}",
+            results
+        );
+        assert!(
+            !results.iter().any(|(n, _)| n == "slow_node"),
+            "slow_node should not appear (still Ok)"
+        );
+    }
+
+    /// Graduated watchdog triggers emergency stop for critical nodes at 3x timeout.
+    #[test]
+    fn test_monitor_graduated_critical_triggers_estop() {
+        use std::thread;
+
+        let monitor = SafetyMonitor::new(100);
+        monitor.add_critical_node("critical_ctrl".to_string(), Duration::from_millis(10));
+
+        // Sleep past 3x timeout
+        thread::sleep(Duration::from_millis(35));
+
+        let mut results = Vec::new();
+        monitor.check_watchdogs_graduated(&mut results);
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "Emergency stop should trigger for critical node at 3x timeout"
+        );
+    }
+
+    /// Non-critical nodes at Critical severity don't trigger emergency stop.
+    #[test]
+    fn test_monitor_graduated_noncritical_no_estop() {
+        use std::thread;
+
+        let monitor = SafetyMonitor::new(100);
+        // Register a watchdog but NOT as critical
+        monitor.watchdogs.write().insert(
+            "noncritical".to_string(),
+            Watchdog::new(Duration::from_millis(10)),
+        );
+
+        thread::sleep(Duration::from_millis(35));
+
+        let mut results = Vec::new();
+        monitor.check_watchdogs_graduated(&mut results);
+
+        assert!(!monitor.is_emergency_stop());
+        assert!(results.iter().any(|(n, s)| n == "noncritical" && *s == WatchdogSeverity::Critical));
+    }
+
+    /// Buffer is reused across calls (cleared at entry).
+    #[test]
+    fn test_monitor_graduated_buffer_reuse() {
+        let monitor = SafetyMonitor::new(100);
+        monitor.add_critical_node("node_a".to_string(), Duration::from_secs(3600));
+
+        let mut results = Vec::new();
+        // Pollute buffer with old data
+        results.push(("stale".to_string(), WatchdogSeverity::Critical));
+
+        monitor.check_watchdogs_graduated(&mut results);
+
+        // Buffer should be cleared — stale entry gone, only current results
+        assert!(
+            !results.iter().any(|(n, _)| n == "stale"),
+            "Buffer should be cleared at entry"
+        );
+    }
+
+    // ── NodeTimingState tests ────────────────────────────────────────────
+
+    /// TickTimingRing wraps correctly after capacity.
+    #[test]
+    fn test_timing_ring_wraps() {
+        let mut ring = TickTimingRing::new();
+        // Fill beyond capacity
+        for i in 0..(TIMING_RING_CAPACITY + 100) {
+            ring.record(i as u64);
+        }
+        assert_eq!(ring.total_count(), (TIMING_RING_CAPACITY + 100) as u64);
+        let stats = ring.stats();
+        assert!(stats.total_ticks > 0);
+    }
+
+    /// TimingStats p99 is correct for uniform data.
+    #[test]
+    fn test_timing_stats_p99() {
+        let mut ring = TickTimingRing::new();
+        // Record 100 samples: 1..=100
+        for i in 1..=100u64 {
+            ring.record(i);
+        }
+        let stats = ring.stats();
+        assert_eq!(stats.min_us, 1);
+        assert_eq!(stats.max_us, 100);
+        assert!(stats.p99_us >= 99, "p99 should be >= 99, got {}", stats.p99_us);
+    }
+
+    /// NodeTimingState tracks overruns correctly.
+    #[test]
+    fn test_node_timing_state_overruns() {
+        let mut state = NodeTimingState::new(Some(Duration::from_micros(100)));
+
+        // Normal tick — no violation
+        assert!(state.record_tick(Duration::from_micros(50)).is_none());
+        assert_eq!(state.overrun_count, 0);
+
+        // Overrun tick
+        let violation = state.record_tick(Duration::from_micros(150));
+        assert!(violation.is_some());
+        assert_eq!(state.overrun_count, 1);
+        assert_eq!(state.worst_overrun_us, 50); // 150 - 100
+    }
+
+    /// NodeTimingState tracks consecutive deadline misses.
+    #[test]
+    fn test_node_timing_consecutive_misses() {
+        let mut state = NodeTimingState::new(None);
+
+        state.record_miss(100);
+        assert_eq!(state.consecutive_misses, 1);
+        state.record_miss(200);
+        assert_eq!(state.consecutive_misses, 2);
+        state.record_miss(50);
+        assert_eq!(state.consecutive_misses, 3);
+        assert!(state.is_chronic());
+
+        // Successful tick resets consecutive counter
+        state.record_tick(Duration::from_micros(10));
+        assert_eq!(state.consecutive_misses, 0);
+        assert!(!state.is_chronic());
+        // But total misses persist
+        assert_eq!(state.total_deadline_misses, 3);
+    }
+
+    /// BudgetEnforcer records per-node timing correctly.
+    #[test]
+    fn test_budget_enforcer_per_node() {
+        let mut enforcer = BudgetEnforcer::new();
+        enforcer.set_budget("motor".to_string(), Duration::from_micros(100));
+
+        // Under budget
+        assert!(enforcer.check_budget("motor", Duration::from_micros(80)).is_ok());
+
+        // Over budget
+        assert!(enforcer.check_budget("motor", Duration::from_micros(150)).is_err());
+        assert_eq!(enforcer.get_overrun_count(), 1);
+
+        // No budget set — should always succeed
+        assert!(enforcer.check_budget("planner", Duration::from_micros(9999)).is_ok());
+    }
+
+    // ── Graduated degradation tests ──────────────────────────────────────
+
+    #[test]
+    fn test_degradation_policy_default_is_graduated() {
+        let policy = DegradationPolicy::default();
+        match policy {
+            DegradationPolicy::Graduated {
+                warn_after,
+                reduce_after,
+                isolate_after,
+                recovery_ticks,
+            } => {
+                assert_eq!(warn_after, 3);
+                assert_eq!(reduce_after, 5);
+                assert_eq!(isolate_after, 10);
+                assert_eq!(recovery_ticks, 100);
+            }
+            _ => panic!("Default should be Graduated"),
+        }
+    }
+
+    #[test]
+    fn test_degradation_log_only_always_returns_none() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy::LogOnly);
+
+        let action = monitor.evaluate_degradation("node", 100, Some(50.0));
+        assert_eq!(action, DegradationAction::None);
+    }
+
+    #[test]
+    fn test_degradation_graduated_stages_in_order() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+            warn_after: 3,
+            reduce_after: 5,
+            isolate_after: 10,
+            recovery_ticks: 100,
+        });
+
+        // Below warn threshold — no action
+        let action = monitor.evaluate_degradation("motor", 2, Some(100.0));
+        assert_eq!(action, DegradationAction::None);
+
+        // At warn threshold — warn
+        let action = monitor.evaluate_degradation("motor", 3, Some(100.0));
+        assert_eq!(action, DegradationAction::Warn("motor".to_string()));
+
+        // At reduce threshold — reduce rate to half
+        let action = monitor.evaluate_degradation("motor", 5, Some(100.0));
+        assert_eq!(
+            action,
+            DegradationAction::ReduceRate {
+                node: "motor".to_string(),
+                new_rate_hz: 50.0,
+            }
+        );
+
+        // At isolate threshold — isolate
+        let action = monitor.evaluate_degradation("motor", 10, Some(100.0));
+        assert_eq!(action, DegradationAction::Isolate("motor".to_string()));
+
+        // Already isolated — no further action
+        let action = monitor.evaluate_degradation("motor", 20, Some(100.0));
+        assert_eq!(action, DegradationAction::None);
+    }
+
+    #[test]
+    fn test_degradation_recovery_after_stable_period() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 100, // high so we test recovery at RateReduced stage
+            recovery_ticks: 5,
+        });
+
+        // Trigger rate reduction
+        let _ = monitor.evaluate_degradation("sensor", 1, Some(200.0)); // warn
+        let action = monitor.evaluate_degradation("sensor", 2, Some(200.0)); // reduce
+        assert_eq!(
+            action,
+            DegradationAction::ReduceRate {
+                node: "sensor".to_string(),
+                new_rate_hz: 100.0,
+            }
+        );
+
+        // 4 successful ticks — not yet recovered
+        for _ in 0..4 {
+            let action = monitor.record_successful_tick("sensor");
+            assert_eq!(action, DegradationAction::None);
+        }
+
+        // 5th successful tick — recovery!
+        let action = monitor.record_successful_tick("sensor");
+        assert_eq!(
+            action,
+            DegradationAction::RestoreRate {
+                node: "sensor".to_string(),
+                original_rate_hz: 200.0,
+            }
+        );
+
+        // Stage should be back to Normal
+        assert_eq!(monitor.degradation_stage("sensor"), DegradationStage::Normal);
+    }
+
+    #[test]
+    fn test_degradation_warned_recovers_on_success() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+            warn_after: 2,
+            reduce_after: 5,
+            isolate_after: 10,
+            recovery_ticks: 100,
+        });
+
+        // Trigger warn
+        let action = monitor.evaluate_degradation("planner", 2, Some(50.0));
+        assert_eq!(action, DegradationAction::Warn("planner".to_string()));
+        assert_eq!(
+            monitor.degradation_stage("planner"),
+            DegradationStage::Warned
+        );
+
+        // Single successful tick at Warned stage → back to Normal
+        let action = monitor.record_successful_tick("planner");
+        assert_eq!(action, DegradationAction::None);
+        assert_eq!(
+            monitor.degradation_stage("planner"),
+            DegradationStage::Normal
+        );
+    }
+
+    #[test]
+    fn test_degradation_no_rate_set_uses_default() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 10,
+            recovery_ticks: 100,
+        });
+
+        let _ = monitor.evaluate_degradation("node", 1, None); // warn
+        let action = monitor.evaluate_degradation("node", 2, None); // reduce
+        // Should use 100.0 / 2 = 50.0 as fallback
+        assert_eq!(
+            action,
+            DegradationAction::ReduceRate {
+                node: "node".to_string(),
+                new_rate_hz: 50.0,
+            }
+        );
+    }
+
+    #[test]
+    fn test_degradation_multiple_nodes_independent() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+            warn_after: 2,
+            reduce_after: 5,
+            isolate_after: 10,
+            recovery_ticks: 100,
+        });
+
+        // Node A warns
+        let action = monitor.evaluate_degradation("node_a", 2, Some(100.0));
+        assert_eq!(action, DegradationAction::Warn("node_a".to_string()));
+
+        // Node B still normal (different consecutive count)
+        let action = monitor.evaluate_degradation("node_b", 1, Some(200.0));
+        assert_eq!(action, DegradationAction::None);
+
+        // Node A reduces
+        let action = monitor.evaluate_degradation("node_a", 5, Some(100.0));
+        assert_eq!(
+            action,
+            DegradationAction::ReduceRate {
+                node: "node_a".to_string(),
+                new_rate_hz: 50.0,
+            }
+        );
+
+        // Node B still unaffected
+        assert_eq!(
+            monitor.degradation_stage("node_b"),
+            DegradationStage::Normal
+        );
+    }
+
+    #[test]
+    fn test_consecutive_misses_method() {
+        let monitor = SafetyMonitor::new(100);
+        assert_eq!(monitor.consecutive_misses("unknown_node"), 0);
+
+        monitor.record_deadline_miss_with_severity("motor", 500);
+        assert_eq!(monitor.consecutive_misses("motor"), 1);
+
+        monitor.record_deadline_miss_with_severity("motor", 600);
+        assert_eq!(monitor.consecutive_misses("motor"), 2);
     }
 }
 

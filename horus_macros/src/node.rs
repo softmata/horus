@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    braced, parenthesized,
+    braced,
     parse::{Parse, ParseStream},
     parse_macro_input, Block, Error, Expr, Ident, Result, Token, Type,
 };
@@ -43,22 +43,19 @@ struct DataSection {
 
 /// Tick implementation
 struct TickSection {
-    _tick_token: Ident,      // "tick" keyword
-    _ctx_arg: Option<Ident>, // Parsed but not used - tick() no longer takes ctx
+    _tick_token: Ident, // "tick" keyword
     body: Block,
 }
 
 /// Optional init implementation
 struct InitSection {
-    _init_token: Ident,      // "init" keyword
-    _ctx_arg: Option<Ident>, // Parsed for backwards compatibility but not used - init() no longer takes ctx
+    _init_token: Ident, // "init" keyword
     body: Block,
 }
 
 /// Optional shutdown implementation
 struct ShutdownSection {
-    _shutdown_token: Ident,  // "shutdown" keyword
-    _ctx_arg: Option<Ident>, // Parsed for backwards compatibility but not used - shutdown() no longer takes ctx
+    _shutdown_token: Ident, // "shutdown" keyword
     body: Block,
 }
 
@@ -66,12 +63,6 @@ struct ShutdownSection {
 struct ImplSection {
     _impl_token: Token![impl],
     body: Block,
-}
-
-/// Optional rate section for preferred execution rate
-struct RateSection {
-    _rate_token: Ident, // "rate" keyword
-    _rate_hz: Expr,     // Parsed but no longer used (rate is set via builder)
 }
 
 /// Optional explicit name section for custom node naming
@@ -92,7 +83,6 @@ struct NodeDef {
     init_section: Option<InitSection>,
     shutdown_section: Option<ShutdownSection>,
     impl_section: Option<ImplSection>,
-    _rate_section: Option<RateSection>, // Parsed for compat, no longer emitted
 }
 
 impl Parse for NodeDef {
@@ -111,8 +101,6 @@ impl Parse for NodeDef {
         let mut init_section = None;
         let mut shutdown_section = None;
         let mut impl_section = None;
-        let mut rate_section = None;
-
         // Parse sections in any order
         while !content.is_empty() {
             let lookahead = content.lookahead1();
@@ -173,13 +161,10 @@ impl Parse for NodeDef {
                         shutdown_section = Some(parse_shutdown_section(&content, section_name)?);
                     }
                     "rate" => {
-                        if rate_section.is_some() {
-                            return Err(Error::new(
-                                section_name.span(),
-                                "Duplicate 'rate' section",
-                            ));
-                        }
-                        rate_section = Some(parse_rate_section(&content, section_name)?);
+                        return Err(Error::new(
+                            section_name.span(),
+                            "'rate' section is no longer supported in the node macro. Use .rate(100.hz()) on the builder instead.",
+                        ));
                     }
                     "name" => {
                         if name_section.is_some() {
@@ -192,7 +177,7 @@ impl Parse for NodeDef {
                     }
                     _ => {
                         return Err(Error::new(section_name.span(),
-                            format!("Unknown section '{}'. Expected: pub, sub, data, tick, init, shutdown, rate, name, or impl", section_str)));
+                            format!("Unknown section '{}'. Expected: pub, sub, data, tick, init, shutdown, name, or impl", section_str)));
                     }
                 }
             } else if lookahead.peek(Token![impl]) {
@@ -219,7 +204,6 @@ impl Parse for NodeDef {
             init_section,
             shutdown_section,
             impl_section,
-            _rate_section: rate_section,
         })
     }
 }
@@ -327,58 +311,49 @@ fn parse_data_section(input: ParseStream, data_token: Ident) -> Result<DataSecti
 }
 
 fn parse_tick_section(input: ParseStream, tick_token: Ident) -> Result<TickSection> {
-    // Check for optional (ctx) argument - parsed for backwards compatibility but not used
-    let _ctx_arg = if input.peek(syn::token::Paren) {
-        let args;
-        parenthesized!(args in input);
-        Some(args.parse::<Ident>()?)
-    } else {
-        None
-    };
+    if input.peek(syn::token::Paren) {
+        return Err(Error::new(
+            input.span(),
+            "tick() no longer takes arguments. Remove the (ctx) parameter.",
+        ));
+    }
 
     let body: Block = input.parse()?;
 
     Ok(TickSection {
         _tick_token: tick_token,
-        _ctx_arg,
         body,
     })
 }
 
 fn parse_init_section(input: ParseStream, init_token: Ident) -> Result<InitSection> {
-    // Parse optional (ctx) for backwards compatibility - but it's not used
-    let _ctx_arg = if input.peek(syn::token::Paren) {
-        let args;
-        parenthesized!(args in input);
-        Some(args.parse::<Ident>()?)
-    } else {
-        None
-    };
+    if input.peek(syn::token::Paren) {
+        return Err(Error::new(
+            input.span(),
+            "init() no longer takes arguments. Remove the (ctx) parameter.",
+        ));
+    }
 
     let body: Block = input.parse()?;
 
     Ok(InitSection {
         _init_token: init_token,
-        _ctx_arg,
         body,
     })
 }
 
 fn parse_shutdown_section(input: ParseStream, shutdown_token: Ident) -> Result<ShutdownSection> {
-    // Parse optional (ctx) for backwards compatibility - but it's not used
-    let _ctx_arg = if input.peek(syn::token::Paren) {
-        let args;
-        parenthesized!(args in input);
-        Some(args.parse::<Ident>()?)
-    } else {
-        None
-    };
+    if input.peek(syn::token::Paren) {
+        return Err(Error::new(
+            input.span(),
+            "shutdown() no longer takes arguments. Remove the (ctx) parameter.",
+        ));
+    }
 
     let body: Block = input.parse()?;
 
     Ok(ShutdownSection {
         _shutdown_token: shutdown_token,
-        _ctx_arg,
         body,
     })
 }
@@ -390,16 +365,6 @@ fn parse_impl_section(input: ParseStream) -> Result<ImplSection> {
     Ok(ImplSection {
         _impl_token: impl_token,
         body,
-    })
-}
-
-fn parse_rate_section(input: ParseStream, rate_token: Ident) -> Result<RateSection> {
-    // Parse rate value: rate 60.0 or rate 100
-    let rate_hz: Expr = input.parse()?;
-
-    Ok(RateSection {
-        _rate_token: rate_token,
-        _rate_hz: rate_hz,
     })
 }
 
@@ -520,7 +485,6 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
     };
 
     // Generate optional init implementation
-    // Note: ctx_arg is parsed for backwards compatibility but ignored - init() no longer takes ctx
     let init_impl = if let Some(ref init_section) = node_def.init_section {
         let init_body = &init_section.body;
         quote! {
@@ -533,7 +497,6 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
     };
 
     // Generate optional shutdown implementation
-    // Note: ctx_arg is parsed for backwards compatibility but ignored - shutdown() no longer takes ctx
     let shutdown_impl = if let Some(ref shutdown_section) = node_def.shutdown_section {
         let shutdown_body = &shutdown_section.body;
         quote! {

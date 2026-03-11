@@ -284,6 +284,7 @@ mod tests {
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: ExecutionClass::Event(topic.to_string()),
+            health_state: super::super::types::AtomicHealthState::default(),
         }
     }
 

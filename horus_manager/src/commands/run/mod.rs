@@ -303,7 +303,7 @@ fn execute_multiple_files(
         } else {
             format!("Building {} Rust files together...", rust_files.len())
         };
-        let spinner = progress::robot_build_spinner(&build_msg);
+        let spinner = progress::build_spinner(&build_msg);
 
         let rust_executables = run_rust::build_rust_files_batch(rust_files, release, clean)?;
         executables.extend(rust_executables);
@@ -313,7 +313,7 @@ fn execute_multiple_files(
     // Build other languages individually
     for (file_path, language) in other_files {
         let spinner =
-            progress::robot_build_spinner(&format!("Building {}...", file_path.display()));
+            progress::build_spinner(&format!("Building {}...", file_path.display()));
 
         let exec_info = run_rust::build_file_for_concurrent_execution(
             file_path, language, release, false, // Don't clean - already done if needed

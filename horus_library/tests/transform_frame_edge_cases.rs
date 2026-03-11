@@ -110,18 +110,18 @@ use horus_library::transform_frame::{
 /// The ring buffer should accept them (it doesn't enforce ordering).
 #[test]
 fn edge_backwards_timestamps() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("sensor", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("sensor", Some("world")).unwrap();
 
     // Write in forward order first
-    hf.update_transform(
+    tf.update_transform(
         "sensor",
         &Transform::from_translation([1.0, 0.0, 0.0]),
         100_000,
     )
     .unwrap();
-    hf.update_transform(
+    tf.update_transform(
         "sensor",
         &Transform::from_translation([2.0, 0.0, 0.0]),
         200_000,
@@ -129,7 +129,7 @@ fn edge_backwards_timestamps() {
     .unwrap();
 
     // Now write backwards (t=50_000 < previous t=200_000)
-    hf.update_transform(
+    tf.update_transform(
         "sensor",
         &Transform::from_translation([0.5, 0.0, 0.0]),
         50_000,
@@ -137,7 +137,7 @@ fn edge_backwards_timestamps() {
     .unwrap();
 
     // Latest should still resolve (no panic)
-    let tf = hf.tf("sensor", "world").unwrap();
+    let tf = tf.tf("sensor", "world").unwrap();
     assert!(
         tf.translation[0].is_finite(),
         "Backwards timestamp caused non-finite result"
@@ -147,16 +147,16 @@ fn edge_backwards_timestamps() {
 /// Timestamp = 0 should not cause division-by-zero in interpolation.
 #[test]
 fn edge_timestamp_zero() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("sensor", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("sensor", Some("world")).unwrap();
 
     // Write at timestamp 0
-    hf.update_transform("sensor", &Transform::from_translation([1.0, 0.0, 0.0]), 0)
+    tf.update_transform("sensor", &Transform::from_translation([1.0, 0.0, 0.0]), 0)
         .unwrap();
 
     // Read at timestamp 0
-    let tf = hf.tf_at("sensor", "world", 0).unwrap();
+    let tf = tf.tf_at("sensor", "world", 0).unwrap();
     assert!(
         (tf.translation[0] - 1.0).abs() < 1e-10,
         "Timestamp 0 read failed: {:?}",
@@ -164,11 +164,11 @@ fn edge_timestamp_zero() {
     );
 
     // Write second entry at 0 as well (duplicate timestamp)
-    hf.update_transform("sensor", &Transform::from_translation([2.0, 0.0, 0.0]), 0)
+    tf.update_transform("sensor", &Transform::from_translation([2.0, 0.0, 0.0]), 0)
         .unwrap();
 
     // Interpolation between two entries with same timestamp should not divide by zero
-    let tf = hf.tf_at("sensor", "world", 0).unwrap();
+    let tf = tf.tf_at("sensor", "world", 0).unwrap();
     assert!(
         tf.translation[0].is_finite(),
         "Duplicate timestamp 0 caused NaN: {:?}",
@@ -179,12 +179,12 @@ fn edge_timestamp_zero() {
 /// Timestamp = u64::MAX should not cause overflow.
 #[test]
 fn edge_timestamp_u64_max() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("sensor", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("sensor", Some("world")).unwrap();
 
     // Write at u64::MAX
-    hf.update_transform(
+    tf.update_transform(
         "sensor",
         &Transform::from_translation([5.0, 0.0, 0.0]),
         u64::MAX,
@@ -192,7 +192,7 @@ fn edge_timestamp_u64_max() {
     .unwrap();
 
     // Read at u64::MAX
-    let tf = hf.tf_at("sensor", "world", u64::MAX).unwrap();
+    let tf = tf.tf_at("sensor", "world", u64::MAX).unwrap();
     assert!(
         (tf.translation[0] - 5.0).abs() < 1e-10,
         "u64::MAX timestamp failed: {:?}",
@@ -200,14 +200,14 @@ fn edge_timestamp_u64_max() {
     );
 
     // Interpolation query near u64::MAX
-    hf.update_transform(
+    tf.update_transform(
         "sensor",
         &Transform::from_translation([3.0, 0.0, 0.0]),
         u64::MAX - 1000,
     )
     .unwrap();
 
-    let tf = hf.tf_at("sensor", "world", u64::MAX - 500).unwrap();
+    let tf = tf.tf_at("sensor", "world", u64::MAX - 500).unwrap();
     assert!(
         tf.translation[0].is_finite(),
         "Near-u64::MAX interpolation produced NaN: {:?}",
@@ -223,22 +223,22 @@ fn edge_duplicate_timestamps() {
         .history_len(8)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::with_config(config);
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     let ts = 100_000u64;
 
     // Write first value at t=100_000
-    hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), ts)
+    tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), ts)
         .unwrap();
 
     // Overwrite at same timestamp with different value
-    hf.update_transform("a", &Transform::from_translation([99.0, 0.0, 0.0]), ts)
+    tf.update_transform("a", &Transform::from_translation([99.0, 0.0, 0.0]), ts)
         .unwrap();
 
     // read_latest should return the most recent write
-    let tf = hf.tf("a", "world").unwrap();
+    let tf = tf.tf("a", "world").unwrap();
     assert!(
         (tf.translation[0] - 99.0).abs() < 1e-10,
         "Duplicate timestamp: expected 99.0, got {}",
@@ -249,12 +249,12 @@ fn edge_duplicate_timestamps() {
 /// Query at a timestamp before any stored data — should return the oldest entry.
 #[test]
 fn edge_query_before_earliest_timestamp() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     // Write at t=1_000_000
-    hf.update_transform(
+    tf.update_transform(
         "a",
         &Transform::from_translation([7.0, 0.0, 0.0]),
         1_000_000,
@@ -262,7 +262,7 @@ fn edge_query_before_earliest_timestamp() {
     .unwrap();
 
     // Query at t=0 (before any data)
-    let tf = hf.tf_at("a", "world", 0).unwrap();
+    let tf = tf.tf_at("a", "world", 0).unwrap();
     assert!(
         tf.translation[0].is_finite(),
         "Query before earliest timestamp produced NaN"
@@ -272,18 +272,18 @@ fn edge_query_before_earliest_timestamp() {
 /// Query at a timestamp after all stored data — should return latest entry.
 #[test]
 fn edge_query_after_latest_timestamp() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
-    hf.update_transform("a", &Transform::from_translation([3.0, 0.0, 0.0]), 100_000)
+    tf.update_transform("a", &Transform::from_translation([3.0, 0.0, 0.0]), 100_000)
         .unwrap();
 
-    hf.update_transform("a", &Transform::from_translation([5.0, 0.0, 0.0]), 200_000)
+    tf.update_transform("a", &Transform::from_translation([5.0, 0.0, 0.0]), 200_000)
         .unwrap();
 
     // Query far in the future
-    let tf = hf.tf_at("a", "world", 999_999_999).unwrap();
+    let tf = tf.tf_at("a", "world", 999_999_999).unwrap();
     assert!(
         (tf.translation[0] - 5.0).abs() < 1e-10,
         "Query after latest: expected 5.0, got {}",
@@ -299,18 +299,18 @@ fn edge_interpolation_midpoint() {
         .history_len(8)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::with_config(config);
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     // Two entries: t=0 at [0,0,0], t=1000 at [10,0,0]
-    hf.update_transform("a", &Transform::from_translation([0.0, 0.0, 0.0]), 0)
+    tf.update_transform("a", &Transform::from_translation([0.0, 0.0, 0.0]), 0)
         .unwrap();
-    hf.update_transform("a", &Transform::from_translation([10.0, 0.0, 0.0]), 1000)
+    tf.update_transform("a", &Transform::from_translation([10.0, 0.0, 0.0]), 1000)
         .unwrap();
 
     // Query at t=500 (midpoint) — should interpolate to [5,0,0]
-    let tf = hf.tf_at("a", "world", 500).unwrap();
+    let tf = tf.tf_at("a", "world", 500).unwrap();
     assert!(
         (tf.translation[0] - 5.0).abs() < 1e-6,
         "Interpolation midpoint: expected 5.0, got {}",
@@ -331,18 +331,18 @@ fn edge_ring_buffer_overflow() {
         .history_len(4) // Very small history
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::with_config(config);
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     // Write 8 entries into a history buffer of size 4
     for i in 0..8u64 {
         let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
-        hf.update_transform("a", &tf, i * 1000).unwrap();
+        tf.update_transform("a", &tf, i * 1000).unwrap();
     }
 
     // Latest should be the most recent write (i=7)
-    let tf = hf.tf("a", "world").unwrap();
+    let tf = tf.tf("a", "world").unwrap();
     assert!(
         (tf.translation[0] - 7.0).abs() < 1e-10,
         "After overflow, latest should be 7.0, got {}",
@@ -351,7 +351,7 @@ fn edge_ring_buffer_overflow() {
 
     // Query at old timestamp (i=0, t=0) — oldest entries evicted,
     // should return the oldest available entry
-    let tf = hf.tf_at("a", "world", 0).unwrap();
+    let tf = tf.tf_at("a", "world", 0).unwrap();
     assert!(
         tf.translation[0].is_finite(),
         "Query at evicted timestamp produced NaN"
@@ -372,19 +372,19 @@ fn edge_ring_buffer_exact_capacity() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::with_config(config);
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     // Write exactly 4 entries
     for i in 0..4u64 {
         let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
-        hf.update_transform("a", &tf, i * 1000).unwrap();
+        tf.update_transform("a", &tf, i * 1000).unwrap();
     }
 
     // All 4 entries should be accessible
     // Oldest (t=0): x=0.0
-    let oldest = hf.tf_at("a", "world", 0).unwrap();
+    let oldest = tf.tf_at("a", "world", 0).unwrap();
     assert!(
         (oldest.translation[0] - 0.0).abs() < 1e-10,
         "Oldest entry should be 0.0, got {}",
@@ -392,7 +392,7 @@ fn edge_ring_buffer_exact_capacity() {
     );
 
     // Newest (t=3000): x=3.0
-    let newest = hf.tf_at("a", "world", 3000).unwrap();
+    let newest = tf.tf_at("a", "world", 3000).unwrap();
     assert!(
         (newest.translation[0] - 3.0).abs() < 1e-10,
         "Newest entry should be 3.0, got {}",
@@ -408,22 +408,22 @@ fn edge_ring_buffer_exact_capacity() {
 /// Should return error, not panic.
 #[test]
 fn edge_disconnected_trees() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
     // Tree 1: world -> a
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
-    hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
+    tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
         .unwrap();
 
     // Tree 2: root2 -> b (separate root)
-    hf.register_frame("root2", None).unwrap();
-    hf.register_frame("b", Some("root2")).unwrap();
-    hf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
+    tf.register_frame("root2", None).unwrap();
+    tf.register_frame("b", Some("root2")).unwrap();
+    tf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
         .unwrap();
 
     // Query across disconnected trees — should fail gracefully
-    let result = hf.tf("a", "b");
+    let result = tf.tf("a", "b");
     assert!(
         result.is_err(),
         "Transform between disconnected trees should return error"
@@ -431,7 +431,7 @@ fn edge_disconnected_trees() {
 
     // can_transform should return false
     assert!(
-        !hf.can_transform("a", "b"),
+        !tf.can_transform("a", "b"),
         "can_transform should be false for disconnected trees"
     );
 }
@@ -439,12 +439,12 @@ fn edge_disconnected_trees() {
 /// Query involving a frame with no transform data yet.
 #[test]
 fn edge_frame_without_transform() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("sensor", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("sensor", Some("world")).unwrap();
 
     // Don't update_transform for "sensor" — query should handle gracefully
-    let result = hf.tf("sensor", "world");
+    let result = tf.tf("sensor", "world");
     // This might return error or identity — either is valid, just no panic
     if let Ok(tf) = &result {
         assert!(
@@ -457,12 +457,12 @@ fn edge_frame_without_transform() {
 /// Query with src == dst (identity transform).
 #[test]
 fn edge_self_transform() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 1000)
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
 
-    let tf = hf.tf("world", "world").unwrap();
+    let tf = tf.tf("world", "world").unwrap();
     assert!(
         (tf.translation[0]).abs() < 1e-10
             && (tf.translation[1]).abs() < 1e-10
@@ -475,27 +475,27 @@ fn edge_self_transform() {
 /// Unregister a mid-chain frame, then query across the broken chain.
 #[test]
 fn edge_broken_chain_after_unregister() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
-    hf.register_frame("b", Some("a")).unwrap();
-    hf.register_frame("c", Some("b")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
+    tf.register_frame("b", Some("a")).unwrap();
+    tf.register_frame("c", Some("b")).unwrap();
 
-    hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+    tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
+    tf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform("c", &Transform::from_translation([3.0, 0.0, 0.0]), 1000)
+    tf.update_transform("c", &Transform::from_translation([3.0, 0.0, 0.0]), 1000)
         .unwrap();
 
     // Chain works before unregister
-    assert!(hf.can_transform("c", "world"));
+    assert!(tf.can_transform("c", "world"));
 
     // Remove mid-chain frame "b"
-    hf.unregister_frame("b").unwrap();
+    tf.unregister_frame("b").unwrap();
 
     // Query across the broken chain — should fail or return error, not panic
-    let result = hf.tf("c", "world");
+    let result = tf.tf("c", "world");
     // After unregistering "b", "c" still has parent=b's old ID which is now invalid
     // This should either error or resolve partially — just must not panic
     if let Ok(tf) = &result {
@@ -513,20 +513,20 @@ fn edge_broken_chain_after_unregister() {
 /// validate() on a valid tree should pass.
 #[test]
 fn edge_validate_valid_tree() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
-    hf.register_frame("b", Some("a")).unwrap();
-    hf.register_frame("c", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
+    tf.register_frame("b", Some("a")).unwrap();
+    tf.register_frame("c", Some("world")).unwrap();
 
-    hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+    tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
+    tf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform("c", &Transform::from_translation([3.0, 0.0, 0.0]), 1000)
+    tf.update_transform("c", &Transform::from_translation([3.0, 0.0, 0.0]), 1000)
         .unwrap();
 
-    let result = hf.validate();
+    let result = tf.validate();
     assert!(result.is_ok(), "Valid tree failed validation: {:?}", result);
 }
 
@@ -534,20 +534,20 @@ fn edge_validate_valid_tree() {
 /// Cycles are the only invalid topology; multiple roots are valid.
 #[test]
 fn edge_validate_multi_root() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
     // Root 1 with children
-    hf.register_frame("root1", None).unwrap();
-    hf.register_frame("a", Some("root1")).unwrap();
+    tf.register_frame("root1", None).unwrap();
+    tf.register_frame("a", Some("root1")).unwrap();
 
     // Root 2 with children
-    hf.register_frame("root2", None).unwrap();
-    hf.register_frame("b", Some("root2")).unwrap();
+    tf.register_frame("root2", None).unwrap();
+    tf.register_frame("b", Some("root2")).unwrap();
 
     // Root 3 standalone
-    hf.register_frame("root3", None).unwrap();
+    tf.register_frame("root3", None).unwrap();
 
-    let result = hf.validate();
+    let result = tf.validate();
     assert!(
         result.is_ok(),
         "Multi-root tree should pass validation: {:?}",
@@ -558,21 +558,21 @@ fn edge_validate_multi_root() {
 /// validate() after unregistering frames should still pass.
 #[test]
 fn edge_validate_after_unregister() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
-    hf.register_frame("b", Some("a")).unwrap();
-    hf.register_frame("c", Some("b")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
+    tf.register_frame("b", Some("a")).unwrap();
+    tf.register_frame("c", Some("b")).unwrap();
 
     // Valid before unregister
-    hf.validate().unwrap();
+    tf.validate().unwrap();
 
     // Remove mid-chain frame
-    hf.unregister_frame("b").unwrap();
+    tf.unregister_frame("b").unwrap();
 
     // Should still pass (no cycles, orphaned "c" has dangling parent but
     // validate() checks cycle only — dangling parents won't cause infinite loops)
-    let result = hf.validate();
+    let result = tf.validate();
     assert!(
         result.is_ok(),
         "Validate after unregister should pass: {:?}",
@@ -588,15 +588,15 @@ fn edge_validate_large_tree() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
-    hf.register_frame("world", None).unwrap();
+    tf.register_frame("world", None).unwrap();
     for i in 0..99 {
         let name = format!("f{}", i);
-        hf.register_frame(&name, Some("world")).unwrap();
+        tf.register_frame(&name, Some("world")).unwrap();
     }
 
-    let result = hf.validate();
+    let result = tf.validate();
     assert!(
         result.is_ok(),
         "Large valid tree failed validation: {:?}",
@@ -608,38 +608,38 @@ fn edge_validate_large_tree() {
 /// before children. Verify this by trying various orderings.
 #[test]
 fn edge_registration_prevents_cycles() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
     // A -> B -> C: each parent must be registered before child
-    hf.register_frame("A", None).unwrap();
-    hf.register_frame("B", Some("A")).unwrap();
-    hf.register_frame("C", Some("B")).unwrap();
+    tf.register_frame("A", None).unwrap();
+    tf.register_frame("B", Some("A")).unwrap();
+    tf.register_frame("C", Some("B")).unwrap();
 
     // Cannot re-register A with parent C (would create cycle, but API rejects
     // because A already exists)
-    let result = hf.register_frame("A", Some("C"));
+    let result = tf.register_frame("A", Some("C"));
     assert!(result.is_err(), "Re-registration should be rejected");
 
     // Validate confirms no cycle
-    hf.validate().unwrap();
+    tf.validate().unwrap();
 }
 
 /// Duplicate frame registration should be rejected.
 #[test]
 fn edge_duplicate_frame_name() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
 
-    let result = hf.register_frame("world", None);
+    let result = tf.register_frame("world", None);
     assert!(result.is_err(), "Duplicate frame registration should fail");
 }
 
 /// Register with nonexistent parent should fail.
 #[test]
 fn edge_nonexistent_parent() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
-    let result = hf.register_frame("child", Some("nonexistent_parent"));
+    let result = tf.register_frame("child", Some("nonexistent_parent"));
     assert!(
         result.is_err(),
         "Registration with nonexistent parent should fail"
@@ -649,14 +649,14 @@ fn edge_nonexistent_parent() {
 /// Extreme transform values — very large/small translations and rotations.
 #[test]
 fn edge_extreme_transform_values() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("far", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("far", Some("world")).unwrap();
 
     // Very large translation
     let big_tf = Transform::from_translation([1e15, -1e15, 1e15]);
-    hf.update_transform("far", &big_tf, 1000).unwrap();
-    let resolved = hf.tf("far", "world").unwrap();
+    tf.update_transform("far", &big_tf, 1000).unwrap();
+    let resolved = tf.tf("far", "world").unwrap();
     assert!(
         (resolved.translation[0] - 1e15).abs() < 1e5,
         "Large translation lost precision: {}",
@@ -665,8 +665,8 @@ fn edge_extreme_transform_values() {
 
     // Very small translation
     let tiny_tf = Transform::from_translation([1e-15, 1e-15, 1e-15]);
-    hf.update_transform("far", &tiny_tf, 2000).unwrap();
-    let resolved = hf.tf("far", "world").unwrap();
+    tf.update_transform("far", &tiny_tf, 2000).unwrap();
+    let resolved = tf.tf("far", "world").unwrap();
     assert!(
         resolved.translation[0].is_finite(),
         "Tiny translation produced non-finite result"
@@ -676,57 +676,57 @@ fn edge_extreme_transform_values() {
 /// Empty TransformFrame — operations on empty system should not panic.
 #[test]
 fn edge_empty_system() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
-    assert_eq!(hf.frame_count(), 0);
-    assert!(!hf.has_frame("anything"));
-    assert!(!hf.can_transform("a", "b"));
-    hf.tf("a", "b").unwrap_err();
-    assert!(hf.frame_id("nonexistent").is_none());
+    assert_eq!(tf.frame_count(), 0);
+    assert!(!tf.has_frame("anything"));
+    assert!(!tf.can_transform("a", "b"));
+    tf.tf("a", "b").unwrap_err();
+    assert!(tf.frame_id("nonexistent").is_none());
 
     // validate on empty should pass
-    let result = hf.validate();
+    let result = tf.validate();
     assert!(result.is_ok(), "Empty system failed validation");
 }
 
 /// Resolve with nonexistent frame names — should return error, not panic.
 #[test]
 fn edge_resolve_nonexistent_frames() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
 
     // Source doesn't exist
-    let result = hf.tf("ghost", "world");
+    let result = tf.tf("ghost", "world");
     assert!(result.is_err(), "Nonexistent source should return error");
 
     // Destination doesn't exist
-    let result = hf.tf("world", "ghost");
+    let result = tf.tf("world", "ghost");
     assert!(
         result.is_err(),
         "Nonexistent destination should return error"
     );
 
     // Both don't exist
-    let result = hf.tf("ghost1", "ghost2");
+    let result = tf.tf("ghost1", "ghost2");
     assert!(result.is_err(), "Both nonexistent should return error");
 
     // can_transform with nonexistent frames
-    assert!(!hf.can_transform("ghost", "world"));
-    assert!(!hf.can_transform("world", "ghost"));
+    assert!(!tf.can_transform("ghost", "world"));
+    assert!(!tf.can_transform("world", "ghost"));
 }
 
 /// Resolve by ID with invalid FrameId values.
 #[test]
 fn edge_resolve_invalid_frame_id() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 1000)
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
 
-    let world_id = hf.frame_id("world").unwrap();
+    let world_id = tf.frame_id("world").unwrap();
 
     // Resolve with an ID that was never registered
-    let result = hf.tf_by_id(9999, world_id);
+    let result = tf.tf_by_id(9999, world_id);
     // Should return None (not panic)
     // Note: tf_by_id returns Option, not Result
     if let Some(tf) = result {
@@ -740,20 +740,20 @@ fn edge_resolve_invalid_frame_id() {
 /// Update transform on nonexistent frame — should return error.
 #[test]
 fn edge_update_nonexistent_frame() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
 
-    let result = hf.update_transform("ghost", &Transform::identity(), 1000);
+    let result = tf.update_transform("ghost", &Transform::identity(), 1000);
     assert!(result.is_err(), "Update on nonexistent frame should fail");
 }
 
 /// Unregister nonexistent frame — should return error.
 #[test]
 fn edge_unregister_nonexistent_frame() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
 
-    let result = hf.unregister_frame("ghost");
+    let result = tf.unregister_frame("ghost");
     assert!(
         result.is_err(),
         "Unregister of nonexistent frame should fail"
@@ -763,31 +763,31 @@ fn edge_unregister_nonexistent_frame() {
 /// can_transform after chain is broken by unregistration at multiple points.
 #[test]
 fn edge_can_transform_multi_break() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
-    hf.register_frame("b", Some("a")).unwrap();
-    hf.register_frame("c", Some("b")).unwrap();
-    hf.register_frame("d", Some("c")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
+    tf.register_frame("b", Some("a")).unwrap();
+    tf.register_frame("c", Some("b")).unwrap();
+    tf.register_frame("d", Some("c")).unwrap();
 
     for &name in &["a", "b", "c", "d"] {
-        hf.update_transform(name, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform(name, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
     }
 
     // Full chain works
-    assert!(hf.can_transform("d", "world"));
+    assert!(tf.can_transform("d", "world"));
 
     // Break at "b"
-    hf.unregister_frame("b").unwrap();
+    tf.unregister_frame("b").unwrap();
 
     // d -> c still has parent reference to unregistered b
     // can_transform may return true or false, but must not panic
-    let _ = hf.can_transform("d", "world");
-    let _ = hf.can_transform("c", "world");
+    let _ = tf.can_transform("d", "world");
+    let _ = tf.can_transform("c", "world");
 
     // a -> world should still work (a's chain to world is intact)
-    assert!(hf.can_transform("a", "world"));
+    assert!(tf.can_transform("a", "world"));
 }
 
 // ============================================================================
@@ -801,8 +801,8 @@ use std::thread;
 /// All registrations should succeed (unique names) with no panics.
 #[test]
 fn edge_concurrent_registration() {
-    let hf = Arc::new(TransformFrame::new());
-    hf.register_frame("world", None).unwrap();
+    let tf = Arc::new(TransformFrame::new());
+    tf.register_frame("world", None).unwrap();
 
     let num_threads = 4;
     let frames_per_thread = 50;
@@ -810,14 +810,14 @@ fn edge_concurrent_registration() {
 
     let mut handles = Vec::new();
     for t in 0..num_threads {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         handles.push(thread::spawn(move || {
             barrier.wait();
             let mut registered = 0u32;
             for i in 0..frames_per_thread {
                 let name = format!("t{}_{}", t, i);
-                if hf.register_frame(&name, Some("world")).is_ok() {
+                if tf.register_frame(&name, Some("world")).is_ok() {
                     registered += 1;
                 }
             }
@@ -837,7 +837,7 @@ fn edge_concurrent_registration() {
         "Not all concurrent registrations succeeded"
     );
     // +1 for "world"
-    assert_eq!(hf.frame_count(), (num_threads * frames_per_thread) + 1);
+    assert_eq!(tf.frame_count(), (num_threads * frames_per_thread) + 1);
 }
 
 /// 2 threads registering while 2 threads unregistering.
@@ -849,13 +849,13 @@ fn edge_concurrent_register_unregister() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = Arc::new(TransformFrame::with_config(config));
-    hf.register_frame("world", None).unwrap();
+    let tf = Arc::new(TransformFrame::with_config(config));
+    tf.register_frame("world", None).unwrap();
 
     // Pre-register frames that will be unregistered
     for i in 0..100 {
         let name = format!("victim_{}", i);
-        hf.register_frame(&name, Some("world")).unwrap();
+        tf.register_frame(&name, Some("world")).unwrap();
     }
 
     let barrier = Arc::new(Barrier::new(4));
@@ -863,14 +863,14 @@ fn edge_concurrent_register_unregister() {
     // 2 registrator threads
     let mut handles = Vec::new();
     for t in 0..2 {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         handles.push(thread::spawn(move || {
             barrier.wait();
             let mut ok = 0u32;
             for i in 0..50 {
                 let name = format!("new_{}_{}", t, i);
-                if hf.register_frame(&name, Some("world")).is_ok() {
+                if tf.register_frame(&name, Some("world")).is_ok() {
                     ok += 1;
                 }
             }
@@ -880,14 +880,14 @@ fn edge_concurrent_register_unregister() {
 
     // 2 unregistrator threads
     for t in 0..2 {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         handles.push(thread::spawn(move || {
             barrier.wait();
             let mut ok = 0u32;
             for i in 0..50 {
                 let name = format!("victim_{}", t * 50 + i);
-                if hf.unregister_frame(&name).is_ok() {
+                if tf.unregister_frame(&name).is_ok() {
                     ok += 1;
                 }
             }
@@ -902,7 +902,7 @@ fn edge_concurrent_register_unregister() {
     }
 
     // Verify system is in a consistent state
-    let result = hf.validate();
+    let result = tf.validate();
     assert!(
         result.is_ok(),
         "Validation failed after concurrent mutations: {:?}",
@@ -914,24 +914,24 @@ fn edge_concurrent_register_unregister() {
 /// Resolves should either succeed or return clean errors — never panic.
 #[test]
 fn edge_concurrent_resolve_during_unregister() {
-    let hf = Arc::new(TransformFrame::new());
+    let tf = Arc::new(TransformFrame::new());
 
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
-    hf.register_frame("b", Some("a")).unwrap();
-    hf.register_frame("c", Some("b")).unwrap();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
+    tf.register_frame("b", Some("a")).unwrap();
+    tf.register_frame("c", Some("b")).unwrap();
 
-    hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+    tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
+    tf.update_transform("b", &Transform::from_translation([2.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform("c", &Transform::from_translation([3.0, 0.0, 0.0]), 1000)
+    tf.update_transform("c", &Transform::from_translation([3.0, 0.0, 0.0]), 1000)
         .unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
 
     // Reader thread: continuously tries to resolve c -> world
-    let hf_reader = hf.clone();
+    let hf_reader = tf.clone();
     let b_reader = barrier.clone();
     let reader = thread::spawn(move || {
         b_reader.wait();
@@ -953,7 +953,7 @@ fn edge_concurrent_resolve_during_unregister() {
     });
 
     // Unregister thread: removes "b" (mid-chain)
-    let hf_writer = hf.clone();
+    let hf_writer = tf.clone();
     let b_writer = barrier.clone();
     let writer = thread::spawn(move || {
         b_writer.wait();
@@ -988,16 +988,16 @@ fn edge_min_history_single_entry() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::with_config(config);
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     // Single entry
-    hf.update_transform("a", &Transform::from_translation([42.0, 0.0, 0.0]), 5000)
+    tf.update_transform("a", &Transform::from_translation([42.0, 0.0, 0.0]), 5000)
         .unwrap();
 
     // read_latest should return it
-    let tf = hf.tf("a", "world").unwrap();
+    let tf = tf.tf("a", "world").unwrap();
     assert!(
         (tf.translation[0] - 42.0).abs() < 1e-10,
         "Single entry read failed: {}",
@@ -1005,7 +1005,7 @@ fn edge_min_history_single_entry() {
     );
 
     // tf_at at exact timestamp
-    let tf = hf.tf_at("a", "world", 5000).unwrap();
+    let tf = tf.tf_at("a", "world", 5000).unwrap();
     assert!(
         (tf.translation[0] - 42.0).abs() < 1e-10,
         "Single entry tf_at failed: {}",
@@ -1013,7 +1013,7 @@ fn edge_min_history_single_entry() {
     );
 
     // tf_at at different timestamp — should still return the single entry
-    let tf = hf.tf_at("a", "world", 9999).unwrap();
+    let tf = tf.tf_at("a", "world", 9999).unwrap();
     assert!(
         (tf.translation[0] - 42.0).abs() < 1e-10,
         "Single entry extrapolation failed: {}",
@@ -1029,20 +1029,20 @@ fn edge_exact_timestamp_match() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::with_config(config);
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     // Store 3 entries at t=1000, 2000, 3000
-    hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+    tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
+    tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
         .unwrap();
-    hf.update_transform("a", &Transform::from_translation([3.0, 0.0, 0.0]), 3000)
+    tf.update_transform("a", &Transform::from_translation([3.0, 0.0, 0.0]), 3000)
         .unwrap();
 
     // Query at exact t=2000 — should return [2.0, 0, 0] with no interpolation
-    let tf = hf.tf_at("a", "world", 2000).unwrap();
+    let tf = tf.tf_at("a", "world", 2000).unwrap();
     assert!(
         (tf.translation[0] - 2.0).abs() < 1e-10,
         "Exact timestamp match: expected 2.0, got {}",
@@ -1050,7 +1050,7 @@ fn edge_exact_timestamp_match() {
     );
 
     // Query at exact t=1000
-    let tf = hf.tf_at("a", "world", 1000).unwrap();
+    let tf = tf.tf_at("a", "world", 1000).unwrap();
     assert!(
         (tf.translation[0] - 1.0).abs() < 1e-10,
         "Exact timestamp match: expected 1.0, got {}",
@@ -1067,18 +1067,18 @@ fn edge_ring_buffer_wraparound_boundary() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("a", Some("world")).unwrap();
+    let tf = TransformFrame::with_config(config);
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("a", Some("world")).unwrap();
 
     // Fill exactly 4 slots
     for i in 0..4u64 {
         let tf = Transform::from_translation([i as f64 * 10.0, 0.0, 0.0]);
-        hf.update_transform("a", &tf, (i + 1) * 1000).unwrap();
+        tf.update_transform("a", &tf, (i + 1) * 1000).unwrap();
     }
 
     // Latest should be entry 3 (x=30.0, t=4000)
-    let tf = hf.tf("a", "world").unwrap();
+    let tf = tf.tf("a", "world").unwrap();
     assert!(
         (tf.translation[0] - 30.0).abs() < 1e-10,
         "Pre-wraparound latest: expected 30.0, got {}",
@@ -1086,11 +1086,11 @@ fn edge_ring_buffer_wraparound_boundary() {
     );
 
     // 5th write: should evict entry 0 (x=0.0, t=1000)
-    hf.update_transform("a", &Transform::from_translation([40.0, 0.0, 0.0]), 5000)
+    tf.update_transform("a", &Transform::from_translation([40.0, 0.0, 0.0]), 5000)
         .unwrap();
 
     // Latest should now be entry 4 (x=40.0)
-    let tf = hf.tf("a", "world").unwrap();
+    let tf = tf.tf("a", "world").unwrap();
     assert!(
         (tf.translation[0] - 40.0).abs() < 1e-10,
         "Post-wraparound latest: expected 40.0, got {}",
@@ -1098,7 +1098,7 @@ fn edge_ring_buffer_wraparound_boundary() {
     );
 
     // Query at t=1000 (evicted) — should return oldest available (entry 1, x=10.0)
-    let tf = hf.tf_at("a", "world", 1000).unwrap();
+    let tf = tf.tf_at("a", "world", 1000).unwrap();
     assert!(
         tf.translation[0] >= 10.0,
         "Evicted timestamp should return oldest available (>= 10.0), got {}",
@@ -1109,13 +1109,13 @@ fn edge_ring_buffer_wraparound_boundary() {
 /// Read from frame with zero writes — should fail gracefully.
 #[test]
 fn edge_read_empty_history() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("empty", Some("world")).unwrap();
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("empty", Some("world")).unwrap();
 
     // No update_transform — history is empty
     // tf should handle this (return error or identity)
-    let result = hf.tf("empty", "world");
+    let result = tf.tf("empty", "world");
     if let Ok(tf) = &result {
         assert!(
             tf.translation.iter().all(|v| v.is_finite()),
@@ -1124,7 +1124,7 @@ fn edge_read_empty_history() {
     }
 
     // tf_at on empty history
-    let result = hf.tf_at("empty", "world", 1000);
+    let result = tf.tf_at("empty", "world", 1000);
     if let Ok(tf) = &result {
         assert!(
             tf.translation.iter().all(|v| v.is_finite()),
@@ -1140,26 +1140,26 @@ fn edge_read_empty_history() {
 /// Multiple threads reading a static frame concurrently — all should get same value.
 #[test]
 fn edge_static_frame_concurrent_reads() {
-    let hf = Arc::new(TransformFrame::new());
-    hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 0)
+    let tf = Arc::new(TransformFrame::new());
+    tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 0)
         .unwrap();
 
     let expected_tf = Transform::from_translation([7.0, 8.0, 9.0]);
-    hf.register_static_frame("sensor", Some("world"), &expected_tf)
+    tf.register_static_frame("sensor", Some("world"), &expected_tf)
         .unwrap();
 
     let barrier = Arc::new(Barrier::new(8));
     let mut handles = Vec::new();
 
     for _ in 0..8 {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         handles.push(thread::spawn(move || {
             barrier.wait();
             let mut mismatches = 0u64;
             for _ in 0..10_000 {
-                if let Ok(tf) = hf.tf("sensor", "world") {
+                if let Ok(tf) = tf.tf("sensor", "world") {
                     if (tf.translation[0] - 7.0).abs() > 1e-10
                         || (tf.translation[1] - 8.0).abs() > 1e-10
                         || (tf.translation[2] - 9.0).abs() > 1e-10
@@ -1186,9 +1186,9 @@ fn edge_static_frame_concurrent_reads() {
 /// update_transform on a static frame should fail.
 #[test]
 fn edge_static_frame_reject_update() {
-    let hf = TransformFrame::new();
-    hf.register_frame("world", None).unwrap();
-    hf.register_static_frame(
+    let tf = TransformFrame::new();
+    tf.register_frame("world", None).unwrap();
+    tf.register_static_frame(
         "fixed",
         Some("world"),
         &Transform::from_translation([1.0, 0.0, 0.0]),
@@ -1196,7 +1196,7 @@ fn edge_static_frame_reject_update() {
     .unwrap();
 
     // Attempt to update a static frame — should be rejected
-    let result = hf.update_transform(
+    let result = tf.update_transform(
         "fixed",
         &Transform::from_translation([99.0, 0.0, 0.0]),
         1000,
@@ -1205,7 +1205,7 @@ fn edge_static_frame_reject_update() {
     if result.is_ok() {
         // If it accepted the write, verify the value is still the original
         // (static frames should ignore dynamic updates)
-        let tf = hf.tf("fixed", "world").unwrap();
+        let tf = tf.tf("fixed", "world").unwrap();
         // At minimum, no panic and finite values
         assert!(
             tf.translation[0].is_finite(),

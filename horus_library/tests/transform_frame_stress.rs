@@ -67,27 +67,27 @@ fn stress_1000_frame_chain() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
     // Register root
-    let _world = hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 1000)
+    let _world = tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
 
     // Register 1000-frame chain
     let mut prev_name = "world".to_string();
     for i in 0..1000 {
         let name = format!("f{}", i);
-        hf.register_frame(&name, Some(&prev_name)).unwrap();
+        tf.register_frame(&name, Some(&prev_name)).unwrap();
         let tf = Transform::from_translation([0.001, 0.0, 0.0]);
-        hf.update_transform(&name, &tf, 1000).unwrap();
+        tf.update_transform(&name, &tf, 1000).unwrap();
         prev_name = name;
     }
 
-    assert_eq!(hf.frame_count(), 1001); // world + 1000 frames
+    assert_eq!(tf.frame_count(), 1001); // world + 1000 frames
 
     // Resolve from leaf to root — composed translation should be ~1.0 (1000 * 0.001)
-    let tf = hf.tf("f999", "world").unwrap();
+    let tf = tf.tf("f999", "world").unwrap();
     assert!(
         (tf.translation[0] - 1.0).abs() < 1e-6,
         "Expected ~1.0, got {}",
@@ -95,9 +95,9 @@ fn stress_1000_frame_chain() {
     );
 
     // can_transform should work across the full chain
-    assert!(hf.can_transform("f999", "world"));
-    assert!(hf.can_transform("world", "f999"));
-    assert!(hf.can_transform("f500", "f200"));
+    assert!(tf.can_transform("f999", "world"));
+    assert!(tf.can_transform("world", "f999"));
+    assert!(tf.can_transform("f500", "f200"));
 }
 
 /// Register 1000 frames in a wide tree (all children of root).
@@ -109,24 +109,24 @@ fn stress_1000_frame_wide_tree() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
-    hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 1000)
+    tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
 
     for i in 0..1000 {
         let name = format!("child_{}", i);
-        hf.register_frame(&name, Some("world")).unwrap();
+        tf.register_frame(&name, Some("world")).unwrap();
         let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
-        hf.update_transform(&name, &tf, 1000).unwrap();
+        tf.update_transform(&name, &tf, 1000).unwrap();
     }
 
-    assert_eq!(hf.frame_count(), 1001);
+    assert_eq!(tf.frame_count(), 1001);
 
     // All children should be queryable relative to each other
     // child_500 -> world -> child_200
-    let tf = hf.tf("child_500", "child_200").unwrap();
+    let tf = tf.tf("child_500", "child_200").unwrap();
     // child_500 is at [500,0,0] in world, child_200 is at [200,0,0] in world
     // transform from child_500 frame to child_200 frame:
     // point_in_world = child_500_tf * point_in_child_500
@@ -139,29 +139,29 @@ fn stress_1000_frame_wide_tree() {
     );
 
     // children() should return 1000 entries
-    let children = hf.children("world");
+    let children = tf.children("world");
     assert_eq!(children.len(), 1000);
 }
 
 /// Fill to the large preset limit (4096 frames).
 #[test]
 fn stress_4096_frames_large_preset() {
-    let hf = TransformFrame::large();
+    let tf = TransformFrame::large();
 
-    hf.register_frame("world", None).unwrap();
+    tf.register_frame("world", None).unwrap();
 
     for i in 0..4095 {
         let name = format!("f{}", i);
-        hf.register_frame(&name, Some("world")).unwrap();
+        tf.register_frame(&name, Some("world")).unwrap();
     }
 
-    assert_eq!(hf.frame_count(), 4096);
+    assert_eq!(tf.frame_count(), 4096);
 
     // Verify we can still resolve transforms
     let tf = Transform::from_translation([1.0, 2.0, 3.0]);
-    hf.update_transform("f0", &tf, 1000).unwrap();
+    tf.update_transform("f0", &tf, 1000).unwrap();
 
-    let resolved = hf.tf("f0", "world").unwrap();
+    let resolved = tf.tf("f0", "world").unwrap();
     assert!((resolved.translation[0] - 1.0).abs() < 1e-10);
 }
 
@@ -179,18 +179,18 @@ fn stress_max_frames_exhaustion() {
         .enable_overflow(false)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
     // Fill all 16 slots
     for i in 0..16 {
         let name = format!("f{}", i);
-        hf.register_frame(&name, None).unwrap();
+        tf.register_frame(&name, None).unwrap();
     }
 
-    assert_eq!(hf.frame_count(), 16);
+    assert_eq!(tf.frame_count(), 16);
 
     // 17th registration should fail gracefully
-    let result = hf.register_frame("overflow", None);
+    let result = tf.register_frame("overflow", None);
     assert!(result.is_err(), "Should fail when max_frames exceeded");
 
     // Error message should mention the capacity limit
@@ -210,37 +210,37 @@ fn stress_slot_reuse_after_unregister() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
     // Fill all 16 slots (all dynamic, so unregisterable)
     for i in 0..16 {
         let name = format!("f{}", i);
-        hf.register_frame(&name, None).unwrap();
+        tf.register_frame(&name, None).unwrap();
     }
 
     // Unregister one
-    hf.unregister_frame("f5").unwrap();
-    assert_eq!(hf.frame_count(), 15);
+    tf.unregister_frame("f5").unwrap();
+    assert_eq!(tf.frame_count(), 15);
 
     // Now should be able to register a new frame in the freed slot
-    let result = hf.register_frame("replacement", None);
+    let result = tf.register_frame("replacement", None);
     assert!(result.is_ok(), "Should reuse freed slot: {:?}", result);
-    assert_eq!(hf.frame_count(), 16);
+    assert_eq!(tf.frame_count(), 16);
 
     // Verify the replacement frame works
-    assert!(hf.has_frame("replacement"));
-    assert!(!hf.has_frame("f5"));
+    assert!(tf.has_frame("replacement"));
+    assert!(!tf.has_frame("f5"));
 }
 
 /// Test static frame limit — static frames cannot be unregistered.
 #[test]
 fn stress_static_frame_cannot_unregister() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
-    hf.register_static_frame("static_world", None, &Transform::identity())
+    tf.register_static_frame("static_world", None, &Transform::identity())
         .unwrap();
 
-    let result = hf.unregister_frame("static_world");
+    let result = tf.unregister_frame("static_world");
     assert!(
         result.is_err(),
         "Static frames should not be unregisterable"
@@ -258,12 +258,12 @@ fn stress_mixed_static_dynamic_at_capacity() {
         .enable_overflow(false)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
     // Register 8 static frames
     for i in 0..8 {
         let name = format!("static_{}", i);
-        hf.register_static_frame(
+        tf.register_static_frame(
             &name,
             None,
             &Transform::from_translation([i as f64, 0.0, 0.0]),
@@ -274,19 +274,19 @@ fn stress_mixed_static_dynamic_at_capacity() {
     // Register 8 dynamic frames
     for i in 0..8 {
         let name = format!("dynamic_{}", i);
-        hf.register_frame(&name, None).unwrap();
+        tf.register_frame(&name, None).unwrap();
     }
 
-    assert_eq!(hf.frame_count(), 16);
+    assert_eq!(tf.frame_count(), 16);
 
     // 17th (either type) should fail
-    let result_dyn = hf.register_frame("overflow_dyn", None);
+    let result_dyn = tf.register_frame("overflow_dyn", None);
     assert!(
         result_dyn.is_err(),
         "Dynamic registration should fail at capacity"
     );
 
-    let result_static = hf.register_static_frame("overflow_static", None, &Transform::identity());
+    let result_static = tf.register_static_frame("overflow_static", None, &Transform::identity());
     assert!(
         result_static.is_err(),
         "Static registration should fail at capacity"
@@ -295,16 +295,16 @@ fn stress_mixed_static_dynamic_at_capacity() {
     // Static frames should still be queryable (sibling resolution via common root)
     // static_0 is root, register static_0_child under it to test chain resolution
     // Instead test that static frames can have their transforms read
-    assert!(hf.has_frame("static_3"));
-    assert!(hf.has_frame("static_0"));
+    assert!(tf.has_frame("static_3"));
+    assert!(tf.has_frame("static_0"));
 
     // Unregister a dynamic, re-register should work
-    hf.unregister_frame("dynamic_7").unwrap();
-    let result = hf.register_frame("replacement", None);
+    tf.unregister_frame("dynamic_7").unwrap();
+    let result = tf.register_frame("replacement", None);
     assert!(result.is_ok(), "Should reuse freed dynamic slot");
 
     // Cannot unregister static to free a slot
-    let result = hf.unregister_frame("static_0");
+    let result = tf.unregister_frame("static_0");
     assert!(result.is_err(), "Cannot unregister static frames");
 }
 
@@ -316,12 +316,12 @@ fn stress_repeated_slot_reuse_cycles() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
     // Fill to capacity, track current names per slot
     let mut slot_names: Vec<String> = (0..16).map(|i| format!("f{}", i)).collect();
     for name in &slot_names {
-        hf.register_frame(name, None).unwrap();
+        tf.register_frame(name, None).unwrap();
     }
 
     // Cycle: unregister one slot, re-register with new name — 50 times
@@ -331,17 +331,17 @@ fn stress_repeated_slot_reuse_cycles() {
         let replacement = format!("cycle_{}", cycle);
 
         // Unregister existing
-        hf.unregister_frame(&victim).unwrap();
-        assert!(!hf.has_frame(&victim));
+        tf.unregister_frame(&victim).unwrap();
+        assert!(!tf.has_frame(&victim));
 
         // Register replacement in the freed slot
-        hf.register_frame(&replacement, None).unwrap();
-        assert!(hf.has_frame(&replacement));
-        assert_eq!(hf.frame_count(), 16);
+        tf.register_frame(&replacement, None).unwrap();
+        assert!(tf.has_frame(&replacement));
+        assert_eq!(tf.frame_count(), 16);
 
         // Set and verify a transform on the replacement
         let tf = Transform::from_translation([cycle as f64, 0.0, 0.0]);
-        hf.update_transform(&replacement, &tf, cycle as u64 * 1000)
+        tf.update_transform(&replacement, &tf, cycle as u64 * 1000)
             .unwrap();
 
         // Track the new name for this slot
@@ -349,25 +349,25 @@ fn stress_repeated_slot_reuse_cycles() {
     }
 
     // Final count should still be 16
-    assert_eq!(hf.frame_count(), 16);
+    assert_eq!(tf.frame_count(), 16);
 }
 
 /// Static frames must have their transform resolvable immediately after registration
 /// (no separate update_transform call needed).
 #[test]
 fn stress_static_frame_transform_immediate() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
-    hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 1000)
+    tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
 
     let expected = Transform::from_translation([1.0, 2.0, 3.0]);
-    hf.register_static_frame("sensor", Some("world"), &expected)
+    tf.register_static_frame("sensor", Some("world"), &expected)
         .unwrap();
 
     // Should be immediately resolvable
-    let resolved = hf.tf("sensor", "world").unwrap();
+    let resolved = tf.tf("sensor", "world").unwrap();
     assert!(
         (resolved.translation[0] - 1.0).abs() < 1e-10
             && (resolved.translation[1] - 2.0).abs() < 1e-10
@@ -391,10 +391,10 @@ fn stress_depth_chain_manual_verification() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
-    hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 1000)
+    tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
 
     // Build a depth-200 chain with non-trivial transforms (translation + rotation)
@@ -402,8 +402,8 @@ fn stress_depth_chain_manual_verification() {
     let mut prev = "world".to_string();
     for i in 0..200 {
         let name = format!("d{}", i);
-        hf.register_frame(&name, Some(&prev)).unwrap();
-        hf.update_transform(&name, &per_link, 1000).unwrap();
+        tf.register_frame(&name, Some(&prev)).unwrap();
+        tf.update_transform(&name, &per_link, 1000).unwrap();
         prev = name;
     }
 
@@ -422,7 +422,7 @@ fn stress_depth_chain_manual_verification() {
     }
 
     // Verify depth 50
-    let resolved_50 = hf.tf("d49", "world").unwrap();
+    let resolved_50 = tf.tf("d49", "world").unwrap();
     for axis in 0..3 {
         assert!(
             (resolved_50.translation[axis] - expected_50.translation[axis]).abs() < 1e-6,
@@ -434,7 +434,7 @@ fn stress_depth_chain_manual_verification() {
     }
 
     // Verify depth 100
-    let resolved_100 = hf.tf("d99", "world").unwrap();
+    let resolved_100 = tf.tf("d99", "world").unwrap();
     for axis in 0..3 {
         assert!(
             (resolved_100.translation[axis] - expected_100.translation[axis]).abs() < 1e-4,
@@ -446,7 +446,7 @@ fn stress_depth_chain_manual_verification() {
     }
 
     // Verify depth 200
-    let resolved_200 = hf.tf("d199", "world").unwrap();
+    let resolved_200 = tf.tf("d199", "world").unwrap();
     for axis in 0..3 {
         assert!(
             (resolved_200.translation[axis] - expected_200.translation[axis]).abs() < 1e-3,
@@ -458,15 +458,15 @@ fn stress_depth_chain_manual_verification() {
     }
 
     // can_transform() must work at every depth
-    assert!(hf.can_transform("d49", "world"));
-    assert!(hf.can_transform("d99", "world"));
-    assert!(hf.can_transform("d199", "world"));
-    assert!(hf.can_transform("d199", "d49"));
-    assert!(hf.can_transform("d49", "d199"));
+    assert!(tf.can_transform("d49", "world"));
+    assert!(tf.can_transform("d99", "world"));
+    assert!(tf.can_transform("d199", "world"));
+    assert!(tf.can_transform("d199", "d49"));
+    assert!(tf.can_transform("d49", "d199"));
 
     // Cross-chain: mid-chain to mid-chain
-    assert!(hf.can_transform("d30", "d150"));
-    let cross = hf.tf("d30", "d150").unwrap();
+    assert!(tf.can_transform("d30", "d150"));
+    let cross = tf.tf("d30", "d150").unwrap();
     assert!(
         cross.translation.iter().all(|v| v.is_finite()),
         "Cross-chain resolution produced non-finite values"
@@ -483,10 +483,10 @@ fn stress_depth_timing_linear_scaling() {
         .chain_cache_size(0) // Disable cache to measure raw resolution
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
-    hf.register_frame("world", None).unwrap();
-    hf.update_transform("world", &Transform::identity(), 1000)
+    tf.register_frame("world", None).unwrap();
+    tf.update_transform("world", &Transform::identity(), 1000)
         .unwrap();
 
     // Build depth-500 chain
@@ -494,8 +494,8 @@ fn stress_depth_timing_linear_scaling() {
     let mut prev = "world".to_string();
     for i in 0..500 {
         let name = format!("t{}", i);
-        hf.register_frame(&name, Some(&prev)).unwrap();
-        hf.update_transform(&name, &per_link, 1000).unwrap();
+        tf.register_frame(&name, Some(&prev)).unwrap();
+        tf.update_transform(&name, &per_link, 1000).unwrap();
         prev = name;
     }
 
@@ -507,7 +507,7 @@ fn stress_depth_timing_linear_scaling() {
         let start = std::time::Instant::now();
         let repeats = 1000;
         for _ in 0..repeats {
-            let _ = hf.tf(frame, "world").unwrap();
+            let _ = tf.tf(frame, "world").unwrap();
         }
         let elapsed = start.elapsed();
         let per_resolve_ns = elapsed.as_nanos() / repeats;
@@ -533,22 +533,22 @@ fn stress_depth_100_chain() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
-    hf.register_frame("world", None).unwrap();
+    tf.register_frame("world", None).unwrap();
 
     let mut prev = "world".to_string();
     for i in 0..100 {
         let name = format!("link_{}", i);
-        hf.register_frame(&name, Some(&prev)).unwrap();
+        tf.register_frame(&name, Some(&prev)).unwrap();
         // Each link adds [0.01, 0.0, 0.0] translation
         let tf = Transform::from_translation([0.01, 0.0, 0.0]);
-        hf.update_transform(&name, &tf, 1000).unwrap();
+        tf.update_transform(&name, &tf, 1000).unwrap();
         prev = name;
     }
 
     // Composed transform: 100 * 0.01 = 1.0
-    let tf = hf.tf("link_99", "world").unwrap();
+    let tf = tf.tf("link_99", "world").unwrap();
     assert!(
         (tf.translation[0] - 1.0).abs() < 1e-4,
         "Depth 100 chain: expected ~1.0, got {}",
@@ -564,21 +564,21 @@ fn stress_depth_200_chain_with_rotation() {
         .history_len(4)
         .build()
         .unwrap();
-    let hf = TransformFrame::with_config(config);
+    let tf = TransformFrame::with_config(config);
 
-    hf.register_frame("world", None).unwrap();
+    tf.register_frame("world", None).unwrap();
 
     let mut prev = "world".to_string();
     for i in 0..200 {
         let name = format!("j{}", i);
-        hf.register_frame(&name, Some(&prev)).unwrap();
+        tf.register_frame(&name, Some(&prev)).unwrap();
         // Small translation + tiny rotation around Z
         let tf = Transform::from_euler([0.01, 0.0, 0.0], [0.0, 0.0, 0.001]);
-        hf.update_transform(&name, &tf, 1000).unwrap();
+        tf.update_transform(&name, &tf, 1000).unwrap();
         prev = name;
     }
 
-    let tf = hf.tf("j199", "world").unwrap();
+    let tf = tf.tf("j199", "world").unwrap();
 
     // Result should be finite (no NaN/Inf from accumulated floating point)
     assert!(
@@ -616,23 +616,23 @@ fn stress_depth_200_chain_with_rotation() {
 /// Verify: no panics, no NaN, no torn reads.
 #[test]
 fn stress_concurrent_4_writers_8_readers() {
-    let hf = Arc::new(TransformFrame::new());
+    let tf = Arc::new(TransformFrame::new());
 
     // Setup: world -> base -> arm -> hand, world -> camera
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("base", Some("world")).unwrap();
-    hf.register_frame("arm", Some("base")).unwrap();
-    hf.register_frame("hand", Some("arm")).unwrap();
-    hf.register_frame("camera", Some("world")).unwrap();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("base", Some("world")).unwrap();
+    tf.register_frame("arm", Some("base")).unwrap();
+    tf.register_frame("hand", Some("arm")).unwrap();
+    tf.register_frame("camera", Some("world")).unwrap();
 
     // Initial transforms
-    hf.update_transform("base", &Transform::from_translation([1.0, 0.0, 0.0]), 0)
+    tf.update_transform("base", &Transform::from_translation([1.0, 0.0, 0.0]), 0)
         .unwrap();
-    hf.update_transform("arm", &Transform::from_translation([0.0, 1.0, 0.0]), 0)
+    tf.update_transform("arm", &Transform::from_translation([0.0, 1.0, 0.0]), 0)
         .unwrap();
-    hf.update_transform("hand", &Transform::from_translation([0.0, 0.0, 1.0]), 0)
+    tf.update_transform("hand", &Transform::from_translation([0.0, 0.0, 1.0]), 0)
         .unwrap();
-    hf.update_transform("camera", &Transform::from_translation([0.5, 0.5, 0.0]), 0)
+    tf.update_transform("camera", &Transform::from_translation([0.5, 0.5, 0.0]), 0)
         .unwrap();
 
     let barrier = Arc::new(Barrier::new(12)); // 4 writers + 8 readers
@@ -643,7 +643,7 @@ fn stress_concurrent_4_writers_8_readers() {
     let frame_names = ["base", "arm", "hand", "camera"];
 
     for (w, &frame) in frame_names.iter().enumerate() {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         let frame = frame.to_string();
         writer_handles.push(thread::spawn(move || {
@@ -651,7 +651,7 @@ fn stress_concurrent_4_writers_8_readers() {
             for i in 0..iterations {
                 let val = (w * iterations + i) as f64 * 0.001;
                 let tf = Transform::from_translation([val, 0.0, 0.0]);
-                hf.update_transform(&frame, &tf, i as u64 * 1000).unwrap();
+                tf.update_transform(&frame, &tf, i as u64 * 1000).unwrap();
             }
         }));
     }
@@ -659,13 +659,13 @@ fn stress_concurrent_4_writers_8_readers() {
     // Spawn 8 reader threads
     let mut reader_handles = Vec::new();
     for _ in 0..8 {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         reader_handles.push(thread::spawn(move || {
             barrier.wait();
             let mut nan_count = 0u64;
             for _ in 0..iterations {
-                if let Ok(tf) = hf.tf("hand", "world") {
+                if let Ok(tf) = tf.tf("hand", "world") {
                     if !tf.translation[0].is_finite()
                         || !tf.translation[1].is_finite()
                         || !tf.translation[2].is_finite()
@@ -678,7 +678,7 @@ fn stress_concurrent_4_writers_8_readers() {
                         }
                     }
                 }
-                let _ = hf.can_transform("hand", "world");
+                let _ = tf.can_transform("hand", "world");
             }
             nan_count
         }));
@@ -699,7 +699,7 @@ fn stress_concurrent_4_writers_8_readers() {
     );
 
     // Final verify: transform should be resolvable and finite
-    let tf = hf.tf("hand", "world").unwrap();
+    let tf = tf.tf("hand", "world").unwrap();
     assert!(
         tf.translation.iter().all(|v| v.is_finite()),
         "Final transform has NaN/Inf: {:?}",
@@ -711,19 +711,19 @@ fn stress_concurrent_4_writers_8_readers() {
 /// Verify correctness under sustained load.
 #[test]
 fn stress_sustained_concurrent_load() {
-    let hf = Arc::new(TransformFrame::new());
+    let tf = Arc::new(TransformFrame::new());
 
     // Setup a realistic robot tree
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("odom", Some("world")).unwrap();
-    hf.register_frame("base_link", Some("odom")).unwrap();
-    hf.register_frame("laser", Some("base_link")).unwrap();
-    hf.register_frame("camera", Some("base_link")).unwrap();
-    hf.register_frame("imu", Some("base_link")).unwrap();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("odom", Some("world")).unwrap();
+    tf.register_frame("base_link", Some("odom")).unwrap();
+    tf.register_frame("laser", Some("base_link")).unwrap();
+    tf.register_frame("camera", Some("base_link")).unwrap();
+    tf.register_frame("imu", Some("base_link")).unwrap();
 
     // Set initial transforms
     for &name in &["odom", "base_link", "laser", "camera", "imu"] {
-        hf.update_transform(name, &Transform::from_translation([0.1, 0.0, 0.0]), 0)
+        tf.update_transform(name, &Transform::from_translation([0.1, 0.0, 0.0]), 0)
             .unwrap();
     }
 
@@ -731,7 +731,7 @@ fn stress_sustained_concurrent_load() {
     let iterations = 10_000u64;
 
     // Writer 1: Updates odom (simulating odometry at high rate)
-    let hf_w1 = hf.clone();
+    let hf_w1 = tf.clone();
     let b1 = barrier.clone();
     let w1 = thread::spawn(move || {
         b1.wait();
@@ -743,7 +743,7 @@ fn stress_sustained_concurrent_load() {
     });
 
     // Writer 2: Updates base_link (simulating joint state)
-    let hf_w2 = hf.clone();
+    let hf_w2 = tf.clone();
     let b2 = barrier.clone();
     let w2 = thread::spawn(move || {
         b2.wait();
@@ -755,7 +755,7 @@ fn stress_sustained_concurrent_load() {
     });
 
     // Reader: Resolves laser->world (typical perception query)
-    let hf_r = hf.clone();
+    let hf_r = tf.clone();
     let br = barrier.clone();
     let reader = thread::spawn(move || {
         br.wait();
@@ -786,7 +786,7 @@ fn stress_sustained_concurrent_load() {
     );
 
     // Final state must be consistent
-    let final_tf = hf.tf("laser", "world").unwrap();
+    let final_tf = tf.tf("laser", "world").unwrap();
     assert!(
         final_tf.translation.iter().all(|v| v.is_finite()),
         "Final transform is non-finite"
@@ -798,19 +798,19 @@ fn stress_sustained_concurrent_load() {
 /// Checks for torn reads, NaN/Inf, and quaternion norm drift under extreme load.
 #[test]
 fn stress_high_throughput_100k() {
-    let hf = Arc::new(TransformFrame::new());
+    let tf = Arc::new(TransformFrame::new());
 
     // Build a 6-frame robot arm: world -> base -> shoulder -> elbow -> wrist -> tool
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("base", Some("world")).unwrap();
-    hf.register_frame("shoulder", Some("base")).unwrap();
-    hf.register_frame("elbow", Some("shoulder")).unwrap();
-    hf.register_frame("wrist", Some("elbow")).unwrap();
-    hf.register_frame("tool", Some("wrist")).unwrap();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("base", Some("world")).unwrap();
+    tf.register_frame("shoulder", Some("base")).unwrap();
+    tf.register_frame("elbow", Some("shoulder")).unwrap();
+    tf.register_frame("wrist", Some("elbow")).unwrap();
+    tf.register_frame("tool", Some("wrist")).unwrap();
 
     // Initial transforms with small rotations
     for &name in &["base", "shoulder", "elbow", "wrist", "tool"] {
-        hf.update_transform(
+        tf.update_transform(
             name,
             &Transform::from_euler([0.1, 0.0, 0.0], [0.0, 0.0, 0.01]),
             0,
@@ -828,7 +828,7 @@ fn stress_high_throughput_100k() {
     let mut writer_handles = Vec::new();
 
     for (w, &frame) in writer_frames.iter().enumerate() {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         let frame = frame.to_string();
         writer_handles.push(thread::spawn(move || {
@@ -839,7 +839,7 @@ fn stress_high_throughput_100k() {
                 let angle = (i as f64) * 0.00001 * (w as f64 + 1.0);
                 let x = (i as f64) * 0.0001;
                 let tf = Transform::from_euler([x, 0.0, 0.0], [0.0, 0.0, angle]);
-                hf.update_transform(&frame, &tf, i * 1000).unwrap();
+                tf.update_transform(&frame, &tf, i * 1000).unwrap();
                 write_count += 1;
             }
             write_count
@@ -850,7 +850,7 @@ fn stress_high_throughput_100k() {
     let mut reader_handles = Vec::new();
 
     for _ in 0..num_readers {
-        let hf = hf.clone();
+        let tf = tf.clone();
         let barrier = barrier.clone();
         reader_handles.push(thread::spawn(move || {
             barrier.wait();
@@ -859,7 +859,7 @@ fn stress_high_throughput_100k() {
             let mut bad_quat_count = 0u64;
 
             for _ in 0..iterations {
-                if let Ok(tf) = hf.tf("tool", "world") {
+                if let Ok(tf) = tf.tf("tool", "world") {
                     read_count += 1;
 
                     // Check for NaN/Inf in translation
@@ -916,7 +916,7 @@ fn stress_high_throughput_100k() {
     );
 
     // Verify final state
-    let final_tf = hf.tf("tool", "world").unwrap();
+    let final_tf = tf.tf("tool", "world").unwrap();
     assert!(
         final_tf.translation.iter().all(|v| v.is_finite()),
         "Final transform has NaN/Inf"

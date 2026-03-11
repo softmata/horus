@@ -1082,6 +1082,13 @@ pub fn register_perception_module(parent: &Bound<'_, PyModule>) -> PyResult<()> 
 
     parent.add_submodule(&perception)?;
 
+    // Register in sys.modules so `from horus._horus.perception import X` works
+    parent
+        .py()
+        .import("sys")?
+        .getattr("modules")?
+        .set_item("horus._horus.perception", &perception)?;
+
     Ok(())
 }
 

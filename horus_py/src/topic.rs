@@ -5189,10 +5189,10 @@ impl PyTopic {
                 TopicType::Generic(t) => read_lock(t)?.metrics(),
             };
 
-            dict.set_item("messages_sent", metrics.messages_sent)?;
-            dict.set_item("messages_received", metrics.messages_received)?;
-            dict.set_item("send_failures", metrics.send_failures)?;
-            dict.set_item("recv_failures", metrics.recv_failures)?;
+            dict.set_item("messages_sent", metrics.messages_sent())?;
+            dict.set_item("messages_received", metrics.messages_received())?;
+            dict.set_item("send_failures", metrics.send_failures())?;
+            dict.set_item("recv_failures", metrics.recv_failures())?;
             dict.set_item("is_network", self.is_network)?;
             dict.set_item("backend", self.backend_type())?;
 

@@ -133,13 +133,13 @@ impl RecordingConfigYaml {
     }
 }
 
-/// Internal scheduler configuration — use `Scheduler` presets or builder methods instead.
+/// Internal scheduler configuration — use `Scheduler` builder methods instead.
 ///
 /// ```rust,ignore
-/// // Preferred: use a profile preset
-/// let scheduler = Scheduler::deploy().tick_rate(500.hz());
+/// // Production: enable monitoring
+/// let scheduler = Scheduler::new().monitoring(true).tick_rate(500.hz());
 ///
-/// // Or configure from scratch
+/// // Lightweight: no monitoring
 /// let scheduler = Scheduler::new().tick_rate(500.hz());
 /// ```
 #[derive(Debug, Clone)]

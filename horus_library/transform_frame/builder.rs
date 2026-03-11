@@ -3,10 +3,10 @@
 //! Provides a fluent API for registering frames:
 //!
 //! ```rust,ignore
-//! hf.add_frame("world").build()?;                              // root frame
-//! hf.add_frame("base_link").parent("world").build()?;          // child frame
+//! tf.add_frame("world").build()?;                              // root frame
+//! tf.add_frame("base_link").parent("world").build()?;          // child frame
 //!
-//! hf.add_frame("camera")
+//! tf.add_frame("camera")
 //!     .parent("base_link")
 //!     .static_transform(&Transform::from_translation([0.1, 0.0, 0.5]))
 //!     .build()?;
@@ -25,28 +25,28 @@ use horus_core::HorusResult;
 ///
 /// ```rust,ignore
 /// // Root frame (no parent)
-/// hf.add_frame("world").build()?;
+/// tf.add_frame("world").build()?;
 ///
 /// // Dynamic child frame
-/// hf.add_frame("base_link").parent("world").build()?;
+/// tf.add_frame("base_link").parent("world").build()?;
 ///
 /// // Static frame with fixed transform (never changes, more efficient)
-/// hf.add_frame("camera")
+/// tf.add_frame("camera")
 ///     .parent("base_link")
 ///     .static_transform(&Transform::xyz(0.1, 0.0, 0.5))
 ///     .build()?;
 /// ```
 pub struct FrameBuilder<'a> {
-    hf: &'a TransformFrame,
+    frame: &'a TransformFrame,
     name: &'a str,
     parent: Option<&'a str>,
     static_tf: Option<Transform>,
 }
 
 impl<'a> FrameBuilder<'a> {
-    pub(crate) fn new(hf: &'a TransformFrame, name: &'a str) -> Self {
+    pub(crate) fn new(frame: &'a TransformFrame, name: &'a str) -> Self {
         Self {
-            hf,
+            frame,
             name,
             parent: None,
             static_tf: None,
@@ -74,9 +74,9 @@ impl<'a> FrameBuilder<'a> {
     #[inline]
     pub fn build(self) -> HorusResult<FrameId> {
         if let Some(tf) = &self.static_tf {
-            self.hf.register_static_frame(self.name, self.parent, tf)
+            self.frame.register_static_frame(self.name, self.parent, tf)
         } else {
-            self.hf.register_frame(self.name, self.parent)
+            self.frame.register_frame(self.name, self.parent)
         }
     }
 }

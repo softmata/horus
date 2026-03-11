@@ -13,6 +13,15 @@ use std::time::{Duration, Instant};
 
 mod recording;
 
+/// Truncate a name to fit in a column width, adding ".." if truncated.
+fn truncate_name(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        name.to_string()
+    } else {
+        format!("{}...", &name[..max_len - 3])
+    }
+}
+
 // Record/Replay imports
 use super::record_replay::{NodeRecorder, NodeReplayer, RecordingConfig, SchedulerRecording};
 
@@ -131,6 +140,8 @@ pub(crate) struct MonitorState {
     /// Reused every tick to avoid the heap allocation that a `-> Vec<String>`
     /// return would require.  Passed by `&mut` into `SafetyMonitor::check_watchdogs`.
     pub watchdog_expired_buf: Vec<String>,
+    /// Pre-allocated buffer for graduated watchdog results.
+    pub watchdog_graduated_buf: Vec<(String, super::safety_monitor::WatchdogSeverity)>,
 }
 
 /// Replay state — only present when replaying a recording.
@@ -163,6 +174,9 @@ pub struct Scheduler {
     /// Deferred configuration applied once at `run()` time via `finalize_config()`.
     /// Builder methods mutate this; `finalize_config()` applies it before the tick loop.
     pub(super) pending_config: super::config::SchedulerConfig,
+
+    /// Whether `finalize_and_init()` has been called. Prevents double-init.
+    initialized: bool,
 }
 
 impl Default for Scheduler {
@@ -189,7 +203,7 @@ impl Scheduler {
     /// Create a scheduler with default configuration.
     ///
     /// Configuration is deferred until `run()` via builder methods.
-    /// Use presets (`hard_rt()`, `deploy()`, `safety_critical()`) or builder methods to configure.
+    /// Use `.prefer_rt()`, `.require_rt()`, `.monitoring(true)` to configure.
     pub fn new() -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
@@ -232,68 +246,21 @@ impl Scheduler {
                 last_snapshot: now,
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
                 watchdog_expired_buf: Vec::new(),
+                watchdog_graduated_buf: Vec::new(),
             },
             replay: None,
             recording: None,
             pending_config: config,
+            initialized: false,
         }
-    }
-
-    /// Create a **hard real-time** scheduler — all RT features enabled, fails fast
-    /// if the system doesn't support them.
-    ///
-    /// Enables: budget enforcement, deadline monitoring, watchdog, safety monitor,
-    /// memory locking, RT scheduling class, fault tolerance.
-    ///
-    /// # Panics
-    /// Panics if the system lacks RT capabilities (no `SCHED_FIFO`, no `mlockall`).
-    /// Use `Scheduler::new()` for graceful degradation instead.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// let scheduler = Scheduler::hard_rt()
-    ///     .tick_rate(1000.hz())
-    ///     .max_deadline_misses(3);
-    ///
-    /// scheduler.add(motor_node).order(0).budget(200.us()).build()?;
-    /// scheduler.run()?;
-    /// ```
-    pub fn hard_rt() -> Self {
-        let mut s = Self::new();
-
-        // Verify the system can actually do hard RT
-        let can_rt =
-            s.rt.capabilities
-                .as_ref()
-                .is_some_and(|c| c.rt_priority_available || c.mlockall_permitted);
-        assert!(
-            can_rt,
-            "hard_rt() requires a system with RT capabilities (SCHED_FIFO or mlockall). \
-             Use Scheduler::new() for best-effort scheduling."
-        );
-
-        // Enable every RT knob
-        s.pending_config.realtime = super::config::RealTimeConfig {
-            budget_enforcement: true,
-            deadline_monitoring: true,
-            watchdog_enabled: true,
-            watchdog_timeout_ms: 500,
-            safety_monitor: true,
-            max_deadline_misses: 10,
-            memory_locking: true,
-            rt_scheduling_class: true,
-        };
-
-        s
     }
 
     /// Set CPU cores to pin the scheduler and RT threads to.
     ///
     /// # Example
     /// ```rust,ignore
-    /// let scheduler = Scheduler::hard_rt()
+    /// let scheduler = Scheduler::new()
+    ///     .require_rt()
     ///     .cores(&[2, 3])   // Pin to cores 2 and 3
     ///     .tick_rate(1000.hz());
     /// ```
@@ -488,59 +455,8 @@ impl Scheduler {
     }
 
     // ========================================================================
-    // PROFILE PRESETS — preferred over individual boolean knobs
-    // ========================================================================
-
-    /// Create a **deployment** scheduler — safety monitor, fault tolerance, and
-    /// blackbox flight recorder enabled. Suitable for production robots.
-    ///
-    /// Gracefully degrades if the system lacks full RT capabilities.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::deploy()
-    ///     .tick_rate(500.hz())
-    ///     .cores(&[2, 3]);
-    /// ```
-    pub fn deploy() -> Self {
-        let mut s = Self::new();
-        s.pending_config.realtime.safety_monitor = true;
-        s.pending_config.realtime.budget_enforcement = true;
-        s.pending_config.realtime.deadline_monitoring = true;
-        s.pending_config.realtime.watchdog_enabled = true;
-        s.pending_config.realtime.watchdog_timeout_ms = 500;
-
-        s.pending_config.monitoring.black_box_enabled = true;
-        s.pending_config.monitoring.black_box_size_mb = 64;
-        s
-    }
-
-    /// Create a **safety-critical** scheduler — all RT features plus strict
-    /// deadline enforcement. Panics if the system lacks RT capabilities.
-    ///
-    /// Equivalent to `hard_rt()` plus fault tolerance and blackbox.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::safety_critical()
-    ///     .tick_rate(1000.hz())
-    ///     .max_deadline_misses(3);
-    /// ```
-    pub fn safety_critical() -> Self {
-        let mut s = Self::hard_rt();
-
-        s.pending_config.monitoring.black_box_enabled = true;
-        s.pending_config.monitoring.black_box_size_mb = 64;
-        s.pending_config.monitoring.profiling_enabled = true;
-        s
-    }
-
-    // ========================================================================
     // INDIVIDUAL BUILDER METHODS
     // ========================================================================
-    //
-    // For most use cases, prefer a profile preset (`hard_rt()`, `deploy()`,
-    // `safety_critical()`) instead of toggling these individually.
 
     /// Set the maximum number of deadline misses before emergency stop.
     pub fn max_deadline_misses(mut self, n: u64) -> Self {
@@ -868,6 +784,8 @@ impl Scheduler {
 
     /// Build node health and RT degradation status lines.
     fn node_health_status_lines(&self) -> Vec<String> {
+        use super::types::NodeHealthState;
+
         let thin_sep = "------------------------------------------------------------------";
         let mut lines = Vec::new();
 
@@ -875,18 +793,45 @@ impl Scheduler {
         if !self.nodes.is_empty() {
             lines.push(thin_sep.to_string());
             lines.push("Node Health:".to_string());
+
             let stopped_count = self.nodes.iter().filter(|n| n.is_stopped).count();
-            if stopped_count == 0 {
+            let warning_count = self
+                .nodes
+                .iter()
+                .filter(|n| n.health_state.load() == NodeHealthState::Warning)
+                .count();
+            let unhealthy_count = self
+                .nodes
+                .iter()
+                .filter(|n| n.health_state.load() == NodeHealthState::Unhealthy)
+                .count();
+            let isolated_count = self
+                .nodes
+                .iter()
+                .filter(|n| n.health_state.load() == NodeHealthState::Isolated)
+                .count();
+
+            let degraded = stopped_count + warning_count + unhealthy_count + isolated_count;
+            if degraded == 0 {
                 lines.push(format!("  [OK] All {} nodes healthy", self.nodes.len()));
             } else {
                 lines.push(format!(
-                    "  [WARN] {} stopped, {} healthy",
+                    "  {} healthy, {} warning, {} unhealthy, {} isolated, {} stopped",
+                    self.nodes.len() - degraded,
+                    warning_count,
+                    unhealthy_count,
+                    isolated_count,
                     stopped_count,
-                    self.nodes.len() - stopped_count
                 ));
                 for node in &self.nodes {
-                    if node.is_stopped {
-                        lines.push(format!("    - {}: STOPPED", node.name.as_ref(),));
+                    let health = node.health_state.load();
+                    if node.is_stopped || health != NodeHealthState::Healthy {
+                        let label = if node.is_stopped {
+                            "STOPPED".to_string()
+                        } else {
+                            health.to_string().to_uppercase()
+                        };
+                        lines.push(format!("    - {}: {}", node.name.as_ref(), label));
                     }
                 }
             }
@@ -1102,7 +1047,7 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::deploy();
+    /// let mut scheduler = Scheduler::new().monitoring(true);
     /// // ... after run() starts, safety monitor is active
     /// ```
     ///
@@ -1120,7 +1065,7 @@ impl Scheduler {
         } else {
             Err(crate::error::HorusError::Config(
                 crate::error::ConfigError::Other(
-                    "Safety monitor not enabled. Use Scheduler::deploy() or Scheduler::hard_rt()."
+                    "Safety monitor not enabled. Use Scheduler::new().monitoring(true) or Scheduler::new().require_rt().monitoring(true)."
                         .to_string(),
                 ),
             ))
@@ -1138,7 +1083,7 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::deploy();
+    /// let mut scheduler = Scheduler::new().monitoring(true);
     /// // tick budgets are typically set via .budget() on the node builder
     /// ```
     ///
@@ -1156,7 +1101,7 @@ impl Scheduler {
         } else {
             Err(crate::error::HorusError::Config(
                 crate::error::ConfigError::Other(
-                    "Safety monitor not enabled. Use Scheduler::deploy() or Scheduler::hard_rt()."
+                    "Safety monitor not enabled. Use Scheduler::new().monitoring(true) or Scheduler::new().require_rt().monitoring(true)."
                         .to_string(),
                 ),
             ))
@@ -1374,6 +1319,7 @@ impl Scheduler {
             rt_stats,
             miss_policy,
             execution_class,
+            health_state: crate::scheduling::types::AtomicHealthState::default(),
         });
 
         if let Some(rate) = node_rate {
@@ -1477,6 +1423,87 @@ impl Scheduler {
         }
     }
 
+    /// Apply deferred configuration and initialize all nodes.
+    ///
+    /// Called lazily on first `tick_once()` or at the start of `run()`.
+    /// Idempotent — subsequent calls are no-ops.
+    fn finalize_and_init(&mut self) {
+        if self.initialized {
+            return;
+        }
+        self.finalize_config();
+        self.adjust_tick_period_for_node_rates();
+        self.initialize_filtered_nodes(None);
+        self.initialized = true;
+    }
+
+    /// Execute exactly one tick cycle for all nodes, then return.
+    ///
+    /// Does **not** loop. Does **not** sleep. The caller controls timing.
+    /// Lazily initializes on first call (applies deferred config, inits nodes).
+    ///
+    /// Designed for simulation and testing:
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::new()
+    ///     .deterministic(true)
+    ///     .tick_rate(100.hz());
+    ///
+    /// scheduler.add(MyNode::new()).build()?;
+    ///
+    /// // Simulation loop
+    /// loop {
+    ///     sim.step_physics(dt);
+    ///     scheduler.tick_once()?;
+    ///     sim.render();
+    /// }
+    /// ```
+    pub fn tick_once(&mut self) -> HorusResult<()> {
+        self.finalize_and_init();
+        self.execute_single_tick(None)
+    }
+
+    /// Execute exactly one tick cycle for specific named nodes only.
+    ///
+    /// Nodes not in `names` are skipped. Non-existent names are silently ignored.
+    /// Lazily initializes on first call.
+    ///
+    /// ```rust,ignore
+    /// // Tick only the motor controller
+    /// scheduler.tick_once_nodes(&["motor_controller"])?;
+    /// assert_eq!(motor_output.recv(), expected);
+    /// ```
+    pub fn tick_once_nodes(&mut self, names: &[&str]) -> HorusResult<()> {
+        self.finalize_and_init();
+        self.execute_single_tick(Some(names))
+    }
+
+    /// Internal: run one tick cycle. No loop, no sleep.
+    fn execute_single_tick(&mut self, node_filter: Option<&[&str]>) -> HorusResult<()> {
+        self.process_control_commands();
+        self.tick.last_instant = Instant::now();
+        self.reinit_pending_nodes();
+
+        // Execute BestEffort nodes synchronously (same logic as execute_nodes but sync)
+        self.nodes.sort_by_key(|r| r.priority);
+        let num_nodes = self.nodes.len();
+        for i in 0..num_nodes {
+            if self.execute_single_node(i, node_filter) {
+                return Err(crate::horus_internal!(
+                    "Fatal node failure during tick_once"
+                ));
+            }
+        }
+
+        if self.check_safety_monitors() {
+            return Err(crate::horus_internal!(
+                "Emergency stop triggered during tick_once"
+            ));
+        }
+
+        self.tick.current += 1;
+        Ok(())
+    }
+
     /// Main loop with automatic signal handling and cleanup.
     pub fn run(&mut self) -> HorusResult<()> {
         self.run_with_filter(None, None)
@@ -1576,6 +1603,7 @@ impl Scheduler {
             let start_time = Instant::now();
 
             self.finalize_config();
+            self.initialized = true;
             self.install_panic_hook();
             self.setup_signal_handlers();
             self.initialize_filtered_nodes(node_filter);
@@ -1583,104 +1611,107 @@ impl Scheduler {
             self.update_registry();
             self.adjust_tick_period_for_node_rates();
 
-            // Group nodes by ExecutionClass and dispatch to dedicated executors:
-            // - RT nodes → RtExecutor (dedicated high-priority thread)
-            // - Compute nodes → ComputeExecutor (parallel thread pool)
-            // - Event nodes → EventExecutor (per-node watcher threads)
-            // - AsyncIo nodes → AsyncExecutor (tokio blocking pool)
-            // - BestEffort nodes → stay in self.nodes for main-thread sequential execution
-            let all_nodes = std::mem::take(&mut self.nodes);
-            let groups = super::types::group_nodes_by_class(all_nodes);
+            let deterministic = self.pending_config.timing.deterministic_order;
 
-            // BestEffort nodes remain on the main thread
-            self.nodes = groups.main_nodes;
+            // In deterministic mode: all nodes stay on the main thread,
+            // no executor threads are spawned. This guarantees identical
+            // execution order across runs.
+            let mut rt_executor = None;
+            let mut compute_executor = None;
+            let mut event_executor = None;
+            let mut async_executor = None;
 
-            // Shared monitors for all executor threads
-            let shared_monitors = super::types::SharedMonitors {
-                profiler: self.monitor.profiler.clone(),
-                blackbox: self.monitor.blackbox.clone(),
-                verbose: self.pending_config.monitoring.verbose,
-            };
+            if deterministic {
+                print_line("Deterministic mode: all nodes execute sequentially on main thread");
+                // All nodes stay in self.nodes — no grouping, no executors
+            } else {
+                // Group nodes by ExecutionClass and dispatch to dedicated executors:
+                // - RT nodes → RtExecutor (dedicated high-priority thread)
+                // - Compute nodes → ComputeExecutor (parallel thread pool)
+                // - Event nodes → EventExecutor (per-node watcher threads)
+                // - AsyncIo nodes → AsyncExecutor (tokio blocking pool)
+                // - BestEffort nodes → stay in self.nodes for main-thread sequential execution
+                let all_nodes = std::mem::take(&mut self.nodes);
+                let groups = super::types::group_nodes_by_class(all_nodes);
 
-            let rt_executor = if !groups.rt_nodes.is_empty() {
-                print_line(&format!(
-                    "Starting RT executor with {} RT nodes on dedicated thread",
-                    groups.rt_nodes.len()
-                ));
-                // Determine RT CPU affinity: user override > detected recommended CPUs > empty
-                let rt_cpus = if let Some(ref cores) = self.pending_config.resources.cpu_cores {
-                    cores.clone()
-                } else if let Some(ref caps) = self.rt.capabilities {
-                    if !caps.recommended_rt_cpus.is_empty() {
-                        // Use top recommended CPU(s)
-                        caps.recommended_rt_cpus.clone()
-                    } else if caps.cpu_count > 1 {
-                        // Fallback: highest-numbered CPU (least system interference)
-                        vec![caps.cpu_count - 1]
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
+                // BestEffort nodes remain on the main thread
+                self.nodes = groups.main_nodes;
+
+                // Shared monitors for all executor threads
+                let shared_monitors = super::types::SharedMonitors {
+                    profiler: self.monitor.profiler.clone(),
+                    blackbox: self.monitor.blackbox.clone(),
+                    verbose: self.pending_config.monitoring.verbose,
                 };
 
-                Some(super::rt_executor::RtExecutor::start(
-                    groups.rt_nodes,
-                    self.running.clone(),
-                    self.tick.period,
-                    shared_monitors.clone(),
-                    rt_cpus,
-                ))
-            } else {
-                None
-            };
+                if !groups.rt_nodes.is_empty() {
+                    print_line(&format!(
+                        "Starting RT executor with {} RT nodes on dedicated thread",
+                        groups.rt_nodes.len()
+                    ));
+                    let rt_cpus = if let Some(ref cores) = self.pending_config.resources.cpu_cores {
+                        cores.clone()
+                    } else if let Some(ref caps) = self.rt.capabilities {
+                        if !caps.recommended_rt_cpus.is_empty() {
+                            caps.recommended_rt_cpus.clone()
+                        } else if caps.cpu_count > 1 {
+                            vec![caps.cpu_count - 1]
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    };
 
-            let compute_executor = if !groups.compute_nodes.is_empty() {
-                print_line(&format!(
-                    "Starting compute executor with {} nodes on thread pool",
-                    groups.compute_nodes.len()
-                ));
-                Some(super::compute_executor::ComputeExecutor::start(
-                    groups.compute_nodes,
-                    self.running.clone(),
-                    self.tick.period,
-                    shared_monitors.clone(),
-                ))
-            } else {
-                None
-            };
+                    rt_executor = Some(super::rt_executor::RtExecutor::start(
+                        groups.rt_nodes,
+                        self.running.clone(),
+                        self.tick.period,
+                        shared_monitors.clone(),
+                        rt_cpus,
+                    ));
+                }
 
-            let event_executor = if !groups.event_nodes.is_empty() {
-                print_line(&format!(
-                    "Starting event executor with {} event-triggered nodes",
-                    groups.event_nodes.len()
-                ));
-                Some(super::event_executor::EventExecutor::start(
-                    groups.event_nodes,
-                    self.running.clone(),
-                    shared_monitors.clone(),
-                ))
-            } else {
-                None
-            };
+                if !groups.compute_nodes.is_empty() {
+                    print_line(&format!(
+                        "Starting compute executor with {} nodes on thread pool",
+                        groups.compute_nodes.len()
+                    ));
+                    compute_executor = Some(super::compute_executor::ComputeExecutor::start(
+                        groups.compute_nodes,
+                        self.running.clone(),
+                        self.tick.period,
+                        shared_monitors.clone(),
+                    ));
+                }
 
-            let async_executor = if !groups.async_io_nodes.is_empty() {
-                print_line(&format!(
-                    "Starting async I/O executor with {} nodes on tokio pool",
-                    groups.async_io_nodes.len()
-                ));
-                Some(super::async_executor::AsyncExecutor::start(
-                    groups.async_io_nodes,
-                    self.running.clone(),
-                    self.tick.period,
-                    shared_monitors.clone(),
-                ))
-            } else {
-                None
-            };
+                if !groups.event_nodes.is_empty() {
+                    print_line(&format!(
+                        "Starting event executor with {} event-triggered nodes",
+                        groups.event_nodes.len()
+                    ));
+                    event_executor = Some(super::event_executor::EventExecutor::start(
+                        groups.event_nodes,
+                        self.running.clone(),
+                        shared_monitors.clone(),
+                    ));
+                }
 
-            // Main tick loop — BestEffort nodes execute sequentially on this thread,
-            // while RT/Compute/Event nodes run on their dedicated executors.
+                if !groups.async_io_nodes.is_empty() {
+                    print_line(&format!(
+                        "Starting async I/O executor with {} nodes on tokio pool",
+                        groups.async_io_nodes.len()
+                    ));
+                    async_executor = Some(super::async_executor::AsyncExecutor::start(
+                        groups.async_io_nodes,
+                        self.running.clone(),
+                        self.tick.period,
+                        shared_monitors.clone(),
+                    ));
+                }
+            }
+
+            // Main tick loop
             while self.is_running() {
                 if self.should_stop_loop(start_time, duration) {
                     break;
@@ -1995,17 +2026,67 @@ impl Scheduler {
         }
     }
 
-    /// Check watchdogs and handle emergency stop. Returns `true` if scheduler should stop.
+    /// Check watchdogs with graduated severity and update node health states.
+    ///
+    /// Uses graduated watchdog to transition nodes through health states:
+    /// - Warning (1x timeout): log, node stays Healthy→Warning
+    /// - Expired (2x timeout): mark Unhealthy, skip in tick loop
+    /// - Critical (3x timeout): mark Isolated, call `enter_safe_state()` for critical nodes
+    ///
+    /// Returns `true` if the scheduler should stop (emergency stop triggered).
     fn check_safety_monitors(&mut self) -> bool {
         if let Some(ref monitor) = self.monitor.safety {
-            // Pass the pre-allocated buffer to avoid a heap allocation every tick.
-            monitor.check_watchdogs(&mut self.monitor.watchdog_expired_buf);
-            if !self.monitor.watchdog_expired_buf.is_empty() {
-                print_line(&format!(
-                    " Watchdog expired for nodes: {:?}",
-                    self.monitor.watchdog_expired_buf
-                ));
+            // Use graduated check for per-node health state transitions
+            monitor
+                .check_watchdogs_graduated(&mut self.monitor.watchdog_graduated_buf);
+
+            // Apply health state transitions based on severity
+            for (node_name, severity) in &self.monitor.watchdog_graduated_buf {
+                use super::safety_monitor::WatchdogSeverity;
+                use super::types::NodeHealthState;
+
+                if let Some(registered) = self.nodes.iter_mut().find(|n| n.name.as_ref() == node_name) {
+                    let current = registered.health_state.load();
+                    match severity {
+                        WatchdogSeverity::Ok => {
+                            // Should not appear in results, but handle gracefully
+                        }
+                        WatchdogSeverity::Warning => {
+                            if current == NodeHealthState::Healthy {
+                                registered.health_state.store(NodeHealthState::Warning);
+                                print_line(&format!(
+                                    " Watchdog warning: '{}' (1x timeout) — marking Warning",
+                                    node_name
+                                ));
+                            }
+                        }
+                        WatchdogSeverity::Expired => {
+                            if current != NodeHealthState::Unhealthy
+                                && current != NodeHealthState::Isolated
+                            {
+                                registered.health_state.store(NodeHealthState::Unhealthy);
+                                print_line(&format!(
+                                    " Watchdog expired: '{}' (2x timeout) — marking Unhealthy, skipping",
+                                    node_name
+                                ));
+                            }
+                        }
+                        WatchdogSeverity::Critical => {
+                            if current != NodeHealthState::Isolated {
+                                registered.health_state.store(NodeHealthState::Isolated);
+                                registered.node.enter_safe_state();
+                                print_line(&format!(
+                                    " Watchdog critical: '{}' (3x timeout) — Isolated, entered safe state",
+                                    node_name
+                                ));
+                            }
+                        }
+                    }
+                }
             }
+
+            // Also run the classic expired check for backward compat logging
+            monitor.check_watchdogs(&mut self.monitor.watchdog_expired_buf);
 
             if monitor.is_emergency_stop() {
                 print_line(" Emergency stop activated - shutting down scheduler");
@@ -2187,11 +2268,132 @@ impl Scheduler {
             let _ = tm.export();
         }
 
+        // Print timing report if profiling enabled and ticks were executed
+        if self.pending_config.monitoring.profiling_enabled && total_ticks > 0 {
+            self.print_timing_report();
+        }
+
         // Clean up registry file and session
         self.cleanup_registry();
         Self::cleanup_session();
 
         print_line("Scheduler shutdown complete");
+    }
+
+    /// Print a formatted per-node timing report to stderr.
+    ///
+    /// Uses data from: RuntimeProfiler (Welford avg/stddev/min/max) and
+    /// SafetyMonitor (ring buffer p99, budget, overruns, deadline misses).
+    ///
+    /// Zero runtime cost — only runs on shutdown. Output goes to stderr
+    /// to avoid polluting stdout piping.
+    fn print_timing_report(&self) {
+        let profiler = self.monitor.profiler.lock().unwrap();
+        if profiler.node_stats.is_empty() {
+            return;
+        }
+
+        // Gather safety monitor data (if available)
+        let safety_data: HashMap<String, (super::safety_monitor::TimingStats, Option<Duration>, u64)> =
+            if let Some(ref monitor) = self.monitor.safety {
+                monitor
+                    .all_node_timing()
+                    .into_iter()
+                    .map(|(name, stats, budget, overruns)| (name, (stats, budget, overruns)))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
+        let sep = "=".repeat(90);
+        let thin_sep = "-".repeat(90);
+        eprintln!("\n{}", sep);
+        eprintln!("TIMING REPORT (per-node)");
+        eprintln!("{}", sep);
+        eprintln!(
+            "{:<20} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8}",
+            "Node", "Avg(us)", "P99(us)", "Max(us)", "Stddev", "Budget(us)", "Overruns", "Misses"
+        );
+        eprintln!("{}", thin_sep);
+
+        // Sort nodes by name for consistent output
+        let mut node_names: Vec<&String> = profiler.node_stats.keys().collect();
+        node_names.sort();
+
+        let mut suggestions: Vec<String> = Vec::new();
+
+        for name in &node_names {
+            let stats = &profiler.node_stats[*name];
+            if stats.count == 0 {
+                continue;
+            }
+
+            let (p99_str, budget_str, overruns_str, misses_str) =
+                if let Some((ref ring_stats, budget, overruns)) = safety_data.get(*name) {
+                    let p99 = format!("{}", ring_stats.p99_us);
+                    let budget_s = budget
+                        .map(|b| format!("{}", b.as_micros()))
+                        .unwrap_or_else(|| "-".to_string());
+                    let overruns_s = format!("{}", overruns);
+                    let misses_s = format!("{}", ring_stats.total_ticks); // reuse total_ticks
+                    (p99, budget_s, overruns_s, misses_s)
+                } else {
+                    ("-".to_string(), "-".to_string(), "0".to_string(), "-".to_string())
+                };
+
+            // Status indicator
+            let status = if let Some((_, _, overruns)) = safety_data.get(*name) {
+                if *overruns > 0 { "!" } else { "" }
+            } else {
+                ""
+            };
+
+            eprintln!(
+                "{:<20} {:>8.0} {:>8} {:>8.0} {:>8.1} {:>10} {:>8} {:>7}{}",
+                truncate_name(name, 20),
+                stats.avg_us,
+                p99_str,
+                stats.max_us,
+                stats.stddev_us,
+                budget_str,
+                overruns_str,
+                misses_str,
+                status,
+            );
+
+            // Generate suggestions
+            if let Some((ref ring_stats, budget, overruns)) = safety_data.get(*name) {
+                if budget.is_none() && ring_stats.p99_us > 0 {
+                    let suggested = ring_stats.p99_us * 2;
+                    suggestions.push(format!(
+                        "  {} — no budget set. Suggested: .budget({}.us())",
+                        name, suggested
+                    ));
+                }
+                if *overruns > 10 {
+                    suggestions.push(format!(
+                        "  {} — {} overruns. Consider increasing budget or reducing tick complexity",
+                        name, overruns
+                    ));
+                }
+            }
+        }
+
+        eprintln!("{}", thin_sep);
+        eprintln!(
+            "Total nodes: {}  |  Ticked: {}",
+            self.nodes.len(),
+            node_names.len()
+        );
+
+        if !suggestions.is_empty() {
+            eprintln!("\nSuggestions:");
+            for s in &suggestions {
+                eprintln!("{}", s);
+            }
+        }
+
+        eprintln!("{}\n", sep);
     }
 
     /// Get information about all registered nodes
@@ -2439,9 +2641,16 @@ impl Scheduler {
                 // Get state and health from context
                 let (state_str, health_str, error_count, tick_count) = if let Some(ref ctx) = registered.context {
                     let metrics = ctx.metrics();
+                    // Watchdog health overrides context-based health when degraded
+                    let watchdog_health = registered.health_state.load();
+                    let health = if watchdog_health != super::types::NodeHealthState::Healthy {
+                        watchdog_health.to_string()
+                    } else {
+                        metrics.calculate_health().as_str().to_string()
+                    };
                     (
                         ctx.state().to_string(),
-                        metrics.calculate_health().as_str().to_string(),
+                        health,
                         metrics.errors_count(),
                         metrics.total_ticks(),
                     )
@@ -2499,6 +2708,15 @@ impl Scheduler {
         // Skip stopped nodes
         if self.nodes[i].is_stopped {
             return false;
+        }
+
+        // Skip Unhealthy/Isolated nodes (watchdog has marked them for skipping)
+        {
+            use super::types::NodeHealthState;
+            let health = self.nodes[i].health_state.load();
+            if matches!(health, NodeHealthState::Unhealthy | NodeHealthState::Isolated) {
+                return false;
+            }
         }
 
         // Auto-unpause nodes that were paused by DeadlineMissPolicy::Skip
@@ -2619,6 +2837,27 @@ impl Scheduler {
                 if let Some(ref mut context) = self.nodes[i].context {
                     context.record_tick();
                 }
+
+                // Recovery: successful tick transitions Warning→Healthy
+                {
+                    use super::types::NodeHealthState;
+                    let health = self.nodes[i].health_state.load();
+                    if health == NodeHealthState::Warning {
+                        self.nodes[i].health_state.store(NodeHealthState::Healthy);
+                        // Feed watchdog on recovery so the graduated check sees fresh timestamp
+                        if let Some(ref monitor) = self.monitor.safety {
+                            monitor.feed_watchdog(&self.nodes[i].name);
+                        }
+                    }
+                }
+
+                // Graduated degradation recovery: track successful ticks at reduced rate
+                if let Some(ref monitor) = self.monitor.safety {
+                    let action =
+                        monitor.record_successful_tick(&self.nodes[i].name);
+                    self.apply_degradation_action(i, action);
+                }
+
                 false
             }
             Err(panic_err) => self.handle_tick_failure(i, panic_err),
@@ -2707,6 +2946,17 @@ impl Scheduler {
                             });
                     }
 
+                    // Graduated degradation: evaluate and apply corrective action
+                    if let Some(ref monitor) = self.monitor.safety {
+                        let consecutive = monitor.consecutive_misses(&node_name);
+                        let action = monitor.evaluate_degradation(
+                            &node_name,
+                            consecutive,
+                            self.nodes[i].rate_hz,
+                        );
+                        self.apply_degradation_action(i, action);
+                    }
+
                     // Dispatch on deadline action
                     match dm.action {
                         DeadlineAction::Warn => {
@@ -2747,6 +2997,57 @@ impl Scheduler {
             }
         }
         false
+    }
+
+    /// Apply a degradation action produced by the safety monitor.
+    fn apply_degradation_action(
+        &mut self,
+        i: usize,
+        action: super::safety_monitor::DegradationAction,
+    ) {
+        use super::safety_monitor::DegradationAction;
+        use super::types::NodeHealthState;
+
+        match action {
+            DegradationAction::None => {}
+            DegradationAction::Warn(ref name) => {
+                print_line(&format!(
+                    " Degradation: '{}' — sustained timing violations, monitoring",
+                    name
+                ));
+            }
+            DegradationAction::ReduceRate { ref node, new_rate_hz } => {
+                self.nodes[i].rate_hz = Some(new_rate_hz);
+                self.nodes[i].last_tick = Some(Instant::now());
+                print_line(&format!(
+                    " Degradation: '{}' — reducing rate to {:.1} Hz",
+                    node, new_rate_hz
+                ));
+            }
+            DegradationAction::Isolate(ref name) => {
+                self.nodes[i].health_state.store(NodeHealthState::Isolated);
+                self.nodes[i].node.enter_safe_state();
+                print_line(&format!(
+                    " Degradation: '{}' — isolated, entered safe state",
+                    name
+                ));
+                if let Some(ref monitor) = self.monitor.safety {
+                    monitor.record_safe_mode_activation();
+                }
+            }
+            DegradationAction::RestoreRate {
+                ref node,
+                original_rate_hz,
+            } => {
+                self.nodes[i].rate_hz = Some(original_rate_hz);
+                self.nodes[i].last_tick = Some(Instant::now());
+                self.nodes[i].health_state.store(NodeHealthState::Healthy);
+                print_line(&format!(
+                    " Recovery: '{}' — restored to {:.1} Hz",
+                    node, original_rate_hz
+                ));
+            }
+        }
     }
 
     /// Handle a node tick failure.

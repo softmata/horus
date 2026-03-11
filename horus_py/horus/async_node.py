@@ -118,17 +118,32 @@ class AsyncTopic:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._topic.send, msg)
 
-    async def recv(self) -> Any:
+    async def recv(self, timeout: Optional[float] = None) -> Any:
         """
         Receive message asynchronously.
-        Waits until a message is available.
+        Waits until a message is available, with exponential backoff.
+
+        Args:
+            timeout: Maximum seconds to wait (None = wait forever).
+
+        Raises:
+            asyncio.TimeoutError: If timeout expires before a message arrives.
         """
         loop = asyncio.get_event_loop()
+        delay = 0.001  # Start at 1ms
+        max_delay = 0.05  # Cap at 50ms
+        elapsed = 0.0
         while True:
             msg = await loop.run_in_executor(None, self._topic.recv)
             if msg is not None:
                 return msg
-            await asyncio.sleep(0.001)  # Small delay to avoid busy wait
+            if timeout is not None and elapsed >= timeout:
+                raise asyncio.TimeoutError(
+                    f"AsyncTopic.recv() timed out after {timeout}s"
+                )
+            await asyncio.sleep(delay)
+            elapsed += delay
+            delay = min(delay * 1.5, max_delay)
 
     async def try_recv(self) -> Optional[Any]:
         """

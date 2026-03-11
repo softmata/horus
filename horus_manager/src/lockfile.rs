@@ -26,7 +26,7 @@ pub const HORUS_LOCK: &str = "horus.lock";
 /// Actual dependency locking is delegated to native tools (Cargo.lock, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HorusLockfile {
-    /// Schema version (2 = config-only, 1 = legacy with packages).
+    /// Schema version (2 = config-only).
     pub version: u32,
 
     /// SHA-256 hash of the `horus.toml` config file.
@@ -51,36 +51,20 @@ impl HorusLockfile {
     }
 
     /// Load lockfile from disk.
-    ///
-    /// Handles both v1 (legacy) and v2 formats. Legacy v1 files with a
-    /// `manifest_hash` field are transparently upgraded to `config_hash`.
     pub fn load_from(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read lockfile: {}", path.display()))?;
 
-        // Parse the raw TOML to inspect the version and fields
-        let raw: toml::Value = toml::from_str(&content)
+        let lockfile: HorusLockfile = toml::from_str(&content)
             .with_context(|| format!("Failed to parse lockfile: {}", path.display()))?;
 
-        let version = raw.get("version").and_then(|v| v.as_integer()).unwrap_or(1) as u32;
+        anyhow::ensure!(
+            lockfile.version >= 2,
+            "Unsupported lockfile version {}. Delete horus.lock and re-run to regenerate.",
+            lockfile.version
+        );
 
-        if version >= 2 {
-            // Modern format — deserialize directly
-            let lockfile: HorusLockfile = toml::from_str(&content)
-                .with_context(|| format!("Failed to parse lockfile: {}", path.display()))?;
-            return Ok(lockfile);
-        }
-
-        // Legacy v1 format had `manifest_hash` instead of `config_hash`
-        let manifest_hash = raw
-            .get("manifest_hash")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        Ok(Self {
-            version: 2,
-            config_hash: manifest_hash,
-        })
+        Ok(lockfile)
     }
 
     /// Save lockfile to disk.
@@ -162,26 +146,17 @@ mod tests {
     }
 
     #[test]
-    fn load_legacy_v1_format() {
+    fn load_v1_lockfile_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("horus.lock");
 
-        // Write a v1-style lockfile with manifest_hash and package entries
-        let legacy_content = r#"
-version = 1
-manifest_hash = "oldhash"
-
-[[package]]
-name = "numpy"
-version = "1.24.3"
-source = "pypi"
-"#;
+        let legacy_content = "version = 1\nmanifest_hash = \"oldhash\"\n";
         fs::write(&path, legacy_content).unwrap();
 
-        let loaded = HorusLockfile::load_from(&path).unwrap();
-        // Should be upgraded to v2 with config_hash from manifest_hash
-        assert_eq!(loaded.version, 2);
-        assert_eq!(loaded.config_hash, Some("oldhash".to_string()));
+        let result = HorusLockfile::load_from(&path);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Unsupported lockfile version"));
     }
 
     #[test]

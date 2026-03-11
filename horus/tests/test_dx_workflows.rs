@@ -303,7 +303,7 @@ fn topic_try_send_and_dropped_count() {
     assert_eq!(topic.dropped_count(), 0);
     // Force a dropped send via the lossy path
     topic.send(4); // this will spin+yield then drop
-    assert!(topic.dropped_count() > 0 || topic.metrics().send_failures > 0);
+    assert!(topic.dropped_count() > 0 || topic.metrics().send_failures() > 0);
 }
 
 // ============================================================================

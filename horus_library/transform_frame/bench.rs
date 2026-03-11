@@ -13,28 +13,28 @@ const ITERATIONS: u64 = 100_000;
 #[test]
 #[ignore]
 fn transform_frame_benchmark_lookup_by_id() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
     // Setup: create a chain of frames
-    let world = hf.register_frame("world", None).unwrap();
-    let base = hf.register_frame("base_link", Some("world")).unwrap();
-    let camera = hf.register_frame("camera", Some("base_link")).unwrap();
+    let world = tf.register_frame("world", None).unwrap();
+    let base = tf.register_frame("base_link", Some("world")).unwrap();
+    let camera = tf.register_frame("camera", Some("base_link")).unwrap();
 
     // Update transforms
-    hf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+    tf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000)
+    tf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000)
         .unwrap();
 
     // Warm up
     for _ in 0..1000 {
-        let _ = hf.core.resolve(camera, world);
+        let _ = tf.core.resolve(camera, world);
     }
 
     // Benchmark
     let start = Instant::now();
     for _ in 0..ITERATIONS {
-        let _ = hf.core.resolve(camera, world);
+        let _ = tf.core.resolve(camera, world);
     }
     let elapsed = start.elapsed();
 
@@ -51,20 +51,20 @@ fn transform_frame_benchmark_lookup_by_id() {
 #[test]
 #[ignore]
 fn transform_frame_benchmark_lookup_by_name() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
     // Setup
-    hf.register_frame("world", None).unwrap();
-    hf.register_frame("base_link", Some("world")).unwrap();
-    hf.register_frame("camera", Some("base_link")).unwrap();
+    tf.register_frame("world", None).unwrap();
+    tf.register_frame("base_link", Some("world")).unwrap();
+    tf.register_frame("camera", Some("base_link")).unwrap();
 
-    hf.update_transform(
+    tf.update_transform(
         "base_link",
         &Transform::from_translation([1.0, 0.0, 0.0]),
         1000,
     )
     .unwrap();
-    hf.update_transform(
+    tf.update_transform(
         "camera",
         &Transform::from_translation([0.0, 0.0, 0.5]),
         1000,
@@ -73,13 +73,13 @@ fn transform_frame_benchmark_lookup_by_name() {
 
     // Warm up
     for _ in 0..1000 {
-        let _ = hf.tf("camera", "world");
+        let _ = tf.tf("camera", "world");
     }
 
     // Benchmark
     let start = Instant::now();
     for _ in 0..ITERATIONS {
-        let _ = hf.tf("camera", "world");
+        let _ = tf.tf("camera", "world");
     }
     let elapsed = start.elapsed();
 
@@ -96,23 +96,23 @@ fn transform_frame_benchmark_lookup_by_name() {
 #[test]
 #[ignore]
 fn transform_frame_benchmark_update() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
     // Setup
-    hf.register_frame("world", None).unwrap();
-    let base = hf.register_frame("base_link", Some("world")).unwrap();
+    tf.register_frame("world", None).unwrap();
+    let base = tf.register_frame("base_link", Some("world")).unwrap();
 
-    let tf = Transform::from_translation([1.0, 0.0, 0.0]);
+    let transform = Transform::from_translation([1.0, 0.0, 0.0]);
 
     // Warm up
     for i in 0..1000 {
-        let _ = hf.update_transform_by_id(base, &tf, i);
+        let _ = tf.update_transform_by_id(base, &transform, i);
     }
 
     // Benchmark
     let start = Instant::now();
     for i in 0..ITERATIONS {
-        let _ = hf.update_transform_by_id(base, &tf, i);
+        let _ = tf.update_transform_by_id(base, &transform, i);
     }
     let elapsed = start.elapsed();
 
@@ -133,10 +133,10 @@ fn transform_frame_benchmark_register() {
 
     let start = Instant::now();
     for _ in 0..100 {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
         for i in 0..count {
-            hf.register_frame(&format!("frame_{}", i), Some("world"))
+            tf.register_frame(&format!("frame_{}", i), Some("world"))
                 .unwrap();
         }
     }
@@ -153,32 +153,32 @@ fn transform_frame_benchmark_register() {
 #[test]
 #[ignore]
 fn transform_frame_benchmark_deep_chain() {
-    let hf = TransformFrame::new();
+    let tf = TransformFrame::new();
 
     // Create a deep chain: world -> link_0 -> link_1 -> ... -> link_9
-    hf.register_frame("world", None).unwrap();
+    tf.register_frame("world", None).unwrap();
     let mut parent = "world".to_string();
     for i in 0..10 {
         let name = format!("link_{}", i);
-        hf.register_frame(&name, Some(&parent)).unwrap();
-        hf.update_transform(&name, &Transform::from_translation([0.1, 0.0, 0.0]), 1000)
+        tf.register_frame(&name, Some(&parent)).unwrap();
+        tf.update_transform(&name, &Transform::from_translation([0.1, 0.0, 0.0]), 1000)
             .unwrap();
         parent = name;
     }
 
     // Cache frame IDs
-    let world = hf.frame_id("world").unwrap();
-    let end = hf.frame_id("link_9").unwrap();
+    let world = tf.frame_id("world").unwrap();
+    let end = tf.frame_id("link_9").unwrap();
 
     // Warm up
     for _ in 0..1000 {
-        let _ = hf.core.resolve(end, world);
+        let _ = tf.core.resolve(end, world);
     }
 
     // Benchmark
     let start = Instant::now();
     for _ in 0..ITERATIONS {
-        let _ = hf.core.resolve(end, world);
+        let _ = tf.core.resolve(end, world);
     }
     let elapsed = start.elapsed();
 
@@ -198,19 +198,19 @@ fn transform_frame_benchmark_concurrent_reads() {
     use std::sync::Arc;
     use std::thread;
 
-    let hf = Arc::new(TransformFrame::new());
+    let tf = Arc::new(TransformFrame::new());
 
     // Setup
-    hf.register_frame("world", None).unwrap();
-    let base = hf.register_frame("base_link", Some("world")).unwrap();
-    let camera = hf.register_frame("camera", Some("base_link")).unwrap();
+    tf.register_frame("world", None).unwrap();
+    let base = tf.register_frame("base_link", Some("world")).unwrap();
+    let camera = tf.register_frame("camera", Some("base_link")).unwrap();
 
-    hf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+    tf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
         .unwrap();
-    hf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000)
+    tf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000)
         .unwrap();
 
-    let world = hf.frame_id("world").unwrap();
+    let world = tf.frame_id("world").unwrap();
 
     let num_threads = 4;
     let ops_per_thread = ITERATIONS / num_threads as u64;
@@ -218,10 +218,10 @@ fn transform_frame_benchmark_concurrent_reads() {
     let start = Instant::now();
     let handles: Vec<_> = (0..num_threads)
         .map(|_| {
-            let hf = hf.clone();
+            let tf = tf.clone();
             thread::spawn(move || {
                 for _ in 0..ops_per_thread {
-                    let _ = hf.core.resolve(camera, world);
+                    let _ = tf.core.resolve(camera, world);
                 }
             })
         })

@@ -1538,12 +1538,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Get a snapshot of the topic's metrics (compatible with Topic API)
     pub fn metrics(&self) -> TopicMetrics {
-        TopicMetrics {
-            messages_sent: self.metrics.messages_sent.load(Ordering::Relaxed),
-            messages_received: self.metrics.messages_received.load(Ordering::Relaxed),
-            send_failures: self.metrics.send_failures.load(Ordering::Relaxed),
-            recv_failures: self.metrics.recv_failures.load(Ordering::Relaxed),
-        }
+        TopicMetrics::new(
+            self.metrics.messages_sent.load(Ordering::Relaxed),
+            self.metrics.messages_received.load(Ordering::Relaxed),
+            self.metrics.send_failures.load(Ordering::Relaxed),
+            self.metrics.recv_failures.load(Ordering::Relaxed),
+        )
     }
 
     #[cfg(test)]

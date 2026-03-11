@@ -254,8 +254,8 @@ fn clean_shared_memory(dry_run: bool, force: bool) -> HorusResult<bool> {
                 println!(
                     "    {} {} (PID {})",
                     cli_output::ICON_INFO.cyan(),
-                    node.name,
-                    node.pid
+                    node.name(),
+                    node.pid()
                 );
             }
             println!();

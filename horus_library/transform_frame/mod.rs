@@ -26,8 +26,8 @@
 //! │  └──────────────────┘   └────────────────────────────────┘ │
 //! │                                                              │
 //! │  ┌──────────────────────────────────────────────────────┐  │
-//! │  │  User API: hf.tf("camera", "base_link")              │  │
-//! │  │            hf.tf_at("lidar", "map", timestamp)        │  │
+//! │  │  User API: tf.tf("camera", "base_link")              │  │
+//! │  │            tf.tf_at("lidar", "map", timestamp)        │  │
 //! │  └──────────────────────────────────────────────────────┘  │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
@@ -38,10 +38,10 @@
 //! use horus_library::transform_frame::{TransformFrame, TransformFrameConfig};
 //!
 //! // Create with default config (256 frames, 32 history entries)
-//! let hf = TransformFrame::new();
+//! let tf = TransformFrame::new();
 //!
 //! // Or customize for large simulations
-//! let hf = TransformFrame::with_config(TransformFrameConfig {
+//! let tf = TransformFrame::with_config(TransformFrameConfig {
 //!     max_frames: 1024,
 //!     max_static_frames: 512,
 //!     history_len: 64,
@@ -49,19 +49,19 @@
 //! });
 //!
 //! // Register frames
-//! let world = hf.register_frame("world", None)?;
-//! let base = hf.register_frame("base_link", Some("world"))?;
-//! let camera = hf.register_frame("camera_frame", Some("base_link"))?;
+//! let world = tf.register_frame("world", None)?;
+//! let base = tf.register_frame("base_link", Some("world"))?;
+//! let camera = tf.register_frame("camera_frame", Some("base_link"))?;
 //!
 //! // Update transforms (lock-free writes)
-//! hf.update_transform(camera, &transform, timestamp_ns);
+//! tf.update_transform(camera, &transform, timestamp_ns);
 //!
 //! // Query transforms (lock-free reads)
-//! let tf = hf.tf("camera_frame", "world")?;
-//! let point_world = tf.transform_point([1.0, 0.0, 0.0]);
+//! let result = tf.tf("camera_frame", "world")?;
+//! let point_world = result.transform_point([1.0, 0.0, 0.0]);
 //!
 //! // Time-travel query with interpolation
-//! let tf_old = hf.tf_at("camera_frame", "world", past_timestamp)?;
+//! let tf_old = tf.tf_at("camera_frame", "world", past_timestamp)?;
 //! ```
 //!
 //! ## Performance Comparison
@@ -92,29 +92,29 @@
 //!
 //! | TF2 (C++) | TransformFrame |
 //! |-----------|--------|
-//! | `lookupTransform("dst", "src")` | `hf.tf("src", "dst")` |
-//! | `lookupTransform("dst", "src", time)` | `hf.tf_at("src", "dst", time_ns)` |
-//! | `canTransform("dst", "src")` | `hf.can_transform("src", "dst")` |
-//! | `canTransform("dst", "src", time)` | `hf.can_transform_at("src", "dst", time_ns)` |
-//! | `sendTransform(msg)` | `hf.update_transform("child", &tf, ts)` |
-//! | `StaticTransformBroadcaster` | `hf.register_static_frame("name", parent, &tf)` |
-//! | `waitForTransform(...)` | `hf.wait_for_transform(src, dst, timeout)` (feature `wait`) |
+//! | `lookupTransform("dst", "src")` | `tf.tf("src", "dst")` |
+//! | `lookupTransform("dst", "src", time)` | `tf.tf_at("src", "dst", time_ns)` |
+//! | `canTransform("dst", "src")` | `tf.can_transform("src", "dst")` |
+//! | `canTransform("dst", "src", time)` | `tf.can_transform_at("src", "dst", time_ns)` |
+//! | `sendTransform(msg)` | `tf.update_transform("child", &transform, ts)` |
+//! | `StaticTransformBroadcaster` | `tf.register_static_frame("name", parent, &transform)` |
+//! | `waitForTransform(...)` | `tf.wait_for_transform(src, dst, timeout)` (feature `wait`) |
 //!
 //! ### Builder API (new in TF2 parity)
 //!
 //! ```rust,ignore
 //! // Register frames fluently
-//! hf.add_frame("world").build()?;
-//! hf.add_frame("base_link").parent("world").build()?;
-//! hf.add_frame("camera")
+//! tf.add_frame("world").build()?;
+//! tf.add_frame("base_link").parent("world").build()?;
+//! tf.add_frame("camera")
 //!     .parent("base_link")
 //!     .static_transform(&Transform::xyz(0.1, 0.0, 0.5))
 //!     .build()?;
 //!
 //! // Query transforms fluently
-//! let tf = hf.query("camera").to("world").lookup()?;
-//! let pt = hf.query("lidar").to("map").point([1.0, 0.0, 0.0])?;
-//! let ok = hf.query("sensor").to("world").can_at(timestamp);
+//! let result = tf.query("camera").to("world").lookup()?;
+//! let pt = tf.query("lidar").to("map").point([1.0, 0.0, 0.0])?;
+//! let ok = tf.query("sensor").to("world").can_at(timestamp);
 //! ```
 //!
 //! ### Short Transform Constructors
@@ -143,6 +143,7 @@
 
 #[cfg(test)]
 mod bench;
+pub mod bridge;
 mod builder;
 mod config;
 mod core;
@@ -363,9 +364,9 @@ impl TransformFrame {
     /// Start building a frame registration (dynamic or static).
     ///
     /// ```rust,ignore
-    /// hf.add_frame("world").build()?;                              // root
-    /// hf.add_frame("base_link").parent("world").build()?;          // child
-    /// hf.add_frame("camera")                                       // static
+    /// tf.add_frame("world").build()?;                              // root
+    /// tf.add_frame("base_link").parent("world").build()?;          // child
+    /// tf.add_frame("camera")                                       // static
     ///     .parent("base_link")
     ///     .static_transform(&Transform::xyz(0.1, 0.0, 0.5))
     ///     .build()?;
@@ -416,13 +417,13 @@ impl TransformFrame {
     /// Returns a builder that you chain with `.to()` and then a lookup method:
     ///
     /// ```rust,ignore
-    /// let tf = hf.query("camera").to("world").lookup()?;
-    /// let pt = hf.query("lidar").to("base_link").point([1.0, 0.0, 0.0])?;
-    /// let ok = hf.query("imu").to("world").can_at(timestamp);
+    /// let result = tf.query("camera").to("world").lookup()?;
+    /// let pt = tf.query("lidar").to("base_link").point([1.0, 0.0, 0.0])?;
+    /// let ok = tf.query("imu").to("world").can_at(timestamp);
     /// ```
     ///
     /// This is zero-overhead sugar — all methods inline to the same code
-    /// as calling `hf.tf()`, `hf.tf_at()`, etc. directly.
+    /// as calling `tf.tf()`, `tf.tf_at()`, etc. directly.
     #[inline]
     pub fn query<'a>(&'a self, src: &'a str) -> TransformQueryFrom<'a> {
         TransformQueryFrom::new(self, src)
@@ -510,8 +511,8 @@ impl TransformFrame {
     /// # Example
     /// ```rust,ignore
     /// // Get transform from camera to base
-    /// let tf = hf.tf("camera_frame", "base_link")?;
-    /// let point_in_base = tf.transform_point(point_in_camera);
+    /// let result = tf.tf("camera_frame", "base_link")?;
+    /// let point_in_base = result.transform_point(point_in_camera);
     /// ```
     pub fn tf(&self, src: &str, dst: &str) -> HorusResult<Transform> {
         let src_id = self.registry.lookup(src).ok_or_else(|| {
@@ -569,8 +570,8 @@ impl TransformFrame {
     ///
     /// Use this when you need TF2-style extrapolation detection:
     /// ```rust,ignore
-    /// match hf.tf_at_strict("camera", "world", timestamp) {
-    ///     Ok(tf) => use_transform(tf),
+    /// match tf.tf_at_strict("camera", "world", timestamp) {
+    ///     Ok(result) => use_transform(result),
     ///     Err(HorusError::Transform(TransformError::Extrapolation { frame, .. })) => log::warn!("Stale: {}", frame),
     ///     Err(e) => return Err(e),
     /// }
@@ -600,7 +601,7 @@ impl TransformFrame {
     ///
     /// ```rust,ignore
     /// // Accept transforms within 50ms of the requested timestamp
-    /// let tf = hf.tf_at_with_tolerance("camera", "world", ts, 50_000_000)?;
+    /// let result = tf.tf_at_with_tolerance("camera", "world", ts, 50_000_000)?;
     /// ```
     pub fn tf_at_with_tolerance(
         &self,
@@ -788,7 +789,7 @@ impl TransformFrame {
     ///
     /// ```rust,ignore
     /// // Wait up to 5 seconds for the camera transform
-    /// let tf = hf.wait_for_transform("camera", "base_link", Duration::from_secs(5))?;
+    /// let result = tf.wait_for_transform("camera", "base_link", Duration::from_secs(5))?;
     /// ```
     #[cfg(feature = "wait")]
     pub fn wait_for_transform(
@@ -878,7 +879,7 @@ impl TransformFrame {
     ///
     /// ```rust,ignore
     /// // In a tokio task:
-    /// let tf = hf.wait_for_transform_async("camera", "base_link", Duration::from_secs(5)).await?;
+    /// let result = tf.wait_for_transform_async("camera", "base_link", Duration::from_secs(5)).await?;
     /// ```
     #[cfg(feature = "async-wait")]
     pub async fn wait_for_transform_async(
@@ -970,12 +971,12 @@ impl TransformFrame {
     ///
     /// ```rust,ignore
     /// // Real robot: use timestamp_now()
-    /// if hf.is_stale("imu", 500_000_000, timestamp_now()) {
+    /// if tf.is_stale("imu", 500_000_000, timestamp_now()) {
     ///     log::warn!("IMU data is >0.5s old!");
     /// }
     ///
     /// // Simulation: use sim time
-    /// if hf.is_stale("imu", 500_000_000, sim_time_ns) {
+    /// if tf.is_stale("imu", 500_000_000, sim_time_ns) {
     ///     log::warn!("IMU data is stale in sim time");
     /// }
     /// ```
@@ -1191,7 +1192,7 @@ impl TransformFrame {
     /// Paste the output into <https://graphviz.org> for instant visualization.
     ///
     /// ```rust,ignore
-    /// println!("{}", hf.frames_as_dot());
+    /// println!("{}", tf.frames_as_dot());
     /// ```
     pub fn frames_as_dot(&self) -> String {
         let mut dot = String::from("digraph transform_frame {\n");
@@ -1253,7 +1254,7 @@ impl TransformFrame {
     /// timestamp, and buffer time range.
     ///
     /// ```rust,ignore
-    /// println!("{}", hf.frames_as_yaml());
+    /// println!("{}", tf.frames_as_yaml());
     /// ```
     pub fn frames_as_yaml(&self) -> String {
         let mut yaml = String::from("# TransformFrame tree export\n");
@@ -1304,7 +1305,7 @@ impl TransformFrame {
     /// `tree` command. Each frame shows its type and latest timestamp.
     ///
     /// ```rust,ignore
-    /// hf.print_tree(); // Prints to stderr
+    /// tf.print_tree(); // Prints to stderr
     /// ```
     pub fn print_tree(&self) {
         eprintln!("{}", self.format_tree());
@@ -1471,40 +1472,40 @@ mod tests {
 
     #[test]
     fn test_basic_usage() {
-        let hf = TransformFrame::new();
+        let tf = TransformFrame::new();
 
         // Register frames
-        let world = hf.register_frame("world", None).unwrap();
-        let base = hf.register_frame("base_link", Some("world")).unwrap();
-        let camera = hf.register_frame("camera", Some("base_link")).unwrap();
+        let world = tf.register_frame("world", None).unwrap();
+        let base = tf.register_frame("base_link", Some("world")).unwrap();
+        let camera = tf.register_frame("camera", Some("base_link")).unwrap();
 
         assert_eq!(world, 0);
         assert_eq!(base, 1);
         assert_eq!(camera, 2);
 
         // Update transforms
-        let tf_base = Transform::from_translation([1.0, 0.0, 0.0]);
-        let tf_camera = Transform::from_translation([0.0, 0.0, 0.5]);
+        let base_transform = Transform::from_translation([1.0, 0.0, 0.0]);
+        let camera_transform = Transform::from_translation([0.0, 0.0, 0.5]);
 
-        hf.update_transform_by_id(base, &tf_base, 1000).unwrap();
-        hf.update_transform_by_id(camera, &tf_camera, 1000).unwrap();
+        tf.update_transform_by_id(base, &base_transform, 1000).unwrap();
+        tf.update_transform_by_id(camera, &camera_transform, 1000).unwrap();
 
         // Query
-        let tf = hf.tf("camera", "world").unwrap();
-        assert!((tf.translation[0] - 1.0).abs() < 1e-10);
-        assert!((tf.translation[2] - 0.5).abs() < 1e-10);
+        let result = tf.tf("camera", "world").unwrap();
+        assert!((result.translation[0] - 1.0).abs() < 1e-10);
+        assert!((result.translation[2] - 0.5).abs() < 1e-10);
     }
 
     #[test]
     fn test_frame_lookup() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
 
-        assert!(hf.has_frame("world"));
-        assert!(!hf.has_frame("nonexistent"));
+        assert!(tf.has_frame("world"));
+        assert!(!tf.has_frame("nonexistent"));
 
-        assert_eq!(hf.frame_id("world"), Some(0));
-        assert_eq!(hf.frame_name(0), Some("world".to_string()));
+        assert_eq!(tf.frame_id("world"), Some(0));
+        assert_eq!(tf.frame_name(0), Some("world".to_string()));
     }
 
     #[test]
@@ -1518,15 +1519,15 @@ mod tests {
 
     #[test]
     fn test_stats_tree_depth_and_root_count() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("base", Some("world")).unwrap();
-        hf.register_frame("arm", Some("base")).unwrap();
-        hf.register_frame("gripper", Some("arm")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("base", Some("world")).unwrap();
+        tf.register_frame("arm", Some("base")).unwrap();
+        tf.register_frame("gripper", Some("arm")).unwrap();
         // Second tree
-        hf.register_frame("map", None).unwrap();
+        tf.register_frame("map", None).unwrap();
 
-        let stats = hf.stats();
+        let stats = tf.stats();
         assert_eq!(stats.total_frames, 5);
         assert_eq!(stats.root_count, 2); // world and map
         assert_eq!(stats.tree_depth, 3); // world -> base -> arm -> gripper
@@ -1534,13 +1535,13 @@ mod tests {
 
     #[test]
     fn test_frame_info_dynamic() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("sensor", Some("world")).unwrap();
-        hf.update_transform("sensor", &Transform::identity(), 5000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("sensor", Some("world")).unwrap();
+        tf.update_transform("sensor", &Transform::identity(), 5000)
             .unwrap();
 
-        let info = hf.frame_info("sensor").unwrap();
+        let info = tf.frame_info("sensor").unwrap();
         assert_eq!(info.name, "sensor");
         assert_eq!(info.parent, Some("world".to_string()));
         assert!(!info.is_static);
@@ -1551,12 +1552,12 @@ mod tests {
 
     #[test]
     fn test_frame_info_static() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_static_frame("fixed", Some("world"), &Transform::identity())
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
 
-        let info = hf.frame_info("fixed").unwrap();
+        let info = tf.frame_info("fixed").unwrap();
         assert!(info.is_static);
         assert_eq!(info.time_range, None); // Static frames have no time range
         assert_eq!(info.depth, 1);
@@ -1564,19 +1565,19 @@ mod tests {
 
     #[test]
     fn test_frame_info_all() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.register_frame("b", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.register_frame("b", Some("world")).unwrap();
 
-        let all = hf.frame_info_all();
+        let all = tf.frame_info_all();
         assert_eq!(all.len(), 3);
     }
 
     #[test]
     fn test_frame_info_nonexistent() {
-        let hf = TransformFrame::new();
-        assert!(hf.frame_info("ghost").is_none());
+        let tf = TransformFrame::new();
+        assert!(tf.frame_info("ghost").is_none());
     }
 
     // =====================================================================
@@ -1585,67 +1586,67 @@ mod tests {
 
     #[test]
     fn test_query_lookup() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("cam", Some("world")).unwrap();
-        hf.update_transform("cam", &Transform::from_translation([1.0, 2.0, 3.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("cam", Some("world")).unwrap();
+        tf.update_transform("cam", &Transform::from_translation([1.0, 2.0, 3.0]), 1000)
             .unwrap();
 
         // Builder should produce same result as tf()
-        let tf_direct = hf.tf("cam", "world").unwrap();
-        let tf_query = hf.query("cam").to("world").lookup().unwrap();
-        assert_eq!(tf_direct.translation, tf_query.translation);
-        assert_eq!(tf_direct.rotation, tf_query.rotation);
+        let direct = tf.tf("cam", "world").unwrap();
+        let query = tf.query("cam").to("world").lookup().unwrap();
+        assert_eq!(direct.translation, query.translation);
+        assert_eq!(direct.rotation, query.rotation);
     }
 
     #[test]
     fn test_query_at() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
-        hf.update_transform("a", &Transform::from_translation([3.0, 0.0, 0.0]), 3000)
+        tf.update_transform("a", &Transform::from_translation([3.0, 0.0, 0.0]), 3000)
             .unwrap();
 
-        let tf = hf.query("a").to("world").at(2000).unwrap();
-        assert!((tf.translation[0] - 2.0).abs() < 1e-6);
+        let result = tf.query("a").to("world").at(2000).unwrap();
+        assert!((result.translation[0] - 2.0).abs() < 1e-6);
     }
 
     #[test]
     fn test_query_point() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([10.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([10.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let pt = hf.query("a").to("world").point([1.0, 0.0, 0.0]).unwrap();
+        let pt = tf.query("a").to("world").point([1.0, 0.0, 0.0]).unwrap();
         assert!((pt[0] - 11.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_query_can_at() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
-        hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 5000)
+        tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 5000)
             .unwrap();
 
-        assert!(hf.query("a").to("world").can_at(3000));
-        assert!(!hf.query("a").to("world").can_at(99999));
+        assert!(tf.query("a").to("world").can_at(3000));
+        assert!(!tf.query("a").to("world").can_at(99999));
     }
 
     #[test]
     fn test_query_chain() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.register_frame("b", Some("a")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.register_frame("b", Some("a")).unwrap();
 
-        let chain = hf.query("b").to("world").chain().unwrap();
+        let chain = tf.query("b").to("world").chain().unwrap();
         assert!(chain.len() >= 2);
     }
 
@@ -1655,40 +1656,40 @@ mod tests {
 
     #[test]
     fn test_add_frame_root() {
-        let hf = TransformFrame::new();
-        let id = hf.add_frame("world").build().unwrap();
+        let tf = TransformFrame::new();
+        let id = tf.add_frame("world").build().unwrap();
         assert_eq!(id, 0);
-        assert!(hf.has_frame("world"));
+        assert!(tf.has_frame("world"));
     }
 
     #[test]
     fn test_add_frame_with_parent() {
-        let hf = TransformFrame::new();
-        hf.add_frame("world").build().unwrap();
-        let id = hf.add_frame("base").parent("world").build().unwrap();
+        let tf = TransformFrame::new();
+        tf.add_frame("world").build().unwrap();
+        let id = tf.add_frame("base").parent("world").build().unwrap();
         assert_eq!(id, 1);
-        assert_eq!(hf.parent("base"), Some("world".to_string()));
+        assert_eq!(tf.parent("base"), Some("world".to_string()));
     }
 
     #[test]
     fn test_add_static_frame() {
-        let hf = TransformFrame::new();
-        hf.add_frame("world").build().unwrap();
-        let id = hf
+        let tf = TransformFrame::new();
+        tf.add_frame("world").build().unwrap();
+        let id = tf
             .add_frame("camera")
             .parent("world")
             .static_transform(&Transform::from_translation([0.1, 0.0, 0.5]))
             .build()
             .unwrap();
 
-        assert!(hf.has_frame("camera"));
-        let info = hf.frame_info("camera").unwrap();
+        assert!(tf.has_frame("camera"));
+        let info = tf.frame_info("camera").unwrap();
         assert!(info.is_static);
 
         // Verify the transform is set
-        let tf = hf.tf("camera", "world").unwrap();
-        assert!((tf.translation[0] - 0.1).abs() < 1e-10);
-        assert!((tf.translation[2] - 0.5).abs() < 1e-10);
+        let result = tf.tf("camera", "world").unwrap();
+        assert!((result.translation[0] - 0.1).abs() < 1e-10);
+        assert!((result.translation[2] - 0.5).abs() < 1e-10);
 
         assert!(id > 0);
     }
@@ -1696,45 +1697,45 @@ mod tests {
     #[test]
     fn test_add_frame_equivalence() {
         // Builder should produce identical results to register_frame
-        let hf1 = TransformFrame::new();
-        hf1.register_frame("world", None).unwrap();
-        hf1.register_frame("arm", Some("world")).unwrap();
+        let tf1 = TransformFrame::new();
+        tf1.register_frame("world", None).unwrap();
+        tf1.register_frame("arm", Some("world")).unwrap();
 
-        let hf2 = TransformFrame::new();
-        hf2.add_frame("world").build().unwrap();
-        hf2.add_frame("arm").parent("world").build().unwrap();
+        let tf2 = TransformFrame::new();
+        tf2.add_frame("world").build().unwrap();
+        tf2.add_frame("arm").parent("world").build().unwrap();
 
-        assert_eq!(hf1.all_frames().len(), hf2.all_frames().len());
-        assert_eq!(hf1.parent("arm"), hf2.parent("arm"));
+        assert_eq!(tf1.all_frames().len(), tf2.all_frames().len());
+        assert_eq!(tf1.parent("arm"), tf2.parent("arm"));
     }
 
     #[test]
     fn test_tf_at_strict_in_range_ok() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
-        hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
+        tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
             .unwrap();
 
         // Query within range should succeed
-        let tf = hf.tf_at_strict("a", "world", 1500).unwrap();
-        assert!((tf.translation[0] - 1.5).abs() < 1e-6);
+        let result = tf.tf_at_strict("a", "world", 1500).unwrap();
+        assert!((result.translation[0] - 1.5).abs() < 1e-6);
     }
 
     #[test]
     fn test_tf_at_strict_extrapolation_past() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 5000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 5000)
             .unwrap();
 
         // Query before oldest buffered timestamp
-        let result = hf.tf_at_strict("a", "world", 1000);
+        let result = tf.tf_at_strict("a", "world", 1000);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1749,15 +1750,15 @@ mod tests {
 
     #[test]
     fn test_tf_at_strict_extrapolation_future() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
         // Query after newest buffered timestamp
-        let result = hf.tf_at_strict("a", "world", 99999);
+        let result = tf.tf_at_strict("a", "world", 99999);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1772,9 +1773,9 @@ mod tests {
 
     #[test]
     fn test_tf_at_strict_static_always_ok() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_static_frame(
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_static_frame(
             "fixed",
             Some("world"),
             &Transform::from_translation([1.0, 0.0, 0.0]),
@@ -1782,31 +1783,31 @@ mod tests {
         .unwrap();
 
         // Static frames should never extrapolate
-        let tf = hf.tf_at_strict("fixed", "world", 0).unwrap();
-        assert!((tf.translation[0] - 1.0).abs() < 1e-10);
-        let tf = hf.tf_at_strict("fixed", "world", u64::MAX).unwrap();
-        assert!((tf.translation[0] - 1.0).abs() < 1e-10);
+        let result = tf.tf_at_strict("fixed", "world", 0).unwrap();
+        assert!((result.translation[0] - 1.0).abs() < 1e-10);
+        let result = tf.tf_at_strict("fixed", "world", u64::MAX).unwrap();
+        assert!((result.translation[0] - 1.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_tf_at_strict_chain_any_hop_extrapolates() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.register_frame("b", Some("a")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.register_frame("b", Some("a")).unwrap();
 
         // "a" has data at 1000-2000, "b" has data at 1000-5000
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
-        hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
+        tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
             .unwrap();
-        hf.update_transform("b", &Transform::from_translation([0.5, 0.0, 0.0]), 1000)
+        tf.update_transform("b", &Transform::from_translation([0.5, 0.0, 0.0]), 1000)
             .unwrap();
-        hf.update_transform("b", &Transform::from_translation([1.5, 0.0, 0.0]), 5000)
+        tf.update_transform("b", &Transform::from_translation([1.5, 0.0, 0.0]), 5000)
             .unwrap();
 
         // ts=3000 is within b's range but outside a's range → Extrapolation
-        let result = hf.tf_at_strict("b", "world", 3000);
+        let result = tf.tf_at_strict("b", "world", 3000);
         assert!(
             matches!(
                 result,
@@ -1819,34 +1820,34 @@ mod tests {
 
     #[test]
     fn test_time_range() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
         // No data yet
-        assert!(hf.time_range("a").is_none());
+        assert!(tf.time_range("a").is_none());
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
-        hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 5000)
+        tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 5000)
             .unwrap();
 
-        let (oldest, newest) = hf.time_range("a").unwrap();
+        let (oldest, newest) = tf.time_range("a").unwrap();
         assert_eq!(oldest, 1000);
         assert_eq!(newest, 5000);
     }
 
     #[test]
     fn test_update_transform_rejects_nan() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        let bad_tf = Transform {
+        let bad_transform = Transform {
             translation: [f64::NAN, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
         };
-        let result = hf.update_transform("a", &bad_tf, 1000);
+        let result = tf.update_transform("a", &bad_transform, 1000);
         assert!(
             matches!(result, Err(HorusError::InvalidInput(_))),
             "Expected InvalidInput, got: {:?}",
@@ -1856,15 +1857,15 @@ mod tests {
 
     #[test]
     fn test_update_transform_by_id_rejects_inf() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        let a = hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        let a = tf.register_frame("a", Some("world")).unwrap();
 
-        let bad_tf = Transform {
+        let bad_transform = Transform {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, f64::INFINITY, 1.0],
         };
-        let result = hf.update_transform_by_id(a, &bad_tf, 1000);
+        let result = tf.update_transform_by_id(a, &bad_transform, 1000);
         assert!(
             matches!(result, Err(HorusError::InvalidInput(_))),
             "Expected InvalidInput, got: {:?}",
@@ -1878,88 +1879,88 @@ mod tests {
 
     #[test]
     fn test_is_stale_fresh_data() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::identity(), 10_000)
+        tf.update_transform("a", &Transform::identity(), 10_000)
             .unwrap();
 
         // Data at ts=10000, now=10500, max_age=1000 → not stale
-        assert!(!hf.is_stale("a", 1000, 10_500));
+        assert!(!tf.is_stale("a", 1000, 10_500));
     }
 
     #[test]
     fn test_is_stale_old_data() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::identity(), 10_000)
+        tf.update_transform("a", &Transform::identity(), 10_000)
             .unwrap();
 
         // Data at ts=10000, now=20000, max_age=5000 → stale (10000 > 5000)
-        assert!(hf.is_stale("a", 5000, 20_000));
+        assert!(tf.is_stale("a", 5000, 20_000));
     }
 
     #[test]
     fn test_is_stale_never_updated() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
         // Never updated → always stale
-        assert!(hf.is_stale("a", 1000, 10_000));
+        assert!(tf.is_stale("a", 1000, 10_000));
     }
 
     #[test]
     fn test_is_stale_unknown_frame() {
-        let hf = TransformFrame::new();
+        let tf = TransformFrame::new();
         // Unknown frame → stale
-        assert!(hf.is_stale("nonexistent", 1000, 10_000));
+        assert!(tf.is_stale("nonexistent", 1000, 10_000));
     }
 
     #[test]
     fn test_is_stale_static_frame_never_stale() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_static_frame("fixed", Some("world"), &Transform::identity())
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
 
         // Static frames are never stale regardless of time
-        assert!(!hf.is_stale("fixed", 0, u64::MAX));
+        assert!(!tf.is_stale("fixed", 0, u64::MAX));
     }
 
     #[test]
     fn test_time_since_last_update_basic() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::identity(), 10_000)
+        tf.update_transform("a", &Transform::identity(), 10_000)
             .unwrap();
 
-        let age = hf.time_since_last_update("a", 15_000).unwrap();
+        let age = tf.time_since_last_update("a", 15_000).unwrap();
         assert_eq!(age, 5000);
     }
 
     #[test]
     fn test_time_since_last_update_never_updated() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        assert!(hf.time_since_last_update("a", 10_000).is_none());
+        assert!(tf.time_since_last_update("a", 10_000).is_none());
     }
 
     #[test]
     fn test_time_since_last_update_static_always_zero() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_static_frame("fixed", Some("world"), &Transform::identity())
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
 
-        let age = hf.time_since_last_update("fixed", 999_999).unwrap();
+        let age = tf.time_since_last_update("fixed", 999_999).unwrap();
         assert_eq!(age, 0);
     }
 
@@ -1969,29 +1970,29 @@ mod tests {
 
     #[test]
     fn test_tf_at_with_tolerance_within() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
         // Query at ts=1500, data at 1000, gap=500, tolerance=1000 → ok
-        let result = hf.tf_at_with_tolerance("a", "world", 1500, 1000);
+        let result = tf.tf_at_with_tolerance("a", "world", 1500, 1000);
         result.unwrap();
     }
 
     #[test]
     fn test_tf_at_with_tolerance_exceeded() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
         // Query at ts=5000, data at 1000, gap=4000, tolerance=1000 → Extrapolation
-        let result = hf.tf_at_with_tolerance("a", "world", 5000, 1000);
+        let result = tf.tf_at_with_tolerance("a", "world", 5000, 1000);
         assert!(
             matches!(
                 result,
@@ -2004,36 +2005,36 @@ mod tests {
 
     #[test]
     fn test_tf_at_with_tolerance_max_is_unlimited() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
         // u64::MAX tolerance = no limit (same as tf_at)
-        let result = hf.tf_at_with_tolerance("a", "world", 999_999, u64::MAX);
+        let result = tf.tf_at_with_tolerance("a", "world", 999_999, u64::MAX);
         result.unwrap();
     }
 
     #[test]
     fn test_tf_at_with_tolerance_past_direction() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 5000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 5000)
             .unwrap();
 
         // Query at ts=1000, data starts at 5000, gap=4000, tolerance=1000
-        let result = hf.tf_at_with_tolerance("a", "world", 1000, 1000);
+        let result = tf.tf_at_with_tolerance("a", "world", 1000, 1000);
         assert!(matches!(
             result,
             Err(HorusError::Transform(TransformError::Extrapolation { .. }))
         ));
 
         // Same but tolerance=5000 → ok
-        let result = hf.tf_at_with_tolerance("a", "world", 1000, 5000);
+        let result = tf.tf_at_with_tolerance("a", "world", 1000, 5000);
         result.unwrap();
     }
 
@@ -2043,66 +2044,66 @@ mod tests {
 
     #[test]
     fn test_can_transform_at_in_range() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
-        hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 5000)
+        tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 5000)
             .unwrap();
 
-        assert!(hf.can_transform_at("a", "world", 3000));
+        assert!(tf.can_transform_at("a", "world", 3000));
     }
 
     #[test]
     fn test_can_transform_at_out_of_range() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        assert!(!hf.can_transform_at("a", "world", 99999));
+        assert!(!tf.can_transform_at("a", "world", 99999));
     }
 
     #[test]
     fn test_can_transform_at_no_path() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("isolated", None).unwrap();
-        hf.update_transform("isolated", &Transform::identity(), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("isolated", None).unwrap();
+        tf.update_transform("isolated", &Transform::identity(), 1000)
             .unwrap();
 
-        assert!(!hf.can_transform_at("isolated", "world", 1000));
+        assert!(!tf.can_transform_at("isolated", "world", 1000));
     }
 
     #[test]
     fn test_can_transform_at_with_tolerance_ok() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
         // ts=2000, data at 1000, gap=1000, tolerance=2000 → ok
-        assert!(hf.can_transform_at_with_tolerance("a", "world", 2000, 2000));
+        assert!(tf.can_transform_at_with_tolerance("a", "world", 2000, 2000));
         // ts=5000, data at 1000, gap=4000, tolerance=2000 → false
-        assert!(!hf.can_transform_at_with_tolerance("a", "world", 5000, 2000));
+        assert!(!tf.can_transform_at_with_tolerance("a", "world", 5000, 2000));
     }
 
     #[test]
     fn test_is_stale_exact_boundary() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::identity(), 10_000)
+        tf.update_transform("a", &Transform::identity(), 10_000)
             .unwrap();
 
         // Exactly at boundary (age == max_age) → not stale (uses >)
-        assert!(!hf.is_stale("a", 5000, 15_000));
+        assert!(!tf.is_stale("a", 5000, 15_000));
         // One nanosecond past → stale
-        assert!(hf.is_stale("a", 5000, 15_001));
+        assert!(tf.is_stale("a", 5000, 15_001));
     }
 
     // =====================================================================
@@ -2111,23 +2112,23 @@ mod tests {
 
     #[test]
     fn test_frames_as_dot_basic() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("base_link", Some("world")).unwrap();
-        hf.register_static_frame(
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("base_link", Some("world")).unwrap();
+        tf.register_static_frame(
             "camera",
             Some("base_link"),
             &Transform::from_translation([0.0, 0.0, 0.5]),
         )
         .unwrap();
-        hf.update_transform(
+        tf.update_transform(
             "base_link",
             &Transform::from_translation([1.0, 0.0, 0.0]),
             1000,
         )
         .unwrap();
 
-        let dot = hf.frames_as_dot();
+        let dot = tf.frames_as_dot();
         assert!(dot.starts_with("digraph transform_frame {"));
         assert!(dot.contains("world"));
         assert!(dot.contains("base_link"));
@@ -2138,13 +2139,13 @@ mod tests {
 
     #[test]
     fn test_frames_as_yaml_basic() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("arm", Some("world")).unwrap();
-        hf.update_transform("arm", &Transform::identity(), 5000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("arm", Some("world")).unwrap();
+        tf.update_transform("arm", &Transform::identity(), 5000)
             .unwrap();
 
-        let yaml = hf.frames_as_yaml();
+        let yaml = tf.frames_as_yaml();
         assert!(yaml.contains("world:"));
         assert!(yaml.contains("arm:"));
         assert!(yaml.contains("parent: (root)"));
@@ -2155,15 +2156,15 @@ mod tests {
 
     #[test]
     fn test_format_tree_basic() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("base", Some("world")).unwrap();
-        hf.register_frame("left_arm", Some("base")).unwrap();
-        hf.register_frame("right_arm", Some("base")).unwrap();
-        hf.update_transform("base", &Transform::identity(), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("base", Some("world")).unwrap();
+        tf.register_frame("left_arm", Some("base")).unwrap();
+        tf.register_frame("right_arm", Some("base")).unwrap();
+        tf.update_transform("base", &Transform::identity(), 1000)
             .unwrap();
 
-        let tree = hf.format_tree();
+        let tree = tf.format_tree();
         assert!(tree.contains("world"));
         assert!(tree.contains("base"));
         assert!(tree.contains("left_arm"));
@@ -2174,12 +2175,12 @@ mod tests {
 
     #[test]
     fn test_frames_as_yaml_static_frame() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_static_frame("fixed", Some("world"), &Transform::identity())
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_static_frame("fixed", Some("world"), &Transform::identity())
             .unwrap();
 
-        let yaml = hf.frames_as_yaml();
+        let yaml = tf.frames_as_yaml();
         assert!(yaml.contains("type: static"));
         assert!(yaml.contains("last_update: static"));
     }
@@ -2190,10 +2191,10 @@ mod tests {
 
     #[test]
     fn test_tf_error_frame_not_registered() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
 
-        let err = hf.tf("nonexistent", "world").unwrap_err();
+        let err = tf.tf("nonexistent", "world").unwrap_err();
         match err {
             HorusError::NotFound(NotFoundError::Frame { ref name }) => {
                 assert_eq!(
@@ -2208,18 +2209,18 @@ mod tests {
 
     #[test]
     fn test_tf_error_disconnected_trees() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("map", None).unwrap();
-        hf.register_frame("robot", Some("world")).unwrap();
-        hf.register_frame("landmark", Some("map")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("map", None).unwrap();
+        tf.register_frame("robot", Some("world")).unwrap();
+        tf.register_frame("landmark", Some("map")).unwrap();
 
-        hf.update_transform("robot", &Transform::identity(), 1000)
+        tf.update_transform("robot", &Transform::identity(), 1000)
             .unwrap();
-        hf.update_transform("landmark", &Transform::identity(), 1000)
+        tf.update_transform("landmark", &Transform::identity(), 1000)
             .unwrap();
 
-        let err = hf.tf("robot", "landmark").unwrap_err();
+        let err = tf.tf("robot", "landmark").unwrap_err();
         match err {
             HorusError::Communication(ref e) => {
                 let msg = e.to_string();
@@ -2235,9 +2236,9 @@ mod tests {
 
     #[test]
     fn test_tf_error_no_data_published() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("sensor", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("sensor", Some("world")).unwrap();
         // sensor registered but no transform published
 
         // tf() still resolves because the chain exists even without data
@@ -2245,7 +2246,7 @@ mod tests {
         // The diagnostic only fires when resolve() returns None,
         // which happens when there's no path (disconnected trees).
         // This test verifies that NotFound messages are clear.
-        let err = hf.tf("sensor", "ghost").unwrap_err();
+        let err = tf.tf("sensor", "ghost").unwrap_err();
         match err {
             HorusError::NotFound(NotFoundError::Frame { ref name }) => {
                 assert_eq!(
@@ -2266,28 +2267,28 @@ mod tests {
     #[test]
     fn test_wait_for_transform_already_available() {
         // If the transform is already available, wait returns immediately
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let tf = hf
+        let result = tf
             .wait_for_transform("a", "world", std::time::Duration::from_secs(1))
             .unwrap();
-        assert!((tf.translation[0] - 1.0).abs() < 1e-10);
+        assert!((result.translation[0] - 1.0).abs() < 1e-10);
     }
 
     #[cfg(feature = "wait")]
     #[test]
     fn test_wait_for_transform_timeout() {
         // If the transform never arrives, wait should return Timeout error
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
         // Frame "a" is registered but never has a path to "world" via parents
-        hf.register_frame("a", None).unwrap();
+        tf.register_frame("a", None).unwrap();
 
-        let result = hf.wait_for_transform("a", "world", std::time::Duration::from_millis(50));
+        let result = tf.wait_for_transform("a", "world", std::time::Duration::from_millis(50));
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),
             "Expected Timeout, got: {:?}",
@@ -2302,14 +2303,14 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let hf = Arc::new(TransformFrame::new());
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("sensor", Some("world")).unwrap();
+        let tf = Arc::new(TransformFrame::new());
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("sensor", Some("world")).unwrap();
 
         // Spawn a thread that waits for the transform
-        let hf_waiter = hf.clone();
+        let tf_waiter = tf.clone();
         let handle = thread::spawn(move || {
-            hf_waiter
+            tf_waiter
                 .wait_for_transform("sensor", "world", Duration::from_secs(5))
                 .unwrap()
         });
@@ -2318,7 +2319,7 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
 
         // Publish the transform — this should wake the waiter
-        hf.update_transform(
+        tf.update_transform(
             "sensor",
             &Transform::from_translation([3.0, 0.0, 0.0]),
             1000,
@@ -2326,8 +2327,8 @@ mod tests {
         .unwrap();
 
         // Waiter should return quickly with the transform
-        let tf = handle.join().unwrap();
-        assert!((tf.translation[0] - 3.0).abs() < 1e-10);
+        let result = handle.join().unwrap();
+        assert!((result.translation[0] - 3.0).abs() < 1e-10);
     }
 
     #[cfg(feature = "wait")]
@@ -2337,20 +2338,20 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let hf = Arc::new(TransformFrame::new());
-        hf.register_frame("world", None).unwrap();
+        let tf = Arc::new(TransformFrame::new());
+        tf.register_frame("world", None).unwrap();
 
         // Spawn a thread that waits — frame "sensor" doesn't exist yet
-        let hf_waiter = hf.clone();
+        let tf_waiter = tf.clone();
         let handle = thread::spawn(move || {
-            hf_waiter.wait_for_transform("sensor", "world", Duration::from_secs(5))
+            tf_waiter.wait_for_transform("sensor", "world", Duration::from_secs(5))
         });
 
         thread::sleep(Duration::from_millis(20));
 
         // Register the frame and publish a transform
-        hf.register_frame("sensor", Some("world")).unwrap();
-        hf.update_transform(
+        tf.register_frame("sensor", Some("world")).unwrap();
+        tf.update_transform(
             "sensor",
             &Transform::from_translation([2.0, 0.0, 0.0]),
             1000,
@@ -2369,17 +2370,17 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let hf = Arc::new(TransformFrame::new());
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = Arc::new(TransformFrame::new());
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
         // Only have data at ts=1000 — strict query for ts=1500 needs [1000,1500] coverage
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let hf_waiter = hf.clone();
+        let tf_waiter = tf.clone();
         let handle = thread::spawn(move || {
-            hf_waiter
+            tf_waiter
                 .wait_for_transform_at("a", "world", 1500, Duration::from_secs(5))
                 .unwrap()
         });
@@ -2387,27 +2388,27 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
 
         // Add data at ts=2000 so ts=1500 is within [1000, 2000]
-        hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
+        tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
             .unwrap();
 
-        let tf = handle.join().unwrap();
+        let result = handle.join().unwrap();
         // Interpolation between [1.0,0,0]@1000 and [2.0,0,0]@2000 at ts=1500 → 1.5
-        assert!((tf.translation[0] - 1.5).abs() < 1e-6);
+        assert!((result.translation[0] - 1.5).abs() < 1e-6);
     }
 
     #[cfg(feature = "wait")]
     #[test]
     fn test_wait_for_transform_at_timeout() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
         // Only have data at ts=1000, querying ts=5000 strict
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
         let result =
-            hf.wait_for_transform_at("a", "world", 5000, std::time::Duration::from_millis(50));
+            tf.wait_for_transform_at("a", "world", 5000, std::time::Duration::from_millis(50));
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),
             "Expected Timeout, got: {:?}",
@@ -2422,27 +2423,27 @@ mod tests {
     #[cfg(feature = "async-wait")]
     #[tokio::test]
     async fn test_async_wait_already_available() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let tf = hf
+        let result = tf
             .wait_for_transform_async("a", "world", std::time::Duration::from_secs(1))
             .await
             .unwrap();
-        assert!((tf.translation[0] - 1.0).abs() < 1e-10);
+        assert!((result.translation[0] - 1.0).abs() < 1e-10);
     }
 
     #[cfg(feature = "async-wait")]
     #[tokio::test]
     async fn test_async_wait_timeout() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", None).unwrap(); // No path to world
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", None).unwrap(); // No path to world
 
-        let result = hf
+        let result = tf
             .wait_for_transform_async("a", "world", std::time::Duration::from_millis(50))
             .await;
         assert!(
@@ -2458,13 +2459,13 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        let hf = Arc::new(TransformFrame::new());
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("sensor", Some("world")).unwrap();
+        let tf = Arc::new(TransformFrame::new());
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("sensor", Some("world")).unwrap();
 
-        let hf_waiter = hf.clone();
+        let tf_waiter = tf.clone();
         let waiter = tokio::spawn(async move {
-            hf_waiter
+            tf_waiter
                 .wait_for_transform_async("sensor", "world", Duration::from_secs(5))
                 .await
                 .unwrap()
@@ -2474,15 +2475,15 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         // Publish transform — should wake the async waiter
-        hf.update_transform(
+        tf.update_transform(
             "sensor",
             &Transform::from_translation([4.0, 0.0, 0.0]),
             1000,
         )
         .unwrap();
 
-        let tf = waiter.await.unwrap();
-        assert!((tf.translation[0] - 4.0).abs() < 1e-10);
+        let result = waiter.await.unwrap();
+        assert!((result.translation[0] - 4.0).abs() < 1e-10);
     }
 
     #[cfg(feature = "async-wait")]
@@ -2491,17 +2492,17 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        let hf = Arc::new(TransformFrame::new());
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = Arc::new(TransformFrame::new());
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
         // Data at ts=1000 only — strict query for ts=1500 needs coverage
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let hf_waiter = hf.clone();
+        let tf_waiter = tf.clone();
         let waiter = tokio::spawn(async move {
-            hf_waiter
+            tf_waiter
                 .wait_for_transform_at_async("a", "world", 1500, Duration::from_secs(5))
                 .await
                 .unwrap()
@@ -2510,24 +2511,24 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         // Add data at ts=2000 to cover ts=1500
-        hf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
+        tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
             .unwrap();
 
-        let tf = waiter.await.unwrap();
-        assert!((tf.translation[0] - 1.5).abs() < 1e-6);
+        let result = waiter.await.unwrap();
+        assert!((result.translation[0] - 1.5).abs() < 1e-6);
     }
 
     #[cfg(feature = "async-wait")]
     #[tokio::test]
     async fn test_async_wait_at_timeout() {
-        let hf = TransformFrame::new();
-        hf.register_frame("world", None).unwrap();
-        hf.register_frame("a", Some("world")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("world", None).unwrap();
+        tf.register_frame("a", Some("world")).unwrap();
 
-        hf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let result = hf
+        let result = tf
             .wait_for_transform_at_async("a", "world", 5000, std::time::Duration::from_millis(50))
             .await;
         assert!(

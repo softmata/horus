@@ -288,21 +288,21 @@ proptest! {
         t_c in arb_transform(),
         t_d in arb_transform(),
     ) {
-        let hf = TransformFrame::new();
-        hf.register_frame("A", None).unwrap();
-        hf.register_frame("B", Some("A")).unwrap();
-        hf.register_frame("C", Some("B")).unwrap();
-        hf.register_frame("D", Some("C")).unwrap();
+        let tf = TransformFrame::new();
+        tf.register_frame("A", None).unwrap();
+        tf.register_frame("B", Some("A")).unwrap();
+        tf.register_frame("C", Some("B")).unwrap();
+        tf.register_frame("D", Some("C")).unwrap();
 
         let ts = 1_000_000u64;
-        hf.update_transform("B", &t_b, ts).unwrap();
-        hf.update_transform("C", &t_c, ts).unwrap();
-        hf.update_transform("D", &t_d, ts).unwrap();
+        tf.update_transform("B", &t_b, ts).unwrap();
+        tf.update_transform("C", &t_c, ts).unwrap();
+        tf.update_transform("D", &t_d, ts).unwrap();
 
-        let tf_ad = hf.tf("A", "D").unwrap();
-        let tf_ab = hf.tf("A", "B").unwrap();
-        let tf_bc = hf.tf("B", "C").unwrap();
-        let tf_cd = hf.tf("C", "D").unwrap();
+        let tf_ad = tf.tf("A", "D").unwrap();
+        let tf_ab = tf.tf("A", "B").unwrap();
+        let tf_bc = tf.tf("B", "C").unwrap();
+        let tf_cd = tf.tf("C", "D").unwrap();
 
         let composed = tf_cd.compose(&tf_bc.compose(&tf_ab));
 

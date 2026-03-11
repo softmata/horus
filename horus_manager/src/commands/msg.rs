@@ -277,7 +277,6 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     //   1. HORUS_SOURCE_DIR env var (explicit override)
     //   2. Relative to the horus binary location
     //   3. Known install paths
-    //   4. Relative to CWD (legacy fallback)
     let mut search_paths: Vec<std::path::PathBuf> = Vec::new();
 
     // 1. HORUS_SOURCE_DIR env var
@@ -309,15 +308,6 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     }
     search_paths.push(Path::new("/opt/horus/library/messages").to_path_buf());
     search_paths.push(Path::new("/usr/local/share/horus/messages").to_path_buf());
-
-    // 4. Relative to CWD (legacy fallback)
-    for rel in &[
-        "horus_library/messages",
-        "../horus_library/messages",
-        "../../horus_library/messages",
-    ] {
-        search_paths.push(Path::new(rel).to_path_buf());
-    }
 
     let mut messages_dir = None;
     for path in &search_paths {

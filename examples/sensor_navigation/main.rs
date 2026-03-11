@@ -172,27 +172,27 @@ impl Node for TelemetryLogger {
 
 /// Publishes static sensor transforms.
 struct SensorFrames {
-    hf: TransformFrame,
+    tf: TransformFrame,
 }
 
 impl SensorFrames {
     fn new() -> Result<Self> {
-        let hf = TransformFrame::new();
-        hf.add_frame("map").build()?;
-        hf.add_frame("odom").parent("map").build()?;
-        hf.add_frame("base_link").parent("odom").build()?;
+        let tf = TransformFrame::new();
+        tf.add_frame("map").build()?;
+        tf.add_frame("odom").parent("map").build()?;
+        tf.add_frame("base_link").parent("odom").build()?;
 
         // Static sensor mounts (from URDF)
-        hf.add_frame("lidar_link")
+        tf.add_frame("lidar_link")
             .parent("base_link")
             .static_transform(&Transform::xyz(0.05, 0.0, 0.10))
             .build()?;
-        hf.add_frame("imu_link")
+        tf.add_frame("imu_link")
             .parent("base_link")
             .static_transform(&Transform::xyz(0.0, 0.0, 0.06))
             .build()?;
 
-        Ok(Self { hf })
+        Ok(Self { tf })
     }
 }
 

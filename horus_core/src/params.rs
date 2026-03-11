@@ -41,7 +41,14 @@ pub struct ParamMetadata {
     /// Validation rules
     pub(crate) validation: Vec<ValidationRule>,
     /// Whether this parameter is read-only
-    pub read_only: bool,
+    read_only: bool,
+}
+
+impl ParamMetadata {
+    /// Whether this parameter is read-only.
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
 }
 
 /// Runtime parameter store for dynamic configuration.
@@ -189,7 +196,7 @@ impl RuntimeParams {
 
         // Check if parameter is read-only
         if let Some(meta) = self.get_metadata(key) {
-            if meta.read_only {
+            if meta.read_only() {
                 return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                     "Parameter '{}' is read-only",
                     key

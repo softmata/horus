@@ -6,12 +6,6 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     // Process liveness is verified by checking if PID exists.
     let mut nodes = discover_nodes_from_presence();
 
-    // FALLBACK: registry.json (for backwards compatibility)
-    // Registry is still used as fallback for tools that haven't migrated
-    if nodes.is_empty() {
-        nodes = discover_nodes_from_registry().unwrap_or_default();
-    }
-
     // SUPPLEMENT: Add process info (CPU, memory) if we have a PID
     for node in &mut nodes {
         if node.process_id > 0 {
@@ -55,7 +49,7 @@ fn discover_nodes_from_presence() -> Vec<NodeStatus> {
         .into_iter()
         .map(|presence| {
             let publishers: Vec<TopicInfo> = presence
-                .publishers
+                .publishers()
                 .iter()
                 .map(|t| TopicInfo {
                     topic: t.topic_name.clone(),
@@ -64,7 +58,7 @@ fn discover_nodes_from_presence() -> Vec<NodeStatus> {
                 .collect();
 
             let subscribers: Vec<TopicInfo> = presence
-                .subscribers
+                .subscribers()
                 .iter()
                 .map(|t| TopicInfo {
                     topic: t.topic_name.clone(),
@@ -73,21 +67,21 @@ fn discover_nodes_from_presence() -> Vec<NodeStatus> {
                 .collect();
 
             NodeStatus {
-                name: presence.name.clone(),
+                name: presence.name().to_string(),
                 status: "Running".to_string(),
                 health: HealthStatus::Healthy,
-                priority: presence.priority,
-                process_id: presence.pid,
+                priority: presence.priority(),
+                process_id: presence.pid(),
                 command_line: String::new(), // Will be enriched by process info
                 working_dir: String::new(),  // Will be enriched by process info
                 cpu_usage: 0.0,
                 memory_usage: 0,
-                start_time: format_unix_timestamp(presence.start_time),
-                scheduler_name: presence.scheduler.unwrap_or_default(),
+                start_time: format_unix_timestamp(presence.start_time()),
+                scheduler_name: presence.scheduler().map(|s| s.to_string()).unwrap_or_default(),
                 category: ProcessCategory::Node,
                 tick_count: 0, // Not stored in presence file
                 error_count: 0,
-                actual_rate_hz: presence.rate_hz.map(|r| r as u32).unwrap_or(0),
+                actual_rate_hz: presence.rate_hz().map(|r| r as u32).unwrap_or(0),
                 publishers,
                 subscribers,
             }
@@ -139,103 +133,6 @@ pub(crate) fn discover_registry_files() -> Vec<std::path::PathBuf> {
     }
 
     registry_files
-}
-
-/// Discover nodes from registry.json files (primary discovery method)
-/// Registry has PID-based liveness check built in for reliable node detection
-fn discover_nodes_from_registry() -> anyhow::Result<Vec<NodeStatus>> {
-    let mut nodes = Vec::new();
-
-    // Discover all registry files from all schedulers
-    let registry_files = discover_registry_files();
-
-    // Process each registry file (supports multiple schedulers)
-    for registry_path in registry_files {
-        let registry_content = match std::fs::read_to_string(&registry_path) {
-            Ok(content) => content,
-            Err(_) => continue, // Skip invalid files
-        };
-
-        let registry: serde_json::Value = match serde_json::from_str(&registry_content) {
-            Ok(reg) => reg,
-            Err(_) => continue, // Skip invalid JSON
-        };
-
-        // Only use registry if scheduler is still running (built-in liveness check)
-        let scheduler_pid = registry["pid"].as_u64().unwrap_or(0) as u32;
-        if !process_exists(scheduler_pid) {
-            // Clean up stale registry file
-            let _ = std::fs::remove_file(&registry_path);
-            continue;
-        }
-
-        if let Some(scheduler_nodes) = registry["nodes"].as_array() {
-            let scheduler_name = registry["scheduler_name"]
-                .as_str()
-                .unwrap_or("Unknown")
-                .to_string();
-            let working_dir = registry["working_dir"].as_str().unwrap_or("/").to_string();
-
-            let proc_info = get_process_info(scheduler_pid).unwrap_or_default();
-
-            for node in scheduler_nodes {
-                let name = node["name"].as_str().unwrap_or("Unknown").to_string();
-                let priority = node["priority"].as_u64().unwrap_or(0) as u32;
-                let rate_hz = node["rate_hz"].as_f64().unwrap_or(0.0) as u32;
-
-                // Parse publishers and subscribers
-                let mut publishers = Vec::new();
-                if let Some(pubs) = node["publishers"].as_array() {
-                    for pub_info in pubs {
-                        if let (Some(topic), Some(type_name)) =
-                            (pub_info["topic"].as_str(), pub_info["type"].as_str())
-                        {
-                            publishers.push(TopicInfo {
-                                topic: topic.to_string(),
-                                type_name: type_name.to_string(),
-                            });
-                        }
-                    }
-                }
-
-                let mut subscribers = Vec::new();
-                if let Some(subs) = node["subscribers"].as_array() {
-                    for sub_info in subs {
-                        if let (Some(topic), Some(type_name)) =
-                            (sub_info["topic"].as_str(), sub_info["type"].as_str())
-                        {
-                            subscribers.push(TopicInfo {
-                                topic: topic.to_string(),
-                                type_name: type_name.to_string(),
-                            });
-                        }
-                    }
-                }
-
-                nodes.push(NodeStatus {
-                    name,
-                    status: "Running".to_string(),
-                    health: HealthStatus::Healthy,
-                    priority,
-                    process_id: scheduler_pid, // Use scheduler PID as approximation
-                    command_line: proc_info.cmdline.clone(),
-                    working_dir: working_dir.clone(),
-                    cpu_usage: proc_info.cpu_percent,
-                    memory_usage: proc_info.memory_kb,
-                    start_time: proc_info.start_time.clone(),
-                    tick_count: 0,
-                    error_count: 0,
-                    actual_rate_hz: rate_hz,
-                    scheduler_name: scheduler_name.clone(),
-                    category: ProcessCategory::Node,
-                    publishers,
-                    subscribers,
-                });
-            }
-        }
-    }
-
-    Ok(nodes)
 }
 
 fn discover_horus_processes() -> anyhow::Result<Vec<NodeStatus>> {

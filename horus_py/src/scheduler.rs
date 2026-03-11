@@ -1017,11 +1017,11 @@ impl PyScheduler {
         match inner.safety_stats() {
             Some(stats) => {
                 let dict = PyDict::new(py);
-                dict.set_item("state", format!("{:?}", stats.state))?;
-                dict.set_item("budget_overruns", stats.budget_overruns)?;
-                dict.set_item("deadline_misses", stats.deadline_misses)?;
-                dict.set_item("watchdog_expirations", stats.watchdog_expirations)?;
-                dict.set_item("safe_mode_activations", stats.safe_mode_activations)?;
+                dict.set_item("state", format!("{:?}", stats.state()))?;
+                dict.set_item("budget_overruns", stats.budget_overruns())?;
+                dict.set_item("deadline_misses", stats.deadline_misses())?;
+                dict.set_item("watchdog_expirations", stats.watchdog_expirations())?;
+                dict.set_item("safe_mode_activations", stats.safe_mode_activations())?;
                 Ok(Some(dict.into()))
             }
             None => Ok(None),

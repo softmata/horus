@@ -70,8 +70,8 @@ mod node;
 /// - `sub {}` - Subscribers (optional, can be empty)
 /// - `data {}` - Internal state fields (optional)
 /// - `tick {}` - Main update logic (required)
-/// - `init(ctx) {}` - Initialization (optional)
-/// - `shutdown(ctx) {}` - Cleanup (optional)
+/// - `init {}` - Initialization (optional)
+/// - `shutdown {}` - Cleanup (optional)
 /// - `impl {}` - Additional methods (optional)
 #[proc_macro]
 pub fn node(input: TokenStream) -> TokenStream {

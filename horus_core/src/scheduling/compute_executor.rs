@@ -351,6 +351,7 @@ mod tests {
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Compute,
+            health_state: super::super::types::AtomicHealthState::default(),
         }
     }
 

@@ -142,24 +142,24 @@ impl Node for TrajectoryController {
 
 /// Frame transform publisher — maintains the TF tree.
 struct FramePublisher {
-    hf: TransformFrame,
+    tf: TransformFrame,
     joint_sub: Topic<JointState>,
 }
 
 impl FramePublisher {
     fn new() -> Result<Self> {
-        let hf = TransformFrame::new();
-        hf.add_frame("world").build()?;
-        hf.add_frame("base_link").parent("world").build()?;
-        hf.add_frame("shoulder").parent("base_link").build()?;
-        hf.add_frame("upper_arm").parent("shoulder").build()?;
-        hf.add_frame("forearm").parent("upper_arm").build()?;
-        hf.add_frame("wrist_1").parent("forearm").build()?;
-        hf.add_frame("wrist_2").parent("wrist_1").build()?;
-        hf.add_frame("ee").parent("wrist_2").build()?;
+        let tf = TransformFrame::new();
+        tf.add_frame("world").build()?;
+        tf.add_frame("base_link").parent("world").build()?;
+        tf.add_frame("shoulder").parent("base_link").build()?;
+        tf.add_frame("upper_arm").parent("shoulder").build()?;
+        tf.add_frame("forearm").parent("upper_arm").build()?;
+        tf.add_frame("wrist_1").parent("forearm").build()?;
+        tf.add_frame("wrist_2").parent("wrist_1").build()?;
+        tf.add_frame("ee").parent("wrist_2").build()?;
 
         Ok(Self {
-            hf,
+            tf,
             joint_sub: Topic::new("joint_commands")?,
         })
     }
@@ -174,15 +174,15 @@ impl Node for FramePublisher {
         if let Some(joints) = self.joint_sub.recv() {
             let ts = timestamp_now();
             // Update each joint transform
-            let _ = self.hf.update_transform(
+            let _ = self.tf.update_transform(
                 "shoulder", &Transform::yaw(joints.j1), ts
             );
-            let _ = self.hf.update_transform(
+            let _ = self.tf.update_transform(
                 "upper_arm",
                 &Transform::xyz(0.0, 0.0, 0.20).with_yaw(joints.j2),
                 ts,
             );
-            let _ = self.hf.update_transform(
+            let _ = self.tf.update_transform(
                 "forearm",
                 &Transform::xyz(0.0, 0.0, 0.30).with_yaw(joints.j3),
                 ts,
@@ -190,7 +190,7 @@ impl Node for FramePublisher {
 
             // Log ee→base transform periodically
             if ts % 1_000_000_000 < 20_000_000 {
-                if let Ok(tf) = self.hf.tf("ee", "base_link") {
+                if let Ok(tf) = self.tf.tf("ee", "base_link") {
                     hlog!(
                         "ee→base: [{:.3}, {:.3}, {:.3}]",
                         tf.translation[0],
