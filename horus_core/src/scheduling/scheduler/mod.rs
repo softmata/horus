@@ -165,7 +165,7 @@ pub(crate) struct RecordingState {
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
     pub(super) running: Arc<AtomicBool>,
-    pub(super) scheduler_name: String,
+    pub scheduler_name: String,
 
     // Grouped sub-structs
     pub(super) tick: TickState,
@@ -206,7 +206,7 @@ impl Scheduler {
     /// Create a scheduler with default configuration.
     ///
     /// Configuration is deferred until `run()` via builder methods.
-    /// Use `.prefer_rt()`, `.require_rt()`, `.monitoring(true)` to configure.
+    /// Use `.prefer_rt()`, `.require_rt()`, `.watchdog()`, `.blackbox()` to configure.
     pub fn new() -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
@@ -258,19 +258,8 @@ impl Scheduler {
         }
     }
 
-    /// Set CPU cores to pin the scheduler and RT threads to.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .require_rt()
-    ///     .cores(&[2, 3])   // Pin to cores 2 and 3
-    ///     .tick_rate(1000_u64.hz());
-    /// ```
-    pub fn cores(mut self, cores: &[usize]) -> Self {
-        self.pending_config.resources.cpu_cores = Some(cores.to_vec());
-        self
-    }
+    // CPU core pinning removed from public API.
+    // Use HORUS_RT_CORES env var (e.g., HORUS_RT_CORES=2,3) or prefer_rt() auto-selects.
 
     // ========================================================================
     // BUILDER METHODS — composable, chainable, explicit
@@ -287,7 +276,7 @@ impl Scheduler {
     /// ```rust,ignore
     /// let scheduler = Scheduler::new()
     ///     .prefer_rt()           // try RT, warn if unavailable
-    ///     .monitoring(true)
+    ///     .watchdog(500_u64.ms())
     ///     .tick_rate(100_u64.hz());
     /// ```
     pub fn prefer_rt(mut self) -> Self {
@@ -310,7 +299,7 @@ impl Scheduler {
     /// ```rust,ignore
     /// let scheduler = Scheduler::new()
     ///     .require_rt()          // panic if RT unavailable
-    ///     .monitoring(true)
+    ///     .watchdog(500_u64.ms())
     ///     .tick_rate(1000_u64.hz());
     /// ```
     pub fn require_rt(mut self) -> Self {
@@ -329,54 +318,58 @@ impl Scheduler {
         self
     }
 
-    /// Enable or disable all monitoring features at once.
+    /// Enable the watchdog — detects frozen or unresponsive nodes.
     ///
-    /// Sets: budget enforcement, deadline monitoring, watchdog (500ms), and
-    /// safety monitor. These four flags always go together in practice.
+    /// When set, a safety monitor is auto-created that watches all registered
+    /// nodes. If a node doesn't tick within the timeout, the watchdog triggers
+    /// graduated degradation (warn → reduce rate → isolate → safe state).
     ///
-    /// For individual control, use `apply_config()` directly.
+    /// Budget enforcement and deadline monitoring are always active for nodes
+    /// that have `.rate()` set (no flag needed).
     ///
     /// # Example
     /// ```rust,ignore
     /// let scheduler = Scheduler::new()
-    ///     .monitoring(true)      // budget + deadline + watchdog + safety
-    ///     .with_blackbox(64)     // add flight recorder
+    ///     .watchdog(500_u64.ms())    // 500ms timeout for frozen nodes
     ///     .tick_rate(100_u64.hz());
     /// ```
-    pub fn monitoring(mut self, enabled: bool) -> Self {
-        self.pending_config.realtime.budget_enforcement = enabled;
-        self.pending_config.realtime.deadline_monitoring = enabled;
-        self.pending_config.realtime.watchdog_enabled = enabled;
-        self.pending_config.realtime.safety_monitor = enabled;
-        if enabled {
-            self.pending_config.realtime.watchdog_timeout_ms = 500;
-        }
+    pub fn watchdog(mut self, timeout: Duration) -> Self {
+        self.pending_config.realtime.watchdog_timeout_ms = timeout.as_millis() as u64;
         self
     }
 
-    /// Enable or disable deterministic execution order.
+    /// Enable the blackbox flight recorder for crash forensics.
     ///
-    /// When enabled, **all** nodes tick sequentially on the main thread in
-    /// registration order. No thread pools, no watcher threads, no executors.
-    /// This guarantees identical execution order across runs.
-    ///
-    /// Designed for use with `tick_once()` in simulation and testing.
+    /// Records critical events (deadline misses, budget violations, fault tolerance
+    /// state changes, emergency stops) in a ring buffer. After a crash, the blackbox
+    /// provides a timeline of what happened.
     ///
     /// # Example
     /// ```rust,ignore
-    /// let mut scheduler = Scheduler::new()
-    ///     .deterministic(true)
+    /// let scheduler = Scheduler::new()
+    ///     .blackbox(64)              // 64MB flight recorder
     ///     .tick_rate(100_u64.hz());
-    ///
-    /// // Simulation loop — you control time
-    /// loop {
-    ///     sim.step_physics(dt);
-    ///     scheduler.tick_once()?;
-    ///     sim.render();
-    /// }
     /// ```
-    pub fn deterministic(mut self, enabled: bool) -> Self {
-        self.pending_config.timing.deterministic_order = enabled;
+    pub fn blackbox(mut self, size_mb: usize) -> Self {
+        self.pending_config.monitoring.black_box_size_mb = size_mb;
+        let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
+        let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
+        self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+        self
+    }
+
+    /// Set the maximum number of deadline misses before emergency stop.
+    ///
+    /// Default: 100. Only meaningful when nodes have `.rate()` set.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .max_deadline_misses(10)   // strict — stop after 10 misses
+    ///     .tick_rate(1000_u64.hz());
+    /// ```
+    pub fn max_deadline_misses(mut self, n: u64) -> Self {
+        self.pending_config.realtime.max_deadline_misses = n;
         self
     }
 
@@ -439,62 +432,9 @@ impl Scheduler {
         self
     }
 
-    /// Enable telemetry export to the given endpoint.
-    ///
-    /// Supported formats: `"udp://host:port"`, `"file:///path/to/metrics.json"`
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let mut scheduler = Scheduler::new()
-    ///     .with_telemetry("udp://localhost:9999");
-    /// ```
-    pub fn with_telemetry(mut self, endpoint: &str) -> Self {
-        self.pending_config.monitoring.telemetry_endpoint = Some(endpoint.to_string());
-        let ep = super::telemetry::TelemetryEndpoint::from_string(endpoint);
-        let mut tm = super::telemetry::TelemetryManager::new(ep, 1000);
-        tm.set_scheduler_name(&self.scheduler_name);
-        self.monitor.telemetry = Some(tm);
-        self
-    }
-
-    // ========================================================================
-    // INDIVIDUAL BUILDER METHODS
-    // ========================================================================
-
-    /// Set the maximum number of deadline misses before emergency stop.
-    pub fn max_deadline_misses(mut self, n: u64) -> Self {
-        self.pending_config.realtime.max_deadline_misses = n;
-        self
-    }
-
-    /// Enable runtime profiling.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .with_profiling();
-    /// ```
-    pub fn with_profiling(mut self) -> Self {
-        self.pending_config.monitoring.profiling_enabled = true;
-        self
-    }
-
-    /// Enable the BlackBox flight recorder with the given buffer size.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .with_blackbox(64);
-    /// ```
-    pub fn with_blackbox(mut self, size_mb: usize) -> Self {
-        self.pending_config.monitoring.black_box_enabled = true;
-        self.pending_config.monitoring.black_box_size_mb = size_mb;
-        // Eagerly create the blackbox so it's accessible before run()
-        let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
-        let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
-        self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
-        self
-    }
+    // Telemetry: set HORUS_TELEMETRY_ENDPOINT env var.
+    // Profiling: always on (negligible overhead).
+    // Budget enforcement + deadline monitoring: always on when nodes have .rate() set.
 
     /// Get the detected runtime capabilities.
     ///
@@ -569,7 +509,7 @@ impl Scheduler {
     /// }
     /// ```
     #[doc(hidden)]
-    pub fn blackbox(&self) -> Option<&Arc<Mutex<super::blackbox::BlackBox>>> {
+    pub fn get_blackbox(&self) -> Option<&Arc<Mutex<super::blackbox::BlackBox>>> {
         self.monitor.blackbox.as_ref()
     }
 
@@ -894,12 +834,14 @@ impl Scheduler {
 
     /// Configure the safety monitor for RT nodes (watchdogs, budget, deadlines).
     fn apply_safety_config(&mut self, rt: &super::config::RealTimeConfig) {
-        if rt.safety_monitor || rt.budget_enforcement || rt.deadline_monitoring {
+        let has_rt_nodes = self.nodes.iter().any(|n| n.is_rt_node);
+        let watchdog_active = rt.watchdog_timeout_ms > 0;
+        if watchdog_active || has_rt_nodes {
             let monitor = SafetyMonitor::new(rt.max_deadline_misses);
 
             for registered in self.nodes.iter() {
                 if registered.is_rt_node {
-                    if rt.watchdog_enabled {
+                    if watchdog_active {
                         let watchdog_timeout = rt.watchdog_timeout_ms.ms();
                         monitor.add_critical_node(registered.name.to_string(), watchdog_timeout);
                     }
@@ -969,17 +911,11 @@ impl Scheduler {
 
     /// Apply monitoring configuration (profiling, blackbox, telemetry).
     fn apply_monitoring_config(&mut self, monitoring: &super::config::MonitoringConfig) {
-        // Profiling
-        if monitoring.profiling_enabled {
-            self.monitor.profiler.lock().unwrap().enable();
-            print_line("Profiling enabled");
-        } else {
-            self.monitor.profiler.lock().unwrap().disable();
-            print_line("Profiling disabled");
-        }
+        // Profiling is always on (negligible overhead: ~microsecond per tick via Welford's algorithm)
+        self.monitor.profiler.lock().unwrap().enable();
 
         // Black box flight recorder
-        if monitoring.black_box_enabled && monitoring.black_box_size_mb > 0 {
+        if monitoring.black_box_size_mb > 0 {
             let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
             let mut bb =
                 super::blackbox::BlackBox::new(monitoring.black_box_size_mb).with_path(bb_dir);
@@ -1050,7 +986,7 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::new().monitoring(true);
+    /// let mut scheduler = Scheduler::new().watchdog(500_u64.ms());
     /// // ... after run() starts, safety monitor is active
     /// ```
     ///
@@ -1068,7 +1004,7 @@ impl Scheduler {
         } else {
             Err(crate::error::HorusError::Config(
                 crate::error::ConfigError::Other(
-                    "Safety monitor not enabled. Use Scheduler::new().monitoring(true) or Scheduler::new().require_rt().monitoring(true)."
+                    "Safety monitor not enabled. Use Scheduler::new().watchdog(500.ms()) to enable."
                         .to_string(),
                 ),
             ))
@@ -1086,8 +1022,8 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::new().monitoring(true);
-    /// // tick budgets are typically set via .budget() on the node builder
+    /// let mut scheduler = Scheduler::new().watchdog(500_u64.ms());
+    /// // tick budgets are auto-derived from .rate() on the node builder
     /// ```
     ///
     /// # Errors
@@ -1104,18 +1040,14 @@ impl Scheduler {
         } else {
             Err(crate::error::HorusError::Config(
                 crate::error::ConfigError::Other(
-                    "Safety monitor not enabled. Use Scheduler::new().monitoring(true) or Scheduler::new().require_rt().monitoring(true)."
+                    "Safety monitor not enabled. Use Scheduler::new().watchdog(500.ms()) to enable."
                         .to_string(),
                 ),
             ))
         }
     }
 
-    /// Set scheduler name (for debugging/logging)
-    pub fn with_name(mut self, name: &str) -> Self {
-        self.scheduler_name = name.to_string();
-        self
-    }
+    // .with_name() removed — auto-derived from binary name.
 
     // ============================================================================
     // OS Integration Methods (low-level, genuinely different from config)
@@ -1215,16 +1147,15 @@ impl Scheduler {
     ///     .order(0)
     ///     .build();
     ///
-    /// // RT node — auto-detected from tick_budget() or explicit .budget()
+    /// // RT node — auto-detected from .rate()
     /// scheduler.add(MotorController::new())
     ///     .order(0)
-    ///     .rate(1000_u64.hz())  // 1kHz
-    ///     .budget(500_u64.us())   // 500μs max → enables RT scheduling
+    ///     .rate(1000_u64.hz())  // 1kHz → auto-derives budget & deadline
     ///     .build()?;
     ///
     /// // Chain multiple nodes
-    /// scheduler.add(SensorNode::new()).order(0).build()?;
-    /// scheduler.add(ControlNode::new()).order(1).budget(200_u64.us()).build()?;
+    /// scheduler.add(SensorNode::new()).order(0).rate(100_u64.hz()).build()?;
+    /// scheduler.add(ControlNode::new()).order(1).rate(500_u64.hz()).build()?;
     /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
@@ -1242,7 +1173,7 @@ impl Scheduler {
     ///
     /// let config = NodeRegistration::new(Box::new(my_node))
     ///     .order(0)
-    ///     .budget(500_u64.us());
+    ///     .rate(1000_u64.hz());
     ///
     /// scheduler.add_configured(config);
     /// ```
@@ -1448,7 +1379,6 @@ impl Scheduler {
     /// Designed for simulation and testing:
     /// ```rust,ignore
     /// let mut scheduler = Scheduler::new()
-    ///     .deterministic(true)
     ///     .tick_rate(100_u64.hz());
     ///
     /// scheduler.add(MyNode::new()).build()?;
@@ -1467,18 +1397,7 @@ impl Scheduler {
 
     /// Execute exactly one tick cycle for specific named nodes only.
     ///
-    /// Nodes not in `names` are skipped. Non-existent names are silently ignored.
-    /// Lazily initializes on first call.
-    ///
-    /// ```rust,ignore
-    /// // Tick only the motor controller
-    /// scheduler.tick_once_nodes(&["motor_controller"])?;
-    /// assert_eq!(motor_output.recv(), expected);
-    /// ```
-    pub fn tick_once_nodes(&mut self, names: &[&str]) -> HorusResult<()> {
-        self.finalize_and_init();
-        self.execute_single_tick(Some(names))
-    }
+    // .tick_once_nodes() removed — register only the nodes you need instead.
 
     /// Internal: run one tick cycle. No loop, no sleep.
     fn execute_single_tick(&mut self, node_filter: Option<&[&str]>) -> HorusResult<()> {
@@ -1562,17 +1481,45 @@ impl Scheduler {
             }
         }
 
-        self.apply_rt_optimizations(&rt_config, &config.resources);
+        // Env var: HORUS_RT_CORES — comma-separated core IDs (e.g. "2,3")
+        // Only applies if no cpu_cores already configured.
+        if self.pending_config.resources.cpu_cores.is_none() {
+            if let Ok(cores_str) = std::env::var("HORUS_RT_CORES") {
+                let cores: Vec<usize> = cores_str
+                    .split(',')
+                    .filter_map(|s| s.trim().parse::<usize>().ok())
+                    .collect();
+                if !cores.is_empty() {
+                    self.pending_config.resources.cpu_cores = Some(cores);
+                }
+            }
+        }
+
+        // Re-read resources after env var override
+        let resources = self.pending_config.resources.clone();
+        self.apply_rt_optimizations(&rt_config, &resources);
+
+        // Env var: HORUS_TELEMETRY_ENDPOINT — UDP or file URI (e.g. "udp://localhost:9999")
+        if self.pending_config.monitoring.telemetry_endpoint.is_none() {
+            if let Ok(endpoint) = std::env::var("HORUS_TELEMETRY_ENDPOINT") {
+                if !endpoint.is_empty() {
+                    self.pending_config.monitoring.telemetry_endpoint = Some(endpoint);
+                }
+            }
+        }
+
+        // Re-read monitoring config after env var overrides
+        let monitoring_config = self.pending_config.monitoring.clone();
 
         // Only apply monitoring if not already set by eager builders (with_blackbox, etc.)
         if self.monitor.blackbox.is_none() {
-            self.apply_monitoring_config(&config.monitoring);
+            self.apply_monitoring_config(&monitoring_config);
         } else {
-            // Blackbox already exists (from with_blackbox builder), only apply profiling/telemetry
-            if config.monitoring.profiling_enabled {
+            // Blackbox already exists (from .blackbox() builder), only apply profiling/telemetry
+            if monitoring_config.verbose {
                 self.monitor.profiler.lock().unwrap().enable();
             }
-            if let Some(ref endpoint_str) = config.monitoring.telemetry_endpoint {
+            if let Some(ref endpoint_str) = monitoring_config.telemetry_endpoint {
                 if self.monitor.telemetry.is_none() {
                     let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
                     let mut tm = super::telemetry::TelemetryManager::new(endpoint, 1000u64);
@@ -2272,7 +2219,7 @@ impl Scheduler {
         }
 
         // Print timing report if profiling enabled and ticks were executed
-        if self.pending_config.monitoring.profiling_enabled && total_ticks > 0 {
+        if self.pending_config.monitoring.verbose && total_ticks > 0 {
             self.print_timing_report();
         }
 
@@ -2367,10 +2314,9 @@ impl Scheduler {
             // Generate suggestions
             if let Some((ref ring_stats, budget, overruns)) = safety_data.get(*name) {
                 if budget.is_none() && ring_stats.p99_us > 0 {
-                    let suggested = ring_stats.p99_us * 2;
                     suggestions.push(format!(
-                        "  {} — no budget set (min={}us avg={}us p99={}us max={}us). Suggested: .budget({}.us())",
-                        name, ring_stats.min_us, ring_stats.avg_us, ring_stats.p99_us, ring_stats.max_us, suggested
+                        "  {} — no budget set (min={}us avg={}us p99={}us max={}us). Use .rate() to auto-derive budget",
+                        name, ring_stats.min_us, ring_stats.avg_us, ring_stats.p99_us, ring_stats.max_us
                     ));
                 }
                 if *overruns > 10 {
@@ -3041,7 +2987,7 @@ impl Scheduler {
                                 node_name
                             ));
                         }
-                        DeadlineAction::Degrade => {
+                        DeadlineAction::SafeMode => {
                             print_line(&format!(
                                 " Deadline policy: '{}' entering safe state",
                                 node_name

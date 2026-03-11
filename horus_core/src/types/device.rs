@@ -169,8 +169,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_device_size() {
+    fn test_device_size_and_alignment() {
         assert_eq!(std::mem::size_of::<Device>(), 8);
+        // Alignment must be 4 (from u32 device_id field)
+        assert_eq!(std::mem::align_of::<Device>(), 4);
+        // 8 bytes = power of 2, fits in a single cache line operation
+        assert!(std::mem::size_of::<Device>().is_power_of_two());
     }
 
     #[test]
@@ -178,13 +182,26 @@ mod tests {
         let cpu = Device::cpu();
         assert!(cpu.is_cpu());
         assert!(!cpu.is_cuda());
+        assert_eq!(cpu.device_id, 0);
 
         let cuda0 = Device::cuda(0);
         assert!(!cuda0.is_cpu());
         assert!(cuda0.is_cuda());
+        assert_eq!(cuda0.device_id, 0);
 
         let cuda7 = Device::cuda(7);
         assert!(cuda7.is_cuda());
+        assert_eq!(cuda7.device_id, 7);
+
+        // Verify constants match constructors
+        assert_eq!(Device::CPU, Device::cpu());
+        assert_eq!(Device::CUDA0, Device::cuda(0));
+
+        // Verify copy semantics: mutating a copy doesn't affect original
+        let mut copy = cpu;
+        copy.device_type = DEVICE_TYPE_CUDA;
+        assert!(cpu.is_cpu(), "original must be unaffected by copy mutation");
+        assert!(copy.is_cuda());
     }
 
     #[test]
@@ -251,6 +268,44 @@ mod tests {
 
     #[test]
     fn test_default_is_cpu() {
-        assert_eq!(Device::default(), Device::cpu());
+        let d = Device::default();
+        assert_eq!(d, Device::cpu());
+        // Default must differ from any CUDA device
+        assert_ne!(d, Device::cuda(0));
+        assert_ne!(d, Device::cuda(1));
+    }
+
+    #[test]
+    fn test_device_clone_and_debug() {
+        let cuda3 = Device::cuda(3);
+        let cloned = cuda3;
+        assert_eq!(cloned, cuda3);
+        // Debug output must contain identifying information
+        let dbg = format!("{:?}", cuda3);
+        assert!(dbg.contains("device_type"), "Debug must show device_type field");
+        assert!(dbg.contains("device_id"), "Debug must show device_id field");
+    }
+
+    #[test]
+    fn test_device_hash_distinguishes_devices() {
+        use std::collections::HashSet;
+        let devices: HashSet<Device> = [
+            Device::cpu(),
+            Device::cuda(0),
+            Device::cuda(1),
+            Device::cuda(2),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(devices.len(), 4, "all four devices must hash uniquely");
+    }
+
+    #[test]
+    fn test_device_padding_zeroed() {
+        // Ensure padding bytes are always zero (important for Pod byte equality)
+        let cpu = Device::cpu();
+        assert_eq!(cpu._pad, [0, 0, 0]);
+        let cuda = Device::cuda(42);
+        assert_eq!(cuda._pad, [0, 0, 0]);
     }
 }

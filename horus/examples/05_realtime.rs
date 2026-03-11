@@ -20,7 +20,7 @@ message! {
 
 /// A PID controller running as a real-time node.
 ///
-/// RT scheduling (budget, deadline, miss policy) is configured via the builder API.
+/// RT scheduling (rate, miss policy) is configured via the builder API.
 struct PidController {
     publisher: Topic<MotorCmd>,
     setpoint: f64,
@@ -120,8 +120,6 @@ fn main() -> Result<()> {
         .add(PidController::new()?)
         .order(0)
         .rate(100_u64.hz())
-        .budget(200_u64.us()) // 200μs max execution time
-        .deadline(1_u64.ms()) // 1ms deadline for 1kHz control
         .on_miss(Miss::Skip) // Occasional miss tolerated
         .build()?;
 

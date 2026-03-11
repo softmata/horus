@@ -288,7 +288,7 @@ fn churn_concurrent_runtimes_no_conflicts() {
     let presences = horus_core::NodePresence::read_all();
     let concurrent_count = presences
         .iter()
-        .filter(|p| p.name.starts_with("concurrent_"))
+        .filter(|p| p.name().starts_with("concurrent_"))
         .count();
     assert!(
         concurrent_count >= 15,

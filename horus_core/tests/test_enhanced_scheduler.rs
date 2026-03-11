@@ -197,21 +197,34 @@ fn test_enhanced_scheduler() {
     println!("I/O node ticks: {}", io_counter.load(Ordering::SeqCst));
     println!("Flaky node ticks: {}", flaky_counter.load(Ordering::SeqCst));
 
-    // Assertions
+    let cpu_ticks = cpu_counter.load(Ordering::SeqCst);
+    let io_ticks = io_counter.load(Ordering::SeqCst);
+    let flaky_ticks = flaky_counter.load(Ordering::SeqCst);
+
+    // CPU node (1ms work) in 3 seconds should tick many times
     assert!(
-        cpu_counter.load(Ordering::SeqCst) > 0,
-        "CPU node should have executed"
+        cpu_ticks > 10,
+        "CPU node should have ticked many times in 3s, got {}",
+        cpu_ticks
     );
+    // I/O node (50ms blocking) should still tick
     assert!(
-        io_counter.load(Ordering::SeqCst) > 0,
-        "I/O node should have executed"
+        io_ticks > 0,
+        "I/O node should have executed despite blocking delay"
     );
 
-    // Flaky node should have some ticks despite failures
-    // Skip policy should protect it from crashing the system
+    // Flaky node (30% fail) should still tick due to Ignore policy
     assert!(
-        flaky_counter.load(Ordering::SeqCst) > 0,
-        "Flaky node should have executed at least once"
+        flaky_ticks > 0,
+        "Flaky node should have executed (Ignore policy protects from crash)"
+    );
+
+    // CPU node (1ms) should tick much more than I/O node (50ms blocking)
+    assert!(
+        cpu_ticks > io_ticks,
+        "CPU node ({}) should tick more than I/O node ({}) due to blocking I/O",
+        cpu_ticks,
+        io_ticks
     );
 
     println!("\n Enhanced scheduler test passed!");

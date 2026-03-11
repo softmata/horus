@@ -62,24 +62,24 @@ syn = { version = "2.0", features = ["full", "visit"] }
 num_cpus = "1.16"
 schemars = { version = "0.8", optional = true }
 
-# TUI dependencies
-ratatui = "0.30"
-crossterm = "0.28"
+# TUI dependencies (monitor feature)
+ratatui = { version = "0.30", optional = true }
+crossterm = { version = "0.28", optional = true }
 rand = "0.8"
 memmap2 = "0.9"
 
-# Web monitor dependencies
-axum = { version = "0.7", features = ["ws"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["fs", "cors"] }
-webbrowser = "0.8"
-futures = "0.3"
-qrcode = "0.14"
+# Web monitor dependencies (monitor feature)
+axum = { version = "0.7", features = ["ws"], optional = true }
+tower = { version = "0.4", optional = true }
+tower-http = { version = "0.5", features = ["fs", "cors"], optional = true }
+webbrowser = { version = "0.8", optional = true }
+futures = { version = "0.3", optional = true }
+qrcode = { version = "0.14", optional = true }
 
-# Security dependencies
-argon2 = "0.5"
-base64 = "0.21"
-rpassword = "7.3"
+# Security dependencies (monitor feature)
+argon2 = { version = "0.5", optional = true }
+base64 = { version = "0.21", optional = true }
+rpassword = { version = "7.3", optional = true }
 
 # Package signing
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
@@ -98,6 +98,14 @@ default = []
 
 # mDNS discovery for local peer finding
 mdns = ["horus_core/mdns"]
+
+# Web + TUI monitor with security (adds ~15 deps)
+monitor = [
+    "dep:ratatui", "dep:crossterm",
+    "dep:axum", "dep:tower", "dep:tower-http",
+    "dep:webbrowser", "dep:futures", "dep:qrcode",
+    "dep:argon2", "dep:base64", "dep:rpassword",
+]
 
 # JSON Schema generation for manifest types
 schema = ["dep:schemars"]

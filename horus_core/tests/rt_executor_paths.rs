@@ -160,8 +160,6 @@ fn test_deadline_emergency_stop() {
             policy: Miss::Stop,
         })
         .order(0)
-        .budget(100_000_u64.us())
-        .deadline(10_u64.us())
         .on_miss(Miss::Stop)
         .build();
 
@@ -203,8 +201,6 @@ fn test_deadline_skip_pauses_node() {
             policy: Miss::Skip,
         })
         .order(0)
-        .budget(100_000_u64.us())
-        .deadline(10_u64.us())
         .on_miss(Miss::Skip)
         .build();
 
@@ -215,7 +211,6 @@ fn test_deadline_skip_pauses_node() {
             tick_count: reference_count.clone(),
         })
         .order(1)
-        .budget(100_000_u64.us())
         .build();
 
     scheduler.run_for(200_u64.ms()).unwrap();
@@ -242,7 +237,6 @@ fn test_rt_panic_str_literal() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
@@ -269,7 +263,6 @@ fn test_rt_panic_owned_string() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
@@ -295,7 +288,6 @@ fn test_rt_panic_unknown_type() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
@@ -324,7 +316,6 @@ fn test_rt_on_error_callback() {
             should_panic: AtomicBool::new(true),
         })
         .order(0)
-        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
@@ -357,7 +348,6 @@ fn test_rt_skip_policy_rejection() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::skip(2, 5_u64.secs())) // Skips after 2 failures, 5s cooldown
         .build();
 
@@ -386,7 +376,6 @@ fn test_rt_restart_failure_deinitializes() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::restart(3, 10_u64.ms()))
         .build();
 

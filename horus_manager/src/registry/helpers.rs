@@ -566,49 +566,6 @@ pub(crate) fn add_dep_to_pyproject_toml(
     Ok(())
 }
 
-/// Remove a Python dependency from pyproject.toml [project.dependencies]
-pub(crate) fn remove_dep_from_pyproject_toml(
-    workspace_path: &Path,
-    package_name: &str,
-) -> Result<()> {
-    use toml_edit::DocumentMut;
-
-    let pyproject_path = workspace_path.join("pyproject.toml");
-    if !pyproject_path.exists() {
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(&pyproject_path)?;
-    let mut doc = content
-        .parse::<DocumentMut>()
-        .map_err(|e| anyhow!("failed to parse pyproject.toml: {}", e))?;
-
-    if let Some(project) = doc.get_mut("project") {
-        if let Some(deps) = project
-            .get_mut("dependencies")
-            .and_then(|d| d.as_array_mut())
-        {
-            let mut i = 0;
-            while i < deps.len() {
-                if let Some(s) = deps.get(i).and_then(|v| v.as_str()) {
-                    let existing_name = s
-                        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-                        .next()
-                        .unwrap_or("");
-                    if existing_name.eq_ignore_ascii_case(package_name) {
-                        deps.remove(i);
-                        continue;
-                    }
-                }
-                i += 1;
-            }
-        }
-    }
-
-    fs::write(&pyproject_path, doc.to_string())?;
-    Ok(())
-}
-
 /// Parse a pip dependency spec like "numpy>=1.0" into (name, version)
 pub(crate) fn parse_pip_dependency_spec(spec: &str) -> (String, String) {
     let operators = [">=", "<=", "==", "!=", "~=", ">", "<"];
@@ -1025,8 +982,8 @@ pub(crate) fn extract_package_dependencies(dir: &Path) -> Result<Vec<DependencyS
         }
     }
 
-    // Dependencies now live in native build files (Cargo.toml, pyproject.toml).
-    // horus.toml no longer has a [dependencies] section — skip manifest dep check.
+    // Dependencies are declared in horus.toml [dependencies] and resolved
+    // to native build files (.horus/Cargo.toml, .horus/pyproject.toml) by cargo_gen/pyproject_gen.
 
     Ok(dependencies)
 }

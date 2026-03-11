@@ -2,7 +2,7 @@
 Integration tests for the composable scheduler configuration API.
 
 Tests cover:
-- SchedulerConfig composable builders (with_monitoring, rate, blackbox, etc.)
+- SchedulerConfig composable builders (with_watchdog, rate, blackbox, etc.)
 - Scheduler construction with builder params
 - Node rate via builder (not trait)
 - Builder chaining with overrides
@@ -22,63 +22,57 @@ class TestSchedulerConfigBuilders:
         from horus._horus import SchedulerConfig
         cfg = SchedulerConfig.minimal()
         assert cfg.tick_rate == 60.0
-        assert cfg.safety_monitor is False
+        assert cfg.watchdog_timeout_ms == 0
         assert cfg.memory_locking is False
 
-    def test_with_monitoring_config(self):
+    def test_with_watchdog_config(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_monitoring()
-        assert cfg.safety_monitor is True
-        assert cfg.budget_enforcement is True
-        assert cfg.deadline_monitoring is True
-        assert cfg.watchdog_enabled is True
+        cfg = SchedulerConfig.with_watchdog()
         assert cfg.watchdog_timeout_ms == 500
 
-    def test_monitoring_config_repr(self):
+    def test_watchdog_config_repr(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_monitoring()
+        cfg = SchedulerConfig.with_watchdog()
         r = repr(cfg)
-        assert "Monitoring" in r
+        assert "Watchdog" in r
 
-    def test_monitoring_config_override_tick_rate(self):
+    def test_watchdog_config_override_tick_rate(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_monitoring()
+        cfg = SchedulerConfig.with_watchdog()
         cfg.tick_rate = 500.0
         assert cfg.tick_rate == 500.0
-        # Monitoring settings preserved
-        assert cfg.safety_monitor is True
+        # Watchdog settings preserved
+        assert cfg.watchdog_timeout_ms == 500
 
-    def test_monitoring_config_chaining(self):
+    def test_watchdog_config_chaining(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_monitoring()
+        cfg = SchedulerConfig.with_watchdog()
         cfg = cfg.rate(500.0).blackbox_mb(128)
         assert cfg.tick_rate == 500.0
         assert cfg.black_box_size_mb == 128
-        assert cfg.safety_monitor is True
+        assert cfg.watchdog_timeout_ms == 500
 
     def test_composable_rt_config(self):
         """Compose an RT-like config from builder methods."""
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_monitoring()
+        cfg = SchedulerConfig.with_watchdog()
         cfg = cfg.rate(100.0).blackbox_mb(64)
         cfg.memory_locking = True
         cfg.rt_scheduling_class = True
         cfg.max_deadline_misses = 10
         assert cfg.tick_rate == 100.0
-        assert cfg.safety_monitor is True
+        assert cfg.watchdog_timeout_ms == 500
         assert cfg.memory_locking is True
         assert cfg.rt_scheduling_class is True
         assert cfg.max_deadline_misses == 10
 
     def test_composable_strict_config(self):
-        """Compose a strict config with profiling and tight deadlines."""
+        """Compose a strict config with tight deadline misses."""
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_monitoring()
+        cfg = SchedulerConfig.with_watchdog()
         cfg.memory_locking = True
         cfg.rt_scheduling_class = True
-        cfg.profiling = True
         cfg.max_deadline_misses = 3
-        assert cfg.profiling is True
         assert cfg.max_deadline_misses == 3
 
     def test_builder_methods_chain(self):
@@ -86,16 +80,14 @@ class TestSchedulerConfigBuilders:
         cfg = SchedulerConfig.minimal()
         cfg = cfg.rate(50.0).watchdog_ms(200).blackbox_mb(32).cpu_affinity([0, 1])
         assert cfg.tick_rate == 50.0
-        assert cfg.watchdog_enabled is True
         assert cfg.watchdog_timeout_ms == 200
-        assert cfg.black_box_enabled is True
         assert cfg.black_box_size_mb == 32
         assert cfg.cpu_cores == [0, 1]
 
     def test_no_watchdog_disables(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_monitoring().no_watchdog()
-        assert cfg.watchdog_enabled is False
+        cfg = SchedulerConfig.with_watchdog().no_watchdog()
+        assert cfg.watchdog_timeout_ms == 0
 
     def test_telemetry_endpoint(self):
         from horus._horus import SchedulerConfig
@@ -120,9 +112,9 @@ class TestSchedulerConstruction:
         s = Scheduler(tick_rate=500.0)
         assert s is not None
 
-    def test_with_monitoring_creates_scheduler(self):
+    def test_with_watchdog_creates_scheduler(self):
         from horus import Scheduler
-        s = Scheduler(tick_rate=100.0, safety_monitor=True)
+        s = Scheduler(tick_rate=100.0, watchdog_ms=500)
         assert s is not None
 
     def test_scheduler_can_add_nodes(self):
@@ -153,7 +145,7 @@ class TestSchedulerConstruction:
         s.run(duration=0.1)
         assert node.count > 0
 
-    def test_monitoring_scheduler_can_run(self):
+    def test_watchdog_scheduler_can_run(self):
         from horus import Scheduler, Node
 
         class SimpleNode(Node):
@@ -161,7 +153,7 @@ class TestSchedulerConstruction:
             def tick(self, info=None):
                 pass
 
-        s = Scheduler(tick_rate=100.0, safety_monitor=True)
+        s = Scheduler(tick_rate=100.0, watchdog_ms=500)
         s.add(SimpleNode(), order=0)
         s.run(duration=0.05)
 
@@ -259,7 +251,7 @@ class TestMissEnum:
         s = Scheduler(tick_rate=100.0)
         s.add(SimpleNode(), order=0, budget=500)
 
-    def test_safety_stats_with_monitoring(self):
+    def test_safety_stats_with_watchdog(self):
         from horus import Scheduler, Node
 
         class SimpleNode(Node):
@@ -267,7 +259,7 @@ class TestMissEnum:
             def tick(self, info=None):
                 pass
 
-        s = Scheduler(tick_rate=100.0, safety_monitor=True)
+        s = Scheduler(tick_rate=100.0, watchdog_ms=500)
         s.add(SimpleNode(), order=0)
         s.run(duration=0.05)
         stats = s._scheduler.safety_stats()

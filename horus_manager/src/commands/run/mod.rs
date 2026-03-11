@@ -2,8 +2,8 @@ pub(crate) mod deps;
 pub(crate) mod features;
 pub(crate) mod hardware;
 pub(crate) mod install;
-mod run_python;
-mod run_rust;
+pub(crate) mod run_python;
+pub(crate) mod run_rust;
 
 // Re-export public API
 pub use hardware::check_hardware_requirements;
@@ -43,6 +43,30 @@ pub fn execute_run(
     clean: bool,
 ) -> Result<()> {
     log::debug!("executing run with files: {:?}", files);
+
+    // Check if the argument is a script name from [scripts] in horus.toml
+    // e.g. `horus run sim` → runs the "sim" script instead of looking for a file
+    if files.len() == 1 {
+        let candidate = files[0].to_string_lossy();
+        // Only check if it looks like a bare name (no path separators, no extension)
+        if !candidate.contains(std::path::MAIN_SEPARATOR)
+            && !candidate.contains('/')
+            && !candidate.contains('.')
+        {
+            let manifest_path = Path::new(HORUS_TOML);
+            if manifest_path.exists() {
+                if let Ok((manifest, _)) = HorusManifest::load_from(manifest_path) {
+                    if manifest.scripts.contains_key(candidate.as_ref()) {
+                        return crate::commands::scripts::run_scripts(
+                            Some(candidate.into_owned()),
+                            args,
+                        )
+                        .map_err(|e| anyhow!("{}", e));
+                    }
+                }
+            }
+        }
+    }
 
     // Handle clean build
     if clean {
@@ -151,7 +175,7 @@ fn execute_single_file(
 
         // Resolve dependencies with language context
         // This ensures cargo library dependencies are handled correctly:
-        // - For Rust: cargo deps go to Cargo.toml, not cargo install
+        // - For Rust: library deps are in horus.toml, resolved via cargo_gen
         // - For Python: cargo deps are skipped entirely (they're library crates)
         if !deps_to_resolve.is_empty() {
             install::resolve_dependencies_with_context(deps_to_resolve, Some(&language))?;
@@ -577,7 +601,7 @@ fn resolve_glob_pattern(pattern: &str) -> Result<Vec<ExecutionTarget>> {
     }
 }
 
-fn auto_detect_main_file() -> Result<PathBuf> {
+pub(crate) fn auto_detect_main_file() -> Result<PathBuf> {
     log::debug!("auto-detecting main file in current directory");
 
     // Load ignore patterns from horus.toml
@@ -624,7 +648,7 @@ fn auto_detect_main_file() -> Result<PathBuf> {
     )
 }
 
-fn ensure_horus_directory() -> Result<()> {
+pub(crate) fn ensure_horus_directory() -> Result<()> {
     let horus_dir = PathBuf::from(".horus");
 
     // Create .horus/ if it doesn't exist

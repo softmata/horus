@@ -376,7 +376,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn discovered_service_defaults() {
+    fn discovered_service_complete_has_both_topics() {
         let svc = DiscoveredService {
             name: "add_two_ints".to_string(),
             has_request: true,
@@ -387,11 +387,27 @@ mod tests {
             response_subscribers: 1,
         };
         assert_eq!(svc.name, "add_two_ints");
+        // A complete service must have both request and response
         assert!(svc.has_request && svc.has_response);
+        // With participants on both sides
+        assert!(svc.request_publishers > 0, "service needs request publishers");
+        assert!(svc.request_subscribers > 0, "service needs request subscribers");
+        assert!(svc.response_publishers > 0, "service needs response publishers");
+        assert!(svc.response_subscribers > 0, "service needs response subscribers");
+
+        // Clone preserves all fields
+        let cloned = svc.clone();
+        assert_eq!(cloned.name, svc.name);
+        assert_eq!(cloned.request_publishers, svc.request_publishers);
+        assert_eq!(cloned.response_subscribers, svc.response_subscribers);
+
+        // Debug contains service name
+        let debug = format!("{:?}", svc);
+        assert!(debug.contains("add_two_ints"), "Debug should contain service name");
     }
 
     #[test]
-    fn discovered_service_partial() {
+    fn discovered_service_partial_lacks_response() {
         let svc = DiscoveredService {
             name: "broken_svc".to_string(),
             has_request: true,
@@ -403,6 +419,11 @@ mod tests {
         };
         assert!(svc.has_request);
         assert!(!svc.has_response);
+        // Partial service: has request topic but no response topic
+        assert_eq!(svc.response_publishers, 0, "no response means no response publishers");
+        assert_eq!(svc.response_subscribers, 0, "no response means no response subscribers");
+        // Even request_subscribers is 0 -- nobody listening
+        assert_eq!(svc.request_subscribers, 0);
     }
 
     #[test]

@@ -113,17 +113,11 @@ class Miss:
 
 class SchedulerConfig:
     tick_rate: float
-    budget_enforcement: bool
-    deadline_monitoring: bool
-    watchdog_enabled: bool
     watchdog_timeout_ms: int
-    safety_monitor: bool
     max_deadline_misses: int
     memory_locking: bool
     rt_scheduling_class: bool
     cpu_cores: Optional[List[int]]
-    profiling: bool
-    black_box_enabled: bool
     black_box_size_mb: int
     telemetry_endpoint: Optional[str]
     recording_enabled: bool
@@ -131,7 +125,7 @@ class SchedulerConfig:
     @staticmethod
     def minimal() -> SchedulerConfig: ...
     @staticmethod
-    def with_monitoring() -> SchedulerConfig: ...
+    def with_watchdog() -> SchedulerConfig: ...
     def rate(self, hz: float) -> SchedulerConfig: ...
     def watchdog_ms(self, ms: int) -> SchedulerConfig: ...
     def no_watchdog(self) -> SchedulerConfig: ...

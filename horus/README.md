@@ -46,8 +46,7 @@ impl Node for MyNode {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new()
-        .with_name("my_app");
+    let mut scheduler = Scheduler::new();
 
     scheduler.add(MyNode {
         publisher: Topic::new("sensor_data")?,
@@ -66,13 +65,11 @@ Scheduler::new()
 
 // Composable builder methods — chain what you need
 Scheduler::new()
-    .monitoring(true)          // budget + deadline + watchdog + safety
-    .with_blackbox(64)         // flight recorder (64MB)
-    .with_profiling()          // runtime profiling
-    .tick_rate(1000.hz())      // 1kHz control loop
-    .deterministic(true)       // reproducible execution order
+    .watchdog(500_u64.ms())    // frozen node detection (auto-creates safety monitor)
+    .blackbox(64)              // crash forensics (64 MB ring buffer)
+    .tick_rate(1000_u64.hz())  // 1kHz control loop
     .prefer_rt()               // try RT, warn if unavailable
-    .max_deadline_misses(3)    // strict deadline enforcement
+    .verbose(false)            // suppress non-emergency logs
 ```
 
 ## License

@@ -164,17 +164,11 @@ except ImportError:
     class _SchedulerConfig:
         def __init__(self):
             self.tick_rate = 60.0
-            self.budget_enforcement = False
-            self.deadline_monitoring = False
+            self.watchdog_timeout_ms = 0
+            self.max_deadline_misses = 100
             self.memory_locking = False
             self.rt_scheduling_class = False
-            self.profiling = False
-            self.black_box_enabled = False
             self.black_box_size_mb = 0
-            self.watchdog_enabled = False
-            self.watchdog_timeout_ms = 0
-            self.safety_monitor = False
-            self.max_deadline_misses = 0
             self.cpu_cores = None
             self.telemetry_endpoint = None
             self.recording_enabled = False
@@ -865,7 +859,7 @@ class Scheduler:
     Example (adding nodes):
         scheduler = Scheduler()
         scheduler.add(sensor_node, order=0, rate=100.0)
-        scheduler.add(motor_node, order=1, rt=True, deadline=5.0)
+        scheduler.add(motor_node, order=1, rate=500.0, on_miss=Miss.SAFE_MODE)
         scheduler.run()
 
     Example (context manager — auto-stop on exit):
@@ -876,13 +870,10 @@ class Scheduler:
 
     def __init__(self, *,
                  tick_rate: float = 1000.0,
-                 fault_tolerance: bool = False,
                  parallel: bool = False,
                  rt: bool = False,
-                 profiling: bool = False,
                  blackbox_mb: int = 0,
                  watchdog_ms: int = 0,
-                 safety_monitor: bool = False,
                  recording: bool = False,
                  _inner=None):
         """
@@ -890,13 +881,10 @@ class Scheduler:
 
         Args:
             tick_rate: Global tick rate in Hz (default: 1000.0)
-            fault_tolerance: Enable tier-based fault tolerance (default: False)
             parallel: Use parallel execution mode (default: False)
             rt: Enable real-time features (memory locking + RT scheduling class)
-            profiling: Enable runtime profiling (default: False)
             blackbox_mb: Black box buffer size in MB (0 = disabled)
             watchdog_ms: Watchdog timeout in ms (0 = disabled)
-            safety_monitor: Enable safety monitor (default: False)
             recording: Enable recording (default: False)
             _inner: Internal — used by preset constructors
         """
@@ -905,20 +893,13 @@ class Scheduler:
         elif _PyScheduler:
             cfg = _SchedulerConfig.minimal()
             cfg.tick_rate = tick_rate
-            if fault_tolerance:
-                cfg.budget_enforcement = True
-                cfg.deadline_monitoring = True
             if rt:
                 cfg.memory_locking = True
                 cfg.rt_scheduling_class = True
-            cfg.profiling = profiling
             if blackbox_mb > 0:
-                cfg.black_box_enabled = True
                 cfg.black_box_size_mb = blackbox_mb
             if watchdog_ms > 0:
-                cfg.watchdog_enabled = True
                 cfg.watchdog_timeout_ms = watchdog_ms
-            cfg.safety_monitor = safety_monitor
             cfg.recording_enabled = recording
             self._scheduler = _PyScheduler(cfg)
         else:
@@ -926,12 +907,11 @@ class Scheduler:
         self._nodes = []
 
     # Presets deploy(), hard_rt(), safety_critical() removed.
-    # Use Scheduler(safety_monitor=True, watchdog_ms=500) or
-    # Scheduler(config=SchedulerConfig.with_monitoring()) instead.
+    # Use Scheduler(watchdog_ms=500) or
+    # Scheduler(config=SchedulerConfig.with_watchdog()) instead.
 
     def add(self, node: 'Node', order: int = 100, rate: Optional[float] = None,
-            rt: bool = False, deadline: Optional[float] = None,
-            budget: Optional[int] = None,
+            rt: bool = False,
             failure_policy: Optional[str] = None,
             on_miss: Optional[str] = None) -> 'Scheduler':
         """
@@ -940,10 +920,9 @@ class Scheduler:
         Args:
             node: Node instance to add
             order: Execution order (lower = earlier, default: 100)
-            rate: Node-specific tick rate in Hz (default: uses node.rate)
+            rate: Node-specific tick rate in Hz (default: uses node.rate).
+                  Setting rate auto-derives budget (80%) and deadline (95%).
             rt: Mark as real-time node (default: False)
-            deadline: Soft deadline in milliseconds (default: None)
-            budget: Tick budget in microseconds (default: None)
             failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
             on_miss: Deadline miss policy - Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, Miss.STOP
                   (default: None = warn)
@@ -953,7 +932,7 @@ class Scheduler:
 
         Example:
             scheduler.add(sensor_node, order=0, rate=1000.0)
-            scheduler.add(motor_node, order=1, rt=True, deadline=5.0, on_miss=Miss.SAFE_MODE)
+            scheduler.add(motor_node, order=1, rate=500.0, on_miss=Miss.SAFE_MODE)
             scheduler.add(logger_node, order=100, failure_policy="skip")
         """
         self._nodes.append(node)
@@ -961,8 +940,8 @@ class Scheduler:
         if self._scheduler:
             # Use node.rate if rate not specified
             actual_rate = rate if rate is not None else node.rate
-            self._scheduler.add(node, order, actual_rate, rt, deadline,
-                                budget, failure_policy, on_miss)
+            self._scheduler.add(node, order, actual_rate, rt,
+                                failure_policy, on_miss)
 
         return self
 
@@ -971,7 +950,7 @@ class Scheduler:
 
         Example:
             scheduler.node(detector).on("lidar_scan").order(0).build()
-            scheduler.node(motor).rate(500).budget(200).failure_policy("restart", max_retries=10).build()
+            scheduler.node(motor).rate(500).failure_policy("restart", max_retries=10).build()
         """
         self._nodes.append(node)
         if self._scheduler:
@@ -1297,14 +1276,14 @@ class Scheduler:
 
     def set_tick_budget(self, node_name: str, us: int) -> None:
         """
-        Set budget (Worst-Case Execution Time) budget for a node.
+        Set tick budget (Worst-Case Execution Time) for a node.
 
         Args:
             node_name: Name of the node
             us: Budget in microseconds
         """
         if not self._scheduler:
-            raise RuntimeError("Cannot set budget budget before scheduler is created")
+            raise RuntimeError("Cannot set tick budget before scheduler is created")
         self._scheduler.set_tick_budget(node_name, us)
 
     def add_critical_node(self, node_name: str, timeout_ms: int) -> None:

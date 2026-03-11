@@ -12,7 +12,6 @@
 //! - Rate specification via `rate` section
 
 use horus::prelude::*;
-use horus::DurationExt;
 
 // ============================================================================
 // 1. Minimal node: just a name and empty tick

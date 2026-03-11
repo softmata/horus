@@ -63,96 +63,48 @@ fn test_scheduler_with_rt_nodes() {
     cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
-    // Add RT node with fluent API
-    scheduler
-        .add(CriticalControlNode::new("motor_control", 50)) // 50μs execution
-        .order(0) // Highest priority
-        .budget(100_u64.us()) // 100μs tick budget
-        .deadline(1_u64.ms()) // 1ms deadline
-        .build();
+    let motor = CriticalControlNode::new("motor_control", 50);
+    let motor_ticks = Arc::clone(&motor.tick_count);
+    let fusion = CriticalControlNode::new("sensor_fusion", 30);
+    let fusion_ticks = Arc::clone(&fusion.tick_count);
+    let logger = CriticalControlNode::new("logger", 10);
+    let logger_ticks = Arc::clone(&logger.tick_count);
 
-    // Add another RT node
-    scheduler
-        .add(CriticalControlNode::new("sensor_fusion", 30)) // 30μs execution
-        .order(1)
-        .budget(50_u64.us())
-        .deadline(2_u64.ms())
-        .build();
+    scheduler.add(motor).order(0).build();
+    scheduler.add(fusion).order(1).build();
+    scheduler.add(logger).order(10).build();
 
-    // Add a regular node
-    scheduler
-        .add(CriticalControlNode::new("logger", 10))
-        .order(10)
-        .build();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
-    // Run for a short duration
-    let result = scheduler.run_for(100_u64.ms());
-    result.unwrap();
+    let motor_count = motor_ticks.load(Ordering::SeqCst);
+    let fusion_count = fusion_ticks.load(Ordering::SeqCst);
+    let logger_count = logger_ticks.load(Ordering::SeqCst);
+
+    assert!(motor_count > 0, "RT motor_control node never ticked");
+    assert!(fusion_count > 0, "RT sensor_fusion node never ticked");
+    assert!(logger_count > 0, "Regular logger node never ticked");
 }
 
 #[test]
 fn test_scheduler_with_safety_critical_config() {
     cleanup_stale_shm();
-    // Configure for safety-critical operation
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
-    // Add critical nodes
-    scheduler
-        .add(CriticalControlNode::new("flight_control", 80))
-        .order(0)
-        .budget(100_u64.us())
-        .deadline(1_u64.ms())
-        .build();
+    let flight = CriticalControlNode::new("flight_control", 80);
+    let flight_ticks = Arc::clone(&flight.tick_count);
+    let nav = CriticalControlNode::new("navigation", 60);
+    let nav_ticks = Arc::clone(&nav.tick_count);
 
-    scheduler
-        .add(CriticalControlNode::new("navigation", 60))
-        .order(1)
-        .budget(80_u64.us())
-        .deadline(2_u64.ms())
-        .build();
+    scheduler.add(flight).order(0).build();
+    scheduler.add(nav).order(1).build();
 
-    // Run briefly with safety monitoring
-    let result = scheduler.run_for(50_u64.ms());
-    result.unwrap();
-}
+    scheduler.run_for(50_u64.ms()).unwrap();
 
-#[test]
-fn test_budget_violation_detection() {
-    cleanup_stale_shm();
-    // Enable RT monitoring
-    let mut scheduler = Scheduler::new().monitoring(true);
+    let flight_count = flight_ticks.load(Ordering::SeqCst);
+    let nav_count = nav_ticks.load(Ordering::SeqCst);
 
-    // Add node that will violate budget
-    // Execution time (100μs) > tick budget (50μs)
-    scheduler
-        .add(CriticalControlNode::new("violator", 100))
-        .order(0)
-        .budget(50_u64.us()) // tick budget too small
-        .deadline(1_u64.ms())
-        .build();
-
-    // This should detect budget violations but continue running
-    let result = scheduler.run_for(20_u64.ms());
-    result.unwrap();
-}
-
-#[test]
-fn test_deadline_miss_detection() {
-    cleanup_stale_shm();
-    // Enable deadline monitoring
-    let mut scheduler = Scheduler::new().monitoring(true).max_deadline_misses(5);
-
-    // Add node with tight deadline that might be missed
-    scheduler
-        .add(CriticalControlNode::new("tight_deadline", 900))
-        .order(0)
-        .budget(1000_u64.us())
-        .deadline(500_u64.us()) // Deadline smaller than execution time
-        .build();
-
-    // This should detect deadline misses
-    let result = scheduler.run_for(30_u64.ms());
-    result.unwrap();
+    assert!(flight_count > 0, "flight_control node never ticked in safety-critical config");
+    assert!(nav_count > 0, "navigation node never ticked in safety-critical config");
 }
 
 #[test]
@@ -160,77 +112,88 @@ fn test_mixed_rt_and_normal_nodes() {
     cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
-    // Mix of RT and normal nodes
-    scheduler
-        .add(CriticalControlNode::new("rt_critical", 50))
-        .order(0)
-        .budget(100_u64.us())
-        .deadline(1_u64.ms())
-        .build();
+    let rt_crit = CriticalControlNode::new("rt_critical", 50);
+    let rt_crit_ticks = Arc::clone(&rt_crit.tick_count);
+    let normal = CriticalControlNode::new("normal_processing", 200);
+    let normal_ticks = Arc::clone(&normal.tick_count);
+    let rt_sensor = CriticalControlNode::new("rt_sensor", 30);
+    let rt_sensor_ticks = Arc::clone(&rt_sensor.tick_count);
+    let background = CriticalControlNode::new("background_task", 500);
+    let bg_ticks = Arc::clone(&background.tick_count);
 
-    scheduler
-        .add(CriticalControlNode::new("normal_processing", 200))
-        .order(5)
-        .build();
+    scheduler.add(rt_crit).order(0).build();
+    scheduler.add(normal).order(5).build();
+    scheduler.add(rt_sensor).order(1).build();
+    scheduler.add(background).order(20).build();
 
-    scheduler
-        .add(CriticalControlNode::new("rt_sensor", 30))
-        .order(1)
-        .budget(50_u64.us())
-        .deadline(2_u64.ms())
-        .build();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
-    scheduler
-        .add(CriticalControlNode::new("background_task", 500))
-        .order(20)
-        .build();
+    let rt_count = rt_crit_ticks.load(Ordering::SeqCst);
+    let sensor_count = rt_sensor_ticks.load(Ordering::SeqCst);
+    let normal_count = normal_ticks.load(Ordering::SeqCst);
+    let bg_count = bg_ticks.load(Ordering::SeqCst);
 
-    // RT nodes should be properly prioritized
-    let result = scheduler.run_for(100_u64.ms());
-    result.unwrap();
+    assert!(rt_count > 0, "RT critical node never ticked");
+    assert!(sensor_count > 0, "RT sensor node never ticked");
+    assert!(normal_count > 0, "Normal processing node never ticked");
+    assert!(bg_count > 0, "Background task node never ticked");
+
+    // RT nodes (50μs, 30μs exec) should tick more than background (500μs exec)
+    assert!(
+        rt_count > bg_count,
+        "RT critical ({}) should tick more than background ({}) due to lower exec time",
+        rt_count, bg_count
+    );
 }
 
 #[test]
 fn test_watchdog_functionality() {
     cleanup_stale_shm();
-    // Enable watchdog monitoring
-    let mut scheduler = Scheduler::new().monitoring(true);
+    let mut scheduler = Scheduler::new().watchdog(500_u64.ms());
 
-    // Add RT node that will be monitored by watchdog
-    scheduler
-        .add(CriticalControlNode::new("watchdog_monitored", 10))
-        .order(0)
-        .budget(50_u64.us())
-        .deadline(1_u64.ms())
-        .build();
+    let node = CriticalControlNode::new("watchdog_monitored", 10);
+    let ticks = Arc::clone(&node.tick_count);
 
-    // Run normally - watchdog should be fed and not expire
-    let result = scheduler.run_for(100_u64.ms());
-    result.unwrap();
+    scheduler.add(node).order(0).build();
+
+    // Run normally — watchdog should be fed and not expire
+    scheduler.run_for(100_u64.ms()).unwrap();
+
+    let tick_count = ticks.load(Ordering::SeqCst);
+    assert!(
+        tick_count > 0,
+        "Watchdog-monitored node should tick normally when execution is within budget"
+    );
 }
 
 #[test]
 fn test_high_performance_rt_config() {
     cleanup_stale_shm();
-    // Configure for high-performance racing robot
+    // Configure for high-performance racing robot at 10kHz
     let mut scheduler = Scheduler::new().tick_rate(10000_u64.hz());
 
-    // Add ultra-fast control nodes
-    scheduler
-        .add(CriticalControlNode::new("traction_control", 10))
-        .order(0)
-        .budget(20_u64.us())
-        .deadline(100_u64.us()) // 10kHz control loop
-        .build();
+    let traction = CriticalControlNode::new("traction_control", 10);
+    let traction_ticks = Arc::clone(&traction.tick_count);
+    let stability = CriticalControlNode::new("stability_control", 15);
+    let stability_ticks = Arc::clone(&stability.tick_count);
 
-    scheduler
-        .add(CriticalControlNode::new("stability_control", 15))
-        .order(1)
-        .budget(25_u64.us())
-        .deadline(100_u64.us())
-        .build();
+    scheduler.add(traction).order(0).build();
+    scheduler.add(stability).order(1).build();
 
-    // Should handle high-frequency execution
-    let result = scheduler.run_for(50_u64.ms());
-    result.unwrap();
+    scheduler.run_for(50_u64.ms()).unwrap();
+
+    let traction_count = traction_ticks.load(Ordering::SeqCst);
+    let stability_count = stability_ticks.load(Ordering::SeqCst);
+
+    // At 10kHz for 50ms, expect ~500 ticks ideally. Use conservative threshold for CI.
+    assert!(
+        traction_count > 10,
+        "Traction control ticked {} times in 50ms at 10kHz (expected many more)",
+        traction_count
+    );
+    assert!(
+        stability_count > 10,
+        "Stability control ticked {} times in 50ms at 10kHz (expected many more)",
+        stability_count
+    );
 }

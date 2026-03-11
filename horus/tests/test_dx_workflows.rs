@@ -5,7 +5,6 @@
 
 use horus::prelude::*;
 use horus::serde_json;
-use horus::DurationExt;
 
 // ============================================================================
 // 1. message! macro works and types are topic-ready
@@ -212,7 +211,6 @@ fn prelude_exports_rt_types() {
     // These should all be accessible from the prelude
     let _policy = Miss::Warn;
     let _stats = RtStats::default();
-    let _exec_class = ExecutionClass::BestEffort;
 }
 
 // ============================================================================

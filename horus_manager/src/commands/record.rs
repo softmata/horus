@@ -640,7 +640,8 @@ pub fn run_inject(args: InjectArgs) -> HorusResult<()> {
     }
 
     // Create a new scheduler for hybrid execution
-    let mut scheduler = Scheduler::new().with_name(&format!("Inject({})", session));
+    let mut scheduler = Scheduler::new();
+    scheduler.scheduler_name = format!("Inject({})", session);
 
     // Filter and add replay nodes
     let mut injected_count = 0;
@@ -792,7 +793,8 @@ pub fn run_inject(args: InjectArgs) -> HorusResult<()> {
                     );
 
                     // Recreate scheduler for next iteration
-                    scheduler = Scheduler::new().with_name(&format!("Inject({})", session));
+                    scheduler = Scheduler::new();
+                    scheduler.scheduler_name = format!("Inject({})", session);
 
                     // Re-inject nodes
                     for path in &recordings {
@@ -899,12 +901,14 @@ mod tests {
 
     #[test]
     fn parse_hex_string_odd_length_errors() {
-        parse_hex_string("abc").unwrap_err();
+        let err = parse_hex_string("abc").unwrap_err();
+        assert!(err.contains("even length"), "should mention even length requirement: {}", err);
     }
 
     #[test]
     fn parse_hex_string_invalid_chars_errors() {
-        parse_hex_string("zzzz").unwrap_err();
+        let err = parse_hex_string("zzzz").unwrap_err();
+        assert!(err.contains("Invalid hex"), "should mention invalid hex: {}", err);
     }
 
     #[test]

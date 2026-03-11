@@ -418,13 +418,19 @@ mod tests {
 
     #[test]
     fn parse_since_invalid_format() {
-        parse_since(Some("5x")).unwrap_err();
-        parse_since(Some("abc")).unwrap_err();
+        let err1 = parse_since(Some("5x")).unwrap_err().to_string();
+        assert!(err1.contains("Invalid time format"), "should mention invalid format: {}", err1);
+        assert!(err1.contains("5x"), "should include the invalid input: {}", err1);
+
+        let err2 = parse_since(Some("abc")).unwrap_err().to_string();
+        assert!(err2.contains("Invalid"), "should indicate invalidity: {}", err2);
     }
 
     #[test]
     fn parse_since_invalid_number() {
-        parse_since(Some("abcs")).unwrap_err();
+        let err = parse_since(Some("abcs")).unwrap_err().to_string();
+        assert!(err.contains("Invalid number"), "should mention invalid number: {}", err);
+        assert!(err.contains("abcs"), "should include the invalid input: {}", err);
     }
 
     #[test]

@@ -75,12 +75,7 @@ fn test_scheduler_default() {
     assert_eq!(scheduler.node_list().len(), 0);
 }
 
-#[test]
-fn test_scheduler_with_name() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().with_name("TestScheduler");
-    assert_eq!(scheduler.scheduler_name(), "TestScheduler");
-}
+// test_scheduler_with_name: DELETED — .with_name() removed from API
 
 // ============================================================================
 // Node Addition Tests
@@ -296,18 +291,14 @@ fn test_scheduler_start_at_tick() {
 // ============================================================================
 
 #[test]
-fn test_scheduler_with_safety_monitor() {
+fn test_scheduler_with_watchdog() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().monitoring(true).max_deadline_misses(10);
+    let scheduler = Scheduler::new().watchdog(500_u64.ms());
     assert!(scheduler.is_running());
-    // monitoring(true) sets safety_monitor=true in pending config (materialized at run time)
-    assert!(
-        scheduler.pending_config.realtime.safety_monitor,
-        "monitoring(true) should enable safety_monitor in pending config"
-    );
+    // watchdog(500ms) sets watchdog_timeout_ms=500 in pending config
     assert_eq!(
-        scheduler.pending_config.realtime.max_deadline_misses, 10,
-        "max_deadline_misses should be 10"
+        scheduler.pending_config.realtime.watchdog_timeout_ms, 500,
+        "watchdog(500ms) should set watchdog_timeout_ms in pending config"
     );
 }
 
@@ -322,8 +313,6 @@ fn test_scheduler_add_rt_node() {
     scheduler
         .add(CounterNode::new("rt_node"))
         .order(0)
-        .budget(100_u64.us())
-        .deadline(1_u64.ms())
         .build();
 
     let nodes = scheduler.node_list();
@@ -360,7 +349,7 @@ fn test_scheduler_run_for_short_duration() {
 #[test]
 fn test_scheduler_chainable_api() {
     let _guard = lock_scheduler();
-    let mut scheduler = Scheduler::new().with_name("ChainedScheduler");
+    let mut scheduler = Scheduler::new();
 
     scheduler
         .add(CounterNode::new("chain_node"))
@@ -403,15 +392,8 @@ fn test_scheduler_list_recordings() {
 }
 
 // ============================================================================
-// Builder Pattern Name Test
+// Builder Pattern Name Test — DELETED (.with_name() removed from API)
 // ============================================================================
-
-#[test]
-fn test_scheduler_name_builder() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().with_name("BuilderName");
-    assert_eq!(scheduler.scheduler_name(), "BuilderName");
-}
 
 // ============================================================================
 // Override Tests
@@ -561,7 +543,7 @@ fn test_parallel_rt_nodes_run_sequentially() {
     scheduler
         .add(CounterNode::with_counter("rt_node", rt_counter.clone()))
         .order(0)
-        .budget(10_000_u64.us())
+        .rate(100_u64.hz())
         .build();
     scheduler
         .add(CounterNode::with_counter(
@@ -730,15 +712,7 @@ fn test_blackbox_with_path() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-#[test]
-fn test_deploy_config_creates_blackbox_with_wal() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().monitoring(true).with_blackbox(16);
-    assert!(
-        scheduler.blackbox().is_some(),
-        ".with_blackbox() should create a blackbox"
-    );
-}
+// test_deploy_config_creates_blackbox_with_wal: DELETED — .with_blackbox() removed from API
 
 // ============================================================================
 // Fix 4: Dead Code Cleanup Verification
@@ -1172,7 +1146,7 @@ fn test_scheduler_all_nodes_init_called_once() {
 }
 
 // ============================================================================
-// budget / Deadline / Failure Policy Integration Tests
+// Failure Policy Integration Tests
 // ============================================================================
 
 /// Node that panics after a configurable number of ticks.
@@ -1206,33 +1180,7 @@ impl Node for PanickingNode {
     }
 }
 
-/// Node that sleeps in tick() to simulate slow execution (for budget tests).
-struct SlowNode {
-    node_name: String,
-    sleep_duration: Duration,
-    tick_count: Arc<AtomicUsize>,
-}
-
-impl SlowNode {
-    fn new(name: &str, sleep: Duration, counter: Arc<AtomicUsize>) -> Self {
-        Self {
-            node_name: name.to_string(),
-            sleep_duration: sleep,
-            tick_count: counter,
-        }
-    }
-}
-
-impl Node for SlowNode {
-    fn name(&self) -> &str {
-        &self.node_name
-    }
-
-    fn tick(&mut self) {
-        self.tick_count.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(self.sleep_duration);
-    }
-}
+// SlowNode: DELETED — was only used by .budget()/.deadline() tests which are removed
 
 /// Fatal policy stops the scheduler when a node panics.
 /// Robotics: motor controller failure must halt the system immediately.
@@ -1393,90 +1341,8 @@ fn test_ignore_policy_continues_after_failure() {
     );
 }
 
-/// budget enforcement: slow RT node exceeds tick budget, violation is detected.
-/// Robotics: motor control loop exceeding 1ms budget must be flagged.
-#[test]
-fn test_budget_violation_detected_for_slow_rt_node() {
-    let _guard = lock_scheduler();
-    let slow_counter = Arc::new(AtomicUsize::new(0));
-    let fast_counter = Arc::new(AtomicUsize::new(0));
-
-    // Enable budget enforcement via builder (deferred to run time)
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    // Fast node within budget
-    scheduler
-        .add(CounterNode::with_counter("fast_ctrl", fast_counter.clone()))
-        .order(0)
-        .budget(10_000_u64.us()) // 10ms budget (generous)
-        .build();
-
-    // Slow node that will exceed its tick budget
-    scheduler
-        .add(SlowNode::new(
-            "slow_sensor",
-            50_u64.ms(),
-            slow_counter.clone(),
-        ))
-        .order(1)
-        .budget(1_000_u64.us()) // 1ms budget — will be violated by 50ms sleep
-        .build();
-
-    let _result = scheduler.run_for(1_u64.secs());
-
-    // Slow node should have ticked
-    assert!(
-        slow_counter.load(Ordering::SeqCst) > 0,
-        "slow node should have ticked"
-    );
-
-    // RT nodes are reclaimed after stop — check per-node rt_stats for budget violations
-    if let Some(stats) = scheduler.rt_stats("slow_sensor") {
-        assert!(
-            stats.budget_violations() > 0,
-            "budget violation should have been detected, got {} violations",
-            stats.budget_violations()
-        );
-    }
-}
-
-/// Deadline miss detection: RT node misses its deadline.
-/// Robotics: control loop missing 10ms deadline means actuator stale.
-#[test]
-fn test_deadline_miss_detected_for_slow_rt_node() {
-    let _guard = lock_scheduler();
-    let slow_counter = Arc::new(AtomicUsize::new(0));
-
-    // Enable deadline monitoring via builder (deferred to run time)
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    // Node with tight deadline that will be missed
-    scheduler
-        .add(SlowNode::new(
-            "ctrl_loop",
-            20_u64.ms(),
-            slow_counter.clone(),
-        ))
-        .order(0)
-        .deadline(5_u64.ms()) // 5ms deadline — will be missed by 20ms sleep
-        .build();
-
-    let _result = scheduler.run_for(2_u64.secs());
-
-    assert!(
-        slow_counter.load(Ordering::SeqCst) > 0,
-        "node should have ticked"
-    );
-
-    // RT nodes are reclaimed after stop — check per-node rt_stats for deadline misses
-    if let Some(stats) = scheduler.rt_stats("ctrl_loop") {
-        assert!(
-            stats.deadline_misses() > 0,
-            "Deadline miss should have been detected, got {} misses",
-            stats.deadline_misses()
-        );
-    }
-}
+// test_budget_violation_detected_for_slow_rt_node: DELETED — .budget() removed from API
+// test_deadline_miss_detected_for_slow_rt_node: DELETED — .deadline() removed from API
 
 /// Verify shutdown is called for every node even when scheduler stops normally.
 #[test]
@@ -1834,37 +1700,10 @@ fn test_double_stop() {
     scheduler.stop(); // Double stop should not panic
 }
 
-#[test]
-fn test_with_name_empty() {
-    let scheduler = Scheduler::new().with_name("");
-    assert_eq!(scheduler.scheduler_name(), "");
-}
-
-#[test]
-fn test_with_name_long() {
-    let long_name = "x".repeat(10_000);
-    let scheduler = Scheduler::new().with_name(&long_name);
-    assert_eq!(scheduler.scheduler_name(), long_name);
-}
-
-#[test]
-fn test_with_blackbox_zero_size() {
-    let _lock = lock_scheduler();
-    let scheduler = Scheduler::new().with_blackbox(0);
-    assert!(scheduler.blackbox().is_some());
-}
-
-#[test]
-fn test_max_deadline_misses_zero() {
-    let _lock = lock_scheduler();
-    let mut scheduler = Scheduler::new().max_deadline_misses(0);
-    scheduler
-        .add(CounterNode::new("zero_miss"))
-        .build()
-        .unwrap();
-    let result = scheduler.run_for(10_u64.ms());
-    result.unwrap();
-}
+// test_with_name_empty: DELETED — .with_name() removed from API
+// test_with_name_long: DELETED — .with_name() removed from API
+// test_with_blackbox_zero_size: DELETED — .with_blackbox() removed from API
+// test_max_deadline_misses_zero: DELETED — .max_deadline_misses() removed from API
 
 #[test]
 fn test_run_for_zero_duration() {
@@ -2405,7 +2244,7 @@ fn test_skip_policy_healthy_nodes_unaffected() {
     let healthy_counter = Arc::new(AtomicUsize::new(0));
     let panic_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().monitoring(true);
+    let mut scheduler = Scheduler::new().watchdog(500_u64.ms());
 
     scheduler
         .add(CounterNode::with_counter(
@@ -2600,7 +2439,7 @@ fn test_fault_tolerance_reflected_in_scheduler_status() {
     let _guard = lock_scheduler();
     let panic_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().monitoring(true);
+    let mut scheduler = Scheduler::new().watchdog(500_u64.ms());
     scheduler
         .add(PanickingNode::new("circuit_node", 1, panic_counter.clone()))
         .order(0)
@@ -2616,379 +2455,14 @@ fn test_fault_tolerance_reflected_in_scheduler_status() {
 }
 
 // ============================================================================
-// budget Budget Enforcement Tests
+// budget Budget Enforcement Tests — DELETED (entire section)
+// .budget() removed from NodeBuilder API (auto-derived from rate)
 // ============================================================================
 
-/// RT node well within tick budget — no violations should be reported.
-#[test]
-fn test_budget_no_violation_within_budget() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-    scheduler
-        .add(CounterNode::with_counter("fast_node", counter.clone()))
-        .order(0)
-        .budget(100_000_u64.us()) // 100ms budget — CounterNode takes nanoseconds
-        .build();
-
-    let _result = scheduler.run_for(200_u64.ms());
-
-    assert!(
-        counter.load(Ordering::SeqCst) > 0,
-        "Node should have ticked"
-    );
-
-    if let Some(stats) = scheduler.rt_stats("fast_node") {
-        assert_eq!(
-            stats.budget_violations(), 0,
-            "Fast node should have zero budget violations, got {}",
-            stats.budget_violations()
-        );
-    }
-}
-
-/// Multiple RT nodes exceed budget simultaneously — both should report violations.
-#[test]
-fn test_budget_multiple_simultaneous_violations() {
-    let _guard = lock_scheduler();
-    let slow_a = Arc::new(AtomicUsize::new(0));
-    let slow_b = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    scheduler
-        .add(SlowNode::new(
-            "slow_a",
-            30_u64.ms(),
-            slow_a.clone(),
-        ))
-        .order(0)
-        .budget(1_000_u64.us()) // 1ms budget — violated by 30ms sleep
-        .build();
-
-    scheduler
-        .add(SlowNode::new(
-            "slow_b",
-            30_u64.ms(),
-            slow_b.clone(),
-        ))
-        .order(1)
-        .budget(2_000_u64.us()) // 2ms budget — violated by 30ms sleep
-        .build();
-
-    let _result = scheduler.run_for(1_u64.secs());
-
-    assert!(
-        slow_a.load(Ordering::SeqCst) > 0,
-        "slow_a should have ticked"
-    );
-    assert!(
-        slow_b.load(Ordering::SeqCst) > 0,
-        "slow_b should have ticked"
-    );
-
-    // Both nodes should have budget violations
-    if let Some(stats) = scheduler.rt_stats("slow_a") {
-        assert!(
-            stats.budget_violations() > 0,
-            "slow_a should have budget violations, got {}",
-            stats.budget_violations()
-        );
-    }
-    if let Some(stats) = scheduler.rt_stats("slow_b") {
-        assert!(
-            stats.budget_violations() > 0,
-            "slow_b should have budget violations, got {}",
-            stats.budget_violations()
-        );
-    }
-}
-
-/// Mix of within-budget and over-budget nodes — only the over-budget one reports.
-#[test]
-fn test_budget_mixed_within_and_over_budget() {
-    let _guard = lock_scheduler();
-    let fast = Arc::new(AtomicUsize::new(0));
-    let slow = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    // Fast node with generous budget
-    scheduler
-        .add(CounterNode::with_counter("fast", fast.clone()))
-        .order(0)
-        .budget(50_000_u64.us()) // 50ms — way more than needed
-        .build();
-
-    // Slow node with tight budget
-    scheduler
-        .add(SlowNode::new(
-            "slow",
-            20_u64.ms(),
-            slow.clone(),
-        ))
-        .order(1)
-        .budget(1_000_u64.us()) // 1ms budget — violated
-        .build();
-
-    let _result = scheduler.run_for(1_u64.secs());
-
-    if let Some(fast_stats) = scheduler.rt_stats("fast") {
-        assert_eq!(
-            fast_stats.budget_violations(), 0,
-            "Fast node should have 0 violations, got {}",
-            fast_stats.budget_violations()
-        );
-    }
-
-    if let Some(slow_stats) = scheduler.rt_stats("slow") {
-        assert!(
-            slow_stats.budget_violations() > 0,
-            "Slow node should have violations, got {}",
-            slow_stats.budget_violations()
-        );
-    }
-}
-
-/// Non-RT node with budget — should still track (if registered as RT via .budget()).
-#[test]
-fn test_budget_non_rt_node_no_crash() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    // Regular node (no .budget()) — no budget tracking
-    scheduler
-        .add(CounterNode::with_counter("regular", counter.clone()))
-        .order(0)
-        .build();
-
-    let result = scheduler.run_for(100_u64.ms());
-    result.unwrap();
-    assert!(counter.load(Ordering::SeqCst) > 0);
-
-    // rt_stats for non-RT node should return None
-    assert!(
-        scheduler.rt_stats("regular").is_none(),
-        "Non-RT node should not have rt_stats"
-    );
-}
-
-/// budget tracks worst execution time correctly.
-#[test]
-fn test_budget_worst_execution_tracked() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    // Variable-speed node: takes 5ms per tick
-    scheduler
-        .add(SlowNode::new(
-            "variable",
-            5_u64.ms(),
-            counter.clone(),
-        ))
-        .order(0)
-        .budget(100_000_u64.us()) // generous budget, just tracking
-        .build();
-
-    let _result = scheduler.run_for(200_u64.ms());
-
-    if let Some(stats) = scheduler.rt_stats("variable") {
-        assert!(
-            stats.worst_execution() >= 4_u64.ms(),
-            "Worst execution should be at least ~5ms, got {:?}",
-            stats.worst_execution()
-        );
-        assert!(stats.total_ticks() > 0, "Should have tracked ticks");
-    }
-}
-
 // ============================================================================
-// Deadline Miss Policy Tests
+// Deadline Miss Policy Tests — DELETED (entire section)
+// .deadline() removed from NodeBuilder API (auto-derived from rate)
 // ============================================================================
-
-/// RT node within deadline — no misses reported.
-#[test]
-fn test_deadline_no_miss_within_budget() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-    scheduler
-        .add(CounterNode::with_counter("fast_rt", counter.clone()))
-        .order(0)
-        .deadline(500_u64.ms()) // 500ms — CounterNode takes nanoseconds
-        .build();
-
-    let _result = scheduler.run_for(1_u64.secs());
-
-    // RT thread needs time to spin up; allow zero ticks on heavily loaded CI
-    let ticks = counter.load(Ordering::SeqCst);
-    if ticks > 0 {
-        if let Some(stats) = scheduler.rt_stats("fast_rt") {
-            assert_eq!(
-                stats.deadline_misses(), 0,
-                "Fast node should have zero deadline misses, got {}",
-                stats.deadline_misses()
-            );
-        }
-    }
-}
-
-/// Multiple RT nodes miss deadlines simultaneously — both reported.
-#[test]
-fn test_deadline_multiple_simultaneous_misses() {
-    let _guard = lock_scheduler();
-    let slow_a = Arc::new(AtomicUsize::new(0));
-    let slow_b = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    scheduler
-        .add(SlowNode::new(
-            "slow_a",
-            30_u64.ms(),
-            slow_a.clone(),
-        ))
-        .order(0)
-        .deadline(5_u64.ms()) // 5ms deadline — missed by 30ms
-        .build();
-
-    scheduler
-        .add(SlowNode::new(
-            "slow_b",
-            30_u64.ms(),
-            slow_b.clone(),
-        ))
-        .order(1)
-        .deadline(10_u64.ms()) // 10ms deadline — missed by 30ms
-        .build();
-
-    let _result = scheduler.run_for(1_u64.secs());
-
-    if let Some(stats) = scheduler.rt_stats("slow_a") {
-        assert!(
-            stats.deadline_misses() > 0,
-            "slow_a should have deadline misses, got {}",
-            stats.deadline_misses()
-        );
-    }
-    if let Some(stats) = scheduler.rt_stats("slow_b") {
-        assert!(
-            stats.deadline_misses() > 0,
-            "slow_b should have deadline misses, got {}",
-            stats.deadline_misses()
-        );
-    }
-}
-
-/// Mix of deadline-meeting and deadline-missing nodes.
-#[test]
-fn test_deadline_mixed_meet_and_miss() {
-    let _guard = lock_scheduler();
-    let fast = Arc::new(AtomicUsize::new(0));
-    let slow = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    // Fast node meets deadline
-    scheduler
-        .add(CounterNode::with_counter("meets_deadline", fast.clone()))
-        .order(0)
-        .deadline(100_u64.ms())
-        .build();
-
-    // Slow node misses deadline
-    scheduler
-        .add(SlowNode::new(
-            "misses_deadline",
-            25_u64.ms(),
-            slow.clone(),
-        ))
-        .order(1)
-        .deadline(5_u64.ms()) // 5ms — violated by 25ms sleep
-        .build();
-
-    let _result = scheduler.run_for(1_u64.secs());
-
-    if let Some(fast_stats) = scheduler.rt_stats("meets_deadline") {
-        assert_eq!(
-            fast_stats.deadline_misses(), 0,
-            "Fast node should have 0 deadline misses"
-        );
-    }
-
-    if let Some(slow_stats) = scheduler.rt_stats("misses_deadline") {
-        assert!(
-            slow_stats.deadline_misses() > 0,
-            "Slow node should have deadline misses"
-        );
-    }
-}
-
-/// Deadline miss stats accumulate across ticks.
-#[test]
-fn test_deadline_miss_count_accumulates() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    scheduler
-        .add(SlowNode::new(
-            "repeated_miss",
-            15_u64.ms(),
-            counter.clone(),
-        ))
-        .order(0)
-        .deadline(5_u64.ms()) // 5ms deadline — each tick misses
-        .build();
-
-    let _result = scheduler.run_for(500_u64.ms());
-
-    let ticks = counter.load(Ordering::SeqCst);
-    assert!(ticks > 1, "Should have ticked multiple times");
-
-    if let Some(stats) = scheduler.rt_stats("repeated_miss") {
-        assert!(
-            stats.deadline_misses() >= 2,
-            "Should have accumulated multiple deadline misses, got {}",
-            stats.deadline_misses()
-        );
-    }
-}
-
-/// Deadline miss + budget violation on same node — both tracked independently.
-#[test]
-fn test_deadline_miss_and_budget_violation_both_tracked() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    // Node with both tight deadline AND tight tick budget
-    scheduler
-        .add(SlowNode::new(
-            "double_violation",
-            30_u64.ms(),
-            counter.clone(),
-        ))
-        .order(0)
-        .budget(1_000_u64.us()) // 1ms tick budget — violated by 30ms
-        .deadline(5_u64.ms()) // 5ms deadline — also violated
-        .build();
-
-    let _result = scheduler.run_for(1_u64.secs());
-
-    if let Some(stats) = scheduler.rt_stats("double_violation") {
-        assert!(stats.budget_violations() > 0, "Should have budget violations");
-        assert!(stats.deadline_misses() > 0, "Should have deadline misses");
-    }
-}
 
 // ============================================================================
 // Phase 6: Comprehensive Tests — Builder Methods
@@ -3020,90 +2494,45 @@ fn test_require_rt_panics_or_succeeds() {
 }
 
 #[test]
-fn test_monitoring_true_sets_all_flags() {
+fn test_watchdog_sets_timeout() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().monitoring(true);
-    assert!(scheduler.pending_config.realtime.budget_enforcement);
-    assert!(scheduler.pending_config.realtime.deadline_monitoring);
-    assert!(scheduler.pending_config.realtime.watchdog_enabled);
-    assert!(scheduler.pending_config.realtime.safety_monitor);
+    let scheduler = Scheduler::new().watchdog(500_u64.ms());
     assert_eq!(scheduler.pending_config.realtime.watchdog_timeout_ms, 500);
 }
 
 #[test]
-fn test_monitoring_false_clears_all_flags() {
+fn test_blackbox_sets_size() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().monitoring(true).monitoring(false);
-    assert!(!scheduler.pending_config.realtime.budget_enforcement);
-    assert!(!scheduler.pending_config.realtime.deadline_monitoring);
-    assert!(!scheduler.pending_config.realtime.watchdog_enabled);
-    assert!(!scheduler.pending_config.realtime.safety_monitor);
+    let scheduler = Scheduler::new().blackbox(64);
+    assert_eq!(scheduler.pending_config.monitoring.black_box_size_mb, 64);
 }
 
 #[test]
-fn test_deterministic_sets_config() {
+fn test_max_deadline_misses_sets_value() {
     let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().deterministic(true);
-    assert!(scheduler.pending_config.timing.deterministic_order);
+    let scheduler = Scheduler::new().max_deadline_misses(10);
+    assert_eq!(scheduler.pending_config.realtime.max_deadline_misses, 10);
 }
 
-#[test]
-fn test_deterministic_false_clears_config() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().deterministic(true).deterministic(false);
-    assert!(!scheduler.pending_config.timing.deterministic_order);
-}
-
-#[test]
-fn test_cores_sets_config() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().cores(&[0, 2, 4]);
-    assert_eq!(
-        scheduler.pending_config.resources.cpu_cores,
-        Some(vec![0, 2, 4])
-    );
-}
-
-#[test]
-fn test_with_profiling_sets_config() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().with_profiling();
-    assert!(scheduler.pending_config.monitoring.profiling_enabled);
-}
-
-#[test]
-fn test_with_blackbox_sets_config() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().with_blackbox(128);
-    assert!(scheduler.pending_config.monitoring.black_box_enabled);
-    assert_eq!(scheduler.pending_config.monitoring.black_box_size_mb, 128);
-    assert!(scheduler.monitor.blackbox.is_some());
-}
-
-#[test]
-fn test_max_deadline_misses_sets_config() {
-    let _guard = lock_scheduler();
-    let scheduler = Scheduler::new().max_deadline_misses(5);
-    assert_eq!(scheduler.pending_config.realtime.max_deadline_misses, 5);
-}
+// test_deterministic_sets_config: DELETED — .deterministic() removed from API
+// test_deterministic_false_clears_config: DELETED — .deterministic() removed from API
+// test_cores_sets_config: DELETED — .cores() removed from API
+// test_with_profiling_sets_config: DELETED — .with_profiling() removed from API
+// test_with_blackbox_sets_config: DELETED — .with_blackbox() removed from API
+// test_max_deadline_misses_sets_config: DELETED — .max_deadline_misses() removed from API
 
 #[test]
 fn test_builder_full_chain() {
     let _guard = lock_scheduler();
     let scheduler = Scheduler::new()
-        .monitoring(true)
-        .with_blackbox(64)
-        .with_profiling()
-        .max_deadline_misses(3)
+        .watchdog(500_u64.ms())
+        .blackbox(64)
         .tick_rate(500_u64.hz())
         .verbose(false)
         .prefer_rt();
 
-    assert!(scheduler.pending_config.realtime.budget_enforcement);
-    assert!(scheduler.pending_config.realtime.safety_monitor);
-    assert!(scheduler.pending_config.monitoring.black_box_enabled);
-    assert!(scheduler.pending_config.monitoring.profiling_enabled);
-    assert_eq!(scheduler.pending_config.realtime.max_deadline_misses, 3);
+    assert_eq!(scheduler.pending_config.realtime.watchdog_timeout_ms, 500);
+    assert_eq!(scheduler.pending_config.monitoring.black_box_size_mb, 64);
     assert_eq!(scheduler.pending_config.timing.global_rate_hz, 500.0);
     assert!(!scheduler.pending_config.monitoring.verbose);
     assert!(scheduler.pending_config.realtime.memory_locking);
@@ -3118,7 +2547,7 @@ fn test_tick_once_basic() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
     scheduler
         .add(CounterNode::with_counter("tick_once_node", counter.clone()))
         .order(0)
@@ -3151,7 +2580,7 @@ fn test_tick_once_multiple_nodes_execution_order() {
         }
     }
 
-    let mut scheduler = Scheduler::new().deterministic(true);
+    let mut scheduler = Scheduler::new();
 
     scheduler
         .add(OrderTracker {
@@ -3181,52 +2610,8 @@ fn test_tick_once_multiple_nodes_execution_order() {
     assert_eq!(recorded, vec!["first", "second", "third"]);
 }
 
-#[test]
-fn test_tick_once_nodes_filters_correctly() {
-    let _guard = lock_scheduler();
-    let c1 = Arc::new(AtomicUsize::new(0));
-    let c2 = Arc::new(AtomicUsize::new(0));
-    let c3 = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().deterministic(true);
-    scheduler
-        .add(CounterNode::with_counter("sensor", c1.clone()))
-        .order(0)
-        .build();
-    scheduler
-        .add(CounterNode::with_counter("motor", c2.clone()))
-        .order(1)
-        .build();
-    scheduler
-        .add(CounterNode::with_counter("logger", c3.clone()))
-        .order(2)
-        .build();
-
-    // Only tick sensor and motor
-    scheduler.tick_once_nodes(&["sensor", "motor"]).unwrap();
-
-    assert_eq!(c1.load(Ordering::SeqCst), 1, "sensor should have ticked");
-    assert_eq!(c2.load(Ordering::SeqCst), 1, "motor should have ticked");
-    assert_eq!(c3.load(Ordering::SeqCst), 0, "logger should NOT have ticked");
-}
-
-#[test]
-fn test_tick_once_nodes_nonexistent_ignored() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().deterministic(true);
-    scheduler
-        .add(CounterNode::with_counter("real_node", counter.clone()))
-        .order(0)
-        .build();
-
-    // Include nonexistent name — should not error
-    scheduler
-        .tick_once_nodes(&["real_node", "ghost_node"])
-        .unwrap();
-    assert_eq!(counter.load(Ordering::SeqCst), 1);
-}
+// test_tick_once_nodes_filters_correctly: DELETED — .tick_once_nodes() removed from API
+// test_tick_once_nodes_nonexistent_ignored: DELETED — .tick_once_nodes() removed from API
 
 #[test]
 fn test_tick_once_lazy_init() {
@@ -3247,7 +2632,7 @@ fn test_tick_once_lazy_init() {
     }
 
     let init_flag = Arc::new(AtomicBool::new(false));
-    let mut scheduler = Scheduler::new().deterministic(true);
+    let mut scheduler = Scheduler::new();
     scheduler
         .add(InitTracker {
             init_called: init_flag.clone(),
@@ -3266,7 +2651,7 @@ fn test_tick_once_lazy_init() {
 #[test]
 fn test_tick_once_increments_tick_counter() {
     let _guard = lock_scheduler();
-    let mut scheduler = Scheduler::new().deterministic(true);
+    let mut scheduler = Scheduler::new();
     let counter = Arc::new(AtomicUsize::new(0));
     scheduler
         .add(CounterNode::with_counter("n", counter))
@@ -3304,7 +2689,7 @@ fn test_deterministic_100_nodes_strict_order() {
         }
     }
 
-    let mut scheduler = Scheduler::new().deterministic(true);
+    let mut scheduler = Scheduler::new();
 
     // Add 100 nodes in REVERSE priority order
     for i in (0..100u32).rev() {
@@ -3352,7 +2737,7 @@ fn test_deterministic_repeated_ticks_identical() {
         }
     }
 
-    let mut scheduler = Scheduler::new().deterministic(true);
+    let mut scheduler = Scheduler::new();
     for (name, prio) in [("alpha", 0), ("beta", 1), ("gamma", 2), ("delta", 3)] {
         scheduler
             .add(NameTracker {
@@ -3383,7 +2768,7 @@ fn test_deterministic_repeated_ticks_identical() {
 #[test]
 fn test_tick_once_empty_scheduler() {
     let _guard = lock_scheduler();
-    let mut scheduler = Scheduler::new().deterministic(true);
+    let mut scheduler = Scheduler::new();
     // Empty scheduler should succeed
     scheduler.tick_once().unwrap();
     assert_eq!(scheduler.current_tick(), 1);
@@ -3393,7 +2778,7 @@ fn test_tick_once_empty_scheduler() {
 fn test_tick_once_single_node() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::new().deterministic(true);
+    let mut scheduler = Scheduler::new();
     scheduler
         .add(CounterNode::with_counter("solo", counter.clone()))
         .order(0)
@@ -3406,9 +2791,9 @@ fn test_tick_once_single_node() {
 }
 
 #[test]
-fn test_monitoring_scheduler_runs_without_nodes() {
+fn test_watchdog_scheduler_runs_without_nodes() {
     let _guard = lock_scheduler();
-    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().watchdog(500_u64.ms()).tick_rate(100_u64.hz());
     let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }
@@ -3418,22 +2803,16 @@ fn test_builder_order_independence() {
     let _guard = lock_scheduler();
     // Builder methods should be order-independent
     let s1 = Scheduler::new()
-        .monitoring(true)
-        .with_blackbox(64)
+        .watchdog(500_u64.ms())
         .tick_rate(200_u64.hz());
 
     let s2 = Scheduler::new()
         .tick_rate(200_u64.hz())
-        .with_blackbox(64)
-        .monitoring(true);
+        .watchdog(500_u64.ms());
 
     assert_eq!(
-        s1.pending_config.realtime.safety_monitor,
-        s2.pending_config.realtime.safety_monitor
-    );
-    assert_eq!(
-        s1.pending_config.monitoring.black_box_enabled,
-        s2.pending_config.monitoring.black_box_enabled
+        s1.pending_config.realtime.watchdog_timeout_ms,
+        s2.pending_config.realtime.watchdog_timeout_ms
     );
     assert_eq!(
         s1.pending_config.timing.global_rate_hz,
@@ -3442,79 +2821,21 @@ fn test_builder_order_independence() {
 }
 
 // ============================================================================
-// Phase 6: Budget Enforcement Under Overload
+// Phase 6: Budget Enforcement Under Overload — DELETED (entire section)
+// .budget() removed from NodeBuilder API (auto-derived from rate)
 // ============================================================================
-
-#[test]
-fn test_budget_enforcement_rapid_violations() {
-    let _guard = lock_scheduler();
-    let counter = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100_u64.hz());
-
-    // Node that consistently exceeds its budget
-    scheduler
-        .add(SlowNode::new(
-            "overloaded",
-            10_u64.ms(),
-            counter.clone(),
-        ))
-        .order(0)
-        .budget(100_u64.us()) // 100us budget, 10ms actual = 100x overbudget
-        .build();
-
-    let _ = scheduler.run_for(500_u64.ms());
-
-    if let Some(stats) = scheduler.rt_stats("overloaded") {
-        assert!(
-            stats.budget_violations() > 0,
-            "Should detect budget violations under sustained overload"
-        );
-    }
-}
-
-#[test]
-fn test_budget_enforcement_multiple_overloaded_nodes() {
-    let _guard = lock_scheduler();
-    let c1 = Arc::new(AtomicUsize::new(0));
-    let c2 = Arc::new(AtomicUsize::new(0));
-
-    let mut scheduler = Scheduler::new().monitoring(true);
-
-    scheduler
-        .add(SlowNode::new("slow_a", 5_u64.ms(), c1.clone()))
-        .order(0)
-        .budget(100_u64.us())
-        .build();
-    scheduler
-        .add(SlowNode::new("slow_b", 5_u64.ms(), c2.clone()))
-        .order(1)
-        .budget(100_u64.us())
-        .build();
-
-    let _ = scheduler.run_for(500_u64.ms());
-
-    // Both should have violations tracked independently
-    if let Some(a) = scheduler.rt_stats("slow_a") {
-        assert!(a.budget_violations() > 0);
-    }
-    if let Some(b) = scheduler.rt_stats("slow_b") {
-        assert!(b.budget_violations() > 0);
-    }
-}
 
 // ============================================================================
 // Phase 6: Graduated Safety Monitor Response
 // ============================================================================
 
 #[test]
-fn test_monitoring_with_deterministic_tick_once() {
+fn test_watchdog_with_deterministic_tick_once() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new()
-        .monitoring(true)
-        .deterministic(true)
+        .watchdog(500_u64.ms())
         .tick_rate(100_u64.hz());
 
     scheduler
@@ -3538,7 +2859,7 @@ fn test_watchdog_with_healthy_nodes() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().watchdog(500_u64.ms()).tick_rate(100_u64.hz());
 
     scheduler
         .add(CounterNode::with_counter("fast_node", counter.clone()))
@@ -3567,8 +2888,7 @@ fn test_timing_report_does_not_crash() {
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new()
-        .monitoring(true)
-        .with_profiling()
+        .watchdog(500_u64.ms())
         .tick_rate(100_u64.hz());
 
     scheduler

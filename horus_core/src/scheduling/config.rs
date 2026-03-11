@@ -25,17 +25,10 @@ pub struct TimingConfig {
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct RealTimeConfig {
-    /// Enable budget enforcement
-    pub budget_enforcement: bool,
-    /// Enable deadline monitoring
-    pub deadline_monitoring: bool,
-    /// Enable watchdog timers
-    pub watchdog_enabled: bool,
-    /// Default watchdog timeout in milliseconds
+    /// Watchdog timeout in milliseconds. 0 = disabled, >0 = enabled.
+    /// When enabled, safety monitor is auto-created.
     pub watchdog_timeout_ms: u64,
-    /// Enable safety monitor
-    pub safety_monitor: bool,
-    /// Maximum deadline misses before emergency stop
+    /// Maximum deadline misses before emergency stop (default: 100)
     pub max_deadline_misses: u64,
     /// Memory locking (mlockall)
     pub memory_locking: bool,
@@ -55,11 +48,7 @@ pub struct ResourceConfig {
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct MonitoringConfig {
-    /// Enable runtime profiling
-    pub profiling_enabled: bool,
-    /// Enable black box recording
-    pub black_box_enabled: bool,
-    /// Black box buffer size in MB
+    /// Black box buffer size in MB. 0 = disabled, >0 = enabled.
     pub black_box_size_mb: usize,
     /// Telemetry export endpoint (e.g., "udp://localhost:9999", "file:///var/log/metrics.json")
     pub telemetry_endpoint: Option<String>,
@@ -141,14 +130,13 @@ impl RecordingConfigYaml {
 /// Internal scheduler configuration — use `Scheduler` builder methods instead.
 ///
 /// ```rust,ignore
-/// // Production: enable monitoring
+/// // Production: enable watchdog + blackbox
 /// let scheduler = Scheduler::new()
-///     .budget_enforcement(true)
-///     .deadline_monitoring(true)
 ///     .watchdog(500_u64.ms())
+///     .blackbox(64)
 ///     .tick_rate(500_u64.hz());
 ///
-/// // Lightweight: no monitoring
+/// // Lightweight: no watchdog or blackbox
 /// let scheduler = Scheduler::new().tick_rate(500_u64.hz());
 /// ```
 #[doc(hidden)]
@@ -174,19 +162,13 @@ impl Default for SchedulerConfig {
                 deterministic_order: false,
             },
             realtime: RealTimeConfig {
-                budget_enforcement: false,
-                deadline_monitoring: false,
-                watchdog_enabled: false,
-                watchdog_timeout_ms: 1000,
-                safety_monitor: false,
+                watchdog_timeout_ms: 0,
                 max_deadline_misses: 100,
                 memory_locking: false,
                 rt_scheduling_class: false,
             },
             resources: ResourceConfig { cpu_cores: None },
             monitoring: MonitoringConfig {
-                profiling_enabled: false,
-                black_box_enabled: false,
                 black_box_size_mb: 0,
                 telemetry_endpoint: None,
                 verbose: true,
@@ -212,23 +194,15 @@ mod tests {
 
     fn arb_realtime_config() -> impl Strategy<Value = RealTimeConfig> {
         (
-            any::<bool>(),
-            any::<bool>(),
-            any::<bool>(),
-            1u64..60_000,
-            any::<bool>(),
+            0u64..60_000,
             1u64..10_000,
             any::<bool>(),
             any::<bool>(),
         )
             .prop_map(
-                |(budget, deadline, watchdog, timeout, safety, max_miss, memlock, rt_class)| {
+                |(timeout, max_miss, memlock, rt_class)| {
                     RealTimeConfig {
-                        budget_enforcement: budget,
-                        deadline_monitoring: deadline,
-                        watchdog_enabled: watchdog,
                         watchdog_timeout_ms: timeout,
-                        safety_monitor: safety,
                         max_deadline_misses: max_miss,
                         memory_locking: memlock,
                         rt_scheduling_class: rt_class,
@@ -238,10 +212,8 @@ mod tests {
     }
 
     fn arb_monitoring_config() -> impl Strategy<Value = MonitoringConfig> {
-        (any::<bool>(), any::<bool>(), 0usize..1024, any::<bool>()).prop_map(
-            |(prof, bb, bb_size, verbose)| MonitoringConfig {
-                profiling_enabled: prof,
-                black_box_enabled: bb,
+        (0usize..1024, any::<bool>()).prop_map(
+            |(bb_size, verbose)| MonitoringConfig {
                 black_box_size_mb: bb_size,
                 telemetry_endpoint: None,
                 verbose,
@@ -307,11 +279,11 @@ mod tests {
                 "Tick rate must be finite, got {}", config.timing.global_rate_hz);
         }
 
-        /// SchedulerConfig: watchdog timeout must be positive
+        /// SchedulerConfig: watchdog timeout is within valid range
         #[test]
-        fn scheduler_config_watchdog_timeout_positive(config in arb_scheduler_config()) {
-            prop_assert!(config.realtime.watchdog_timeout_ms > 0,
-                "Watchdog timeout must be > 0, got {}", config.realtime.watchdog_timeout_ms);
+        fn scheduler_config_watchdog_timeout_in_range(config in arb_scheduler_config()) {
+            prop_assert!(config.realtime.watchdog_timeout_ms < 60_000,
+                "Watchdog timeout out of range, got {}", config.realtime.watchdog_timeout_ms);
         }
 
         /// SchedulerConfig: max deadline misses must be positive
@@ -409,12 +381,10 @@ mod tests {
     #[test]
     fn realtime_config_default_all_disabled() {
         let config = SchedulerConfig::default();
-        assert!(!config.realtime.budget_enforcement);
-        assert!(!config.realtime.deadline_monitoring);
-        assert!(!config.realtime.watchdog_enabled);
-        assert!(!config.realtime.safety_monitor);
+        assert_eq!(config.realtime.watchdog_timeout_ms, 0);
         assert!(!config.realtime.memory_locking);
         assert!(!config.realtime.rt_scheduling_class);
+        assert_eq!(config.realtime.max_deadline_misses, 100);
     }
 
     // ── Edge Case & Boundary Tests ──────────────────────────────────────
@@ -452,22 +422,19 @@ mod tests {
     #[test]
     fn realtime_config_all_enabled_simultaneously() {
         let rt = RealTimeConfig {
-            budget_enforcement: true,
-            deadline_monitoring: true,
-            watchdog_enabled: true,
             watchdog_timeout_ms: 500,
-            safety_monitor: true,
             max_deadline_misses: 10,
             memory_locking: true,
             rt_scheduling_class: true,
         };
-        // All flags enabled simultaneously should be representable
-        assert!(rt.budget_enforcement);
-        assert!(rt.deadline_monitoring);
-        assert!(rt.watchdog_enabled);
-        assert!(rt.safety_monitor);
+        let default_rt = SchedulerConfig::default().realtime;
         assert!(rt.memory_locking);
         assert!(rt.rt_scheduling_class);
+        assert_eq!(rt.watchdog_timeout_ms, 500);
+        assert_eq!(rt.max_deadline_misses, 10);
+        // Should differ from defaults
+        assert_ne!(rt.watchdog_timeout_ms, default_rt.watchdog_timeout_ms);
+        assert_ne!(rt.memory_locking, default_rt.memory_locking);
     }
 
     #[test]
@@ -477,6 +444,8 @@ mod tests {
             ..SchedulerConfig::default().realtime
         };
         assert_eq!(rt.watchdog_timeout_ms, 1);
+        let default_rt = SchedulerConfig::default().realtime;
+        assert_eq!(rt.max_deadline_misses, default_rt.max_deadline_misses);
     }
 
     #[test]
@@ -486,18 +455,18 @@ mod tests {
             ..SchedulerConfig::default().realtime
         };
         assert_eq!(rt.max_deadline_misses, u64::MAX);
+        // Default should be much smaller
+        let default_rt = SchedulerConfig::default().realtime;
+        assert!(
+            default_rt.max_deadline_misses < u64::MAX,
+            "Default max_deadline_misses should be less than MAX"
+        );
     }
 
     #[test]
-    fn monitoring_config_zero_blackbox_size() {
-        let mon = MonitoringConfig {
-            black_box_enabled: true,
-            black_box_size_mb: 0,
-            ..SchedulerConfig::default().monitoring
-        };
-        // Zero-size blackbox with enable flag should be representable
-        assert!(mon.black_box_enabled);
-        assert_eq!(mon.black_box_size_mb, 0);
+    fn monitoring_config_zero_blackbox_means_disabled() {
+        let config = SchedulerConfig::default();
+        assert_eq!(config.monitoring.black_box_size_mb, 0, "Default blackbox should be disabled (0 MB)");
     }
 
     #[test]
@@ -510,15 +479,24 @@ mod tests {
             mon.telemetry_endpoint.as_deref(),
             Some("udp://localhost:9999")
         );
+        // Default should have no endpoint
+        let default_mon = SchedulerConfig::default().monitoring;
+        assert!(
+            default_mon.telemetry_endpoint.is_none(),
+            "Default should have no telemetry endpoint"
+        );
     }
 
     #[test]
     fn monitoring_config_verbose_false() {
-        let mon = MonitoringConfig {
+        let explicit_false = MonitoringConfig {
             verbose: false,
             ..SchedulerConfig::default().monitoring
         };
-        assert!(!mon.verbose);
+        assert!(!explicit_false.verbose);
+        // Verify clone preserves the flag
+        let cloned = explicit_false.clone();
+        assert_eq!(explicit_false.verbose, cloned.verbose);
     }
 
     #[test]
@@ -526,7 +504,16 @@ mod tests {
         let res = ResourceConfig {
             cpu_cores: Some(vec![0, 2, 4]),
         };
-        assert_eq!(res.cpu_cores, Some(vec![0, 2, 4]));
+        let cores = res.cpu_cores.as_ref().unwrap();
+        assert_eq!(cores.len(), 3);
+        // Cores should be sorted and unique (no duplicates)
+        let mut sorted = cores.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(cores.len(), sorted.len(), "CPU cores should be unique");
+        // Default should have None
+        let default_res = SchedulerConfig::default().resources;
+        assert!(default_res.cpu_cores.is_none(), "Default should not pin CPUs");
     }
 
     #[test]
@@ -534,7 +521,10 @@ mod tests {
         let res = ResourceConfig {
             cpu_cores: Some(vec![]),
         };
-        assert_eq!(res.cpu_cores, Some(vec![]));
+        // Some(empty) is distinct from None
+        assert!(res.cpu_cores.is_some());
+        assert!(res.cpu_cores.as_ref().unwrap().is_empty());
+        assert_ne!(res.cpu_cores, None, "Some(empty) should differ from None");
     }
 
     #[test]
@@ -555,6 +545,17 @@ mod tests {
         };
         assert_eq!(config.include_nodes.len(), 2);
         assert_eq!(config.exclude_nodes.len(), 1);
+        // Include and exclude should not overlap (logical consistency)
+        for inc in &config.include_nodes {
+            assert!(
+                !config.exclude_nodes.contains(inc),
+                "Node '{}' is in both include and exclude",
+                inc
+            );
+        }
+        assert!(config.include_nodes.contains(&"sensor".to_string()));
+        assert!(config.include_nodes.contains(&"motor".to_string()));
+        assert!(config.exclude_nodes.contains(&"logger".to_string()));
     }
 
     #[test]
@@ -564,12 +565,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(config.session_name.as_deref(), Some("test_session_001"));
+        // Default should have no session name
+        let default_config = RecordingConfigYaml::default();
+        assert!(default_config.session_name.is_none(), "Default should have no session name");
     }
 
     #[test]
     fn recording_config_max_size_zero_means_unlimited() {
         let config = RecordingConfigYaml::default();
         assert_eq!(config.max_size_mb, 0);
+        // Non-default should preserve the value
+        let custom = RecordingConfigYaml {
+            max_size_mb: 1024,
+            ..Default::default()
+        };
+        assert_eq!(custom.max_size_mb, 1024);
+        assert_ne!(custom.max_size_mb, config.max_size_mb);
     }
 
     #[test]
@@ -595,25 +606,31 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(500))]
 
-        /// RealTimeConfig: watchdog timeout is always reasonable
+        /// RealTimeConfig: watchdog timeout round-trips correctly and other fields are preserved
         #[test]
-        fn realtime_config_watchdog_always_positive(timeout in 1u64..u64::MAX) {
+        fn realtime_config_watchdog_roundtrip(timeout in 1u64..u64::MAX) {
+            let default_rt = SchedulerConfig::default().realtime;
             let rt = RealTimeConfig {
                 watchdog_timeout_ms: timeout,
-                ..SchedulerConfig::default().realtime
+                ..default_rt.clone()
             };
-            prop_assert!(rt.watchdog_timeout_ms > 0);
+            prop_assert_eq!(rt.watchdog_timeout_ms, timeout);
+            prop_assert_eq!(rt.max_deadline_misses, default_rt.max_deadline_misses);
         }
 
-        /// RecordingConfig: max_size_mb is non-negative (usize guarantees this)
+        /// RecordingConfig: max_size_mb round-trips and clone is independent
         #[test]
-        fn recording_config_max_size_non_negative(size in 0usize..1_000_000) {
+        fn recording_config_max_size_roundtrip(size in 0usize..1_000_000) {
             let config = RecordingConfigYaml {
                 max_size_mb: size,
                 ..Default::default()
             };
-            // usize is always >= 0, just verify it's stored correctly
             prop_assert_eq!(config.max_size_mb, size);
+            // Clone independence
+            let mut cloned = config.clone();
+            cloned.max_size_mb = size.wrapping_add(1);
+            prop_assert_eq!(config.max_size_mb, size);
+            prop_assert_ne!(config.max_size_mb, cloned.max_size_mb);
         }
     }
 }

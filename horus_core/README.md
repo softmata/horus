@@ -48,22 +48,23 @@ pub trait Node: Send {
 let mut scheduler = Scheduler::new();
 
 // Per-node execution classes via fluent builders
-scheduler.add(motor).order(0).rt().rate(1000.0.hz()).build();
-scheduler.add(planner).order(5).compute().build();
-scheduler.add(telemetry).order(10).async_io().rate(1.0.hz()).build();
+scheduler.add(motor).order(0).rate(1000_u64.hz()).build()?;   // RT (auto-derived)
+scheduler.add(planner).order(5).compute().build()?;
+scheduler.add(telemetry).order(10).async_io().rate(1_u64.hz()).build()?;
 
-// Production-ready with safety monitor, watchdog, fault tolerance, blackbox
+// Production-ready with watchdog, blackbox, RT
 let mut scheduler = Scheduler::new()
-    .monitoring(true)
-    .tick_rate(1000.0.hz())
-    .with_name("my_robot");
+    .watchdog(500_u64.ms())
+    .blackbox(64)
+    .tick_rate(1000_u64.hz())
+    .prefer_rt();
 
 // Add nodes with execution order
-scheduler.add(my_node).order(0).rate(100.0.hz()).build();
+scheduler.add(my_node).order(0).rate(100_u64.hz()).build()?;
 
 // Run
 scheduler.run()?;
-scheduler.run_for(Duration::from_secs(10))?;
+scheduler.run_for(10_u64.secs())?;
 ```
 
 ## Topic Communication

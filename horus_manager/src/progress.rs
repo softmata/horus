@@ -97,13 +97,13 @@ pub fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
 
     #[test]
     fn test_spinner_creation() {
         let pb = spinner("Testing...");
-        thread::sleep(500_u64.ms());
+        assert!(!pb.is_finished(), "Spinner should be active after creation");
         finish_success(&pb, "Test complete!");
+        assert!(pb.is_finished(), "Spinner should be finished after finish_success");
     }
 
     #[test]

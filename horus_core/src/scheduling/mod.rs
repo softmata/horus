@@ -13,13 +13,14 @@
 //!
 //! // Nodes declare their execution needs
 //! let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
-//! scheduler.add(motor_ctrl).order(0).rate(1000_u64.hz()).budget(500_u64.us()).build();
+//! scheduler.add(motor_ctrl).order(0).rate(1000_u64.hz()).build();
 //! scheduler.add(planner).order(5).compute().build();
 //! scheduler.add(telemetry).order(10).async_io().rate(1_u64.hz()).build();
 //! scheduler.run()?;
 //! ```
 
 pub(crate) mod config;
+pub(crate) mod graph;
 pub(crate) mod safety_monitor;
 pub(crate) mod scheduler;
 pub(crate) mod types;

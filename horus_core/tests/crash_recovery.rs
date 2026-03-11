@@ -69,25 +69,42 @@ fn test_panic_hook_writes_crash_report() {
         .expect("failed to spawn subprocess");
 
     // The subprocess should have exited non-zero (panic)
-    // We don't assert exit code because test harness may mask it
-    let _ = output;
+    assert!(
+        !output.status.success(),
+        "Subprocess should have exited non-zero due to panic"
+    );
 
-    // Check if crash report was created (best-effort — the hook writes to
-    // /tmp/horus_crash_<pid>.log but the pid is the child's, which we don't
-    // easily know). Instead, check that files matching the pattern exist.
+    // Check if crash report was created. The hook writes to
+    // /tmp/horus_crash_<pid>.log — find by pattern matching.
     let tmp_dir = std::path::Path::new("/tmp");
-    if tmp_dir.exists() {
-        let crash_files: Vec<_> = std::fs::read_dir(tmp_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("horus_crash_"))
-            .collect();
+    let crash_files: Vec<_> = std::fs::read_dir(tmp_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("horus_crash_"))
+        .collect();
 
-        // Clean up any crash files we find (from this or previous test runs)
-        for f in &crash_files {
-            std::fs::remove_file(f.path()).ok();
-        }
+    assert!(
+        !crash_files.is_empty(),
+        "Panic hook should have written at least one crash report to /tmp/horus_crash_*.log"
+    );
+
+    // Verify the crash report contains the expected panic message
+    let latest = &crash_files[crash_files.len() - 1];
+    let content = std::fs::read_to_string(latest.path()).expect("Should read crash report");
+    assert!(
+        content.contains("HORUS CRASH REPORT"),
+        "Crash report should contain header, got: {}",
+        &content[..content.len().min(200)]
+    );
+    assert!(
+        content.contains("intentional crash for testing"),
+        "Crash report should contain panic message"
+    );
+
+    // Clean up crash files
+    for f in &crash_files {
+        std::fs::remove_file(f.path()).ok();
     }
 }
 

@@ -59,17 +59,17 @@ pub fn create_new_project(
     // Create .gitignore in project root
     create_gitignore(&project_path, &language)?;
 
-    // Generate horus.toml (slim — no deps, no language)
+    // Generate horus.toml (deps added later via `horus add`)
     create_horus_toml(&project_path, &name, &description, &author)?;
 
-    // Generate native build file + main source based on language
+    // Generate main source file based on language
+    // Note: native build files (Cargo.toml, pyproject.toml) are generated
+    // automatically from horus.toml by the build pipeline (cargo_gen/pyproject_gen).
     match language.as_str() {
         "rust" => {
-            create_cargo_toml(&project_path, &name, &author, use_macro)?;
             create_main_rs(&project_path, use_macro)?;
         }
         "python" => {
-            create_pyproject_toml(&project_path, &name, &description, &author)?;
             create_main_py(&project_path)?;
         }
         other => anyhow::bail!("Unsupported language: {}", other),
@@ -237,97 +237,16 @@ fn create_horus_toml(
             package_type: None,
             categories: Vec::new(),
         },
+        dependencies: Default::default(),
+        dev_dependencies: Default::default(),
         drivers: Default::default(),
+        scripts: Default::default(),
         ignore: Default::default(),
         enable: Vec::new(),
     };
 
     manifest.save_to(&project_path.join(HORUS_TOML))?;
 
-    Ok(())
-}
-
-/// Create a user-owned Cargo.toml for Rust projects.
-///
-/// Uses path dependencies pointing to the local horus source tree (resolved via
-/// `find_horus_source_dir`). This ensures scaffolded projects build immediately
-/// without requiring horus crates to be published on crates.io.
-fn create_cargo_toml(project_path: &Path, name: &str, author: &str, use_macro: bool) -> Result<()> {
-    // Resolve horus source to generate path dependencies
-    let deps = match super::run::find_horus_source_dir() {
-        Ok(horus_source) => {
-            let mut d = format!(
-                "horus = {{ path = \"{}\" }}\nhorus_library = {{ path = \"{}\" }}\n",
-                horus_source.join("horus").display(),
-                horus_source.join("horus_library").display(),
-            );
-            if use_macro {
-                d.push_str(&format!(
-                    "horus_macros = {{ path = \"{}\" }}\n",
-                    horus_source.join("horus_macros").display(),
-                ));
-            }
-            d
-        }
-        Err(_) => {
-            // Fallback: use wildcard deps (user will need to configure manually)
-            cli_output::warn(
-                "Could not locate HORUS source tree. Using wildcard dependencies.\n  \
-                 Set HORUS_SOURCE env var or install horus crates to fix.",
-            );
-            let mut d = String::from("horus = \"*\"\nhorus_library = \"*\"\n");
-            if use_macro {
-                d.push_str("horus_macros = \"*\"\n");
-            }
-            d
-        }
-    };
-
-    let content = format!(
-        r#"[package]
-name = "{name}"
-version = "0.1.0"
-edition = "2021"
-authors = ["{author}"]
-
-[[bin]]
-name = "{name}"
-path = "main.rs"
-
-[dependencies]
-{deps}"#,
-    );
-
-    fs::write(project_path.join("Cargo.toml"), content)?;
-    Ok(())
-}
-
-/// Create a user-owned pyproject.toml for Python projects.
-fn create_pyproject_toml(
-    project_path: &Path,
-    name: &str,
-    description: &str,
-    author: &str,
-) -> Result<()> {
-    let content = format!(
-        r#"[project]
-name = "{name}"
-version = "0.1.0"
-description = "{description}"
-authors = [{{ name = "{author}" }}]
-requires-python = ">=3.10"
-
-dependencies = [
-    "horus-robotics",
-]
-
-[build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.build_meta"
-"#,
-    );
-
-    fs::write(project_path.join("pyproject.toml"), content)?;
     Ok(())
 }
 

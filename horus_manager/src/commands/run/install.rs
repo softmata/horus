@@ -469,7 +469,6 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
             use crate::registry::RegistryClient;
             let client = RegistryClient::new();
 
-            // Dependencies now live in native build files (Cargo.toml, pyproject.toml).
             // Install missing packages from the HORUS registry.
             for package in &missing_packages {
                 print!(
@@ -779,8 +778,9 @@ fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     let lock_path = Path::new(HORUS_LOCK);
 
     let lockfile = HorusLockfile {
-        version: 2,
+        version: 3,
         config_hash: config_hash.clone(),
+        packages: Vec::new(),
     };
 
     lockfile
@@ -969,10 +969,24 @@ mod tests {
         let install_horus = SystemPackageChoiceRun::InstallHORUS;
         let cancel = SystemPackageChoiceRun::Cancel;
 
+        // All three variants are distinct
         assert_eq!(use_system, SystemPackageChoiceRun::UseSystem);
         assert_eq!(install_horus, SystemPackageChoiceRun::InstallHORUS);
         assert_eq!(cancel, SystemPackageChoiceRun::Cancel);
         assert_ne!(use_system, cancel);
         assert_ne!(install_horus, cancel);
+        assert_ne!(use_system, install_horus);
+
+        // Clone preserves identity
+        let cloned = use_system.clone();
+        assert_eq!(cloned, SystemPackageChoiceRun::UseSystem);
+
+        // Debug output is distinct per variant
+        let debug_use = format!("{:?}", use_system);
+        let debug_install = format!("{:?}", install_horus);
+        let debug_cancel = format!("{:?}", cancel);
+        assert_ne!(debug_use, debug_install);
+        assert_ne!(debug_use, debug_cancel);
+        assert_ne!(debug_install, debug_cancel);
     }
 }

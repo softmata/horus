@@ -11,6 +11,7 @@
 /// - Battery monitoring with fault tolerance
 use horus_core::{HorusResult as Result, Node, Scheduler, Topic, TopicMetadata};
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -995,104 +996,187 @@ fn cleanup_test_topics() {
 #[test]
 fn test_autonomous_robot_complete_system() {
     cleanup_stale_shm();
-    // Clean up any stale shared memory from previous runs
     cleanup_test_topics();
 
-    println!("\n=== AUTONOMOUS MOBILE ROBOT APPLICATION ===");
-    println!("Demonstrating enhanced HORUS scheduler with real robotics system\n");
+    // Generic wrapper to count node ticks
+    struct CountingNode<N: Node> {
+        inner: N,
+        counter: Arc<AtomicUsize>,
+    }
 
-    // Create scheduler - SAME SIMPLE API!
+    impl<N: Node> Node for CountingNode<N> {
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+        fn init(&mut self) -> Result<()> {
+            self.inner.init()
+        }
+        fn tick(&mut self) {
+            self.counter.fetch_add(1, Ordering::Relaxed);
+            self.inner.tick();
+        }
+        fn shutdown(&mut self) -> Result<()> {
+            self.inner.shutdown()
+        }
+        fn publishers(&self) -> Vec<TopicMetadata> {
+            self.inner.publishers()
+        }
+        fn subscribers(&self) -> Vec<TopicMetadata> {
+            self.inner.subscribers()
+        }
+    }
+
+    // Create tick counters for key nodes
+    let motor_counter = Arc::new(AtomicUsize::new(0));
+    let imu_counter = Arc::new(AtomicUsize::new(0));
+    let fusion_counter = Arc::new(AtomicUsize::new(0));
+    let nav_counter = Arc::new(AtomicUsize::new(0));
+    let planner_counter = Arc::new(AtomicUsize::new(0));
+    let lidar_counter = Arc::new(AtomicUsize::new(0));
+    let battery_counter = Arc::new(AtomicUsize::new(0));
+
     let mut scheduler = Scheduler::new();
-
-    // Add all robot nodes with appropriate priorities
 
     // Critical control loop (highest priority)
     scheduler
-        .add(MotorControllerNode::new().expect("Failed to create motor controller"))
-        .order(0) // Highest priority
+        .add(CountingNode {
+            inner: MotorControllerNode::new().expect("Failed to create motor controller"),
+            counter: Arc::clone(&motor_counter),
+        })
+        .order(0)
         .build();
 
     // Sensor fusion (high priority)
     scheduler
-        .add(SensorFusionNode::new().expect("Failed to create sensor fusion"))
+        .add(CountingNode {
+            inner: SensorFusionNode::new().expect("Failed to create sensor fusion"),
+            counter: Arc::clone(&fusion_counter),
+        })
         .order(10)
         .build();
 
     // IMU sensor (high priority)
     scheduler
-        .add(IMUSensorNode::new().expect("Failed to create IMU sensor"))
+        .add(CountingNode {
+            inner: IMUSensorNode::new().expect("Failed to create IMU sensor"),
+            counter: Arc::clone(&imu_counter),
+        })
         .order(15)
         .build();
 
     // Navigation controller
     scheduler
-        .add(NavigationControllerNode::new().expect("Failed to create navigation controller"))
+        .add(CountingNode {
+            inner: NavigationControllerNode::new().expect("Failed to create navigation controller"),
+            counter: Arc::clone(&nav_counter),
+        })
         .order(20)
         .build();
 
     // Path planner
     scheduler
-        .add(PathPlannerNode::new((10.0, 10.0)).expect("Failed to create path planner")) // Goal at (10, 10)
+        .add(CountingNode {
+            inner: PathPlannerNode::new((10.0, 10.0)).expect("Failed to create path planner"),
+            counter: Arc::clone(&planner_counter),
+        })
         .order(30)
         .build();
 
-    // Camera perception (I/O heavy - will use async tier)
+    // Camera perception (I/O heavy)
     scheduler
-        .add(CameraPerceptionNode::new(0).expect("Failed to create front camera")) // Front camera
+        .add(CameraPerceptionNode::new(0).expect("Failed to create front camera"))
         .order(40)
         .build();
 
     scheduler
-        .add(CameraPerceptionNode::new(1).expect("Failed to create rear camera")) // Rear camera
+        .add(CameraPerceptionNode::new(1).expect("Failed to create rear camera"))
         .order(45)
         .build();
 
-    // Lidar processing (I/O heavy - will use async tier)
+    // Lidar processing (I/O heavy)
     scheduler
-        .add(LidarProcessingNode::new().expect("Failed to create lidar processor"))
+        .add(CountingNode {
+            inner: LidarProcessingNode::new().expect("Failed to create lidar processor"),
+            counter: Arc::clone(&lidar_counter),
+        })
         .order(50)
         .build();
 
-    // Battery monitor (prone to failures - will test skip policy)
+    // Battery monitor (prone to failures)
     scheduler
-        .add(BatteryMonitorNode::new().expect("Failed to create battery monitor"))
-        .order(100) // Lower priority
+        .add(CountingNode {
+            inner: BatteryMonitorNode::new().expect("Failed to create battery monitor"),
+            counter: Arc::clone(&battery_counter),
+        })
+        .order(100)
         .build();
-
-    println!("Robot system configuration:");
-    println!("- Motor controller: PID control at 1kHz (ultra-fast inline)");
-    println!("- Sensor fusion: EKF at 100Hz");
-    println!("- Cameras: 2x at 30fps (will use async I/O)");
-    println!("- Lidar: 360° at 10Hz (will use async I/O)");
-    println!("- Navigation: Path planning + pure pursuit control");
-    println!("- Battery monitor: With simulated failures (tests skip policy)");
-    println!();
 
     // Run the robot for 5 seconds
     let run_duration = 5_u64.secs();
-    println!("Starting autonomous navigation for {:?}...\n", run_duration);
-
     let start_time = Instant::now();
     scheduler.run_for(run_duration).expect("Scheduler failed");
     let elapsed = start_time.elapsed();
 
-    println!("\n=== ROBOT SYSTEM RESULTS ===");
-    println!("Total runtime: {:?}", elapsed);
-    println!();
-    println!("Enhanced scheduler features demonstrated:");
-    println!(" Fast execution: Motor controller ran at maximum speed");
-    println!(" Async I/O: Cameras and lidar didn't block other nodes");
-    println!(" Fault tolerance: Battery monitor failures handled gracefully");
-    println!(" Smart scheduling: Automatic optimization after learning phase");
-    println!(" Zero API changes: Same simple add() and run() interface");
-    println!();
-    println!("This complete robot system shows HORUS handling:");
-    println!("- Real-time control (motors, IMU)");
-    println!("- Heavy I/O (cameras, lidar)");
-    println!("- Complex algorithms (sensor fusion, path planning)");
-    println!("- Fault-prone hardware (battery monitor)");
-    println!();
-    println!("All with ZERO configuration - the smart backend handles everything!");
+    // Verify runtime is reasonable (not instant, not stuck)
+    assert!(
+        elapsed >= std::time::Duration::from_secs(4),
+        "Run finished too early: {:?}",
+        elapsed
+    );
+
+    // Verify all nodes actually ticked
+    let motor_ticks = motor_counter.load(Ordering::Relaxed);
+    let imu_ticks = imu_counter.load(Ordering::Relaxed);
+    let fusion_ticks = fusion_counter.load(Ordering::Relaxed);
+    let nav_ticks = nav_counter.load(Ordering::Relaxed);
+    let planner_ticks = planner_counter.load(Ordering::Relaxed);
+    let lidar_ticks = lidar_counter.load(Ordering::Relaxed);
+    let battery_ticks = battery_counter.load(Ordering::Relaxed);
+
+    assert!(
+        motor_ticks > 0,
+        "Motor controller never ticked (expected fast inline execution)"
+    );
+    assert!(
+        imu_ticks > 0,
+        "IMU sensor never ticked (expected high-frequency sensor)"
+    );
+    assert!(
+        fusion_ticks > 0,
+        "Sensor fusion never ticked (expected EKF updates)"
+    );
+    assert!(
+        nav_ticks > 0,
+        "Navigation controller never ticked (expected path following)"
+    );
+    assert!(
+        planner_ticks > 0,
+        "Path planner never ticked (expected planning updates)"
+    );
+    assert!(
+        lidar_ticks > 0,
+        "Lidar processor never ticked (expected scan processing)"
+    );
+    assert!(
+        battery_ticks > 0,
+        "Battery monitor never ticked (expected periodic reads)"
+    );
+
+    // Motor controller (inline, no sleep) should tick much more than lidar (100ms sleep)
+    assert!(
+        motor_ticks > lidar_ticks,
+        "Motor ({}) should tick faster than lidar ({}) due to I/O blocking in lidar",
+        motor_ticks,
+        lidar_ticks
+    );
+
+    // IMU and fusion should tick at similar rates (both fast, no sleep)
+    assert!(
+        imu_ticks > lidar_ticks,
+        "IMU ({}) should tick faster than lidar ({})",
+        imu_ticks,
+        lidar_ticks
+    );
 }
 
 #[test]
@@ -1160,8 +1244,13 @@ fn test_robot_performance_metrics() {
     println!("- Motor controller rate: {:.1} Hz", motor_rate);
     println!("- Expected rate: >1000 Hz");
 
-    // The motor controller should run fast (lower threshold for parallel test execution)
-    assert!(motor_rate > 10.0, "Motor controller should run fast");
+    // Motor controller has no sleep, should run at scheduler tick rate.
+    // Threshold is conservative for CI environments with parallel test execution.
+    assert!(
+        motor_rate > 50.0,
+        "Motor controller rate too low: {:.1} Hz (expected >50 Hz, ideal >1000 Hz)",
+        motor_rate
+    );
 
     println!(" Performance test passed!");
 }

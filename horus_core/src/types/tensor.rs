@@ -383,12 +383,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tensor_size() {
+    fn test_tensor_size_and_alignment() {
         assert_eq!(
             std::mem::size_of::<Tensor>(),
             168,
             "Tensor must be exactly 168 bytes"
         );
+        // Alignment is 8 (from u64 fields)
+        assert_eq!(std::mem::align_of::<Tensor>(), 8);
+        // Size must be a multiple of alignment (no trailing padding)
+        assert_eq!(168 % 8, 0, "Tensor size must be a multiple of its alignment");
     }
 
     #[test]
@@ -509,11 +513,47 @@ mod tests {
         assert_eq!(tensor.pool_id, 0);
         assert_eq!(tensor.slot_id, 0);
         assert_eq!(tensor.generation, 0);
+        assert_eq!(tensor.generation_hi, 0);
+        assert_eq!(tensor.generation_full(), 0);
         assert_eq!(tensor.offset, 0);
         assert_eq!(tensor.size, 0);
         assert_eq!(tensor.dtype, TensorDtype::F32);
         assert_eq!(tensor.ndim, 0);
         assert!(tensor.is_cpu());
         assert_eq!(tensor.device(), Device::cpu());
+        assert_eq!(tensor.numel(), 1); // empty shape product = 1
+        assert!(tensor.is_contiguous());
+
+        // Default must differ from a configured tensor
+        let configured = Tensor::new(1, 0, 0, 0, &[10], TensorDtype::U8, Device::cpu());
+        assert_ne!(tensor.pool_id, configured.pool_id);
+        assert_ne!(tensor.ndim, configured.ndim);
+    }
+
+    #[test]
+    fn test_tensor_generation_full_split() {
+        // Verify 64-bit generation is correctly split into lo/hi halves
+        let gen: u64 = 0xDEAD_BEEF_CAFE_BABEu64;
+        let tensor = Tensor::new(0, 0, gen, 0, &[1], TensorDtype::F32, Device::cpu());
+        assert_eq!(tensor.generation, gen as u32);
+        assert_eq!(tensor.generation_hi, (gen >> 32) as u32);
+        assert_eq!(tensor.generation_full(), gen);
+
+        // Edge case: generation that fits in 32 bits has hi == 0
+        let small_gen = 42u64;
+        let t2 = Tensor::new(0, 0, small_gen, 0, &[1], TensorDtype::F32, Device::cpu());
+        assert_eq!(t2.generation, 42);
+        assert_eq!(t2.generation_hi, 0);
+        assert_eq!(t2.generation_full(), 42);
+    }
+
+    #[test]
+    fn test_tensor_clone_independence() {
+        let t = Tensor::new(1, 2, 3, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
+        let mut copy = t;
+        copy.pool_id = 99;
+        copy.shape[0] = 1;
+        assert_eq!(t.pool_id, 1, "original must be unaffected by copy mutation");
+        assert_eq!(t.shape[0], 480);
     }
 }

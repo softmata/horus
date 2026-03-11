@@ -808,96 +808,201 @@ pub fn run_install(
     ver: Option<String>,
     global: bool,
     target: Option<String>,
+    source: Option<String>,
+    features: Option<Vec<String>>,
+    dev: bool,
 ) -> HorusResult<()> {
-    // Check if package is actually a path
-    if package.contains('/') || package.starts_with('.') || package.starts_with('~') {
-        // Path dependency installation
-        if global {
-            return Err(HorusError::Config(ConfigError::Other(
-                "Cannot install path dependencies globally. Path dependencies must be local."
-                    .to_string(),
-            )));
+    use crate::manifest::{DepSource, DependencyValue, DetailedDependency};
+
+    // Auto-detect source from package string or --source flag
+    let is_path = package.contains('/') || package.starts_with('.') || package.starts_with('~');
+    let is_git = package.starts_with("https://") || package.starts_with("git://");
+
+    let dep_source = if let Some(ref s) = source {
+        match s.to_lowercase().as_str() {
+            "crates.io" | "crates" | "cargo" => DepSource::CratesIo,
+            "pypi" | "pip" | "python" => DepSource::PyPI,
+            "path" => DepSource::Path,
+            "git" => DepSource::Git,
+            "system" | "apt" | "brew" => DepSource::System,
+            "registry" | "horus" => DepSource::Registry,
+            _ => {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "Unknown source '{}'. Use: crates.io, pypi, path, git, system, registry",
+                    s
+                ))));
+            }
         }
-
-        println!(
-            "{} Installing path dependency: {}",
-            cli_output::ICON_INFO.cyan(),
-            package.green()
-        );
-
-        // Resolve path
-        let path = PathBuf::from(&package);
-        let absolute_path = if path.is_absolute() {
-            path.clone()
-        } else {
-            std::env::current_dir()
-                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
-                .join(&path)
-        };
-
-        // Verify path exists and is a directory
-        if !absolute_path.exists() {
-            return Err(HorusError::Config(ConfigError::Other(format!(
-                "Path does not exist: {}",
-                absolute_path.display()
-            ))));
-        }
-        if !absolute_path.is_dir() {
-            return Err(HorusError::Config(ConfigError::Other(format!(
-                "Path is not a directory: {}",
-                absolute_path.display()
-            ))));
-        }
-
-        // Read package name from the path (try horus.toml, then Cargo.toml)
-        let package_name = read_package_name_from_path(&absolute_path)
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-        println!(
-            "  {} Detected package name: {}",
-            "▸".cyan(),
-            package_name.cyan()
-        );
-
-        // Determine installation target
-        let install_target = if let Some(target_name) = target {
-            let registry = workspace::WorkspaceRegistry::load()
-                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-            let ws = registry.find_by_name(&target_name).ok_or_else(|| {
-                HorusError::Config(ConfigError::Other(format!(
-                    "Workspace '{}' not found",
-                    target_name
-                )))
-            })?;
-            workspace::InstallTarget::Local(ws.path.clone())
-        } else {
-            workspace::detect_or_select_workspace(true)
-                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
-        };
-
-        // Install using install_from_path
-        let client = registry::RegistryClient::new();
-
-        // Pass None for base_dir - CLI paths are resolved relative to current_dir
-        client
-            .install_from_path(&package_name, &absolute_path, install_target, None)
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-        println!(
-            "  {} horus.toml no longer tracks dependencies. Use your build tool to add path deps.",
-            cli_output::ICON_HINT.dimmed()
-        );
-
-        println!(
-            "{} Path dependency installed successfully!",
-            cli_output::ICON_SUCCESS.green()
-        );
-        Ok(())
+    } else if is_path {
+        DepSource::Path
+    } else if is_git {
+        DepSource::Git
     } else {
-        // Registry dependency installation
-        let install_target = if global {
-            workspace::InstallTarget::Global
-        } else if let Some(target_name) = target {
+        DepSource::Registry
+    };
+
+    // For global installs, skip horus.toml and install directly
+    if global {
+        return run_install_global(&package, ver.as_deref(), target);
+    }
+
+    // ── Write to horus.toml ──────────────────────────────────────────────
+    let manifest_path = Path::new(HORUS_TOML);
+    let mut manifest = if manifest_path.exists() {
+        HorusManifest::load_from(manifest_path)
+            .map(|(m, _)| m)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+    } else {
+        return Err(HorusError::Config(ConfigError::Other(
+            "No horus.toml found. Run `horus new` to create a project first.".to_string(),
+        )));
+    };
+
+    // Build the DependencyValue
+    let dep_name: String;
+    let dep_value: DependencyValue;
+
+    match dep_source {
+        DepSource::Path => {
+            // Resolve and validate path
+            let path = PathBuf::from(&package);
+            let absolute_path = if path.is_absolute() {
+                path.clone()
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+                    .join(&path)
+            };
+            if !absolute_path.exists() {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "Path does not exist: {}",
+                    absolute_path.display()
+                ))));
+            }
+
+            dep_name = read_package_name_from_path(&absolute_path)
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+            dep_value = DependencyValue::Detailed(DetailedDependency {
+                version: None,
+                source: Some(DepSource::Path),
+                features: features.unwrap_or_default(),
+                optional: false,
+                path: Some(package.clone()),
+                git: None,
+                branch: None,
+                tag: None,
+                rev: None,
+            });
+        }
+        DepSource::Git => {
+            dep_name = package
+                .rsplit('/')
+                .next()
+                .unwrap_or(&package)
+                .trim_end_matches(".git")
+                .to_string();
+
+            dep_value = DependencyValue::Detailed(DetailedDependency {
+                version: None,
+                source: Some(DepSource::Git),
+                features: features.unwrap_or_default(),
+                optional: false,
+                path: None,
+                git: Some(package.clone()),
+                branch: None,
+                tag: None,
+                rev: None,
+            });
+        }
+        DepSource::CratesIo | DepSource::PyPI | DepSource::System => {
+            dep_name = package.clone();
+            let feats = features.unwrap_or_default();
+            if feats.is_empty() && ver.is_none() {
+                // Simple form: serde = { version = "*", source = "crates.io" }
+                dep_value = DependencyValue::Detailed(DetailedDependency {
+                    version: Some("*".to_string()),
+                    source: Some(dep_source.clone()),
+                    features: vec![],
+                    optional: false,
+                    path: None,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                });
+            } else {
+                dep_value = DependencyValue::Detailed(DetailedDependency {
+                    version: ver.clone().or_else(|| Some("*".to_string())),
+                    source: Some(dep_source.clone()),
+                    features: feats,
+                    optional: false,
+                    path: None,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                });
+            }
+        }
+        DepSource::Registry => {
+            dep_name = package.clone();
+            let feats = features.unwrap_or_default();
+            if feats.is_empty() {
+                // Simple form: rplidar = "1.2.0"
+                dep_value = DependencyValue::Simple(
+                    ver.clone().unwrap_or_else(|| "*".to_string()),
+                );
+            } else {
+                dep_value = DependencyValue::Detailed(DetailedDependency {
+                    version: ver.clone().or_else(|| Some("*".to_string())),
+                    source: None, // Registry is the default
+                    features: feats,
+                    optional: false,
+                    path: None,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                });
+            }
+        }
+    }
+
+    // Insert into the appropriate section
+    let section_name = if dev { "dev-dependencies" } else { "dependencies" };
+    let deps_map = if dev {
+        &mut manifest.dev_dependencies
+    } else {
+        &mut manifest.dependencies
+    };
+
+    let was_present = deps_map.contains_key(&dep_name);
+    deps_map.insert(dep_name.clone(), dep_value);
+
+    // Save manifest
+    manifest
+        .save_to(manifest_path)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    let action = if was_present { "Updated" } else { "Added" };
+    let version_str = ver
+        .as_deref()
+        .map(|v| format!("@{}", v))
+        .unwrap_or_default();
+
+    println!(
+        "{} {} {} ({}) to [{}]",
+        cli_output::ICON_SUCCESS.green(),
+        action,
+        format!("{}{}", dep_name, version_str).green(),
+        dep_source,
+        section_name,
+    );
+
+    // ── Physical installation for registry packages ──────────────────────
+    if dep_source == DepSource::Registry {
+        let install_target = if let Some(target_name) = target {
             let registry = workspace::WorkspaceRegistry::load()
                 .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             let ws = registry.find_by_name(&target_name).ok_or_else(|| {
@@ -939,7 +1044,7 @@ pub fn run_install(
                         format!("horus {}", cmd).green()
                     );
                 }
-                Ok(None) => {} // Not a plugin, that's fine
+                Ok(None) => {}
                 Err(e) => {
                     println!(
                         "  {} Plugin registration failed: {}",
@@ -949,9 +1054,80 @@ pub fn run_install(
                 }
             }
         }
-
-        Ok(())
+    } else if dep_source == DepSource::CratesIo {
+        println!(
+            "  {} Cargo will fetch this crate on next build",
+            cli_output::ICON_HINT.dimmed()
+        );
+    } else if dep_source == DepSource::PyPI {
+        println!(
+            "  {} pip will install this package on next build",
+            cli_output::ICON_HINT.dimmed()
+        );
     }
+
+    Ok(())
+}
+
+/// Install a package globally (no horus.toml involved).
+fn run_install_global(
+    package: &str,
+    ver: Option<&str>,
+    target: Option<String>,
+) -> HorusResult<()> {
+    let install_target = if let Some(target_name) = target {
+        let registry = workspace::WorkspaceRegistry::load()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let ws = registry.find_by_name(&target_name).ok_or_else(|| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Workspace '{}' not found",
+                target_name
+            )))
+        })?;
+        workspace::InstallTarget::Local(ws.path.clone())
+    } else {
+        workspace::InstallTarget::Global
+    };
+
+    let client = registry::RegistryClient::new();
+    let installed_version = client
+        .install_to_target(package, ver, install_target.clone())
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    // Auto-detect and register plugins
+    let is_global = matches!(install_target, workspace::InstallTarget::Global);
+    let project_root = match &install_target {
+        workspace::InstallTarget::Local(p) => Some(p.clone()),
+        workspace::InstallTarget::Global => None,
+    };
+    if let Some(pkg_dir) =
+        resolve_installed_package_dir(package, &installed_version, is_global)
+    {
+        match register_plugin_after_install(
+            &pkg_dir,
+            PluginSource::Registry,
+            is_global,
+            project_root.as_deref(),
+        ) {
+            Ok(Some(cmd)) => {
+                println!(
+                    "  {} Registered plugin command: {}",
+                    cli_output::ICON_SUCCESS.green(),
+                    format!("horus {}", cmd).green()
+                );
+            }
+            Ok(None) => {}
+            Err(e) => {
+                println!(
+                    "  {} Plugin registration failed: {}",
+                    cli_output::ICON_WARN.yellow(),
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Remove a package
@@ -1096,7 +1272,9 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
         println!("  Removed system package reference for {}", package);
 
-        // horus.toml no longer tracks dependencies; nothing to update there.
+        // Remove from horus.toml and horus.lock
+        remove_from_horus_toml(&package);
+        remove_from_horus_lock(&package);
 
         return Ok(());
     }
@@ -1123,29 +1301,8 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
             .unwrap_or("bin");
 
         if install_type == "lib" {
-            // Library: run cargo remove
-            let ws_root = workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
-
-            let status = std::process::Command::new("cargo")
-                .args(["remove", &package])
-                .current_dir(&ws_root)
-                .status();
-
-            match status {
-                Ok(s) if s.success() => {
-                    println!(
-                        "  {} Removed {} from Cargo.toml",
-                        cli_output::ICON_SUCCESS.green(),
-                        package
-                    );
-                }
-                _ => {
-                    println!(
-                        "  {} cargo remove failed, manual Cargo.toml update may be needed",
-                        cli_output::ICON_WARN.yellow()
-                    );
-                }
-            }
+            // Remove from horus.toml (the source of truth for deps)
+            remove_from_horus_toml(&package);
         }
 
         // Delete tracking json
@@ -1161,6 +1318,8 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
             fs::remove_dir_all(&remove_dir).ok();
         }
 
+        remove_from_horus_lock(&package);
+
         println!(
             "{} Removed {} (crates.io)",
             cli_output::ICON_SUCCESS.green(),
@@ -1172,22 +1331,8 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
     // Check for PyPI tracking reference
     let pypi_ref = packages_dir.join(format!("{}.pypi.json", package));
     if pypi_ref.exists() {
-        // Remove from pyproject.toml
-        let ws_root = workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
-
-        if let Err(e) = registry::remove_dep_from_pyproject_toml(&ws_root, &package) {
-            println!(
-                "  {} Could not update pyproject.toml: {}",
-                cli_output::ICON_WARN.yellow(),
-                e
-            );
-        } else if ws_root.join("pyproject.toml").exists() {
-            println!(
-                "  {} Removed {} from pyproject.toml",
-                cli_output::ICON_SUCCESS.green(),
-                package
-            );
-        }
+        // Remove from horus.toml (the source of truth for deps)
+        remove_from_horus_toml(&package);
 
         // Delete tracking json
         fs::remove_file(&pypi_ref).map_err(|e| {
@@ -1201,6 +1346,8 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
         if remove_dir.exists() {
             fs::remove_dir_all(&remove_dir).ok();
         }
+
+        remove_from_horus_lock(&package);
 
         println!(
             "{} Removed {} (PyPI)",
@@ -1223,9 +1370,62 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
         )))
     })?;
 
+    // Remove from horus.toml and horus.lock
+    remove_from_horus_toml(&package);
+    remove_from_horus_lock(&package);
+
     println!("  Removed {} from {}", package, remove_dir.display());
 
     Ok(())
+}
+
+/// Remove a dependency from horus.toml if the manifest exists.
+fn remove_from_horus_toml(package: &str) {
+    use crate::manifest::{HorusManifest, HORUS_TOML};
+
+    let manifest_path = std::path::Path::new(HORUS_TOML);
+    if !manifest_path.exists() {
+        return;
+    }
+
+    let Ok((mut manifest, _)) = HorusManifest::load_from(manifest_path) else {
+        return;
+    };
+
+    let had_dep = manifest.dependencies.remove(package).is_some();
+    let had_dev = manifest.dev_dependencies.remove(package).is_some();
+
+    if had_dep || had_dev {
+        if manifest.save_to(manifest_path).is_ok() {
+            println!(
+                "  {} Removed {} from horus.toml",
+                cli_output::ICON_SUCCESS.green(),
+                package
+            );
+        }
+    }
+}
+
+/// Remove a package from horus.lock if the lockfile exists.
+fn remove_from_horus_lock(package: &str) {
+    use crate::lockfile::{HorusLockfile, HORUS_LOCK};
+
+    let lock_path = std::path::Path::new(HORUS_LOCK);
+    if !lock_path.exists() {
+        return;
+    }
+
+    let Ok(mut lockfile) = HorusLockfile::load_from(lock_path) else {
+        return;
+    };
+
+    // Remove from all sources
+    let before = lockfile.packages.len();
+    lockfile.packages.retain(|p| p.name != package);
+
+    if lockfile.packages.len() < before {
+        lockfile.save_to(lock_path).ok();
+    }
 }
 
 /// List packages (local, global, or search)

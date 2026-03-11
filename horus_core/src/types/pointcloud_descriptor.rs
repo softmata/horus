@@ -154,20 +154,44 @@ mod tests {
     use crate::types::Device;
 
     #[test]
-    fn test_pointcloud_size() {
-        assert_eq!(
-            std::mem::size_of::<PointCloudDescriptor>(),
-            272,
-            "PointCloudDescriptor must be exactly 272 bytes"
-        );
+    fn test_pointcloud_size_and_alignment() {
+        let size = std::mem::size_of::<PointCloudDescriptor>();
+        let align = std::mem::align_of::<PointCloudDescriptor>();
+        assert_eq!(size, 272, "PointCloudDescriptor must be exactly 272 bytes");
+        assert_eq!(align, 8, "alignment must be 8 from u64 fields");
+        assert_eq!(size % align, 0, "size must be a multiple of alignment");
+        // 272 = 16 * 17, divisible by 16 for SIMD-friendly allocation
+        assert_eq!(size % 16, 0);
     }
 
     #[test]
     fn test_pointcloud_pod() {
-        let pc = PointCloudDescriptor::default();
+        // Roundtrip a configured descriptor through bytes
+        let tensor = Tensor::new(1, 0, 0, 0, &[10000, 3], TensorDtype::F32, Device::cpu());
+        let mut pc = PointCloudDescriptor::xyz(tensor);
+        pc.set_frame_id("lidar_top");
+        pc.set_timestamp_ns(123456);
+
         let bytes: &[u8] = bytemuck::bytes_of(&pc);
         assert_eq!(bytes.len(), 272);
-        let _recovered: &PointCloudDescriptor = bytemuck::from_bytes(bytes);
+        let recovered: &PointCloudDescriptor = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.point_count(), 10000);
+        assert_eq!(recovered.fields_per_point(), 3);
+        assert_eq!(recovered.frame_id(), "lidar_top");
+        assert_eq!(recovered.timestamp_ns(), 123456);
+        assert!(recovered.is_xyz());
+    }
+
+    #[test]
+    fn test_pointcloud_default_is_empty() {
+        let pc = PointCloudDescriptor::default();
+        assert_eq!(pc.point_count(), 0);
+        assert_eq!(pc.fields_per_point(), 0);
+        assert!(!pc.is_xyz());
+        assert!(!pc.has_intensity());
+        assert!(!pc.has_color());
+        assert_eq!(pc.frame_id(), "");
+        assert_eq!(pc.timestamp_ns(), 0);
     }
 
     #[test]

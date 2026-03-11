@@ -1468,6 +1468,7 @@ pub fn timestamp_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horus_core::core::duration_ext::DurationExt;
     use horus_core::error::TransformError;
 
     #[test]

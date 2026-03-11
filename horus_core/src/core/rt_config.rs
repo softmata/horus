@@ -863,16 +863,30 @@ mod tests {
 
     #[test]
     fn test_kernel_info_detect() {
-        // Just verify it doesn't panic
         let info = RtKernelInfo::detect();
         assert!(info.cpu_count > 0);
+        assert!(
+            !info.kernel_version.is_empty(),
+            "kernel_version should be non-empty"
+        );
+        // Verify RT priority range is sane
+        assert!(
+            info.max_rt_priority >= info.min_rt_priority,
+            "max_rt_priority ({}) should >= min_rt_priority ({})",
+            info.max_rt_priority,
+            info.min_rt_priority
+        );
     }
 
     #[test]
     fn test_get_current_scheduler() {
-        // Should not fail
-        let result = RtConfig::get_current_scheduler();
-        result.unwrap();
+        let (scheduler, priority) = RtConfig::get_current_scheduler().unwrap();
+        // Priority should be non-negative
+        assert!(priority >= 0, "Priority should be non-negative, got {}", priority);
+        // Verify the enum variant is one of the known policies
+        match scheduler {
+            RtScheduler::Normal | RtScheduler::Fifo => {}
+        }
     }
 
     #[test]

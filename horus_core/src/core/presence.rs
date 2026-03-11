@@ -269,6 +269,7 @@ impl NodePresence {
     ///
     /// Used when a node dynamically adds or removes publishers/subscribers
     /// at runtime.  The file is rewritten atomically.
+    #[allow(dead_code)]
     pub(crate) fn update_topics(
         node_name: &str,
         publishers: Vec<TopicMetadata>,
@@ -286,6 +287,7 @@ impl NodePresence {
     /// Update runtime metrics (health, tick count, error count) in the presence file.
     ///
     /// Called periodically by the scheduler to keep monitor data fresh.
+    #[allow(dead_code)]
     pub(crate) fn update_metrics(
         node_name: &str,
         health: &str,

@@ -450,20 +450,30 @@ mod tests {
 
     #[test]
     fn workspace_registry_empty_on_missing_file() {
-        // If registry file doesn't exist, load returns empty
+        // Constructing an empty registry should behave correctly
         let registry = WorkspaceRegistry {
             workspaces: Vec::new(),
         };
         assert!(registry.workspaces.is_empty());
+
+        // find_by_name on empty registry returns None for any query
+        assert!(registry.find_by_name("anything").is_none());
+        assert!(registry.find_by_name("").is_none());
+
+        // Empty registry serializes to valid JSON
+        let json = serde_json::to_string(&registry).unwrap();
+        let parsed: WorkspaceRegistry = serde_json::from_str(&json).unwrap();
+        assert!(parsed.workspaces.is_empty());
     }
 
     #[test]
     fn workspace_registry_serde_roundtrip() {
+        let now = Utc::now();
         let ws = Workspace {
             name: "test_ws".to_string(),
             path: PathBuf::from("/tmp/test_ws"),
-            created_at: Utc::now(),
-            last_used: Utc::now(),
+            created_at: now,
+            last_used: now,
         };
         let registry = WorkspaceRegistry {
             workspaces: vec![ws],
@@ -474,6 +484,18 @@ mod tests {
         assert_eq!(loaded.workspaces.len(), 1);
         assert_eq!(loaded.workspaces[0].name, "test_ws");
         assert_eq!(loaded.workspaces[0].path, PathBuf::from("/tmp/test_ws"));
+
+        // Timestamps survive roundtrip (chrono serializes as ISO 8601)
+        assert_eq!(loaded.workspaces[0].created_at, now);
+        assert_eq!(loaded.workspaces[0].last_used, now);
+
+        // find_by_name works on deserialized registry
+        assert!(loaded.find_by_name("test_ws").is_some());
+        assert_eq!(
+            loaded.find_by_name("test_ws").unwrap().path,
+            PathBuf::from("/tmp/test_ws")
+        );
+        assert!(loaded.find_by_name("nonexistent").is_none());
     }
 
     #[test]

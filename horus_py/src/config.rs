@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 /// Full scheduler configuration for Python — plain data bag.
 ///
 /// All fields from the Rust config are exposed. Use builder methods
-/// like `.monitoring()`, `.prefer_rt()` on the Scheduler, or construct
+/// like `.watchdog()`, `.blackbox()` on the Scheduler, or construct
 /// a config and pass it to `Scheduler(config=cfg)`.
 #[pyclass(name = "SchedulerConfig", module = "horus._horus")]
 #[derive(Clone, Debug)]
@@ -16,24 +16,8 @@ pub struct PySchedulerConfig {
 
     // --- Real-time ---
     #[pyo3(get, set)]
-    /// Enable budget enforcement
-    pub budget_enforcement: bool,
-
-    #[pyo3(get, set)]
-    /// Enable deadline monitoring
-    pub deadline_monitoring: bool,
-
-    #[pyo3(get, set)]
-    /// Enable watchdog timers
-    pub watchdog_enabled: bool,
-
-    #[pyo3(get, set)]
-    /// Watchdog timeout in milliseconds
+    /// Watchdog timeout in milliseconds. 0 = disabled, >0 = enabled.
     pub watchdog_timeout_ms: u64,
-
-    #[pyo3(get, set)]
-    /// Enable safety monitor
-    pub safety_monitor: bool,
 
     #[pyo3(get, set)]
     /// Maximum deadline misses before emergency stop
@@ -54,15 +38,7 @@ pub struct PySchedulerConfig {
 
     // --- Monitoring ---
     #[pyo3(get, set)]
-    /// Enable runtime profiling
-    pub profiling: bool,
-
-    #[pyo3(get, set)]
-    /// Enable black box recording
-    pub black_box_enabled: bool,
-
-    #[pyo3(get, set)]
-    /// Black box buffer size in MB
+    /// Black box buffer size in MB. 0 = disabled, >0 = enabled.
     pub black_box_size_mb: usize,
 
     #[pyo3(get, set)]
@@ -110,21 +86,17 @@ impl PySchedulerConfig {
     // CONFIG BUILDER METHODS — composable, explicit
     // ========================================================================
 
-    /// Enable all monitoring features: safety monitor, budget enforcement,
-    /// deadline monitoring, and watchdog (500ms default).
+    /// Enable watchdog with 500ms timeout, budget enforcement, and deadline
+    /// monitoring (implicit when nodes have `.rate()` set).
     ///
     /// Example:
-    ///     cfg = SchedulerConfig.with_monitoring()
+    ///     cfg = SchedulerConfig.with_watchdog()
     ///     scheduler = Scheduler(config=cfg)
     #[staticmethod]
-    pub fn with_monitoring() -> Self {
+    pub fn with_watchdog() -> Self {
         let mut cfg = Self::minimal();
-        cfg.safety_monitor = true;
-        cfg.budget_enforcement = true;
-        cfg.deadline_monitoring = true;
-        cfg.watchdog_enabled = true;
         cfg.watchdog_timeout_ms = 500;
-        cfg.config_name = "Monitoring".to_string();
+        cfg.config_name = "Watchdog".to_string();
         cfg
     }
 
@@ -138,22 +110,20 @@ impl PySchedulerConfig {
         self.clone()
     }
 
-    /// Set watchdog timeout in milliseconds and enable watchdog.
+    /// Set watchdog timeout in milliseconds.
     pub fn watchdog_ms(&mut self, ms: u64) -> Self {
-        self.watchdog_enabled = true;
         self.watchdog_timeout_ms = ms;
         self.clone()
     }
 
     /// Disable watchdog.
     pub fn no_watchdog(&mut self) -> Self {
-        self.watchdog_enabled = false;
+        self.watchdog_timeout_ms = 0;
         self.clone()
     }
 
-    /// Set black box buffer size in MB and enable it.
+    /// Set black box buffer size in MB.
     pub fn blackbox_mb(&mut self, mb: usize) -> Self {
-        self.black_box_enabled = true;
         self.black_box_size_mb = mb;
         self.clone()
     }
@@ -173,13 +143,12 @@ impl PySchedulerConfig {
     fn __repr__(&self) -> String {
         format!(
             "SchedulerConfig(config={}, tick_rate={:.1}Hz, \
-             budget={}, deadline_monitoring={}, safety_monitor={}, memory_locking={}, \
+             watchdog_timeout_ms={}, max_deadline_misses={}, memory_locking={}, \
              recording={})",
             self.config_name,
             self.tick_rate,
-            self.budget_enforcement,
-            self.deadline_monitoring,
-            self.safety_monitor,
+            self.watchdog_timeout_ms,
+            self.max_deadline_misses,
             self.memory_locking,
             self.recording_enabled,
         )
@@ -197,19 +166,13 @@ impl PySchedulerConfig {
 
         config.timing.global_rate_hz = self.tick_rate;
 
-        config.realtime.budget_enforcement = self.budget_enforcement;
-        config.realtime.deadline_monitoring = self.deadline_monitoring;
-        config.realtime.watchdog_enabled = self.watchdog_enabled;
         config.realtime.watchdog_timeout_ms = self.watchdog_timeout_ms;
-        config.realtime.safety_monitor = self.safety_monitor;
         config.realtime.max_deadline_misses = self.max_deadline_misses;
         config.realtime.memory_locking = self.memory_locking;
         config.realtime.rt_scheduling_class = self.rt_scheduling_class;
 
         config.resources.cpu_cores = self.cpu_cores.clone();
 
-        config.monitoring.profiling_enabled = self.profiling;
-        config.monitoring.black_box_enabled = self.black_box_enabled;
         config.monitoring.black_box_size_mb = self.black_box_size_mb;
         config.monitoring.telemetry_endpoint = self.telemetry_endpoint.clone();
 
@@ -225,17 +188,11 @@ impl PySchedulerConfig {
     fn from_rust_config(rust_config: SchedulerConfig, name: &str) -> Self {
         PySchedulerConfig {
             tick_rate: rust_config.timing.global_rate_hz,
-            budget_enforcement: rust_config.realtime.budget_enforcement,
-            deadline_monitoring: rust_config.realtime.deadline_monitoring,
-            watchdog_enabled: rust_config.realtime.watchdog_enabled,
             watchdog_timeout_ms: rust_config.realtime.watchdog_timeout_ms,
-            safety_monitor: rust_config.realtime.safety_monitor,
             max_deadline_misses: rust_config.realtime.max_deadline_misses,
             memory_locking: rust_config.realtime.memory_locking,
             rt_scheduling_class: rust_config.realtime.rt_scheduling_class,
             cpu_cores: rust_config.resources.cpu_cores,
-            profiling: rust_config.monitoring.profiling_enabled,
-            black_box_enabled: rust_config.monitoring.black_box_enabled,
             black_box_size_mb: rust_config.monitoring.black_box_size_mb,
             telemetry_endpoint: rust_config.monitoring.telemetry_endpoint,
             recording_enabled: rust_config.recording.is_some(),
@@ -251,63 +208,49 @@ mod tests {
     #[test]
     fn minimal_defaults() {
         let cfg = PySchedulerConfig::minimal();
-        assert!(!cfg.budget_enforcement);
-        assert!(!cfg.safety_monitor);
+        assert_eq!(cfg.watchdog_timeout_ms, 0);
         assert!(!cfg.memory_locking);
         assert!(!cfg.recording_enabled);
         assert_eq!(cfg.config_name, "Minimal");
     }
 
     #[test]
-    fn with_monitoring_enables_safety_features() {
-        let cfg = PySchedulerConfig::with_monitoring();
-        assert!(cfg.safety_monitor);
-        assert!(cfg.budget_enforcement);
-        assert!(cfg.deadline_monitoring);
-        assert!(cfg.watchdog_enabled);
+    fn with_watchdog_enables_safety_features() {
+        let cfg = PySchedulerConfig::with_watchdog();
         assert_eq!(cfg.watchdog_timeout_ms, 500);
-        assert_eq!(cfg.config_name, "Monitoring");
+        assert_eq!(cfg.config_name, "Watchdog");
     }
 
     #[test]
     fn composable_rt_config() {
-        // Compose RT-like config from builder methods
-        let cfg = PySchedulerConfig::with_monitoring()
+        let cfg = PySchedulerConfig::with_watchdog()
             .rate(100.0)
             .blackbox_mb(64);
-        assert!(cfg.safety_monitor);
-        assert!(cfg.budget_enforcement);
-        assert!(cfg.black_box_enabled);
+        assert_eq!(cfg.watchdog_timeout_ms, 500);
         assert_eq!(cfg.black_box_size_mb, 64);
         assert_eq!(cfg.tick_rate, 100.0);
     }
 
     #[test]
     fn composable_strict_config() {
-        // Compose strict config via field overrides
-        let mut cfg = PySchedulerConfig::with_monitoring();
+        let mut cfg = PySchedulerConfig::with_watchdog();
         cfg.memory_locking = true;
         cfg.rt_scheduling_class = true;
         cfg.max_deadline_misses = 3;
-        cfg.profiling = true;
         assert!(cfg.memory_locking);
-        assert!(cfg.profiling);
         assert_eq!(cfg.max_deadline_misses, 3);
     }
 
     #[test]
     fn to_core_config_round_trip() {
-        let py_cfg = PySchedulerConfig::with_monitoring()
+        let py_cfg = PySchedulerConfig::with_watchdog()
             .rate(100.0)
             .blackbox_mb(64);
         let core_cfg = py_cfg.to_core_config();
 
         assert_eq!(core_cfg.timing.global_rate_hz, 100.0);
-        assert!(core_cfg.realtime.budget_enforcement);
-        assert!(core_cfg.realtime.deadline_monitoring);
-        assert!(core_cfg.realtime.watchdog_enabled);
-        assert!(core_cfg.realtime.safety_monitor);
-        assert!(core_cfg.monitoring.black_box_enabled);
+        assert_eq!(core_cfg.realtime.watchdog_timeout_ms, 500);
+        assert_eq!(core_cfg.monitoring.black_box_size_mb, 64);
     }
 
     #[test]
@@ -319,17 +262,15 @@ mod tests {
             .cpu_affinity(vec![0, 1]);
 
         assert_eq!(cfg.tick_rate, 50.0);
-        assert!(cfg.watchdog_enabled);
         assert_eq!(cfg.watchdog_timeout_ms, 200);
-        assert!(cfg.black_box_enabled);
         assert_eq!(cfg.black_box_size_mb, 32);
         assert_eq!(cfg.cpu_cores, Some(vec![0, 1]));
     }
 
     #[test]
     fn no_watchdog_disables_it() {
-        let cfg = PySchedulerConfig::with_monitoring().no_watchdog();
-        assert!(!cfg.watchdog_enabled);
+        let cfg = PySchedulerConfig::with_watchdog().no_watchdog();
+        assert_eq!(cfg.watchdog_timeout_ms, 0);
     }
 
     #[test]

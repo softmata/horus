@@ -13,8 +13,8 @@ use std::time::Duration;
 /// // Video encoder: drop frame, keep streaming
 /// scheduler.add(encoder).rate(30_u64.hz()).on_miss(Miss::Skip).build()?;
 ///
-/// // Motor controller: degrade to safe mode
-/// scheduler.add(motor).rate(1000_u64.hz()).on_miss(Miss::Degrade).build()?;
+/// // Motor controller: enter safe mode on deadline miss
+/// scheduler.add(motor).rate(1000_u64.hz()).on_miss(Miss::SafeMode).build()?;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Miss {
@@ -23,9 +23,9 @@ pub enum Miss {
     Warn,
     /// Skip this tick, resume next cycle.
     Skip,
-    /// Call `enter_safe_state()` on the node, continue ticking in degraded mode.
+    /// Call `enter_safe_state()` on the node, continue ticking in safe mode.
     /// The scheduler checks `is_safe_state()` each tick for recovery.
-    Degrade,
+    SafeMode,
     /// Stop the entire scheduler (last resort).
     Stop,
 }

@@ -515,7 +515,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn discovered_action_defaults() {
+    fn discovered_action_complete_has_all_sub_topics() {
         let action = DiscoveredAction {
             name: "navigate".to_string(),
             has_goal: true,
@@ -527,11 +527,25 @@ mod tests {
             result_subscribers: 1,
         };
         assert_eq!(action.name, "navigate");
+        // A complete action must have all 5 sub-topics
         assert!(action.has_goal && action.has_result && action.has_feedback);
+        assert!(action.has_status && action.has_cancel);
+        assert!(action.goal_publishers > 0, "complete action needs at least one goal publisher");
+        assert!(action.result_subscribers > 0, "complete action needs at least one result subscriber");
+
+        // Clone preserves all fields
+        let cloned = action.clone();
+        assert_eq!(cloned.name, action.name);
+        assert_eq!(cloned.goal_publishers, action.goal_publishers);
+        assert_eq!(cloned.result_subscribers, action.result_subscribers);
+
+        // Debug contains action name
+        let debug = format!("{:?}", action);
+        assert!(debug.contains("navigate"), "Debug should contain action name");
     }
 
     #[test]
-    fn discovered_action_partial() {
+    fn discovered_action_partial_is_incomplete() {
         let action = DiscoveredAction {
             name: "pick".to_string(),
             has_goal: true,
@@ -544,6 +558,13 @@ mod tests {
         };
         assert!(action.has_goal);
         assert!(!action.has_result);
+        assert!(!action.has_feedback);
+        assert!(!action.has_status);
+        assert!(!action.has_cancel);
+        // A partial action with no result subscribers is inconsistent
+        assert_eq!(action.result_subscribers, 0);
+        // But it still has a valid goal publisher
+        assert_eq!(action.goal_publishers, 1);
     }
 
     #[test]

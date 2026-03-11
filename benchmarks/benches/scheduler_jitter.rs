@@ -1,7 +1,7 @@
 //! Scheduler RT Jitter Benchmarks
 //!
 //! Measures RT node timing accuracy using the node-declared API
-//! (Scheduler::new() with .budget() nodes) under heavy compute load.
+//! (Scheduler::new() with RT nodes) under heavy compute load.
 //!
 //! Run with: cargo bench -- scheduler_jitter
 
@@ -143,7 +143,6 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
             scheduler
                 .add(rt_node)
                 .order(0)
-                .budget(10_000_u64.us())
                 .rate(500_u64.hz())
                 .build();
             scheduler.add(compute_a).order(10).compute().build();
@@ -172,7 +171,6 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
             scheduler
                 .add(rt_node)
                 .order(0)
-                .budget(10_000_u64.us())
                 .rate(500_u64.hz())
                 .build();
 
@@ -204,7 +202,7 @@ fn bench_jitter_report(c: &mut Criterion) {
             let slow = HeavyComputeNode::new("proof_slow", 50_000); // 50ms blocking work
 
             let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
-            scheduler.add(rt_node).order(0).budget(10_000_u64.us()).rate(500_u64.hz()).build();
+            scheduler.add(rt_node).order(0).rate(500_u64.hz()).build();
             scheduler.add(slow).order(10).compute().rate(10_u64.hz()).build();
 
             scheduler.run_for(500_u64.ms()).unwrap();

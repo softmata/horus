@@ -51,6 +51,7 @@ pub fn to_py_err(err: HorusError) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horus_core::core::DurationExt;
     use horus_core::error::{NotFoundError, TransformError};
 
     /// Verify to_py_err routes each HorusError variant to the correct exception.
@@ -89,6 +90,7 @@ mod tests {
         let err = HorusError::NotFound(NotFoundError::ParentFrame {
             name: "world".into(),
         });
+        assert!(err.to_string().contains("world"));
         let _py_err = to_py_err(err);
     }
 
@@ -132,6 +134,7 @@ mod tests {
             std::io::ErrorKind::NotFound,
             "file missing",
         ));
+        assert!(err.to_string().contains("file missing"));
         let _py_err = to_py_err(err);
     }
 
@@ -149,6 +152,7 @@ mod tests {
     #[test]
     fn invalid_descriptor_falls_through() {
         let err = HorusError::InvalidDescriptor("bad tensor".into());
+        assert!(err.to_string().contains("bad tensor"));
         let _py_err = to_py_err(err);
     }
 }

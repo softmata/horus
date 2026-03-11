@@ -641,6 +641,12 @@ mod runtime_tests {
     fn test_numa_node_count() {
         let count = get_numa_node_count();
         assert!(count >= 1);
+        // Cross-check against capabilities detection
+        let caps = RuntimeCapabilities::detect();
+        assert_eq!(
+            count, caps.numa_node_count,
+            "get_numa_node_count() should match RuntimeCapabilities::detect().numa_node_count"
+        );
     }
 
     #[test]
@@ -658,6 +664,13 @@ mod capabilities_tests {
     fn test_detect_capabilities() {
         let caps = RuntimeCapabilities::detect();
         assert!(caps.cpu_count > 0);
+        assert!(!caps.kernel_version.is_empty(), "kernel_version should be detected");
+        assert!(caps.numa_node_count >= 1, "At least 1 NUMA node expected");
+        assert!(caps.detection_time_us > 0, "Detection should take measurable time");
+        // recommended_rt_cpus should be a subset of available CPUs
+        for &cpu in &caps.recommended_rt_cpus {
+            assert!(cpu < caps.cpu_count, "Recommended RT CPU {} exceeds cpu_count {}", cpu, caps.cpu_count);
+        }
     }
 
     #[test]
@@ -711,11 +724,23 @@ mod capabilities_tests {
     #[test]
     fn test_helper_methods() {
         let caps = RuntimeCapabilities::detect();
-        let _ = caps.has_rt_support();
-        let _ = caps.has_hard_rt_support();
-        let _ = caps.can_lock_memory();
-        let _ = caps.has_isolated_cpus();
-        let _ = caps.is_numa_system();
+        // Verify logical consistency between capability flags
+        if caps.has_hard_rt_support() {
+            assert!(caps.has_rt_support(), "hard RT implies basic RT support");
+        }
+        // NUMA system iff multiple nodes
+        assert_eq!(
+            caps.is_numa_system(),
+            caps.numa_node_count > 1,
+            "is_numa_system() should match numa_node_count > 1"
+        );
+        // isolated_cpus implies they exist in the CPU range
+        if caps.has_isolated_cpus() {
+            assert!(
+                !caps.recommended_rt_cpus.is_empty(),
+                "Isolated CPUs should produce RT CPU recommendations"
+            );
+        }
     }
 
     #[test]

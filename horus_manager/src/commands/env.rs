@@ -4,11 +4,12 @@ use crate::cli_output;
 use crate::commands::check::{
     check_system_package_exists, prompt_missing_system_package, MissingSystemChoice,
 };
+use crate::lockfile::{HorusLockfile, HORUS_LOCK};
 use crate::{registry, workspace};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Freeze the current environment to a file and optionally publish
 pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
@@ -22,6 +23,9 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
         .freeze()
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
+    // Update unified horus.lock with all discovered packages
+    update_lockfile_from_manifest(&manifest)?;
+
     // Save to local file
     let freeze_file = output.unwrap_or_else(|| PathBuf::from("horus-freeze.toml"));
     let toml_str = toml::to_string_pretty(&manifest)
@@ -30,6 +34,7 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!("  Environment frozen to {}", freeze_file.display());
+    println!("  Lockfile updated: {}", HORUS_LOCK);
     println!("   ID: {}", manifest.horus_id);
     println!("   Packages: {}", manifest.packages.len());
 
@@ -148,7 +153,8 @@ pub fn run_restore(source: String) -> HorusResult<()> {
     Ok(())
 }
 
-/// Common logic for restoring packages from a manifest
+/// Common logic for restoring packages from a manifest.
+/// Also updates `horus.lock` with the restored pins.
 fn restore_packages(
     client: &registry::RegistryClient,
     manifest: &registry::EnvironmentManifest,
@@ -257,6 +263,15 @@ fn restore_packages(
         // Dependencies are installed to .horus/packages/ — native build files
         // (Cargo.toml, pyproject.toml) handle dependency tracking.
     }
+
+    // Update unified horus.lock with all restored packages
+    update_lockfile_from_manifest(manifest)?;
+    println!(
+        "  {} Lockfile updated: {}",
+        cli_output::ICON_SUCCESS.green(),
+        HORUS_LOCK
+    );
+
     Ok(())
 }
 
@@ -458,6 +473,45 @@ pub fn run_show(id: String, json: bool) -> HorusResult<()> {
         "Tip:".dimmed(),
         manifest.horus_id
     );
+
+    Ok(())
+}
+
+/// Convert an `EnvironmentManifest` into `horus.lock` pins.
+///
+/// Loads the existing lockfile (or creates a new one), merges all packages
+/// from the manifest, and writes back to disk.
+fn update_lockfile_from_manifest(manifest: &registry::EnvironmentManifest) -> HorusResult<()> {
+    let lock_path = Path::new(HORUS_LOCK);
+
+    let mut lockfile = if lock_path.exists() {
+        HorusLockfile::load_from(lock_path)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+    } else {
+        HorusLockfile::new()
+    };
+
+    for pkg in &manifest.packages {
+        let source_str = match &pkg.source {
+            registry::PackageSource::Registry => "registry",
+            registry::PackageSource::CratesIO => "crates.io",
+            registry::PackageSource::PyPI => "pypi",
+            registry::PackageSource::System => "system",
+            registry::PackageSource::Path { .. } => "path",
+        };
+
+        let checksum = if pkg.checksum.is_empty() {
+            None
+        } else {
+            Some(pkg.checksum.clone())
+        };
+
+        lockfile.pin(&pkg.name, &pkg.version, source_str, checksum);
+    }
+
+    lockfile
+        .save_to(lock_path)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     Ok(())
 }

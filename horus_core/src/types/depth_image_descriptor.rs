@@ -149,20 +149,43 @@ mod tests {
     use crate::types::Device;
 
     #[test]
-    fn test_depth_image_size() {
-        assert_eq!(
-            std::mem::size_of::<DepthImageDescriptor>(),
-            224,
-            "DepthImageDescriptor must be exactly 224 bytes"
-        );
+    fn test_depth_image_size_and_alignment() {
+        let size = std::mem::size_of::<DepthImageDescriptor>();
+        let align = std::mem::align_of::<DepthImageDescriptor>();
+        assert_eq!(size, 224, "DepthImageDescriptor must be exactly 224 bytes");
+        assert_eq!(align, 8, "alignment must be 8 from u64 fields");
+        assert_eq!(size % align, 0, "size must be a multiple of alignment");
+        // Same size as ImageDescriptor (both 224 bytes) for uniform ring buffer slots
+        assert_eq!(size, std::mem::size_of::<super::super::image_descriptor::ImageDescriptor>());
     }
 
     #[test]
     fn test_depth_image_pod() {
-        let di = DepthImageDescriptor::default();
+        // Roundtrip a configured descriptor through bytes
+        let tensor = Tensor::new(1, 0, 0, 0, &[480, 640], TensorDtype::F32, Device::cpu());
+        let mut di = DepthImageDescriptor::new(tensor).with_range(200, 10000);
+        di.set_frame_id("depth0");
+        di.set_timestamp_ns(42);
+
         let bytes: &[u8] = bytemuck::bytes_of(&di);
         assert_eq!(bytes.len(), 224);
-        let _recovered: &DepthImageDescriptor = bytemuck::from_bytes(bytes);
+        let recovered: &DepthImageDescriptor = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.height(), 480);
+        assert_eq!(recovered.width(), 640);
+        assert_eq!(recovered.min_depth(), 200);
+        assert_eq!(recovered.max_depth(), 10000);
+        assert_eq!(recovered.frame_id(), "depth0");
+        assert_eq!(recovered.timestamp_ns(), 42);
+    }
+
+    #[test]
+    fn test_depth_image_default_has_sensible_range() {
+        let di = DepthImageDescriptor::default();
+        // Default range: 20cm to 10m (200mm to 10000mm)
+        assert_eq!(di.min_depth(), 200);
+        assert_eq!(di.max_depth(), 10000);
+        assert!(di.min_depth() < di.max_depth(), "min_depth must be less than max_depth");
+        assert_eq!(di.depth_scale(), 1.0);
     }
 
     #[test]

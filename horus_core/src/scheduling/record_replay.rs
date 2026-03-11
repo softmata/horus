@@ -680,6 +680,7 @@ impl NodeRecorder {
 
 impl NodeRecorder {
     /// Get a reference to the underlying recording.
+    #[allow(dead_code)]
     pub(crate) fn recording(&self) -> &NodeRecording {
         &self.recording
     }

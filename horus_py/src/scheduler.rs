@@ -21,8 +21,6 @@ struct NodeParams {
     order: u32,
     rate_hz: Option<f64>,
     rt: bool,
-    deadline_ms: Option<f64>,
-    budget_us: Option<u64>,
     failure_policy: Option<FailurePolicy>,
     miss_policy: Option<String>,
     execution_class: Option<ExecutionClass>,
@@ -256,9 +254,9 @@ impl PyMiss {
     #[classattr]
     const SKIP: &'static str = "skip";
 
-    /// Enter degraded mode — calls `enter_safe_state()` on the node.
+    /// Enter safe mode — calls `enter_safe_state()` on the node.
     #[classattr]
-    const DEGRADE: &'static str = "degrade";
+    const SAFE_MODE: &'static str = "safe_mode";
 
     /// Stop the entire scheduler (last resort).
     #[classattr]
@@ -270,10 +268,10 @@ fn parse_miss_policy(name: &str) -> PyResult<Miss> {
     match name {
         "warn" => Ok(Miss::Warn),
         "skip" => Ok(Miss::Skip),
-        "degrade" => Ok(Miss::Degrade),
+        "safe_mode" | "safemode" => Ok(Miss::SafeMode),
         "stop" => Ok(Miss::Stop),
         _ => Err(PyRuntimeError::new_err(format!(
-            "Unknown miss policy '{}'. Use Miss.WARN, Miss.SKIP, Miss.DEGRADE, or Miss.STOP",
+            "Unknown miss policy '{}'. Use Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, or Miss.STOP",
             name
         ))),
     }
@@ -284,7 +282,7 @@ fn parse_miss_policy(name: &str) -> PyResult<Miss> {
 /// Fluent builder for adding nodes to the scheduler.
 ///
 /// Example:
-///     scheduler.add(my_node).order(0).rate(100.0).budget(500).build()
+///     scheduler.add(my_node).order(0).rate(100.0).build()
 #[pyclass(name = "NodeBuilder", module = "horus._horus")]
 pub struct PyNodeBuilder {
     scheduler: Py<PyScheduler>,
@@ -292,8 +290,6 @@ pub struct PyNodeBuilder {
     order: u32,
     rate_hz: Option<f64>,
     rt: bool,
-    deadline_ms: Option<f64>,
-    budget_us: Option<u64>,
     failure_policy: Option<FailurePolicy>,
     miss_policy: Option<String>,
     execution_class: Option<ExecutionClass>,
@@ -310,20 +306,6 @@ impl PyNodeBuilder {
     /// Set node-specific tick rate in Hz.
     fn rate(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
         slf.rate_hz = Some(rate);
-        slf
-    }
-
-    /// Set soft deadline in milliseconds.
-    fn deadline(mut slf: PyRefMut<'_, Self>, ms: f64) -> PyRefMut<'_, Self> {
-        slf.deadline_ms = Some(ms);
-        slf.rt = true;
-        slf
-    }
-
-    /// Set tick budget in microseconds.
-    fn budget(mut slf: PyRefMut<'_, Self>, us: u64) -> PyRefMut<'_, Self> {
-        slf.budget_us = Some(us);
-        slf.rt = true;
         slf
     }
 
@@ -404,8 +386,6 @@ impl PyNodeBuilder {
         let order = slf.order;
         let rate_hz = slf.rate_hz;
         let rt = slf.rt;
-        let deadline_ms = slf.deadline_ms;
-        let budget_us = slf.budget_us;
         let failure_policy = slf.failure_policy.clone();
         let miss_policy = slf.miss_policy.clone();
         let execution_class = slf.execution_class.clone();
@@ -420,8 +400,6 @@ impl PyNodeBuilder {
                     order,
                     rate_hz,
                     rt,
-                    deadline_ms,
-                    budget_us,
                     failure_policy,
                     miss_policy,
                     execution_class,
@@ -466,8 +444,6 @@ impl PyScheduler {
             order,
             rate_hz,
             rt,
-            deadline_ms,
-            budget_us,
             failure_policy,
             miss_policy,
             execution_class,
@@ -518,12 +494,6 @@ impl PyScheduler {
         if let Some(rate) = node_rate {
             config = config.rate(rate.hz());
         }
-        if let Some(ms) = deadline_ms {
-            config = config.deadline((ms as u64).ms());
-        }
-        if let Some(us) = budget_us {
-            config = config.budget((us as u64).us());
-        }
         if let Some(ref miss_name) = miss_policy {
             config = config.on_miss(parse_miss_policy(miss_name)?);
         }
@@ -542,7 +512,7 @@ impl PyScheduler {
                     config = config.async_io();
                 }
                 ExecutionClass::Rt => {
-                    // RT is set implicitly via deadline/budget
+                    // RT is auto-detected from rate
                 }
                 ExecutionClass::BestEffort => {} // default, no-op
             }
@@ -642,7 +612,7 @@ impl PyScheduler {
 
         let tick_rate = config.as_ref().map_or(100.0, |c| c.tick_rate);
 
-        let mut core_sched = CoreScheduler::new().with_name("PythonScheduler");
+        let mut core_sched = CoreScheduler::new();
         core_sched.apply_config(core_config);
         Self::wrap_core(core_sched, tick_rate)
     }
@@ -655,8 +625,6 @@ impl PyScheduler {
             order: 100,
             rate_hz: None,
             rt: false,
-            deadline_ms: None,
-            budget_us: None,
             failure_policy: None,
             miss_policy: None,
             execution_class: None,
@@ -664,8 +632,7 @@ impl PyScheduler {
     }
 
     /// Add a node to the scheduler.
-    #[allow(clippy::too_many_arguments)] // PyO3 kwargs match Python __init__ convention
-    #[pyo3(signature = (node, order=100, rate=None, rt=false, deadline=None, budget=None, failure_policy=None, on_miss=None))]
+    #[pyo3(signature = (node, order=100, rate=None, rt=false, failure_policy=None, on_miss=None))]
     fn add(
         &self,
         py: Python,
@@ -673,8 +640,6 @@ impl PyScheduler {
         order: u32,
         rate: Option<f64>,
         rt: bool,
-        deadline: Option<f64>,
-        budget: Option<u64>,
         failure_policy: Option<String>,
         on_miss: Option<String>,
     ) -> PyResult<()> {
@@ -700,8 +665,6 @@ impl PyScheduler {
                 order,
                 rate_hz: rate,
                 rt,
-                deadline_ms: deadline,
-                budget_us: budget,
                 failure_policy: parsed_policy,
                 miss_policy: on_miss,
                 execution_class: None,
@@ -1152,7 +1115,7 @@ impl PyScheduler {
 
         self.tick_rate_hz = tick_rate_hz;
 
-        let core_sched = CoreScheduler::new().with_name("PythonScheduler");
+        let core_sched = CoreScheduler::new();
         self.scheduler_running = core_sched.running_flag();
         *self
             .inner

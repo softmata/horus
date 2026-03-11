@@ -653,14 +653,28 @@ mod tests {
 
     #[test]
     fn token_format_validation_valid() {
-        assert!("horus_key_abc123".starts_with("horus_key_"));
+        let valid_token = "horus_key_abc123";
+        assert!(valid_token.starts_with("horus_key_"));
+        // Valid token should be accepted in an AuthConfig
+        let config = AuthConfig {
+            api_key: valid_token.to_string(),
+            registry_url: "https://registry.example.com".to_string(),
+            github_username: None,
+        };
+        assert!(config.api_key.starts_with("horus_key_"));
+        assert!(config.api_key.len() > "horus_key_".len(), "token must have content after prefix");
     }
 
     #[test]
     fn token_format_validation_invalid() {
-        assert!(!"invalid_token".starts_with("horus_key_"));
-        assert!(!"".starts_with("horus_key_"));
-        assert!(!"horus_key".starts_with("horus_key_"));
+        let invalid_tokens = ["invalid_token", "", "horus_key", "HORUS_KEY_abc"];
+        for token in &invalid_tokens {
+            assert!(
+                !token.starts_with("horus_key_"),
+                "token '{}' should NOT be valid",
+                token
+            );
+        }
     }
 
     #[test]

@@ -158,7 +158,7 @@ async fn status_version_matches_cargo() {
     let resp = app.oneshot(get_request("/api/status")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
-    assert_eq!(json["version"], "0.1.9", "version should match Cargo.toml");
+    assert_eq!(json["version"], "0.1.9", "version should match horus.toml / Cargo.toml");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

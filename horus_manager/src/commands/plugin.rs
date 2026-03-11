@@ -478,9 +478,8 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
         }
     }
 
-    // horus.toml no longer tracks dependencies; plugin registration is handled
-    // by the plugin registry (lock file + symlink) above.  Native dep tracking
-    // is delegated to `cargo add` / `pip install` via `horus add`.
+    // Plugin registration is handled by the plugin registry (lock file + symlink) above.
+    // Dependencies are tracked in horus.toml [dependencies] and managed via `horus add`.
 
     println!();
     println!(

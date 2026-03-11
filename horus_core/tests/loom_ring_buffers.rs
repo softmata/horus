@@ -824,6 +824,7 @@ fn loom_mpmc_concurrent_consumers() {
 
         let mut all: Vec<u64> = c1.join().unwrap();
         all.extend(c2.join().unwrap());
+        let total = all.len();
         all.sort();
 
         // All consumed values must be valid and no duplicates.
@@ -834,8 +835,10 @@ fn loom_mpmc_concurrent_consumers() {
         all.dedup();
         assert_eq!(
             all.len(),
-            all.len(),
-            "No duplicate values should be received"
+            total,
+            "Duplicate values received: dedup reduced {} to {}",
+            total,
+            all.len()
         );
     });
 }

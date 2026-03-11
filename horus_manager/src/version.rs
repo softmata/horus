@@ -284,9 +284,11 @@ mod tests {
 
     #[test]
     fn test_print_version_mismatch_does_not_panic() {
-        // Just verify it doesn't panic with various inputs
-        print_version_mismatch("1.0.0", "0.9.0");
-        print_version_mismatch("", "");
-        print_version_mismatch("1.0.0-beta", "1.0.0");
+        // Smoke test: print_version_mismatch is a pure side-effect function
+        // (writes to stderr). We verify it handles edge cases without panicking,
+        // including empty strings and pre-release versions.
+        print_version_mismatch("1.0.0", "0.9.0"); // normal mismatch
+        print_version_mismatch("", ""); // empty versions
+        print_version_mismatch("1.0.0-beta", "1.0.0"); // pre-release vs release
     }
 }

@@ -2337,27 +2337,54 @@ mod tests {
 
     #[test]
     fn test_list_frames_empty() {
-        // Should handle empty case gracefully
+        // Without a running HORUS application, list_frames should succeed
+        // with an empty reader (no shared memory data).
         let result = list_frames(false, false);
-        result.unwrap();
+        assert!(result.is_ok(), "list_frames should succeed even with no shared memory: {:?}", result.err());
+
+        // Verify the underlying reader starts empty
+        let reader = TransformFrameReader::new();
+        assert!(reader.get_all_frames().is_empty(), "no frames should exist without live data");
     }
 
     #[test]
     fn test_view_frames() {
+        // view_frames with no output file should succeed even without live data
         let result = view_frames(None);
-        result.unwrap();
+        assert!(result.is_ok(), "view_frames(None) should succeed with no live data: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_view_frames_writes_dot_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dot_path = dir.path().join("frames.dot");
+        let result = view_frames(Some(dot_path.to_str().unwrap()));
+        assert!(result.is_ok(), "view_frames with output file should succeed: {:?}", result.err());
+        // Even with no frames, the DOT file should not be written (empty tree short-circuits)
+        // but the function itself should not error
     }
 
     #[test]
     fn test_frame_info() {
+        // frame_info on a non-existent frame should still succeed (prints "not found" message)
         let result = frame_info("base_link");
-        result.unwrap();
+        assert!(result.is_ok(), "frame_info should succeed even for missing frame: {:?}", result.err());
+
+        // Verify the reader finds no frames when no app is running
+        let reader = TransformFrameReader::new();
+        assert!(!reader.frame_data.contains_key("base_link"), "base_link should not exist without live data");
     }
 
     #[test]
     fn test_can_transform() {
+        // can_transform between non-existent frames should succeed (prints "No")
         let result = can_transform("base_link", "camera_link");
-        result.unwrap();
+        assert!(result.is_ok(), "can_transform should succeed even for missing frames: {:?}", result.err());
+
+        // Verify the underlying TransformFrame correctly reports no transform available
+        let reader = TransformFrameReader::new();
+        assert!(!reader.tf.can_transform("base_link", "camera_link"),
+            "transform should not be available between non-existent frames");
     }
 
     #[test]

@@ -85,7 +85,17 @@ mod tests {
 
     #[test]
     fn test_raw_mode_detection() {
-        // In a test environment, the terminal is not in raw mode
+        // In a test environment (no tty), raw mode should always be false
         assert!(!is_raw_mode());
+        // Calling twice should be consistent (no state mutation)
+        assert_eq!(is_raw_mode(), is_raw_mode());
+    }
+
+    #[test]
+    fn test_print_line_does_not_panic() {
+        // print_line should handle both empty and non-empty strings without panic
+        print_line("");
+        print_line("hello from test");
+        print_line("line with special chars: \t\x1b[0m");
     }
 }

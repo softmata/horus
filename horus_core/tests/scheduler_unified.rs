@@ -142,7 +142,6 @@ fn test_rt_isolation_under_compute_load() {
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(1000_u64.hz())
         .build();
     scheduler
@@ -249,7 +248,6 @@ fn test_mixed_rt_and_compute_nodes() {
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(500_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
@@ -330,13 +328,11 @@ fn test_full_system_rt_and_compute_groups() {
     scheduler
         .add(rt_fast)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(500_u64.hz())
         .build();
     scheduler
         .add(rt_slow)
         .order(1)
-        .budget(10_000_u64.us())
         .rate(100_u64.hz())
         .build();
 
@@ -497,7 +493,6 @@ fn test_event_node_alongside_rt_and_besteffort() {
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(200_u64.hz())
         .build();
     scheduler.add(be_node).order(5).build();
@@ -636,7 +631,6 @@ fn test_async_io_isolation_from_rt_and_compute() {
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(1000_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
@@ -775,7 +769,6 @@ fn test_all_execution_groups_simultaneously() {
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(500_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
@@ -843,7 +836,6 @@ fn test_clean_shutdown_all_groups() {
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(100_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
@@ -881,19 +873,16 @@ fn test_multi_rate_rt_timing_accuracy() {
     scheduler
         .add(node_1khz)
         .order(0)
-        .budget(10_000_u64.us())
         .rate(1000_u64.hz())
         .build();
     scheduler
         .add(node_100hz)
         .order(1)
-        .budget(10_000_u64.us())
         .rate(100_u64.hz())
         .build();
     scheduler
         .add(node_10hz)
         .order(2)
-        .budget(10_000_u64.us())
         .rate(10_u64.hz())
         .build();
 

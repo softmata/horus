@@ -759,7 +759,7 @@ impl SafetyMonitor {
             .unwrap_or(DegradationStage::Normal)
     }
 
-    /// Record a degrade activation (Miss::Degrade triggered on a node).
+    /// Record a safe mode activation (Miss::SafeMode triggered on a node).
     pub(crate) fn record_degrade_activation(&self) {
         self.degrade_activations.fetch_add(1, Ordering::SeqCst);
     }

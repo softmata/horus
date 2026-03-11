@@ -148,34 +148,24 @@ impl Node for LoggingNode {
 #[test]
 fn test_rt_node_basic() {
     cleanup_stale_shm();
-    // Use default config (RT features disabled)
     let mut scheduler = Scheduler::new();
 
-    // Add RT nodes as regular nodes
-    scheduler
-        .add(MotorControlNode::new("motor_ctrl"))
-        .order(0)
-        .budget(100_u64.us())
-        .deadline(1_u64.ms())
-        .on_miss(Miss::Stop)
-        .build();
-    scheduler
-        .add(SensorFusionNode::new("sensor_fusion"))
-        .order(1)
-        .budget(500_u64.us())
-        .deadline(10_u64.ms())
-        .on_miss(Miss::Skip)
-        .build();
-    scheduler
-        .add(LoggingNode::new("logger"))
-        .order(10)
-        .budget(5000_u64.us())
-        .deadline(100_u64.ms())
-        .build();
+    let motor = MotorControlNode::new("motor_ctrl");
+    let motor_ticks = Arc::clone(&motor.tick_count);
+    let fusion = SensorFusionNode::new("sensor_fusion");
+    let fusion_ticks = Arc::clone(&fusion.samples_processed);
+    let logger = LoggingNode::new("logger");
+    let logger_ticks = Arc::clone(&logger.logs_written);
 
-    // Run for a short duration
-    let result = scheduler.run_for(100_u64.ms());
-    result.unwrap();
+    scheduler.add(motor).order(0).on_miss(Miss::Stop).build();
+    scheduler.add(fusion).order(1).on_miss(Miss::Skip).build();
+    scheduler.add(logger).order(10).build();
+
+    scheduler.run_for(100_u64.ms()).unwrap();
+
+    assert!(motor_ticks.load(Ordering::SeqCst) > 0, "Motor control node should have ticked");
+    assert!(fusion_ticks.load(Ordering::SeqCst) > 0, "Sensor fusion node should have ticked");
+    assert!(logger_ticks.load(Ordering::SeqCst) > 0, "Logger node should have ticked");
 }
 
 #[test]
@@ -198,52 +188,56 @@ fn test_rt_node_priority_ordering() {
     scheduler
         .add(log_node)
         .order(10)
-        .budget(5000_u64.us())
-        .deadline(100_u64.ms())
         .build(); // Low priority
     scheduler
         .add(sensor_node)
         .order(1)
-        .budget(500_u64.us())
-        .deadline(10_u64.ms())
         .on_miss(Miss::Skip)
         .build(); // High priority
     scheduler
         .add(motor_node)
         .order(0)
-        .budget(100_u64.us())
-        .deadline(1_u64.ms())
         .on_miss(Miss::Stop)
         .build(); // Critical priority
 
     scheduler.run_for(200_u64.ms()).unwrap();
 
-    // Critical priority node should have executed
-    assert!(motor.load(Ordering::SeqCst) > 0);
+    let motor_count = motor.load(Ordering::SeqCst);
+    let sensor_count = sensor.load(Ordering::SeqCst);
+    let logger_count = logger.load(Ordering::SeqCst);
+
+    // All nodes should have executed
+    assert!(motor_count > 0, "Critical motor node never ticked");
+    assert!(sensor_count > 0, "Sensor node never ticked");
+    assert!(logger_count > 0, "Logger node never ticked");
+
+    // Motor (50μs exec, order 0) should tick at least as much as sensor (100μs exec, order 1)
+    assert!(
+        motor_count >= sensor_count,
+        "Motor ({}, 50μs) should tick >= sensor ({}, 100μs) due to lower exec time",
+        motor_count, sensor_count
+    );
 }
 
 #[test]
 fn test_rt_node_with_safety_critical_config() {
     cleanup_stale_shm();
-    // Use safety-critical configuration (all RT features enabled)
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
-    scheduler
-        .add(MotorControlNode::new("critical_motor"))
-        .order(0)
-        .budget(100_u64.us())
-        .deadline(1_u64.ms())
-        .on_miss(Miss::Stop)
-        .build();
-    scheduler
-        .add(SensorFusionNode::new("critical_sensor"))
-        .order(1)
-        .budget(500_u64.us())
-        .deadline(10_u64.ms())
-        .on_miss(Miss::Skip)
-        .build();
+    let motor = MotorControlNode::new("critical_motor");
+    let motor_ticks = Arc::clone(&motor.tick_count);
+    let sensor = SensorFusionNode::new("critical_sensor");
+    let sensor_ticks = Arc::clone(&sensor.samples_processed);
 
-    // Run briefly (safety-critical config runs at 1kHz)
-    let result = scheduler.run_for(200_u64.ms());
-    result.unwrap();
+    scheduler.add(motor).order(0).on_miss(Miss::Stop).build();
+    scheduler.add(sensor).order(1).on_miss(Miss::Skip).build();
+
+    // Run at 1kHz for 200ms — expect ~200 ticks ideally
+    scheduler.run_for(200_u64.ms()).unwrap();
+
+    let motor_count = motor_ticks.load(Ordering::SeqCst);
+    let sensor_count = sensor_ticks.load(Ordering::SeqCst);
+
+    assert!(motor_count > 0, "Critical motor should have ticked at 1kHz");
+    assert!(sensor_count > 0, "Critical sensor should have ticked at 1kHz");
 }

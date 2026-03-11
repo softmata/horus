@@ -192,6 +192,30 @@ mod tests {
 
     #[test]
     fn test_dtype_sizes() {
+        // Every dtype's element_size must be a power of 2
+        let all_dtypes = [
+            TensorDtype::F32,
+            TensorDtype::F64,
+            TensorDtype::F16,
+            TensorDtype::BF16,
+            TensorDtype::I8,
+            TensorDtype::I16,
+            TensorDtype::I32,
+            TensorDtype::I64,
+            TensorDtype::U8,
+            TensorDtype::U16,
+            TensorDtype::U32,
+            TensorDtype::U64,
+            TensorDtype::Bool,
+        ];
+        for dtype in all_dtypes {
+            let sz = dtype.element_size();
+            assert!(sz.is_power_of_two(), "{:?} element_size {} is not power of 2", dtype, sz);
+            // size_bytes() must be an alias for element_size()
+            assert_eq!(dtype.size_bytes(), sz, "size_bytes() != element_size() for {:?}", dtype);
+        }
+
+        // Spot-check specific sizes
         assert_eq!(TensorDtype::F32.element_size(), 4);
         assert_eq!(TensorDtype::F64.element_size(), 8);
         assert_eq!(TensorDtype::F16.element_size(), 2);
@@ -199,6 +223,12 @@ mod tests {
         assert_eq!(TensorDtype::U8.element_size(), 1);
         assert_eq!(TensorDtype::I64.element_size(), 8);
         assert_eq!(TensorDtype::Bool.element_size(), 1);
+
+        // Signed/unsigned pairs must have the same size
+        assert_eq!(TensorDtype::I8.element_size(), TensorDtype::U8.element_size());
+        assert_eq!(TensorDtype::I16.element_size(), TensorDtype::U16.element_size());
+        assert_eq!(TensorDtype::I32.element_size(), TensorDtype::U32.element_size());
+        assert_eq!(TensorDtype::I64.element_size(), TensorDtype::U64.element_size());
     }
 
     #[test]
@@ -253,6 +283,10 @@ mod tests {
 
     #[test]
     fn test_dtype_pod_soundness() {
+        // TensorDtype is repr(u8), so each variant occupies exactly 1 byte
+        assert_eq!(std::mem::size_of::<TensorDtype>(), 1);
+        assert_eq!(std::mem::align_of::<TensorDtype>(), 1);
+
         let dtype = TensorDtype::F32;
         let bytes = bytemuck::bytes_of(&dtype);
         assert_eq!(bytes.len(), 1);
@@ -261,6 +295,68 @@ mod tests {
         let dtype2 = TensorDtype::U8;
         let bytes2 = bytemuck::bytes_of(&dtype2);
         assert_eq!(bytes2[0], 8); // U8 = 8
+
+        // Roundtrip every variant through bytemuck
+        for (expected_byte, dtype) in [
+            (0u8, TensorDtype::F32),
+            (1, TensorDtype::F64),
+            (2, TensorDtype::F16),
+            (3, TensorDtype::BF16),
+            (4, TensorDtype::I8),
+            (5, TensorDtype::I16),
+            (6, TensorDtype::I32),
+            (7, TensorDtype::I64),
+            (8, TensorDtype::U8),
+            (9, TensorDtype::U16),
+            (10, TensorDtype::U32),
+            (11, TensorDtype::U64),
+            (12, TensorDtype::Bool),
+        ] {
+            let b = bytemuck::bytes_of(&dtype);
+            assert_eq!(b[0], expected_byte, "byte repr mismatch for {:?}", dtype);
+            let recovered: &TensorDtype = bytemuck::from_bytes(b);
+            assert_eq!(*recovered, dtype, "roundtrip failed for {:?}", dtype);
+        }
+    }
+
+    #[test]
+    fn test_dtype_default_is_f32() {
+        let d = TensorDtype::default();
+        assert_eq!(d, TensorDtype::F32);
+        // Default must differ from other common types
+        assert_ne!(d, TensorDtype::U8);
+        assert_ne!(d, TensorDtype::F64);
+    }
+
+    #[test]
+    fn test_dtype_clone_and_debug() {
+        let d = TensorDtype::BF16;
+        let cloned = d;
+        assert_eq!(cloned, d);
+        let dbg = format!("{:?}", d);
+        assert_eq!(dbg, "BF16");
+    }
+
+    #[test]
+    fn test_dtype_dlpack_bits_match_element_size() {
+        // DLPack bits field must equal element_size * 8 for all types
+        let all_dtypes = [
+            TensorDtype::F32, TensorDtype::F64, TensorDtype::F16,
+            TensorDtype::BF16, TensorDtype::I8, TensorDtype::I16,
+            TensorDtype::I32, TensorDtype::I64, TensorDtype::U8,
+            TensorDtype::U16, TensorDtype::U32, TensorDtype::U64,
+            TensorDtype::Bool,
+        ];
+        for dtype in all_dtypes {
+            let (_, bits, lanes) = dtype.to_dlpack();
+            assert_eq!(lanes, 1, "lanes must be 1 for {:?}", dtype);
+            assert_eq!(
+                bits as usize,
+                dtype.element_size() * 8,
+                "DLPack bits mismatch for {:?}",
+                dtype
+            );
+        }
     }
 
     #[test]

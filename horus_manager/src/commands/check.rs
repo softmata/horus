@@ -970,14 +970,25 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     // 9. API Usage Check
     print!("  {} Checking API usage... ", "▸".cyan());
     if languages.contains(&Language::Rust) {
-        // Check if Cargo.toml references horus
-        let cargo_toml_path = base_dir.join(CARGO_TOML);
-        let uses_horus = if cargo_toml_path.exists() {
-            std::fs::read_to_string(&cargo_toml_path)
-                .map(|c| c.contains("horus") || c.contains("horus_macros"))
-                .unwrap_or(false)
-        } else {
-            false
+        // Check if horus.toml or Cargo.toml references horus
+        let uses_horus = {
+            let horus_toml_path = base_dir.join(HORUS_TOML);
+            if horus_toml_path.exists() {
+                HorusManifest::load_from(&horus_toml_path)
+                    .map(|(m, _)| {
+                        m.dependencies.keys().any(|k| k.contains("horus"))
+                    })
+                    .unwrap_or(false)
+            } else {
+                let cargo_toml_path = base_dir.join(CARGO_TOML);
+                if cargo_toml_path.exists() {
+                    std::fs::read_to_string(&cargo_toml_path)
+                        .map(|c| c.contains("horus") || c.contains("horus_macros"))
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            }
         };
 
         if uses_horus {
@@ -1240,7 +1251,7 @@ mod tests {
     #[test]
     fn valid_toml_passes_check() {
         let dir = TempDir::new().unwrap();
-        write_toml(
+        let toml_path = write_toml(
             &dir,
             "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n",
         );
@@ -1250,6 +1261,10 @@ mod tests {
             "Valid horus.toml should pass: {:?}",
             result.err()
         );
+        // Verify the manifest file is still intact after checking
+        assert!(toml_path.exists(), "horus.toml should still exist after check");
+        let content = fs::read_to_string(&toml_path).unwrap();
+        assert!(content.contains("my-robot"), "manifest content should be unchanged");
     }
 
     #[test]
@@ -1312,6 +1327,11 @@ mod tests {
             "Valid semver should pass: {:?}",
             result.err()
         );
+        // Also verify the manifest can be independently loaded and parsed
+        let toml_path = dir.path().join("horus.toml");
+        let (manifest, _) = HorusManifest::load_from(&toml_path).unwrap();
+        assert_eq!(manifest.package.version, "1.2.3");
+        assert_eq!(manifest.package.name, "my-robot");
     }
 
     // ─── Project Name Validation Tests ───
@@ -1351,6 +1371,11 @@ mod tests {
             "Hyphens and underscores in name should pass: {:?}",
             result.err()
         );
+        // Verify the name round-trips correctly through manifest parsing
+        let toml_path = dir.path().join("horus.toml");
+        let (manifest, _) = HorusManifest::load_from(&toml_path).unwrap();
+        assert_eq!(manifest.package.name, "my-robot_v2",
+            "name with hyphens and underscores should round-trip through parsing");
     }
 
     // ─── Path Not Found Tests ───

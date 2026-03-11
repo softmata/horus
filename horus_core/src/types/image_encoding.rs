@@ -171,10 +171,68 @@ mod tests {
 
     #[test]
     fn test_encoding_pod_soundness() {
+        // ImageEncoding is repr(u8): 1 byte, 1-byte alignment
+        assert_eq!(std::mem::size_of::<ImageEncoding>(), 1);
+        assert_eq!(std::mem::align_of::<ImageEncoding>(), 1);
+
         let enc = ImageEncoding::Rgb8;
         let bytes = bytemuck::bytes_of(&enc);
         assert_eq!(bytes.len(), 1);
         assert_eq!(bytes[0], 2); // Rgb8 = 2
+
+        // Roundtrip every variant through bytemuck
+        for (expected_byte, enc) in [
+            (0u8, ImageEncoding::Mono8),
+            (1, ImageEncoding::Mono16),
+            (2, ImageEncoding::Rgb8),
+            (3, ImageEncoding::Bgr8),
+            (4, ImageEncoding::Rgba8),
+            (5, ImageEncoding::Bgra8),
+            (6, ImageEncoding::Yuv422),
+            (7, ImageEncoding::Mono32F),
+            (8, ImageEncoding::Rgb32F),
+            (9, ImageEncoding::BayerRggb8),
+            (10, ImageEncoding::Depth16),
+        ] {
+            let b = bytemuck::bytes_of(&enc);
+            assert_eq!(b[0], expected_byte, "byte repr mismatch for {:?}", enc);
+            let recovered: &ImageEncoding = bytemuck::from_bytes(b);
+            assert_eq!(*recovered, enc, "roundtrip failed for {:?}", enc);
+        }
+    }
+
+    #[test]
+    fn test_encoding_bytes_per_pixel_matches_channels_times_dtype() {
+        // For non-packed encodings: bpp == channels * dtype.element_size()
+        for enc in [
+            ImageEncoding::Mono8,
+            ImageEncoding::Mono16,
+            ImageEncoding::Rgb8,
+            ImageEncoding::Bgr8,
+            ImageEncoding::Rgba8,
+            ImageEncoding::Bgra8,
+            ImageEncoding::Mono32F,
+            ImageEncoding::Rgb32F,
+            ImageEncoding::Depth16,
+        ] {
+            let expected = enc.channels() * enc.tensor_dtype().element_size() as u32;
+            assert_eq!(
+                enc.bytes_per_pixel(),
+                expected,
+                "{:?}: bpp {} != channels({}) * dtype_size({})",
+                enc,
+                enc.bytes_per_pixel(),
+                enc.channels(),
+                enc.tensor_dtype().element_size()
+            );
+        }
+    }
+
+    #[test]
+    fn test_encoding_default_is_rgb8() {
+        let d = ImageEncoding::default();
+        assert_eq!(d, ImageEncoding::Rgb8);
+        assert_ne!(d, ImageEncoding::Mono8);
     }
 
     #[test]

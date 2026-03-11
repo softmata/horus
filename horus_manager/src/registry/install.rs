@@ -113,9 +113,8 @@ impl RegistryClient {
                 "System packages not supported via horus pkg install"
             )),
             PackageSource::Path { .. } => Err(anyhow!(
-                "Path dependencies should be added via native build tools.\n\
-                     For Rust: cargo add --path <path>\n\
-                     For Python: pip install -e <path>"
+                "Path dependencies should be added to horus.toml [dependencies].\n\
+                     Example: my-lib = {{ source = \"path\", path = \"../my-lib\" }}"
             )),
         }
     }

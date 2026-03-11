@@ -114,8 +114,8 @@ impl Scheduler {
             })?;
 
         let session_dir = scheduler_path.parent().unwrap_or(&scheduler_path);
-        let mut scheduler =
-            Self::new().with_name(&format!("Replay({})", scheduler_recording.session_name));
+        let mut scheduler = Self::new();
+        scheduler.scheduler_name = format!("Replay({})", scheduler_recording.session_name);
 
         scheduler.replay = Some(ReplayState {
             nodes: HashMap::new(),

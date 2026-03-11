@@ -82,7 +82,7 @@
 //! ```rust,ignore
 //! let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 //! scheduler.add(sensor).order(0).rate(100_u64.hz()).build()?;
-//! scheduler.add(controller).order(1).budget(200_u64.us()).build()?;
+//! scheduler.add(controller).order(1).rate(200_u64.hz()).build()?;
 //! scheduler.add(planner).order(5).compute().build()?;
 //! scheduler.add(logger).order(10).async_io().rate(1_u64.hz()).build()?;
 //! scheduler.run()?;
@@ -125,9 +125,8 @@
 //! }
 //! scheduler.add(MotorCtrl::new())
 //!     .order(0)
-//!     .budget(200_u64.us())        // 200μs tick budget (auto-marks as RT)
-//!     .deadline(1_u64.ms())        // 1ms deadline
-//!     .on_miss(Miss::Skip)     // skip tick on deadline miss
+//!     .rate(1000_u64.hz())         // 1kHz → auto-derives budget (80%) & deadline (95%)
+//!     .on_miss(Miss::Skip)         // skip tick on deadline miss
 //!     .build()?;
 //! ```
 //!

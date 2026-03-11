@@ -7,7 +7,6 @@ mod tests;
 
 // Re-export all public types and functions
 pub use helpers::generate_signing_keypair;
-pub(crate) use helpers::remove_dep_from_pyproject_toml;
 
 use crate::config::CARGO_TOML;
 use crate::dependency_resolver::{DependencySpec, PackageProvider};

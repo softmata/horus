@@ -212,8 +212,6 @@ fn main() -> Result<()> {
     scheduler.add(JointController::new()?)
         .order(1)
         .rate(200_u64.hz())
-        .budget(100_u64.us())          // 100μs max execution time
-        .deadline(500_u64.us())        // 500μs deadline
         .on_miss(Miss::Skip)       // Skip tick on deadline miss
         .build()?;
 

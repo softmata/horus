@@ -95,7 +95,7 @@ fn five_nodes_all_present_in_read_all() {
     for suffix in &["camera", "lidar", "motor", "gripper", "planner"] {
         let name = format!("{pfx}{suffix}");
         assert!(
-            all.iter().any(|p| p.name == name),
+            all.iter().any(|p| p.name() == name),
             "node '{}' not found in NodePresence::read_all()",
             name
         );
@@ -113,30 +113,30 @@ fn five_nodes_have_correct_pub_sub_topology() {
     // Camera publishes "image"
     let camera = all
         .iter()
-        .find(|p| p.name == format!("{pfx}camera"))
+        .find(|p| p.name() == format!("{pfx}camera"))
         .unwrap();
-    assert_eq!(camera.publishers.len(), 1);
-    assert_eq!(camera.publishers[0].topic_name, "image");
-    assert!(camera.subscribers.is_empty());
+    assert_eq!(camera.publishers().len(), 1);
+    assert_eq!(camera.publishers()[0].topic_name, "image");
+    assert!(camera.subscribers().is_empty());
 
     // Motor subscribes to "cmd_vel"
     let motor = all
         .iter()
-        .find(|p| p.name == format!("{pfx}motor"))
+        .find(|p| p.name() == format!("{pfx}motor"))
         .unwrap();
-    assert!(motor.publishers.is_empty());
-    assert_eq!(motor.subscribers.len(), 1);
-    assert_eq!(motor.subscribers[0].topic_name, "cmd_vel");
+    assert!(motor.publishers().is_empty());
+    assert_eq!(motor.subscribers().len(), 1);
+    assert_eq!(motor.subscribers()[0].topic_name, "cmd_vel");
 
     // Planner: subscribes to "image", publishes "cmd_vel"
     let planner = all
         .iter()
-        .find(|p| p.name == format!("{pfx}planner"))
+        .find(|p| p.name() == format!("{pfx}planner"))
         .unwrap();
-    assert_eq!(planner.publishers.len(), 1);
-    assert_eq!(planner.publishers[0].topic_name, "cmd_vel");
-    assert_eq!(planner.subscribers.len(), 1);
-    assert_eq!(planner.subscribers[0].topic_name, "image");
+    assert_eq!(planner.publishers().len(), 1);
+    assert_eq!(planner.publishers()[0].topic_name, "cmd_vel");
+    assert_eq!(planner.subscribers().len(), 1);
+    assert_eq!(planner.subscribers()[0].topic_name, "image");
 }
 
 #[test]
@@ -149,11 +149,11 @@ fn all_nodes_have_current_process_pid() {
     let all = NodePresence::read_all();
 
     for name in rt.node_names() {
-        let node = all.iter().find(|p| p.name == name).unwrap();
+        let node = all.iter().find(|p| p.name() == name).unwrap();
         assert_eq!(
-            node.pid, my_pid,
+            node.pid(), my_pid,
             "node '{}' should have PID {} (current process), got {}",
-            name, my_pid, node.pid
+            name, my_pid, node.pid()
         );
     }
 }
@@ -183,7 +183,7 @@ fn removed_node_disappears_from_discovery() {
 
     let all = NodePresence::read_all();
     assert!(
-        !all.iter().any(|p| p.name == camera_name),
+        !all.iter().any(|p| p.name() == camera_name),
         "camera node must no longer appear after presence file removal"
     );
 
@@ -191,7 +191,7 @@ fn removed_node_disappears_from_discovery() {
     for suffix in &["lidar", "motor", "gripper", "planner"] {
         let name = format!("{pfx}{suffix}");
         assert!(
-            all.iter().any(|p| p.name == name),
+            all.iter().any(|p| p.name() == name),
             "{name} must still exist"
         );
     }
@@ -216,14 +216,14 @@ fn dynamically_added_node_appears_in_discovery() {
     rt.refresh_discovery();
 
     let all = NodePresence::read_all();
-    let new_node = all.iter().find(|p| p.name == new_name);
+    let new_node = all.iter().find(|p| p.name() == new_name);
     assert!(
         new_node.is_some(),
         "dynamically added node must appear in discovery"
     );
     let new_node = new_node.unwrap();
-    assert_eq!(new_node.publishers.len(), 1);
-    assert_eq!(new_node.publishers[0].topic_name, "depth");
+    assert_eq!(new_node.publishers().len(), 1);
+    assert_eq!(new_node.publishers()[0].topic_name, "depth");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

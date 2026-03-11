@@ -258,9 +258,33 @@ impl RegistryClient {
 
         match &manifest.manifest_format {
             ManifestFormat::HorusToml => {
-                // Dependencies now live in native build files (Cargo.toml, pyproject.toml).
-                // horus.toml no longer has a [dependencies] section.
-                // Path dependency checks are handled by the Cargo.toml branch below.
+                // Check for path dependencies in horus.toml — cannot publish those
+                use crate::manifest::{HorusManifest, HORUS_TOML};
+                let horus_path = current_dir.join(HORUS_TOML);
+                if horus_path.exists() {
+                    if let Ok((horus_manifest, _)) = HorusManifest::load_from(&horus_path) {
+                        let mut has_path_deps = false;
+                        for (dep_name, dep_value) in &horus_manifest.dependencies {
+                            if dep_value.is_path() {
+                                println!(
+                                    "\n{} Cannot publish package with path dependencies!",
+                                    "Error:".red()
+                                );
+                                println!("  Path dependency: {}", dep_name);
+                                has_path_deps = true;
+                            }
+                        }
+                        if has_path_deps {
+                            println!(
+                                "\n{}",
+                                "Path dependencies are not reproducible and cannot be published."
+                                    .yellow()
+                            );
+                            println!("{}", "Please publish path dependencies to the registry first, then use version requirements in horus.toml.".yellow());
+                            return Err(anyhow!("Cannot publish package with path dependencies"));
+                        }
+                    }
+                }
             }
             ManifestFormat::CargoToml => {
                 let cargo_path = current_dir.join(CARGO_TOML);
@@ -990,6 +1014,35 @@ impl RegistryClient {
         // Collect names already tracked to avoid duplicates
         let mut tracked_names: std::collections::HashSet<String> =
             locked_packages.iter().map(|p| p.name.clone()).collect();
+
+        // Read dependencies from horus.toml (primary source of truth)
+        {
+            use crate::manifest::{HorusManifest, DepSource, HORUS_TOML};
+            let horus_path = PathBuf::from(HORUS_TOML);
+            if horus_path.exists() {
+                if let Ok((horus_manifest, _)) = HorusManifest::load_from(&horus_path) {
+                    for (dep_name, dep_value) in &horus_manifest.dependencies {
+                        if tracked_names.contains(dep_name) {
+                            continue;
+                        }
+                        let source = match dep_value.effective_source() {
+                            DepSource::CratesIo => PackageSource::CratesIO,
+                            DepSource::PyPI => PackageSource::PyPI,
+                            DepSource::Registry => PackageSource::Registry,
+                            DepSource::Path | DepSource::Git => continue,
+                            DepSource::System => PackageSource::System,
+                        };
+                        tracked_names.insert(dep_name.clone());
+                        locked_packages.push(LockedPackage {
+                            name: dep_name.clone(),
+                            version: dep_value.version().unwrap_or("*").to_string(),
+                            checksum: String::new(),
+                            source,
+                        });
+                    }
+                }
+            }
+        }
 
         // Parse Cargo.lock for pinned Rust dependencies
         let cargo_lock_path = PathBuf::from("Cargo.lock");

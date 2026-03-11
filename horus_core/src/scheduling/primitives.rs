@@ -62,8 +62,8 @@ pub(crate) enum DeadlineAction {
     Warn,
     /// Pause the node for one tick.
     Skip,
-    /// Call `enter_safe_state()` on the node, continue ticking in degraded mode.
-    Degrade,
+    /// Call `enter_safe_state()` on the node, continue ticking in safe mode.
+    SafeMode,
     /// Trigger emergency stop — caller must stop the scheduler.
     EmergencyStop,
 }
@@ -125,7 +125,7 @@ impl TimingEnforcer {
             let action = match miss {
                 Miss::Warn => DeadlineAction::Warn,
                 Miss::Skip => DeadlineAction::Skip,
-                Miss::Degrade => DeadlineAction::Degrade,
+                Miss::SafeMode => DeadlineAction::SafeMode,
                 Miss::Stop => DeadlineAction::EmergencyStop,
             };
             Some(DeadlineMissResult {
@@ -265,7 +265,7 @@ mod tests {
         let policies_and_expected = [
             (Miss::Warn, "Warn"),
             (Miss::Skip, "Skip"),
-            (Miss::Degrade, "Degrade"),
+            (Miss::SafeMode, "SafeMode"),
             (Miss::Stop, "EmergencyStop"),
         ];
 

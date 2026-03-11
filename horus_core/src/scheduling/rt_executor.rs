@@ -181,10 +181,10 @@ impl RtExecutor {
                     DeadlineAction::Skip => {
                         node.is_paused = true;
                     }
-                    DeadlineAction::Degrade => {
+                    DeadlineAction::SafeMode => {
                         if monitors.verbose {
                             print_line(&format!(
-                                "[RT-thread] Degrade: '{}' entering safe state after deadline miss",
+                                "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
                                 node.name
                             ));
                         }

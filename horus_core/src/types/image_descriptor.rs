@@ -171,21 +171,34 @@ mod tests {
     use crate::types::{Device, TensorDtype};
 
     #[test]
-    fn test_image_size() {
-        assert_eq!(
-            std::mem::size_of::<ImageDescriptor>(),
-            224,
-            "ImageDescriptor must be exactly 224 bytes"
-        );
+    fn test_image_size_and_alignment() {
+        let size = std::mem::size_of::<ImageDescriptor>();
+        let align = std::mem::align_of::<ImageDescriptor>();
+        assert_eq!(size, 224, "ImageDescriptor must be exactly 224 bytes");
+        // Alignment must be 8 (from u64 fields in inner Tensor)
+        assert_eq!(align, 8);
+        // Size is multiple of alignment (no trailing padding)
+        assert_eq!(size % align, 0);
+        // 224 = 32 * 7, divisible by common cache-line fractions
+        assert_eq!(size % 32, 0);
     }
 
     #[test]
     fn test_image_pod() {
-        // Verify Pod by roundtripping through bytes
-        let img = ImageDescriptor::default();
+        // Verify Pod by roundtripping a configured descriptor through bytes
+        let tensor = Tensor::new(1, 42, 99, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
+        let mut img = ImageDescriptor::new(tensor, ImageEncoding::Rgb8);
+        img.set_frame_id("test_cam");
+        img.set_timestamp_ns(1_000_000_000);
+
         let bytes: &[u8] = bytemuck::bytes_of(&img);
         assert_eq!(bytes.len(), 224);
-        let _recovered: &ImageDescriptor = bytemuck::from_bytes(bytes);
+        let recovered: &ImageDescriptor = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.height(), 480);
+        assert_eq!(recovered.width(), 640);
+        assert_eq!(recovered.encoding(), ImageEncoding::Rgb8);
+        assert_eq!(recovered.frame_id(), "test_cam");
+        assert_eq!(recovered.timestamp_ns(), 1_000_000_000);
     }
 
     #[test]

@@ -112,6 +112,7 @@ pub fn make_test_topic(
         } else {
             "5m ago".to_string()
         },
+        is_system: false,
     }
 }
 

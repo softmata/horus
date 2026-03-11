@@ -26,7 +26,7 @@ fn harness_add_node_discoverable() {
     );
 
     let all = NodePresence::read_all();
-    let found = all.iter().any(|p| p.name == "harness_smoke_node");
+    let found = all.iter().any(|p| p.name() == "harness_smoke_node");
     assert!(found, "harness_smoke_node not found in read_all()");
 }
 
@@ -76,14 +76,14 @@ fn harness_sensor_preset() {
     assert!(rt.wait_ready(2_u64.secs()));
 
     let all = NodePresence::read_all();
-    let node = all.iter().find(|p| p.name == "harness_lidar_node");
+    let node = all.iter().find(|p| p.name() == "harness_lidar_node");
     assert!(node.is_some(), "harness_lidar_node not found");
 
     let node = node.unwrap();
-    assert_eq!(node.publishers.len(), 1);
-    assert_eq!(node.publishers[0].topic_name, "scan_data");
-    assert_eq!(node.publishers[0].type_name, "LaserScan");
-    assert_eq!(node.pid, std::process::id());
+    assert_eq!(node.publishers().len(), 1);
+    assert_eq!(node.publishers()[0].topic_name, "scan_data");
+    assert_eq!(node.publishers()[0].type_name, "LaserScan");
+    assert_eq!(node.pid(), std::process::id());
 }
 
 /// Verify topic file creation under horus_topic/ subdirectory.
@@ -128,14 +128,22 @@ fn harness_blackbox_injection() {
     assert!(content.contains("hello from harness"));
 }
 
-/// Verify log injection does not panic.
+/// Verify log injection stores entries retrievable from the global log buffer.
 #[test]
 fn harness_log_injection() {
+    use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
+
     let rt = HorusTestRuntime::new();
     rt.inject_log("test_node", "info", "harness log entry");
     rt.inject_log("test_node", "error", "harness error entry");
     rt.inject_log("test_node", "warning", "harness warning entry");
-    // If we get here without panicking, the log buffer accepts our entries.
+
+    let logs = GLOBAL_LOG_BUFFER.for_node("test_node");
+    assert!(
+        logs.len() >= 3,
+        "Expected at least 3 log entries for test_node, got {}",
+        logs.len()
+    );
 }
 
 /// Verify multi-node scenario with publisher/subscriber graph.
@@ -160,7 +168,7 @@ fn harness_multi_node() {
     assert_eq!(rt.node_names().len(), 3);
 
     let all = NodePresence::read_all();
-    let names: Vec<&str> = all.iter().map(|p| p.name.as_str()).collect();
+    let names: Vec<&str> = all.iter().map(|p| p.name()).collect();
 
     for expected in &["harness_camera", "harness_detector", "harness_arm"] {
         assert!(
@@ -172,11 +180,11 @@ fn harness_multi_node() {
     }
 
     // Verify the processor has both publishers and subscribers.
-    let detector = all.iter().find(|p| p.name == "harness_detector").unwrap();
-    assert_eq!(detector.publishers.len(), 1);
-    assert_eq!(detector.subscribers.len(), 1);
-    assert_eq!(detector.publishers[0].topic_name, "detections");
-    assert_eq!(detector.subscribers[0].topic_name, "image");
+    let detector = all.iter().find(|p| p.name() == "harness_detector").unwrap();
+    assert_eq!(detector.publishers().len(), 1);
+    assert_eq!(detector.subscribers().len(), 1);
+    assert_eq!(detector.publishers()[0].topic_name, "detections");
+    assert_eq!(detector.subscribers()[0].topic_name, "image");
 }
 
 /// Verify builder pattern methods on TestNodeConfig.
@@ -197,16 +205,16 @@ fn harness_builder_pattern() {
     let all = NodePresence::read_all();
     let node = all
         .iter()
-        .find(|p| p.name == "harness_builder_node")
+        .find(|p| p.name() == "harness_builder_node")
         .expect("harness_builder_node not found");
 
-    assert_eq!(node.scheduler.as_deref(), Some("test_scheduler"));
-    assert_eq!(node.rate_hz, Some(50.0));
-    assert_eq!(node.priority, 42);
-    assert_eq!(node.publishers.len(), 1);
-    assert_eq!(node.subscribers.len(), 1);
-    assert_eq!(node.publishers[0].topic_name, "output_a");
-    assert_eq!(node.subscribers[0].topic_name, "input_b");
+    assert_eq!(node.scheduler(), Some("test_scheduler"));
+    assert_eq!(node.rate_hz(), Some(50.0));
+    assert_eq!(node.priority(), 42);
+    assert_eq!(node.publishers().len(), 1);
+    assert_eq!(node.subscribers().len(), 1);
+    assert_eq!(node.publishers()[0].topic_name, "output_a");
+    assert_eq!(node.subscribers()[0].topic_name, "input_b");
 }
 
 /// Verify that the actuator preset works.
@@ -224,13 +232,13 @@ fn harness_actuator_preset() {
     let all = NodePresence::read_all();
     let node = all
         .iter()
-        .find(|p| p.name == "harness_motor")
+        .find(|p| p.name() == "harness_motor")
         .expect("harness_motor not found");
 
-    assert!(node.publishers.is_empty());
-    assert_eq!(node.subscribers.len(), 1);
-    assert_eq!(node.subscribers[0].topic_name, "cmd_vel");
-    assert_eq!(node.subscribers[0].type_name, "Twist");
+    assert!(node.publishers().is_empty());
+    assert_eq!(node.subscribers().len(), 1);
+    assert_eq!(node.subscribers()[0].topic_name, "cmd_vel");
+    assert_eq!(node.subscribers()[0].type_name, "Twist");
 }
 
 /// Verify that multiple blackbox events accumulate in the WAL.

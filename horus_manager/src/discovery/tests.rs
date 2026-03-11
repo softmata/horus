@@ -131,6 +131,7 @@ impl TestPresenceWriter {
         }).collect()
     }
 
+    #[allow(dead_code)]
     fn invalidate_cache(&self) {
         if let Ok(mut cache) = DISCOVERY_CACHE.write() {
             cache.nodes_last_updated = std::time::Instant::now() - 10_u64.secs();
@@ -178,6 +179,29 @@ fn test_node_status_creation() {
     assert_eq!(node.priority, 10);
     assert_eq!(node.process_id, 1234);
     assert_eq!(node.tick_count, 100);
+    assert_eq!(node.error_count, 0);
+    assert_eq!(node.actual_rate_hz, 50);
+    assert!((node.cpu_usage - 25.5).abs() < f32::EPSILON);
+    assert_eq!(node.memory_usage, 1024);
+    assert_eq!(node.command_line, "horus run test");
+    assert_eq!(node.working_dir, "/home/test");
+    assert_eq!(node.scheduler_name, "default");
+    assert!(node.publishers.is_empty());
+    assert!(node.subscribers.is_empty());
+
+    // Debug impl should contain all key fields
+    let debug = format!("{:?}", node);
+    assert!(debug.contains("test_node"), "Debug should contain name");
+    assert!(debug.contains("Running"), "Debug should contain status");
+    assert!(debug.contains("Healthy"), "Debug should contain health");
+
+    // Clone preserves all fields
+    let cloned = node.clone();
+    assert_eq!(cloned.name, node.name);
+    assert_eq!(cloned.process_id, node.process_id);
+    assert_eq!(cloned.category, node.category);
+    assert_eq!(cloned.tick_count, node.tick_count);
+    assert_eq!(cloned.scheduler_name, node.scheduler_name);
 }
 
 #[test]
@@ -253,9 +277,33 @@ fn test_shared_memory_info_creation() {
     assert_eq!(shm.size_bytes, 4096);
     assert!(shm.active);
     assert_eq!(shm.accessing_processes.len(), 2);
+    assert_eq!(shm.accessing_processes[0], 1234);
+    assert_eq!(shm.accessing_processes[1], 5678);
     assert_eq!(shm.publishers.len(), 1);
+    assert_eq!(shm.publishers[0], "localization");
     assert_eq!(shm.subscribers.len(), 2);
+    assert_eq!(shm.subscribers[0], "navigation");
+    assert_eq!(shm.subscribers[1], "visualization");
     assert!((shm.message_rate_hz - 30.0).abs() < 0.001);
+    assert_eq!(shm.status, TopicStatus::Active);
+    assert_eq!(shm.age_string, "0s ago");
+    assert!(!shm.is_system);
+    assert!(shm.message_type.is_some());
+    assert_eq!(shm.message_type.as_deref(), Some("PoseMsg"));
+    assert!(shm.last_modified.is_some());
+
+    // Total participant count should match accessing_processes
+    let total_participants = shm.publishers.len() + shm.subscribers.len();
+    assert!(
+        total_participants <= shm.accessing_processes.len() + 10, // allow headroom
+        "participant count ({}) should be reasonable relative to accessing processes ({})",
+        total_participants, shm.accessing_processes.len()
+    );
+
+    // Debug output should contain the topic name
+    let debug = format!("{:?}", shm);
+    assert!(debug.contains("robot.pose"), "Debug should contain topic name");
+    assert!(debug.contains("Active"), "Debug should contain status");
 }
 
 #[test]
@@ -279,6 +327,18 @@ fn test_shared_memory_info_inactive() {
     assert!(shm.accessing_processes.is_empty());
     assert!(shm.message_type.is_none());
     assert!(shm.last_modified.is_none());
+    assert_eq!(shm.status, TopicStatus::Stale);
+    assert_eq!(shm.age_string, "unknown");
+    assert!(shm.publishers.is_empty());
+    assert!(shm.subscribers.is_empty());
+    assert!((shm.message_rate_hz - 0.0).abs() < f32::EPSILON);
+
+    // Inactive topics should be consistent: no rate, no processes, stale status
+    assert_eq!(shm.status, TopicStatus::Stale, "inactive topic should be Stale");
+    assert!(
+        shm.accessing_processes.is_empty(),
+        "inactive topic should have no accessing processes"
+    );
 }
 
 // =====================
@@ -293,6 +353,16 @@ fn test_topic_info_creation() {
 
     assert_eq!(topic.topic, "camera.image");
     assert_eq!(topic.type_name, "sensor_msgs::Image");
+
+    // Verify Clone preserves both fields
+    let cloned = topic.clone();
+    assert_eq!(cloned.topic, topic.topic);
+    assert_eq!(cloned.type_name, topic.type_name);
+
+    // Verify Debug output contains fields
+    let debug = format!("{:?}", topic);
+    assert!(debug.contains("camera.image"), "Debug should contain topic name");
+    assert!(debug.contains("sensor_msgs::Image"), "Debug should contain type name");
 }
 
 // =====================
@@ -697,9 +767,25 @@ fn test_node_status_clone() {
     };
 
     let cloned = node.clone();
+    // Verify all fields are deeply equal
     assert_eq!(cloned.name, node.name);
     assert_eq!(cloned.status, node.status);
+    assert_eq!(cloned.priority, node.priority);
+    assert_eq!(cloned.process_id, node.process_id);
+    assert_eq!(cloned.command_line, node.command_line);
+    assert_eq!(cloned.working_dir, node.working_dir);
+    assert!((cloned.cpu_usage - node.cpu_usage).abs() < f32::EPSILON);
+    assert_eq!(cloned.memory_usage, node.memory_usage);
+    assert_eq!(cloned.start_time, node.start_time);
+    assert_eq!(cloned.scheduler_name, node.scheduler_name);
+    assert_eq!(cloned.category, node.category);
+    assert_eq!(cloned.tick_count, node.tick_count);
+    assert_eq!(cloned.error_count, node.error_count);
+    assert_eq!(cloned.actual_rate_hz, node.actual_rate_hz);
     assert_eq!(cloned.publishers.len(), node.publishers.len());
+    assert_eq!(cloned.publishers[0].topic, "pub");
+    assert_eq!(cloned.publishers[0].type_name, "Msg");
+    assert_eq!(cloned.subscribers.len(), 0);
 }
 
 #[test]
@@ -720,39 +806,66 @@ fn test_shared_memory_info_clone() {
     };
 
     let cloned = shm.clone();
+    // Verify all fields deeply
     assert_eq!(cloned.topic_name, shm.topic_name);
-    assert_eq!(cloned.accessing_processes.len(), 3);
-    assert_eq!(cloned.subscribers.len(), 2);
+    assert_eq!(cloned.size_bytes, shm.size_bytes);
+    assert_eq!(cloned.active, shm.active);
+    assert_eq!(cloned.accessing_processes, vec![1, 2, 3]);
+    assert_eq!(cloned.message_type, shm.message_type);
+    assert_eq!(cloned.publishers, vec!["pub1"]);
+    assert_eq!(cloned.subscribers, vec!["sub1", "sub2"]);
+    assert!((cloned.message_rate_hz - shm.message_rate_hz).abs() < f32::EPSILON);
+    assert_eq!(cloned.status, shm.status);
+    assert_eq!(cloned.age_string, shm.age_string);
+    assert_eq!(cloned.is_system, shm.is_system);
+    // last_modified is cloned (SystemTime implements Clone)
+    assert!(cloned.last_modified.is_some());
 }
 
 #[test]
 fn test_health_status_variants() {
-    // Ensure all health status variants work correctly
-    let node_healthy = NodeStatus {
-        name: "h".to_string(),
-        status: String::new(),
-        health: HealthStatus::Healthy,
-        priority: 0,
-        process_id: 0,
-        command_line: String::new(),
-        working_dir: String::new(),
-        cpu_usage: 0.0,
-        memory_usage: 0,
-        start_time: String::new(),
-        scheduler_name: String::new(),
-        category: ProcessCategory::Node,
-        tick_count: 0,
-        error_count: 0,
-        actual_rate_hz: 0,
-        publishers: vec![],
-        subscribers: vec![],
-    };
+    // Verify all HealthStatus variants can be assigned and distinguished
+    let variants = [
+        HealthStatus::Healthy,
+        HealthStatus::Warning,
+        HealthStatus::Error,
+        HealthStatus::Critical,
+    ];
 
-    assert!(
-        matches!(node_healthy.health, HealthStatus::Healthy),
-        "Expected Healthy, got {:?}",
-        node_healthy.health
-    );
+    // Each variant should have a distinct Debug representation
+    let debug_strs: Vec<String> = variants.iter().map(|v| format!("{:?}", v)).collect();
+    for (i, a) in debug_strs.iter().enumerate() {
+        for (j, b) in debug_strs.iter().enumerate() {
+            if i != j {
+                assert_ne!(a, b, "All health variants should have distinct Debug output");
+            }
+        }
+    }
+
+    // Verify a node can hold each variant
+    for variant in &variants {
+        let node = NodeStatus {
+            name: "h".to_string(),
+            status: String::new(),
+            health: variant.clone(),
+            priority: 0,
+            process_id: 0,
+            command_line: String::new(),
+            working_dir: String::new(),
+            cpu_usage: 0.0,
+            memory_usage: 0,
+            start_time: String::new(),
+            scheduler_name: String::new(),
+            category: ProcessCategory::Node,
+            tick_count: 0,
+            error_count: 0,
+            actual_rate_hz: 0,
+            publishers: vec![],
+            subscribers: vec![],
+        };
+        let debug = format!("{:?}", node.health);
+        assert!(!debug.is_empty(), "Health debug should not be empty");
+    }
 }
 
 #[test]
@@ -1336,6 +1449,25 @@ fn test_system_topic_detection() {
         is_system: false,
     };
     assert!(!user_shm.is_system);
+
+    // Verify system and user topics are distinguishable after clone
+    let system_clone = system_shm.clone();
+    let user_clone = user_shm.clone();
+    assert!(system_clone.is_system);
+    assert!(!user_clone.is_system);
+    assert_ne!(system_clone.topic_name, user_clone.topic_name);
+
+    // Verify Debug contains the system flag
+    let system_debug = format!("{:?}", system_shm);
+    assert!(
+        system_debug.contains("is_system: true"),
+        "System topic Debug should show is_system: true"
+    );
+    let user_debug = format!("{:?}", user_shm);
+    assert!(
+        user_debug.contains("is_system: false"),
+        "User topic Debug should show is_system: false"
+    );
 }
 
 // =====================

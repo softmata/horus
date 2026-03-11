@@ -204,9 +204,8 @@ async fn environments_response_contains_local_array() {
             "local env entry should have 'package_count' number, got: {}",
             entry
         );
-        // Note: 'dependencies' field was removed from the API response
-        // as part of the manifest separation (horus.toml is config-only,
-        // deps live in Cargo.toml/pyproject.toml).
+        // Note: 'dependencies' field is in horus.toml [dependencies] section,
+        // not in the API response.
     }
 }
 

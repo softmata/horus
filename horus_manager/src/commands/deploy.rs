@@ -548,8 +548,20 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
     Ok(())
 }
 
-/// Find the binary name from Cargo.toml
+/// Find the binary name from horus.toml, falling back to Cargo.toml
 fn find_binary_name() -> Option<String> {
+    // Try horus.toml first (single source of truth)
+    use crate::manifest::{HorusManifest, HORUS_TOML};
+    let manifest_path = Path::new(HORUS_TOML);
+    if manifest_path.exists() {
+        if let Ok((manifest, _)) = HorusManifest::load_from(manifest_path) {
+            if !manifest.package.name.is_empty() {
+                return Some(manifest.package.name.replace('-', "_"));
+            }
+        }
+    }
+
+    // Fall back to Cargo.toml (legacy or non-horus projects)
     let cargo_toml = Path::new(CARGO_TOML);
     if !cargo_toml.exists() {
         return None;

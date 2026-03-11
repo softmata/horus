@@ -791,7 +791,15 @@ nodes:
         std::fs::write(&path, "nodes: []").unwrap();
         // Empty nodes with dry_run should succeed (prints "No nodes defined")
         let result = run_launch(&path, true, None, 5);
-        result.unwrap();
+        assert!(
+            result.is_ok(),
+            "empty nodes launch with dry_run should succeed: {:?}",
+            result.err()
+        );
+        // Verify the YAML file still exists and was not modified
+        assert!(path.exists(), "launch file should not be deleted by dry run");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "nodes: []", "launch file should not be modified by dry run");
     }
 
     #[test]

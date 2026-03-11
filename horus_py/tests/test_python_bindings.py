@@ -378,9 +378,9 @@ class TestSchedulerConfig:
         from horus._horus import SchedulerConfig
         config = SchedulerConfig.minimal()
         config.tick_rate = 500.0
-        config.budget_enforcement = True
+        config.watchdog_timeout_ms = 500
         assert config.tick_rate == 500.0
-        assert config.budget_enforcement is True
+        assert config.watchdog_timeout_ms == 500
 
 
 # ============================================================================

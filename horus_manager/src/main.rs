@@ -6,7 +6,9 @@ use std::io;
 use std::path::PathBuf;
 
 // Use modules from the library instead of redeclaring them
-use horus_manager::{commands, monitor, monitor_tui, security};
+use horus_manager::commands;
+#[cfg(feature = "monitor")]
+use horus_manager::{monitor, monitor_tui, security};
 
 #[derive(Parser)]
 #[command(name = "horus")]
@@ -58,6 +60,20 @@ Plugins:
   enable            Enable a disabled plugin
   disable           Disable a plugin (keep installed but don't execute)
   verify            Verify integrity of installed plugins
+
+Development:
+  fmt               Format code (Rust + Python)
+  lint              Lint code (clippy + ruff/pylint)
+  doc               Generate documentation
+  bench             Run benchmarks
+  deps              Dependency insight (tree, why, outdated, audit)
+
+Maintenance:
+  doctor            Comprehensive ecosystem health check
+  upgrade           Upgrade horus CLI to latest version
+  shell             Open shell with horus environment
+  config            View/edit horus.toml settings
+  migrate           Migrate project to unified horus.toml format
 
 Publishing & Deploy:
   publish           Publish package to registry
@@ -413,6 +429,7 @@ enum Commands {
     },
 
     /// Monitor running HORUS nodes, topics, and system health
+    #[cfg(feature = "monitor")]
     #[command(visible_alias = "mon")]
     Monitor {
         /// Port for web interface (default: 3000)
@@ -488,6 +505,15 @@ enum Commands {
         /// Install as CLI plugin (defaults to global scope)
         #[arg(long = "plugin", conflicts_with = "driver")]
         plugin: bool,
+        /// Dependency source: crates.io, pypi, path, git, system, registry
+        #[arg(short = 's', long = "source")]
+        source: Option<String>,
+        /// Cargo/Python features to enable (e.g. --features derive,serde)
+        #[arg(short = 'F', long = "features", value_delimiter = ',')]
+        features: Option<Vec<String>>,
+        /// Add as dev-dependency
+        #[arg(long = "dev")]
+        dev: bool,
     },
 
     /// Remove a package, driver, or plugin
@@ -572,6 +598,122 @@ enum Commands {
         /// Output as JSON
         #[arg(long = "json")]
         json: bool,
+    },
+
+    // ── Development ──────────────────────────────────────────────────────
+    /// Format code (Rust + Python)
+    Fmt {
+        /// Check formatting without modifying files
+        #[arg(long = "check")]
+        check: bool,
+
+        /// Additional arguments passed to underlying tools
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Lint code (clippy + ruff/pylint)
+    Lint {
+        /// Auto-fix lint issues where possible
+        #[arg(long = "fix")]
+        fix: bool,
+
+        /// Also run Python type checker (mypy/pyright)
+        #[arg(long = "types")]
+        types: bool,
+
+        /// Additional arguments passed to underlying tools
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Generate documentation
+    Doc {
+        /// Open documentation in browser after generating
+        #[arg(long = "open")]
+        open: bool,
+
+        /// Additional arguments passed to underlying tools
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Run benchmarks
+    Bench {
+        /// Filter benchmarks by name
+        #[arg(value_name = "FILTER")]
+        filter: Option<String>,
+
+        /// Additional arguments passed to underlying tools
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Dependency insight (tree, why, outdated, audit)
+    Deps {
+        #[command(subcommand)]
+        command: DepsCommands,
+    },
+
+    // ── Maintenance ─────────────────────────────────────────────────────
+    /// Comprehensive ecosystem health check
+    Doctor {
+        /// Show detailed output for each check
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Upgrade horus CLI to latest version
+    Upgrade {
+        /// Check for updates without installing
+        #[arg(long = "check")]
+        check_only: bool,
+    },
+
+    /// Open shell with horus environment variables
+    Shell,
+
+    /// View/edit horus.toml settings
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+
+    /// Migrate project to unified horus.toml format
+    Migrate {
+        /// Show what would change without modifying
+        #[arg(short = 'n', long = "dry-run")]
+        dry_run: bool,
+
+        /// Skip confirmation prompts
+        #[arg(short = 'f', long = "force")]
+        force: bool,
+    },
+
+    /// Run a script defined in horus.toml [scripts]
+    #[command(visible_alias = "script")]
+    Scripts {
+        /// Script name to run (omit to list available scripts)
+        name: Option<String>,
+
+        /// Arguments to pass to the script
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+
+    /// Freeze environment (shortcut for `horus env freeze`)
+    Freeze {
+        /// Output file path (default: horus-freeze.toml)
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+
+        /// Publish environment to registry
+        #[arg(short = 'p', long = "publish")]
+        publish: bool,
     },
 
     // ── Publishing & Deploy ──────────────────────────────────────────────
@@ -1343,6 +1485,61 @@ enum MsgCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum DepsCommands {
+    /// Show dependency tree
+    Tree {
+        /// Additional arguments
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Explain why a dependency is included
+    Why {
+        /// Package name to trace
+        package: String,
+
+        /// Additional arguments
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Check for outdated dependencies
+    Outdated {
+        /// Additional arguments
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Security audit of dependencies
+    Audit {
+        /// Additional arguments
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Get a config value
+    Get {
+        /// Config key (dot-notation, e.g. package.name)
+        key: String,
+    },
+
+    /// Set a config value
+    Set {
+        /// Config key (dot-notation, e.g. package.name)
+        key: String,
+
+        /// Value to set
+        value: String,
+    },
+
+    /// List all config values
+    List,
+}
+
 /// Parse override argument in format "node.output=value"
 fn parse_override(s: &str) -> Result<(String, String, String), String> {
     let parts: Vec<&str> = s.splitn(2, '=').collect();
@@ -1592,6 +1789,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             Ok(())
         }
 
+        #[cfg(feature = "monitor")]
         Commands::Monitor {
             port,
             tui,
@@ -1837,6 +2035,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             target,
             driver,
             plugin,
+            source,
+            features,
+            dev,
         } => {
             // Parse name@version syntax (takes precedence over --ver)
             let (pkg_name, pkg_ver) = match name.find('@') {
@@ -1851,7 +2052,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             } else if driver {
                 commands::pkg::run_add(pkg_name, pkg_ver, true, false)
             } else {
-                commands::pkg::run_install(pkg_name, pkg_ver, global, target)
+                commands::pkg::run_install(pkg_name, pkg_ver, global, target, source, features, dev)
             }
         }
 
@@ -2051,6 +2252,78 @@ fn run_command(command: Commands) -> HorusResult<()> {
             custom_path: path,
             clear,
         }),
+
+        // ── Development commands ────────────────────────────────────────
+        Commands::Fmt { check, extra_args } => {
+            commands::fmt::run_fmt(check, extra_args).map_err(HorusError::from)
+        }
+
+        Commands::Lint { fix, types, extra_args } => {
+            commands::lint::run_lint(fix, types, extra_args).map_err(HorusError::from)
+        }
+
+        Commands::Doc { open, extra_args } => {
+            commands::doc::run_doc(open, extra_args).map_err(HorusError::from)
+        }
+
+        Commands::Bench { filter, extra_args } => {
+            commands::bench::run_bench(filter, extra_args).map_err(HorusError::from)
+        }
+
+        Commands::Deps { command } => match command {
+            DepsCommands::Tree { extra_args } => {
+                commands::deps::run_deps(commands::deps::DepsAction::Tree, extra_args)
+                    .map_err(HorusError::from)
+            }
+            DepsCommands::Why { package, extra_args } => {
+                commands::deps::run_deps(commands::deps::DepsAction::Why(package), extra_args)
+                    .map_err(HorusError::from)
+            }
+            DepsCommands::Outdated { extra_args } => {
+                commands::deps::run_deps(commands::deps::DepsAction::Outdated, extra_args)
+                    .map_err(HorusError::from)
+            }
+            DepsCommands::Audit { extra_args } => {
+                commands::deps::run_deps(commands::deps::DepsAction::Audit, extra_args)
+                    .map_err(HorusError::from)
+            }
+        },
+
+        // ── Maintenance commands ────────────────────────────────────────
+        Commands::Doctor { verbose, json } => {
+            commands::doctor::run_doctor(verbose, json).map_err(HorusError::from)
+        }
+
+        Commands::Upgrade { check_only } => {
+            commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)
+        }
+
+        Commands::Shell => {
+            commands::shell::run_shell().map_err(HorusError::from)
+        }
+
+        Commands::Config { command } => match command {
+            ConfigCommands::Get { key } => {
+                commands::config::run_config(commands::config::ConfigAction::Get(key))
+                    .map_err(HorusError::from)
+            }
+            ConfigCommands::Set { key, value } => {
+                commands::config::run_config(commands::config::ConfigAction::Set(key, value))
+                    .map_err(HorusError::from)
+            }
+            ConfigCommands::List => {
+                commands::config::run_config(commands::config::ConfigAction::List)
+                    .map_err(HorusError::from)
+            }
+        },
+
+        Commands::Migrate { dry_run, force } => {
+            commands::migrate::run_migrate(dry_run, force).map_err(HorusError::from)
+        }
+
+        Commands::Scripts { name, args } => commands::scripts::run_scripts(name, args),
+
+        Commands::Freeze { output, publish } => commands::env::run_freeze(output, publish),
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup

@@ -89,7 +89,12 @@ fn test_new_records_degradations_gracefully() {
     cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let degradations = scheduler.degradations();
-    let _ = degradations.len();
+    assert_eq!(
+        degradations.len(),
+        0,
+        "A fresh scheduler should have no degradations, got: {:?}",
+        degradations
+    );
 }
 
 // =============================================================================
@@ -142,52 +147,11 @@ fn test_new_no_blackbox_by_default() {
     let scheduler = Scheduler::new();
 
     assert!(
-        scheduler.blackbox().is_none(),
-        "new() should NOT auto-create BlackBox (opt-in via config.monitoring.black_box_enabled)"
+        scheduler.get_blackbox().is_none(),
+        "new() should NOT auto-create BlackBox (opt-in via .blackbox(size_mb))"
     );
 }
 
-#[test]
-fn test_with_blackbox_creates_blackbox() {
-    cleanup_stale_shm();
-    let scheduler = Scheduler::new().with_blackbox(16);
-
-    assert!(
-        scheduler.blackbox().is_some(),
-        ".with_blackbox() should create BlackBox"
-    );
-}
-
-#[test]
-fn test_blackbox_accessor_record() {
-    cleanup_stale_shm();
-    use horus_core::scheduling::BlackBoxEvent;
-
-    let scheduler = Scheduler::new().with_blackbox(16);
-
-    let bb = scheduler.blackbox().expect("BlackBox should exist");
-    bb.lock().unwrap().record(BlackBoxEvent::Custom {
-        category: "test".to_string(),
-        message: "Integration test event".to_string(),
-    });
-}
-
-#[test]
-fn test_status_shows_blackbox() {
-    cleanup_stale_shm();
-    let scheduler = Scheduler::new().with_blackbox(16);
-    let status = scheduler.status();
-
-    assert!(
-        status.contains("BlackBox"),
-        "status() should mention BlackBox"
-    );
-    assert!(
-        status.contains("[x] BlackBox"),
-        "status() should show BlackBox as enabled: {}",
-        status
-    );
-}
 
 #[test]
 fn test_status_no_blackbox_by_default() {

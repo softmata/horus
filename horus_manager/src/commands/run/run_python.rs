@@ -14,6 +14,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         cli_output::ICON_INFO.cyan()
     );
 
+    // Generate .horus/pyproject.toml from horus.toml if present
+    generate_pyproject_if_needed()?;
+
     // Check for Python interpreter
     let python_cmd = detect_python_interpreter()?;
 
@@ -134,7 +137,7 @@ pub(crate) fn detect_python_interpreter() -> Result<String> {
 /// Build PYTHONPATH for child processes without calling `env::set_var`.
 ///
 /// Returns the combined PYTHONPATH string to pass via `Command::env()`.
-pub(super) fn build_python_path() -> Result<String> {
+pub(crate) fn build_python_path() -> Result<String> {
     let current_dir = env::current_dir()?;
     let horus_packages = current_dir.join(".horus/packages");
 
@@ -274,6 +277,38 @@ if __name__ == "__main__":
 
     fs::write(&wrapper_path, wrapper_content)?;
     Ok(wrapper_path)
+}
+
+/// Generate `.horus/pyproject.toml` from `horus.toml` if the manifest exists.
+///
+/// This keeps the Python build config in sync with the unified manifest,
+/// mirroring what `cargo_gen` does for Rust projects.
+fn generate_pyproject_if_needed() -> Result<()> {
+    use crate::manifest::{HorusManifest, HORUS_TOML};
+
+    let manifest_path = Path::new(HORUS_TOML);
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+
+    let manifest = HorusManifest::load_from(manifest_path)
+        .map(|(m, _)| m)
+        .ok();
+
+    if let Some(manifest) = manifest {
+        // Only generate if there are Python deps
+        let has_python = manifest.dependencies.values().any(|v| v.is_pypi());
+        if has_python {
+            let project_dir = env::current_dir()?;
+            crate::pyproject_gen::generate(&manifest, &project_dir, false)?;
+            eprintln!(
+                "  {} Generated .horus/pyproject.toml",
+                cli_output::ICON_INFO.cyan()
+            );
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
