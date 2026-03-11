@@ -20,6 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use header::current_time_ms;
+use crate::core::DurationExt;
 
 // ============================================================================
 // Helpers
@@ -142,7 +143,7 @@ fn thread_id_hash_is_deterministic() {
 #[test]
 fn current_time_ms_advances() {
     let t1 = current_time_ms();
-    std::thread::sleep(Duration::from_millis(10));
+    std::thread::sleep(10_u64.ms());
     let t2 = current_time_ms();
     assert!(t2 > t1);
 }
@@ -644,7 +645,7 @@ fn topic_cross_thread_1p1c_spsc() {
     let consumer = thread::spawn(move || {
         let mut received = Vec::with_capacity(n as usize);
         b.wait(); // signal ready
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + 10_u64.secs();
         while received.len() < n as usize && Instant::now() < deadline {
             if let Some(v) = sub_t.recv() {
                 received.push(v);
@@ -703,7 +704,7 @@ fn topic_cross_thread_1p_multi_c_spmc() {
             thread::spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + 10_u64.secs();
                 loop {
                     match sub_t.recv() {
                         Some(v) => local.push(v),
@@ -726,7 +727,7 @@ fn topic_cross_thread_1p_multi_c_spmc() {
         pub_t.send(i);
     }
     // Give consumers time to drain — use a generous window for loaded CI systems
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(500_u64.ms());
 
     drop(pub_t);
     for h in consumers {
@@ -771,7 +772,7 @@ fn topic_cross_thread_multi_p_1c_mpsc() {
     barrier.wait();
 
     let mut received = Vec::with_capacity(total);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + 10_u64.secs();
     while received.len() < total && Instant::now() < deadline {
         if let Some(v) = sub_t.recv() {
             received.push(v);
@@ -784,7 +785,7 @@ fn topic_cross_thread_multi_p_1c_mpsc() {
         h.join().unwrap();
     }
     // Drain any remaining — give the ring time to flush
-    let drain_deadline = Instant::now() + Duration::from_secs(5);
+    let drain_deadline = Instant::now() + 5_u64.secs();
     while received.len() < total && Instant::now() < drain_deadline {
         if let Some(v) = sub_t.recv() {
             received.push(v);
@@ -835,7 +836,7 @@ fn topic_cross_thread_multi_p_multi_c_mpmc() {
             thread::spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
-                let deadline = Instant::now() + Duration::from_secs(15);
+                let deadline = Instant::now() + 15_u64.secs();
                 loop {
                     match sub_t.recv() {
                         Some(v) => {
@@ -1107,7 +1108,7 @@ fn topic_sustained_cross_thread_throughput() {
 
     let consumer = thread::spawn(move || {
         let mut count = 0u64;
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + 30_u64.secs();
         while count < n && Instant::now() < deadline {
             if sub_t.recv().is_some() {
                 count += 1;
@@ -1235,7 +1236,7 @@ fn migration_epoch_visible_across_clones() {
 #[test]
 fn check_migration_revalidates_epoch_after_concurrent_migration() {
     use std::sync::atomic::AtomicBool;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let name = unique("epoch_revalidate");
 
@@ -1276,7 +1277,7 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
     t2.send(1);
     let _ = t2.recv();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + 2_u64.secs();
     let mut iterations = 0usize;
     while Instant::now() < deadline {
         t2.check_migration_now();
@@ -1329,7 +1330,7 @@ fn concurrent_migration_no_livelock_16_threads() {
     use std::sync::atomic::AtomicU32;
     use std::sync::{Arc, Barrier};
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     const THREADS: usize = 16;
 
@@ -1371,7 +1372,7 @@ fn concurrent_migration_no_livelock_16_threads() {
         .collect();
 
     // All threads must finish within 10 seconds (livelock would hang indefinitely).
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + 10_u64.secs();
     for handle in handles {
         let _remaining = deadline.saturating_duration_since(Instant::now());
         // join() has no timeout, but the test runner will kill us if we truly livelock.
@@ -1501,9 +1502,9 @@ fn topic_name_with_dots() {
 }
 
 #[test]
-fn topic_name_with_slashes() {
-    let name = unique("camera/front/compressed");
-    let t: Topic<u32> = Topic::new(&name).expect("slashes");
+fn topic_name_with_dots() {
+    let name = unique("camera.front.compressed");
+    let t: Topic<u32> = Topic::new(&name).expect("dots");
     t.send(42);
     assert_eq!(t.recv(), Some(42));
 }
@@ -1651,7 +1652,7 @@ fn robotics_sensor_fusion_pipeline() {
                 accel: [0.0, 0.0, 9.81 + 0.01 * t.sin()],
                 gyro: [0.0, 0.0, 0.1 * (t * 0.5).sin()],
             });
-            std::thread::sleep(Duration::from_micros(100));
+            std::thread::sleep(100_u64.us());
         }
     });
 
@@ -1664,7 +1665,7 @@ fn robotics_sensor_fusion_pipeline() {
         let cmd_pub: Topic<CmdVel> = Topic::new(&cmd_name).expect("cmd pub");
         b.wait();
         let mut count = 0;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + 10_u64.secs();
         while count < n_ticks && Instant::now() < deadline {
             if let Some(imu) = imu_sub.recv() {
                 cmd_pub.send(CmdVel {
@@ -1686,7 +1687,7 @@ fn robotics_sensor_fusion_pipeline() {
         let cmd_sub: Topic<CmdVel> = Topic::new(&cmd_name).expect("cmd sub");
         b.wait();
         let mut count = 0;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + 10_u64.secs();
         while count < n_ticks && Instant::now() < deadline {
             if let Some(cmd) = cmd_sub.recv() {
                 assert!(cmd.linear >= 0.0);
@@ -1753,7 +1754,7 @@ fn robotics_multi_sensor_multi_actuator() {
         b.wait();
 
         let mut total = 0;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + 10_u64.secs();
         while total < 3 * n_msgs && Instant::now() < deadline {
             for (i, sub) in subs.iter().enumerate() {
                 if let Some(val) = sub.recv() {
@@ -1780,7 +1781,7 @@ fn robotics_multi_sensor_multi_actuator() {
                 let t: Topic<f64> = Topic::new(&n).expect("actuator");
                 b.wait();
                 let mut count = 0;
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
                     if t.recv().is_some() {
                         count += 1;
@@ -1802,7 +1803,7 @@ fn robotics_multi_sensor_multi_actuator() {
     let ctrl_total = controller.join().unwrap();
     done.store(true, Ordering::SeqCst);
     // Give actuators a moment to drain remaining messages
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(100_u64.ms());
     let actuator_totals: Vec<usize> = actuator_handles
         .into_iter()
         .map(|h| h.join().unwrap())
@@ -2253,7 +2254,7 @@ fn concurrent_read_latest_with_producer_spmc() {
             let d = done.clone();
             thread::spawn(move || {
                 b.wait();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
                     if r.try_recv().is_some() {
                         let prev = d.fetch_add(1, Ordering::Relaxed);
@@ -2280,7 +2281,7 @@ fn concurrent_read_latest_with_producer_spmc() {
                 b.wait();
                 let mut seen_count = 0u64;
                 let mut max_seen = 0u64;
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
                     if let Some(v) = r.read_latest() {
                         assert!(v <= n_messages, "Invalid value: {}", v);
@@ -2335,7 +2336,7 @@ fn concurrent_read_latest_with_producer_mpmc() {
             let d = done.clone();
             thread::spawn(move || {
                 b.wait();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
                     if r.try_recv().is_some() {
                         let prev = d.fetch_add(1, Ordering::Relaxed);
@@ -2364,7 +2365,7 @@ fn concurrent_read_latest_with_producer_mpmc() {
             thread::spawn(move || {
                 b.wait();
                 let mut seen = 0u64;
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
                     if let Some(v) = r.read_latest() {
                         assert!(v <= n_messages, "Invalid value: {}", v);
@@ -2432,7 +2433,7 @@ fn concurrent_migration_during_send_recv() {
         let t: Topic<u64> = Topic::new(&sub_name).expect("sub");
         b.wait();
         let mut received = Vec::with_capacity(n_messages as usize);
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + 30_u64.secs();
         while received.len() < n_messages as usize && Instant::now() < deadline {
             if let Some(v) = t.recv() {
                 received.push(v);
@@ -2460,7 +2461,7 @@ fn concurrent_migration_during_send_recv() {
                 for i in 0..50 {
                     let mode = modes[(id + i) % modes.len()];
                     let _ = t.force_migrate(mode);
-                    std::thread::sleep(Duration::from_millis(1));
+                    std::thread::sleep(1_u64.ms());
                 }
             })
         })
@@ -2563,7 +2564,7 @@ fn topic_cross_thread_1p1c_pre_initialized_99_percent() {
 
     let consumer = thread::spawn(move || {
         let mut received = Vec::with_capacity(n as usize);
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + 15_u64.secs();
         while received.len() < n as usize && Instant::now() < deadline {
             if let Some(v) = sub_t.recv() {
                 received.push(v);
@@ -2628,7 +2629,7 @@ fn topic_cross_thread_mpmc_pre_initialized_99_percent() {
             thread::spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
-                let deadline = Instant::now() + Duration::from_secs(15);
+                let deadline = Instant::now() + 15_u64.secs();
                 loop {
                     match sub_t.recv() {
                         Some(v) => {
@@ -2786,7 +2787,7 @@ fn shm_backend_cross_thread_no_crash() {
 
     let consumer = thread::spawn(move || {
         let mut received = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + 10_u64.secs();
         while received.len() < n as usize && Instant::now() < deadline {
             if let Some(v) = sub_t.recv() {
                 received.push(v);
@@ -3685,7 +3686,7 @@ fn dispatch_cross_thread_migrates_to_spsc_intra() {
     });
 
     // Give migration time
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
     pub_t.send(1);
 
     let mode = handle.join().unwrap();
@@ -3706,17 +3707,17 @@ fn dispatch_cross_thread_mpsc_mode() {
     let h1 = thread::spawn(move || {
         let pub_t: Topic<u64> = Topic::new(&send_name).expect("pub1");
         pub_t.send(1);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(100_u64.ms());
     });
 
     let send_name2 = name.clone();
     let h2 = thread::spawn(move || {
         let pub_t: Topic<u64> = Topic::new(&send_name2).expect("pub2");
         pub_t.send(2);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(100_u64.ms());
     });
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
     // Force migration check via recv
     let _ = sub_t.recv();
     let mode = sub_t.mode();
@@ -4068,7 +4069,7 @@ fn shm_no_partial_reads_cross_thread() {
                 let sub_t: Topic<[u64; 4]> = Topic::new(&sub_name).expect("sub");
                 let mut partial_reads = 0u64;
                 let mut total = 0u64;
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now() + 5_u64.secs();
                 while Instant::now() < deadline {
                     if let Some(v) = sub_t.try_recv() {
                         total += 1;
@@ -6377,7 +6378,7 @@ fn migration_lock_data_flows_during_migration() {
     let h2 = thread::spawn(move || {
         b2.wait();
         // Wait a bit for some messages to flow
-        std::thread::sleep(std::time::Duration::from_micros(50));
+        std::thread::sleep(50_u64.us());
         let _ = t2c.force_migrate(BackendMode::SpscShm);
     });
 
@@ -6459,7 +6460,7 @@ fn force_migrate_swaps_backend_and_epoch() {
 /// the process_epoch atomic (shared by all same-name handles in-process) is updated.
 /// Other handles detect this on their next check_migration_now.
 ///
-/// Robotics: all sensor nodes sharing "lidar/points" detect when one upgrades the backend.
+/// Robotics: all sensor nodes sharing "lidar.points" detect when one upgrades the backend.
 #[test]
 fn epoch_propagation_via_process_epoch() {
     let name = unique("epoch_prop");
@@ -6528,10 +6529,10 @@ fn cross_thread_spsc_to_spmc_migration() {
         for i in 1..=total_msgs {
             pub_t.send(i);
             if i % 50 == 0 {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(1_u64.ms());
             }
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(50_u64.ms());
         done_pub.store(true, Ordering::Release);
     });
 
@@ -6542,7 +6543,7 @@ fn cross_thread_spsc_to_spmc_migration() {
     let h_sub1 = thread::spawn(move || {
         let sub_t: Topic<u64> = Topic::new(&sub1_name).expect("sub1");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + 5_u64.secs();
         while std::time::Instant::now() < deadline {
             if let Some(v) = sub_t.recv() {
                 if v > 0 && v <= total_msgs {
@@ -6557,7 +6558,7 @@ fn cross_thread_spsc_to_spmc_migration() {
                 }
                 break;
             } else {
-                thread::sleep(Duration::from_micros(100));
+                thread::sleep(100_u64.us());
             }
         }
     });
@@ -6568,12 +6569,12 @@ fn cross_thread_spsc_to_spmc_migration() {
     let done2 = done.clone();
     let h_sub2 = thread::spawn(move || {
         // Wait for some messages to flow before joining
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(20_u64.ms());
 
         let sub_t: Topic<u64> = Topic::new(&sub2_name).expect("sub2");
         let _ = sub_t.recv(); // register as consumer, triggers SPSC → SPMC
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + 5_u64.secs();
         while std::time::Instant::now() < deadline {
             if let Some(v) = sub_t.recv() {
                 if v > 0 && v <= total_msgs {
@@ -6587,7 +6588,7 @@ fn cross_thread_spsc_to_spmc_migration() {
                 }
                 break;
             } else {
-                thread::sleep(Duration::from_micros(100));
+                thread::sleep(100_u64.us());
             }
         }
     });
@@ -6702,19 +6703,18 @@ fn epoch_increments_exactly_once_per_migration() {
 // Tests for topic naming: special characters, empty, long, unicode, slashes,
 // duplicate names sharing ring buffers.
 
-/// Slash-separated topic names work — simulates ROS2 namespaced topics.
-/// Linux: slashes create subdirectories under /dev/shm/horus/topics/.
-/// macOS: shm_open flattens to /horus_links/sensor_test which contains a slash.
+/// Dot-separated topic names work for namespaced topics.
+/// HORUS uses dots instead of slashes for cross-platform compatibility
+/// (slashes fail on macOS with shm_open).
 ///
-/// Robotics: ROS2 convention uses "/" for namespace separation,
-/// e.g. "/robot1/camera/rgb" or "links/sensor_test".
+/// Examples: "links.sensor_test", "robot1.camera.rgb"
 #[test]
-fn topic_name_with_slashes_works() {
-    let name = format!("links/slash_test_{}", std::process::id());
-    let t: Topic<u32> = Topic::new(&name).expect("Slash in topic name should work");
+fn topic_name_with_dots_for_namespaces_works() {
+    let name = format!("links.slash_test_{}", std::process::id());
+    let t: Topic<u32> = Topic::new(&name).expect("Dot in topic name should work");
     t.send(42);
     let val = t.recv();
-    assert_eq!(val, Some(42), "Should send/recv through slash-named topic");
+    assert_eq!(val, Some(42), "Should send/recv through dot-named topic");
 }
 
 /// Dot-separated topic names work — common alternative to slashes.
@@ -6894,7 +6894,7 @@ fn stress_100_concurrent_topics_sustained() {
             let topic: Topic<u64> = Topic::new(&name).expect("Topic creation failed");
 
             let mut received = 0u64;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let deadline = std::time::Instant::now() + 15_u64.secs();
 
             while std::time::Instant::now() < deadline && !done_flag.load(Ordering::Relaxed) {
                 if let Some(msg) = topic.recv() {
@@ -6923,7 +6923,7 @@ fn stress_100_concurrent_topics_sustained() {
 
     // Signal subscribers to stop
     done.store(true, Ordering::Relaxed);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(100_u64.ms());
 
     // Wait for subscribers
     for sub_h in sub_handles {
@@ -6975,7 +6975,7 @@ fn stress_1khz_sustained_single_topic() {
     let pub_sent = sent_count.clone();
     let pub_handle = std::thread::spawn(move || {
         let topic: Topic<u64> = Topic::new(&pub_name).unwrap();
-        let period = Duration::from_micros(1_000_000 / target_hz);
+        let period = (1_000_000 / target_hz).us();
         let start = Instant::now();
 
         for i in 0..total_msgs {
@@ -7024,7 +7024,7 @@ fn stress_1khz_sustained_single_topic() {
     let actual_hz = total_msgs as f64 / elapsed.as_secs_f64();
 
     // Give subscriber a moment to drain
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(200_u64.ms());
     done.store(true, Ordering::Relaxed);
     let _max_gap = sub_handle.join().expect("Subscriber panicked");
 
@@ -7140,7 +7140,7 @@ fn stress_mpmc_single_topic() {
         let topic_name = name.clone();
         handles.push(std::thread::spawn(move || {
             let topic: Topic<u64> = Topic::new(&topic_name).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + 10_u64.secs();
             while std::time::Instant::now() < deadline && !done_flag.load(Ordering::Relaxed) {
                 if topic.recv().is_some() {
                     recv.fetch_add(1, Ordering::Relaxed);
@@ -7157,7 +7157,7 @@ fn stress_mpmc_single_topic() {
     }
 
     // Give consumers time to drain
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(500_u64.ms());
     done.store(true, Ordering::Relaxed);
 
     // Wait for consumers
@@ -7283,11 +7283,11 @@ fn stress_producer_crash_recovery() {
         handle.join().expect("Producer thread panicked");
 
         // Brief pause to simulate restart delay
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(5_u64.ms());
     }
 
     // Let subscriber drain
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(200_u64.ms());
     done.store(true, Ordering::Relaxed);
     sub_handle.join().expect("Subscriber panicked");
 
@@ -7333,7 +7333,7 @@ fn stress_ring_buffer_saturation() {
     let pub_blocked = pub_blocked_count.clone();
     let pub_handle = std::thread::spawn(move || {
         let topic: Topic<u64> = Topic::new(&pub_name).unwrap();
-        let period = Duration::from_micros(1_000_000 / pub_hz);
+        let period = (1_000_000 / pub_hz).us();
         let block_threshold = period * 5; // >5x period means "blocked"
         let start = Instant::now();
         let mut sent = 0u64;
@@ -7361,7 +7361,7 @@ fn stress_ring_buffer_saturation() {
     let sub_done = done.clone();
     let sub_handle = std::thread::spawn(move || {
         let topic: Topic<u64> = Topic::new(&sub_name).unwrap();
-        let period = Duration::from_micros(1_000_000 / sub_hz);
+        let period = (1_000_000 / sub_hz).us();
         let mut received_seqs: Vec<u64> = Vec::new();
 
         while !sub_done.load(Ordering::Relaxed) {
@@ -7383,7 +7383,7 @@ fn stress_ring_buffer_saturation() {
     let actual_hz = sent as f64 / elapsed.as_secs_f64();
 
     // Give subscriber a moment to process remaining
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(200_u64.ms());
     done.store(true, Ordering::Relaxed);
     let received_seqs = sub_handle.join().expect("Subscriber panicked");
     let blocked = pub_blocked_count.load(Ordering::Relaxed);
@@ -7701,10 +7701,10 @@ fn topic_send_blocking_short_timeout() {
     let topic: Topic<u64> = Topic::with_capacity(&name, 1, None).unwrap();
     topic.send(1u64); // fill ring
     let start = Instant::now();
-    let result = topic.send_blocking(2u64, Duration::from_millis(1));
+    let result = topic.send_blocking(2u64, 1_u64.ms());
     assert_eq!(result, Err(SendBlockingError::Timeout));
     assert!(
-        start.elapsed() < Duration::from_secs(1),
+        start.elapsed() < 1_u64.secs(),
         "Should not block for too long"
     );
 }
@@ -7924,7 +7924,7 @@ fn crash_producer_panic_consumer_not_stuck() {
             Some(v) => received.push(v),
             None => break,
         }
-        if start.elapsed() > Duration::from_secs(2) {
+        if start.elapsed() > 2_u64.secs() {
             panic!("Consumer appears stuck after producer panic");
         }
     }
@@ -7955,7 +7955,7 @@ fn crash_consumer_panic_producer_continues() {
     });
 
     // Give consumer time to start
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(10_u64.ms());
 
     // Wait for panic
     let result = consumer_handle.join();
@@ -7965,7 +7965,7 @@ fn crash_consumer_panic_producer_continues() {
     let start = Instant::now();
     for i in 0..10u64 {
         topic.send(i);
-        if start.elapsed() > Duration::from_secs(2) {
+        if start.elapsed() > 2_u64.secs() {
             panic!("Producer stuck after consumer crash at message {}", i);
         }
     }
@@ -8020,7 +8020,7 @@ fn crash_one_producer_others_unaffected() {
         let t: Topic<u64> = Topic::new(&name_c).unwrap();
         for i in 0..5u64 {
             t.send(i);
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(5_u64.ms());
         }
     });
 
@@ -8045,7 +8045,7 @@ fn crash_one_producer_others_unaffected() {
             Some(_) => count += 1,
             None => break,
         }
-        if start.elapsed() > Duration::from_secs(2) {
+        if start.elapsed() > 2_u64.secs() {
             panic!("Consumer stuck after multi-producer crash");
         }
     }
@@ -8068,7 +8068,7 @@ fn crash_consumer_drops_producer_not_blocked() {
     let consumer = thread::spawn(move || {
         let t: Topic<u64> = Topic::new(&name_c).unwrap();
         for _ in 0..3 {
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(5_u64.ms());
             let _ = t.recv();
         }
         // t drops here — consumer gone
@@ -8080,8 +8080,8 @@ fn crash_consumer_drops_producer_not_blocked() {
     let start = Instant::now();
     for i in 0..20u64 {
         producer_topic.send(i);
-        thread::sleep(Duration::from_millis(2));
-        if start.elapsed() > Duration::from_secs(3) {
+        thread::sleep(2_u64.ms());
+        if start.elapsed() > 3_u64.secs() {
             panic!("Producer stuck at message {} after consumer drop", i);
         }
     }
@@ -8148,7 +8148,7 @@ fn crash_concurrent_send_recv_no_corruption() {
     let consumer = thread::spawn(move || {
         barrier_c.wait();
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(3) {
+        while start.elapsed() < 3_u64.secs() {
             if sub_t.try_recv().is_some() {
                 recv_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -8577,7 +8577,7 @@ fn partial_write_concurrent_writers_no_partial_data() {
         reader_barrier.wait();
         let mut corrupt_count = 0u64;
         let mut total = 0u64;
-        let deadline = Instant::now() + Duration::from_millis(200);
+        let deadline = Instant::now() + 200_u64.ms();
         while Instant::now() < deadline {
             if let Some(arr) = t.recv() {
                 total += 1;
@@ -8713,7 +8713,7 @@ fn corrupted_zero_length_vec_roundtrip() {
 fn send_blocking_succeeds_when_ring_has_space() {
     let name = unique("blocking_ok");
     let t: Topic<u64> = Topic::with_capacity(&name, 4, None).unwrap();
-    let result = t.send_blocking(42u64, Duration::from_millis(100));
+    let result = t.send_blocking(42u64, 100_u64.ms());
     assert_eq!(result, Ok(()));
     assert_eq!(t.recv(), Some(42u64));
 }
@@ -8726,18 +8726,18 @@ fn send_blocking_timeout_on_full_ring() {
     t.send(1u64); // fill ring
 
     let start = Instant::now();
-    let result = t.send_blocking(2u64, Duration::from_millis(5));
+    let result = t.send_blocking(2u64, 5_u64.ms());
     let elapsed = start.elapsed();
 
     assert_eq!(result, Err(SendBlockingError::Timeout));
     // Should have waited approximately the timeout duration
     assert!(
-        elapsed >= Duration::from_millis(1),
+        elapsed >= 1_u64.ms(),
         "Should have blocked for at least some time, got {:?}",
         elapsed
     );
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < 2_u64.secs(),
         "Should not block excessively, got {:?}",
         elapsed
     );
@@ -8754,12 +8754,12 @@ fn send_blocking_unblocks_when_consumer_drains() {
 
     // Spawn consumer that drains after a short delay
     let consumer = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(10_u64.ms());
         sub_t.recv()
     });
 
     // send_blocking should succeed once consumer drains
-    let result = pub_t.send_blocking(2u64, Duration::from_secs(2));
+    let result = pub_t.send_blocking(2u64, 2_u64.secs());
     assert_eq!(result, Ok(()), "send_blocking should succeed after drain");
 
     let received = consumer.join().unwrap();
@@ -8774,7 +8774,7 @@ fn send_blocking_multiple_timeouts_independent() {
     t.send(1u64); // fill ring
 
     for i in 0..3u64 {
-        let result = t.send_blocking(i + 100, Duration::from_millis(1));
+        let result = t.send_blocking(i + 100, 1_u64.ms());
         assert_eq!(
             result,
             Err(SendBlockingError::Timeout),
@@ -8797,7 +8797,7 @@ fn send_blocking_zero_duration_returns_immediately() {
 
     assert_eq!(result, Err(SendBlockingError::Timeout));
     assert!(
-        elapsed < Duration::from_millis(50),
+        elapsed < 50_u64.ms(),
         "Zero timeout should return near-instantly, got {:?}",
         elapsed
     );
@@ -8817,12 +8817,12 @@ fn send_blocking_no_deadlock_two_producers() {
 
     let h1 = thread::spawn(move || {
         barrier_c.wait();
-        t1.send_blocking(10u64, Duration::from_millis(50))
+        t1.send_blocking(10u64, 50_u64.ms())
     });
 
     let h2 = thread::spawn(move || {
         barrier.wait();
-        t2.send_blocking(20u64, Duration::from_millis(50))
+        t2.send_blocking(20u64, 50_u64.ms())
     });
 
     // Both should complete within a reasonable time — no deadlock.
@@ -8856,7 +8856,7 @@ fn send_blocking_serde_type() {
     let name = unique("blocking_serde");
     let t: Topic<String> = Topic::with_capacity(&name, 4, None).unwrap();
 
-    let result = t.send_blocking("hello".to_string(), Duration::from_millis(100));
+    let result = t.send_blocking("hello".to_string(), 100_u64.ms());
     assert_eq!(result, Ok(()));
     assert_eq!(t.recv(), Some("hello".to_string()));
 }
@@ -8868,7 +8868,7 @@ fn send_blocking_serde_type_timeout() {
     let t: Topic<String> = Topic::with_capacity(&name, 1, None).unwrap();
     t.send("occupy".to_string());
 
-    let result = t.send_blocking("blocked".to_string(), Duration::from_millis(5));
+    let result = t.send_blocking("blocked".to_string(), 5_u64.ms());
     assert_eq!(result, Err(SendBlockingError::Timeout));
 }
 
@@ -8884,7 +8884,7 @@ fn send_fire_and_forget_drops_on_full() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(100),
+        elapsed < 100_u64.ms(),
         "Fire-and-forget send should not block, took {:?}",
         elapsed
     );
@@ -8912,7 +8912,7 @@ fn send_blocking_cross_thread_producer_consumer() {
     // Consumer thread: drains messages after barrier
     let consumer = thread::spawn(move || {
         barrier_c.wait();
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(20_u64.ms());
         let mut count = 0u64;
         while sub_t.try_recv().is_some() {
             count += 1;
@@ -8922,7 +8922,7 @@ fn send_blocking_cross_thread_producer_consumer() {
 
     // Producer blocks waiting for space
     barrier.wait();
-    let result = pub_t.send_blocking(3u64, Duration::from_secs(2));
+    let result = pub_t.send_blocking(3u64, 2_u64.secs());
 
     consumer.join().unwrap();
 
@@ -9336,13 +9336,13 @@ fn spsc_ring_fast_producer_slow_consumer() {
     let consumer = thread::spawn(move || {
         let start = Instant::now();
         while recv_c.load(Ordering::Relaxed) < total_msgs
-            && start.elapsed() < Duration::from_secs(5)
+            && start.elapsed() < 5_u64.secs()
         {
             if r.try_recv().is_some() {
                 recv_c.fetch_add(1, Ordering::Relaxed);
             } else {
                 // Slow consumer: sleep a bit
-                thread::sleep(Duration::from_micros(10));
+                thread::sleep(10_u64.us());
             }
         }
     });

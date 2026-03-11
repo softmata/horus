@@ -133,6 +133,7 @@ impl RuntimeProfiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
 
     // ── NodeStats defaults ──
 
@@ -330,7 +331,7 @@ mod tests {
     #[test]
     fn test_profiler_record_creates_entry() {
         let mut profiler = RuntimeProfiler::new();
-        profiler.record("test_node", Duration::from_micros(100));
+        profiler.record("test_node", 100_u64.us());
         assert!(profiler.node_stats.contains_key("test_node"));
         assert_eq!(profiler.node_stats["test_node"].count, 1);
         assert_eq!(profiler.node_stats["test_node"].avg_us, 100.0);
@@ -339,9 +340,9 @@ mod tests {
     #[test]
     fn test_profiler_record_multiple_nodes() {
         let mut profiler = RuntimeProfiler::new();
-        profiler.record("node_a", Duration::from_micros(100));
-        profiler.record("node_b", Duration::from_micros(200));
-        profiler.record("node_a", Duration::from_micros(300));
+        profiler.record("node_a", 100_u64.us());
+        profiler.record("node_b", 200_u64.us());
+        profiler.record("node_a", 300_u64.us());
 
         assert_eq!(profiler.node_stats.len(), 2);
         assert_eq!(profiler.node_stats["node_a"].count, 2);
@@ -352,7 +353,7 @@ mod tests {
     fn test_profiler_disabled_ignores_records() {
         let mut profiler = RuntimeProfiler::new();
         profiler.disable();
-        profiler.record("test_node", Duration::from_micros(100));
+        profiler.record("test_node", 100_u64.us());
         assert!(profiler.node_stats.is_empty());
     }
 
@@ -360,18 +361,18 @@ mod tests {
     fn test_profiler_enable_disable_toggle() {
         let mut profiler = RuntimeProfiler::new();
         profiler.disable();
-        profiler.record("a", Duration::from_micros(10));
+        profiler.record("a", 10_u64.us());
         assert!(profiler.node_stats.is_empty());
 
         profiler.enable();
-        profiler.record("a", Duration::from_micros(10));
+        profiler.record("a", 10_u64.us());
         assert_eq!(profiler.node_stats["a"].count, 1);
     }
 
     #[test]
     fn test_profiler_record_node_failure() {
         let mut profiler = RuntimeProfiler::new();
-        profiler.record("node", Duration::from_micros(50));
+        profiler.record("node", 50_u64.us());
         profiler.record_node_failure("node");
         assert_eq!(profiler.node_stats["node"].failure_count, 1);
         // count=1, failures=1, total=2 → rate = 0.5
@@ -405,7 +406,7 @@ mod tests {
     #[test]
     fn test_profiler_record_large_duration() {
         let mut profiler = RuntimeProfiler::new();
-        profiler.record("slow", Duration::from_secs(10));
+        profiler.record("slow", 10_u64.secs());
         assert_eq!(profiler.node_stats["slow"].avg_us, 10_000_000.0);
     }
 }

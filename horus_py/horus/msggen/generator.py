@@ -101,7 +101,7 @@ def generate_message(
 
     Args:
         name: Message class name (e.g., "RobotStatus")
-        topic: Topic name (e.g., "robot/status")
+        topic: Topic name (e.g., "robot.status")
         fields: List of (field_name, field_type) tuples
         doc: Optional docstring
         output_dir: Where to write the generated file

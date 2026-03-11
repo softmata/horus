@@ -42,11 +42,18 @@ async fn handle_websocket(socket: WebSocket) {
         crate::config::WS_BROADCAST_INTERVAL_MS,
     ));
 
+    // Track the log buffer write index so we only send new entries each tick.
+    let mut last_log_idx =
+        horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
+
     loop {
         interval.tick().await;
 
+        // Capture current log index for this tick's delta query.
+        let current_log_idx = last_log_idx;
+
         // Gather all data in parallel
-        let (nodes_result, topics_result, graph_result) = tokio::join!(
+        let (nodes_result, topics_result, graph_result, logs_result) = tokio::join!(
             tokio::task::spawn_blocking(|| {
                 crate::discovery::discover_nodes()
                     .unwrap_or_default()
@@ -83,6 +90,9 @@ async fn handle_websocket(socket: WebSocket) {
             tokio::task::spawn_blocking(|| {
                 let (nodes, edges) = crate::graph::discover_graph_data();
                 (nodes, edges)
+            }),
+            tokio::task::spawn_blocking(move || {
+                collect_new_logs(current_log_idx)
             })
         );
 
@@ -90,6 +100,8 @@ async fn handle_websocket(socket: WebSocket) {
         let nodes = nodes_result.unwrap_or_default();
         let topics = topics_result.unwrap_or_default();
         let (graph_nodes, graph_edges) = graph_result.unwrap_or_default();
+        let (new_logs, new_log_idx) = logs_result.unwrap_or_default();
+        last_log_idx = new_log_idx;
 
         // Convert graph data — PID omitted from graph nodes for the same reason.
         let graph_nodes_json = graph_nodes
@@ -133,7 +145,8 @@ async fn handle_websocket(socket: WebSocket) {
                 "graph": {
                     "nodes": graph_nodes_json,
                     "edges": graph_edges_json
-                }
+                },
+                "logs": new_logs
             }
         });
 
@@ -146,6 +159,49 @@ async fn handle_websocket(socket: WebSocket) {
             break; // Client disconnected
         }
     }
+}
+
+/// Collect log entries written since `last_idx`.
+///
+/// Returns `(entries_json, new_write_idx)`.  The caller stores `new_write_idx`
+/// so the next call only fetches the delta.  At most 200 entries are returned
+/// per tick to avoid oversized WebSocket frames.
+fn collect_new_logs(last_idx: u64) -> (Vec<serde_json::Value>, u64) {
+    use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
+
+    let current_idx = GLOBAL_LOG_BUFFER.write_idx();
+    if current_idx <= last_idx {
+        return (Vec::new(), current_idx);
+    }
+
+    // Fetch all entries and take only the ones written after last_idx.
+    // The ring buffer is 5000 slots; we cap at 200 per tick to keep frames small.
+    let all = GLOBAL_LOG_BUFFER.get_all();
+    let new_count = (current_idx - last_idx) as usize;
+    let capped = new_count.min(200);
+
+    let entries: Vec<serde_json::Value> = all
+        .into_iter()
+        .rev()
+        .take(capped)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|e| {
+            serde_json::json!({
+                "timestamp": e.timestamp,
+                "tick_number": e.tick_number,
+                "node_name": e.node_name,
+                "log_type": format!("{:?}", e.log_type),
+                "topic": e.topic,
+                "message": e.message,
+                "tick_us": e.tick_us,
+                "ipc_ns": e.ipc_ns,
+            })
+        })
+        .collect();
+
+    (entries, current_idx)
 }
 
 #[cfg(test)]

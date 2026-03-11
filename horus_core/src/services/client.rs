@@ -16,7 +16,7 @@
 //! let client = ServiceClient::<AddTwoInts>::new()?;
 //! let response = client.call(
 //!     AddTwoIntsRequest { a: 3, b: 4 },
-//!     Duration::from_secs(1),
+//!     1_u64.secs(),
 //! )?;
 //! println!("3 + 4 = {}", response.sum);
 //! ```
@@ -30,6 +30,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::communication::Topic;
 use crate::error::{HorusResult, RetryConfig};
+use crate::core::DurationExt;
 use crate::services::types::{
     Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
 };
@@ -63,7 +64,7 @@ where
 {
     /// Create a new synchronous client for service `S`.
     pub fn new() -> HorusResult<Self> {
-        Self::with_poll_interval(Duration::from_millis(1))
+        Self::with_poll_interval(1_u64.ms())
     }
 
     /// Create a client with a custom polling interval.
@@ -124,7 +125,7 @@ where
     /// ```rust,ignore
     /// let resp = client.call_resilient(
     ///     AddTwoIntsRequest { a: 3, b: 4 },
-    ///     Duration::from_secs(1),
+    ///     1_u64.secs(),
     /// )?;
     /// ```
     pub fn call_resilient(
@@ -143,10 +144,10 @@ where
     /// # Example
     ///
     /// ```rust,ignore
-    /// let config = RetryConfig::new(5, Duration::from_millis(50));
+    /// let config = RetryConfig::new(5, 50_u64.ms());
     /// let resp = client.call_resilient_with(
     ///     AddTwoIntsRequest { a: 3, b: 4 },
-    ///     Duration::from_secs(1),
+    ///     1_u64.secs(),
     ///     config,
     /// )?;
     /// ```
@@ -271,7 +272,7 @@ where
 {
     /// Create a new async client for service `S`.
     pub fn new() -> HorusResult<Self> {
-        Self::with_poll_interval(Duration::from_millis(1))
+        Self::with_poll_interval(1_u64.ms())
     }
 
     /// Create a client with a custom polling interval.

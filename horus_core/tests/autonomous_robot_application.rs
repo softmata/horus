@@ -1,4 +1,3 @@
-use horus_core::core::DurationExt;
 /// Complete Autonomous Mobile Robot Application
 /// Demonstrates the enhanced HORUS scheduler with a real robotics system
 ///
@@ -13,10 +12,11 @@ use horus_core::core::DurationExt;
 use horus_core::{HorusResult as Result, Node, Scheduler, Topic, TopicMetadata};
 use std::f64::consts::PI;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::DurationExt;
 
 // ============ Message Types ============
 
@@ -283,7 +283,7 @@ impl CameraPerceptionNode {
             camera_id,
             resolution: (640, 480),
             fps: 30,
-            image_pub: Topic::new(format!("camera_{}/compressed", camera_id))?,
+            image_pub: Topic::new(format!("camera_{}.compressed", camera_id))?,
             detected_obstacles: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -323,7 +323,7 @@ impl Node for CameraPerceptionNode {
 
     fn tick(&mut self) {
         // Simulate camera capture (blocking I/O - will be moved to async tier)
-        std::thread::sleep(Duration::from_millis(1000 / self.fps as u64));
+        std::thread::sleep((1000 / self.fps as u64).ms());
 
         // Create fake image data
         let mut image_data = vec![0u8; (self.resolution.0 * self.resolution.1 * 3) as usize];
@@ -352,7 +352,7 @@ impl Node for CameraPerceptionNode {
 
     fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
-            topic_name: format!("camera_{}/compressed", self.camera_id),
+            topic_name: format!("camera_{}.compressed", self.camera_id),
             type_name: "sensor_msgs/CompressedImage".to_string(),
         }]
     }
@@ -405,7 +405,7 @@ impl Node for LidarProcessingNode {
 
     fn tick(&mut self) {
         // Simulate lidar scan (blocking I/O - will be moved to async tier)
-        std::thread::sleep(Duration::from_millis(100)); // 10Hz lidar
+        std::thread::sleep(100_u64.ms()); // 10Hz lidar
 
         // Generate fake scan data
         let mut ranges = vec![30.0; 360];
@@ -1069,7 +1069,7 @@ fn test_autonomous_robot_complete_system() {
     println!();
 
     // Run the robot for 5 seconds
-    let run_duration = Duration::from_secs(5);
+    let run_duration = 5_u64.secs();
     println!("Starting autonomous navigation for {:?}...\n", run_duration);
 
     let start_time = Instant::now();
@@ -1148,7 +1148,7 @@ fn test_robot_performance_metrics() {
         .build();
 
     // Run for 2 seconds
-    let run_duration = Duration::from_secs(2);
+    let run_duration = 2_u64.secs();
     let start = Instant::now();
     scheduler.run_for(run_duration).unwrap();
     let elapsed = start.elapsed();

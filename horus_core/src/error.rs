@@ -65,6 +65,8 @@
 
 use std::time::Duration;
 use thiserror::Error;
+use crate::core::DurationExt;
+
 
 /// Structured communication layer errors.
 ///
@@ -396,7 +398,7 @@ impl ValidationError {
 /// ```rust,ignore
 /// match err {
 ///     HorusError::Timeout(ref t) => {
-///         if t.elapsed > Duration::from_secs(5) {
+///         if t.elapsed > 5_u64.secs() {
 ///             // System is severely overloaded
 ///         }
 ///     }
@@ -1085,7 +1087,7 @@ impl HorusError {
 /// ```rust,ignore
 /// use horus::prelude::*;
 ///
-/// let config = RetryConfig::new(3, Duration::from_millis(10));
+/// let config = RetryConfig::new(3, 10_u64.ms());
 /// let result = retry_transient(&config, || tf.tf("camera", "base"));
 /// ```
 #[derive(Debug, Clone)]
@@ -1108,7 +1110,7 @@ impl RetryConfig {
         Self {
             max_retries,
             initial_backoff,
-            max_backoff: Duration::from_secs(1),
+            max_backoff: 1_u64.secs(),
             backoff_multiplier: 2.0,
         }
     }
@@ -1157,7 +1159,7 @@ impl RetryConfig {
 impl Default for RetryConfig {
     /// Default: 3 retries, 10ms initial backoff, 2x multiplier, 1s cap.
     fn default() -> Self {
-        Self::new(3, Duration::from_millis(10))
+        Self::new(3, 10_u64.ms())
     }
 }
 
@@ -1181,7 +1183,7 @@ impl Default for RetryConfig {
 ///
 /// // Custom retry: 5 attempts, 50ms initial backoff
 /// let data = retry_transient(
-///     &RetryConfig::new(5, Duration::from_millis(50)),
+///     &RetryConfig::new(5, 50_u64.ms()),
 ///     || expensive_operation(),
 /// )?;
 /// ```
@@ -1526,8 +1528,8 @@ mod tests {
     fn variant_stale() {
         let err = HorusError::Transform(TransformError::Stale {
             frame: "imu".into(),
-            age: Duration::from_millis(2500),
-            threshold: Duration::from_millis(500),
+            age: 2500_u64.ms(),
+            threshold: 500_u64.ms(),
         });
         let msg = format!("{}", err);
         assert!(msg.contains("imu"), "Should contain frame name: {}", msg);
@@ -1608,8 +1610,8 @@ mod tests {
     fn from_transform_error_stale() {
         let err: HorusError = TransformError::Stale {
             frame: "imu".to_string(),
-            age: Duration::from_millis(2500),
-            threshold: Duration::from_millis(500),
+            age: 2500_u64.ms(),
+            threshold: 500_u64.ms(),
         }
         .into();
         assert!(
@@ -1624,8 +1626,8 @@ mod tests {
     fn from_timeout_error() {
         let err: HorusError = TimeoutError {
             resource: "tensor_pool".to_string(),
-            elapsed: Duration::from_millis(500),
-            deadline: Some(Duration::from_millis(100)),
+            elapsed: 500_u64.ms(),
+            deadline: Some(100_u64.ms()),
         }
         .into();
         assert!(
@@ -2060,8 +2062,8 @@ mod tests {
     fn help_stale() {
         let err = HorusError::Transform(TransformError::Stale {
             frame: "imu".into(),
-            age: Duration::from_millis(2500),
-            threshold: Duration::from_millis(500),
+            age: 2500_u64.ms(),
+            threshold: 500_u64.ms(),
         });
         let help = err.help();
         assert!(help.is_some(), "Stale should have help text");
@@ -2109,15 +2111,15 @@ mod tests {
 
         let err = HorusError::Timeout(TimeoutError {
             resource: "pool alloc".into(),
-            elapsed: Duration::from_millis(100),
+            elapsed: 100_u64.ms(),
             deadline: None,
         });
         assert_eq!(err.severity(), Severity::Transient);
 
         let err = HorusError::Transform(TransformError::Stale {
             frame: "imu".into(),
-            age: Duration::from_secs(1),
-            threshold: Duration::from_millis(500),
+            age: 1_u64.secs(),
+            threshold: 500_u64.ms(),
         });
         assert_eq!(err.severity(), Severity::Transient);
 
@@ -2389,8 +2391,8 @@ mod tests {
     fn chain_timeout_exposes_source() {
         let err = HorusError::Timeout(TimeoutError {
             resource: "sensor_pool".into(),
-            elapsed: Duration::from_secs(5),
-            deadline: Some(Duration::from_secs(3)),
+            elapsed: 5_u64.secs(),
+            deadline: Some(3_u64.secs()),
         });
         let src = err
             .source()
@@ -2437,14 +2439,14 @@ mod tests {
 
     #[test]
     fn retry_succeeds_immediately() {
-        let config = RetryConfig::new(3, Duration::from_millis(1));
+        let config = RetryConfig::new(3, 1_u64.ms());
         let result = retry_transient(&config, || Ok::<_, HorusError>(42));
         assert_eq!(result.unwrap(), 42);
     }
 
     #[test]
     fn retry_succeeds_after_transient_failures() {
-        let config = RetryConfig::new(3, Duration::from_millis(1));
+        let config = RetryConfig::new(3, 1_u64.ms());
         let mut attempt = 0;
         let result = retry_transient(&config, || {
             attempt += 1;
@@ -2462,7 +2464,7 @@ mod tests {
 
     #[test]
     fn retry_propagates_permanent_immediately() {
-        let config = RetryConfig::new(5, Duration::from_millis(1));
+        let config = RetryConfig::new(5, 1_u64.ms());
         let mut attempt = 0;
         let result: HorusResult<i32> = retry_transient(&config, || {
             attempt += 1;
@@ -2477,7 +2479,7 @@ mod tests {
 
     #[test]
     fn retry_propagates_fatal_immediately() {
-        let config = RetryConfig::new(5, Duration::from_millis(1));
+        let config = RetryConfig::new(5, 1_u64.ms());
         let mut attempt = 0;
         let result: HorusResult<i32> = retry_transient(&config, || {
             attempt += 1;
@@ -2489,14 +2491,14 @@ mod tests {
 
     #[test]
     fn retry_exhausts_max_retries() {
-        let config = RetryConfig::new(2, Duration::from_millis(1));
+        let config = RetryConfig::new(2, 1_u64.ms());
         let mut attempt = 0;
         let result: HorusResult<i32> = retry_transient(&config, || {
             attempt += 1;
             Err(HorusError::Timeout(TimeoutError {
                 resource: "test".to_string(),
-                elapsed: Duration::from_secs(1),
-                deadline: Some(Duration::from_secs(1)),
+                elapsed: 1_u64.secs(),
+                deadline: Some(1_u64.secs()),
             }))
         });
         result.unwrap_err();
@@ -2508,8 +2510,8 @@ mod tests {
     fn retry_config_defaults() {
         let config = RetryConfig::default();
         assert_eq!(config.max_retries(), 3);
-        assert_eq!(config.initial_backoff(), Duration::from_millis(10));
-        assert_eq!(config.max_backoff(), Duration::from_secs(1));
+        assert_eq!(config.initial_backoff(), 10_u64.ms());
+        assert_eq!(config.max_backoff(), 1_u64.secs());
         assert_eq!(config.backoff_multiplier(), 2.0);
     }
 }

@@ -1,5 +1,6 @@
 use super::data::get_installed_packages;
 use super::*;
+use std::time::Duration;
 
 impl TuiDashboard {
     pub(super) fn next_tab(&mut self) {

@@ -25,6 +25,7 @@ use std::sync::Mutex;
 
 use crate::communication::topic::metrics::TopicMetrics;
 use crate::communication::SendBlockingError;
+use crate::core::DurationExt;
 
 /// Configuration for MockTopic failure injection.
 #[derive(Debug, Clone, Default)]
@@ -397,14 +398,14 @@ mod tests {
             ..Default::default()
         };
         let topic: MockTopic<u64> = MockTopic::new("blocking", config);
-        let result = topic.send_blocking(42, std::time::Duration::from_secs(1));
+        let result = topic.send_blocking(42, 1_u64.secs());
         assert_eq!(result, Err(SendBlockingError::Timeout));
     }
 
     #[test]
     fn mock_topic_send_blocking_success() {
         let topic: MockTopic<u64> = MockTopic::simple("blocking_ok");
-        let result = topic.send_blocking(42, std::time::Duration::from_secs(1));
+        let result = topic.send_blocking(42, 1_u64.secs());
         assert_eq!(result, Ok(()));
         assert_eq!(topic.recv(), Some(42));
     }

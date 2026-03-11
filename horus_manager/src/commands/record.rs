@@ -6,6 +6,7 @@ use horus_core::error::HorusResult;
 use horus_core::horus_internal;
 use horus_core::scheduling::{diff_recordings, Recording, RecordingManager};
 use std::path::PathBuf;
+use horus_core::core::DurationExt;
 
 /// List recording sessions
 pub fn run_list(long: bool, json: bool) -> HorusResult<()> {
@@ -290,11 +291,11 @@ pub fn run_replay(
         let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
             // Hex format
             parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
-        } else if let Ok(num) = value_str.parse::<f64>() {
-            // Float number
-            num.to_le_bytes().to_vec()
         } else if let Ok(num) = value_str.parse::<i64>() {
-            // Integer number
+            // Integer number (checked before f64 so "42" stays i64, not IEEE 754)
+            num.to_le_bytes().to_vec()
+        } else if let Ok(num) = value_str.parse::<f64>() {
+            // Float number (only matches values with '.', 'e', 'inf', 'nan', etc.)
             num.to_le_bytes().to_vec()
         } else {
             // Raw string bytes
@@ -756,7 +757,7 @@ pub fn run_inject(args: InjectArgs) -> HorusResult<()> {
 
         // Brief delay to let the script process start and subscribe to topics
         // before the scheduler begins publishing replay data
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(1_u64.secs());
 
         println!(
             "\n{} Running {} injected node(s) + script...\n",

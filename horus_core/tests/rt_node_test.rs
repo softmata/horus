@@ -1,14 +1,13 @@
 // Test real-time node functionality
-use horus_core::core::{DurationExt, Miss, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::{DurationExt, Miss, Node};
 
 /// Example: Motor control node with real-time constraints
 struct MotorControlNode {
@@ -43,10 +42,10 @@ impl Node for MotorControlNode {
         // Simulate computation
         if self.simulate_overrun {
             // Simulate budget violation
-            std::thread::sleep(Duration::from_micros(200));
+            std::thread::sleep(200_u64.us());
         } else {
             // Normal execution within budget
-            std::thread::sleep(Duration::from_micros(50));
+            std::thread::sleep(50_u64.us());
         }
     }
 
@@ -90,7 +89,7 @@ impl Node for SensorFusionNode {
         self.samples_processed.fetch_add(1, Ordering::SeqCst);
 
         // Simulate sensor fusion computation
-        std::thread::sleep(Duration::from_micros(100));
+        std::thread::sleep(100_u64.us());
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -132,7 +131,7 @@ impl Node for LoggingNode {
     fn tick(&mut self) {
         self.logs_written.fetch_add(1, Ordering::SeqCst);
         // Simulate logging (fast operation)
-        std::thread::sleep(Duration::from_micros(10));
+        std::thread::sleep(10_u64.us());
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -156,26 +155,26 @@ fn test_rt_node_basic() {
     scheduler
         .add(MotorControlNode::new("motor_ctrl"))
         .order(0)
-        .budget(100.us())
-        .deadline(1.ms())
+        .budget(100_u64.us())
+        .deadline(1_u64.ms())
         .on_miss(Miss::Stop)
         .build();
     scheduler
         .add(SensorFusionNode::new("sensor_fusion"))
         .order(1)
-        .budget(500.us())
-        .deadline(10.ms())
+        .budget(500_u64.us())
+        .deadline(10_u64.ms())
         .on_miss(Miss::Skip)
         .build();
     scheduler
         .add(LoggingNode::new("logger"))
         .order(10)
-        .budget(5000.us())
-        .deadline(100.ms())
+        .budget(5000_u64.us())
+        .deadline(100_u64.ms())
         .build();
 
     // Run for a short duration
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -199,25 +198,25 @@ fn test_rt_node_priority_ordering() {
     scheduler
         .add(log_node)
         .order(10)
-        .budget(5000.us())
-        .deadline(100.ms())
+        .budget(5000_u64.us())
+        .deadline(100_u64.ms())
         .build(); // Low priority
     scheduler
         .add(sensor_node)
         .order(1)
-        .budget(500.us())
-        .deadline(10.ms())
+        .budget(500_u64.us())
+        .deadline(10_u64.ms())
         .on_miss(Miss::Skip)
         .build(); // High priority
     scheduler
         .add(motor_node)
         .order(0)
-        .budget(100.us())
-        .deadline(1.ms())
+        .budget(100_u64.us())
+        .deadline(1_u64.ms())
         .on_miss(Miss::Stop)
         .build(); // Critical priority
 
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
 
     // Critical priority node should have executed
     assert!(motor.load(Ordering::SeqCst) > 0);
@@ -227,24 +226,24 @@ fn test_rt_node_priority_ordering() {
 fn test_rt_node_with_safety_critical_config() {
     cleanup_stale_shm();
     // Use safety-critical configuration (all RT features enabled)
-    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
     scheduler
         .add(MotorControlNode::new("critical_motor"))
         .order(0)
-        .budget(100.us())
-        .deadline(1.ms())
+        .budget(100_u64.us())
+        .deadline(1_u64.ms())
         .on_miss(Miss::Stop)
         .build();
     scheduler
         .add(SensorFusionNode::new("critical_sensor"))
         .order(1)
-        .budget(500.us())
-        .deadline(10.ms())
+        .budget(500_u64.us())
+        .deadline(10_u64.ms())
         .on_miss(Miss::Skip)
         .build();
 
     // Run briefly (safety-critical config runs at 1kHz)
-    let result = scheduler.run_for(Duration::from_millis(200));
+    let result = scheduler.run_for(200_u64.ms());
     result.unwrap();
 }

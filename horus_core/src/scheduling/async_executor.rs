@@ -260,6 +260,7 @@ impl AsyncExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
     use crate::core::{Miss, Node, NodeInfo};
     use std::sync::atomic::AtomicU64;
     use std::sync::Mutex;
@@ -299,7 +300,7 @@ mod tests {
         }
         fn tick(&mut self) {
             self.count.fetch_add(1, Ordering::Relaxed);
-            std::thread::sleep(Duration::from_millis(self.sleep_ms));
+            std::thread::sleep(self.sleep_ms.ms());
         }
     }
 
@@ -365,11 +366,11 @@ mod tests {
         let executor = AsyncExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(5),
+            5_u64.ms(),
             test_monitors(),
         );
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 
@@ -394,11 +395,11 @@ mod tests {
         let executor = AsyncExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(5),
+            5_u64.ms(),
             test_monitors(),
         );
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
         let elapsed = start.elapsed();
@@ -429,11 +430,11 @@ mod tests {
         let executor = AsyncExecutor::start(
             vec![node],
             running.clone(),
-            Duration::from_millis(5),
+            5_u64.ms(),
             test_monitors(),
         );
 
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(250_u64.ms());
         running.store(false, Ordering::SeqCst);
         let _returned = executor.stop();
 
@@ -455,11 +456,11 @@ mod tests {
         let executor = AsyncExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(5),
+            5_u64.ms(),
             test_monitors(),
         );
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
         running.store(false, Ordering::SeqCst);
 
         let returned = executor.stop();

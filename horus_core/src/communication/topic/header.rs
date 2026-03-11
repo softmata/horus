@@ -459,8 +459,21 @@ impl TopicHeader {
             }
         }
 
+        // All 16 participant slots occupied by live processes.
+        // Count active for diagnostics.
+        let active = self
+            .participants
+            .iter()
+            .filter(|p| p.active.load(Ordering::Relaxed) != 0)
+            .count();
         Err(HorusError::Communication(
-            "No available participant slots".to_string().into(),
+            format!(
+                "No available participant slots ({}/{} active). \
+                 Consider reducing the number of concurrent publishers/subscribers \
+                 on this topic, or increasing lease timeout to allow faster reclamation.",
+                active, MAX_PARTICIPANTS
+            )
+            .into(),
         ))
     }
 
@@ -688,6 +701,34 @@ pub fn read_latest_slot_bytes(
         write_idx,
         is_pod,
     })
+}
+
+/// Read the write-sequence counter from a raw topic SHM file.
+///
+/// This is a lightweight read used by the monitor to compute accurate message
+/// rates without needing a typed `Topic<T>`.  Returns `None` when the file
+/// cannot be opened, is too small, or has an invalid magic number.
+pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
+    use memmap2::MmapOptions;
+    use std::fs::File;
+
+    let file = File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if meta.len() < TOPIC_HEADER_SIZE as u64 {
+        return None;
+    }
+    // SAFETY: the file is opened read-only; the mapping is read-only.
+    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let base: *const u8 = mmap.as_ptr();
+
+    // SAFETY: mmap is at least TOPIC_HEADER_SIZE (640) bytes.
+    let magic = unsafe { std::ptr::read_unaligned(base as *const u64) };
+    if magic != TOPIC_MAGIC {
+        return None;
+    }
+    // SAFETY: offset 64 is within the validated header (sequence_or_head field).
+    let seq = unsafe { std::ptr::read_unaligned(base.add(64) as *const u64) };
+    Some(seq)
 }
 
 // ============================================================================

@@ -15,7 +15,7 @@
 //! img.set_pixel(100, 200, &[255, 0, 0]); // Red dot
 //!
 //! // Send via topic (zero-copy — only the descriptor travels)
-//! let topic: Topic<Image> = Topic::new("camera/rgb")?;
+//! let topic: Topic<Image> = Topic::new("camera.rgb")?;
 //! topic.send(&img);
 //!
 //! // Receive in another node or process

@@ -26,6 +26,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use horus_core::core::DurationExt;
 
 #[derive(Debug, Clone)]
 enum ExecutionTarget {
@@ -476,7 +477,7 @@ fn execute_multiple_files(
         }
 
         // Small sleep to avoid busy-waiting
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
     }
 
     // Wait for output threads to finish

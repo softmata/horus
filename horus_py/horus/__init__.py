@@ -11,7 +11,7 @@ Quick start::
     img = horus.Image(480, 640, "rgb8")
 
     # Send over a topic (zero-copy)
-    topic = horus.Topic("camera/rgb")
+    topic = horus.Topic("camera.rgb")
     topic.send(img)
 
     # Receive (in another process)
@@ -342,15 +342,15 @@ class Node:
         from horus import Node, Pose2D, CmdVel
 
         def controller(node: Node) -> None:
-            if node.has_msg("localization/pose"):
-                pose = node.get("localization/pose")
+            if node.has_msg("localization.pose"):
+                pose = node.get("localization.pose")
                 # Logs will show: Pose2D { x: 2.31, y: 1.31, ... }
-                node.send("control/cmd", {"linear": 1.0, "angular": 0.5})
+                node.send("control.cmd", {"linear": 1.0, "angular": 0.5})
 
         node = Node(
             name="controller",
-            subs={"localization/pose": {"type": Pose2D}},
-            pubs={"control/cmd": {"type": CmdVel}},
+            subs={"localization.pose": {"type": Pose2D}},
+            pubs={"control.cmd": {"type": CmdVel}},
             tick=controller,
             rate=30
         )
@@ -391,16 +391,16 @@ class Node:
 
             node = Node(
                 name="controller",
-                subs={"localization/pose": {"type": Pose2D}},
-                pubs={"control/cmd": {"type": CmdVel, "capacity": 2048}},
+                subs={"localization.pose": {"type": Pose2D}},
+                pubs={"control.cmd": {"type": CmdVel, "capacity": 2048}},
                 tick=lambda n: None
             )
 
         Example with generic topics (shows <bytes> in logs):
             node = Node(
                 name="controller",
-                subs=["localization/pose"],  # Generic topic
-                pubs=["control/cmd"],
+                subs=["localization.pose"],  # Generic topic
+                pubs=["control.cmd"],
                 tick=lambda n: None
             )
         """

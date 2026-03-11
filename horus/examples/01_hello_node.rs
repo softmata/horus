@@ -7,7 +7,7 @@
 //! ```
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 /// A minimal node that prints "Hello" each tick.
 struct HelloNode {
@@ -29,13 +29,13 @@ fn main() -> Result<()> {
     println!("=== HORUS Example 1: Hello Node ===\n");
 
     // Create a scheduler running at 2 Hz (slow enough to read output)
-    let mut scheduler = Scheduler::new().tick_rate(2.hz());
+    let mut scheduler = Scheduler::new().tick_rate(2_u64.hz());
 
     // Add the node with execution order 0 (first to run)
     scheduler.add(HelloNode { count: 0 }).order(0).build()?;
 
     // Run for 3 seconds
-    scheduler.run_for(Duration::from_secs(3))?;
+    scheduler.run_for(3_u64.secs())?;
 
     println!("\nDone!");
     Ok(())

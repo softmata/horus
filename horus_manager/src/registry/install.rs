@@ -959,7 +959,7 @@ impl RegistryClient {
         Ok(())
     }
 
-    fn install_from_pypi(
+    pub(crate) fn install_from_pypi(
         &self,
         package_name: &str,
         version: Option<&str>,
@@ -1109,6 +1109,32 @@ impl RegistryClient {
         let metadata_path = pkg_dir.join("metadata.json");
         fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
+        // Update pyproject.toml if present in workspace
+        if let crate::workspace::InstallTarget::Local(ref ws) = target {
+            if let Err(e) = add_dep_to_pyproject_toml(ws, package_name, &actual_version) {
+                log::warn!("Could not update pyproject.toml: {}", e);
+            } else if ws.join("pyproject.toml").exists() {
+                println!(
+                    "  {} Updated pyproject.toml",
+                    crate::cli_output::ICON_SUCCESS.green()
+                );
+            }
+        }
+
+        // Write tracking JSON
+        let tracking_dir = match &target {
+            crate::workspace::InstallTarget::Local(ws) => ws.join(".horus/packages"),
+            crate::workspace::InstallTarget::Global => PathBuf::from(".horus/packages"),
+        };
+        fs::create_dir_all(&tracking_dir)?;
+        let tracking_path = tracking_dir.join(format!("{}.pypi.json", package_name));
+        let tracking = serde_json::json!({
+            "name": package_name,
+            "version": actual_version,
+            "source": "PyPI",
+        });
+        fs::write(&tracking_path, serde_json::to_string_pretty(&tracking)?)?;
+
         // If global, create symlink
         if is_global {
             if let Some(local_pkg_dir) = local_packages_dir {
@@ -1163,7 +1189,7 @@ impl RegistryClient {
         Ok(actual_version)
     }
 
-    fn install_from_cratesio(
+    pub(crate) fn install_from_cratesio(
         &self,
         package_name: &str,
         version: Option<&str>,
@@ -1245,9 +1271,101 @@ impl RegistryClient {
         }
         fs::create_dir_all(&pkg_dir)?;
 
+        // Detect if this is a library crate (workspace has Cargo.toml) or binary.
+        // Check root Cargo.toml first, then fall back to .horus/Cargo.toml
+        // (generated for standalone .rs files by `horus run`).
+        let workspace_cargo_toml = match &target {
+            crate::workspace::InstallTarget::Local(workspace_path) => {
+                let root = workspace_path.join("Cargo.toml");
+                let horus_dir = workspace_path.join(".horus/Cargo.toml");
+                if root.exists() {
+                    Some(workspace_path.clone())
+                } else if horus_dir.exists() {
+                    Some(workspace_path.join(".horus"))
+                } else {
+                    None
+                }
+            }
+            crate::workspace::InstallTarget::Global => None,
+        };
+        let is_library_install = workspace_cargo_toml.is_some();
+
+        if is_library_install {
+            // Library crate: use `cargo add` to add as a dependency to Cargo.toml
+            let ws_path = workspace_cargo_toml.as_ref().unwrap();
+            spinner.set_message(format!("Adding {} to Cargo.toml...", package_name));
+
+            let mut cmd = Command::new("cargo");
+            cmd.arg("add");
+            if version_str != "latest" {
+                cmd.arg(format!("{}@{}", package_name, version_str));
+            } else {
+                cmd.arg(package_name);
+            }
+            cmd.current_dir(ws_path);
+
+            let output = cmd.output()?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // If cargo add fails because it's not a lib (binary-only crate),
+                // fall through to cargo install
+                if !stderr.contains("doesn't have a library") {
+                    finish_error(
+                        &spinner,
+                        &format!("cargo add failed for {}", package_name),
+                    );
+                    return Err(anyhow!("cargo add failed:\n{}", stderr));
+                }
+                // Fall through to binary install below
+            } else {
+                // Read actual version from Cargo.toml after cargo add
+                let cargo_toml_path = ws_path.join("Cargo.toml");
+                let actual_version = if let Ok(content) = fs::read_to_string(&cargo_toml_path) {
+                    if let Ok(doc) = content.parse::<toml::Value>() {
+                        doc.get("dependencies")
+                            .and_then(|deps| deps.get(package_name))
+                            .and_then(|dep| {
+                                dep.as_str()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| {
+                                        dep.get("version")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                            })
+                            .unwrap_or_else(|| version_str.to_string())
+                    } else {
+                        version_str.to_string()
+                    }
+                } else {
+                    version_str.to_string()
+                };
+
+                // Write tracking JSON
+                let tracking_dir = ws_path.join(".horus/packages");
+                fs::create_dir_all(&tracking_dir)?;
+                let tracking_path =
+                    tracking_dir.join(format!("{}.crates-io.json", package_name));
+                let tracking = serde_json::json!({
+                    "name": package_name,
+                    "version": actual_version,
+                    "source": "CratesIO",
+                    "install_type": "lib",
+                });
+                fs::write(&tracking_path, serde_json::to_string_pretty(&tracking)?)?;
+
+                finish_success(
+                    &spinner,
+                    &format!("Added {} v{} to Cargo.toml", package_name, actual_version),
+                );
+                return Ok(actual_version);
+            }
+        }
+
+        // Binary crate: use `cargo install`
         spinner.set_message(format!("Installing {} with cargo...", package_name));
 
-        // Use cargo install with --root to install to specific directory
         let mut cmd = Command::new("cargo");
         cmd.arg("install");
         cmd.arg(&crate_spec);
@@ -1277,6 +1395,21 @@ impl RegistryClient {
         });
         let metadata_path = pkg_dir.join("metadata.json");
         fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
+
+        // Write tracking JSON for binary installs too
+        let tracking_dir = match &target {
+            crate::workspace::InstallTarget::Local(ws) => ws.join(".horus/packages"),
+            crate::workspace::InstallTarget::Global => PathBuf::from(".horus/packages"),
+        };
+        fs::create_dir_all(&tracking_dir)?;
+        let tracking_path = tracking_dir.join(format!("{}.crates-io.json", package_name));
+        let tracking = serde_json::json!({
+            "name": package_name,
+            "version": actual_version,
+            "source": "CratesIO",
+            "install_type": "bin",
+        });
+        fs::write(&tracking_path, serde_json::to_string_pretty(&tracking)?)?;
 
         // If global, create symlink
         if is_global {

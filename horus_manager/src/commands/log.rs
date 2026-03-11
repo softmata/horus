@@ -9,7 +9,8 @@ use colored::*;
 use horus_core::core::log_buffer::{LogEntry, LogType, GLOBAL_LOG_BUFFER};
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_logs_path;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
+use horus_core::core::DurationExt;
 
 // ─── Log level for filtering ──────────────────────────────────────────────────
 
@@ -102,7 +103,7 @@ fn parse_since(since: Option<&str>) -> HorusResult<Option<SystemTime>> {
         }
     };
 
-    Ok(Some(SystemTime::now() - Duration::from_secs(secs)))
+    Ok(Some(SystemTime::now() - secs.secs()))
 }
 
 /// Parse the `%H:%M:%S%.3f` timestamp stored in `LogEntry` into a `SystemTime`.
@@ -120,7 +121,7 @@ fn parse_entry_time(ts: &str) -> Option<SystemTime> {
     if epoch_secs < 0 {
         return None;
     }
-    Some(UNIX_EPOCH + Duration::from_secs(epoch_secs as u64))
+    Some(UNIX_EPOCH + (epoch_secs as u64).secs())
 }
 
 // ─── Display helpers ──────────────────────────────────────────────────────────
@@ -282,7 +283,7 @@ fn follow_logs(node_filter: Option<&str>, min_level: LogLevel) -> HorusResult<()
     let mut last_seen_idx = GLOBAL_LOG_BUFFER.write_idx();
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
 
         let current_idx = GLOBAL_LOG_BUFFER.write_idx();
         if current_idx == last_seen_idx {

@@ -11,6 +11,7 @@ use monitor_tests::builders;
 use monitor_tests::helpers::{get_request, post_json_request};
 
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Concurrent GET /api/nodes
@@ -22,7 +23,7 @@ async fn concurrent_50_get_nodes() {
     for i in 0..10 {
         rt.add_node(TestNodeConfig::bare(&format!("conc_node_{}", i)));
     }
-    rt.wait_ready(std::time::Duration::from_secs(5));
+    rt.wait_ready(5_u64.secs());
 
     let app = builders::test_router();
 
@@ -197,7 +198,7 @@ async fn concurrent_10_websocket_connections() {
                 .unwrap_or_else(|e| panic!("WS client {} connect failed: {}", i, e));
 
             // Each client should receive at least one broadcast
-            let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            let msg = tokio::time::timeout(5_u64.secs(), ws.next())
                 .await
                 .unwrap_or_else(|_| panic!("WS client {} timed out", i))
                 .unwrap()
@@ -228,7 +229,7 @@ async fn concurrent_mixed_endpoints() {
         rt.add_node(TestNodeConfig::bare(&format!("mixed_node_{}", i)));
         rt.add_topic(&format!("mixed_topic_{}", i), 1024);
     }
-    rt.wait_ready(std::time::Duration::from_secs(5));
+    rt.wait_ready(5_u64.secs());
 
     let app = builders::test_router();
     let mut handles = Vec::new();
@@ -296,7 +297,7 @@ async fn concurrent_mixed_endpoints() {
     assert_eq!(handles.len(), 100, "must have 100 concurrent requests");
 
     let timeout = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        30_u64.secs(),
         futures_util::future::join_all(handles),
     )
     .await

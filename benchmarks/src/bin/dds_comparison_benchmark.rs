@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 const DEFAULT_ITERATIONS: usize = 100_000;
 const DEFAULT_WARMUP: usize = 10_000;
@@ -291,7 +291,7 @@ fn benchmark_horus_adaptive(
     while !consumer_ready.load(Ordering::Acquire) {
         thread::yield_now();
     }
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(10_u64.ms());
 
     // Producer on main thread
     let _ = set_cpu_affinity(0);

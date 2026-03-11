@@ -43,6 +43,9 @@ horus_macros = { path = "../horus_macros", optional = true }
 # mDNS service discovery (optional)
 mdns-sd = { version = "0.11", optional = true }
 
+# Compression for recordings (optional)
+zstd = { version = "0.13", optional = true }
+
 
 # Platform-specific: Windows shared memory
 [target.'cfg(windows)'.dependencies]
@@ -69,6 +72,9 @@ blackbox = []
 
 # mDNS/DNS-SD for automatic peer discovery on local networks
 mdns = ["mdns-sd"]
+
+# Zstd compression for recording files
+recording-compression = ["zstd"]
 
 # Test utilities (MockTopic, etc.) for use in downstream crate tests
 test-utils = []

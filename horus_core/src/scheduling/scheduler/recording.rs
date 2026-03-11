@@ -130,10 +130,25 @@ impl Scheduler {
             scheduler_recording.total_ticks
         ));
 
+        // Build name→priority map from recorded execution order (first tick).
+        // This restores the original scheduling order during replay.
+        let priority_map: HashMap<&str, u32> = scheduler_recording
+            .execution_order
+            .first()
+            .map(|order| {
+                order
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| (name.as_str(), i as u32))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         for (node_id, relative_path) in &scheduler_recording.node_recordings {
             let node_path = session_dir.join(relative_path);
             if node_path.exists() {
-                if let Err(e) = scheduler.add_replay(node_path, 0) {
+                let priority = priority_map.get(node_id.as_str()).copied().unwrap_or(0);
+                if let Err(e) = scheduler.add_replay(node_path, priority) {
                     print_line(&format!(
                         "Warning: Failed to load node '{}': {}",
                         node_id, e

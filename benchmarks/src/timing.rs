@@ -5,7 +5,8 @@
 //! - Cycle-to-nanosecond conversion with calibration
 //! - Fallback timing for non-x86 platforms
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use horus_core::core::DurationExt;
 
 /// Read Time Stamp Counter (RDTSC) for cycle-accurate timing
 ///
@@ -97,7 +98,7 @@ impl RdtscCalibration {
 /// Measures over `duration_ms` milliseconds for accuracy.
 /// Returns calibration data for cycle-to-time conversion.
 pub fn calibrate_rdtsc(duration_ms: u64) -> RdtscCalibration {
-    let duration = Duration::from_millis(duration_ms);
+    let duration = duration_ms.ms();
 
     // Measure RDTSC overhead
     let overhead = measure_rdtsc_overhead();
@@ -259,7 +260,7 @@ mod tests {
     #[test]
     fn test_rdtsc_monotonic() {
         let a = rdtsc();
-        std::thread::sleep(Duration::from_micros(1));
+        std::thread::sleep(1_u64.us());
         let b = rdtsc();
         assert!(b > a, "RDTSC should be monotonically increasing");
     }
@@ -289,7 +290,7 @@ mod tests {
 
         // Measure a sleep
         let (_, elapsed) = timer.measure(|| {
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(1_u64.ms());
         });
 
         // Should be around 1ms = 1_000_000 ns, with some tolerance

@@ -16,6 +16,7 @@ use monitor_tests::builders;
 use futures_util::StreamExt;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use horus_core::core::DurationExt;
 
 /// Start a test server on a random port and return the bound address.
 async fn start_test_server() -> SocketAddr {
@@ -56,7 +57,7 @@ async fn ws_receives_first_broadcast() {
     let mut ws = ws_connect(addr).await;
 
     // Wait for the first message (should arrive within broadcast interval)
-    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+    let msg = tokio::time::timeout(2_u64.secs(), ws.next())
         .await
         .expect("must receive message within timeout")
         .expect("stream must not end")
@@ -79,7 +80,7 @@ async fn ws_broadcast_has_correct_structure() {
     let addr = start_test_server().await;
     let mut ws = ws_connect(addr).await;
 
-    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+    let msg = tokio::time::timeout(2_u64.secs(), ws.next())
         .await
         .unwrap()
         .unwrap()
@@ -118,7 +119,7 @@ async fn ws_broadcast_node_fields() {
     // Read a few messages to let discovery pick up the node
     let mut found = false;
     for _ in 0..5 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        let msg = tokio::time::timeout(2_u64.secs(), ws.next())
             .await
             .unwrap()
             .unwrap()
@@ -177,7 +178,7 @@ async fn ws_broadcast_topic_fields() {
 
     let mut found = false;
     for _ in 0..5 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        let msg = tokio::time::timeout(2_u64.secs(), ws.next())
             .await
             .unwrap()
             .unwrap()
@@ -219,7 +220,7 @@ async fn ws_broadcast_no_pid_anywhere() {
     let addr = start_test_server().await;
     let mut ws = ws_connect(addr).await;
 
-    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+    let msg = tokio::time::timeout(2_u64.secs(), ws.next())
         .await
         .unwrap()
         .unwrap()
@@ -264,7 +265,7 @@ async fn ws_broadcast_graph_node_fields() {
 
     // Read messages until we get one with graph nodes
     for _ in 0..5 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        let msg = tokio::time::timeout(2_u64.secs(), ws.next())
             .await
             .unwrap()
             .unwrap()
@@ -298,7 +299,7 @@ async fn ws_broadcast_graph_edge_fields() {
     let mut ws = ws_connect(addr).await;
 
     for _ in 0..5 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        let msg = tokio::time::timeout(2_u64.secs(), ws.next())
             .await
             .unwrap()
             .unwrap()
@@ -334,9 +335,9 @@ async fn ws_receives_multiple_broadcasts() {
 
     // Should receive at least 3 messages within a few seconds
     let mut count = 0;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + 3_u64.secs();
     while tokio::time::Instant::now() < deadline && count < 3 {
-        match tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await {
+        match tokio::time::timeout(2_u64.secs(), ws.next()).await {
             Ok(Some(Ok(msg))) => {
                 let text = msg.into_text().unwrap();
                 let json: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -360,7 +361,7 @@ async fn ws_broadcast_timestamps_increase() {
 
     let mut timestamps = Vec::new();
     for _ in 0..3 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        let msg = tokio::time::timeout(2_u64.secs(), ws.next())
             .await
             .unwrap()
             .unwrap()

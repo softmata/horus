@@ -1101,6 +1101,115 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
         return Ok(());
     }
 
+    // Check for crates.io tracking reference
+    let cratesio_ref = packages_dir.join(format!("{}.crates-io.json", package));
+    if cratesio_ref.exists() {
+        let content = fs::read_to_string(&cratesio_ref).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to read crates.io reference: {}",
+                e
+            )))
+        })?;
+        let metadata: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to parse crates.io reference: {}",
+                e
+            )))
+        })?;
+
+        let install_type = metadata
+            .get("install_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("bin");
+
+        if install_type == "lib" {
+            // Library: run cargo remove
+            let ws_root = workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
+
+            let status = std::process::Command::new("cargo")
+                .args(["remove", &package])
+                .current_dir(&ws_root)
+                .status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    println!(
+                        "  {} Removed {} from Cargo.toml",
+                        cli_output::ICON_SUCCESS.green(),
+                        package
+                    );
+                }
+                _ => {
+                    println!(
+                        "  {} cargo remove failed, manual Cargo.toml update may be needed",
+                        cli_output::ICON_WARN.yellow()
+                    );
+                }
+            }
+        }
+
+        // Delete tracking json
+        fs::remove_file(&cratesio_ref).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to remove tracking file: {}",
+                e
+            )))
+        })?;
+
+        // Also remove the package directory if it exists (for binary installs)
+        if remove_dir.exists() {
+            fs::remove_dir_all(&remove_dir).ok();
+        }
+
+        println!(
+            "{} Removed {} (crates.io)",
+            cli_output::ICON_SUCCESS.green(),
+            package
+        );
+        return Ok(());
+    }
+
+    // Check for PyPI tracking reference
+    let pypi_ref = packages_dir.join(format!("{}.pypi.json", package));
+    if pypi_ref.exists() {
+        // Remove from pyproject.toml
+        let ws_root = workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
+
+        if let Err(e) = registry::remove_dep_from_pyproject_toml(&ws_root, &package) {
+            println!(
+                "  {} Could not update pyproject.toml: {}",
+                cli_output::ICON_WARN.yellow(),
+                e
+            );
+        } else if ws_root.join("pyproject.toml").exists() {
+            println!(
+                "  {} Removed {} from pyproject.toml",
+                cli_output::ICON_SUCCESS.green(),
+                package
+            );
+        }
+
+        // Delete tracking json
+        fs::remove_file(&pypi_ref).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to remove tracking file: {}",
+                e
+            )))
+        })?;
+
+        // Remove package directory
+        if remove_dir.exists() {
+            fs::remove_dir_all(&remove_dir).ok();
+        }
+
+        println!(
+            "{} Removed {} (PyPI)",
+            cli_output::ICON_SUCCESS.green(),
+            package
+        );
+        return Ok(());
+    }
+
     if !remove_dir.exists() {
         println!("  Package {} is not installed", package);
         return Ok(());
@@ -1115,8 +1224,6 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
     })?;
 
     println!("  Removed {} from {}", package, remove_dir.display());
-
-    // horus.toml no longer tracks dependencies; nothing to update there.
 
     Ok(())
 }

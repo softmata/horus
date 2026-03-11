@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_topic_roundtrip() {
-        let topic: Topic<PointCloud> = Topic::new("test/pc_topic_roundtrip_unified").unwrap();
+        let topic: Topic<PointCloud> = Topic::new("test.pc_topic_roundtrip_unified").unwrap();
 
         let pc = PointCloud::new(4, 3, TensorDtype::F32).unwrap();
 

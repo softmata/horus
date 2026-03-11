@@ -27,7 +27,7 @@
 //!
 //! // Client side
 //! let mut client = ServiceClient::<AddTwoInts>::new()?;
-//! let resp = client.call(AddTwoIntsRequest { a: 3, b: 4 }, Duration::from_secs(1))?;
+//! let resp = client.call(AddTwoIntsRequest { a: 3, b: 4 }, 1_u64.secs())?;
 //! println!("sum = {}", resp.sum);
 //! ```
 //!
@@ -38,9 +38,9 @@
 //! ```text
 //! Client                          Server
 //!   |                                |
-//!   |-- {name}/request -----------> |  (ServiceRequest<Req>)
+//!   |-- {name}.request -----------> |  (ServiceRequest<Req>)
 //!   |                                |
-//!   | <---------- {name}/response -- |  (ServiceResponse<Res>)
+//!   | <---------- {name}.response -- |  (ServiceResponse<Res>)
 //!   |                                |
 //! ```
 //!

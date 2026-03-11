@@ -34,7 +34,7 @@ use horus_library::messages::{
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 const DEFAULT_ITERATIONS: usize = 50_000;
 const DEFAULT_WARMUP: usize = 5_000;
@@ -265,7 +265,7 @@ fn benchmark_cmdvel(
     while !consumer_ready.load(Ordering::Acquire) {
         thread::yield_now();
     }
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(10_u64.ms());
 
     let _ = set_cpu_affinity(0);
     let tx: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
@@ -354,7 +354,7 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
     while !consumer_ready.load(Ordering::Acquire) {
         thread::yield_now();
     }
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(10_u64.ms());
 
     let _ = set_cpu_affinity(0);
     let tx: Topic<Imu> = Topic::new(&topic_name).unwrap();
@@ -449,7 +449,7 @@ fn benchmark_laserscan(
     while !consumer_ready.load(Ordering::Acquire) {
         thread::yield_now();
     }
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(10_u64.ms());
 
     let _ = set_cpu_affinity(0);
     let tx: Topic<LaserScan> = Topic::new(&topic_name).unwrap();
@@ -547,7 +547,7 @@ fn benchmark_jointcmd(
     while !consumer_ready.load(Ordering::Acquire) {
         thread::yield_now();
     }
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(10_u64.ms());
 
     let _ = set_cpu_affinity(0);
     let tx: Topic<JointCommand> = Topic::new(&topic_name).unwrap();

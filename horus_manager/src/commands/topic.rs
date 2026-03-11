@@ -9,7 +9,8 @@ use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_topics_dir;
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use horus_core::core::DurationExt;
 
 /// List all active topics
 pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
@@ -167,8 +168,8 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
                 "Rate must be greater than 0.0".to_string(),
             )));
         }
-        Some(r) => Duration::from_secs_f64(1.0 / r),
-        None => Duration::from_millis(100),
+        Some(r) => r.hz().period(),
+        None => 100_u64.ms(),
     };
 
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -466,7 +467,7 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
     }
 
     // Print final stats
@@ -586,7 +587,7 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
     }
 
     println!();
@@ -624,7 +625,7 @@ pub fn publish_topic(
                 "Rate must be greater than 0.0".to_string(),
             )));
         }
-        Some(r) => Some(Duration::from_secs_f64(1.0 / r)),
+        Some(r) => Some(r.hz().period()),
         None => None,
     };
     let publish_count = count.unwrap_or(1);

@@ -5,8 +5,8 @@
 //! the server returns a response (or a timeout elapses).
 //!
 //! Internally each service is backed by two topics:
-//! - `{name}/request`  — clients publish `ServiceRequest<Req>` here
-//! - `{name}/response` — server publishes `ServiceResponse<Res>` here
+//! - `{name}.request`  — clients publish `ServiceRequest<Req>` here
+//! - `{name}.response` — server publishes `ServiceResponse<Res>` here
 //!
 //! Correlation is done via a monotonically-increasing `request_id` that
 //! the client embeds in the request and the server echoes in the response.
@@ -34,7 +34,7 @@ use thiserror::Error;
 ///
 /// // Use the service:
 /// let client = ServiceClient::<AddTwoInts>::new()?;
-/// let resp = client.call(AddTwoIntsRequest { a: 3, b: 4 }, Duration::from_secs(1))?;
+/// let resp = client.call(AddTwoIntsRequest { a: 3, b: 4 }, 1_u64.secs())?;
 /// assert_eq!(resp.sum, 7);
 /// ```
 pub trait Service: Send + Sync + 'static {
@@ -50,12 +50,12 @@ pub trait Service: Send + Sync + 'static {
 
     /// Full topic name for the request channel.
     fn request_topic() -> String {
-        format!("{}/request", Self::name())
+        format!("{}.request", Self::name())
     }
 
     /// Full topic name for the response channel.
     fn response_topic() -> String {
-        format!("{}/response", Self::name())
+        format!("{}.response", Self::name())
     }
 
     /// Human-readable name of the request type (for introspection).

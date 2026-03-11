@@ -2,6 +2,7 @@ use super::data::{
     format_bytes, get_active_nodes, get_active_topics, get_installed_packages, get_local_workspaces,
 };
 use super::*;
+use std::time::Duration;
 
 impl TuiDashboard {
     /// Refresh workspace cache if stale (5 second TTL)

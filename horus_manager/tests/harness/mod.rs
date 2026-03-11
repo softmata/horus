@@ -12,13 +12,14 @@
 //! rt.add_node(TestNodeConfig::sensor("lidar", "scan_data", "LaserScan"))
 //!   .add_topic("scan_data", 4096);
 //!
-//! assert!(rt.wait_ready(Duration::from_secs(2)));
+//! assert!(rt.wait_ready(2_u64.secs()));
 //!
 //! let nodes = horus_manager::discovery::discover_nodes().unwrap();
 //! assert!(nodes.iter().any(|n| n.name == "lidar"));
 //! // Cleanup happens automatically on drop.
 //! ```
 
+use horus_core::core::DurationExt;
 mod fixtures;
 mod runtime;
 

@@ -16,6 +16,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 // Security imports
 use crate::security::{security_headers_middleware, AuthService};
+use horus_core::core::DurationExt;
 
 // Re-export handlers for router setup (pub so integration tests can compose routers).
 pub use handlers::*;
@@ -42,7 +43,7 @@ impl WorkspaceCache {
     fn new() -> Self {
         Self {
             workspaces: Vec::new(),
-            last_scan: Instant::now() - Duration::from_secs(1000), // Force initial scan
+            last_scan: Instant::now() - 1000_u64.secs(), // Force initial scan
             base_path: None,
         }
     }

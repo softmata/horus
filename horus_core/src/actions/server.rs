@@ -39,7 +39,7 @@ use crate::actions::types::{
     PreemptionPolicy,
 };
 use crate::communication::Topic;
-use crate::core::{LogSummary, Node};
+use crate::core::{DurationExt, LogSummary, Node};
 use crate::HorusResult;
 
 use parking_lot::RwLock;
@@ -211,7 +211,7 @@ where
 {
     fn new(link: FeedbackLink<A::Feedback>, rate_hz: f64) -> Self {
         let min_interval = if rate_hz > 0.0 {
-            Duration::from_secs_f64(1.0 / rate_hz)
+            rate_hz.hz().period()
         } else {
             Duration::ZERO
         };

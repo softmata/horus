@@ -3,7 +3,6 @@
 //! These tests verify that RT nodes are fully isolated from compute nodes:
 //! RT nodes tick at their declared rate regardless of how slow compute nodes are.
 
-use horus_core::core::{DurationExt, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +11,7 @@ use std::time::{Duration, Instant};
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::{DurationExt, Node};
 
 // ============================================================================
 // Test Nodes
@@ -87,7 +87,7 @@ impl Node for SlowComputeNode {
 
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(self.sleep_ms));
+        std::thread::sleep(self.sleep_ms.ms());
     }
 }
 
@@ -138,22 +138,22 @@ fn test_rt_isolation_under_compute_load() {
     let (rt_node, rt_count, rt_timestamps) = RtTimingNode::new("rt_controller");
     let (slow_node, compute_count) = SlowComputeNode::new("heavy_compute", 50);
 
-    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000.us())
-        .rate(1000.hz())
+        .budget(10_000_u64.us())
+        .rate(1000_u64.hz())
         .build();
     scheduler
         .add(slow_node)
         .order(5)
         .compute()
-        .rate(10.hz())
+        .rate(10_u64.hz())
         .build(); // 10 Hz compute
 
     // Run for 200ms
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
 
     let rt_ticks = rt_count.load(Ordering::Relaxed);
     let compute_ticks = compute_count.load(Ordering::Relaxed);
@@ -214,12 +214,12 @@ fn test_compute_nodes_run_parallel() {
     let (node_a, count_a) = SlowComputeNode::new("compute_a", 30);
     let (node_b, count_b) = SlowComputeNode::new("compute_b", 30);
 
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
     scheduler.add(node_a).order(1).build();
     scheduler.add(node_b).order(2).build();
 
     let start = Instant::now();
-    scheduler.run_for(Duration::from_millis(150)).unwrap();
+    scheduler.run_for(150_u64.ms()).unwrap();
     let elapsed = start.elapsed();
 
     let ticks_a = count_a.load(Ordering::Relaxed);
@@ -245,16 +245,16 @@ fn test_mixed_rt_and_compute_nodes() {
     let (rt_node, rt_count, _) = RtTimingNode::new("mixed_rt");
     let (compute_node, compute_count) = CounterNode::new("mixed_compute");
 
-    let mut scheduler = Scheduler::new().tick_rate(500.hz());
+    let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000.us())
-        .rate(500.hz())
+        .budget(10_000_u64.us())
+        .rate(500_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     let rt_ticks = rt_count.load(Ordering::Relaxed);
     let compute_ticks = compute_count.load(Ordering::Relaxed);
@@ -289,7 +289,7 @@ fn test_sequential_mode_unchanged() {
     scheduler.add(node_a).order(0).build();
     scheduler.add(node_b).order(1).build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     let ticks_a = count_a.load(Ordering::Relaxed);
     let ticks_b = count_b.load(Ordering::Relaxed);
@@ -324,20 +324,20 @@ fn test_full_system_rt_and_compute_groups() {
     let (compute_b, compute_b_count) = CounterNode::new("compute_worker_b");
     let (slow_compute, slow_compute_count) = SlowComputeNode::new("slow_planner", 30);
 
-    let mut scheduler = Scheduler::new().tick_rate(500.hz());
+    let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
 
     // RT nodes
     scheduler
         .add(rt_fast)
         .order(0)
-        .budget(10_000.us())
-        .rate(500.hz())
+        .budget(10_000_u64.us())
+        .rate(500_u64.hz())
         .build();
     scheduler
         .add(rt_slow)
         .order(1)
-        .budget(10_000.us())
-        .rate(100.hz())
+        .budget(10_000_u64.us())
+        .rate(100_u64.hz())
         .build();
 
     // Compute nodes
@@ -347,11 +347,11 @@ fn test_full_system_rt_and_compute_groups() {
         .add(slow_compute)
         .order(20)
         .compute()
-        .rate(10.hz())
+        .rate(10_u64.hz())
         .build();
 
     // Run for 300ms
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     let fast_ticks = rt_fast_count.load(Ordering::Relaxed);
     let slow_rt_ticks = rt_slow_count.load(Ordering::Relaxed);
@@ -432,18 +432,18 @@ fn test_event_node_ticks_on_publish() {
     });
 
     // Give the scheduler and event watcher time to start
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(50_u64.ms());
 
     // Publish 10 notifications at irregular intervals
     for i in 0..10 {
         NodeInfo::notify_event("evt_sensor");
         // Irregular intervals: 5ms, 10ms, 5ms, ...
         let sleep_ms = if i % 2 == 0 { 5 } else { 10 };
-        std::thread::sleep(Duration::from_millis(sleep_ms));
+        std::thread::sleep(sleep_ms.ms());
     }
 
     // Wait for all ticks to process
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(50_u64.ms());
 
     // Stop the scheduler
     running.store(false, Ordering::SeqCst);
@@ -472,7 +472,7 @@ fn test_event_node_no_tick_without_data() {
         .build();
 
     // Run for 100ms without publishing any data
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     let ticks = event_count.load(Ordering::Relaxed);
     assert_eq!(
@@ -493,12 +493,12 @@ fn test_event_node_alongside_rt_and_besteffort() {
     let (be_node, be_count) = CounterNode::new("mixed_be_node");
     let (evt_node, evt_count) = CounterNode::new("mixed_evt_node");
 
-    let mut scheduler = Scheduler::new().tick_rate(200.hz());
+    let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000.us())
-        .rate(200.hz())
+        .budget(10_000_u64.us())
+        .rate(200_u64.hz())
         .build();
     scheduler.add(be_node).order(5).build();
     scheduler.add(evt_node).order(10).on("sensor_data").build();
@@ -516,7 +516,7 @@ fn test_event_node_alongside_rt_and_besteffort() {
             registered = true;
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(5_u64.ms());
     }
     assert!(
         registered,
@@ -526,11 +526,11 @@ fn test_event_node_alongside_rt_and_besteffort() {
     // That first notify_event already sent 1 notification; send 4 more
     for _ in 0..4 {
         NodeInfo::notify_event("mixed_evt_node");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
     }
 
     // Let the system run a bit more
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(100_u64.ms());
 
     running.store(false, Ordering::SeqCst);
     handle.join().unwrap();
@@ -602,7 +602,7 @@ impl Node for BlockingIoNode {
 
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(self.sleep_ms));
+        std::thread::sleep(self.sleep_ms.ms());
     }
 }
 
@@ -632,23 +632,23 @@ fn test_async_io_isolation_from_rt_and_compute() {
     // Blocking async I/O node — 200ms sleep simulates network call
     let (async_node, async_count) = BlockingIoNode::new("iso_async_slow", 200);
 
-    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000.us())
-        .rate(1000.hz())
+        .budget(10_000_u64.us())
+        .rate(1000_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
     scheduler
         .add(async_node)
         .order(10)
         .async_io()
-        .rate(5.hz()) // 5 Hz — each tick blocks 200ms
+        .rate(5_u64.hz()) // 5 Hz — each tick blocks 200ms
         .build();
 
     // Run for 500ms — enough for async node to tick a few times
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     let rt_ticks = rt_count.load(Ordering::Relaxed);
     let compute_ticks = compute_count.load(Ordering::Relaxed);
@@ -724,12 +724,12 @@ fn test_async_io_nodes_run_concurrently() {
     let (io_a, count_a) = BlockingIoNode::new("async_a_100ms", 100);
     let (io_b, count_b) = BlockingIoNode::new("async_b_100ms", 100);
 
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
     scheduler.add(io_a).order(0).async_io().build();
     scheduler.add(io_b).order(1).async_io().build();
 
     // Run for 350ms
-    scheduler.run_for(Duration::from_millis(350)).unwrap();
+    scheduler.run_for(350_u64.ms()).unwrap();
 
     let ticks_a = count_a.load(Ordering::Relaxed);
     let ticks_b = count_b.load(Ordering::Relaxed);
@@ -771,19 +771,19 @@ fn test_all_execution_groups_simultaneously() {
     // Event group
     let (event_node, event_count) = CounterNode::new("all_event");
 
-    let mut scheduler = Scheduler::new().tick_rate(500.hz());
+    let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000.us())
-        .rate(500.hz())
+        .budget(10_000_u64.us())
+        .rate(500_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
     scheduler
         .add(async_node)
         .order(10)
         .async_io()
-        .rate(10.hz())
+        .rate(10_u64.hz())
         .build();
     scheduler.add(event_node).order(15).on("all_topic").build();
 
@@ -793,16 +793,16 @@ fn test_all_execution_groups_simultaneously() {
     });
 
     // Give all groups time to start
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(50_u64.ms());
 
     // Send event notifications
     for _ in 0..5 {
         NodeInfo::notify_event("all_event");
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
     }
 
     // Let the system run more
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(200_u64.ms());
 
     running.store(false, Ordering::SeqCst);
     handle.join().unwrap();
@@ -839,17 +839,17 @@ fn test_clean_shutdown_all_groups() {
     let (rt_node, rt_count, _) = RtTimingNode::new("shutdown_rt");
     let (compute_node, compute_count) = CounterNode::new("shutdown_compute");
 
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
     scheduler
         .add(rt_node)
         .order(0)
-        .budget(10_000.us())
-        .rate(100.hz())
+        .budget(10_000_u64.us())
+        .rate(100_u64.hz())
         .build();
     scheduler.add(compute_node).order(5).build();
 
     // run_for triggers clean shutdown at the end
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     // After run_for returns, both groups should have been stopped and joined
     // The fact that run_for returns without hanging proves clean shutdown
@@ -877,28 +877,28 @@ fn test_multi_rate_rt_timing_accuracy() {
     let (node_100hz, count_100hz, _) = RtTimingNode::new("rt_100hz");
     let (node_10hz, count_10hz, _) = RtTimingNode::new("rt_10hz");
 
-    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
     scheduler
         .add(node_1khz)
         .order(0)
-        .budget(10_000.us())
-        .rate(1000.hz())
+        .budget(10_000_u64.us())
+        .rate(1000_u64.hz())
         .build();
     scheduler
         .add(node_100hz)
         .order(1)
-        .budget(10_000.us())
-        .rate(100.hz())
+        .budget(10_000_u64.us())
+        .rate(100_u64.hz())
         .build();
     scheduler
         .add(node_10hz)
         .order(2)
-        .budget(10_000.us())
-        .rate(10.hz())
+        .budget(10_000_u64.us())
+        .rate(10_u64.hz())
         .build();
 
     // Run for 500ms — enough for statistical significance
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     let ticks_1khz = count_1khz.load(Ordering::Relaxed);
     let ticks_100hz = count_100hz.load(Ordering::Relaxed);
@@ -966,7 +966,7 @@ fn test_compute_load_shedding() {
     // Slow background node (order 200) — sheddable, sleeps to cause overload
     let (slow_bg, count_bg) = SlowComputeNode::new("slow_bg_200", 100);
 
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
     scheduler.add(fast_hi).order(10).compute().build();
     scheduler.add(fast_mid).order(50).compute().build();
     // Order 200 = sheddable tier. 100ms sleep on a 10ms tick period = guaranteed overload.
@@ -974,11 +974,11 @@ fn test_compute_load_shedding() {
         .add(slow_bg)
         .order(200)
         .compute()
-        .rate(100.hz())
+        .rate(100_u64.hz())
         .build();
 
     // Run for 500ms
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     let hi_ticks = count_hi.load(Ordering::Relaxed);
     let mid_ticks = count_mid.load(Ordering::Relaxed);

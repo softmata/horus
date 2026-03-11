@@ -6,7 +6,7 @@
 /// Demonstrates multi-rate scheduling, sensor processing, and reactive control.
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 message! {
     /// Detected obstacle bearing and distance
@@ -36,7 +36,7 @@ struct LidarProcessor {
 impl LidarProcessor {
     fn new() -> Result<Self> {
         Ok(Self {
-            scan_sub: Topic::new("lidar/scan")?,
+            scan_sub: Topic::new("lidar.scan")?,
             alert_pub: Topic::new("obstacles")?,
             min_distance: 0.5, // 50cm warning distance
         })
@@ -88,9 +88,9 @@ impl Navigator {
     fn new() -> Result<Self> {
         Ok(Self {
             alert_sub: Topic::new("obstacles")?,
-            imu_sub: Topic::new("imu/data")?,
+            imu_sub: Topic::new("imu.data")?,
             cmd_pub: Topic::new("cmd_vel")?,
-            goal_pub: Topic::new("nav/goal")?,
+            goal_pub: Topic::new("nav.goal")?,
             obstacle_detected: false,
             turn_ticks: 0,
         })
@@ -148,7 +148,7 @@ impl TelemetryLogger {
     fn new() -> Result<Self> {
         Ok(Self {
             cmd_sub: Topic::new("cmd_vel")?,
-            imu_sub: Topic::new("imu/data")?,
+            imu_sub: Topic::new("imu.data")?,
             tick_count: 0,
         })
     }
@@ -217,14 +217,14 @@ impl Node for SensorFrames {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
     // Sensor pipeline: fast → slow
-    scheduler.add(LidarProcessor::new()?).order(0).rate(100.hz()).build()?;
-    scheduler.add(Navigator::new()?).order(1).rate(20.hz()).build()?;
-    scheduler.add(SensorFrames::new()?).order(2).rate(1.hz()).build()?;
-    scheduler.add(TelemetryLogger::new()?).order(10).rate(2.hz()).build()?;
+    scheduler.add(LidarProcessor::new()?).order(0).rate(100_u64.hz()).build()?;
+    scheduler.add(Navigator::new()?).order(1).rate(20_u64.hz()).build()?;
+    scheduler.add(SensorFrames::new()?).order(2).rate(1_u64.hz()).build()?;
+    scheduler.add(TelemetryLogger::new()?).order(10).rate(2_u64.hz()).build()?;
 
-    scheduler.run_for(Duration::from_secs(60))?;
+    scheduler.run_for(60_u64.secs())?;
     Ok(())
 }

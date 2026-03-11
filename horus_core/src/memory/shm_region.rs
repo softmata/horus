@@ -71,10 +71,10 @@ impl ShmRegion {
             .create(&horus_shm_dir)?;
 
         // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
-        // Names can also contain "/" for namespacing (e.g., "links/sensor_test")
+        // Names can also contain "/" for backward compatibility
         let path = horus_shm_dir.join(format!("horus_{}", name));
 
-        // Create parent directory if the name contains "/" (e.g., "links/sensor_test")
+        // Create parent directory if the name contains "/" (legacy topic names)
         if let Some(parent) = path.parent() {
             std::fs::DirBuilder::new()
                 .recursive(true)
@@ -203,7 +203,7 @@ fn wait_for_shm_init(fd: i32, expected_size: usize) -> Result<(), ()> {
         }
         // Exponential backoff: 1, 2, 4, 8, 16, 32, 64 ms (capped).
         let delay_ms = 1u64 << retry.min(6);
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        std::thread::sleep(delay_ms.ms());
     }
 
     Err(())

@@ -9,7 +9,7 @@ use horus_core::communication::network::{
     DiscoveryOptions,
 };
 use horus_core::error::HorusResult;
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 /// Run the discover command
 pub fn run_discover(
@@ -34,7 +34,7 @@ fn scan_nodes(
     format: &str,
 ) -> HorusResult<()> {
     let options = DiscoveryOptions {
-        timeout: Duration::from_secs(timeout),
+        timeout: timeout.secs(),
         filter_topic: topic.clone(),
         filter_name: name.clone(),
         include_cached: false,
@@ -100,7 +100,7 @@ fn watch_nodes(topic: Option<String>, name: Option<String>, format: &str) -> Hor
         println!();
     }
 
-    let watcher = watch_with_interval(Duration::from_secs(1))?;
+    let watcher = watch_with_interval(1_u64.secs())?;
 
     for event in watcher {
         // Apply filters

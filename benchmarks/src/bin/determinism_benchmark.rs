@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 const DEFAULT_ITERATIONS: usize = 100_000;
 const DEFAULT_WARMUP: usize = 10_000;
@@ -262,7 +262,7 @@ fn run_determinism_benchmark(
         }
 
         // Give consumer a moment to create the topic
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(10_u64.ms());
 
         // Pin producer to CPU 0
         if let Some((producer_core, _)) = config.cpu_affinity {

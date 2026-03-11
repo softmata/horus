@@ -44,10 +44,10 @@ use std::time::{Duration, Instant};
 pub const HORUS_SERVICE_TYPE: &str = "_horus._udp.local.";
 
 /// Default timeout for mDNS operations
-pub const MDNS_TIMEOUT: Duration = Duration::from_millis(100);
+pub const MDNS_TIMEOUT: Duration = 100_u64.ms();
 
 /// Extended timeout for browsing (need to collect multiple responses)
-pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(2);
+pub const BROWSE_TIMEOUT: Duration = 2_u64.secs();
 
 /// Information about a discovered HORUS service
 #[derive(Debug, Clone)]
@@ -76,7 +76,7 @@ struct CachedResolution {
 }
 
 /// Cache TTL for hostname resolutions (5 minutes)
-const RESOLUTION_CACHE_TTL: Duration = Duration::from_secs(300);
+const RESOLUTION_CACHE_TTL: Duration = 300_u64.secs();
 
 /// mDNS service manager for HORUS
 ///
@@ -272,7 +272,7 @@ impl Mdns {
                     if receiver.is_disconnected() {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(10_u64.ms());
                 }
             }
         }
@@ -340,7 +340,7 @@ impl Mdns {
                     if receiver.is_disconnected() {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(10_u64.ms());
                 }
             }
         }
@@ -422,7 +422,7 @@ impl Mdns {
                     if receiver.is_disconnected() {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(50_u64.ms());
                 }
             }
         }
@@ -594,6 +594,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
 use std::thread;
 use std::time::SystemTime;
+use crate::core::DurationExt;
 
 /// A discovered HORUS node on the network
 ///
@@ -790,7 +791,7 @@ pub struct DiscoveryWatcher {
 impl DiscoveryWatcher {
     /// Create a new watcher with default scan interval (1 second)
     pub fn new() -> HorusResult<Self> {
-        Self::with_interval(Duration::from_secs(1))
+        Self::with_interval(1_u64.secs())
     }
 
     /// Create a watcher with a custom scan interval
@@ -863,7 +864,7 @@ impl DiscoveryWatcher {
                 }
 
                 // Small sleep between scans
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(100_u64.ms());
             }
         });
 
@@ -1546,7 +1547,7 @@ mod tests {
         let watcher = watch().unwrap();
 
         // Wait for a few events or timeout
-        let _event = watcher.recv_timeout(Duration::from_secs(3));
+        let _event = watcher.recv_timeout(3_u64.secs());
 
         // Should either get an event or timeout (no crash)
         drop(watcher);

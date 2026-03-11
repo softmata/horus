@@ -1,15 +1,14 @@
 //! Integration tests for Scheduler DX (Developer Experience) API
 
-use horus_core::core::DurationExt;
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::DurationExt;
 
 /// Simple test node that counts ticks
 struct TickCounterNode {
@@ -59,7 +58,7 @@ fn test_new_creates_scheduler() {
         .order(0)
         .build();
 
-    let result = scheduler.run_for(Duration::from_millis(500));
+    let result = scheduler.run_for(500_u64.ms());
     assert!(
         result.is_ok(),
         "Scheduler::new() should create a working scheduler"

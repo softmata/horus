@@ -287,7 +287,16 @@ mod tests {
         let epoch = get_or_create_process_epoch(&name);
         assert_eq!(epoch.load(Ordering::Relaxed), 0);
 
-        notify_epoch_change(&name, 5);
+        // notify_epoch_change uses try_lock() to avoid blocking the hot path.
+        // Under heavy parallel test load the mutex may be contended, so retry
+        // a few times to give the lock a chance to become available.
+        for _ in 0..50 {
+            notify_epoch_change(&name, 5);
+            if epoch.load(Ordering::Acquire) == 5 {
+                break;
+            }
+            std::thread::yield_now();
+        }
         assert_eq!(epoch.load(Ordering::Acquire), 5);
     }
 

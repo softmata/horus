@@ -26,7 +26,7 @@ use horus_core::communication::Topic;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 // ============================================================================
 // 1. Topic system regressions
@@ -86,7 +86,7 @@ fn regression_cross_thread_topic_handles_must_be_created_before_spawn() {
     let consumer = thread::spawn(move || {
         barrier_c.wait();
         let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(2) {
+        while start.elapsed() < 2_u64.secs() {
             if sub_t.try_recv().is_some() {
                 recv_count.fetch_add(1, Ordering::Relaxed);
             }

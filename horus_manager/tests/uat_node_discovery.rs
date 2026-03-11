@@ -21,8 +21,8 @@ use monitor_tests::helpers::{assert_json_ok, get_request};
 
 use horus_core::NodePresence;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 /// Monotonically increasing counter for unique test prefixes.
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -80,7 +80,7 @@ fn five_nodes_discovered_within_timeout() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
     assert!(
-        rt.wait_ready(Duration::from_secs(3)),
+        rt.wait_ready(3_u64.secs()),
         "all 5 nodes must be discoverable within 3 seconds"
     );
 }
@@ -89,7 +89,7 @@ fn five_nodes_discovered_within_timeout() {
 fn five_nodes_all_present_in_read_all() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
 
     let all = NodePresence::read_all();
     for suffix in &["camera", "lidar", "motor", "gripper", "planner"] {
@@ -106,7 +106,7 @@ fn five_nodes_all_present_in_read_all() {
 fn five_nodes_have_correct_pub_sub_topology() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
 
     let all = NodePresence::read_all();
 
@@ -143,7 +143,7 @@ fn five_nodes_have_correct_pub_sub_topology() {
 fn all_nodes_have_current_process_pid() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
 
     let my_pid = std::process::id();
     let all = NodePresence::read_all();
@@ -164,7 +164,7 @@ fn all_nodes_have_current_process_pid() {
 fn removed_node_disappears_from_discovery() {
     let pfx = unique_prefix();
     let mut rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
 
     let camera_name = format!("{pfx}camera");
 
@@ -203,7 +203,7 @@ fn removed_node_disappears_from_discovery() {
 fn dynamically_added_node_appears_in_discovery() {
     let pfx = unique_prefix();
     let mut rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
 
     let new_name = format!("{pfx}new_sensor");
     rt.add_node(
@@ -234,7 +234,7 @@ fn dynamically_added_node_appears_in_discovery() {
 async fn api_status_reports_correct_node_count() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -253,7 +253,7 @@ async fn api_status_reports_correct_node_count() {
 async fn api_status_healthy_with_all_nodes_alive() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -271,7 +271,7 @@ async fn api_status_healthy_with_all_nodes_alive() {
 async fn api_nodes_lists_all_five_nodes() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -298,7 +298,7 @@ async fn api_nodes_lists_all_five_nodes() {
 async fn api_nodes_have_valid_pid() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -330,7 +330,7 @@ async fn api_nodes_have_valid_pid() {
 async fn api_nodes_cpu_and_memory_plausible() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -363,7 +363,7 @@ async fn api_nodes_cpu_and_memory_plausible() {
 async fn api_and_discovery_show_consistent_node_list() {
     let pfx = unique_prefix();
     let rt = build_five_nodes(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     // Get nodes from discovery layer directly.
@@ -406,7 +406,7 @@ fn no_shm_leak_after_runtime_drop() {
     let paths;
     {
         let rt = build_five_nodes(&pfx);
-        assert!(rt.wait_ready(Duration::from_secs(3)));
+        assert!(rt.wait_ready(3_u64.secs()));
         paths = rt.presence_paths().to_vec();
 
         // All files should exist while runtime is alive.

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use horus_core::core::DurationExt;
 
 /// Node configuration in a launch file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,7 +175,7 @@ pub fn run_launch(
         if let Some(delay) = node.start_delay {
             if delay > 0.0 {
                 println!("  {} Waiting {:.1}s for {}", "".dimmed(), delay, node.name);
-                std::thread::sleep(std::time::Duration::from_secs_f64(delay));
+                std::thread::sleep(delay.secs());
             }
         }
 
@@ -281,7 +282,7 @@ pub fn run_launch(
             break;
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
     }
 
     // Clean up
@@ -301,7 +302,7 @@ pub fn run_launch(
         }
 
         // Wait for graceful shutdown
-        std::thread::sleep(std::time::Duration::from_secs(shutdown_timeout_secs));
+        std::thread::sleep(shutdown_timeout_secs.secs());
 
         // Force kill if still running
         if proc.try_wait().map(|s| s.is_none()).unwrap_or(false) {

@@ -4,16 +4,16 @@
 //! load shedding activation/cooldown, non-sheddable nodes, paused/uninitialized
 //! nodes, skip policy, restart failure, panic downcasting.
 
-use horus_core::core::DurationExt;
 use horus_core::core::Node;
 use horus_core::error::HorusResult;
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::DurationExt;
 
 // ============================================================================
 // Mock nodes
@@ -47,7 +47,7 @@ impl Node for SlowComputeNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(self.sleep_ms));
+        std::thread::sleep(self.sleep_ms.ms());
     }
 }
 
@@ -140,7 +140,7 @@ fn test_compute_single_node_no_crossbeam() {
         .compute()
         .build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     assert!(
         tick_count.load(Ordering::SeqCst) > 0,
@@ -167,7 +167,7 @@ fn test_compute_parallel_execution() {
     }
 
     let start = Instant::now();
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
     let elapsed = start.elapsed();
 
     // If running in parallel, all 5 nodes (20ms each) should complete in ~20ms per cycle
@@ -194,7 +194,7 @@ fn test_load_shedding_activates() {
     let critical_count = Arc::new(AtomicU64::new(0));
     let background_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_rate(100.hz()); // 10ms tick period
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz()); // 10ms tick period
 
     // Critical compute node (order=0, not sheddable)
     scheduler
@@ -217,7 +217,7 @@ fn test_load_shedding_activates() {
         .compute()
         .build();
 
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     let critical = critical_count.load(Ordering::SeqCst);
     let background = background_count.load(Ordering::SeqCst);
@@ -236,7 +236,7 @@ fn test_load_shedding_cooldown_deactivates() {
     let critical_count = Arc::new(AtomicU64::new(0));
     let background_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_rate(10.hz()); // 100ms tick period - generous
+    let mut scheduler = Scheduler::new().tick_rate(10_u64.hz()); // 100ms tick period - generous
 
     // Fast critical node (well under budget)
     scheduler
@@ -258,7 +258,7 @@ fn test_load_shedding_cooldown_deactivates() {
         .compute()
         .build();
 
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     // Both should tick since there's no overload
     let critical = critical_count.load(Ordering::SeqCst);
@@ -277,7 +277,7 @@ fn test_non_sheddable_ticks_during_shedding() {
     cleanup_stale_shm();
     let non_sheddable_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
     // Non-sheddable node (order < 200) with slow execution
     scheduler
@@ -290,7 +290,7 @@ fn test_non_sheddable_ticks_during_shedding() {
         .compute()
         .build();
 
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     // Non-sheddable nodes keep ticking even under overload
     assert!(
@@ -319,7 +319,7 @@ fn test_compute_paused_node_skipped() {
         .build();
 
     // Normal operation should tick
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
     assert!(tick_count.load(Ordering::SeqCst) > 0);
 }
 
@@ -339,7 +339,7 @@ fn test_compute_uninitialized_node_skipped() {
         .compute()
         .build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     assert_eq!(
         tick_count.load(Ordering::SeqCst),
@@ -361,10 +361,10 @@ fn test_compute_skip_policy() {
         })
         .order(5)
         .compute()
-        .failure_policy(FailurePolicy::skip(2, 5000))
+        .failure_policy(FailurePolicy::skip(2, 5_u64.secs()))
         .build();
 
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     // The compute executor may dispatch several ticks before the skip policy
@@ -390,12 +390,12 @@ fn test_compute_restart_failure() {
         })
         .order(5)
         .compute()
-        .failure_policy(FailurePolicy::restart(3, 10))
+        .failure_policy(FailurePolicy::restart(3, 10_u64.ms()))
         .build();
 
     // The restart policy should attempt to restart the node after panics.
     // After exhausting restarts, it escalates to fatal.
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     // The node should tick at least once before restart exhaustion
@@ -445,7 +445,7 @@ fn test_compute_panic_downcasting() {
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     // All three panic types should be handled and nodes keep ticking with Ignore
     assert!(

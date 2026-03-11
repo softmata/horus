@@ -6,12 +6,12 @@
 //! Run with: cargo bench -- scheduler_jitter
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use horus_core::core::{DurationExt, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use horus_core::core::{DurationExt, Node};
 
 // ============================================================================
 // Benchmark Nodes
@@ -127,7 +127,7 @@ fn analyze_jitter(timestamps: &[Instant]) -> Option<JitterStats> {
 
 fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
     let mut group = c.benchmark_group("scheduler_rt_jitter");
-    group.measurement_time(Duration::from_secs(5));
+    group.measurement_time(5_u64.secs());
     group.sample_size(10);
 
     group.bench_function("new_api_rt_500hz_with_compute_load", |b| {
@@ -139,17 +139,17 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
             let compute_a = HeavyComputeNode::new("bench_compute_a", 5000); // 5ms work
             let compute_b = HeavyComputeNode::new("bench_compute_b", 5000);
 
-            let mut scheduler = Scheduler::new().tick_rate(500.hz());
+            let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
             scheduler
                 .add(rt_node)
                 .order(0)
-                .budget(10_000.us())
-                .rate(500.hz())
+                .budget(10_000_u64.us())
+                .rate(500_u64.hz())
                 .build();
             scheduler.add(compute_a).order(10).compute().build();
             scheduler.add(compute_b).order(11).compute().build();
 
-            scheduler.run_for(Duration::from_millis(200)).unwrap();
+            scheduler.run_for(200_u64.ms()).unwrap();
 
             let ts = timestamps.lock().unwrap();
             if let Some(stats) = analyze_jitter(&ts) {
@@ -168,15 +168,15 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
 
             let (rt_node, _count, timestamps) = JitterMeasureNode::new("bench_rt_solo");
 
-            let mut scheduler = Scheduler::new().tick_rate(500.hz());
+            let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
             scheduler
                 .add(rt_node)
                 .order(0)
-                .budget(10_000.us())
-                .rate(500.hz())
+                .budget(10_000_u64.us())
+                .rate(500_u64.hz())
                 .build();
 
-            scheduler.run_for(Duration::from_millis(200)).unwrap();
+            scheduler.run_for(200_u64.ms()).unwrap();
 
             let ts = timestamps.lock().unwrap();
             if let Some(stats) = analyze_jitter(&ts) {
@@ -192,7 +192,7 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
 
 fn bench_jitter_report(c: &mut Criterion) {
     let mut group = c.benchmark_group("scheduler_jitter_report");
-    group.measurement_time(Duration::from_secs(3));
+    group.measurement_time(3_u64.secs());
     group.sample_size(10);
 
     group.bench_function("rt_isolation_proof", |b| {
@@ -203,11 +203,11 @@ fn bench_jitter_report(c: &mut Criterion) {
             let (rt_node, rt_count, rt_timestamps) = JitterMeasureNode::new("proof_rt");
             let slow = HeavyComputeNode::new("proof_slow", 50_000); // 50ms blocking work
 
-            let mut scheduler = Scheduler::new().tick_rate(500.hz());
-            scheduler.add(rt_node).order(0).budget(10_000.us()).rate(500.hz()).build();
-            scheduler.add(slow).order(10).compute().rate(10.hz()).build();
+            let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
+            scheduler.add(rt_node).order(0).budget(10_000_u64.us()).rate(500_u64.hz()).build();
+            scheduler.add(slow).order(10).compute().rate(10_u64.hz()).build();
 
-            scheduler.run_for(Duration::from_millis(500)).unwrap();
+            scheduler.run_for(500_u64.ms()).unwrap();
 
             let ticks = rt_count.load(Ordering::Relaxed);
             let ts = rt_timestamps.lock().unwrap();

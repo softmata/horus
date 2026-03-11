@@ -1,11 +1,11 @@
 // Test comprehensive scheduler configuration
-use horus_core::core::{DurationExt, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::{DurationExt, Node};
 
 /// Simple test node for configuration testing
 struct TestNode {
@@ -57,7 +57,7 @@ fn test_standard_config() {
     scheduler.add(TestNode::new("controller1")).order(1).build();
 
     // Run for a short duration to test
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -65,7 +65,7 @@ fn test_standard_config() {
 fn test_safety_critical_config() {
     cleanup_stale_shm();
     // Apply safety-critical robot configuration
-    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
     scheduler
         .add(TestNode::new("safety_monitor"))
@@ -76,7 +76,7 @@ fn test_safety_critical_config() {
         .order(0)
         .build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(50));
+    let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }
 
@@ -84,7 +84,7 @@ fn test_safety_critical_config() {
 fn test_high_performance_config() {
     cleanup_stale_shm();
     // Apply high-performance robot configuration
-    let mut scheduler = Scheduler::new().tick_rate(10000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(10000_u64.hz());
 
     scheduler.add(TestNode::new("fast_sensor")).order(0).build();
     scheduler
@@ -92,7 +92,7 @@ fn test_high_performance_config() {
         .order(1)
         .build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(50));
+    let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }
 
@@ -105,7 +105,7 @@ fn test_space_robot_config() {
     scheduler.add(TestNode::new("navigation")).order(0).build();
     scheduler.add(TestNode::new("solar_panel")).order(5).build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -113,7 +113,7 @@ fn test_space_robot_config() {
 fn test_custom_exotic_robot_config() {
     cleanup_stale_shm();
     // Create custom configuration using builder methods
-    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(500.hz());
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(500_u64.hz());
 
     scheduler.add(TestNode::new("bio_sensor")).order(0).build();
     scheduler
@@ -121,7 +121,7 @@ fn test_custom_exotic_robot_config() {
         .order(1)
         .build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -132,7 +132,7 @@ fn test_execution_classes() {
     {
         let mut scheduler = Scheduler::new();
         scheduler.add(TestNode::new("seq_node")).order(0).build();
-        let result = scheduler.run_for(std::time::Duration::from_millis(50));
+        let result = scheduler.run_for(50_u64.ms());
         result.unwrap();
     }
 
@@ -145,7 +145,7 @@ fn test_execution_classes() {
             .compute()
             .build();
         scheduler.add(TestNode::new("main_node")).order(1).build();
-        let result = scheduler.run_for(std::time::Duration::from_millis(50));
+        let result = scheduler.run_for(50_u64.ms());
         result.unwrap();
     }
 }
@@ -162,7 +162,7 @@ fn test_swarm_config() {
         .order(1)
         .build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -181,7 +181,7 @@ fn test_soft_robotics_config() {
         .order(1)
         .build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -189,7 +189,7 @@ fn test_soft_robotics_config() {
 fn test_high_performance_optimizer_nodes() {
     cleanup_stale_shm();
     // Test high-performance configuration with optimizer nodes
-    let mut scheduler = Scheduler::new().tick_rate(10000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(10000_u64.hz());
 
     scheduler.add(TestNode::new("perf_sensor")).order(0).build();
     scheduler
@@ -197,7 +197,7 @@ fn test_high_performance_optimizer_nodes() {
         .order(1)
         .build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -209,20 +209,20 @@ fn test_high_performance_optimizer_nodes() {
 fn test_deploy_preset() {
     cleanup_stale_shm();
     // Scheduler::new().monitoring(true) enables safety monitor, fault tolerance, watchdog, blackbox
-    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(100_u64.hz());
 
     scheduler
         .add(TestNode::new("motor"))
         .order(0)
-        .rate(100.hz())
+        .rate(100_u64.hz())
         .build();
     scheduler
         .add(TestNode::new("sensor"))
         .order(1)
-        .rate(50.hz())
+        .rate(50_u64.hz())
         .build();
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -230,14 +230,14 @@ fn test_deploy_preset() {
 fn test_deploy_with_cores() {
     cleanup_stale_shm();
     // monitoring(true) + cores() is the typical production pattern
-    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(500.hz()).cores(&[0, 1]);
+    let mut scheduler = Scheduler::new().monitoring(true).tick_rate(500_u64.hz()).cores(&[0, 1]);
 
     scheduler
         .add(TestNode::new("ctrl"))
         .order(0)
-        .rate(500.hz())
+        .rate(500_u64.hz())
         .build();
-    let result = scheduler.run_for(std::time::Duration::from_millis(50));
+    let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }
 
@@ -250,15 +250,15 @@ fn test_safety_critical_preset() {
         .monitoring(true)
         .with_blackbox(64)
         .with_profiling()
-        .tick_rate(1000.hz())
+        .tick_rate(1000_u64.hz())
         .max_deadline_misses(3);
 
     scheduler
         .add(TestNode::new("safety_node"))
         .order(0)
-        .budget(500.us())
+        .budget(500_u64.us())
         .build();
-    let _ = scheduler.run_for(std::time::Duration::from_millis(50));
+    let _ = scheduler.run_for(50_u64.ms());
 }
 
 #[test]
@@ -270,16 +270,16 @@ fn test_hard_rt_preset() {
         Scheduler::new()
             .require_rt()
             .monitoring(true)
-            .tick_rate(1000.hz())
+            .tick_rate(1000_u64.hz())
     });
     // Either succeeds (system has RT) or panics (no RT) — both are valid
     if let Ok(mut scheduler) = result {
         scheduler
             .add(TestNode::new("rt_node"))
             .order(0)
-            .budget(200.us())
+            .budget(200_u64.us())
             .build();
-        let _ = scheduler.run_for(std::time::Duration::from_millis(50));
+        let _ = scheduler.run_for(50_u64.ms());
     }
 }
 
@@ -288,21 +288,21 @@ fn test_auto_derive_tick_rate_from_fastest_node() {
     cleanup_stale_shm();
     // If we set tick_rate(10) but add a node at 500Hz,
     // the scheduler should auto-bump to at least 500Hz
-    let mut scheduler = Scheduler::new().tick_rate(10.hz());
+    let mut scheduler = Scheduler::new().tick_rate(10_u64.hz());
 
     scheduler
         .add(TestNode::new("fast_node"))
         .order(0)
-        .rate(500.hz())
+        .rate(500_u64.hz())
         .build();
     scheduler
         .add(TestNode::new("slow_node"))
         .order(1)
-        .rate(1.hz())
+        .rate(1_u64.hz())
         .build();
 
     // After run starts, tick rate should have been bumped
-    let result = scheduler.run_for(std::time::Duration::from_millis(50));
+    let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }
 
@@ -310,22 +310,22 @@ fn test_auto_derive_tick_rate_from_fastest_node() {
 fn test_node_rate_via_builder_only() {
     cleanup_stale_shm();
     // rate_hz is now builder-only — Node trait no longer declares it
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
     // Rate set via builder, not via Node::rate_hz()
     scheduler
         .add(TestNode::new("node_a"))
         .order(0)
-        .rate(50.hz())
+        .rate(50_u64.hz())
         .build();
     scheduler
         .add(TestNode::new("node_b"))
         .order(1)
-        .rate(25.hz())
+        .rate(25_u64.hz())
         .build();
     scheduler.add(TestNode::new("node_c")).order(2).build(); // Uses global rate
 
-    let result = scheduler.run_for(std::time::Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -335,11 +335,11 @@ fn test_preset_chaining() {
     // Builder methods return Self so they can be chained
     let mut scheduler = Scheduler::new()
         .monitoring(true)
-        .tick_rate(200.hz())
+        .tick_rate(200_u64.hz())
         .verbose(false)
         .with_profiling();
 
     scheduler.add(TestNode::new("chained")).order(0).build();
-    let result = scheduler.run_for(std::time::Duration::from_millis(50));
+    let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }

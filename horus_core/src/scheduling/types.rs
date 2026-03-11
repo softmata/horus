@@ -17,6 +17,7 @@ use crate::core::{Miss, Node, NodeInfo, RtStats};
 /// - `Warning` → `Unhealthy` (2x timeout): node is skipped in tick loop
 /// - `Unhealthy` → `Isolated` (3x timeout, critical node): `enter_safe_state()` called
 /// - Any → `Healthy`: node ticks successfully (recovery)
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum NodeHealthState {
@@ -57,6 +58,7 @@ impl std::fmt::Display for NodeHealthState {
 /// Atomic wrapper for `NodeHealthState`, enabling lock-free per-node health tracking.
 ///
 /// Uses `AtomicU8` internally — no lock contention on read or write.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct AtomicHealthState(AtomicU8);
 
@@ -234,25 +236,9 @@ mod execution_class_tests {
 /// - **AsyncIo**: Tokio blocking pool for I/O-bound work
 /// - **BestEffort**: Default — runs in the main tick loop
 ///
-/// # Example
-///
-/// ```rust,ignore
-/// use horus::prelude::*;
-///
-/// let mut scheduler = Scheduler::new();
-///
-/// // Motor control on dedicated RT thread
-/// scheduler.add(motor_node).order(0).budget(200.us()).build()?;
-///
-/// // Path planning in parallel compute pool
-/// scheduler.add(planner_node).order(5).compute().build()?;
-///
-/// // React to LiDAR scans when they arrive
-/// scheduler.add(obstacle_node).on("lidar_scan").build()?;
-///
-/// // Telemetry upload on async I/O pool
-/// scheduler.add(telemetry_node).async_io().rate(1.hz()).build()?;
-/// ```
+/// Users should not construct this directly. Use the node builder methods instead:
+/// `.compute()`, `.on("topic")`, `.async_io()`, `.rate()` (auto-sets Rt).
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ExecutionClass {
     /// Real-time node — runs on a dedicated RT thread with priority scheduling.

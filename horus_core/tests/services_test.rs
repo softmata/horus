@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod tests {
+    use horus_core::core::DurationExt;
     use horus_core::service;
     use horus_core::services::{
         AsyncServiceClient, ServiceClient, ServiceError, ServiceInfo, ServiceRequest,
@@ -13,7 +14,6 @@ mod tests {
     };
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
 
     // ─── Test service definitions ───────────────────────────────────────────
 
@@ -104,8 +104,8 @@ mod tests {
     fn test_service_macro_topic_names() {
         use horus_core::services::Service;
 
-        assert_eq!(AddTwoInts::request_topic(), "add_two_ints/request");
-        assert_eq!(AddTwoInts::response_topic(), "add_two_ints/response");
+        assert_eq!(AddTwoInts::request_topic(), "add_two_ints.request");
+        assert_eq!(AddTwoInts::response_topic(), "add_two_ints.response");
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_service_client_with_custom_poll_interval() {
-        let client = ServiceClient::<RtClientPoll>::with_poll_interval(Duration::from_micros(500));
+        let client = ServiceClient::<RtClientPoll>::with_poll_interval(500_u64.us());
         client.unwrap();
     }
 
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn test_async_service_client_with_custom_poll_interval() {
         let client =
-            AsyncServiceClient::<RtAsyncCreatePoll>::with_poll_interval(Duration::from_micros(100));
+            AsyncServiceClient::<RtAsyncCreatePoll>::with_poll_interval(100_u64.us());
         client.unwrap();
     }
 
@@ -375,7 +375,7 @@ mod tests {
     fn test_server_builder_with_poll_interval() {
         let server = ServiceServerBuilder::<RtServerPoll>::new()
             .on_request(|req| Ok(RtServerPollResponse { sum: req.a + req.b }))
-            .poll_interval(Duration::from_millis(10))
+            .poll_interval(10_u64.ms())
             .build();
         server.unwrap();
     }
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn test_client_call_timeout_no_server() {
         let mut client = ServiceClient::<RtClientTimeout>::new().unwrap();
-        let result = client.call(RtClientTimeoutRequest {}, Duration::from_millis(50));
+        let result = client.call(RtClientTimeoutRequest {}, 50_u64.ms());
         assert!(
             matches!(result, Err(ServiceError::Timeout)),
             "expected Timeout, got {:?}",
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn test_client_call_optional_timeout_returns_none() {
         let mut client = ServiceClient::<RtClientOptTo>::new().unwrap();
-        let result = client.call_optional(RtClientOptToRequest {}, Duration::from_millis(50));
+        let result = client.call_optional(RtClientOptToRequest {}, 50_u64.ms());
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     }
@@ -433,14 +433,14 @@ mod tests {
     fn test_roundtrip_add_two_ints() {
         let _server = ServiceServerBuilder::<RtAddBasic>::new()
             .on_request(|req| Ok(RtAddBasicResponse { sum: req.a + req.b }))
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtAddBasic>::new().unwrap();
-        let resp = client.call(RtAddBasicRequest { a: 3, b: 4 }, Duration::from_secs(2));
+        let resp = client.call(RtAddBasicRequest { a: 3, b: 4 }, 2_u64.secs());
 
         assert!(resp.is_ok(), "roundtrip should succeed: {:?}", resp);
         assert_eq!(resp.unwrap().sum, 7);
@@ -454,18 +454,18 @@ mod tests {
                     echoed: req.message.clone(),
                 })
             })
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtEcho>::new().unwrap();
         let resp = client.call(
             RtEchoRequest {
                 message: "hello horus".to_string(),
             },
-            Duration::from_secs(2),
+            2_u64.secs(),
         );
 
         assert!(resp.is_ok(), "echo roundtrip should succeed: {:?}", resp);
@@ -476,18 +476,18 @@ mod tests {
     fn test_roundtrip_multiple_calls() {
         let _server = ServiceServerBuilder::<RtMultiCall>::new()
             .on_request(|req| Ok(RtMultiCallResponse { sum: req.a + req.b }))
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtMultiCall>::new().unwrap();
 
         for i in 0..5 {
             let resp = client.call(
                 RtMultiCallRequest { a: i, b: i * 10 },
-                Duration::from_secs(2),
+                2_u64.secs(),
             );
             assert!(resp.is_ok(), "call {} should succeed", i);
             assert_eq!(resp.unwrap().sum, i + i * 10);
@@ -506,11 +506,11 @@ mod tests {
                     })
                 }
             })
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtFallible>::new().unwrap();
 
@@ -520,7 +520,7 @@ mod tests {
                 should_fail: false,
                 value: 21,
             },
-            Duration::from_secs(2),
+            2_u64.secs(),
         );
         assert!(resp.is_ok());
         assert_eq!(resp.unwrap().result, 42);
@@ -531,7 +531,7 @@ mod tests {
                 should_fail: true,
                 value: 0,
             },
-            Duration::from_secs(2),
+            2_u64.secs(),
         );
         assert!(resp.is_err());
         match resp {
@@ -546,16 +546,16 @@ mod tests {
     fn test_roundtrip_call_optional_success() {
         let _server = ServiceServerBuilder::<RtCallOptional>::new()
             .on_request(|req| Ok(RtCallOptionalResponse { sum: req.a + req.b }))
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtCallOptional>::new().unwrap();
         let resp = client.call_optional(
             RtCallOptionalRequest { a: 10, b: 20 },
-            Duration::from_secs(2),
+            2_u64.secs(),
         );
         assert!(resp.is_ok());
         let inner = resp.unwrap();
@@ -567,11 +567,11 @@ mod tests {
     fn test_roundtrip_call_optional_propagates_service_error() {
         let _server = ServiceServerBuilder::<RtCallOptErr>::new()
             .on_request(|_req| Err("forced error".to_string()))
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtCallOptErr>::new().unwrap();
         let resp = client.call_optional(
@@ -579,7 +579,7 @@ mod tests {
                 should_fail: true,
                 value: 0,
             },
-            Duration::from_secs(2),
+            2_u64.secs(),
         );
         assert!(resp.is_err());
         assert!(
@@ -597,14 +597,14 @@ mod tests {
     fn test_async_client_call_and_wait() {
         let _server = ServiceServerBuilder::<RtAsyncWait>::new()
             .on_request(|req| Ok(RtAsyncWaitResponse { sum: req.a + req.b }))
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = AsyncServiceClient::<RtAsyncWait>::new().unwrap();
-        let pending = client.call_async(RtAsyncWaitRequest { a: 5, b: 6 }, Duration::from_secs(2));
+        let pending = client.call_async(RtAsyncWaitRequest { a: 5, b: 6 }, 2_u64.secs());
 
         let resp = pending.wait();
         assert!(resp.is_ok(), "async wait should succeed: {:?}", resp);
@@ -615,16 +615,16 @@ mod tests {
     fn test_async_client_check_polling() {
         let _server = ServiceServerBuilder::<RtAsyncPoll>::new()
             .on_request(|req| Ok(RtAsyncPollResponse { sum: req.a + req.b }))
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = AsyncServiceClient::<RtAsyncPoll>::new().unwrap();
         let mut pending = client.call_async(
             RtAsyncPollRequest { a: 100, b: 200 },
-            Duration::from_secs(2),
+            2_u64.secs(),
         );
 
         let mut result = None;
@@ -635,7 +635,7 @@ mod tests {
                     break;
                 }
                 Ok(None) => {
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(10_u64.ms());
                 }
                 Err(e) => panic!("unexpected error during check: {:?}", e),
             }
@@ -651,9 +651,9 @@ mod tests {
     #[test]
     fn test_async_client_timeout_on_check() {
         let mut client = AsyncServiceClient::<RtAsyncTimeout>::new().unwrap();
-        let mut pending = client.call_async(RtAsyncTimeoutRequest {}, Duration::from_millis(50));
+        let mut pending = client.call_async(RtAsyncTimeoutRequest {}, 50_u64.ms());
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
 
         let result = pending.check();
         assert!(
@@ -666,11 +666,11 @@ mod tests {
     #[test]
     fn test_async_client_is_expired() {
         let mut client = AsyncServiceClient::<RtAsyncExpired>::new().unwrap();
-        let pending = client.call_async(RtAsyncExpiredRequest {}, Duration::from_millis(30));
+        let pending = client.call_async(RtAsyncExpiredRequest {}, 30_u64.ms());
 
         assert!(!pending.is_expired(), "should not be expired immediately");
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         assert!(pending.is_expired(), "should be expired after timeout");
     }
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn test_async_client_wait_timeout() {
         let mut client = AsyncServiceClient::<RtAsyncWaitTo>::new().unwrap();
-        let pending = client.call_async(RtAsyncWaitToRequest {}, Duration::from_millis(50));
+        let pending = client.call_async(RtAsyncWaitToRequest {}, 50_u64.ms());
 
         let result = pending.wait();
         assert!(
@@ -695,14 +695,14 @@ mod tests {
     #[test]
     fn test_server_no_handler_returns_error() {
         let _server = ServiceServerBuilder::<RtNoHandler>::new()
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtNoHandler>::new().unwrap();
-        let resp = client.call(RtNoHandlerRequest {}, Duration::from_secs(2));
+        let resp = client.call(RtNoHandlerRequest {}, 2_u64.secs());
 
         assert!(resp.is_err());
         match resp {
@@ -721,17 +721,17 @@ mod tests {
     fn test_server_drop_during_client_call() {
         let server = ServiceServerBuilder::<RtDropServer>::new()
             .on_request(|_req| {
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(100_u64.ms());
                 Ok(RtDropServerResponse {})
             })
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
         drop(server);
 
         let mut client = ServiceClient::<RtDropServer>::new().unwrap();
-        let result = client.call(RtDropServerRequest {}, Duration::from_millis(100));
+        let result = client.call(RtDropServerRequest {}, 100_u64.ms());
         result.unwrap_err();
     }
 
@@ -743,11 +743,11 @@ mod tests {
                     echoed: req.message.clone(),
                 })
             })
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let large_message = "x".repeat(10_000);
         let mut client = ServiceClient::<RtLargePayload>::new().unwrap();
@@ -755,7 +755,7 @@ mod tests {
             RtLargePayloadRequest {
                 message: large_message.clone(),
             },
-            Duration::from_secs(5),
+            5_u64.secs(),
         );
 
         assert!(resp.is_ok(), "large payload roundtrip should work");
@@ -766,11 +766,11 @@ mod tests {
     fn test_negative_values_roundtrip() {
         let _server = ServiceServerBuilder::<RtNegative>::new()
             .on_request(|req| Ok(RtNegativeResponse { sum: req.a + req.b }))
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtNegative>::new().unwrap();
         let resp = client.call(
@@ -778,7 +778,7 @@ mod tests {
                 a: i64::MIN / 2,
                 b: i64::MIN / 2,
             },
-            Duration::from_secs(2),
+            2_u64.secs(),
         );
         assert!(resp.is_ok());
         assert_eq!(resp.unwrap().sum, i64::MIN);
@@ -794,15 +794,15 @@ mod tests {
                 count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(RtSharedStateResponse { sum: req.a + req.b })
             })
-            .poll_interval(Duration::from_millis(1))
+            .poll_interval(1_u64.ms())
             .build()
             .unwrap();
 
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtSharedState>::new().unwrap();
         for _ in 0..3 {
-            let _ = client.call(RtSharedStateRequest { a: 1, b: 1 }, Duration::from_secs(2));
+            let _ = client.call(RtSharedStateRequest { a: 1, b: 1 }, 2_u64.secs());
         }
 
         assert!(

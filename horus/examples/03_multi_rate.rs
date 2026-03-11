@@ -9,7 +9,7 @@
 //! ```
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 message! {
     /// Velocity command for a differential-drive robot
@@ -105,28 +105,28 @@ impl Node for LoggerNode {
 fn main() -> Result<()> {
     println!("=== HORUS Example 3: Multi-Rate Nodes ===\n");
 
-    let mut scheduler = Scheduler::new().tick_rate(10.hz());
+    let mut scheduler = Scheduler::new().tick_rate(10_u64.hz());
 
     // Each node gets its own rate
     scheduler
         .add(SensorNode { ticks: 0 })
         .order(0)
-        .rate(10.hz())
+        .rate(10_u64.hz())
         .build()?;
 
     scheduler
         .add(ControlNode::new()?)
         .order(1)
-        .rate(5.hz())
+        .rate(5_u64.hz())
         .build()?;
 
     scheduler
         .add(LoggerNode::new()?)
         .order(2)
-        .rate(1.hz())
+        .rate(1_u64.hz())
         .build()?;
 
-    scheduler.run_for(Duration::from_secs(3))?;
+    scheduler.run_for(3_u64.secs())?;
 
     println!("\nDone!");
     Ok(())

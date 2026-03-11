@@ -1,9 +1,10 @@
 // Scheduler configuration - preset factories and data structs
 
 /// Timing configuration
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct TimingConfig {
-    /// Global tick rate in Hz (default: 60)
+    /// Global tick rate in Hz (default: 100)
     pub global_rate_hz: f64,
     /// Enable deterministic execution order (default: false).
     ///
@@ -21,6 +22,7 @@ pub struct TimingConfig {
 ///
 /// For standalone thread-level RT configuration (outside the scheduler), use
 /// [`RtConfig`](crate::core::rt_config::RtConfig) directly.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct RealTimeConfig {
     /// Enable budget enforcement
@@ -42,6 +44,7 @@ pub struct RealTimeConfig {
 }
 
 /// Resource management configuration
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct ResourceConfig {
     /// CPU cores to use (None = all cores)
@@ -49,6 +52,7 @@ pub struct ResourceConfig {
 }
 
 /// Monitoring and telemetry configuration
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct MonitoringConfig {
     /// Enable runtime profiling
@@ -66,6 +70,7 @@ pub struct MonitoringConfig {
 }
 
 /// Recording configuration for record/replay system (YAML-compatible)
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct RecordingConfigYaml {
     /// Enable recording when scheduler starts
@@ -137,11 +142,16 @@ impl RecordingConfigYaml {
 ///
 /// ```rust,ignore
 /// // Production: enable monitoring
-/// let scheduler = Scheduler::new().monitoring(true).tick_rate(500.hz());
+/// let scheduler = Scheduler::new()
+///     .budget_enforcement(true)
+///     .deadline_monitoring(true)
+///     .watchdog(500_u64.ms())
+///     .tick_rate(500_u64.hz());
 ///
 /// // Lightweight: no monitoring
-/// let scheduler = Scheduler::new().tick_rate(500.hz());
+/// let scheduler = Scheduler::new().tick_rate(500_u64.hz());
 /// ```
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     /// Timing configuration
@@ -160,7 +170,7 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             timing: TimingConfig {
-                global_rate_hz: 60.0,
+                global_rate_hz: 100.0,
                 deterministic_order: false,
             },
             realtime: RealTimeConfig {
@@ -353,7 +363,7 @@ mod tests {
     fn scheduler_config_default_has_positive_rate() {
         let config = SchedulerConfig::default();
         assert!(config.timing.global_rate_hz > 0.0);
-        assert_eq!(config.timing.global_rate_hz, 60.0);
+        assert_eq!(config.timing.global_rate_hz, 100.0);
     }
 
     #[test]
@@ -568,7 +578,7 @@ mod tests {
         let mut cloned = config.clone();
         cloned.timing.global_rate_hz = 999.0;
         // Original should be unmodified
-        assert_eq!(config.timing.global_rate_hz, 60.0);
+        assert_eq!(config.timing.global_rate_hz, 100.0);
     }
 
     #[test]
@@ -577,7 +587,7 @@ mod tests {
         let debug = format!("{:?}", config);
         assert!(debug.contains("SchedulerConfig"));
         assert!(debug.contains("global_rate_hz"));
-        assert!(debug.contains("60"));
+        assert!(debug.contains("100"));
     }
 
     // ── Proptest: boundary value fuzzing ────────────────────────────────

@@ -607,6 +607,12 @@ fn format_bytes_compact(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
+
+    /// Mutex to serialise tests that mutate `HORUS_NAMESPACE` env var.
+    /// Environment variables are process-global; concurrent set_var/remove_var
+    /// causes data races that make namespace tests flaky under parallel test execution.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_shm_paths_are_valid() {
@@ -661,20 +667,18 @@ mod tests {
     /// generate_namespace() with HORUS_NAMESPACE set returns the sanitized value.
     #[test]
     fn test_generate_namespace_uses_horus_namespace_env() {
+        // Serialise all tests that mutate the process-global HORUS_NAMESPACE env var.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
         let prev = std::env::var("HORUS_NAMESPACE").ok();
 
-        // SAFETY: set_var/remove_var are process-wide mutations. This test must not run in
-        // parallel with other tests that read HORUS_NAMESPACE. Each Rust test binary runs
-        // its tests sequentially by default within a single thread pool, and the env changes
-        // are bracketed by a restore block, so this is safe.
+        // SAFETY: env var mutation is process-wide; ENV_MUTEX serialises access.
         unsafe {
             std::env::set_var("HORUS_NAMESPACE", "test_robot_A");
         }
         let ns = generate_namespace();
 
         // Restore
-        // SAFETY: env var mutation is process-wide; test is single-threaded and
-        // restores original values before returning.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
@@ -688,16 +692,18 @@ mod tests {
     /// generate_namespace() auto-generates a non-empty namespace when env var is absent.
     #[test]
     fn test_generate_namespace_auto_when_no_env() {
+        // Serialise all tests that mutate the process-global HORUS_NAMESPACE env var.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
         let prev = std::env::var("HORUS_NAMESPACE").ok();
 
-        // SAFETY: env var mutation is process-wide; test is single-threaded and
-        // restores original values before returning.
+        // SAFETY: env var mutation is process-wide; ENV_MUTEX serialises access.
         unsafe {
             std::env::remove_var("HORUS_NAMESPACE");
         }
         let ns = generate_namespace();
 
-        // SAFETY: restoring env vars saved above; same single-threaded test context.
+        // Restore
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HORUS_NAMESPACE", v),
@@ -1252,7 +1258,7 @@ time.sleep(3600)
                     // SAFETY: fd valid; LOCK_SH valid
                     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
                     hc.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(std::time::Duration::from_micros(100));
+                    std::thread::sleep(100_u64.us());
                     hc.fetch_sub(1, Ordering::SeqCst);
                     drop(file);
                     std::thread::yield_now();
@@ -1273,7 +1279,7 @@ time.sleep(3600)
                         // Recheck: if holders > 0, this is a false stale.
                         // (There's a tiny race window between our check and the
                         //  atomic read, so we do a conservative double-check.)
-                        std::thread::sleep(std::time::Duration::from_micros(50));
+                        std::thread::sleep(50_u64.us());
                         if hc.load(Ordering::SeqCst) > 0 && is_shm_file_stale(p.as_ref()) {
                             fs.store(true, Ordering::SeqCst);
                         }
@@ -1284,7 +1290,7 @@ time.sleep(3600)
         }
 
         // Run for a bit
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(500_u64.ms());
         stop.store(true, Ordering::SeqCst);
 
         for h in handles {
@@ -1329,7 +1335,7 @@ time.sleep(0.2)
         }
 
         // Give children time to acquire locks
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
 
         // File should be alive while children hold it
         assert!(

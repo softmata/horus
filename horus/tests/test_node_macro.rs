@@ -12,6 +12,7 @@
 //! - Rate specification via `rate` section
 
 use horus::prelude::*;
+use horus::DurationExt;
 
 // ============================================================================
 // 1. Minimal node: just a name and empty tick
@@ -54,12 +55,12 @@ fn test_minimal_node_default_trait() {
 node! {
     SensorFusionNode {
         pub {
-            fused_output: f64 -> "sensor_fusion/output",
+            fused_output: f64 -> "sensor_fusion.output",
         }
 
         sub {
-            imu_input: f64 -> "sensor_fusion/imu",
-            gps_input: f64 -> "sensor_fusion/gps",
+            imu_input: f64 -> "sensor_fusion.imu",
+            gps_input: f64 -> "sensor_fusion.gps",
         }
 
         tick {
@@ -78,13 +79,13 @@ fn test_node_with_pub_sub_topics() {
     // Verify publisher metadata
     let pubs = node.publishers();
     assert_eq!(pubs.len(), 1);
-    assert_eq!(pubs[0].topic_name, "sensor_fusion/output");
+    assert_eq!(pubs[0].topic_name, "sensor_fusion.output");
 
     // Verify subscriber metadata
     let subs = node.subscribers();
     assert_eq!(subs.len(), 2);
-    assert_eq!(subs[0].topic_name, "sensor_fusion/imu");
-    assert_eq!(subs[1].topic_name, "sensor_fusion/gps");
+    assert_eq!(subs[0].topic_name, "sensor_fusion.imu");
+    assert_eq!(subs[1].topic_name, "sensor_fusion.gps");
 }
 
 #[test]
@@ -250,7 +251,7 @@ fn test_custom_name_override() {
 node! {
     HighFreqNode {
         tick {
-            // Rate is set via .rate(100.hz()) on the scheduler builder
+            // Rate is set via .rate(100_u64.hz()) on the scheduler builder
         }
     }
 }
@@ -258,7 +259,7 @@ node! {
 #[test]
 fn test_node_rate_via_builder() {
     // Rate is no longer specified in the node! macro.
-    // Use scheduler.add(node).rate(100.hz()).build() instead.
+    // Use scheduler.add(node).rate(100_u64.hz()).build() instead.
     let _node = HighFreqNode::new();
 }
 
@@ -325,12 +326,12 @@ fn test_node_with_impl_methods() {
 node! {
     NavigationNode {
         pub {
-            cmd_vel: f64 -> "nav/cmd_vel",
+            cmd_vel: f64 -> "nav.cmd_vel",
         }
 
         sub {
-            goal: f64 -> "nav/goal",
-            odom: f64 -> "nav/odom",
+            goal: f64 -> "nav.goal",
+            odom: f64 -> "nav.odom",
         }
 
         data {
@@ -389,7 +390,7 @@ fn test_full_featured_navigation_node() {
 
     // Publisher/subscriber metadata
     assert_eq!(node.publishers().len(), 1);
-    assert_eq!(node.publishers()[0].topic_name, "nav/cmd_vel");
+    assert_eq!(node.publishers()[0].topic_name, "nav.cmd_vel");
     assert_eq!(node.subscribers().len(), 2);
 
     // Custom method works

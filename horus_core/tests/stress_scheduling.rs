@@ -3,14 +3,14 @@
 //! Tests scale, sustained operation, cascading failures, and
 //! resource management under load.
 
-use horus_core::core::{DurationExt, Node, NodeInfo};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::{DurationExt, Node, NodeInfo};
 
 // ============================================================================
 // Mock nodes
@@ -75,7 +75,7 @@ impl Node for SlowNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(self.sleep_ms));
+        std::thread::sleep(self.sleep_ms.ms());
     }
 }
 
@@ -113,7 +113,7 @@ fn test_50_nodes_startup_shutdown() {
                 tick_count: counts[i].clone(),
             })
             .order(i as u32)
-            .budget(10_000.us())
+            .budget(10_000_u64.us())
             .build();
     }
     for i in 17..34 {
@@ -136,7 +136,7 @@ fn test_50_nodes_startup_shutdown() {
             .build();
     }
 
-    let result = scheduler.run_for(Duration::from_millis(300));
+    let result = scheduler.run_for(300_u64.ms());
     assert!(result.is_ok(), "50-node scheduler should run cleanly");
 
     // Verify at least some nodes from each group ticked
@@ -172,11 +172,11 @@ fn test_50_rt_nodes_priority_order() {
                 tick_count: counts[i].clone(),
             })
             .order(i as u32)
-            .budget(10_000.us())
+            .budget(10_000_u64.us())
             .build();
     }
 
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     // All RT nodes should tick
     let all_ticked = counts.iter().enumerate().all(|(i, c)| {
@@ -195,18 +195,18 @@ fn test_sustained_high_rate_1_second() {
     cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_rate(200.hz()); // 200Hz = 5ms period
+    let mut scheduler = Scheduler::new().tick_rate(200_u64.hz()); // 200Hz = 5ms period
     scheduler
         .add(RtCounterNode {
             name: "sustained_200hz".to_string(),
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(10_000.us())
-        .rate(200.hz())
+        .budget(10_000_u64.us())
+        .rate(200_u64.hz())
         .build();
 
-    scheduler.run_for(Duration::from_secs(1)).unwrap();
+    scheduler.run_for(1_u64.secs()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     // At 200Hz for 1s, expect ~200 ticks. Wide margin for non-RT kernels.
@@ -232,12 +232,12 @@ fn test_cascading_failures_restart() {
             })
             .order(i as u32)
             .compute()
-            .failure_policy(FailurePolicy::restart(3, 10))
+            .failure_policy(FailurePolicy::restart(3, 10_u64.ms()))
             .build();
     }
 
     // After exhausting restarts, all nodes should escalate to fatal
-    let result = scheduler.run_for(Duration::from_millis(500));
+    let result = scheduler.run_for(500_u64.ms());
     result.unwrap();
 
     // At least some nodes should have ticked before escalation
@@ -277,7 +277,7 @@ fn test_cascading_failures_mixed_policies() {
         })
         .order(1)
         .compute()
-        .failure_policy(FailurePolicy::restart(3, 10))
+        .failure_policy(FailurePolicy::restart(3, 10_u64.ms()))
         .build();
 
     scheduler
@@ -287,7 +287,7 @@ fn test_cascading_failures_mixed_policies() {
         })
         .order(2)
         .compute()
-        .failure_policy(FailurePolicy::skip(2, 100))
+        .failure_policy(FailurePolicy::skip(2, 100_u64.ms()))
         .build();
 
     scheduler
@@ -301,7 +301,7 @@ fn test_cascading_failures_mixed_policies() {
         .build();
 
     // Fatal should stop scheduler
-    let result = scheduler.run_for(Duration::from_millis(500));
+    let result = scheduler.run_for(500_u64.ms());
     result.unwrap();
 
     // Fatal node should have ticked at least once
@@ -318,7 +318,7 @@ fn test_sustained_load_shedding() {
         (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let bg_counts: Vec<Arc<AtomicU64>> = (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
-    let mut scheduler = Scheduler::new().tick_rate(50.hz()); // 20ms period
+    let mut scheduler = Scheduler::new().tick_rate(50_u64.hz()); // 20ms period
 
     // 3 critical compute nodes
     for i in 0..3 {
@@ -345,7 +345,7 @@ fn test_sustained_load_shedding() {
             .build();
     }
 
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     // All critical nodes should tick
     for (i, c) in critical_counts.iter().enumerate() {
@@ -375,7 +375,7 @@ fn test_all_executors_simultaneously() {
             tick_count: rt_count.clone(),
         })
         .order(0)
-        .budget(10_000.us())
+        .budget(10_000_u64.us())
         .build();
 
     // Compute node
@@ -418,13 +418,13 @@ fn test_all_executors_simultaneously() {
         .build();
 
     let handle = std::thread::spawn(move || {
-        scheduler.run_for(Duration::from_millis(200)).unwrap();
+        scheduler.run_for(200_u64.ms()).unwrap();
     });
 
     // Send event notification
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(50_u64.ms());
     NodeInfo::notify_event("all_exec_event");
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(50_u64.ms());
 
     handle.join().unwrap();
 
@@ -458,7 +458,7 @@ fn test_rapid_start_stop_cycles() {
             .order(0)
             .build();
 
-        scheduler.run_for(Duration::from_millis(10)).unwrap();
+        scheduler.run_for(10_u64.ms()).unwrap();
         // Scheduler is dropped here
     }
     // If we get here without hanging or panicking, no resource leak
@@ -480,7 +480,7 @@ fn test_burst_event_notifications() {
         .build();
 
     let handle = std::thread::spawn(move || {
-        scheduler.run_for(Duration::from_millis(500)).unwrap();
+        scheduler.run_for(500_u64.ms()).unwrap();
     });
 
     // Wait for registration
@@ -490,18 +490,18 @@ fn test_burst_event_notifications() {
             registered = true;
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(5_u64.ms());
     }
 
     if registered {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         // Send 999 more rapid notifications (1000 total)
         for _ in 0..999 {
             NodeInfo::notify_event("burst_stress_event");
         }
 
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(200_u64.ms());
 
         let ticks = tick_count.load(Ordering::SeqCst);
         assert!(
@@ -533,7 +533,7 @@ fn test_20_parallel_compute_nodes() {
     }
 
     let start = Instant::now();
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
     let elapsed = start.elapsed();
 
     // All nodes should tick

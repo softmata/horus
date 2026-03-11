@@ -57,7 +57,7 @@
 //!     .build();
 //!
 //! let handle = client.send_goal(goal)?;
-//! let result = handle.await_result(Duration::from_secs(30));
+//! let result = handle.await_result(30_u64.secs());
 //! ```
 //!
 //! ## Defining Actions

@@ -227,11 +227,29 @@ fn restore_packages(
                 // Don't try to install - user must fix path manually
                 continue;
             }
-            _ => {
-                // Registry, PyPI, CratesIO - use standard install
-                println!("  Installing {} v{}...", pkg.name, pkg.version);
+            registry::PackageSource::Registry => {
+                // HORUS registry packages: use standard install
+                println!("  Installing {} v{} from HORUS registry...", pkg.name, pkg.version);
                 client
                     .install(&pkg.name, Some(&pkg.version))
+                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+            }
+            registry::PackageSource::CratesIO => {
+                // CratesIO packages: detect workspace context and route correctly
+                println!("  Installing {} v{} from crates.io...", pkg.name, pkg.version);
+                let install_target = workspace::detect_or_select_workspace(true)
+                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                client
+                    .install_from_cratesio(&pkg.name, Some(&pkg.version), install_target)
+                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+            }
+            registry::PackageSource::PyPI => {
+                // PyPI packages: pip install + pyproject.toml update
+                println!("  Installing {} v{} from PyPI...", pkg.name, pkg.version);
+                let install_target = workspace::detect_or_select_workspace(true)
+                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                client
+                    .install_from_pypi(&pkg.name, Some(&pkg.version), install_target)
                     .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             }
         }

@@ -1,9 +1,28 @@
 //! Node presence files for monitor detection
 //!
 //! Each node creates a presence file at startup and removes it at shutdown.
-//! Monitor scans this directory to discover all active nodes - like rqt but simpler.
+//! Monitor scans this directory to discover all active nodes — like rqt but simpler.
 //!
-//! Structure: `/dev/shm/horus/nodes/{node_name}.json`
+//! ## Structure
+//!
+//! Presence files live at `/dev/shm/horus/nodes/{node_name}.json` with mode 0600.
+//! Writes use atomic rename (`{name}.json.tmp` → `{name}.json`) to prevent
+//! partial reads.
+//!
+//! ## Node Name Rules
+//!
+//! Node names must satisfy [`validate_node_name`]:
+//! - 1–255 ASCII characters
+//! - Allowed: `a-z A-Z 0-9 _ - .`
+//! - Forbidden: `/`, `\`, `..`, spaces, control characters
+//!
+//! ## Liveness Detection
+//!
+//! [`NodePresence::read_all`] verifies each entry by checking:
+//! 1. `kill(pid, 0)` — process still exists
+//! 2. PID start time comparison — detects PID reuse after node crash
+//!
+//! Stale and corrupt files are automatically cleaned up during reads.
 
 use crate::core::node::TopicMetadata;
 use crate::memory::platform::shm_nodes_dir;
@@ -27,6 +46,21 @@ pub struct NodePresence {
     rate_hz: Option<f64>,
     #[serde(default)]
     pid_start_time: u64,
+    /// Node health status (Healthy/Warning/Error/Critical)
+    #[serde(default)]
+    health_status: Option<String>,
+    /// Cumulative tick count since node start
+    #[serde(default)]
+    tick_count: u64,
+    /// Cumulative error count since node start
+    #[serde(default)]
+    error_count: u32,
+    /// Services provided by this node (e.g. ["set_params", "get_status"])
+    #[serde(default)]
+    services: Vec<String>,
+    /// Actions provided by this node (e.g. ["navigate", "pick_place"])
+    #[serde(default)]
+    actions: Vec<String>,
 }
 
 impl NodePresence {
@@ -65,10 +99,69 @@ impl NodePresence {
     pub fn pid_start_time(&self) -> u64 {
         self.pid_start_time
     }
+
+    pub fn health_status(&self) -> Option<&str> {
+        self.health_status.as_deref()
+    }
+
+    pub fn tick_count(&self) -> u64 {
+        self.tick_count
+    }
+
+    pub fn error_count(&self) -> u32 {
+        self.error_count
+    }
+
+    pub fn services(&self) -> &[String] {
+        &self.services
+    }
+
+    pub fn actions(&self) -> &[String] {
+        &self.actions
+    }
+}
+
+/// Validate a node name for use in presence file paths.
+///
+/// Rules:
+/// - 1 to 255 characters
+/// - Only ASCII alphanumeric, `_`, `-`, `.`
+/// - Must not contain `/`, `\`, or `..`
+/// - Must not be empty
+///
+/// Returns `Ok(())` if valid, `Err(reason)` if invalid.
+pub fn validate_node_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("node name must not be empty".into());
+    }
+    if name.len() > 255 {
+        return Err(format!(
+            "node name too long ({} chars, max 255)",
+            name.len()
+        ));
+    }
+    if name.contains("..") {
+        return Err("node name must not contain '..'".into());
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        return Err(format!(
+            "node name '{}' contains invalid characters (allowed: a-z A-Z 0-9 _ - .)",
+            name
+        ));
+    }
+    Ok(())
 }
 
 impl NodePresence {
-    /// Create a new presence record
+    /// Create a new presence record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is invalid (empty, too long, contains `/` or `..`).
+    /// Use [`validate_node_name`] to check before calling.
     pub(crate) fn new(
         name: &str,
         scheduler: Option<&str>,
@@ -77,6 +170,9 @@ impl NodePresence {
         priority: u32,
         rate_hz: Option<f64>,
     ) -> Self {
+        if let Err(e) = validate_node_name(name) {
+            panic!("invalid node name '{}': {}", name, e);
+        }
         let pid = std::process::id();
         Self {
             name: name.to_string(),
@@ -91,6 +187,11 @@ impl NodePresence {
             priority,
             rate_hz,
             pid_start_time: read_pid_start_time(pid),
+            health_status: None,
+            tick_count: 0,
+            error_count: 0,
+            services: Vec::new(),
+            actions: Vec::new(),
         }
     }
 
@@ -104,7 +205,29 @@ impl NodePresence {
     /// The nodes directory is created with mode 0o700 (owner only) so that
     /// other local users cannot enumerate running nodes.  The presence file
     /// itself is written with mode 0o600 (owner read/write only).
+    ///
+    /// If a presence file already exists for this node name and its process
+    /// is still alive, a warning is logged before overwriting.
     pub(crate) fn write(&self) -> std::io::Result<()> {
+        // Detect duplicate: another live process already owns this node name
+        let path = Self::presence_path(&self.name);
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(existing) = serde_json::from_str::<NodePresence>(&content) {
+                    if existing.pid != self.pid
+                        && is_alive(existing.pid, existing.pid_start_time)
+                    {
+                        eprintln!(
+                            "[horus] WARNING: node '{}' already registered by PID {} \
+                             (this is PID {}). Overwriting presence file — \
+                             duplicate node names cause unreliable discovery.",
+                            self.name, existing.pid, self.pid
+                        );
+                    }
+                }
+            }
+        }
+
         let dir = shm_nodes_dir();
 
         // Create directory hierarchy with owner-only access.
@@ -116,12 +239,14 @@ impl NodePresence {
         #[cfg(not(unix))]
         fs::create_dir_all(&dir)?;
 
-        let path = Self::presence_path(&self.name);
+        let dest = Self::presence_path(&self.name);
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        // Write with owner-only permissions: other local users must not read
-        // presence data (contains PIDs, topic names, and timing information).
+        // Atomic write: write to a temporary file then rename, so readers
+        // never see a partially-written presence file.
+        let tmp_path = dest.with_extension("json.tmp");
+
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -130,11 +255,51 @@ impl NodePresence {
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
-                .open(&path)?;
-            file.write_all(json.as_bytes())
+                .open(&tmp_path)?;
+            file.write_all(json.as_bytes())?;
+            file.flush()?;
         }
         #[cfg(not(unix))]
-        fs::write(&path, json)
+        fs::write(&tmp_path, &json)?;
+
+        fs::rename(&tmp_path, &dest)
+    }
+
+    /// Update an existing presence file with new topic lists.
+    ///
+    /// Used when a node dynamically adds or removes publishers/subscribers
+    /// at runtime.  The file is rewritten atomically.
+    pub(crate) fn update_topics(
+        node_name: &str,
+        publishers: Vec<TopicMetadata>,
+        subscribers: Vec<TopicMetadata>,
+    ) -> std::io::Result<()> {
+        let path = Self::presence_path(node_name);
+        let content = fs::read_to_string(&path)?;
+        let mut presence: NodePresence = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        presence.publishers = publishers;
+        presence.subscribers = subscribers;
+        presence.write()
+    }
+
+    /// Update runtime metrics (health, tick count, error count) in the presence file.
+    ///
+    /// Called periodically by the scheduler to keep monitor data fresh.
+    pub(crate) fn update_metrics(
+        node_name: &str,
+        health: &str,
+        ticks: u64,
+        errors: u32,
+    ) -> std::io::Result<()> {
+        let path = Self::presence_path(node_name);
+        let content = fs::read_to_string(&path)?;
+        let mut presence: NodePresence = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        presence.health_status = Some(health.to_string());
+        presence.tick_count = ticks;
+        presence.error_count = errors;
+        presence.write()
     }
 
     /// Remove presence file from shared memory (called at node shutdown)
@@ -165,16 +330,27 @@ impl NodePresence {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|ext| ext == "json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(presence) = serde_json::from_str::<NodePresence>(&content) {
-                            // Verify process is still alive and is the same process
-                            // that wrote this file (not a recycled PID).
-                            if is_alive(presence.pid, presence.pid_start_time) {
-                                nodes.push(presence);
-                            } else {
-                                // Clean up stale presence file
-                                let _ = fs::remove_file(&path);
+                    match fs::read_to_string(&path) {
+                        Ok(content) => {
+                            match serde_json::from_str::<NodePresence>(&content) {
+                                Ok(presence) => {
+                                    // Verify process is still alive and is the same process
+                                    // that wrote this file (not a recycled PID).
+                                    if is_alive(presence.pid, presence.pid_start_time) {
+                                        nodes.push(presence);
+                                    } else {
+                                        // Clean up stale presence file
+                                        let _ = fs::remove_file(&path);
+                                    }
+                                }
+                                Err(_) => {
+                                    // Corrupt JSON — remove the file so it doesn't persist
+                                    let _ = fs::remove_file(&path);
+                                }
                             }
+                        }
+                        Err(_) => {
+                            // Unreadable file (permissions, I/O error) — skip silently
                         }
                     }
                 }

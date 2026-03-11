@@ -3,6 +3,7 @@
 //! Provides Python access to TransformFrame's lock-free transform management system.
 
 use crate::errors::to_py_err;
+use horus_core::core::DurationExt;
 use horus_library::transform_frame::{timestamp_now, TransformFrame, TransformFrameConfig, Transform};
 use pyo3::prelude::*;
 
@@ -490,7 +491,7 @@ impl PyTransformFrame {
         dst: &str,
         timeout_sec: f64,
     ) -> PyResult<PyTransform> {
-        let timeout = std::time::Duration::from_secs_f64(timeout_sec);
+        let timeout = timeout_sec.secs();
         let inner = &self.inner;
         let src_owned = src.to_string();
         let dst_owned = dst.to_string();

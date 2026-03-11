@@ -13,8 +13,8 @@ use monitor_tests::builders;
 use monitor_tests::helpers::{assert_json_ok, get_request};
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(100);
 
@@ -65,7 +65,7 @@ fn build_topic_scenario(pfx: &str) -> HorusTestRuntime {
 async fn api_topics_lists_all_created_topics() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -98,7 +98,7 @@ async fn api_topics_lists_all_created_topics() {
 async fn api_topics_have_non_zero_sizes() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -133,7 +133,7 @@ async fn api_topics_have_non_zero_sizes() {
 async fn api_topics_different_sizes_reflect_actual() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -185,7 +185,7 @@ async fn api_topics_different_sizes_reflect_actual() {
 async fn destroyed_topic_disappears_from_listing() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let imu_topic_name = format!("{pfx}imu");
@@ -235,7 +235,7 @@ async fn destroyed_topic_disappears_from_listing() {
 async fn api_graph_returns_nodes_and_edges() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -250,7 +250,7 @@ async fn api_graph_returns_nodes_and_edges() {
 async fn api_graph_contains_process_nodes() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -280,7 +280,7 @@ async fn api_graph_contains_process_nodes() {
 async fn api_graph_contains_topic_nodes() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -310,7 +310,7 @@ async fn api_graph_contains_topic_nodes() {
 async fn api_graph_has_publish_edges() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -335,7 +335,7 @@ async fn api_graph_has_publish_edges() {
 async fn api_graph_has_subscribe_edges() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -360,7 +360,7 @@ async fn api_graph_has_subscribe_edges() {
 async fn api_graph_edges_reference_valid_node_ids() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -400,7 +400,7 @@ async fn api_graph_edges_reference_valid_node_ids() {
 async fn graph_updates_after_node_removal() {
     let pfx = unique_prefix();
     let rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let lidar_name = format!("{pfx}lidar_node");
@@ -445,7 +445,7 @@ async fn graph_updates_after_node_removal() {
 async fn graph_updates_after_node_addition() {
     let pfx = unique_prefix();
     let mut rt = build_topic_scenario(&pfx);
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let new_name = format!("{pfx}new_actuator");
@@ -485,7 +485,7 @@ fn no_topic_file_leak_after_drop() {
     let presence_paths;
     {
         let rt = build_topic_scenario(&pfx);
-        assert!(rt.wait_ready(Duration::from_secs(3)));
+        assert!(rt.wait_ready(3_u64.secs()));
         topic_paths = rt.topic_paths().to_vec();
         presence_paths = rt.presence_paths().to_vec();
     }

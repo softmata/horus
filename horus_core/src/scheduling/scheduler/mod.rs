@@ -1,5 +1,5 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
-use crate::core::{announce_started, announce_stopped, Node, NodeInfo, NodePresence};
+use crate::core::{announce_started, announce_stopped, DurationExt, Node, NodeInfo, NodePresence};
 use crate::error::{HorusContext, HorusResult};
 use crate::memory::platform::shm_control_dir;
 use crate::terminal::print_line;
@@ -54,6 +54,7 @@ use super::rt::RuntimeCapabilities;
 /// failures (e.g., no RT permission). These are recorded as degradations
 /// rather than errors, allowing the scheduler to still function with
 /// reduced capabilities.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct RtFeatureDegradation {
     /// What feature was attempted
@@ -65,6 +66,7 @@ pub struct RtFeatureDegradation {
 }
 
 /// RT feature that was attempted during auto-optimization.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RtFeature {
     /// SCHED_FIFO/SCHED_RR priority
@@ -95,6 +97,7 @@ impl std::fmt::Display for RtFeature {
 }
 
 /// Severity of RT degradation.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DegradationSeverity {
     /// Significant impact on performance (e.g., no RT priority)
@@ -198,7 +201,7 @@ impl Scheduler {
     /// let scheduler = Scheduler::new();
     ///
     /// // Configure with builder methods
-    /// let scheduler = Scheduler::new().tick_rate(500.hz());
+    /// let scheduler = Scheduler::new().tick_rate(500_u64.hz());
     /// ```
     /// Create a scheduler with default configuration.
     ///
@@ -262,7 +265,7 @@ impl Scheduler {
     /// let scheduler = Scheduler::new()
     ///     .require_rt()
     ///     .cores(&[2, 3])   // Pin to cores 2 and 3
-    ///     .tick_rate(1000.hz());
+    ///     .tick_rate(1000_u64.hz());
     /// ```
     pub fn cores(mut self, cores: &[usize]) -> Self {
         self.pending_config.resources.cpu_cores = Some(cores.to_vec());
@@ -285,7 +288,7 @@ impl Scheduler {
     /// let scheduler = Scheduler::new()
     ///     .prefer_rt()           // try RT, warn if unavailable
     ///     .monitoring(true)
-    ///     .tick_rate(100.hz());
+    ///     .tick_rate(100_u64.hz());
     /// ```
     pub fn prefer_rt(mut self) -> Self {
         self.pending_config.realtime.memory_locking = true;
@@ -308,7 +311,7 @@ impl Scheduler {
     /// let scheduler = Scheduler::new()
     ///     .require_rt()          // panic if RT unavailable
     ///     .monitoring(true)
-    ///     .tick_rate(1000.hz());
+    ///     .tick_rate(1000_u64.hz());
     /// ```
     pub fn require_rt(mut self) -> Self {
         let can_rt = self
@@ -338,7 +341,7 @@ impl Scheduler {
     /// let scheduler = Scheduler::new()
     ///     .monitoring(true)      // budget + deadline + watchdog + safety
     ///     .with_blackbox(64)     // add flight recorder
-    ///     .tick_rate(100.hz());
+    ///     .tick_rate(100_u64.hz());
     /// ```
     pub fn monitoring(mut self, enabled: bool) -> Self {
         self.pending_config.realtime.budget_enforcement = enabled;
@@ -363,7 +366,7 @@ impl Scheduler {
     /// ```rust,ignore
     /// let mut scheduler = Scheduler::new()
     ///     .deterministic(true)
-    ///     .tick_rate(100.hz());
+    ///     .tick_rate(100_u64.hz());
     ///
     /// // Simulation loop — you control time
     /// loop {
@@ -384,7 +387,7 @@ impl Scheduler {
     /// use horus::prelude::*;
     ///
     /// let scheduler = Scheduler::new()
-    ///     .tick_rate(1000.hz()); // 1kHz control loop
+    ///     .tick_rate(1000_u64.hz()); // 1kHz control loop
     /// ```
     pub fn tick_rate(mut self, freq: crate::core::duration_ext::Frequency) -> Self {
         self.pending_config.timing.global_rate_hz = freq.value();
@@ -410,7 +413,7 @@ impl Scheduler {
     /// # Example
     /// ```rust,ignore
     /// let mut scheduler = Scheduler::new()
-    ///     .tick_rate(100.hz())
+    ///     .tick_rate(100_u64.hz())
     ///     .with_recording();
     /// ```
     pub fn with_recording(mut self) -> Self {
@@ -575,7 +578,7 @@ impl Scheduler {
     /// Returns `None` if the safety monitor is not enabled.
     ///
     /// The returned `SafetyStats` contains:
-    /// - `state`: Current safety state (Normal, Degraded, EmergencyStop, SafeMode)
+    /// - `state`: Current safety state (Normal, Degraded, EmergencyStop)
     /// - `budget_overruns`: Number of tick budget violations
     /// - `deadline_misses`: Number of deadline misses
     /// - `watchdog_expirations`: Number of watchdog timeouts
@@ -867,7 +870,7 @@ impl Scheduler {
             } else {
                 100.0 // Safe fallback for invalid rate
             };
-        self.tick.period = std::time::Duration::from_micros((1_000_000.0 / rate_hz) as u64);
+        self.tick.period = Duration::from_micros((1_000_000.0 / rate_hz) as u64);
 
         // RT safety and OS-level optimizations
         self.apply_safety_config(&config.realtime);
@@ -897,7 +900,7 @@ impl Scheduler {
             for registered in self.nodes.iter() {
                 if registered.is_rt_node {
                     if rt.watchdog_enabled {
-                        let watchdog_timeout = Duration::from_millis(rt.watchdog_timeout_ms);
+                        let watchdog_timeout = rt.watchdog_timeout_ms.ms();
                         monitor.add_critical_node(registered.name.to_string(), watchdog_timeout);
                     }
 
@@ -1215,13 +1218,13 @@ impl Scheduler {
     /// // RT node — auto-detected from tick_budget() or explicit .budget()
     /// scheduler.add(MotorController::new())
     ///     .order(0)
-    ///     .rate(1000.hz())  // 1kHz
-    ///     .budget(500.us())   // 500μs max → enables RT scheduling
+    ///     .rate(1000_u64.hz())  // 1kHz
+    ///     .budget(500_u64.us())   // 500μs max → enables RT scheduling
     ///     .build()?;
     ///
     /// // Chain multiple nodes
     /// scheduler.add(SensorNode::new()).order(0).build()?;
-    /// scheduler.add(ControlNode::new()).order(1).budget(200.us()).build()?;
+    /// scheduler.add(ControlNode::new()).order(1).budget(200_u64.us()).build()?;
     /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
@@ -1239,7 +1242,7 @@ impl Scheduler {
     ///
     /// let config = NodeRegistration::new(Box::new(my_node))
     ///     .order(0)
-    ///     .budget(500.us());
+    ///     .budget(500_u64.us());
     ///
     /// scheduler.add_configured(config);
     /// ```
@@ -1377,11 +1380,11 @@ impl Scheduler {
     ///
     /// # Arguments
     /// * `name` - The name of the node
-    /// * `rate` - The desired rate as a `Frequency` (e.g. `100.hz()`)
+    /// * `rate` - The desired rate as a `Frequency` (e.g. `100_u64.hz()`)
     ///
     /// # Example
     /// ```ignore
-    /// scheduler.set_node_rate("sensor", 100.hz());
+    /// scheduler.set_node_rate("sensor", 100_u64.hz());
     /// ```
     #[doc(hidden)]
     pub fn set_node_rate(
@@ -1414,7 +1417,7 @@ impl Scheduler {
             .fold(0.0_f64, f64::max);
 
         if max_node_rate > current_rate {
-            let new_period = Duration::from_secs_f64(1.0 / max_node_rate);
+            let new_period = max_node_rate.hz().period();
             print_line(&format!(
                 "Adjusting scheduler tick rate from {:.1} Hz to {:.1} Hz (fastest node requires it)",
                 current_rate, max_node_rate
@@ -1446,7 +1449,7 @@ impl Scheduler {
     /// ```rust,ignore
     /// let mut scheduler = Scheduler::new()
     ///     .deterministic(true)
-    ///     .tick_rate(100.hz());
+    ///     .tick_rate(100_u64.hz());
     ///
     /// scheduler.add(MyNode::new()).build()?;
     ///
@@ -1827,7 +1830,7 @@ impl Scheduler {
             print_line("\nCtrl+C received! Shutting down HORUS scheduler...");
             running.store(false, Ordering::SeqCst);
             std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(2_u64.secs());
                 print_line("Force terminating - cleaning up session...");
                 // Clean up session before forced exit to prevent stale files
                 Self::cleanup_session();
@@ -2107,7 +2110,7 @@ impl Scheduler {
     /// Periodic registry snapshot, failure logging, blackbox tick, and telemetry export.
     fn periodic_monitoring(&mut self, start_time: Instant) {
         // Registry snapshot every 5 seconds
-        if self.monitor.last_snapshot.elapsed() >= Duration::from_secs(5) {
+        if self.monitor.last_snapshot.elapsed() >= 5_u64.secs() {
             self.snapshot_state_to_registry();
             self.monitor.last_snapshot = Instant::now();
 
@@ -2366,8 +2369,8 @@ impl Scheduler {
                 if budget.is_none() && ring_stats.p99_us > 0 {
                     let suggested = ring_stats.p99_us * 2;
                     suggestions.push(format!(
-                        "  {} — no budget set. Suggested: .budget({}.us())",
-                        name, suggested
+                        "  {} — no budget set (min={}us avg={}us p99={}us max={}us). Suggested: .budget({}.us())",
+                        name, ring_stats.min_us, ring_stats.avg_us, ring_stats.p99_us, ring_stats.max_us, suggested
                     ));
                 }
                 if *overruns > 10 {
@@ -2770,6 +2773,58 @@ impl Scheduler {
                 }
             }
 
+            // Capture inputs from subscriber topics (for recording)
+            {
+                let RegisteredNode { ref mut node, ref mut recorder, .. } = self.nodes[i];
+                if let Some(recorder) = recorder.as_mut() {
+                    if recorder.is_active_tick() {
+                        let subscribers = node.subscribers();
+                        if !subscribers.is_empty() {
+                            let topics_dir = crate::memory::platform::shm_topics_dir();
+                            for sub in &subscribers {
+                                let topic_path = topics_dir.join(&sub.topic_name);
+                                if let Some(slot_read) = crate::communication::read_latest_slot_bytes(&topic_path, 0) {
+                                    recorder.record_input(&sub.topic_name, slot_read.payload);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Replay: if this node has a replayer, advance it and feed the
+            // recorded (or overridden) outputs into the node's recorder so
+            // that diff/export tools can compare replay results.
+            //
+            // NOTE: This does NOT yet publish replay data to shared-memory
+            // topics for live subscriber nodes.  Full shm injection requires
+            // a `write_topic_slot_bytes` counterpart and will be added in a
+            // follow-up task.
+            {
+                let node_name = self.nodes[i].name.clone();
+                let replay_outputs: Option<Vec<(String, Vec<u8>)>> = self.replay.as_mut().and_then(|replay| {
+                    let replayer = replay.nodes.get_mut(node_name.as_ref())?;
+                    let node_overrides = replay.overrides.get(node_name.as_ref());
+                    let snapshot = replayer.current_snapshot()?;
+                    let outputs: Vec<(String, Vec<u8>)> = snapshot.outputs.iter().map(|(topic, data)| {
+                        let output_data = node_overrides
+                            .and_then(|ovr| ovr.get(topic))
+                            .unwrap_or(data)
+                            .clone();
+                        (topic.clone(), output_data)
+                    }).collect();
+                    replayer.advance();
+                    Some(outputs)
+                });
+                if let (Some(outputs), Some(ref mut recorder)) =
+                    (replay_outputs, self.nodes[i].recorder.as_mut())
+                {
+                    for (topic, data) in outputs {
+                        recorder.record_output(&topic, data);
+                    }
+                }
+            }
+
             let (tick_start, tick_duration, tick_result) = {
                 let registered = &mut self.nodes[i];
                 if let Some(ref mut context) = registered.context {
@@ -2817,6 +2872,25 @@ impl Scheduler {
         // Update per-node RtStats
         if let Some(ref mut stats) = self.nodes[i].rt_stats {
             stats.record_execution(tick_duration);
+        }
+
+        // Capture outputs from publisher topics (for recording)
+        {
+            let RegisteredNode { ref mut node, ref mut recorder, .. } = self.nodes[i];
+            if let Some(recorder) = recorder.as_mut() {
+                if recorder.is_active_tick() {
+                    let publishers = node.publishers();
+                    if !publishers.is_empty() {
+                        let topics_dir = crate::memory::platform::shm_topics_dir();
+                        for pub_topic in &publishers {
+                            let topic_path = topics_dir.join(&pub_topic.topic_name);
+                            if let Some(slot_read) = crate::communication::read_latest_slot_bytes(&topic_path, 0) {
+                                recorder.record_output(&pub_topic.topic_name, slot_read.payload);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // End recording tick
@@ -2967,14 +3041,14 @@ impl Scheduler {
                                 node_name
                             ));
                         }
-                        DeadlineAction::SafeMode => {
+                        DeadlineAction::Degrade => {
                             print_line(&format!(
                                 " Deadline policy: '{}' entering safe state",
                                 node_name
                             ));
                             self.nodes[i].node.enter_safe_state();
                             if let Some(ref monitor) = self.monitor.safety {
-                                monitor.record_safe_mode_activation();
+                                monitor.record_degrade_activation();
                             }
                         }
                         DeadlineAction::EmergencyStop => {
@@ -3030,7 +3104,7 @@ impl Scheduler {
                     name
                 ));
                 if let Some(ref monitor) = self.monitor.safety {
-                    monitor.record_safe_mode_activation();
+                    monitor.record_degrade_activation();
                 }
             }
             DegradationAction::RestoreRate {

@@ -495,6 +495,133 @@ pub(crate) fn add_cargo_deps_to_cargo_toml(workspace_path: &Path, deps: &[String
     Ok(())
 }
 
+/// Add a Python dependency to pyproject.toml [project.dependencies]
+pub(crate) fn add_dep_to_pyproject_toml(
+    workspace_path: &Path,
+    package_name: &str,
+    version: &str,
+) -> Result<()> {
+    use toml_edit::DocumentMut;
+
+    let pyproject_path = workspace_path.join("pyproject.toml");
+    if !pyproject_path.exists() {
+        return Ok(()); // No pyproject.toml, nothing to update
+    }
+
+    let content = fs::read_to_string(&pyproject_path)?;
+    let mut doc = content
+        .parse::<DocumentMut>()
+        .map_err(|e| anyhow!("failed to parse pyproject.toml: {}", e))?;
+
+    // Build dependency string
+    let dep_str = if version == "latest" || version.is_empty() {
+        package_name.to_string()
+    } else if version.starts_with(">=")
+        || version.starts_with("==")
+        || version.starts_with("<=")
+        || version.starts_with("!=")
+        || version.starts_with("~=")
+        || version.contains(',')
+    {
+        format!("{}{}", package_name, version)
+    } else {
+        format!("{}=={}", package_name, version)
+    };
+
+    // Ensure [project] section exists
+    let project = match doc.get_mut("project") {
+        Some(p) => p,
+        None => return Ok(()), // No [project] section
+    };
+
+    // Check if dependency already exists
+    if let Some(deps) = project.get("dependencies").and_then(|d| d.as_array()) {
+        for item in deps.iter() {
+            if let Some(s) = item.as_str() {
+                let existing_name = s
+                    .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+                    .next()
+                    .unwrap_or("");
+                if existing_name.eq_ignore_ascii_case(package_name) {
+                    return Ok(()); // Already present
+                }
+            }
+        }
+    }
+
+    // Add to dependencies array
+    if let Some(deps) = project
+        .get_mut("dependencies")
+        .and_then(|d| d.as_array_mut())
+    {
+        deps.push(dep_str);
+    } else {
+        // Create dependencies array if missing
+        let mut arr = toml_edit::Array::new();
+        arr.push(&dep_str);
+        project["dependencies"] = toml_edit::value(arr);
+    }
+
+    fs::write(&pyproject_path, doc.to_string())?;
+    Ok(())
+}
+
+/// Remove a Python dependency from pyproject.toml [project.dependencies]
+pub(crate) fn remove_dep_from_pyproject_toml(
+    workspace_path: &Path,
+    package_name: &str,
+) -> Result<()> {
+    use toml_edit::DocumentMut;
+
+    let pyproject_path = workspace_path.join("pyproject.toml");
+    if !pyproject_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&pyproject_path)?;
+    let mut doc = content
+        .parse::<DocumentMut>()
+        .map_err(|e| anyhow!("failed to parse pyproject.toml: {}", e))?;
+
+    if let Some(project) = doc.get_mut("project") {
+        if let Some(deps) = project
+            .get_mut("dependencies")
+            .and_then(|d| d.as_array_mut())
+        {
+            let mut i = 0;
+            while i < deps.len() {
+                if let Some(s) = deps.get(i).and_then(|v| v.as_str()) {
+                    let existing_name = s
+                        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if existing_name.eq_ignore_ascii_case(package_name) {
+                        deps.remove(i);
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+
+    fs::write(&pyproject_path, doc.to_string())?;
+    Ok(())
+}
+
+/// Parse a pip dependency spec like "numpy>=1.0" into (name, version)
+pub(crate) fn parse_pip_dependency_spec(spec: &str) -> (String, String) {
+    let operators = [">=", "<=", "==", "!=", "~=", ">", "<"];
+    for op in operators {
+        if let Some(idx) = spec.find(op) {
+            let name = spec[..idx].trim().to_string();
+            let version = spec[idx..].trim().to_string();
+            return (name, version);
+        }
+    }
+    (spec.trim().to_string(), "latest".to_string())
+}
+
 // Copy directory recursively with symlink safety
 pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     let canonical_src = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());

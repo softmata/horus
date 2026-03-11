@@ -1,6 +1,7 @@
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
 use horus::core::{NodeInfo as CoreNodeInfo, TopicMetadata};
+use horus_core::core::DurationExt;
 use horus_core::core::Miss;
 use horus_core::core::Node as CoreNode;
 use horus_core::core::NodeMetrics;
@@ -14,7 +15,6 @@ use pyo3::types::{PyDict, PyList};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// Parameters for adding a node to the scheduler.
 struct NodeParams {
@@ -256,9 +256,9 @@ impl PyMiss {
     #[classattr]
     const SKIP: &'static str = "skip";
 
-    /// Enter safe mode — calls `enter_safe_state()` on the node.
+    /// Enter degraded mode — calls `enter_safe_state()` on the node.
     #[classattr]
-    const SAFE_MODE: &'static str = "safe_mode";
+    const DEGRADE: &'static str = "degrade";
 
     /// Stop the entire scheduler (last resort).
     #[classattr]
@@ -270,10 +270,10 @@ fn parse_miss_policy(name: &str) -> PyResult<Miss> {
     match name {
         "warn" => Ok(Miss::Warn),
         "skip" => Ok(Miss::Skip),
-        "safe_mode" => Ok(Miss::SafeMode),
+        "degrade" => Ok(Miss::Degrade),
         "stop" => Ok(Miss::Stop),
         _ => Err(PyRuntimeError::new_err(format!(
-            "Unknown miss policy '{}'. Use Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, or Miss.STOP",
+            "Unknown miss policy '{}'. Use Miss.WARN, Miss.SKIP, Miss.DEGRADE, or Miss.STOP",
             name
         ))),
     }
@@ -355,9 +355,15 @@ impl PyNodeBuilder {
         let policy = match name.as_str() {
             "fatal" => FailurePolicy::Fatal,
             "restart" => {
-                FailurePolicy::restart(max_retries.unwrap_or(5), backoff_ms.unwrap_or(100))
+                FailurePolicy::restart(
+                    max_retries.unwrap_or(5),
+                    backoff_ms.unwrap_or(100).ms(),
+                )
             }
-            "skip" => FailurePolicy::skip(max_failures.unwrap_or(5), cooldown_ms.unwrap_or(30_000)),
+            "skip" => FailurePolicy::skip(
+                max_failures.unwrap_or(5),
+                cooldown_ms.unwrap_or(30_000).ms(),
+            ),
             "ignore" => FailurePolicy::Ignore,
             _ => {
                 return Err(PyRuntimeError::new_err(format!(
@@ -510,14 +516,13 @@ impl PyScheduler {
 
         let mut config = NodeRegistration::new(Box::new(adapter)).order(order);
         if let Some(rate) = node_rate {
-            use horus_core::core::DurationExt;
             config = config.rate(rate.hz());
         }
         if let Some(ms) = deadline_ms {
-            config = config.deadline(std::time::Duration::from_millis(ms as u64));
+            config = config.deadline((ms as u64).ms());
         }
         if let Some(us) = budget_us {
-            config = config.budget(std::time::Duration::from_micros(us));
+            config = config.budget((us as u64).us());
         }
         if let Some(ref miss_name) = miss_policy {
             config = config.on_miss(parse_miss_policy(miss_name)?);
@@ -675,8 +680,10 @@ impl PyScheduler {
     ) -> PyResult<()> {
         let parsed_policy = match failure_policy.as_deref() {
             Some("fatal") => Some(FailurePolicy::Fatal),
-            Some("restart") => Some(FailurePolicy::restart(5, 100)),
-            Some("skip") => Some(FailurePolicy::skip(5, 30_000)),
+            Some("restart") => {
+                Some(FailurePolicy::restart(5, 100_u64.ms()))
+            }
+            Some("skip") => Some(FailurePolicy::skip(5, 30_u64.secs())),
             Some("ignore") => Some(FailurePolicy::Ignore),
             Some(other) => {
                 return Err(PyRuntimeError::new_err(format!(
@@ -718,7 +725,6 @@ impl PyScheduler {
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Cannot modify while scheduler is running"))?;
 
-        use horus_core::core::DurationExt;
         inner.set_node_rate(&node_name, rate.hz());
         tracing::info!(node = %node_name, rate, "Set node rate");
         Ok(())
@@ -734,7 +740,7 @@ impl PyScheduler {
         if duration_seconds <= 0.0 {
             return Err(PyRuntimeError::new_err("Duration must be positive"));
         }
-        let duration = Duration::from_secs_f64(duration_seconds);
+        let duration = duration_seconds.secs();
         self.with_inner_run(py, move |sched| sched.run_for(duration))
     }
 
@@ -751,7 +757,7 @@ impl PyScheduler {
         if duration_seconds <= 0.0 {
             return Err(PyRuntimeError::new_err("Duration must be positive"));
         }
-        let duration = Duration::from_secs_f64(duration_seconds);
+        let duration = duration_seconds.secs();
         self.with_inner_run(py, move |sched| {
             let refs: Vec<&str> = node_names.iter().map(|s| s.as_str()).collect();
             sched.tick_for(&refs, duration)
@@ -1021,7 +1027,7 @@ impl PyScheduler {
                 dict.set_item("budget_overruns", stats.budget_overruns())?;
                 dict.set_item("deadline_misses", stats.deadline_misses())?;
                 dict.set_item("watchdog_expirations", stats.watchdog_expirations())?;
-                dict.set_item("safe_mode_activations", stats.safe_mode_activations())?;
+                dict.set_item("degrade_activations", stats.degrade_activations())?;
                 Ok(Some(dict.into()))
             }
             None => Ok(None),
@@ -1091,7 +1097,7 @@ impl PyScheduler {
             PyRuntimeError::new_err("Cannot set tick budget while scheduler is running")
         })?;
         inner
-            .set_tick_budget(&node_name, Duration::from_micros(us))
+            .set_tick_budget(&node_name, us.us())
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
     }
@@ -1106,7 +1112,7 @@ impl PyScheduler {
             PyRuntimeError::new_err("Cannot add critical node while scheduler is running")
         })?;
         inner
-            .add_critical_node(&node_name, Duration::from_millis(timeout_ms))
+            .add_critical_node(&node_name, timeout_ms.ms())
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
     }

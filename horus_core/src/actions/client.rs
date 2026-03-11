@@ -19,7 +19,7 @@
 //! let handle = client.send_goal(NavigateGoal { target_x: 5.0, target_y: 3.0 });
 //!
 //! // Wait for result with timeout
-//! match handle.await_result(Duration::from_secs(30)) {
+//! match handle.await_result(30_u64.secs()) {
 //!     Some(result) => println!("Navigation complete: {:?}", result),
 //!     None => println!("Navigation timed out"),
 //! }
@@ -41,6 +41,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use crate::core::DurationExt;
 
 /// Handle to a goal sent by the client.
 ///
@@ -150,7 +151,7 @@ where
     /// # Example
     /// ```rust,ignore
     /// let handle = client.send_goal(goal);
-    /// if let Some(result) = handle.await_result(Duration::from_secs(30)) {
+    /// if let Some(result) = handle.await_result(30_u64.secs()) {
     ///     println!("Got result: {:?}", result);
     /// } else {
     ///     println!("Timed out waiting for result");
@@ -158,7 +159,7 @@ where
     /// ```
     pub fn await_result(&self, timeout: Duration) -> Option<A::Result> {
         let start = Instant::now();
-        let poll_interval = Duration::from_millis(10);
+        let poll_interval = 10_u64.ms();
 
         while start.elapsed() < timeout {
             if self.is_done() {
@@ -186,7 +187,7 @@ where
         F: FnMut(&A::Feedback),
     {
         let start = Instant::now();
-        let poll_interval = Duration::from_millis(10);
+        let poll_interval = 10_u64.ms();
         let mut last_feedback_count = 0u64;
 
         while start.elapsed() < timeout {
@@ -715,7 +716,7 @@ where
         let state = self.inner.register_goal(goal_id);
 
         let start = Instant::now();
-        let poll_interval = Duration::from_millis(10);
+        let poll_interval = 10_u64.ms();
 
         while start.elapsed() < timeout {
             // Process messages
@@ -759,7 +760,7 @@ where
         let state = self.inner.register_goal(goal_id);
 
         let start = Instant::now();
-        let poll_interval = Duration::from_millis(10);
+        let poll_interval = 10_u64.ms();
         let mut last_feedback_count = 0u64;
 
         while start.elapsed() < timeout {

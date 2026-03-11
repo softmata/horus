@@ -4,7 +4,7 @@
 /// The arm sweeps through a predefined joint trajectory.
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 message! {
     /// Joint positions for all 6 joints (radians)
@@ -204,11 +204,11 @@ impl Node for FramePublisher {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_rate(50.hz());
+    let mut scheduler = Scheduler::new().tick_rate(50_u64.hz());
 
-    scheduler.add(TrajectoryController::new()?).order(0).rate(50.hz()).build()?;
-    scheduler.add(FramePublisher::new()?).order(1).rate(50.hz()).build()?;
+    scheduler.add(TrajectoryController::new()?).order(0).rate(50_u64.hz()).build()?;
+    scheduler.add(FramePublisher::new()?).order(1).rate(50_u64.hz()).build()?;
 
-    scheduler.run_for(Duration::from_secs(60))?;
+    scheduler.run_for(60_u64.secs())?;
     Ok(())
 }

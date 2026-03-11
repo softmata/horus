@@ -3,15 +3,14 @@
 //! Covers: burst notifications, paused event node, fatal policy stops scheduler,
 //! restart recovery after event node panic.
 
-use horus_core::core::DurationExt;
 use horus_core::core::{Node, NodeInfo};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::DurationExt;
 
 // ============================================================================
 // Mock nodes
@@ -69,7 +68,7 @@ fn test_event_burst_notifications() {
 
     // Start scheduler in background
     let handle = std::thread::spawn(move || {
-        scheduler.run_for(Duration::from_millis(500)).unwrap();
+        scheduler.run_for(500_u64.ms()).unwrap();
     });
 
     // Wait for the event node to register its notifier
@@ -79,12 +78,12 @@ fn test_event_burst_notifications() {
             registered = true;
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(5_u64.ms());
     }
 
     if registered {
         // Wait for first notification to be processed
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         // Send 4 more rapid notifications (5 total including the initial one)
         for _ in 0..4 {
@@ -92,7 +91,7 @@ fn test_event_burst_notifications() {
         }
 
         // Wait for all to be processed
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
 
         let ticks = tick_count.load(Ordering::SeqCst);
         assert!(
@@ -121,7 +120,7 @@ fn test_event_paused_node_no_tick() {
         .build();
 
     // Run without sending notifications — node should not tick
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     assert_eq!(
         tick_count.load(Ordering::SeqCst),
@@ -147,7 +146,7 @@ fn test_event_fatal_policy_stops_scheduler() {
         .build();
 
     let handle = std::thread::spawn(move || {
-        scheduler.run_for(Duration::from_millis(500)).unwrap();
+        scheduler.run_for(500_u64.ms()).unwrap();
     });
 
     // Wait for event node to register
@@ -157,12 +156,12 @@ fn test_event_fatal_policy_stops_scheduler() {
             registered = true;
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(5_u64.ms());
     }
 
     if registered {
         // The notification should trigger a panic → Fatal → scheduler stops
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
 
         let ticks = tick_count.load(Ordering::SeqCst);
         // Fatal should stop after first panic
@@ -189,11 +188,11 @@ fn test_event_restart_recovery() {
         })
         .order(5)
         .on("restart_topic")
-        .failure_policy(FailurePolicy::restart(3, 10))
+        .failure_policy(FailurePolicy::restart(3, 10_u64.ms()))
         .build();
 
     let handle = std::thread::spawn(move || {
-        scheduler.run_for(Duration::from_millis(500)).unwrap();
+        scheduler.run_for(500_u64.ms()).unwrap();
     });
 
     // Wait for event node to register
@@ -201,14 +200,14 @@ fn test_event_restart_recovery() {
         if NodeInfo::notify_event("restart_event") {
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(5_u64.ms());
     }
 
     // Send multiple notifications to trigger multiple panics/restarts
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(50_u64.ms());
     for _ in 0..5 {
         NodeInfo::notify_event("restart_event");
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(30_u64.ms());
     }
 
     handle.join().unwrap();

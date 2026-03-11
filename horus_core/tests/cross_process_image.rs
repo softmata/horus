@@ -8,11 +8,12 @@
 //!   - Child:  Subscriber — receives Images, validates pixel data
 
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use horus_core::communication::topic::Topic;
 use horus_core::memory::Image;
 use horus_core::types::ImageEncoding;
+use horus_core::core::DurationExt;
 
 /// Env var that marks a child process invocation.
 const CHILD_ENV: &str = "HORUS_IMAGE_IPC_CHILD";
@@ -94,7 +95,7 @@ fn child_recv_images() {
     let mut received_count = 0usize;
     let mut valid_count = 0usize;
     let mut errors = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + 15_u64.secs();
 
     // Receive until we get the expected count or timeout
     while received_count < expected_count && Instant::now() < deadline {
@@ -211,7 +212,7 @@ fn cross_process_image_roundtrip() {
     let child = spawn_child("cross_process_image_roundtrip", &topic_name, msg_count);
 
     // Wait for child to register and trigger cross-process migration
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(1500_u64.ms());
 
     // Force migration check
     topic.check_migration_now();
@@ -226,7 +227,7 @@ fn cross_process_image_roundtrip() {
         topic.send(&img);
 
         // Small delay to avoid overwhelming the ring
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
     }
 
     // Wait for child to finish
@@ -292,7 +293,7 @@ fn cross_process_image_stress() {
 
     let child = spawn_child("cross_process_image_stress", &topic_name, msg_count);
 
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(1500_u64.ms());
     topic.check_migration_now();
 
     // Burst send at higher rate
@@ -368,7 +369,7 @@ fn cross_process_two_schedulers_image() {
     let child = spawn_child("cross_process_two_schedulers_image", &topic_name, msg_count);
 
     // Wait for cross-process detection and migration
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(2000_u64.ms());
     topic.check_migration_now();
 
     // Simulate scheduler ticks at 30Hz
@@ -377,7 +378,7 @@ fn cross_process_two_schedulers_image() {
             Image::new(IMAGE_WIDTH, IMAGE_HEIGHT, ImageEncoding::Rgb8).expect("Image::new");
         fill_pattern(&mut img, i);
         topic.send(&img);
-        std::thread::sleep(Duration::from_millis(33)); // ~30Hz
+        std::thread::sleep(33_u64.ms()); // ~30Hz
     }
 
     let output = child.wait_with_output().expect("child wait failed");

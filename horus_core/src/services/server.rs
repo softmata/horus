@@ -36,6 +36,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::communication::Topic;
 use crate::error::HorusResult;
 use crate::services::types::{Service, ServiceRequest, ServiceResponse};
+use crate::core::DurationExt;
 
 // ─── Handler type alias ───────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ where
     pub fn new() -> Self {
         Self {
             handler: None,
-            poll_interval: Duration::from_millis(5),
+            poll_interval: 5_u64.ms(),
         }
     }
 

@@ -5,7 +5,7 @@
 /// node in a separate namespace.
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 message! {
     /// Robot's self-reported position
@@ -41,9 +41,9 @@ impl ScoutController {
     fn new(robot_id: u32, offset_x: f64, offset_z: f64) -> Result<Self> {
         Ok(Self {
             robot_id,
-            cmd_pub: Topic::new(&format!("scout_{}/cmd_vel", robot_id))?,
-            pose_pub: Topic::new("fleet/poses")?,
-            formation_sub: Topic::new("fleet/formation_cmd")?,
+            cmd_pub: Topic::new(&format!("scout_{}.cmd_vel", robot_id))?,
+            pose_pub: Topic::new("fleet.poses")?,
+            formation_sub: Topic::new("fleet.formation_cmd")?,
             formation_offset_x: offset_x,
             formation_offset_z: offset_z,
             x: offset_x * 2.0, // Start spread out
@@ -114,8 +114,8 @@ struct FormationCoordinator {
 impl FormationCoordinator {
     fn new() -> Result<Self> {
         Ok(Self {
-            cmd_pub: Topic::new("fleet/formation_cmd")?,
-            pose_sub: Topic::new("fleet/poses")?,
+            cmd_pub: Topic::new("fleet.formation_cmd")?,
+            pose_sub: Topic::new("fleet.poses")?,
             center_x: 0.0,
             center_z: 0.0,
             tick_count: 0,
@@ -155,16 +155,16 @@ impl Node for FormationCoordinator {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_rate(20.hz());
+    let mut scheduler = Scheduler::new().tick_rate(20_u64.hz());
 
     // Three scout controllers
-    scheduler.add(ScoutController::new(1, -1.0, -1.0)?).order(0).rate(20.hz()).build()?;
-    scheduler.add(ScoutController::new(2, 1.0, -1.0)?).order(0).rate(20.hz()).build()?;
-    scheduler.add(ScoutController::new(3, 0.0, 1.0)?).order(0).rate(20.hz()).build()?;
+    scheduler.add(ScoutController::new(1, -1.0, -1.0)?).order(0).rate(20_u64.hz()).build()?;
+    scheduler.add(ScoutController::new(2, 1.0, -1.0)?).order(0).rate(20_u64.hz()).build()?;
+    scheduler.add(ScoutController::new(3, 0.0, 1.0)?).order(0).rate(20_u64.hz()).build()?;
 
     // Coordinator runs slower
-    scheduler.add(FormationCoordinator::new()?).order(5).rate(5.hz()).build()?;
+    scheduler.add(FormationCoordinator::new()?).order(5).rate(5_u64.hz()).build()?;
 
-    scheduler.run_for(Duration::from_secs(60))?;
+    scheduler.run_for(60_u64.secs())?;
     Ok(())
 }

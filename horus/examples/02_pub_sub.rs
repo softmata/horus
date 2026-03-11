@@ -8,7 +8,7 @@
 //! ```
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 // Define a custom message type with the message! macro.
 // This auto-derives Clone, Debug, Serialize, Deserialize, and LogSummary.
@@ -89,13 +89,13 @@ impl Node for MonitorNode {
 fn main() -> Result<()> {
     println!("=== HORUS Example 2: Pub/Sub ===\n");
 
-    let mut scheduler = Scheduler::new().tick_rate(2.hz());
+    let mut scheduler = Scheduler::new().tick_rate(2_u64.hz());
 
     // Sensor publishes first (order 0), monitor reads after (order 1)
     scheduler.add(SensorNode::new()?).order(0).build()?;
     scheduler.add(MonitorNode::new()?).order(1).build()?;
 
-    scheduler.run_for(Duration::from_secs(4))?;
+    scheduler.run_for(4_u64.secs())?;
 
     println!("\nDone!");
     Ok(())

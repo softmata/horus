@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::discovery::discover_shared_memory;
+use horus_core::core::DurationExt;
 
 /// Standard TransformFrame topic names
 const TF_TOPIC: &str = "tf";
@@ -485,10 +486,10 @@ pub fn echo_transform(
             "Rate must be greater than 0.0".to_string(),
         )));
     }
-    let interval = Duration::from_secs_f64(1.0 / rate_hz);
+    let interval = rate_hz.hz().period();
     let mut messages_received = 0;
     let max_messages = count.unwrap_or(usize::MAX);
-    let deadline = timeout.map(|secs| std::time::Instant::now() + Duration::from_secs_f64(secs));
+    let deadline = timeout.map(|secs| std::time::Instant::now() + secs.secs());
 
     // Set up Ctrl+C handler
     let running = Arc::new(AtomicBool::new(true));
@@ -1014,7 +1015,7 @@ pub fn monitor_rates(window: Option<usize>) -> HorusResult<()> {
             );
         }
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
     }
 
     println!();
@@ -1191,7 +1192,7 @@ pub fn record_transforms(
             let _ = std::io::stdout().flush();
         }
 
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(1_u64.ms());
     }
 
     // Update header with final entry count
@@ -1343,7 +1344,7 @@ pub fn replay_transforms(path: &str, speed: f64) -> HorusResult<()> {
         let _ = tf.update_transform(&child, &entry.stamped.transform, entry.stamped.timestamp_ns);
 
         // Print at ~10Hz
-        if last_print.elapsed() >= Duration::from_millis(100) {
+        if last_print.elapsed() >= 100_u64.ms() {
             let t = &entry.stamped.transform;
             println!(
                 "  [{:>8.3}s] {} → {}: {}",
@@ -1593,7 +1594,7 @@ pub fn tune_static_frame(
     // Poll SHM a few times to collect frames
     for _ in 0..10 {
         reader.read_from_shm();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
     }
 
     let original = if let Some(data) = reader.frame_data.get(frame_name) {

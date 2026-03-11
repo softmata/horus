@@ -1,4 +1,4 @@
-use horus::scheduling::config::{RecordingConfigYaml, SchedulerConfig};
+use horus::scheduling::{RecordingConfigYaml, SchedulerConfig};
 use pyo3::prelude::*;
 
 /// Full scheduler configuration for Python — plain data bag.

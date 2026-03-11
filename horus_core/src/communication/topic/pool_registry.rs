@@ -88,15 +88,15 @@ mod tests {
 
     #[test]
     fn test_pool_id_deterministic() {
-        let id1 = pool_id_from_name("camera/rgb");
-        let id2 = pool_id_from_name("camera/rgb");
+        let id1 = pool_id_from_name("camera.rgb");
+        let id2 = pool_id_from_name("camera.rgb");
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn test_pool_id_different_names() {
-        let id1 = pool_id_from_name("camera/rgb");
-        let id2 = pool_id_from_name("lidar/points");
+        let id1 = pool_id_from_name("camera.rgb");
+        let id2 = pool_id_from_name("lidar.points");
         assert_ne!(id1, id2);
     }
 

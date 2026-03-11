@@ -19,6 +19,7 @@ use crate::error::{HorusError, HorusResult, ValidationError};
 use crate::memory::platform::shm_topics_dir;
 use crate::memory::shm_region::ShmRegion;
 use std::path::PathBuf;
+use crate::core::DurationExt;
 
 /// Types of faults that can be injected into shared memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +248,7 @@ impl MockNetworkEndpoint {
             None => Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
             Some(NetworkFault::Timeout) => Err(HorusError::Timeout(crate::error::TimeoutError {
                 resource: format!("mDNS resolution for {}", self.hostname),
-                elapsed: std::time::Duration::from_secs(0),
+                elapsed: 0_u64.secs(),
                 deadline: None,
             })),
             Some(NetworkFault::Unreachable) => Err(HorusError::network_fault(
@@ -276,7 +277,7 @@ impl MockNetworkEndpoint {
             None => Ok(()),
             Some(NetworkFault::Timeout) => Err(HorusError::Timeout(crate::error::TimeoutError {
                 resource: format!("connection to {}", self.hostname),
-                elapsed: std::time::Duration::from_secs(0),
+                elapsed: 0_u64.secs(),
                 deadline: None,
             })),
             Some(NetworkFault::Unreachable) => Err(HorusError::network_fault(

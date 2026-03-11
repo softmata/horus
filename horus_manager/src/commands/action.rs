@@ -7,6 +7,7 @@ use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
+use horus_core::core::DurationExt;
 
 // ─── Action discovery ─────────────────────────────────────────────────────────
 
@@ -25,9 +26,9 @@ struct DiscoveredAction {
 
 /// Discover active actions by scanning SHM topics for action-specific topic patterns.
 ///
-/// An action named `/navigate` creates topics:
-///   navigate/goal, navigate/result, navigate/feedback,
-///   navigate/status, navigate/cancel
+/// An action named `navigate` creates topics:
+///   navigate.goal, navigate.result, navigate.feedback,
+///   navigate.status, navigate.cancel
 fn discover_actions() -> HorusResult<Vec<DiscoveredAction>> {
     let topics = discover_shared_memory()?;
 
@@ -35,11 +36,11 @@ fn discover_actions() -> HorusResult<Vec<DiscoveredAction>> {
         std::collections::HashMap::new();
 
     let suffixes = [
-        ("/goal", "goal"),
-        ("/result", "result"),
-        ("/feedback", "feedback"),
-        ("/status", "status"),
-        ("/cancel", "cancel"),
+        (".goal", "goal"),
+        (".result", "result"),
+        (".feedback", "feedback"),
+        (".status", "status"),
+        (".cancel", "cancel"),
     ];
 
     for topic in &topics {
@@ -50,7 +51,7 @@ fn discover_actions() -> HorusResult<Vec<DiscoveredAction>> {
 
         for (suffix, field) in &suffixes {
             if let Some(action_name) = topic_name.strip_suffix(suffix) {
-                // Skip topics that look like service topics (also have /request, /response)
+                // Skip topics that look like service topics (also have .request, .response)
                 let entry =
                     actions
                         .entry(action_name.to_string())
@@ -89,7 +90,7 @@ fn discover_actions() -> HorusResult<Vec<DiscoveredAction>> {
         .filter(|a| a.has_goal || a.has_result)
         .collect();
 
-    // Exclude entries that are actually services (have /request or /response partner)
+    // Exclude entries that are actually services (have .request or .response partner)
     let topic_names: std::collections::HashSet<String> = topics
         .iter()
         .map(|t| {
@@ -101,8 +102,8 @@ fn discover_actions() -> HorusResult<Vec<DiscoveredAction>> {
         .collect();
 
     result.retain(|a| {
-        !topic_names.contains(&format!("{}/request", a.name))
-            && !topic_names.contains(&format!("{}/response", a.name))
+        !topic_names.contains(&format!("{}.request", a.name))
+            && !topic_names.contains(&format!("{}.response", a.name))
     });
 
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -316,7 +317,7 @@ pub fn send_goal(
     timeout_secs: f64,
 ) -> HorusResult<()> {
     use horus_core::communication::Topic;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     // Validate JSON
     let goal_value: serde_json::Value =
@@ -329,10 +330,10 @@ pub fn send_goal(
 
     // Action topics use a wrapper: GoalRequest<G> which has uuid + priority + payload
     // We use serde_json::Value as the payload.
-    let goal_topic_name = format!("{}/goal", name);
-    let status_topic_name = format!("{}/status", name);
-    let feedback_topic_name = format!("{}/feedback", name);
-    let result_topic_name = format!("{}/result", name);
+    let goal_topic_name = format!("{}.goal", name);
+    let status_topic_name = format!("{}.status", name);
+    let feedback_topic_name = format!("{}.feedback", name);
+    let result_topic_name = format!("{}.result", name);
 
     // Generate a goal UUID
     let goal_id = uuid::Uuid::new_v4().to_string();
@@ -410,7 +411,7 @@ pub fn send_goal(
         )
     })?;
 
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
+    let deadline = Instant::now() + timeout_secs.secs();
 
     loop {
         if !running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -468,7 +469,7 @@ pub fn send_goal(
             }
         }
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
     }
 
     Ok(())
@@ -478,7 +479,7 @@ pub fn send_goal(
 pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {
     use horus_core::communication::Topic;
 
-    let cancel_topic_name = format!("{}/cancel", name);
+    let cancel_topic_name = format!("{}.cancel", name);
     let cancel_request = serde_json::json!({
         "goal_id": goal_id.unwrap_or(""),  // empty = cancel all
         "cancel_all": goal_id.is_none(),
@@ -547,7 +548,7 @@ mod tests {
 
     #[test]
     fn action_topic_suffix_stripping() {
-        let suffixes = ["/goal", "/result", "/feedback", "/status", "/cancel"];
+        let suffixes = [".goal", ".result", ".feedback", ".status", ".cancel"];
         let base = "navigate_to_pose";
         for suffix in &suffixes {
             let topic = format!("{}{}", base, suffix);
@@ -558,25 +559,25 @@ mod tests {
 
     #[test]
     fn action_topic_with_horus_prefix() {
-        let topic = "horus_topic/navigate/goal";
+        let topic = "horus_topic/navigate.goal";
         let stripped = topic
             .strip_prefix("horus_topic/")
-            .and_then(|n| n.strip_suffix("/goal"));
+            .and_then(|n| n.strip_suffix(".goal"));
         assert_eq!(stripped, Some("navigate"));
     }
 
     #[test]
     fn action_not_confused_with_service() {
-        // An action should NOT have /request or /response topics
+        // An action should NOT have .request or .response topics
         let topic_names: std::collections::HashSet<String> =
-            ["nav/goal", "nav/result", "nav/feedback"]
+            ["nav.goal", "nav.result", "nav.feedback"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
 
-        // No /request or /response for "nav" means it's an action, not a service
-        assert!(!topic_names.contains("nav/request"));
-        assert!(!topic_names.contains("nav/response"));
+        // No .request or .response for "nav" means it's an action, not a service
+        assert!(!topic_names.contains("nav.request"));
+        assert!(!topic_names.contains("nav.response"));
     }
 
     #[test]
@@ -632,8 +633,8 @@ mod tests {
     #[test]
     fn cancel_goal_topic_name_format() {
         let name = "navigate";
-        let cancel_topic = format!("{}/cancel", name);
-        assert_eq!(cancel_topic, "navigate/cancel");
+        let cancel_topic = format!("{}.cancel", name);
+        assert_eq!(cancel_topic, "navigate.cancel");
     }
 
     #[test]

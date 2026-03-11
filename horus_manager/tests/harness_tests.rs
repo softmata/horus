@@ -9,7 +9,7 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 
 use horus_core::NodePresence;
 use std::fs;
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 // ── Harness self-tests ──────────────────────────────────────────────────────
 
@@ -21,7 +21,7 @@ fn harness_add_node_discoverable() {
     rt.add_node(TestNodeConfig::bare("harness_smoke_node"));
 
     assert!(
-        rt.wait_ready(Duration::from_secs(2)),
+        rt.wait_ready(2_u64.secs()),
         "node should be discoverable within 2 seconds"
     );
 
@@ -73,7 +73,7 @@ fn harness_sensor_preset() {
         "LaserScan",
     ));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
 
     let all = NodePresence::read_all();
     let node = all.iter().find(|p| p.name == "harness_lidar_node");
@@ -156,7 +156,7 @@ fn harness_multi_node() {
             "BBoxArray",
         ));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     assert_eq!(rt.node_names().len(), 3);
 
     let all = NodePresence::read_all();
@@ -192,7 +192,7 @@ fn harness_builder_pattern() {
             .with_subscriber("input_b", "TypeB"),
     );
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
 
     let all = NodePresence::read_all();
     let node = all
@@ -219,7 +219,7 @@ fn harness_actuator_preset() {
         "Twist",
     ));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
 
     let all = NodePresence::read_all();
     let node = all

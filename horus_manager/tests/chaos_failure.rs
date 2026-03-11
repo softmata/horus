@@ -14,6 +14,7 @@ use monitor_tests::helpers::get_request;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 static CHAOS_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -39,7 +40,7 @@ async fn chaos_corrupt_presence_file_no_panic() {
     // Also write some valid nodes
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare(&unique_name("good_node")));
-    rt.wait_ready(std::time::Duration::from_secs(5));
+    rt.wait_ready(5_u64.secs());
 
     // API must still respond
     let app = builders::test_router();

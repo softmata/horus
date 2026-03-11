@@ -9,6 +9,7 @@ use horus_core::{NodePresence, TopicMetadata};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use horus_core::core::DurationExt;
 
 /// Handle for a single simulated node.
 #[derive(Debug)]
@@ -233,7 +234,7 @@ impl HorusTestRuntime {
         // The cache is a module-private lazy_static in horus_manager.
         // We cannot access it directly from an integration test.  Instead
         // we simply wait long enough for the cache TTL (250 ms) to expire.
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(300_u64.ms());
     }
 
     // ── Readiness ───────────────────────────────────────────────────────
@@ -253,11 +254,11 @@ impl HorusTestRuntime {
             let presences = NodePresence::read_all();
             let found_all = expected_names
                 .iter()
-                .all(|name| presences.iter().any(|p| p.name == *name));
+                .all(|name| presences.iter().any(|p| p.name() == *name));
             if found_all {
                 return true;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(50_u64.ms());
         }
 
         false

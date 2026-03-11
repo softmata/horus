@@ -291,6 +291,18 @@ impl PluginDiscovery {
     fn get_known_plugins(&self) -> Vec<AvailablePlugin> {
         vec![
             AvailablePlugin {
+                name: "horus-realsense".to_string(),
+                version: "0.1.0".to_string(),
+                description: "Intel RealSense depth camera support (D435, D455, L515)".to_string(),
+                category: PluginCategory::Camera,
+                source: PluginSourceType::Registry,
+                platforms: vec!["linux-x86_64".to_string(), "linux-aarch64".to_string()],
+                horus_compat: ">=0.1.0".to_string(),
+                has_prebuilt: true,
+                system_deps: vec!["librealsense2-dev".to_string()],
+                features: vec!["depth".to_string(), "rgb".to_string(), "pointcloud".to_string(), "camera".to_string()],
+            },
+            AvailablePlugin {
                 name: "horus-rplidar".to_string(),
                 version: "0.1.0".to_string(),
                 description: "Slamtec RPLiDAR support (A1, A2, A3, S1, S2)".to_string(),

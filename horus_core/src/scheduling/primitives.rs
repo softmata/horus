@@ -63,7 +63,7 @@ pub(crate) enum DeadlineAction {
     /// Pause the node for one tick.
     Skip,
     /// Call `enter_safe_state()` on the node, continue ticking in degraded mode.
-    SafeMode,
+    Degrade,
     /// Trigger emergency stop — caller must stop the scheduler.
     EmergencyStop,
 }
@@ -125,7 +125,7 @@ impl TimingEnforcer {
             let action = match miss {
                 Miss::Warn => DeadlineAction::Warn,
                 Miss::Skip => DeadlineAction::Skip,
-                Miss::SafeMode => DeadlineAction::SafeMode,
+                Miss::Degrade => DeadlineAction::Degrade,
                 Miss::Stop => DeadlineAction::EmergencyStop,
             };
             Some(DeadlineMissResult {
@@ -142,6 +142,7 @@ impl TimingEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
     use crate::core::Node;
 
     struct OkNode;
@@ -170,7 +171,7 @@ mod tests {
             "slow_node"
         }
         fn tick(&mut self) {
-            std::thread::sleep(std::time::Duration::from_micros(self.work_us));
+            std::thread::sleep(self.work_us.us());
         }
     }
 
@@ -205,8 +206,8 @@ mod tests {
     fn test_check_budget_no_violation() {
         let result = TimingEnforcer::check_tick_budget(
             "node",
-            Duration::from_micros(100),
-            Duration::from_micros(500),
+            100_u64.us(),
+            500_u64.us(),
         );
         assert!(result.is_none());
     }
@@ -215,22 +216,22 @@ mod tests {
     fn test_check_budget_violation() {
         let result = TimingEnforcer::check_tick_budget(
             "motor_ctrl",
-            Duration::from_micros(800),
-            Duration::from_micros(500),
+            800_u64.us(),
+            500_u64.us(),
         );
         let v = result.expect("should detect violation");
         assert_eq!(v.violation.node_name(), "motor_ctrl");
-        assert_eq!(v.violation.budget(), Duration::from_micros(500));
-        assert_eq!(v.violation.actual(), Duration::from_micros(800));
-        assert_eq!(v.violation.overrun(), Duration::from_micros(300));
+        assert_eq!(v.violation.budget(), 500_u64.us());
+        assert_eq!(v.violation.actual(), 800_u64.us());
+        assert_eq!(v.violation.overrun(), 300_u64.us());
     }
 
     #[test]
     fn test_check_budget_exact_no_violation() {
         let result = TimingEnforcer::check_tick_budget(
             "node",
-            Duration::from_micros(500),
-            Duration::from_micros(500),
+            500_u64.us(),
+            500_u64.us(),
         );
         assert!(result.is_none(), "exact budget should not be a violation");
     }
@@ -240,31 +241,31 @@ mod tests {
         // tick_start is now — elapsed is ~0, well within any deadline
         let tick_start = Instant::now();
         let result =
-            TimingEnforcer::check_deadline(tick_start, Duration::from_millis(100), Miss::Warn);
+            TimingEnforcer::check_deadline(tick_start, 100_u64.ms(), Miss::Warn);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_check_deadline_miss() {
         // tick_start was 50ms ago — deadline is 10ms
-        let tick_start = Instant::now() - Duration::from_millis(50);
+        let tick_start = Instant::now() - 50_u64.ms();
         let result =
-            TimingEnforcer::check_deadline(tick_start, Duration::from_millis(10), Miss::Stop);
+            TimingEnforcer::check_deadline(tick_start, 10_u64.ms(), Miss::Stop);
         let dm = result.expect("should detect deadline miss");
-        assert!(dm.elapsed >= Duration::from_millis(50));
-        assert_eq!(dm.deadline, Duration::from_millis(10));
+        assert!(dm.elapsed >= 50_u64.ms());
+        assert_eq!(dm.deadline, 10_u64.ms());
         assert!(matches!(dm.action, DeadlineAction::EmergencyStop));
     }
 
     #[test]
     fn test_check_deadline_miss_policy_mapping() {
-        let tick_start = Instant::now() - Duration::from_millis(50);
-        let deadline = Duration::from_millis(10);
+        let tick_start = Instant::now() - 50_u64.ms();
+        let deadline = 10_u64.ms();
 
         let policies_and_expected = [
             (Miss::Warn, "Warn"),
             (Miss::Skip, "Skip"),
-            (Miss::SafeMode, "SafeMode"),
+            (Miss::Degrade, "Degrade"),
             (Miss::Stop, "EmergencyStop"),
         ];
 

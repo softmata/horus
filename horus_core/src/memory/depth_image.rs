@@ -13,7 +13,7 @@
 //! depth.set_depth(100, 200, 2.5)?; // 2.5 meters
 //!
 //! // Send via topic (zero-copy)
-//! let topic: Topic<DepthImage> = Topic::new("depth/raw")?;
+//! let topic: Topic<DepthImage> = Topic::new("depth.raw")?;
 //! topic.send(&depth);
 //!
 //! // Receive and query

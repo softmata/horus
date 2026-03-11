@@ -30,7 +30,8 @@ use horus_benchmarks::{
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use horus_core::core::DurationExt;
 
 const DEFAULT_ITERATIONS: usize = 50_000;
 const DEFAULT_WARMUP: usize = 5_000;
@@ -202,7 +203,7 @@ fn run_cross_process_test(
         .expect("Failed to spawn consumer");
 
     // Give consumer time to initialize
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(100_u64.ms());
 
     // Spawn producer
     let mut producer = Command::new(&exe)
@@ -229,12 +230,12 @@ fn run_cross_process_test(
     // Collect results from consumer
     let mut latencies = Vec::new();
     let timeout = Instant::now();
-    while timeout.elapsed() < Duration::from_secs(5) {
+    while timeout.elapsed() < 5_u64.secs() {
         if let Some(result) = result_rx.recv() {
             latencies = result.latencies_ns;
             break;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
     }
 
     if latencies.is_empty() {
@@ -318,11 +319,11 @@ fn run_producer(args: &[String]) {
             payload: [0u8; 48],
         };
         producer.send(msg);
-        std::thread::sleep(Duration::from_micros(10));
+        std::thread::sleep(10_u64.us());
     }
 
     // Small delay to let consumer drain warmup
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(50_u64.ms());
 
     // Measured iterations
     for i in 0..iterations {
@@ -374,7 +375,7 @@ fn run_consumer(args: &[String]) {
     let timeout = Instant::now();
 
     // Receive messages and measure latency
-    while timeout.elapsed() < Duration::from_secs(60) {
+    while timeout.elapsed() < 60_u64.secs() {
         if let Some(msg) = consumer.recv() {
             // Check for completion signal
             if msg.seq == u64::MAX {

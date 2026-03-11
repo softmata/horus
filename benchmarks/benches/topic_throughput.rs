@@ -9,7 +9,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use horus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 /// Small payload for high-frequency messaging
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ unsafe impl bytemuck::Zeroable for ThroughputPayload1K {}
 /// Benchmark sustained throughput - how many messages per second
 fn bench_sustained_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("sustained_throughput");
-    group.measurement_time(Duration::from_secs(10));
+    group.measurement_time(10_u64.secs());
     group.sample_size(100);
 
     // 16-byte messages - target: >1M msg/sec for native
@@ -117,7 +117,7 @@ fn bench_sustained_throughput(c: &mut Criterion) {
 /// Benchmark burst throughput - short bursts of high traffic
 fn bench_burst_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("burst_throughput");
-    group.measurement_time(Duration::from_secs(5));
+    group.measurement_time(5_u64.secs());
     group.sample_size(100);
 
     // Small burst (100 messages)
@@ -158,7 +158,7 @@ fn bench_burst_throughput(c: &mut Criterion) {
 /// Benchmark multi-topic throughput (simulates real robot scenarios)
 fn bench_multi_topic_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("multi_topic_throughput");
-    group.measurement_time(Duration::from_secs(5));
+    group.measurement_time(5_u64.secs());
     group.sample_size(50);
 
     // Simulate robot with multiple topics (sensors, commands, state)
@@ -215,7 +215,7 @@ fn bench_multi_topic_throughput(c: &mut Criterion) {
 /// Benchmark pub-sub round trip (send + receive)
 fn bench_pubsub_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("pubsub_roundtrip");
-    group.measurement_time(Duration::from_secs(5));
+    group.measurement_time(5_u64.secs());
     group.sample_size(500);
 
     group.bench_function("native_roundtrip_16B", |b| {

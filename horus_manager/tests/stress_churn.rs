@@ -15,6 +15,7 @@ use monitor_tests::helpers::get_request;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 static CHURN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -74,7 +75,7 @@ async fn churn_api_nodes_stable_during_lifecycle() {
     for i in 0..10 {
         stable_rt.add_node(TestNodeConfig::bare(&format!("stable_churn_{}", i)));
     }
-    stable_rt.wait_ready(std::time::Duration::from_secs(5));
+    stable_rt.wait_ready(5_u64.secs());
 
     // Poll API while churning additional nodes
     for cycle in 0..20 {
@@ -123,7 +124,7 @@ async fn churn_api_graph_stable_during_lifecycle() {
             "ChurnData",
         ));
     }
-    stable_rt.wait_ready(std::time::Duration::from_secs(5));
+    stable_rt.wait_ready(5_u64.secs());
 
     for cycle in 0..15 {
         let mut transient = HorusTestRuntime::new();
@@ -221,7 +222,7 @@ async fn churn_websocket_stable_during_lifecycle() {
         rt.add_node(TestNodeConfig::bare(&unique_churn_name("ws_churn")));
 
         // Receive a broadcast
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), ws.next())
+        let msg = tokio::time::timeout(3_u64.secs(), ws.next())
             .await
             .unwrap_or_else(|_| panic!("WS broadcast {} timed out during churn", cycle))
             .unwrap()
@@ -311,7 +312,7 @@ async fn churn_rapid_status_polling_no_degradation() {
     for i in 0..20 {
         stable_rt.add_node(TestNodeConfig::bare(&format!("rapid_poll_{}", i)));
     }
-    stable_rt.wait_ready(std::time::Duration::from_secs(5));
+    stable_rt.wait_ready(5_u64.secs());
 
     // Poll 50 times as fast as possible
     let start = Instant::now();

@@ -19,7 +19,7 @@
 //! use horus_core::communication::Topic;
 //! use crate::types::{Tensor, TensorDtype, Device};
 //!
-//! let topic: RingTopic<Tensor> = RingTopic::new("camera/rgb")?;
+//! let topic: RingTopic<Tensor> = RingTopic::new("camera.rgb")?;
 //!
 //! // Allocate a 1080p RGB image from the topic's pool
 //! let mut handle = topic.alloc(&[1080, 1920, 3], TensorDtype::U8, Device::cpu())?;
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_topic_tensor_pool_roundtrip() {
-        let topic: RingTopic<Tensor> = RingTopic::new("test/tensor_ext_roundtrip").unwrap();
+        let topic: RingTopic<Tensor> = RingTopic::new("test.tensor_ext_roundtrip").unwrap();
 
         // Allocate a tensor
         let handle = topic
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_pool_shared_across_calls() {
-        let topic: RingTopic<Tensor> = RingTopic::new("test/tensor_ext_shared_pool").unwrap();
+        let topic: RingTopic<Tensor> = RingTopic::new("test.tensor_ext_shared_pool").unwrap();
 
         let pool1 = topic.pool();
         let pool2 = topic.pool();

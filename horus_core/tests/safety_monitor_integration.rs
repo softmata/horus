@@ -3,14 +3,13 @@
 //! Covers: budget critical violation, non-critical budget, multiple watchdog expiry,
 //! deadline miss threshold, safety stats accuracy, concurrent budget checks.
 
-use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::{DurationExt, Node};
 
 // ============================================================================
 // Mock nodes
@@ -29,7 +28,7 @@ impl Node for TimedRtNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_micros(self.sleep_us));
+        std::thread::sleep(self.sleep_us.us());
     }
 }
 
@@ -47,7 +46,7 @@ impl Node for BudgetViolatorNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_micros(self.actual_us));
+        std::thread::sleep(self.actual_us.us());
     }
 }
 
@@ -86,11 +85,11 @@ fn test_budget_critical_violation_emergency_stop() {
             actual_us: 500, // 500us actual (10x overrun)
         })
         .order(0)
-        .budget(50.us())
+        .budget(50_u64.us())
         .build();
 
     // The budget violation should be detected by the safety monitor
-    let result = scheduler.run_for(Duration::from_millis(500));
+    let result = scheduler.run_for(500_u64.ms());
     result.unwrap();
 
     // Should have ticked at least once to trigger the violation
@@ -118,11 +117,11 @@ fn test_budget_non_critical_no_emergency() {
             actual_us: 200,
         })
         .order(0)
-        .budget(50.us())
+        .budget(50_u64.us())
         .build();
 
     // Non-critical budget overrun should NOT trigger emergency stop
-    let result = scheduler.run_for(Duration::from_millis(200));
+    let result = scheduler.run_for(200_u64.ms());
     result.unwrap();
 
     // Scheduler should have continued running
@@ -151,12 +150,12 @@ fn test_multiple_watchdogs_expire_simultaneously() {
                 sleep_us: 10,
             })
             .order(i)
-            .budget(60.us()) // sleep_us(10) + margin
+            .budget(60_u64.us()) // sleep_us(10) + margin
             .build();
     }
 
     // With properly feeding watchdogs, no emergency stop within 200ms
-    let result = scheduler.run_for(Duration::from_millis(200));
+    let result = scheduler.run_for(200_u64.ms());
     result.unwrap();
 }
 
@@ -176,11 +175,11 @@ fn test_deadline_miss_threshold_triggers_stop() {
             actual_us: 2000, // Exceeds deadline
         })
         .order(0)
-        .budget(5000.us())
-        .deadline(500.us()) // Will be missed
+        .budget(5000_u64.us())
+        .deadline(500_u64.us()) // Will be missed
         .build();
 
-    let result = scheduler.run_for(Duration::from_millis(500));
+    let result = scheduler.run_for(500_u64.ms());
     result.unwrap();
 
     // Should have stopped after accumulating 3 deadline misses
@@ -208,11 +207,11 @@ fn test_safety_stats_accurate() {
             actual_us: 200,
         })
         .order(0)
-        .budget(50.us())
-        .deadline(100.us())
+        .budget(50_u64.us())
+        .deadline(100_u64.us())
         .build();
 
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
 
     // Stats should reflect violations (verified through scheduler running without crash)
     let ticks = tick_count.load(Ordering::SeqCst);
@@ -235,11 +234,11 @@ fn test_concurrent_budget_check_and_add_critical() {
                 tick_count: Arc::new(AtomicU64::new(0)),
             })
             .order(i)
-            .budget(10000.us())
+            .budget(10000_u64.us())
             .build();
     }
 
     // Run to exercise the concurrent safety monitor checks
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }

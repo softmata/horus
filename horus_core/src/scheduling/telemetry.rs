@@ -13,6 +13,8 @@ use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use crate::core::DurationExt;
+
 
 /// Telemetry metric types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,7 +149,7 @@ impl TelemetryManager {
 
         Self {
             endpoint,
-            interval: Duration::from_millis(interval_ms),
+            interval: interval_ms.ms(),
             last_export: Instant::now(),
             metrics: HashMap::new(),
             scheduler_name: "horus".to_string(),
@@ -356,8 +358,8 @@ fn http_post_blocking(url: &str, snapshot: &TelemetrySnapshot) -> Result<(), Str
     let mut stream =
         TcpStream::connect(format!("{}:80", host)).map_err(|e| format!("Connect failed: {}", e))?;
 
-    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_write_timeout(Some(5_u64.secs())).ok();
+    stream.set_read_timeout(Some(5_u64.secs())).ok();
 
     let request = format!(
         "POST {} HTTP/1.1\r\n\
@@ -440,7 +442,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(
-            elapsed < std::time::Duration::from_millis(200),
+            elapsed < 200_u64.ms(),
             "export() with Http endpoint must be non-blocking; took {:?}",
             elapsed
         );

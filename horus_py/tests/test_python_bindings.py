@@ -346,10 +346,10 @@ class TestPythonNode:
         from horus import Node
         node = Node(
             name="test_dict_pubs",
-            pubs={"control/cmd": {"capacity": 2048}},
+            pubs={"control.cmd": {"capacity": 2048}},
             tick=lambda n: None,
         )
-        assert "control/cmd" in node.pub_topics
+        assert "control.cmd" in node.pub_topics
 
     def test_node_with_string_pub(self):
         from horus import Node

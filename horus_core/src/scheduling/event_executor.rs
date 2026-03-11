@@ -237,6 +237,7 @@ impl EventExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
     use crate::core::{Miss, Node, NodeInfo};
     use std::sync::Mutex;
 
@@ -297,7 +298,7 @@ mod tests {
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
 
         // Let it run briefly — no notifications, so no ticks
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
         running.store(false, Ordering::SeqCst);
 
         let returned = executor.stop();
@@ -326,7 +327,7 @@ mod tests {
                 registered = true;
                 break;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(5_u64.ms());
         }
         assert!(
             registered,
@@ -334,7 +335,7 @@ mod tests {
         );
 
         // Wait for the watcher to process the notification we just sent
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         let ticks = count.load(Ordering::Relaxed);
         assert!(
@@ -346,7 +347,7 @@ mod tests {
         // Send more notifications
         crate::core::NodeInfo::notify_event("evt_node_notify");
         crate::core::NodeInfo::notify_event("evt_node_notify");
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         let ticks = count.load(Ordering::Relaxed);
         assert!(
@@ -371,18 +372,18 @@ mod tests {
         let running = Arc::new(AtomicBool::new(true));
 
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
 
         // Notify only topic_a's node
         crate::core::NodeInfo::notify_event("evt_a");
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         assert!(count_a.load(Ordering::Relaxed) >= 1, "evt_a should tick");
         assert_eq!(count_b.load(Ordering::Relaxed), 0, "evt_b should NOT tick");
 
         // Now notify topic_b's node
         crate::core::NodeInfo::notify_event("evt_b");
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
 
         assert!(
             count_b.load(Ordering::Relaxed) >= 1,
@@ -403,7 +404,7 @@ mod tests {
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
 
         // Wait without sending any notifications
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();

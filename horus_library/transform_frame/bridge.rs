@@ -61,6 +61,7 @@ use std::hash::{Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use horus_core::core::DurationExt;
 use std::time::{Duration, Instant};
 
 /// Default multicast group for TF bridge
@@ -214,7 +215,7 @@ impl TFBridgePublisher {
 
         // Rate limiting
         if self.config.max_publish_rate > 0 {
-            let min_interval = Duration::from_secs_f64(1.0 / self.config.max_publish_rate as f64);
+            let min_interval = (self.config.max_publish_rate as f64).hz().period();
             let mut last = self.last_send.lock().unwrap();
             let elapsed = last.elapsed();
             if elapsed < min_interval {

@@ -1409,6 +1409,7 @@ pub use crate::types::{Device, Tensor, TensorDtype};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
 
     #[test]
     fn test_pool_creation() {
@@ -1845,7 +1846,7 @@ mod tests {
     #[test]
     fn test_alloc_with_timeout_succeeds_when_slot_freed() {
         use std::sync::Arc;
-        use std::time::{Duration, Instant};
+        use std::time::Instant;
 
         let config = TensorPoolConfig {
             pool_size: 1024 * 1024,
@@ -1865,7 +1866,7 @@ mod tests {
         let pool2 = Arc::clone(&pool);
         let tensor_for_thread = tensor;
         let handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(50_u64.ms());
             pool2.release(&tensor_for_thread);
         });
 
@@ -1875,7 +1876,7 @@ mod tests {
             &[64],
             TensorDtype::U8,
             Device::cpu(),
-            Duration::from_millis(200),
+            200_u64.ms(),
         );
         let elapsed = t0.elapsed();
 
@@ -1887,11 +1888,11 @@ mod tests {
         // We should have blocked at least ~50 ms (until the helper released the slot)
         // but well under the 200 ms timeout.
         assert!(
-            elapsed >= Duration::from_millis(30),
+            elapsed >= 30_u64.ms(),
             "should have blocked while waiting for slot (elapsed={elapsed:?})"
         );
         assert!(
-            elapsed < Duration::from_millis(180),
+            elapsed < 180_u64.ms(),
             "should have been woken promptly by the condvar (elapsed={elapsed:?})"
         );
 
@@ -1904,8 +1905,6 @@ mod tests {
     /// alloc_with_timeout returns Timeout when no slot is freed within the deadline.
     #[test]
     fn test_alloc_with_timeout_returns_timeout_when_pool_stays_full() {
-        use std::time::Duration;
-
         let config = TensorPoolConfig {
             pool_size: 1024 * 1024,
             max_slots: 1,
@@ -1924,7 +1923,7 @@ mod tests {
             &[64],
             TensorDtype::U8,
             Device::cpu(),
-            Duration::from_millis(80),
+            80_u64.ms(),
         );
 
         assert!(
@@ -2267,7 +2266,7 @@ mod tests {
             "Zero timeout on exhausted pool should fail"
         );
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(1),
+            start.elapsed() < 1_u64.secs(),
             "Zero timeout should return quickly"
         );
 

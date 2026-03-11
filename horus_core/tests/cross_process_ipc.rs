@@ -10,9 +10,10 @@
 //! This ensures send() goes through fn ptr dispatch (not DirectChannel fast path).
 
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use horus_core::communication::topic::Topic;
+use horus_core::core::DurationExt;
 
 /// Env var that marks a child process invocation.
 const CHILD_ENV: &str = "HORUS_IPC_CHILD";
@@ -40,7 +41,7 @@ fn child_recv_pod() {
     let t: Topic<u64> = Topic::new(&topic_name).expect("child: Topic::new failed");
 
     let mut received = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + 10_u64.secs();
 
     while Instant::now() < deadline {
         match t.recv() {
@@ -121,7 +122,7 @@ fn cross_process_shm_pod_roundtrip() {
 
     // Wait for child to register and trigger cross-process migration to SpscShm.
     // The child's check_migration detects different PIDs → same_process=false → SpscShm.
-    std::thread::sleep(Duration::from_millis(1000));
+    std::thread::sleep(1000_u64.ms());
 
     // Force the parent to re-read the SHM header and detect the child's migration.
     // This installs SHM dispatch fn ptrs and syncs epoch counters.
@@ -200,7 +201,7 @@ fn cross_process_shm_stress_no_crash() {
 
     let child = spawn_child("cross_process_shm_stress_no_crash", &topic_name, msg_count);
 
-    std::thread::sleep(Duration::from_millis(1000));
+    std::thread::sleep(1000_u64.ms());
     t.check_migration_now();
 
     // High-throughput burst

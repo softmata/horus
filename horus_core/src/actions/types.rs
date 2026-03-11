@@ -265,27 +265,27 @@ pub trait Action: Send + Sync + 'static {
 
     /// Get the goal topic name.
     fn goal_topic() -> String {
-        format!("{}/goal", Self::name())
+        format!("{}.goal", Self::name())
     }
 
     /// Get the cancel topic name.
     fn cancel_topic() -> String {
-        format!("{}/cancel", Self::name())
+        format!("{}.cancel", Self::name())
     }
 
     /// Get the result topic name.
     fn result_topic() -> String {
-        format!("{}/result", Self::name())
+        format!("{}.result", Self::name())
     }
 
     /// Get the feedback topic name.
     fn feedback_topic() -> String {
-        format!("{}/feedback", Self::name())
+        format!("{}.feedback", Self::name())
     }
 
     /// Get the status topic name.
     fn status_topic() -> String {
-        format!("{}/status", Self::name())
+        format!("{}.status", Self::name())
     }
 }
 

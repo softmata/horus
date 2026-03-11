@@ -53,6 +53,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use horus_core::core::DurationExt;
 
 // ============================================================================
 // Configuration
@@ -455,7 +456,7 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let handle = thread::spawn(move || {
         let _ = set_cpu_affinity(CORE_AUX);
         let mut count = 0u64;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + 5_u64.secs();
         while count < 1000 && Instant::now() < deadline {
             if consumer.recv().is_some() {
                 count += 1;
@@ -484,7 +485,7 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     for _ in 0..WARMUP {
         producer.send(msg);
     }
-    thread::sleep(Duration::from_millis(5));
+    thread::sleep(5_u64.ms());
 
     // Measure send latency
     let mut latencies = Vec::with_capacity(ITERATIONS as usize);
@@ -496,7 +497,7 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
     }
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
     done.store(true, Ordering::Relaxed);
     handle.join().unwrap();
 
@@ -544,7 +545,7 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let cons_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(CORE_AUX);
         let mut count = 0u64;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + 5_u64.secs();
         while count < 1000 && Instant::now() < deadline {
             if consumer.recv().is_some() {
                 count += 1;
@@ -593,7 +594,7 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     for _ in 0..WARMUP {
         producer1.send(msg);
     }
-    thread::sleep(Duration::from_millis(5));
+    thread::sleep(5_u64.ms());
 
     let backend = producer1.backend_name().to_string();
 
@@ -607,7 +608,7 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
     }
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
     done.store(true, Ordering::Relaxed);
     cons_handle.join().unwrap();
     p2_handle.join().unwrap();
@@ -653,7 +654,7 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let c1_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(CORE_AUX);
         let mut count = 0u64;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
             if consumer1.recv().is_some() {
                 count += 1;
@@ -682,7 +683,7 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let c2_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(CORE_CONS2);
         let mut count = 0u64;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
             if consumer2.recv().is_some() {
                 count += 1;
@@ -709,7 +710,7 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     for _ in 0..WARMUP {
         producer.send(msg);
     }
-    thread::sleep(Duration::from_millis(5));
+    thread::sleep(5_u64.ms());
 
     let backend = producer.backend_name().to_string();
 
@@ -723,7 +724,7 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
     }
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
     done.store(true, Ordering::Relaxed);
     c1_handle.join().unwrap();
     c2_handle.join().unwrap();
@@ -771,7 +772,7 @@ fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let c1_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(CORE_AUX);
         let mut count = 0u64;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
             if consumer1.recv().is_some() {
                 count += 1;
@@ -800,7 +801,7 @@ fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let c2_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(CORE_CONS2);
         let mut count = 0u64;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
             if consumer2.recv().is_some() {
                 count += 1;
@@ -847,7 +848,7 @@ fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     for _ in 0..WARMUP {
         producer1.send(msg);
     }
-    thread::sleep(Duration::from_millis(5));
+    thread::sleep(5_u64.ms());
 
     let backend = producer1.backend_name().to_string();
 
@@ -861,7 +862,7 @@ fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
     }
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
     done.store(true, Ordering::Relaxed);
     c1_handle.join().unwrap();
     c2_handle.join().unwrap();
@@ -902,8 +903,8 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let mut child = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
 
     // Wait for publisher to register and migration to occur
-    wait_for_topology(&consumer, 1, 1, Duration::from_secs(5));
-    let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
+    wait_for_topology(&consumer, 1, 1, 5_u64.secs());
+    let migration_recv = wait_for_messages(&consumer, 100, 10_u64.secs());
 
     // Force migration detection
     consumer.check_migration_now();
@@ -948,16 +949,16 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     // Spawn pub1 → SpscShm migration (1P, 1C, cross-process)
     let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_AUX);
-    let migration1 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
+    let migration1 = wait_for_messages(&consumer, 100, 10_u64.secs());
 
     // Spawn pub2 → MpscShm migration (2P, 1C, cross-process)
     let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
 
     // Wait for pub2 to actually register in the topology
-    wait_for_topology(&consumer, 2, 1, Duration::from_secs(5));
+    wait_for_topology(&consumer, 2, 1, 5_u64.secs());
 
     // Drain migration-era messages
-    let migration2 = wait_for_messages(&consumer, 200, Duration::from_secs(5));
+    let migration2 = wait_for_messages(&consumer, 200, 5_u64.secs());
 
     // Force migration detection so parent sees MpscShm before measurement
     consumer.check_migration_now();
@@ -1001,7 +1002,7 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // Spawn child consumer first (registers as 2nd subscriber)
     let child_count = PODSHM_MSGS_PER_PUB;
     let mut child_cons = spawn_consumer(&topic_name, child_count, CORE_CHILD_CONS);
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(200_u64.ms());
 
     // Paced publisher: even with 2 consumers, the parent consumer (doing measurement
     // work: RDTSC + Vec::push) is slower, so CAS contention causes bursty delivery.
@@ -1009,8 +1010,8 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let mut child_pub = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
 
     // Wait for publisher to register and topology to settle (1P, 2S → SpmcShm)
-    wait_for_topology(&consumer, 1, 2, Duration::from_secs(5));
-    let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
+    wait_for_topology(&consumer, 1, 2, 5_u64.secs());
+    let migration_recv = wait_for_messages(&consumer, 100, 10_u64.secs());
 
     // Force migration detection
     consumer.check_migration_now();
@@ -1061,23 +1062,23 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // Step 1: Spawn child consumer FIRST so both consumers are present before publishers.
     // Child consumer receives from both publishers (broadcast), so count = msgs_per_pub * 2.
     let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub * 2, CORE_CHILD_CONS);
-    thread::sleep(Duration::from_millis(200)); // Wait for child to register
+    thread::sleep(200_u64.ms()); // Wait for child to register
 
     // Step 2: Spawn pub1 (paced) → topology: 1P, 2S, cross-proc → SpmcShm
     // Paced publishers prevent ring overflow that causes the consumer to read
     // stale messages with old timestamps, inflating measured latency.
     let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_AUX);
-    let migration1 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
+    let migration1 = wait_for_messages(&consumer, 100, 10_u64.secs());
 
     // Step 3: Spawn pub2 (paced) → topology: 2P, 2S, cross-proc, POD → PodShm migration
     let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
 
     // Wait for pub2 to actually register (it sleeps 100ms at startup).
     // We need pubs=2 visible in the header before migration detection works.
-    wait_for_topology(&consumer, 2, 2, Duration::from_secs(5));
+    wait_for_topology(&consumer, 2, 2, 5_u64.secs());
 
     // Drain any queued messages from the SpmcShm era
-    let migration2 = wait_for_messages(&consumer, 200, Duration::from_secs(5));
+    let migration2 = wait_for_messages(&consumer, 200, 5_u64.secs());
 
     // Step 4: Force migration check so parent detects PodShm before measurement
     consumer.check_migration_now();
@@ -1401,7 +1402,7 @@ fn run_child_publisher(topic_name: &str, count: u64, core: usize, paced: bool) {
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
 
     // Wait for parent consumer to register
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(100_u64.ms());
 
     // Boot messages: trigger cross-process backend migration
     for _ in 0..MIGRATION_BOOT {
@@ -1409,7 +1410,7 @@ fn run_child_publisher(topic_name: &str, count: u64, core: usize, paced: bool) {
         let t = rdtsc();
         topic.send(CmdVel::with_timestamp(1.5, 0.8, t));
     }
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
 
     eprintln!(
         "  [pub] PID={} core={} backend={} pubs={} subs={}{}",
@@ -1453,7 +1454,7 @@ fn run_child_consumer(topic_name: &str, count: u64, core: usize) {
     let _ = set_cpu_affinity(core);
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
     let _ = topic.recv(); // Register as subscriber
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(50_u64.ms());
 
     let mut received = 0u64;
     let deadline = Instant::now() + TIMEOUT;
@@ -1504,7 +1505,7 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
         .expect("Failed to spawn atomic writer");
 
     // Wait for child to start writing
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(200_u64.ms());
 
     // Get pointer to sequence_or_head atomic — we'll use this as our raw atomic.
     // Both processes access the same SHM-mapped header.
@@ -1584,7 +1585,7 @@ fn run_child_atomic_writer(topic_name: &str, count: u64) {
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
     // Send a dummy message to register as publisher and trigger SHM creation
     topic.send(CmdVel::with_timestamp(0.0, 0.0, 0));
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(100_u64.ms());
 
     let seq_ptr = topic.sequence_head_ptr();
     if seq_ptr.is_null() {
@@ -1669,7 +1670,7 @@ fn bench_stress(
         child_consumers.push(child);
     }
     if !child_consumers.is_empty() {
-        thread::sleep(Duration::from_millis(200)); // Wait for child consumers to register
+        thread::sleep(200_u64.ms()); // Wait for child consumers to register
     }
 
     // Spawn paced publishers
@@ -1680,7 +1681,7 @@ fn bench_stress(
         publishers.push(child);
         // Stagger spawns slightly so each publisher registers before the next
         if i < num_pubs - 1 {
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(50_u64.ms());
         }
     }
 
@@ -1689,11 +1690,11 @@ fn bench_stress(
         &consumer,
         num_pubs as u32,
         num_cons as u32,
-        Duration::from_secs(10),
+        10_u64.secs(),
     );
 
     // Drain migration-era messages
-    let migration_recv = wait_for_messages(&consumer, 500, Duration::from_secs(5));
+    let migration_recv = wait_for_messages(&consumer, 500, 5_u64.secs());
 
     // Force migration check so parent detects the final backend
     consumer.check_migration_now();

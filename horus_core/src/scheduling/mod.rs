@@ -12,16 +12,16 @@
 //! scheduler.run()?;
 //!
 //! // Nodes declare their execution needs
-//! let mut scheduler = Scheduler::new().tick_rate(500.hz());
-//! scheduler.add(motor_ctrl).order(0).rate(1000.hz()).budget(500.us()).build();
+//! let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
+//! scheduler.add(motor_ctrl).order(0).rate(1000_u64.hz()).budget(500_u64.us()).build();
 //! scheduler.add(planner).order(5).compute().build();
-//! scheduler.add(telemetry).order(10).async_io().rate(1.hz()).build();
+//! scheduler.add(telemetry).order(10).async_io().rate(1_u64.hz()).build();
 //! scheduler.run()?;
 //! ```
 
-pub mod config;
+pub(crate) mod config;
 pub(crate) mod safety_monitor;
-pub mod scheduler;
+pub(crate) mod scheduler;
 pub(crate) mod types;
 
 // Low-level execution primitives (NodeRunner, TickResult)

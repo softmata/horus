@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use horus_core::core::DurationExt;
 
 const MEASUREMENT_DURATION_SECS: u64 = 5;
 const WARMUP_DURATION_SECS: u64 = 1;
@@ -295,11 +296,11 @@ fn run_scalability_test(
     }
 
     // Give threads time to initialize
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(100_u64.ms());
 
     // Warmup phase
     running.store(true, Ordering::Release);
-    thread::sleep(Duration::from_secs(WARMUP_DURATION_SECS));
+    thread::sleep(WARMUP_DURATION_SECS.secs());
 
     // Reset counters for measurement
     total_sent.store(0, Ordering::Relaxed);
@@ -307,7 +308,7 @@ fn run_scalability_test(
 
     // Measurement phase
     let start = Instant::now();
-    thread::sleep(Duration::from_secs(MEASUREMENT_DURATION_SECS));
+    thread::sleep(MEASUREMENT_DURATION_SECS.secs());
     let duration = start.elapsed();
 
     // Stop

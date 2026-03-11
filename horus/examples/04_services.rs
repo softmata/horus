@@ -9,7 +9,7 @@
 //! ```
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 // Define a service using the service! macro
 service! {
@@ -48,7 +48,7 @@ fn main() -> Result<()> {
         let b = i * 3;
         println!("[Client] Requesting: {} + {}", a, b);
 
-        match client.call(AddTwoIntsRequest { a, b }, Duration::from_secs(1)) {
+        match client.call(AddTwoIntsRequest { a, b }, 1_u64.secs()) {
             Ok(response) => println!("[Client] Got response: sum = {}\n", response.sum),
             Err(e) => println!("[Client] Error: {:?}\n", e),
         }

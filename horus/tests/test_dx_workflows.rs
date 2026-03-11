@@ -5,7 +5,7 @@
 
 use horus::prelude::*;
 use horus::serde_json;
-use std::time::Duration;
+use horus::DurationExt;
 
 // ============================================================================
 // 1. message! macro works and types are topic-ready
@@ -169,7 +169,7 @@ impl Node for CounterNode {
 
 #[test]
 fn scheduler_runs_node() {
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
     scheduler
         .add(CounterNode { count: 0 })
         .order(0)
@@ -177,7 +177,7 @@ fn scheduler_runs_node() {
         .unwrap();
 
     // Run for a short duration
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 }
 
 // ============================================================================
@@ -347,16 +347,16 @@ fn runtime_params_get_typed() {
 #[test]
 fn scheduler_tick_rate_deferred() {
     // tick_rate() should work as a builder — applied when run() is called
-    let mut scheduler = Scheduler::new().tick_rate(500.hz());
+    let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
     scheduler
         .add(CounterNode { count: 0 })
         .order(0)
-        .rate(100.hz())
+        .rate(100_u64.hz())
         .build()
         .unwrap();
 
     // Runs without panic — proves tick_rate config is applied at run() time
-    scheduler.run_for(Duration::from_millis(50)).unwrap();
+    scheduler.run_for(50_u64.ms()).unwrap();
 }
 
 // ============================================================================
@@ -366,7 +366,7 @@ fn scheduler_tick_rate_deferred() {
 #[test]
 fn failure_policy_accessible() {
     let _fatal = FailurePolicy::Fatal;
-    let restart = FailurePolicy::restart(3, 100);
+    let restart = FailurePolicy::restart(3, 100_u64.ms());
     match restart {
         FailurePolicy::Restart { max_restarts, .. } => assert_eq!(max_restarts, 3),
         other => unreachable!("Expected Restart, got {:?}", other),

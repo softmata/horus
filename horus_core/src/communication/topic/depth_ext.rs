@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_depth_topic_roundtrip() {
-        let topic: Topic<DepthImage> = Topic::new("test/depth_topic_roundtrip_unified").unwrap();
+        let topic: Topic<DepthImage> = Topic::new("test.depth_topic_roundtrip_unified").unwrap();
 
         let mut depth = DepthImage::new(3, 2, TensorDtype::F32).unwrap();
 

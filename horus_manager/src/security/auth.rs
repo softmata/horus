@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use horus_core::core::DurationExt;
 
 /// Authentication service with password-based authentication
 pub struct AuthService {
@@ -49,7 +50,7 @@ impl AuthService {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter: Arc::new(RwLock::new(RateLimiter::new(
                 crate::config::AUTH_MAX_ATTEMPTS,
-                Duration::from_secs(crate::config::AUTH_RATE_LIMIT_WINDOW_SECS),
+                crate::config::AUTH_RATE_LIMIT_WINDOW_SECS.secs(),
             ))),
         })
     }
@@ -124,7 +125,7 @@ impl AuthService {
         if let Some(session) = sessions.get_mut(token) {
             // Absolute session lifetime — expire regardless of activity.
             if session.created_at.elapsed()
-                > Duration::from_secs(crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS)
+                > crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS.secs()
             {
                 sessions.remove(token);
                 return false;
@@ -132,7 +133,7 @@ impl AuthService {
 
             // Idle timeout — expire after 1 hour of inactivity.
             if session.last_used.elapsed()
-                > Duration::from_secs(crate::config::SESSION_TIMEOUT_SECS)
+                > crate::config::SESSION_TIMEOUT_SECS.secs()
             {
                 sessions.remove(token);
                 return false;
@@ -528,7 +529,7 @@ mod tests {
         {
             let mut sessions = auth.sessions.write().unwrap();
             if let Some(session) = sessions.get_mut(&token) {
-                session.last_used = Instant::now() - Duration::from_secs(3601);
+                session.last_used = Instant::now() - 3601_u64.secs();
             }
         }
 
@@ -549,7 +550,7 @@ mod tests {
             let mut sessions = auth.sessions.write().unwrap();
             if let Some(session) = sessions.get_mut(&token) {
                 session.created_at = Instant::now()
-                    - Duration::from_secs(crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS + 1);
+                    - (crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS + 1).secs();
             }
         }
 

@@ -1,3 +1,33 @@
+//! # Discovery System
+//!
+//! Local single-machine discovery of HORUS nodes and topics.
+//!
+//! ## Architecture
+//!
+//! Discovery uses two complementary data sources:
+//!
+//! 1. **Presence files** (`/dev/shm/horus/nodes/{name}.json`) — written by each
+//!    node at startup, removed at shutdown.  Contains PID, scheduler, topics,
+//!    priority, rate, health, and PID start time (for reuse detection).
+//!
+//! 2. **SHM topic files** (`/dev/shm/horus/topics/`) — memory-mapped files
+//!    created by the Topic API.  Contains message data, sequence counters,
+//!    and participant tables.
+//!
+//! Results from both sources are merged: SHM provides size/rate metadata,
+//! presence provides pub/sub relationships.  A [`DiscoveryCache`] with
+//! configurable TTL avoids redundant filesystem scans.
+//!
+//! ## Known Limitations
+//!
+//! - **Local only**: no network discovery of remote HORUS instances.
+//! - **16 participant limit**: each SHM topic supports at most 16 concurrent
+//!   publishers/subscribers (expired leases are reclaimed automatically).
+//! - **CPU first-sample**: the first CPU reading uses lifetime average rather
+//!   than instantaneous delta.
+//! - **No inotify**: discovery polls the filesystem on each cache miss rather
+//!   than using file-change notifications.
+
 pub(crate) mod nodes;
 pub(crate) mod topics;
 
@@ -8,6 +38,7 @@ use horus_core::NodePresence;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use horus_core::core::DurationExt;
 
 // Data structures for comprehensive monitoring
 #[derive(Debug, Clone)]
@@ -64,6 +95,8 @@ pub struct SharedMemoryInfo {
     pub status: TopicStatus,
     /// Human-readable age string (e.g., "2s ago", "5m ago", "1h ago")
     pub age_string: String,
+    /// Whether this is an internal system topic (e.g., horus.discovery)
+    pub is_system: bool,
 }
 
 // Enhanced node status with pub/sub info
@@ -78,21 +111,26 @@ pub struct TopicInfo {
 struct DiscoveryCache {
     nodes: Vec<NodeStatus>,
     shared_memory: Vec<SharedMemoryInfo>,
+    /// Cached presence data shared between node and topic discovery
+    presence: Vec<NodePresence>,
     // Separate timestamps for nodes and shared_memory to prevent cross-contamination
     nodes_last_updated: Instant,
     shared_memory_last_updated: Instant,
+    presence_last_updated: Instant,
     cache_duration: Duration,
 }
 
 impl DiscoveryCache {
     fn new() -> Self {
-        let initial_time = Instant::now() - Duration::from_secs(10); // Force initial update
+        let initial_time = Instant::now() - 10_u64.secs(); // Force initial update
         Self {
             nodes: Vec::new(),
             shared_memory: Vec::new(),
+            presence: Vec::new(),
             nodes_last_updated: initial_time,
             shared_memory_last_updated: initial_time,
-            cache_duration: Duration::from_millis(crate::config::DISCOVERY_CACHE_MS),
+            presence_last_updated: initial_time,
+            cache_duration: crate::config::DISCOVERY_CACHE_MS.ms(),
         }
     }
 
@@ -104,6 +142,10 @@ impl DiscoveryCache {
         self.shared_memory_last_updated.elapsed() > self.cache_duration
     }
 
+    fn is_presence_stale(&self) -> bool {
+        self.presence_last_updated.elapsed() > self.cache_duration
+    }
+
     fn update_nodes(&mut self, nodes: Vec<NodeStatus>) {
         self.nodes = nodes;
         self.nodes_last_updated = Instant::now();
@@ -112,6 +154,11 @@ impl DiscoveryCache {
     fn update_shared_memory(&mut self, shm: Vec<SharedMemoryInfo>) {
         self.shared_memory = shm;
         self.shared_memory_last_updated = Instant::now();
+    }
+
+    fn update_presence(&mut self, presence: Vec<NodePresence>) {
+        self.presence = presence;
+        self.presence_last_updated = Instant::now();
     }
 }
 
@@ -122,13 +169,33 @@ lazy_static::lazy_static! {
 
 #[derive(Debug, Default)]
 pub(crate) struct ProcessInfo {
-    pub(crate) _pid: u32,
-    pub(crate) _name: String,
     pub(crate) cmdline: String,
     pub(crate) working_dir: String,
     pub(crate) cpu_percent: f32,
     pub(crate) memory_kb: u64,
     pub(crate) start_time: String,
+}
+
+/// Get cached presence data, refreshing if stale.
+///
+/// Both node and topic discovery need presence data. This function ensures
+/// `NodePresence::read_all()` is called at most once per cache cycle.
+pub(crate) fn cached_presence() -> Vec<NodePresence> {
+    // Check cache first
+    if let Ok(cache) = DISCOVERY_CACHE.read() {
+        if !cache.is_presence_stale() {
+            return cache.presence.clone();
+        }
+    }
+
+    // Cache is stale — refresh
+    let presence = NodePresence::read_all();
+
+    if let Ok(mut cache) = DISCOVERY_CACHE.write() {
+        cache.update_presence(presence.clone());
+    }
+
+    presence
 }
 
 pub fn discover_nodes() -> HorusResult<Vec<NodeStatus>> {

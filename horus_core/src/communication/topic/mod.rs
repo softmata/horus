@@ -161,7 +161,7 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
-pub use header::{read_latest_slot_bytes, set_topic_debug, TopicSlotRead, TOPIC_DEBUG_LOG_OFFSET};
+pub use header::{read_latest_slot_bytes, read_topic_sequence, set_topic_debug, TopicSlotRead, TOPIC_DEBUG_LOG_OFFSET};
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
 pub use metrics::TopicMetrics;
@@ -550,7 +550,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
             // Joiner: wait for owner to initialize the header.
             for _ in 0..100 {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(1_u64.ms());
                 std::sync::atomic::fence(Ordering::Acquire);
                 if header.magic == TOPIC_MAGIC {
                     break;
@@ -781,7 +781,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         let wait_start = std::time::Instant::now();
                         while migrator.is_migration_in_progress() {
                             std::hint::spin_loop();
-                            if wait_start.elapsed() > std::time::Duration::from_millis(5) {
+                            if wait_start.elapsed() > 5_u64.ms() {
                                 // Stale lock from a crashed process — force-unlock
                                 header.migration_lock.store(0, Ordering::Release);
                                 break;
@@ -1698,7 +1698,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
 
         // Phase 4: sleep in 100μs increments until deadline
-        let sleep_step = std::time::Duration::from_micros(100);
+        let sleep_step = 100_u64.us();
         loop {
             if std::time::Instant::now() >= deadline {
                 return Err(SendBlockingError::Timeout);
@@ -2037,6 +2037,7 @@ use crate::memory::image::Image;
 use crate::memory::pointcloud::PointCloud;
 use crate::memory::TensorPool;
 use crate::types::Tensor;
+use crate::core::DurationExt;
 
 /// Topic — Universal IPC with automatic backend detection.
 ///
@@ -2058,7 +2059,7 @@ use crate::types::Tensor;
 /// topic.send(CmdVel { linear: 1.0, angular: 0.0 });
 ///
 /// // Pool-backed type — same API!
-/// let topic: Topic<Image> = Topic::new("camera/rgb")?;
+/// let topic: Topic<Image> = Topic::new("camera.rgb")?;
 /// let img = Image::new(640, 480, Rgb8)?;
 /// topic.send(&img);
 /// let img = topic.recv();

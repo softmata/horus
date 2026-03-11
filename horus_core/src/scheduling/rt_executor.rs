@@ -29,6 +29,7 @@ use crate::terminal::print_line;
 
 use super::primitives::{DeadlineAction, NodeRunner, TimingEnforcer};
 use super::types::{RegisteredNode, SharedMonitors};
+use crate::core::DurationExt;
 
 /// Dedicated RT thread executor.
 ///
@@ -63,7 +64,7 @@ impl RtExecutor {
             .fold(0.0_f64, f64::max);
 
         let tick_period = if max_rate_hz > 0.0 {
-            Duration::from_secs_f64(1.0 / max_rate_hz)
+            max_rate_hz.hz().period()
         } else {
             fallback_period
         };
@@ -180,10 +181,10 @@ impl RtExecutor {
                     DeadlineAction::Skip => {
                         node.is_paused = true;
                     }
-                    DeadlineAction::SafeMode => {
+                    DeadlineAction::Degrade => {
                         if monitors.verbose {
                             print_line(&format!(
-                                "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
+                                "[RT-thread] Degrade: '{}' entering safe state after deadline miss",
                                 node.name
                             ));
                         }
@@ -336,14 +337,14 @@ impl RtExecutor {
             let elapsed = loop_start.elapsed();
             if elapsed < tick_period {
                 // Use spin-wait for sub-millisecond precision on RT thread
-                if tick_period - elapsed < Duration::from_millis(1) {
+                if tick_period - elapsed < 1_u64.ms() {
                     // Spin-wait for very short sleeps (better jitter than thread::sleep)
                     while loop_start.elapsed() < tick_period {
                         std::hint::spin_loop();
                     }
                 } else {
                     // Sleep for bulk of the time, then spin for the remainder
-                    let sleep_dur = (tick_period - elapsed) - Duration::from_micros(500);
+                    let sleep_dur = (tick_period - elapsed) - 500_u64.us();
                     if sleep_dur > Duration::ZERO {
                         std::thread::sleep(sleep_dur);
                     }
@@ -431,13 +432,13 @@ mod tests {
         let executor = RtExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             test_monitors(),
             Vec::new(),
         );
 
         // Let it run for a bit
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         // Stop
         running.store(false, Ordering::SeqCst);
@@ -456,7 +457,7 @@ mod tests {
         let executor = RtExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             test_monitors(),
             Vec::new(),
         );
@@ -482,12 +483,12 @@ mod tests {
         let executor = RtExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             test_monitors(),
             Vec::new(),
         );
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned_nodes = executor.stop();
 
@@ -536,13 +537,13 @@ mod tests {
         let executor = RtExecutor::start(
             vec![registered],
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             test_monitors(),
             Vec::new(),
         );
 
         // The panic node should log errors and continue (no longer stops scheduler)
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
 
         // Signal the executor to stop before calling stop() (which joins the thread)
         running.store(false, Ordering::SeqCst);
@@ -591,13 +592,13 @@ mod tests {
         let executor = RtExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(10),
+            10_u64.ms(),
             test_monitors(),
             Vec::new(),
         );
 
         // Run for 200ms
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(200_u64.ms());
         running.store(false, Ordering::SeqCst);
         let _returned = executor.stop();
 
@@ -644,13 +645,13 @@ mod tests {
         let executor = RtExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(10),
+            10_u64.ms(),
             test_monitors(),
             Vec::new(),
         );
 
         // Run for 200ms
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(200_u64.ms());
         running.store(false, Ordering::SeqCst);
         let _returned = executor.stop();
 
@@ -702,7 +703,7 @@ mod tests {
         let executor = RtExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             monitors,
             Vec::new(),
         );
@@ -710,11 +711,11 @@ mod tests {
         // Background thread holds profiler lock for 50ms
         let lock_thread = std::thread::spawn(move || {
             let _guard = profiler_arc.lock().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(50_u64.ms());
         });
 
         // Let RT thread run concurrently with the contended lock
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
         lock_thread.join().unwrap();
@@ -789,12 +790,12 @@ mod tests {
         let executor = RtExecutor::start(
             vec![panic_registered, normal_registered],
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             test_monitors(),
             Vec::new(),
         );
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 
@@ -834,12 +835,12 @@ mod tests {
         let executor = RtExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             monitors,
             Vec::new(),
         );
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 
@@ -897,12 +898,12 @@ mod tests {
         let executor = RtExecutor::start(
             vec![panic_registered, normal_registered],
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             monitors,
             Vec::new(),
         );
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 

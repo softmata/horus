@@ -28,6 +28,7 @@
 //! }
 //! ```
 
+use crate::core::DurationExt;
 use std::time::{Duration, Instant};
 
 // ─── Rate ────────────────────────────────────────────────────────────────
@@ -67,7 +68,7 @@ impl Rate {
     pub fn new(hz: f64) -> Self {
         assert!(hz > 0.0, "Rate: frequency must be positive (got {})", hz);
         Self {
-            period: Duration::from_secs_f64(1.0 / hz),
+            period: hz.hz().period(),
             last_cycle_start: Instant::now(),
             smoothed_period: None,
         }
@@ -202,7 +203,7 @@ impl Stopwatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::core::duration_ext::DurationExt;
 
     #[test]
     fn test_rate_target_hz() {
@@ -213,17 +214,17 @@ mod tests {
     #[test]
     fn test_stopwatch_elapsed() {
         let sw = Stopwatch::start();
-        std::thread::sleep(Duration::from_millis(10));
-        assert!(sw.elapsed() >= Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
+        assert!(sw.elapsed() >= 10_u64.ms());
         assert!(sw.elapsed_ms() >= 10.0);
     }
 
     #[test]
     fn test_stopwatch_lap() {
         let mut sw = Stopwatch::start();
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
         let lap = sw.lap();
-        assert!(lap >= Duration::from_millis(10));
-        assert!(sw.elapsed() < Duration::from_millis(5));
+        assert!(lap >= 10_u64.ms());
+        assert!(sw.elapsed() < 5_u64.ms());
     }
 }

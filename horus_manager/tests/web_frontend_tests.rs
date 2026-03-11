@@ -21,6 +21,7 @@ use monitor_tests::builders;
 use monitor_tests::helpers::{assert_json_ok, get_request};
 use monitor_tests::shm_fixtures::TestShmGuard;
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Helper: Get generated HTML from index handler
@@ -352,7 +353,7 @@ async fn polling_nodes_endpoint_has_expected_node_fields() {
     let mut guard = TestShmGuard::new();
     guard.create_presence("wf_nf", std::process::id());
     // Wait for discovery cache to expire (250ms TTL)
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    tokio::time::sleep(350_u64.ms()).await;
 
     let app = builders::test_router();
     let resp = app.oneshot(get_request("/api/nodes")).await.unwrap();
@@ -388,7 +389,7 @@ async fn polling_topics_endpoint_has_expected_topic_fields() {
     // Inject a test topic so the endpoint returns non-empty data
     let mut guard = TestShmGuard::new();
     guard.create_topic("wf_tf", 65536);
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    tokio::time::sleep(350_u64.ms()).await;
 
     let app = builders::test_router();
     let resp = app.oneshot(get_request("/api/topics")).await.unwrap();
@@ -436,7 +437,7 @@ async fn polling_graph_endpoint_has_nodes_and_edges() {
         &[("wf_gf_topic", "SensorData")],
     );
     guard.create_topic("wf_gf_topic", 4096);
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    tokio::time::sleep(350_u64.ms()).await;
 
     let app = builders::test_router();
     let resp = app.oneshot(get_request("/api/graph")).await.unwrap();

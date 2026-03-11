@@ -222,7 +222,7 @@ class TestMissEnum:
         from horus import Miss
         assert Miss.WARN == "warn"
         assert Miss.SKIP == "skip"
-        assert Miss.SAFE_MODE == "safe_mode"
+        assert Miss.DEGRADE == "degrade"
         assert Miss.STOP == "stop"
 
     def test_on_miss_via_add(self):
@@ -272,4 +272,4 @@ class TestMissEnum:
         s.run(duration=0.05)
         stats = s._scheduler.safety_stats()
         if stats is not None:
-            assert "safe_mode_activations" in stats
+            assert "degrade_activations" in stats

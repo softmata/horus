@@ -21,7 +21,8 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io::stdout;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use horus_core::core::DurationExt;
 
 // Import the monitoring structs and functions
 #[derive(Debug, Clone)]
@@ -289,7 +290,7 @@ impl TuiDashboard {
 
             // Initialize workspace cache as empty (will load on first access)
             workspace_cache: Vec::new(),
-            workspace_cache_time: Instant::now() - Duration::from_secs(10), // Force initial load
+            workspace_cache_time: Instant::now() - 10_u64.secs(), // Force initial load
             current_workspace_path,
 
             // Time-travel debugger state
@@ -304,7 +305,7 @@ impl TuiDashboard {
                 watches: Vec::new(),
                 selected_panel: 0,
                 recordings_cache: Vec::new(),
-                cache_time: Instant::now() - Duration::from_secs(10),
+                cache_time: Instant::now() - 10_u64.secs(),
             },
 
             debug_mmaps: std::collections::HashMap::new(),
@@ -343,7 +344,7 @@ impl TuiDashboard {
             // Update data if not paused (250ms refresh for real-time feel)
             if !self.paused
                 && self.last_update.elapsed()
-                    > Duration::from_millis(crate::config::TUI_REFRESH_INTERVAL_MS)
+                    > crate::config::TUI_REFRESH_INTERVAL_MS.ms()
             {
                 self.update_data()?;
                 self.last_update = Instant::now();
@@ -353,7 +354,7 @@ impl TuiDashboard {
             terminal.draw(|f| self.draw_ui(f))?;
 
             // Handle input
-            if event::poll(Duration::from_millis(crate::config::TUI_POLL_INTERVAL_MS))? {
+            if event::poll(crate::config::TUI_POLL_INTERVAL_MS.ms())? {
                 if let Event::Key(key) = event::read()? {
                     if self.show_help {
                         self.show_help = false;

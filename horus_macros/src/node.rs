@@ -163,7 +163,7 @@ impl Parse for NodeDef {
                     "rate" => {
                         return Err(Error::new(
                             section_name.span(),
-                            "'rate' section is no longer supported in the node macro. Use .rate(100.hz()) on the builder instead.",
+                            "'rate' section is no longer supported in the node macro. Use .rate(100_u64.hz()) on the builder instead.",
                         ));
                     }
                     "name" => {

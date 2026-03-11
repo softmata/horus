@@ -15,7 +15,7 @@ pub const SOURCE_REPLAY: u8 = 2;
 
 /// Simulation/replay time broadcast
 ///
-/// Published on a well-known topic (e.g. `/clock`) to synchronize all nodes
+/// Published on a well-known topic (e.g. `clock`) to synchronize all nodes
 /// to a common time source. Essential for simulation and log replay where
 /// wall-clock time doesn't match the intended execution time.
 ///
@@ -35,7 +35,7 @@ pub const SOURCE_REPLAY: u8 = 2;
 /// use horus::prelude::*;
 ///
 /// // Publish simulation time
-/// let topic: Topic<Clock> = Topic::new("/clock")?;
+/// let topic: Topic<Clock> = Topic::new("clock")?;
 /// let clock = Clock::sim_time(1_000_000_000, 1.0); // 1 second in, real-time speed
 /// topic.send(clock);
 /// ```
@@ -137,7 +137,7 @@ impl Clock {
 /// ```rust,ignore
 /// use horus::prelude::*;
 ///
-/// let topic: Topic<TimeReference> = Topic::new("/time_reference")?;
+/// let topic: Topic<TimeReference> = Topic::new("time_reference")?;
 /// let tref = TimeReference::new(gps_time_ns, "gps", local_ns as i64 - gps_time_ns as i64);
 /// topic.send(tref);
 /// ```

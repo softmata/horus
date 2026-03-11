@@ -51,7 +51,7 @@ def mlnode(
 
         @mlnode(
             model="models/detector.onnx",
-            input="camera/image",
+            input="camera.image",
             output="detections",
             device="cuda:0",
         )
@@ -66,7 +66,7 @@ def mlnode(
 
         DetectorNode = mlnode.from_model(
             "models/detector.onnx",
-            input="camera/image",
+            input="camera.image",
             output="detections",
         )
 
@@ -185,7 +185,7 @@ def from_model(
     Example:
         detector = mlnode.from_model(
             "models/yolov8n.onnx",
-            input="camera/image",
+            input="camera.image",
             output="detections",
             device="cuda:0",
         )

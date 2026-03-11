@@ -41,9 +41,9 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
 
 /// Discover nodes from presence files (primary discovery method - rqt-like)
 /// Each node writes a presence file at startup with PID, topics, etc.
-/// NodePresence::read_all() validates PIDs are still alive and cleans stale files.
+/// Uses cached_presence() to share read_all() results with topic discovery.
 fn discover_nodes_from_presence() -> Vec<NodeStatus> {
-    let presence_nodes = NodePresence::read_all();
+    let presence_nodes = super::cached_presence();
 
     presence_nodes
         .into_iter()
@@ -69,7 +69,12 @@ fn discover_nodes_from_presence() -> Vec<NodeStatus> {
             NodeStatus {
                 name: presence.name().to_string(),
                 status: "Running".to_string(),
-                health: HealthStatus::Healthy,
+                health: match presence.health_status() {
+                    Some("Warning") => HealthStatus::Warning,
+                    Some("Error") => HealthStatus::Error,
+                    Some("Critical") => HealthStatus::Critical,
+                    _ => HealthStatus::Healthy,
+                },
                 priority: presence.priority(),
                 process_id: presence.pid(),
                 command_line: String::new(), // Will be enriched by process info
@@ -79,8 +84,8 @@ fn discover_nodes_from_presence() -> Vec<NodeStatus> {
                 start_time: format_unix_timestamp(presence.start_time()),
                 scheduler_name: presence.scheduler().map(|s| s.to_string()).unwrap_or_default(),
                 category: ProcessCategory::Node,
-                tick_count: 0, // Not stored in presence file
-                error_count: 0,
+                tick_count: presence.tick_count(),
+                error_count: presence.error_count(),
                 actual_rate_hz: presence.rate_hz().map(|r| r as u32).unwrap_or(0),
                 publishers,
                 subscribers,
@@ -91,14 +96,14 @@ fn discover_nodes_from_presence() -> Vec<NodeStatus> {
 
 /// Format Unix timestamp to human-readable string
 fn format_unix_timestamp(secs: u64) -> String {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let time = UNIX_EPOCH + Duration::from_secs(secs);
+    let time = UNIX_EPOCH + secs.secs();
     match time.duration_since(UNIX_EPOCH) {
         Ok(_) => {
             let elapsed = SystemTime::now()
                 .duration_since(time)
-                .unwrap_or(Duration::from_secs(0));
+                .unwrap_or(0_u64.secs());
             if elapsed.as_secs() < 60 {
                 format!("{}s ago", elapsed.as_secs())
             } else if elapsed.as_secs() < 3600 {
@@ -354,9 +359,6 @@ fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
             .trim()
             .to_string();
 
-        // Extract process name
-        let name = extract_process_name(&cmdline);
-
         // Read working directory
         let working_dir = std::fs::read_link(format!("{}/cwd", proc_path))
             .map(|p| p.to_string_lossy().to_string())
@@ -373,8 +375,6 @@ fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
         let start_time = get_process_start_time(pid);
 
         Ok(ProcessInfo {
-            _pid: pid,
-            _name: name,
             cmdline,
             working_dir,
             cpu_percent,
@@ -396,9 +396,8 @@ fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         // Fallback for other Unix platforms - basic info only
+        let _ = pid;
         Ok(ProcessInfo {
-            _pid: pid,
-            _name: format!("pid_{}", pid),
             cmdline: String::new(),
             working_dir: String::new(),
             cpu_percent: 0.0,
@@ -408,17 +407,39 @@ fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
     }
 }
 
+/// Parse fields from `/proc/[pid]/stat` safely, handling process names
+/// that contain spaces or parentheses.
+///
+/// The `comm` field (field 2) is enclosed in `()` and may contain arbitrary
+/// characters including spaces and nested parentheses.  We skip it by finding
+/// the **last** `)` and then splitting the remainder by whitespace.
+///
+/// Returns the fields **after** the comm field (0-indexed: field 0 = state,
+/// field 11 = utime, field 12 = stime, field 19 = starttime, field 21 = rss).
+#[cfg(target_os = "linux")]
+pub(super) fn parse_stat_fields(stat_content: &str) -> Option<Vec<&str>> {
+    let after_comm = stat_content.rfind(')')?.checked_add(1)?;
+    if after_comm >= stat_content.len() {
+        return None;
+    }
+    let fields: Vec<&str> = stat_content[after_comm..].split_whitespace().collect();
+    if fields.is_empty() {
+        return None;
+    }
+    Some(fields)
+}
+
 #[cfg(target_os = "linux")]
 fn calculate_cpu_usage(pid: u32, stat_content: &str) -> f32 {
     // Parse utime + stime from /proc/[pid]/stat
-    let fields: Vec<&str> = stat_content.split_whitespace().collect();
-    if fields.len() < 15 {
-        return 0.0;
-    }
+    // After comm: field[11] = utime, field[12] = stime
+    let fields = match parse_stat_fields(stat_content) {
+        Some(f) if f.len() > 12 => f,
+        _ => return 0.0,
+    };
 
-    // utime is field 13 (0-indexed), stime is field 14
-    let utime = fields[13].parse::<u64>().unwrap_or(0);
-    let stime = fields[14].parse::<u64>().unwrap_or(0);
+    let utime = fields[11].parse::<u64>().unwrap_or(0);
+    let stime = fields[12].parse::<u64>().unwrap_or(0);
     let total_time = utime + stime;
 
     // Get cached value
@@ -439,41 +460,81 @@ fn calculate_cpu_usage(pid: u32, stat_content: &str) -> f32 {
             }
         }
 
-        // First sample - cache it
+        // First sample: estimate lifetime average from cumulative CPU time
+        // divided by process uptime (better than returning 0).
         cache.insert(pid, (total_time, now));
+
+        // fields[19] = starttime (jiffies since boot)
+        if fields.len() > 19 {
+            if let Ok(start_jiffies) = fields[19].parse::<u64>() {
+                // Read system uptime to compute process age
+                if let Ok(uptime_str) = std::fs::read_to_string("/proc/uptime") {
+                    if let Some(uptime_secs) = uptime_str
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        let uptime_jiffies = (uptime_secs * 100.0) as u64;
+                        let process_jiffies = uptime_jiffies.saturating_sub(start_jiffies);
+                        if process_jiffies > 0 {
+                            let pct = (total_time as f32 / process_jiffies as f32) * 100.0;
+                            return pct.min(100.0);
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    0.0 // Return 0 for first sample
+    0.0 // Fallback when /proc is unreadable
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn parse_memory_from_stat(stat: &str) -> u64 {
     // Parse RSS (Resident Set Size) from /proc/[pid]/stat
-    // RSS is the 24th field (0-indexed: 23)
-    let fields: Vec<&str> = stat.split_whitespace().collect();
+    // After comm: field[21] = rss (in pages)
+    let fields = match parse_stat_fields(stat) {
+        Some(f) if f.len() > 21 => f,
+        _ => return 0,
+    };
 
-    if fields.len() > 23 {
-        if let Ok(rss_pages) = fields[23].parse::<u64>() {
-            // Convert pages to KB (usually 4KB per page)
-            let page_size = 4; // KB
-            return rss_pages * page_size;
-        }
+    if let Ok(rss_pages) = fields[21].parse::<u64>() {
+        // Convert pages to KB using actual system page size
+        let page_size_kb = page_size_kb();
+        return rss_pages * page_size_kb;
     }
     0
+}
+
+/// System page size in KB, cached (never changes at runtime).
+#[cfg(target_os = "linux")]
+fn page_size_kb() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CACHED: AtomicU64 = AtomicU64::new(0);
+    let cached = CACHED.load(Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+    // SAFETY: sysconf(_SC_PAGESIZE) is always safe and returns the page size in bytes.
+    let bytes = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let kb = if bytes > 0 { bytes as u64 / 1024 } else { 4 };
+    CACHED.store(kb, Ordering::Relaxed);
+    kb
 }
 
 #[cfg(target_os = "linux")]
 fn get_process_start_time(pid: u32) -> String {
     // Read process start time from stat (Linux only)
+    // After comm: field[19] = starttime (in jiffies since boot)
     if let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
-        // Start time is the 22nd field (0-indexed: 21) in jiffies since boot
-        let fields: Vec<&str> = stat.split_whitespace().collect();
-        if fields.len() > 21 {
-            if let Ok(start_jiffies) = fields[21].parse::<u64>() {
-                // Convert to seconds and format
-                let start_secs = start_jiffies / 100; // Assuming 100 Hz
-                let duration = std::time::Duration::from_secs(start_secs);
-                return format_duration(duration);
+        if let Some(fields) = parse_stat_fields(&stat) {
+            if fields.len() > 19 {
+                if let Ok(start_jiffies) = fields[19].parse::<u64>() {
+                    // Convert to seconds and format
+                    let start_secs = start_jiffies / 100; // Assuming 100 Hz
+                    let duration = start_secs.secs();
+                    return format_duration(duration);
+                }
             }
         }
     }
@@ -500,9 +561,6 @@ pub(crate) fn format_duration(duration: std::time::Duration) -> String {
 
 #[cfg(target_os = "macos")]
 fn get_process_info_macos(pid: u32) -> anyhow::Result<ProcessInfo> {
-    // Get process name using proc_name
-    let name = get_process_name_macos(pid).unwrap_or_else(|| format!("pid_{}", pid));
-
     // Get command line arguments
     let cmdline = get_cmdline_macos(pid).unwrap_or_default();
 
@@ -519,8 +577,6 @@ fn get_process_info_macos(pid: u32) -> anyhow::Result<ProcessInfo> {
     let start_time = get_start_time_macos(pid).unwrap_or_else(|| "Unknown".to_string());
 
     Ok(ProcessInfo {
-        _pid: pid,
-        _name: name,
         cmdline,
         working_dir,
         cpu_percent,
@@ -900,7 +956,7 @@ fn get_start_time_macos(pid: u32) -> Option<String> {
     }
 
     // Calculate uptime
-    let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(info.pbi_start_tvsec);
+    let start = std::time::UNIX_EPOCH + info.pbi_start_tvsec.secs();
     if let Ok(elapsed) = std::time::SystemTime::now().duration_since(start) {
         Some(format_duration(elapsed))
     } else {
@@ -937,8 +993,6 @@ fn get_process_info_windows(pid: u32) -> anyhow::Result<ProcessInfo> {
 
     if handle.is_null() {
         return Ok(ProcessInfo {
-            _pid: pid,
-            _name: format!("pid_{}", pid),
             cmdline: String::new(),
             working_dir: String::new(),
             cpu_percent: 0.0,
@@ -946,9 +1000,6 @@ fn get_process_info_windows(pid: u32) -> anyhow::Result<ProcessInfo> {
             start_time: "Unknown".to_string(),
         });
     }
-
-    // Get process name
-    let name = get_process_name_windows(handle).unwrap_or_else(|| format!("pid_{}", pid));
 
     // Get command line
     let cmdline = get_cmdline_windows(pid).unwrap_or_default();
@@ -966,8 +1017,6 @@ fn get_process_info_windows(pid: u32) -> anyhow::Result<ProcessInfo> {
     unsafe { CloseHandle(handle) };
 
     Ok(ProcessInfo {
-        _pid: pid,
-        _name: name,
         cmdline,
         working_dir: String::new(), // Windows doesn't easily expose cwd
         cpu_percent,
@@ -1201,7 +1250,7 @@ fn get_start_time_windows(handle: *mut std::ffi::c_void) -> Option<String> {
 
     if creation_time > EPOCH_DIFF {
         let unix_time = (creation_time - EPOCH_DIFF) / 10_000_000;
-        let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(unix_time);
+        let start = std::time::UNIX_EPOCH + unix_time.secs();
         if let Ok(elapsed) = std::time::SystemTime::now().duration_since(start) {
             return Some(format_duration(elapsed));
         }

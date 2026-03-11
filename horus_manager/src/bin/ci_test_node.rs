@@ -12,9 +12,8 @@
 
 use horus_core::communication::Topic;
 use horus_core::core::node::TopicMetadata;
-use horus_core::core::DurationExt;
 use horus_core::{Node, Scheduler};
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 struct CiTestNode {
     topic_name: String,
@@ -99,13 +98,13 @@ fn main() {
     scheduler
         .add(CiTestNode::new())
         .order(0)
-        .rate(10.hz())
+        .rate(10_u64.hz())
         .build()
         .expect("invalid node configuration");
 
     eprintln!("[ci_test_node] Running for {}ms", duration_ms);
 
-    if let Err(e) = scheduler.run_for(Duration::from_millis(duration_ms)) {
+    if let Err(e) = scheduler.run_for(duration_ms.ms()) {
         eprintln!("[ci_test_node] Error: {}", e);
         std::process::exit(1);
     }

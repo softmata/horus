@@ -396,6 +396,10 @@ impl NodeMetrics {
 }
 
 /// Internal scheduler context for tracking node state and metrics.
+///
+/// This is an internal type used by the scheduler and Python bindings.
+/// Users should not construct or interact with `NodeInfo` directly.
+#[doc(hidden)]
 pub struct NodeInfo {
     // Identity
     name: String,
@@ -430,6 +434,7 @@ pub struct NodeInfo {
 
 impl NodeInfo {
     /// Create a new NodeInfo
+    #[doc(hidden)]
     pub fn new(node_name: String) -> Self {
         let now = Instant::now();
 
@@ -464,6 +469,7 @@ impl NodeInfo {
         }
     }
 
+    #[doc(hidden)]
     pub fn transition_to_error(&mut self, error_msg: String) {
         crate::hlog!(error, "{}", error_msg);
         self.track_error(&error_msg);
@@ -488,14 +494,6 @@ impl NodeInfo {
         Ok(())
     }
 
-    #[allow(dead_code)] // lifecycle method, used by restart()
-    pub(crate) fn shutdown(&mut self) -> crate::error::HorusResult<()> {
-        self.set_state(NodeState::Stopping);
-        // Cleanup logic can be added here
-        self.set_state(NodeState::Stopped);
-        Ok(())
-    }
-
     /// Reset node context for restart (preserves identity, clears runtime state)
     pub(crate) fn reset_for_restart(&mut self) {
         self.restart_count += 1;
@@ -508,15 +506,8 @@ impl NodeInfo {
         self.metrics.reset_timing();
     }
 
-    #[allow(dead_code)] // lifecycle method
-    pub(crate) fn restart(&mut self) -> crate::error::HorusResult<()> {
-        self.restart_count += 1;
-        self.shutdown()?;
-        self.initialize()?;
-        Ok(())
-    }
-
     // Tick Management
+    #[doc(hidden)]
     pub fn start_tick(&mut self) {
         self.tick_start_time = Some(Instant::now());
         if self.state == NodeState::Uninitialized {
@@ -524,6 +515,7 @@ impl NodeInfo {
         }
     }
 
+    #[doc(hidden)]
     pub fn record_tick(&mut self) {
         let _guard = self
             .metrics_lock
@@ -729,25 +721,28 @@ pub trait Node: Send {
         Ok(())
     }
 
-    /// Get list of publishers (topic metadata)
+    /// Return topic metadata for publishers (used by scheduler discovery).
     ///
-    /// **Important:** Override this if your node publishes to any topics.
-    /// The default returns empty, which may hide connectivity issues during debugging.
+    /// Called internally by the scheduler and monitoring systems.
+    /// Not typically overridden by users — topic connections are auto-detected.
+    #[doc(hidden)]
     fn publishers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 
-    /// Get list of subscribers (topic metadata)
+    /// Return topic metadata for subscribers (used by scheduler discovery).
     ///
-    /// **Important:** Override this if your node subscribes to any topics.
-    /// The default returns empty, which may hide connectivity issues during debugging.
+    /// Called internally by the scheduler and monitoring systems.
+    /// Not typically overridden by users — topic connections are auto-detected.
+    #[doc(hidden)]
     fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 
-    /// Handle errors (optional override).
+    /// Handle errors (called by the scheduler on tick failure).
     ///
-    /// Use `hlog!()` for logging instead of the old ctx parameter.
+    /// Override to add custom error recovery logic. The default logs via `hlog!()`.
+    #[doc(hidden)]
     fn on_error(&mut self, error: &str) {
         crate::hlog!(error, "Node error: {}", error);
     }
@@ -1086,15 +1081,12 @@ mod tests {
     }
 
     #[test]
-    fn test_node_info_initialize_and_shutdown() {
+    fn test_node_info_initialize() {
         let mut info = NodeInfo::new("test_node".to_string());
         assert_eq!(info.state(), &NodeState::Uninitialized);
 
         info.initialize().unwrap();
         assert_eq!(info.state(), &NodeState::Running);
-
-        info.shutdown().unwrap();
-        assert_eq!(info.state(), &NodeState::Stopped);
     }
 
     // =========================================================================

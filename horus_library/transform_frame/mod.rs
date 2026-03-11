@@ -789,7 +789,7 @@ impl TransformFrame {
     ///
     /// ```rust,ignore
     /// // Wait up to 5 seconds for the camera transform
-    /// let result = tf.wait_for_transform("camera", "base_link", Duration::from_secs(5))?;
+    /// let result = tf.wait_for_transform("camera", "base_link", 5_u64.secs())?;
     /// ```
     #[cfg(feature = "wait")]
     pub fn wait_for_transform(
@@ -879,7 +879,7 @@ impl TransformFrame {
     ///
     /// ```rust,ignore
     /// // In a tokio task:
-    /// let result = tf.wait_for_transform_async("camera", "base_link", Duration::from_secs(5)).await?;
+    /// let result = tf.wait_for_transform_async("camera", "base_link", 5_u64.secs()).await?;
     /// ```
     #[cfg(feature = "async-wait")]
     pub async fn wait_for_transform_async(
@@ -2274,7 +2274,7 @@ mod tests {
             .unwrap();
 
         let result = tf
-            .wait_for_transform("a", "world", std::time::Duration::from_secs(1))
+            .wait_for_transform("a", "world", 1_u64.secs())
             .unwrap();
         assert!((result.translation[0] - 1.0).abs() < 1e-10);
     }
@@ -2288,7 +2288,7 @@ mod tests {
         // Frame "a" is registered but never has a path to "world" via parents
         tf.register_frame("a", None).unwrap();
 
-        let result = tf.wait_for_transform("a", "world", std::time::Duration::from_millis(50));
+        let result = tf.wait_for_transform("a", "world", 50_u64.ms());
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),
             "Expected Timeout, got: {:?}",
@@ -2311,12 +2311,12 @@ mod tests {
         let tf_waiter = tf.clone();
         let handle = thread::spawn(move || {
             tf_waiter
-                .wait_for_transform("sensor", "world", Duration::from_secs(5))
+                .wait_for_transform("sensor", "world", 5_u64.secs())
                 .unwrap()
         });
 
         // Give the waiter a moment to enter the wait state
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(20_u64.ms());
 
         // Publish the transform — this should wake the waiter
         tf.update_transform(
@@ -2344,10 +2344,10 @@ mod tests {
         // Spawn a thread that waits — frame "sensor" doesn't exist yet
         let tf_waiter = tf.clone();
         let handle = thread::spawn(move || {
-            tf_waiter.wait_for_transform("sensor", "world", Duration::from_secs(5))
+            tf_waiter.wait_for_transform("sensor", "world", 5_u64.secs())
         });
 
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(20_u64.ms());
 
         // Register the frame and publish a transform
         tf.register_frame("sensor", Some("world")).unwrap();
@@ -2381,11 +2381,11 @@ mod tests {
         let tf_waiter = tf.clone();
         let handle = thread::spawn(move || {
             tf_waiter
-                .wait_for_transform_at("a", "world", 1500, Duration::from_secs(5))
+                .wait_for_transform_at("a", "world", 1500, 5_u64.secs())
                 .unwrap()
         });
 
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(20_u64.ms());
 
         // Add data at ts=2000 so ts=1500 is within [1000, 2000]
         tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
@@ -2408,7 +2408,7 @@ mod tests {
             .unwrap();
 
         let result =
-            tf.wait_for_transform_at("a", "world", 5000, std::time::Duration::from_millis(50));
+            tf.wait_for_transform_at("a", "world", 5000, 50_u64.ms());
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),
             "Expected Timeout, got: {:?}",
@@ -2430,7 +2430,7 @@ mod tests {
             .unwrap();
 
         let result = tf
-            .wait_for_transform_async("a", "world", std::time::Duration::from_secs(1))
+            .wait_for_transform_async("a", "world", 1_u64.secs())
             .await
             .unwrap();
         assert!((result.translation[0] - 1.0).abs() < 1e-10);
@@ -2444,7 +2444,7 @@ mod tests {
         tf.register_frame("a", None).unwrap(); // No path to world
 
         let result = tf
-            .wait_for_transform_async("a", "world", std::time::Duration::from_millis(50))
+            .wait_for_transform_async("a", "world", 50_u64.ms())
             .await;
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),
@@ -2466,13 +2466,13 @@ mod tests {
         let tf_waiter = tf.clone();
         let waiter = tokio::spawn(async move {
             tf_waiter
-                .wait_for_transform_async("sensor", "world", Duration::from_secs(5))
+                .wait_for_transform_async("sensor", "world", 5_u64.secs())
                 .await
                 .unwrap()
         });
 
         // Give the waiter time to enter the wait state
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(20_u64.ms()).await;
 
         // Publish transform — should wake the async waiter
         tf.update_transform(
@@ -2503,12 +2503,12 @@ mod tests {
         let tf_waiter = tf.clone();
         let waiter = tokio::spawn(async move {
             tf_waiter
-                .wait_for_transform_at_async("a", "world", 1500, Duration::from_secs(5))
+                .wait_for_transform_at_async("a", "world", 1500, 5_u64.secs())
                 .await
                 .unwrap()
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(20_u64.ms()).await;
 
         // Add data at ts=2000 to cover ts=1500
         tf.update_transform("a", &Transform::from_translation([2.0, 0.0, 0.0]), 2000)
@@ -2529,7 +2529,7 @@ mod tests {
             .unwrap();
 
         let result = tf
-            .wait_for_transform_at_async("a", "world", 5000, std::time::Duration::from_millis(50))
+            .wait_for_transform_at_async("a", "world", 5000, 50_u64.ms())
             .await;
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),

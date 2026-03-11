@@ -4,14 +4,13 @@
 //! (str, String, unknown), on_error callback, skip policy rejection,
 //! and restart failure deinit.
 
-use horus_core::core::{DurationExt, Miss, Node};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::{DurationExt, Miss, Node};
 
 // ============================================================================
 // Mock nodes
@@ -32,7 +31,7 @@ impl Node for PolicyRtNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         if self.sleep_us > 0 {
-            std::thread::sleep(Duration::from_micros(self.sleep_us));
+            std::thread::sleep(self.sleep_us.us());
         }
     }
 }
@@ -161,12 +160,12 @@ fn test_deadline_emergency_stop() {
             policy: Miss::Stop,
         })
         .order(0)
-        .budget(100_000.us())
-        .deadline(10.us())
+        .budget(100_000_u64.us())
+        .deadline(10_u64.us())
         .on_miss(Miss::Stop)
         .build();
 
-    let result = scheduler.run_for(Duration::from_millis(500));
+    let result = scheduler.run_for(500_u64.ms());
     // The scheduler should stop due to emergency stop
     result.unwrap();
 
@@ -204,8 +203,8 @@ fn test_deadline_skip_pauses_node() {
             policy: Miss::Skip,
         })
         .order(0)
-        .budget(100_000.us())
-        .deadline(10.us())
+        .budget(100_000_u64.us())
+        .deadline(10_u64.us())
         .on_miss(Miss::Skip)
         .build();
 
@@ -216,10 +215,10 @@ fn test_deadline_skip_pauses_node() {
             tick_count: reference_count.clone(),
         })
         .order(1)
-        .budget(100_000.us())
+        .budget(100_000_u64.us())
         .build();
 
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
 
     let skip_ticks = tick_count.load(Ordering::SeqCst);
     let ref_ticks = reference_count.load(Ordering::SeqCst);
@@ -243,11 +242,11 @@ fn test_rt_panic_str_literal() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000.us())
+        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     // With Ignore policy, node should keep ticking despite panics
     let ticks = tick_count.load(Ordering::SeqCst);
@@ -270,11 +269,11 @@ fn test_rt_panic_owned_string() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000.us())
+        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     assert!(
@@ -296,11 +295,11 @@ fn test_rt_panic_unknown_type() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000.us())
+        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     assert!(
@@ -325,11 +324,11 @@ fn test_rt_on_error_callback() {
             should_panic: AtomicBool::new(true),
         })
         .order(0)
-        .budget(100_000.us())
+        .budget(100_000_u64.us())
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(Duration::from_millis(300)).unwrap();
+    scheduler.run_for(300_u64.ms()).unwrap();
 
     // on_error should be called for each panic
     let errors = error_count.load(Ordering::SeqCst);
@@ -358,11 +357,11 @@ fn test_rt_skip_policy_rejection() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000.us())
-        .failure_policy(FailurePolicy::skip(2, 5000)) // Skips after 2 failures, 5s cooldown
+        .budget(100_000_u64.us())
+        .failure_policy(FailurePolicy::skip(2, 5_u64.secs())) // Skips after 2 failures, 5s cooldown
         .build();
 
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
 
     // Skip policy should suppress after 2 failures, preventing further ticks.
     // The RT executor tick loop is fast, so several ticks may fire before the
@@ -387,13 +386,13 @@ fn test_rt_restart_failure_deinitializes() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .budget(100_000.us())
-        .failure_policy(FailurePolicy::restart(3, 10))
+        .budget(100_000_u64.us())
+        .failure_policy(FailurePolicy::restart(3, 10_u64.ms()))
         .build();
 
     // The restart policy should attempt restarts after panics.
     // After exhausting restarts (3), it escalates to fatal and stops.
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     // The node should tick at least once before restart exhaustion

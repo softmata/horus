@@ -14,6 +14,7 @@ use monitor_tests::helpers::get_request;
 
 use std::time::Instant;
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 /// Create a runtime with `n` nodes and `t` topics.
 fn build_large_runtime(n: usize, t: usize) -> HorusTestRuntime {
@@ -73,7 +74,7 @@ fn stress_discover_1000_nodes() {
     let rt = build_large_runtime(1000, 100);
 
     let start = Instant::now();
-    let found = rt.wait_ready(std::time::Duration::from_secs(10));
+    let found = rt.wait_ready(10_u64.secs());
     let elapsed = start.elapsed();
 
     assert!(
@@ -91,7 +92,7 @@ fn stress_discover_1000_nodes() {
 async fn stress_api_status_response_time() {
     let _rt = build_large_runtime(500, 200);
     // Wait for discovery
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
 
@@ -110,7 +111,7 @@ async fn stress_api_status_response_time() {
 #[tokio::test]
 async fn stress_api_nodes_response_time() {
     let _rt = build_large_runtime(500, 200);
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
 
@@ -141,7 +142,7 @@ async fn stress_api_nodes_response_time() {
 #[tokio::test]
 async fn stress_api_topics_response_time() {
     let _rt = build_large_runtime(200, 500);
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
 
@@ -160,7 +161,7 @@ async fn stress_api_topics_response_time() {
 #[tokio::test]
 async fn stress_api_graph_response_time() {
     let _rt = build_large_runtime(200, 100);
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
 
@@ -183,7 +184,7 @@ async fn stress_api_graph_response_time() {
 #[tokio::test]
 async fn stress_repeated_polling_stable() {
     let _rt = build_large_runtime(200, 100);
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
 
@@ -210,7 +211,7 @@ async fn stress_repeated_polling_stable() {
 #[tokio::test]
 async fn stress_repeated_nodes_polling_stable() {
     let _rt = build_large_runtime(200, 50);
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
 
@@ -232,7 +233,7 @@ async fn stress_repeated_nodes_polling_stable() {
 #[tokio::test]
 async fn stress_large_nodes_response_parseable() {
     let _rt = build_large_runtime(500, 100);
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
     let resp = app.oneshot(get_request("/api/nodes")).await.unwrap();
@@ -257,7 +258,7 @@ async fn stress_large_nodes_response_parseable() {
 #[tokio::test]
 async fn stress_websocket_broadcast_at_scale() {
     let _rt = build_large_runtime(200, 100);
-    _rt.wait_ready(std::time::Duration::from_secs(10));
+    _rt.wait_ready(10_u64.secs());
 
     let app = builders::test_router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -275,7 +276,7 @@ async fn stress_websocket_broadcast_at_scale() {
 
     // Receive 3 broadcasts and verify they're valid JSON
     for i in 0..3 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+        let msg = tokio::time::timeout(5_u64.secs(), ws.next())
             .await
             .unwrap_or_else(|_| panic!("broadcast {} timed out at scale", i))
             .unwrap()

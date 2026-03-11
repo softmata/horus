@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_image_topic_roundtrip() {
-        let topic: Topic<Image> = Topic::new("test/image_topic_roundtrip_unified").unwrap();
+        let topic: Topic<Image> = Topic::new("test.image_topic_roundtrip_unified").unwrap();
 
         let img = Image::new(3, 2, ImageEncoding::Rgb8).unwrap();
 

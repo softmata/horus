@@ -7,7 +7,7 @@
 ///   GaitGenerator (200Hz, RT) → JointController (200Hz, RT) → BalanceMonitor (50Hz)
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 message! {
     /// All 12 joint positions (4 legs x 3 joints)
@@ -160,7 +160,7 @@ struct BalanceMonitor {
 impl BalanceMonitor {
     fn new() -> Result<Self> {
         Ok(Self {
-            imu_sub: Topic::new("imu/data")?,
+            imu_sub: Topic::new("imu.data")?,
             state_pub: Topic::new("body_state")?,
             joint_sub: Topic::new("joint_commands")?,
         })
@@ -205,21 +205,21 @@ impl Node for BalanceMonitor {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_rate(200.hz());
+    let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
 
     // RT nodes for gait + joint control
-    scheduler.add(GaitGenerator::new()?).order(0).rate(200.hz()).build()?;
+    scheduler.add(GaitGenerator::new()?).order(0).rate(200_u64.hz()).build()?;
     scheduler.add(JointController::new()?)
         .order(1)
-        .rate(200.hz())
-        .budget(100.us())          // 100μs max execution time
-        .deadline(500.us())        // 500μs deadline
+        .rate(200_u64.hz())
+        .budget(100_u64.us())          // 100μs max execution time
+        .deadline(500_u64.us())        // 500μs deadline
         .on_miss(Miss::Skip)       // Skip tick on deadline miss
         .build()?;
 
     // Balance monitor at lower rate
-    scheduler.add(BalanceMonitor::new()?).order(5).rate(50.hz()).build()?;
+    scheduler.add(BalanceMonitor::new()?).order(5).rate(50_u64.hz()).build()?;
 
-    scheduler.run_for(Duration::from_secs(30))?;
+    scheduler.run_for(30_u64.secs())?;
     Ok(())
 }

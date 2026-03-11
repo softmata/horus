@@ -7,6 +7,7 @@ mod tests;
 
 // Re-export all public types and functions
 pub use helpers::generate_signing_keypair;
+pub(crate) use helpers::remove_dep_from_pyproject_toml;
 
 use crate::config::CARGO_TOML;
 use crate::dependency_resolver::{DependencySpec, PackageProvider};
@@ -26,6 +27,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use tar::Builder;
+use horus_core::core::DurationExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Package {
@@ -315,8 +317,8 @@ impl RegistryClient {
         let base_url = crate::config::registry_url();
 
         let client = Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(30_u64.secs())
+            .timeout(120_u64.secs())
             .user_agent("horus-pkg-manager")
             .build()
             .unwrap_or_else(|_| Client::new());

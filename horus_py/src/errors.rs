@@ -108,8 +108,8 @@ mod tests {
     fn transform_stale_converts() {
         let err = HorusError::Transform(TransformError::Stale {
             frame: "odom".into(),
-            age: std::time::Duration::from_secs(5),
-            threshold: std::time::Duration::from_secs(1),
+            age: 5_u64.secs(),
+            threshold: 1_u64.secs(),
         });
         assert!(err.to_string().contains("odom"));
         let _py_err = to_py_err(err);
@@ -119,8 +119,8 @@ mod tests {
     fn timeout_converts() {
         let err = HorusError::Timeout(horus_core::error::TimeoutError {
             resource: "imu_topic".into(),
-            elapsed: std::time::Duration::from_millis(100),
-            deadline: Some(std::time::Duration::from_millis(50)),
+            elapsed: 100_u64.ms(),
+            deadline: Some(50_u64.ms()),
         });
         assert!(err.to_string().contains("imu_topic"));
         let _py_err = to_py_err(err);

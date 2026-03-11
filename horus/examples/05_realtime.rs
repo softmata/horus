@@ -8,7 +8,7 @@
 //! ```
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 message! {
     /// Motor command
@@ -113,15 +113,15 @@ impl Node for SafetyMonitor {
 fn main() -> Result<()> {
     println!("=== HORUS Example 5: Real-Time Nodes ===\n");
 
-    let mut scheduler = Scheduler::new().tick_rate(100.hz());
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
     // PID controller: RT node on dedicated thread
     scheduler
         .add(PidController::new()?)
         .order(0)
-        .rate(100.hz())
-        .budget(200.us()) // 200μs max execution time
-        .deadline(1.ms()) // 1ms deadline for 1kHz control
+        .rate(100_u64.hz())
+        .budget(200_u64.us()) // 200μs max execution time
+        .deadline(1_u64.ms()) // 1ms deadline for 1kHz control
         .on_miss(Miss::Skip) // Occasional miss tolerated
         .build()?;
 
@@ -130,10 +130,10 @@ fn main() -> Result<()> {
         .add(SafetyMonitor::new()?)
         .order(10)
         .compute()
-        .rate(10.hz())
+        .rate(10_u64.hz())
         .build()?;
 
-    scheduler.run_for(Duration::from_secs(3))?;
+    scheduler.run_for(3_u64.secs())?;
 
     println!("\nDone!");
     Ok(())

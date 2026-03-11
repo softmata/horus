@@ -858,6 +858,46 @@ impl RegistryClient {
                     continue;
                 }
 
+                // Check for crates.io tracking JSON
+                if entry_path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && entry_path.to_string_lossy().contains(".crates-io.")
+                {
+                    let content = fs::read_to_string(&entry_path)?;
+                    let metadata: serde_json::Value = serde_json::from_str(&content)?;
+                    let name = metadata["name"].as_str().unwrap_or("unknown").to_string();
+                    let version = metadata["version"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    locked_packages.push(LockedPackage {
+                        name,
+                        version,
+                        checksum: String::new(),
+                        source: PackageSource::CratesIO,
+                    });
+                    continue;
+                }
+
+                // Check for PyPI tracking JSON
+                if entry_path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && entry_path.to_string_lossy().contains(".pypi.")
+                {
+                    let content = fs::read_to_string(&entry_path)?;
+                    let metadata: serde_json::Value = serde_json::from_str(&content)?;
+                    let name = metadata["name"].as_str().unwrap_or("unknown").to_string();
+                    let version = metadata["version"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    locked_packages.push(LockedPackage {
+                        name,
+                        version,
+                        checksum: String::new(),
+                        source: PackageSource::PyPI,
+                    });
+                    continue;
+                }
+
                 if entry_path.extension().and_then(|s| s.to_str()) == Some("json")
                     && entry_path.to_string_lossy().contains(".system.")
                 {
@@ -942,6 +982,86 @@ impl RegistryClient {
                             checksum: String::new(),
                             source,
                         });
+                    }
+                }
+            }
+        }
+
+        // Collect names already tracked to avoid duplicates
+        let mut tracked_names: std::collections::HashSet<String> =
+            locked_packages.iter().map(|p| p.name.clone()).collect();
+
+        // Parse Cargo.lock for pinned Rust dependencies
+        let cargo_lock_path = PathBuf::from("Cargo.lock");
+        if cargo_lock_path.exists() {
+            if let Ok(lock_content) = fs::read_to_string(&cargo_lock_path) {
+                if let Ok(lock_toml) = toml::from_str::<toml::Value>(&lock_content) {
+                    if let Some(packages) = lock_toml.get("package").and_then(|p| p.as_array()) {
+                        for pkg in packages {
+                            let name = pkg
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let version = pkg
+                                .get("version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let checksum = pkg
+                                .get("checksum")
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let source_str =
+                                pkg.get("source").and_then(|s| s.as_str()).unwrap_or("");
+
+                            // Skip path dependencies and already-tracked packages
+                            if source_str.starts_with("path+") || source_str.is_empty() {
+                                continue;
+                            }
+                            if tracked_names.contains(&name) {
+                                continue;
+                            }
+
+                            tracked_names.insert(name.clone());
+                            locked_packages.push(LockedPackage {
+                                name,
+                                version,
+                                checksum,
+                                source: PackageSource::CratesIO,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse pyproject.toml for Python dependencies
+        let pyproject_path = PathBuf::from("pyproject.toml");
+        if pyproject_path.exists() {
+            if let Ok(pyproject_content) = fs::read_to_string(&pyproject_path) {
+                if let Ok(pyproject) = toml::from_str::<toml::Value>(&pyproject_content) {
+                    if let Some(deps) = pyproject
+                        .get("project")
+                        .and_then(|p| p.get("dependencies"))
+                        .and_then(|d| d.as_array())
+                    {
+                        for dep in deps {
+                            if let Some(dep_str) = dep.as_str() {
+                                let (name, version) = parse_pip_dependency_spec(dep_str);
+                                if tracked_names.contains(&name) {
+                                    continue;
+                                }
+                                tracked_names.insert(name.clone());
+                                locked_packages.push(LockedPackage {
+                                    name,
+                                    version,
+                                    checksum: String::new(),
+                                    source: PackageSource::PyPI,
+                                });
+                            }
+                        }
                     }
                 }
             }

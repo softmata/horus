@@ -28,9 +28,11 @@ use std::collections::HashMap;
 // ============================================================================
 
 /// Result type for runtime operations
+#[doc(hidden)]
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
 /// Errors from runtime operations
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     /// Failed to set CPU affinity
@@ -77,6 +79,7 @@ impl From<RuntimeError> for crate::error::HorusError {
 // ============================================================================
 
 /// Pin the current thread to specific CPU cores
+#[doc(hidden)]
 pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<()> {
     if cores.is_empty() {
         return Ok(());
@@ -105,6 +108,7 @@ pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<()> {
 
 /// Lock all current and future memory pages (prevents swapping)
 /// Requires CAP_IPC_LOCK capability or root on Linux
+#[doc(hidden)]
 #[cfg(target_os = "linux")]
 pub fn lock_all_memory() -> RuntimeResult<()> {
     // SAFETY: MCL_CURRENT | MCL_FUTURE are valid POSIX flag constants for mlockall.
@@ -132,6 +136,7 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
     }
 }
 
+#[doc(hidden)]
 #[cfg(not(target_os = "linux"))]
 pub fn lock_all_memory() -> RuntimeResult<()> {
     Err(RuntimeError::NotSupported(
@@ -143,6 +148,7 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
 ///
 /// Delegates to [`crate::core::rt_config::prefault_stack`] which uses
 /// recursive stack touching with `black_box` for reliable prefaulting.
+#[doc(hidden)]
 pub fn prefault_stack(stack_size: usize) -> RuntimeResult<()> {
     crate::core::rt_config::prefault_stack(stack_size);
     println!("[RT] Pre-faulted {}KB of stack", stack_size / 1024);
@@ -155,6 +161,7 @@ pub fn prefault_stack(stack_size: usize) -> RuntimeResult<()> {
 
 /// Set real-time scheduling policy for current thread
 /// Requires CAP_SYS_NICE capability or root on Linux
+#[doc(hidden)]
 #[cfg(target_os = "linux")]
 pub fn set_realtime_priority(priority: i32) -> RuntimeResult<()> {
     // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
@@ -185,6 +192,7 @@ pub fn set_realtime_priority(priority: i32) -> RuntimeResult<()> {
     }
 }
 
+#[doc(hidden)]
 #[cfg(not(target_os = "linux"))]
 pub fn set_realtime_priority(_priority: i32) -> RuntimeResult<()> {
     Err(RuntimeError::NotSupported(
@@ -233,6 +241,7 @@ pub(crate) fn get_numa_node_count() -> usize {
 ///
 /// All fields are public for inspection, but prefer using the helper methods
 /// (e.g., `has_rt_support()`, `can_lock_memory()`) for cleaner code.
+#[doc(hidden)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeCapabilities {
     // =========================================================================

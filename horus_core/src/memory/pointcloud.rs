@@ -20,7 +20,7 @@
 //! }
 //!
 //! // Send via topic (zero-copy)
-//! let topic: Topic<PointCloud> = Topic::new("lidar/points")?;
+//! let topic: Topic<PointCloud> = Topic::new("lidar.points")?;
 //! topic.send(&pc);
 //!
 //! // Receive and extract XYZ

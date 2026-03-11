@@ -21,7 +21,7 @@
 //!
 //! // Slow node (sleeps 10ms per tick)
 //! let node = TestNode::builder("slow")
-//!     .tick_delay(std::time::Duration::from_millis(10))
+//!     .tick_delay(10_u64.ms())
 //!     .build();
 //!
 //! // Node that fails init
@@ -35,6 +35,7 @@ use crate::error::HorusResult;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use crate::core::DurationExt;
 
 /// Behavior for the `init()` lifecycle method.
 #[derive(Debug, Clone)]
@@ -312,10 +313,10 @@ mod tests {
 
     #[test]
     fn test_slow_node() {
-        let mut node = TestNode::slow("slow", Duration::from_millis(1));
+        let mut node = TestNode::slow("slow", 1_u64.ms());
         let start = std::time::Instant::now();
         node.tick();
-        assert!(start.elapsed() >= Duration::from_millis(1));
+        assert!(start.elapsed() >= 1_u64.ms());
     }
 
     #[test]

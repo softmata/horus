@@ -1,14 +1,13 @@
 // Integration test for real-time scheduler features
-use horus_core::core::{DurationExt, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::{DurationExt, Node};
 
 /// Critical control node that must never miss deadlines
 struct CriticalControlNode {
@@ -45,7 +44,7 @@ impl Node for CriticalControlNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
 
         // Simulate computation
-        std::thread::sleep(Duration::from_micros(self.execution_time_us));
+        std::thread::sleep(self.execution_time_us.us());
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -68,16 +67,16 @@ fn test_scheduler_with_rt_nodes() {
     scheduler
         .add(CriticalControlNode::new("motor_control", 50)) // 50μs execution
         .order(0) // Highest priority
-        .budget(100.us()) // 100μs tick budget
-        .deadline(1.ms()) // 1ms deadline
+        .budget(100_u64.us()) // 100μs tick budget
+        .deadline(1_u64.ms()) // 1ms deadline
         .build();
 
     // Add another RT node
     scheduler
         .add(CriticalControlNode::new("sensor_fusion", 30)) // 30μs execution
         .order(1)
-        .budget(50.us())
-        .deadline(2.ms())
+        .budget(50_u64.us())
+        .deadline(2_u64.ms())
         .build();
 
     // Add a regular node
@@ -87,7 +86,7 @@ fn test_scheduler_with_rt_nodes() {
         .build();
 
     // Run for a short duration
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -95,25 +94,25 @@ fn test_scheduler_with_rt_nodes() {
 fn test_scheduler_with_safety_critical_config() {
     cleanup_stale_shm();
     // Configure for safety-critical operation
-    let mut scheduler = Scheduler::new().tick_rate(1000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
     // Add critical nodes
     scheduler
         .add(CriticalControlNode::new("flight_control", 80))
         .order(0)
-        .budget(100.us())
-        .deadline(1.ms())
+        .budget(100_u64.us())
+        .deadline(1_u64.ms())
         .build();
 
     scheduler
         .add(CriticalControlNode::new("navigation", 60))
         .order(1)
-        .budget(80.us())
-        .deadline(2.ms())
+        .budget(80_u64.us())
+        .deadline(2_u64.ms())
         .build();
 
     // Run briefly with safety monitoring
-    let result = scheduler.run_for(Duration::from_millis(50));
+    let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }
 
@@ -128,12 +127,12 @@ fn test_budget_violation_detection() {
     scheduler
         .add(CriticalControlNode::new("violator", 100))
         .order(0)
-        .budget(50.us()) // tick budget too small
-        .deadline(1.ms())
+        .budget(50_u64.us()) // tick budget too small
+        .deadline(1_u64.ms())
         .build();
 
     // This should detect budget violations but continue running
-    let result = scheduler.run_for(Duration::from_millis(20));
+    let result = scheduler.run_for(20_u64.ms());
     result.unwrap();
 }
 
@@ -147,12 +146,12 @@ fn test_deadline_miss_detection() {
     scheduler
         .add(CriticalControlNode::new("tight_deadline", 900))
         .order(0)
-        .budget(1000.us())
-        .deadline(500.us()) // Deadline smaller than execution time
+        .budget(1000_u64.us())
+        .deadline(500_u64.us()) // Deadline smaller than execution time
         .build();
 
     // This should detect deadline misses
-    let result = scheduler.run_for(Duration::from_millis(30));
+    let result = scheduler.run_for(30_u64.ms());
     result.unwrap();
 }
 
@@ -165,8 +164,8 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler
         .add(CriticalControlNode::new("rt_critical", 50))
         .order(0)
-        .budget(100.us())
-        .deadline(1.ms())
+        .budget(100_u64.us())
+        .deadline(1_u64.ms())
         .build();
 
     scheduler
@@ -177,8 +176,8 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler
         .add(CriticalControlNode::new("rt_sensor", 30))
         .order(1)
-        .budget(50.us())
-        .deadline(2.ms())
+        .budget(50_u64.us())
+        .deadline(2_u64.ms())
         .build();
 
     scheduler
@@ -187,7 +186,7 @@ fn test_mixed_rt_and_normal_nodes() {
         .build();
 
     // RT nodes should be properly prioritized
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -201,12 +200,12 @@ fn test_watchdog_functionality() {
     scheduler
         .add(CriticalControlNode::new("watchdog_monitored", 10))
         .order(0)
-        .budget(50.us())
-        .deadline(1.ms())
+        .budget(50_u64.us())
+        .deadline(1_u64.ms())
         .build();
 
     // Run normally - watchdog should be fed and not expire
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(100_u64.ms());
     result.unwrap();
 }
 
@@ -214,24 +213,24 @@ fn test_watchdog_functionality() {
 fn test_high_performance_rt_config() {
     cleanup_stale_shm();
     // Configure for high-performance racing robot
-    let mut scheduler = Scheduler::new().tick_rate(10000.hz());
+    let mut scheduler = Scheduler::new().tick_rate(10000_u64.hz());
 
     // Add ultra-fast control nodes
     scheduler
         .add(CriticalControlNode::new("traction_control", 10))
         .order(0)
-        .budget(20.us())
-        .deadline(100.us()) // 10kHz control loop
+        .budget(20_u64.us())
+        .deadline(100_u64.us()) // 10kHz control loop
         .build();
 
     scheduler
         .add(CriticalControlNode::new("stability_control", 15))
         .order(1)
-        .budget(25.us())
-        .deadline(100.us())
+        .budget(25_u64.us())
+        .deadline(100_u64.us())
         .build();
 
     // Should handle high-frequency execution
-    let result = scheduler.run_for(Duration::from_millis(50));
+    let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }

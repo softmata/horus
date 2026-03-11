@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Log entry with timestamp and metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +41,20 @@ const SLOT_SEQ_SIZE: usize = 8;
 /// Bytes available for the serialised log entry within a slot.
 const SLOT_DATA_SIZE: usize = SLOT_SIZE - SLOT_SEQ_SIZE; // 504 bytes
 
-const MAX_MESSAGE_LEN: usize = 300;
+/// Maximum length for the `message` field after truncation.
+///
+/// The slot data budget is 504 bytes.  Bincode fixed-overhead for a `LogEntry`
+/// with all `Option` fields present is 61 bytes (4 string-length prefixes ×
+/// 8 + tick_number 8 + LogType u32 + Option tag 1 + tick_us 8 + ipc_ns 8).
+/// Variable string limits: timestamp 32 + node_name 64 + topic 64 = 160.
+/// That leaves 504 − 61 − 160 = 283 bytes for the message.  We use 280 for
+/// a small margin.
+const MAX_MESSAGE_LEN: usize = 280;
+
+/// How long a reader spins waiting for an odd-seq (in-progress) slot before
+/// giving up.  Normal writes complete in single-digit microseconds; a slot
+/// still odd after this timeout is treated as crash-orphaned and skipped.
+const SEQLOCK_SPIN_TIMEOUT: Duration = Duration::from_millis(5);
 
 /// Bytes reserved for the mmap header.
 ///
@@ -100,6 +114,22 @@ unsafe fn load_slot_seq(base: *const u8, slot_idx: usize) -> u64 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Truncate a string field to at most `max` bytes on a valid UTF-8 char
+/// boundary, appending "..." when truncation occurs.
+#[inline]
+fn truncate_field(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
+    }
+    let suffix = "...";
+    let mut end = max.saturating_sub(suffix.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push_str(suffix);
+}
 
 /// Shared memory ring buffer for logs.
 ///
@@ -174,28 +204,29 @@ impl SharedLogBuffer {
     pub fn push(&self, entry: LogEntry) {
         let mut guard = self.mmap.lock().unwrap();
 
-        // Truncate message if too long (BEFORE serialization to keep metadata intact)
+        // Truncate all variable-length fields BEFORE serialization so the
+        // envelope is always valid bincode.  Message gets the tightest limit;
+        // metadata fields get generous caps that still leave room.
         let mut entry = entry;
-        if entry.message.len() > MAX_MESSAGE_LEN {
-            let mut end = MAX_MESSAGE_LEN - 3;
-            while end > 0 && !entry.message.is_char_boundary(end) {
-                end -= 1;
-            }
-            entry.message.truncate(end);
-            entry.message.push_str("...");
+        truncate_field(&mut entry.node_name, 64);
+        truncate_field(&mut entry.timestamp, 32);
+        if let Some(ref mut t) = entry.topic {
+            truncate_field(t, 64);
         }
+        truncate_field(&mut entry.message, MAX_MESSAGE_LEN);
 
         // Serialize log entry
         let serialized = match bincode::serialize(&entry) {
             Ok(data) if data.len() <= SLOT_DATA_SIZE => data,
             Ok(data) => {
-                // Serialized size still exceeds slot data area — truncate as a safety net.
+                // Even after field truncation the entry is too large — drop it
+                // rather than writing corrupt mid-struct bytes.
                 error!(
-                    "[LogBuffer] Log entry too large ({} bytes, max {}); truncating",
+                    "[LogBuffer] Log entry too large ({} bytes, max {}); dropping",
                     data.len(),
                     SLOT_DATA_SIZE
                 );
-                data[..SLOT_DATA_SIZE].to_vec()
+                return;
             }
             Err(e) => {
                 error!("[LogBuffer] Failed to serialize log: {}", e);
@@ -255,8 +286,11 @@ impl SharedLogBuffer {
 
     /// Read all log entries from the ring buffer.
     ///
-    /// Slots with an in-progress write (odd seqlock value) or that have never
-    /// been written (seq == 0) are silently skipped.
+    /// Slots that have never been written (seq == 0) are skipped.  Slots with
+    /// an in-progress write (odd seqlock) are retried for up to
+    /// [`SEQLOCK_SPIN_TIMEOUT`] before being skipped — this handles both
+    /// normal writes that complete within microseconds and crash-orphaned
+    /// slots where the writer died mid-write.
     pub fn get_all(&self) -> Vec<LogEntry> {
         let guard = self.mmap.lock().unwrap();
 
@@ -277,11 +311,34 @@ impl SharedLogBuffer {
         for i in 0..num_entries {
             let slot_idx = (start_idx + i) % MAX_LOG_ENTRIES;
 
-            // Skip empty or in-progress slots (seqlock check).
             // SAFETY: slot_idx < MAX_LOG_ENTRIES; mmap covers the full buffer.
             let seq = unsafe { load_slot_seq(base, slot_idx) };
-            if seq == 0 || seq & 1 == 1 {
+
+            // Never-written slot.
+            if seq == 0 {
                 continue;
+            }
+
+            // Odd seq = write in progress.  Spin briefly in case the writer is
+            // about to finish; give up after SEQLOCK_SPIN_TIMEOUT (handles
+            // crash-orphaned slots where the writer died mid-write).
+            if seq & 1 == 1 {
+                let deadline = Instant::now() + SEQLOCK_SPIN_TIMEOUT;
+                let mut resolved = false;
+                while Instant::now() < deadline {
+                    std::hint::spin_loop();
+                    let seq2 = unsafe { load_slot_seq(base, slot_idx) };
+                    if seq2 != 0 && seq2 & 1 == 0 {
+                        resolved = true;
+                        break;
+                    }
+                }
+                if !resolved {
+                    // Writer is dead — reset seqlock to even so the slot can be
+                    // reclaimed by a future writer (the data is garbage anyway).
+                    unsafe { store_slot_seq(base, slot_idx, seq.wrapping_add(1)) };
+                    continue;
+                }
             }
 
             let data_off = HEADER_SIZE + slot_idx * SLOT_SIZE + SLOT_SEQ_SIZE;
@@ -310,6 +367,14 @@ impl SharedLogBuffer {
         self.get_all()
             .into_iter()
             .filter(|e| e.topic.as_ref().is_some_and(|t| t == topic))
+            .collect()
+    }
+
+    /// Get logs matching a specific [`LogType`].
+    pub fn for_type(&self, log_type: &LogType) -> Vec<LogEntry> {
+        self.get_all()
+            .into_iter()
+            .filter(|e| &e.log_type == log_type)
             .collect()
     }
 }
@@ -346,6 +411,57 @@ impl SharedLogBuffer {
     /// Used in tests to avoid touching the global log path.
     pub fn new_at_path(path: &std::path::Path) -> crate::error::HorusResult<Self> {
         Self::open_at(path)
+    }
+
+    /// Corrupt a slot's seqlock to an odd value (simulating a crash mid-write).
+    ///
+    /// **Test-only**: this is deliberately `#[doc(hidden)]` — never use in
+    /// production.  Integration tests use this to verify crash-orphaned slot
+    /// recovery.
+    #[doc(hidden)]
+    pub fn corrupt_slot_seqlock(&self, slot_idx: usize, odd_value: u64) {
+        assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
+        assert!(odd_value & 1 == 1, "value must be odd to simulate crash");
+        let guard = self.mmap.lock().unwrap();
+        let base: *const u8 = (*guard).as_ptr();
+        unsafe { store_slot_seq(base, slot_idx, odd_value) };
+    }
+
+    /// Read a slot's seqlock value.
+    ///
+    /// **Test-only**: `#[doc(hidden)]`.
+    #[doc(hidden)]
+    pub fn read_slot_seqlock(&self, slot_idx: usize) -> u64 {
+        assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
+        let guard = self.mmap.lock().unwrap();
+        let base: *const u8 = (*guard).as_ptr();
+        unsafe { load_slot_seq(base, slot_idx) }
+    }
+
+    /// Write raw bytes into a slot's data area and set its seqlock to a
+    /// given even value (marking it as "complete" so readers attempt
+    /// deserialization).
+    ///
+    /// **Test-only**: `#[doc(hidden)]`.  Used by corruption resilience tests
+    /// to verify `get_all()` gracefully skips garbage data.
+    #[doc(hidden)]
+    pub fn write_slot_raw(&self, slot_idx: usize, data: &[u8], seq_even: u64) {
+        assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
+        assert!(seq_even != 0 && seq_even & 1 == 0, "seq must be even nonzero");
+        let mut guard = self.mmap.lock().unwrap();
+        let base: *mut u8 = {
+            let s: &mut [u8] = &mut guard;
+            s.as_mut_ptr()
+        };
+        let data_off = HEADER_SIZE + slot_idx * SLOT_SIZE + SLOT_SEQ_SIZE;
+        let len = data.len().min(SLOT_DATA_SIZE);
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), base.add(data_off), len);
+            if len < SLOT_DATA_SIZE {
+                std::ptr::write_bytes(base.add(data_off + len), 0, SLOT_DATA_SIZE - len);
+            }
+            store_slot_seq(base, slot_idx, seq_even);
+        }
     }
 }
 
@@ -534,7 +650,7 @@ mod tests {
         let all = buf.get_all();
         assert_eq!(all.len(), 1);
 
-        // push() truncates at MAX_MESSAGE_LEN (300) and appends "..."
+        // push() truncates at MAX_MESSAGE_LEN (280) and appends "..."
         let msg = &all[0].message;
         assert!(
             msg.len() <= MAX_MESSAGE_LEN,
@@ -664,6 +780,135 @@ mod tests {
         assert_eq!(e.message, "sensor timeout detected");
         assert_eq!(e.tick_us, 1234);
         assert_eq!(e.ipc_ns, 5678);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// All variable-length fields are truncated before serialization so the
+    /// deserialized struct is always valid (no mid-struct byte truncation).
+    #[test]
+    fn test_all_fields_truncated_safely() {
+        let (buf, path) = temp_buf(15);
+
+        let entry = LogEntry {
+            timestamp: "T".repeat(200),         // way over 32-byte cap
+            tick_number: 1,
+            node_name: "N".repeat(200),          // way over 64-byte cap
+            log_type: LogType::Info,
+            topic: Some("X".repeat(200)),        // way over 64-byte cap
+            message: "M".repeat(1000),           // way over 300-byte cap
+            tick_us: 0,
+            ipc_ns: 0,
+        };
+        buf.push(entry);
+
+        let all = buf.get_all();
+        assert_eq!(all.len(), 1, "oversized entry must still be readable");
+
+        let e = &all[0];
+        assert!(e.message.len() <= MAX_MESSAGE_LEN, "message too long");
+        assert!(e.message.ends_with("..."), "message must show truncation marker");
+        assert!(e.node_name.len() <= 67, "node_name too long"); // 64 + "..."
+        assert!(e.node_name.ends_with("..."), "node_name must show truncation marker");
+        assert!(e.timestamp.len() <= 35, "timestamp too long"); // 32 + "..."
+        assert!(e.timestamp.ends_with("..."), "timestamp must show truncation marker");
+        let topic = e.topic.as_ref().unwrap();
+        assert!(topic.len() <= 67, "topic too long");
+        assert!(topic.ends_with("..."), "topic must show truncation marker");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Verify that truncate_field works correctly on char boundaries.
+    #[test]
+    fn test_truncate_field_unicode_boundary() {
+        // 4-byte emoji repeated — truncation must not split a multi-byte char
+        let mut s = "🤖".repeat(100); // 400 bytes
+        super::truncate_field(&mut s, 20);
+        assert!(s.len() <= 20);
+        assert!(s.ends_with("..."));
+        // Must be valid UTF-8 (String guarantees, but let's be explicit)
+        let _ = s.chars().count();
+    }
+
+    /// Simulate a crash-orphaned slot by manually writing an odd seqlock.
+    /// The reader must not hang — it should skip the slot after the timeout
+    /// and reset its seqlock to even for future reclamation.
+    #[test]
+    fn test_crash_orphaned_seqlock_skipped() {
+        let (buf, path) = temp_buf(16);
+
+        // Write two valid entries
+        buf.push(make_entry("before_crash", 1));
+        buf.push(make_entry("after_crash", 2));
+
+        // Manually corrupt slot 0's seqlock to odd (simulates a crashed writer)
+        {
+            let guard = buf.mmap.lock().unwrap();
+            let base: *const u8 = (*guard).as_ptr();
+            unsafe { store_slot_seq(base, 0, 99) }; // 99 is odd → "write in progress"
+        }
+
+        // get_all() must complete (not hang) and skip the orphaned slot
+        let start = std::time::Instant::now();
+        let all = buf.get_all();
+        let elapsed = start.elapsed();
+
+        // Should only get the non-corrupted entry
+        assert_eq!(all.len(), 1, "must skip the crash-orphaned slot");
+        assert_eq!(all[0].node_name, "after_crash");
+
+        // Must complete within a reasonable time (SEQLOCK_SPIN_TIMEOUT=5ms + margin)
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "reader hung on orphaned slot ({:?})",
+            elapsed
+        );
+
+        // The orphaned slot's seqlock should now be reset to even
+        {
+            let guard = buf.mmap.lock().unwrap();
+            let base: *const u8 = (*guard).as_ptr();
+            let seq = unsafe { load_slot_seq(base, 0) };
+            assert!(
+                seq & 1 == 0,
+                "orphaned slot seqlock should be reset to even, got {}",
+                seq
+            );
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Multiple crash-orphaned slots: reader skips all of them and reads the
+    /// remaining valid entries.
+    #[test]
+    fn test_multiple_crash_orphaned_slots() {
+        let (buf, path) = temp_buf(17);
+
+        // Write 5 valid entries
+        for i in 0..5 {
+            buf.push(make_entry(&format!("node_{}", i), i));
+        }
+
+        // Corrupt slots 1 and 3
+        {
+            let guard = buf.mmap.lock().unwrap();
+            let base: *const u8 = (*guard).as_ptr();
+            unsafe {
+                store_slot_seq(base, 1, 77); // odd
+                store_slot_seq(base, 3, 55); // odd
+            }
+        }
+
+        let all = buf.get_all();
+        // Slots 0, 2, 4 should be readable; slots 1, 3 are corrupted
+        assert_eq!(all.len(), 3, "must skip both orphaned slots");
+
+        let names: Vec<&str> = all.iter().map(|e| e.node_name.as_str()).collect();
+        assert!(names.contains(&"node_0"));
+        assert!(names.contains(&"node_2"));
+        assert!(names.contains(&"node_4"));
 
         let _ = std::fs::remove_file(path);
     }

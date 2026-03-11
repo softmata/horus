@@ -11,8 +11,8 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::{assert_json_ok, get_request};
 
-use std::time::Duration;
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Phase 8: System QA — Real Project → Monitor Verification
@@ -42,7 +42,7 @@ async fn qa_nodes_visible_in_monitor_after_discovery() {
     );
 
     assert!(
-        rt.wait_ready(Duration::from_secs(2)),
+        rt.wait_ready(2_u64.secs()),
         "nodes should become discoverable"
     );
     rt.refresh_discovery();
@@ -74,7 +74,7 @@ async fn qa_api_status_health_matches_nodes() {
     rt.add_node(TestNodeConfig::bare("health_qa_a"))
         .add_node(TestNodeConfig::bare("health_qa_b"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -121,7 +121,7 @@ async fn qa_tui_and_web_api_data_equivalence() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::sensor("tui_web_qa", "camera", "Image"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     // Web API
@@ -155,7 +155,7 @@ async fn qa_cpu_memory_fields_present() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("metrics_qa"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -193,7 +193,7 @@ async fn qa_node_disappearance_detected() {
     // verify it disappears
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("disappear_qa"));
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     // Verify node is visible
@@ -219,7 +219,7 @@ async fn qa_node_disappearance_detected() {
     drop(rt);
 
     // Wait for discovery cache to expire
-    std::thread::sleep(Duration::from_millis(350));
+    std::thread::sleep(350_u64.ms());
 
     // Node should no longer appear
     let app2 = builders::test_router();
@@ -242,7 +242,7 @@ async fn qa_node_graceful_shutdown_detected() {
     // Same as crash detection but simulates graceful shutdown
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("graceful_qa"));
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     // Verify present
@@ -257,7 +257,7 @@ async fn qa_node_graceful_shutdown_detected() {
 
     // Graceful shutdown = drop
     drop(rt);
-    std::thread::sleep(Duration::from_millis(350));
+    std::thread::sleep(350_u64.ms());
 
     let app2 = builders::test_router();
     let resp2 = app2.oneshot(get_request("/api/nodes")).await.unwrap();
@@ -282,7 +282,7 @@ async fn qa_topic_creation_and_destruction() {
     ))
     .add_topic("ephemeral_topic", 4096);
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     // Topic should be visible
@@ -299,7 +299,7 @@ async fn qa_topic_creation_and_destruction() {
 
     // Drop runtime — topics cleaned up
     drop(rt);
-    std::thread::sleep(Duration::from_millis(350));
+    std::thread::sleep(350_u64.ms());
 
     let app2 = builders::test_router();
     let resp2 = app2.oneshot(get_request("/api/topics")).await.unwrap();
@@ -321,15 +321,15 @@ async fn qa_node_restart_fresh_instance() {
     {
         let mut rt = HorusTestRuntime::new();
         rt.add_node(TestNodeConfig::bare(node_name));
-        assert!(rt.wait_ready(Duration::from_secs(2)));
+        assert!(rt.wait_ready(2_u64.secs()));
         // Drop = shutdown
     }
-    std::thread::sleep(Duration::from_millis(350));
+    std::thread::sleep(350_u64.ms());
 
     // Restart with same name
     let mut rt2 = HorusTestRuntime::new();
     rt2.add_node(TestNodeConfig::bare(node_name));
-    assert!(rt2.wait_ready(Duration::from_secs(2)));
+    assert!(rt2.wait_ready(2_u64.secs()));
     rt2.refresh_discovery();
 
     let app = builders::test_router();
@@ -345,7 +345,7 @@ async fn qa_node_health_reported_in_api() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("health_report_qa"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -402,7 +402,7 @@ async fn qa_multi_node_all_visible() {
         TestNodeConfig::actuator("motor_node", "motor_cmd", "Twist").with_scheduler("control"),
     );
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -432,7 +432,7 @@ async fn qa_pub_sub_graph_verification() {
         .add_node(TestNodeConfig::actuator("graph_sub", "graph_topic", "Data"))
         .add_topic("graph_topic", 4096);
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -497,7 +497,7 @@ async fn qa_scale_test_many_nodes() {
         rt.add_node(TestNodeConfig::bare(&format!("scale_node_{:02}", i)));
     }
 
-    assert!(rt.wait_ready(Duration::from_secs(3)));
+    assert!(rt.wait_ready(3_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -534,7 +534,7 @@ async fn qa_partial_launch_mixed_results() {
         .add_node(TestNodeConfig::bare("partial_ok_2"));
     // partial_fail_1 is intentionally NOT added (simulates failed launch)
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -567,7 +567,7 @@ async fn qa_network_endpoint_returns_valid_data() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("network_qa"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();

@@ -3,16 +3,15 @@
 //! Covers: panic handling, mixed success/failure, skip policy,
 //! paused node, uninitialized node, restart failure.
 
-use horus_core::core::DurationExt;
 use horus_core::core::Node;
 use horus_core::error::HorusResult;
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::DurationExt;
 
 // ============================================================================
 // Mock nodes
@@ -89,7 +88,7 @@ fn test_async_panic_handled() {
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     // With Ignore policy, node should keep ticking despite panics
     assert!(
@@ -127,7 +126,7 @@ fn test_async_mixed_success_failure() {
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     // OK node should keep ticking
     assert!(
@@ -154,10 +153,10 @@ fn test_async_skip_policy() {
         })
         .order(5)
         .async_io()
-        .failure_policy(FailurePolicy::skip(2, 5000))
+        .failure_policy(FailurePolicy::skip(2, 5_u64.secs()))
         .build();
 
-    scheduler.run_for(Duration::from_millis(200)).unwrap();
+    scheduler.run_for(200_u64.ms()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     // The async executor may dispatch several ticks before the skip policy
@@ -186,7 +185,7 @@ fn test_async_paused_node_skipped() {
         .async_io()
         .build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     // Should tick normally (just verifying the async_io path works)
     assert!(tick_count.load(Ordering::SeqCst) > 0);
@@ -207,7 +206,7 @@ fn test_async_uninitialized_node_skipped() {
         .async_io()
         .build();
 
-    scheduler.run_for(Duration::from_millis(100)).unwrap();
+    scheduler.run_for(100_u64.ms()).unwrap();
 
     assert_eq!(
         tick_count.load(Ordering::SeqCst),
@@ -229,12 +228,12 @@ fn test_async_restart_failure() {
         })
         .order(5)
         .async_io()
-        .failure_policy(FailurePolicy::restart(3, 10))
+        .failure_policy(FailurePolicy::restart(3, 10_u64.ms()))
         .build();
 
     // The restart policy should attempt to restart the node after panics.
     // After exhausting restarts (3), it escalates to fatal and stops the scheduler.
-    scheduler.run_for(Duration::from_millis(500)).unwrap();
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
     // The node should have ticked multiple times before restart exhaustion

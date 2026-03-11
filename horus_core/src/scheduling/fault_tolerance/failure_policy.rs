@@ -15,12 +15,14 @@ use std::time::{Duration, Instant};
 /// Set per-node via the builder API:
 ///
 /// ```rust,ignore
+/// use horus::prelude::*;
+///
 /// scheduler.add(motor_node)
 ///     .failure_policy(FailurePolicy::Fatal)
 ///     .build();
 ///
 /// scheduler.add(logger_node)
-///     .failure_policy(FailurePolicy::skip(10, 60_000))
+///     .failure_policy(FailurePolicy::skip(10, 60_u64.secs()))
 ///     .build();
 /// ```
 #[derive(Debug, Clone)]
@@ -36,15 +38,18 @@ pub enum FailurePolicy {
     /// Use for: sensor drivers, perception pipelines, recoverable nodes.
     Restart {
         max_restarts: u32,
-        initial_backoff_ms: u64,
+        initial_backoff: Duration,
     },
 
     /// Node failure is tolerated with a cooldown period.
     /// After `max_failures` consecutive failures, the node is skipped
-    /// for `cooldown_ms` before being retried.
+    /// for `cooldown` before being retried.
     ///
     /// Use for: logging, telemetry, diagnostics, non-critical tasks.
-    Skip { max_failures: u32, cooldown_ms: u64 },
+    Skip {
+        max_failures: u32,
+        cooldown: Duration,
+    },
 
     /// Failures are completely ignored. The node keeps ticking every cycle.
     ///
@@ -53,19 +58,19 @@ pub enum FailurePolicy {
 }
 
 impl FailurePolicy {
-    /// Create a `Restart` policy with common defaults.
-    pub fn restart(max_restarts: u32, initial_backoff_ms: u64) -> Self {
+    /// Create a `Restart` policy.
+    pub fn restart(max_restarts: u32, initial_backoff: Duration) -> Self {
         Self::Restart {
             max_restarts,
-            initial_backoff_ms,
+            initial_backoff,
         }
     }
 
-    /// Create a `Skip` policy with common defaults.
-    pub fn skip(max_failures: u32, cooldown_ms: u64) -> Self {
+    /// Create a `Skip` policy.
+    pub fn skip(max_failures: u32, cooldown: Duration) -> Self {
         Self::Skip {
             max_failures,
-            cooldown_ms,
+            cooldown,
         }
     }
 }
@@ -92,7 +97,7 @@ enum FailureHandlerState {
     Restart {
         restart_count: u32,
         max_restarts: u32,
-        initial_backoff_ms: u64,
+        initial_backoff: Duration,
         /// When the current backoff period expires (None = not in backoff)
         backoff_until: Option<Instant>,
     },
@@ -100,7 +105,7 @@ enum FailureHandlerState {
     Skip {
         failure_count: u32,
         max_failures: u32,
-        cooldown_ms: u64,
+        cooldown: Duration,
         /// When the cooldown period expires (None = not suppressed)
         suppressed_until: Option<Instant>,
     },
@@ -185,20 +190,20 @@ impl FailureHandler {
             FailurePolicy::Fatal => FailureHandlerState::Fatal,
             FailurePolicy::Restart {
                 max_restarts,
-                initial_backoff_ms,
+                initial_backoff,
             } => FailureHandlerState::Restart {
                 restart_count: 0,
                 max_restarts: *max_restarts,
-                initial_backoff_ms: *initial_backoff_ms,
+                initial_backoff: *initial_backoff,
                 backoff_until: None,
             },
             FailurePolicy::Skip {
                 max_failures,
-                cooldown_ms,
+                cooldown,
             } => FailureHandlerState::Skip {
                 failure_count: 0,
                 max_failures: *max_failures,
-                cooldown_ms: *cooldown_ms,
+                cooldown: *cooldown,
                 suppressed_until: None,
             },
             FailurePolicy::Ignore => FailureHandlerState::Ignore,
@@ -274,7 +279,7 @@ impl FailureHandler {
             FailureHandlerState::Restart {
                 restart_count,
                 max_restarts,
-                initial_backoff_ms,
+                initial_backoff,
                 backoff_until,
             } => {
                 *restart_count += 1;
@@ -282,20 +287,20 @@ impl FailureHandler {
                     return FailureAction::FatalAfterRestarts;
                 }
                 // Exponential backoff: initial * 2^(restart_count - 1)
-                let backoff_ms =
-                    *initial_backoff_ms * 2u64.saturating_pow(restart_count.saturating_sub(1));
-                *backoff_until = Some(Instant::now() + Duration::from_millis(backoff_ms));
+                let backoff = initial_backoff
+                    .saturating_mul(2u32.saturating_pow(restart_count.saturating_sub(1)));
+                *backoff_until = Some(Instant::now() + backoff);
                 FailureAction::RestartNode
             }
             FailureHandlerState::Skip {
                 failure_count,
                 max_failures,
-                cooldown_ms,
+                cooldown,
                 suppressed_until,
             } => {
                 *failure_count += 1;
                 if *failure_count >= *max_failures {
-                    *suppressed_until = Some(Instant::now() + Duration::from_millis(*cooldown_ms));
+                    *suppressed_until = Some(Instant::now() + *cooldown);
                     *failure_count = 0;
                     FailureAction::SkipNode
                 } else {
@@ -409,20 +414,20 @@ impl FailureHandler {
             FailurePolicy::Fatal => FailureHandlerState::Fatal,
             FailurePolicy::Restart {
                 max_restarts,
-                initial_backoff_ms,
+                initial_backoff,
             } => FailureHandlerState::Restart {
                 restart_count: 0,
                 max_restarts: *max_restarts,
-                initial_backoff_ms: *initial_backoff_ms,
+                initial_backoff: *initial_backoff,
                 backoff_until: None,
             },
             FailurePolicy::Skip {
                 max_failures,
-                cooldown_ms,
+                cooldown,
             } => FailureHandlerState::Skip {
                 failure_count: 0,
                 max_failures: *max_failures,
-                cooldown_ms: *cooldown_ms,
+                cooldown: *cooldown,
                 suppressed_until: None,
             },
             FailurePolicy::Ignore => FailureHandlerState::Ignore,
@@ -444,6 +449,7 @@ impl std::fmt::Debug for FailureHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
 
     #[test]
     fn test_fatal_policy_stops_on_first_failure() {
@@ -454,7 +460,8 @@ mod tests {
 
     #[test]
     fn test_restart_policy_with_backoff() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 10));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
         assert!(handler.should_allow());
 
         // First failure: restart with 10ms backoff
@@ -463,24 +470,25 @@ mod tests {
         assert!(!handler.should_allow());
 
         // Wait for backoff to expire
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(15_u64.ms());
         assert!(handler.should_allow());
 
         // Second failure: restart with 20ms backoff
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
 
         // Third failure: restart with 40ms backoff
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(25_u64.ms());
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
 
         // Fourth failure: exceeds max_restarts (3), escalate to fatal
-        std::thread::sleep(Duration::from_millis(45));
+        std::thread::sleep(45_u64.ms());
         assert_eq!(handler.record_failure(), FailureAction::FatalAfterRestarts);
     }
 
     #[test]
     fn test_skip_policy_skips_after_threshold() {
-        let mut handler = FailureHandler::new(FailurePolicy::skip(3, 100));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::skip(3, 100_u64.ms()));
         assert!(handler.should_allow());
 
         // Record failures up to threshold
@@ -505,14 +513,15 @@ mod tests {
 
     #[test]
     fn test_restart_success_clears_backoff() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 10));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(5, 10_u64.ms()));
 
         // Fail once, enter backoff
         handler.record_failure();
         assert!(!handler.should_allow());
 
         // Wait for backoff, succeed
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(15_u64.ms());
         handler.record_success();
 
         // Should be allowed immediately (backoff cleared)
@@ -526,7 +535,7 @@ mod tests {
         assert_eq!(stats.policy, "Fatal");
         assert!(!stats.is_suppressed);
 
-        let handler = FailureHandler::new(FailurePolicy::skip(5, 30_000));
+        let handler = FailureHandler::new(FailurePolicy::skip(5, 30_u64.secs()));
         let stats = handler.stats();
         assert_eq!(stats.policy, "Skip");
         assert_eq!(stats.failure_count, 0);
@@ -534,7 +543,8 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 10));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
         handler.record_failure();
         handler.record_failure();
 
@@ -551,12 +561,13 @@ mod tests {
     /// hammering a disconnected device.
     #[test]
     fn restart_exponential_backoff_increases() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 10));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(5, 10_u64.ms()));
 
         // Failure 1: 10ms backoff (10 * 2^0)
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
         assert!(!handler.should_allow());
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(15_u64.ms());
         assert!(
             handler.should_allow(),
             "Should be allowed after 10ms backoff"
@@ -565,9 +576,9 @@ mod tests {
         // Failure 2: 20ms backoff (10 * 2^1)
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
         assert!(!handler.should_allow());
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(10_u64.ms());
         assert!(!handler.should_allow(), "Should still be in 20ms backoff");
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(15_u64.ms());
         assert!(
             handler.should_allow(),
             "Should be allowed after 20ms backoff"
@@ -576,9 +587,9 @@ mod tests {
         // Failure 3: 40ms backoff (10 * 2^2)
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
         assert!(!handler.should_allow());
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(20_u64.ms());
         assert!(!handler.should_allow(), "Should still be in 40ms backoff");
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(25_u64.ms());
         assert!(
             handler.should_allow(),
             "Should be allowed after 40ms backoff"
@@ -591,7 +602,8 @@ mod tests {
     /// recovers, logging resumes.
     #[test]
     fn skip_policy_full_cycle() {
-        let mut handler = FailureHandler::new(FailurePolicy::skip(2, 50));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::skip(2, 50_u64.ms()));
 
         // Normal operation
         assert!(handler.should_allow());
@@ -603,7 +615,7 @@ mod tests {
         assert!(!handler.should_allow());
 
         // Wait for cooldown
-        std::thread::sleep(Duration::from_millis(60));
+        std::thread::sleep(60_u64.ms());
 
         // should_allow returns true after cooldown expires
         assert!(handler.should_allow());
@@ -624,7 +636,8 @@ mod tests {
     /// on the 4th failure the scheduler stops to prevent damage.
     #[test]
     fn restart_exhaustion_escalates_to_fatal() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 5));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(3, 5_u64.ms()));
 
         for i in 0..3 {
             let action = handler.record_failure();
@@ -635,7 +648,7 @@ mod tests {
                 i + 1
             );
             // Wait for backoff before next failure
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(50_u64.ms());
         }
 
         // 4th failure exceeds max_restarts → fatal
@@ -647,13 +660,15 @@ mod tests {
     #[test]
     fn stats_report_suppression_correctly() {
         // Restart handler in backoff is suppressed
-        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 100));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(5, 100_u64.ms()));
         handler.record_failure();
         let stats = handler.stats();
         assert!(stats.is_suppressed, "Should be suppressed during backoff");
 
         // Skip handler suppressed after threshold
-        let mut handler = FailureHandler::new(FailurePolicy::skip(1, 5000));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::skip(1, 5_u64.secs()));
         handler.record_failure(); // exceeds threshold (max_failures=1)
         let stats = handler.stats();
         assert!(
@@ -687,7 +702,8 @@ mod tests {
     /// Fatal severity always stops, even with Restart policy.
     #[test]
     fn severity_fatal_overrides_restart_policy() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 100));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(5, 100_u64.ms()));
         assert_eq!(
             handler.record_failure_with_severity(Severity::Fatal),
             FailureAction::StopScheduler,
@@ -711,7 +727,8 @@ mod tests {
     /// Transient severity with Restart policy follows normal record_failure().
     #[test]
     fn severity_transient_follows_restart_policy() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 10));
+        let mut handler =
+            FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
         assert_eq!(
             handler.record_failure_with_severity(Severity::Transient),
             FailureAction::RestartNode,

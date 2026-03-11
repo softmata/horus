@@ -9,6 +9,7 @@ use colored::*;
 use horus_core::scheduling::{BlackBoxEvent, BlackBoxRecord};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use horus_core::core::DurationExt;
 
 /// CLI arguments for the `horus blackbox` command.
 pub struct BlackboxArgs {
@@ -299,7 +300,7 @@ fn blackbox_tail(
         );
         // Wait for file to appear
         while !wal_path.is_file() {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(500_u64.ms());
         }
     }
 
@@ -350,7 +351,7 @@ fn blackbox_tail(
             }
             buf.clear();
         } else {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(100_u64.ms());
         }
     }
 

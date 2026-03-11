@@ -303,6 +303,7 @@ impl ComputeExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
     use crate::core::{Miss, Node, NodeInfo};
     use std::sync::Mutex;
 
@@ -364,11 +365,11 @@ mod tests {
         let executor = ComputeExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             test_monitors(),
         );
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 
@@ -391,11 +392,11 @@ mod tests {
         let executor = ComputeExecutor::start(
             nodes,
             running.clone(),
-            Duration::from_millis(1),
+            1_u64.ms(),
             test_monitors(),
         );
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 
@@ -415,11 +416,11 @@ mod tests {
         let executor = ComputeExecutor::start(
             vec![node],
             running.clone(),
-            Duration::from_millis(1), // Pool ticks at 1kHz but node only at 10Hz
+            1_u64.ms(), // Pool ticks at 1kHz but node only at 10Hz
             test_monitors(),
         );
 
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(250_u64.ms());
         running.store(false, Ordering::SeqCst);
         let _returned = executor.stop();
 

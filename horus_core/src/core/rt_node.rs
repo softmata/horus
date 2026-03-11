@@ -11,10 +11,10 @@ use std::time::Duration;
 /// use horus::prelude::*;
 ///
 /// // Video encoder: drop frame, keep streaming
-/// scheduler.add(encoder).rate(30.hz()).on_miss(Miss::Skip).build()?;
+/// scheduler.add(encoder).rate(30_u64.hz()).on_miss(Miss::Skip).build()?;
 ///
 /// // Motor controller: degrade to safe mode
-/// scheduler.add(motor).rate(1000.hz()).on_miss(Miss::SafeMode).build()?;
+/// scheduler.add(motor).rate(1000_u64.hz()).on_miss(Miss::Degrade).build()?;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Miss {
@@ -25,7 +25,7 @@ pub enum Miss {
     Skip,
     /// Call `enter_safe_state()` on the node, continue ticking in degraded mode.
     /// The scheduler checks `is_safe_state()` each tick for recovery.
-    SafeMode,
+    Degrade,
     /// Stop the entire scheduler (last resort).
     Stop,
 }
@@ -84,12 +84,12 @@ impl BudgetViolation {
 /// let mut stats = RtStats::default();
 ///
 /// // Record execution times
-/// stats.record_execution(Duration::from_micros(95));
-/// stats.record_execution(Duration::from_micros(105));
-/// stats.record_execution(Duration::from_micros(100));
+/// stats.record_execution(95_u64.us());
+/// stats.record_execution(105_u64.us());
+/// stats.record_execution(100_u64.us());
 ///
 /// assert_eq!(stats.total_ticks(), 3);
-/// assert_eq!(stats.worst_execution(), Duration::from_micros(105));
+/// assert_eq!(stats.worst_execution(), 105_u64.us());
 /// println!("{}", stats.summary());
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -196,6 +196,7 @@ impl RtStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
     use crate::core::node::Node;
 
     // =========================================================================
@@ -230,13 +231,13 @@ mod tests {
     #[test]
     fn rtstats_first_recording_sets_baseline() {
         let mut stats = RtStats::default();
-        stats.record_execution(Duration::from_micros(100));
+        stats.record_execution(100_u64.us());
 
         assert_eq!(stats.total_ticks(), 1);
         assert!((stats.avg_execution_us() - 100.0).abs() < 1e-6);
         assert!((stats.jitter_us() - 0.0).abs() < 1e-6);
-        assert_eq!(stats.worst_execution(), Duration::from_micros(100));
-        assert_eq!(stats.last_execution(), Duration::from_micros(100));
+        assert_eq!(stats.worst_execution(), 100_u64.us());
+        assert_eq!(stats.last_execution(), 100_u64.us());
     }
 
     /// EMA with alpha=0.1 over a known 10-element sequence.
@@ -254,7 +255,7 @@ mod tests {
 
         for (i, &dur_us) in durations_us.iter().enumerate() {
             let d = dur_us as f64;
-            stats.record_execution(Duration::from_micros(dur_us));
+            stats.record_execution(dur_us.us());
 
             if i == 0 {
                 expected_avg = d;
@@ -290,7 +291,7 @@ mod tests {
 
         // 50 ticks of exactly 200µs
         for _ in 0..50 {
-            stats.record_execution(Duration::from_micros(200));
+            stats.record_execution(200_u64.us());
         }
 
         assert!(
@@ -311,31 +312,31 @@ mod tests {
     fn rtstats_worst_case_tracks_maximum() {
         let mut stats = RtStats::default();
 
-        stats.record_execution(Duration::from_micros(100));
-        assert_eq!(stats.worst_execution(), Duration::from_micros(100));
+        stats.record_execution(100_u64.us());
+        assert_eq!(stats.worst_execution(), 100_u64.us());
 
-        stats.record_execution(Duration::from_micros(50));
+        stats.record_execution(50_u64.us());
         assert_eq!(
             stats.worst_execution(),
-            Duration::from_micros(100),
+            100_u64.us(),
             "Worst should not decrease"
         );
 
-        stats.record_execution(Duration::from_micros(500));
-        assert_eq!(stats.worst_execution(), Duration::from_micros(500));
+        stats.record_execution(500_u64.us());
+        assert_eq!(stats.worst_execution(), 500_u64.us());
 
-        stats.record_execution(Duration::from_micros(200));
+        stats.record_execution(200_u64.us());
         assert_eq!(
             stats.worst_execution(),
-            Duration::from_micros(500),
+            500_u64.us(),
             "Worst should stay at 500"
         );
 
         // Record many smaller values — worst must remain 500
         for _ in 0..100 {
-            stats.record_execution(Duration::from_micros(100));
+            stats.record_execution(100_u64.us());
         }
-        assert_eq!(stats.worst_execution(), Duration::from_micros(500));
+        assert_eq!(stats.worst_execution(), 500_u64.us());
     }
 
     /// Last execution always tracks the most recent value.
@@ -343,14 +344,14 @@ mod tests {
     fn rtstats_last_execution_tracks_most_recent() {
         let mut stats = RtStats::default();
 
-        stats.record_execution(Duration::from_micros(100));
-        assert_eq!(stats.last_execution(), Duration::from_micros(100));
+        stats.record_execution(100_u64.us());
+        assert_eq!(stats.last_execution(), 100_u64.us());
 
-        stats.record_execution(Duration::from_micros(250));
-        assert_eq!(stats.last_execution(), Duration::from_micros(250));
+        stats.record_execution(250_u64.us());
+        assert_eq!(stats.last_execution(), 250_u64.us());
 
-        stats.record_execution(Duration::from_micros(50));
-        assert_eq!(stats.last_execution(), Duration::from_micros(50));
+        stats.record_execution(50_u64.us());
+        assert_eq!(stats.last_execution(), 50_u64.us());
     }
 
     /// Deadline miss counter increments correctly.
@@ -371,7 +372,7 @@ mod tests {
     #[test]
     fn rtstats_summary_format() {
         let mut stats = RtStats::default();
-        stats.record_execution(Duration::from_micros(100));
+        stats.record_execution(100_u64.us());
         stats.record_deadline_miss();
 
         let summary = stats.summary();
@@ -387,14 +388,14 @@ mod tests {
 
         // 20 ticks at 100µs — avg converges to 100
         for _ in 0..20 {
-            stats.record_execution(Duration::from_micros(100));
+            stats.record_execution(100_u64.us());
         }
         let avg_before = stats.avg_execution_us();
         assert!((avg_before - 100.0).abs() < 1.0);
 
         // Step to 500µs — avg should increase
         for _ in 0..20 {
-            stats.record_execution(Duration::from_micros(500));
+            stats.record_execution(500_u64.us());
         }
         assert!(
             stats.avg_execution_us() > avg_before + 50.0,
@@ -413,13 +414,13 @@ mod tests {
     fn budget_violation_fields() {
         let v = BudgetViolation::new(
             "motor_ctrl".to_string(),
-            Duration::from_micros(100),
-            Duration::from_micros(250),
+            100_u64.us(),
+            250_u64.us(),
         );
         assert_eq!(v.node_name(), "motor_ctrl");
-        assert_eq!(v.budget(), Duration::from_micros(100));
-        assert_eq!(v.actual(), Duration::from_micros(250));
-        assert_eq!(v.overrun(), Duration::from_micros(150));
+        assert_eq!(v.budget(), 100_u64.us());
+        assert_eq!(v.actual(), 250_u64.us());
+        assert_eq!(v.overrun(), 150_u64.us());
     }
 
     // =========================================================================

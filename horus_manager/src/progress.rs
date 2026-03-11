@@ -5,7 +5,7 @@
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 /// Global quiet mode flag
 static QUIET_MODE: AtomicBool = AtomicBool::new(false);
@@ -42,7 +42,7 @@ pub fn spinner(message: &str) -> ProgressBar {
             .expect("valid template"),
     );
     pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
+    pb.enable_steady_tick(80_u64.ms());
     pb
 }
 
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_spinner_creation() {
         let pb = spinner("Testing...");
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(500_u64.ms());
         finish_success(&pb, "Test complete!");
     }
 

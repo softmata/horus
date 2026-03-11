@@ -7,6 +7,7 @@ use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
+use horus_core::core::DurationExt;
 
 // ─── Service discovery helpers ────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@ struct DiscoveredService {
     response_subscribers: usize,
 }
 
-/// Discover active services by scanning SHM topics for `/request` + `/response` pairs.
+/// Discover active services by scanning SHM topics for `.request` + `.response` pairs.
 fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
     let topics = discover_shared_memory()?;
 
@@ -30,13 +31,13 @@ fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
         std::collections::HashMap::new();
 
     for topic in &topics {
-        // Match topics that end with /request or /response
-        if let Some(svc_name) = topic.topic_name.strip_suffix("/request").or_else(|| {
+        // Match topics that end with .request or .response
+        if let Some(svc_name) = topic.topic_name.strip_suffix(".request").or_else(|| {
             // Also handle horus_topic/ prefix
             topic
                 .topic_name
                 .strip_prefix("horus_topic/")
-                .and_then(|n| n.strip_suffix("/request"))
+                .and_then(|n| n.strip_suffix(".request"))
         }) {
             let entry = services
                 .entry(svc_name.to_string())
@@ -52,11 +53,11 @@ fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
             entry.has_request = true;
             entry.request_publishers = topic.publishers.len();
             entry.request_subscribers = topic.subscribers.len();
-        } else if let Some(svc_name) = topic.topic_name.strip_suffix("/response").or_else(|| {
+        } else if let Some(svc_name) = topic.topic_name.strip_suffix(".response").or_else(|| {
             topic
                 .topic_name
                 .strip_prefix("horus_topic/")
-                .and_then(|n| n.strip_suffix("/response"))
+                .and_then(|n| n.strip_suffix(".response"))
         }) {
             let entry = services
                 .entry(svc_name.to_string())
@@ -234,7 +235,7 @@ pub fn service_type(name: &str) -> HorusResult<()> {
 pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusResult<()> {
     use horus_core::communication::Topic;
     use horus_core::services::types::{ServiceRequest, ServiceResponse};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     // Parse the request JSON to validate it's valid JSON.
     let request_value: serde_json::Value = serde_json::from_str(request_json).map_err(|e| {
@@ -245,8 +246,8 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
     })?;
 
     // We use serde_json::Value as the payload type — the topics are JSON-encoded.
-    let req_topic_name = format!("{}/request", name);
-    let res_topic_name = format!("{}/response", name);
+    let req_topic_name = format!("{}.request", name);
+    let res_topic_name = format!("{}.response", name);
 
     // Use a unique request_id for correlation.
     let request_id: u64 = std::time::SystemTime::now()
@@ -298,9 +299,9 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
     })
     .ok();
 
-    let timeout = Duration::from_secs_f64(timeout_secs);
+    let timeout = timeout_secs.secs();
     let deadline = Instant::now() + timeout;
-    let poll_interval = Duration::from_millis(10);
+    let poll_interval = 10_u64.ms();
 
     loop {
         if !running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -406,31 +407,31 @@ mod tests {
 
     #[test]
     fn topic_suffix_stripping_request() {
-        let topic = "my_service/request";
-        let svc_name = topic.strip_suffix("/request");
+        let topic = "my_service.request";
+        let svc_name = topic.strip_suffix(".request");
         assert_eq!(svc_name, Some("my_service"));
     }
 
     #[test]
     fn topic_suffix_stripping_response() {
-        let topic = "my_service/response";
-        let svc_name = topic.strip_suffix("/response");
+        let topic = "my_service.response";
+        let svc_name = topic.strip_suffix(".response");
         assert_eq!(svc_name, Some("my_service"));
     }
 
     #[test]
     fn topic_suffix_stripping_with_prefix() {
-        let topic = "horus_topic/my_service/request";
+        let topic = "horus_topic/my_service.request";
         let svc_name = topic
             .strip_prefix("horus_topic/")
-            .and_then(|n| n.strip_suffix("/request"));
+            .and_then(|n| n.strip_suffix(".request"));
         assert_eq!(svc_name, Some("my_service"));
     }
 
     #[test]
     fn topic_suffix_stripping_no_match() {
-        let topic = "my_topic/data";
-        assert!(topic.strip_suffix("/request").is_none());
-        assert!(topic.strip_suffix("/response").is_none());
+        let topic = "my_topic.data";
+        assert!(topic.strip_suffix(".request").is_none());
+        assert!(topic.strip_suffix(".response").is_none());
     }
 }

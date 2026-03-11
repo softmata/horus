@@ -32,6 +32,7 @@ use horus_core::error::HorusError;
 use horus_core::memory::tensor_pool::{Device, TensorDtype};
 use horus_core::memory::{TensorPool, TensorPoolConfig};
 use std::sync::Arc;
+use horus_core::core::DurationExt;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -332,7 +333,7 @@ fn pool_exhaustion_triggers_timeout() {
         &[4],
         TensorDtype::U8,
         Device::cpu(),
-        std::time::Duration::from_millis(50),
+        50_u64.ms(),
     );
 
     assert!(
@@ -374,11 +375,11 @@ fn alloc_with_timeout_unblocks_on_release() {
         .expect("initial alloc failed");
 
     let pool_for_thread = pool.clone();
-    let timeout = std::time::Duration::from_millis(500);
+    let timeout = 500_u64.ms();
 
     // Spawn a thread that releases the slot after a short delay.
     let release_thread = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(50_u64.ms());
         pool_for_thread.release(&tensor);
     });
 

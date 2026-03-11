@@ -1,6 +1,6 @@
 //! Ergonomic duration and frequency helpers for RT configuration.
 //!
-//! These extensions replace verbose `Duration::from_micros(200)` with `200.us()`,
+//! These extensions replace verbose `Duration::from_micros(200)` with `200_u64.us()`,
 //! and provide a `Frequency` type that auto-derives budget and deadline from rate.
 //!
 //! # Examples
@@ -9,12 +9,12 @@
 //! use horus_core::core::duration_ext::{DurationExt, Frequency};
 //!
 //! // Duration helpers
-//! let budget = 200.us();   // Duration::from_micros(200)
-//! let deadline = 1.ms();   // Duration::from_millis(1)
+//! let budget = 200_u64.us();   // Duration::from_micros(200)
+//! let deadline = 1_u64.ms();   // Duration::from_millis(1)
 //!
 //! // Frequency with auto-derived timing
-//! let freq = 100.hz();     // 100 Hz
-//! assert_eq!(freq.period(), 10.ms());
+//! let freq = 100_u64.hz();     // 100 Hz
+//! assert_eq!(freq.period(), 10_u64.ms());
 //! ```
 
 use std::time::Duration;
@@ -29,7 +29,7 @@ use std::time::Duration;
 /// ```rust
 /// use horus_core::core::duration_ext::DurationExt;
 ///
-/// let freq = 100.hz();
+/// let freq = 100_u64.hz();
 /// assert_eq!(freq.value(), 100.0);
 ///
 /// // Period = 1/frequency
@@ -90,24 +90,33 @@ impl Frequency {
 /// use std::time::Duration;
 ///
 /// // Integer usage
-/// assert_eq!(200.us(), Duration::from_micros(200));
-/// assert_eq!(5.ms(), Duration::from_millis(5));
-/// assert_eq!(100.hz().period(), Duration::from_millis(10));
+/// assert_eq!(200_u64.us(), Duration::from_micros(200));
+/// assert_eq!(5_u64.ms(), Duration::from_millis(5));
+/// assert_eq!(100_u64.hz().period(), Duration::from_millis(10));
 ///
 /// // Float usage
 /// assert_eq!(1.5.ms(), Duration::from_micros(1500));
 /// assert_eq!(33.33.hz().value(), 33.33);
 /// ```
 pub trait DurationExt {
+    /// Create a `Duration` in nanoseconds.
+    fn ns(self) -> Duration;
     /// Create a `Duration` in microseconds.
     fn us(self) -> Duration;
     /// Create a `Duration` in milliseconds.
     fn ms(self) -> Duration;
+    /// Create a `Duration` in seconds.
+    fn secs(self) -> Duration;
     /// Create a `Frequency` in Hz.
     fn hz(self) -> Frequency;
 }
 
 impl DurationExt for u64 {
+    #[inline]
+    fn ns(self) -> Duration {
+        Duration::from_nanos(self)
+    }
+
     #[inline]
     fn us(self) -> Duration {
         Duration::from_micros(self)
@@ -119,6 +128,11 @@ impl DurationExt for u64 {
     }
 
     #[inline]
+    fn secs(self) -> Duration {
+        Duration::from_secs(self)
+    }
+
+    #[inline]
     fn hz(self) -> Frequency {
         assert!(self > 0, "frequency must be positive (got 0)");
         Frequency(self as f64)
@@ -127,6 +141,11 @@ impl DurationExt for u64 {
 
 impl DurationExt for f64 {
     #[inline]
+    fn ns(self) -> Duration {
+        Duration::from_secs_f64(self / 1_000_000_000.0)
+    }
+
+    #[inline]
     fn us(self) -> Duration {
         Duration::from_secs_f64(self / 1_000_000.0)
     }
@@ -134,6 +153,11 @@ impl DurationExt for f64 {
     #[inline]
     fn ms(self) -> Duration {
         Duration::from_secs_f64(self / 1_000.0)
+    }
+
+    #[inline]
+    fn secs(self) -> Duration {
+        Duration::from_secs_f64(self)
     }
 
     #[inline]
@@ -149,6 +173,12 @@ impl DurationExt for f64 {
 // Also implement for i32/i64 for convenience (common literal types)
 impl DurationExt for i32 {
     #[inline]
+    fn ns(self) -> Duration {
+        assert!(self >= 0, "duration must be non-negative (got {self})");
+        Duration::from_nanos(self as u64)
+    }
+
+    #[inline]
     fn us(self) -> Duration {
         assert!(self >= 0, "duration must be non-negative (got {self})");
         Duration::from_micros(self as u64)
@@ -158,6 +188,12 @@ impl DurationExt for i32 {
     fn ms(self) -> Duration {
         assert!(self >= 0, "duration must be non-negative (got {self})");
         Duration::from_millis(self as u64)
+    }
+
+    #[inline]
+    fn secs(self) -> Duration {
+        assert!(self >= 0, "duration must be non-negative (got {self})");
+        Duration::from_secs(self as u64)
     }
 
     #[inline]
@@ -175,16 +211,16 @@ mod tests {
 
     #[test]
     fn us_from_u64() {
-        assert_eq!(200.us(), Duration::from_micros(200));
-        assert_eq!(0.us(), Duration::ZERO);
-        assert_eq!(1_000_000.us(), Duration::from_secs(1));
+        assert_eq!(200_u64.us(), Duration::from_micros(200));
+        assert_eq!(0_u64.us(), Duration::ZERO);
+        assert_eq!(1_000_000_u64.us(), Duration::from_secs(1));
     }
 
     #[test]
     fn ms_from_u64() {
-        assert_eq!(5.ms(), Duration::from_millis(5));
-        assert_eq!(0.ms(), Duration::ZERO);
-        assert_eq!(1000.ms(), Duration::from_secs(1));
+        assert_eq!(5_u64.ms(), Duration::from_millis(5));
+        assert_eq!(0_u64.ms(), Duration::ZERO);
+        assert_eq!(1000_u64.ms(), Duration::from_secs(1));
     }
 
     #[test]
@@ -225,7 +261,7 @@ mod tests {
 
     #[test]
     fn hz_from_u64() {
-        let f = 100.hz();
+        let f = 100_u64.hz();
         assert_eq!(f.value(), 100.0);
     }
 
@@ -243,28 +279,28 @@ mod tests {
 
     #[test]
     fn period_calculation() {
-        assert_eq!(100.hz().period(), Duration::from_millis(10));
-        assert_eq!(1000.hz().period(), Duration::from_millis(1));
-        assert_eq!(1.hz().period(), Duration::from_secs(1));
+        assert_eq!(100_u64.hz().period(), Duration::from_millis(10));
+        assert_eq!(1000_u64.hz().period(), Duration::from_millis(1));
+        assert_eq!(1_u64.hz().period(), Duration::from_secs(1));
     }
 
     #[test]
     fn budget_default_is_80_percent() {
-        let freq = 100.hz(); // period = 10ms
+        let freq = 100_u64.hz(); // period = 10ms
         let budget = freq.budget_default();
         assert_eq!(budget, Duration::from_millis(8)); // 80% of 10ms
     }
 
     #[test]
     fn deadline_default_is_95_percent() {
-        let freq = 100.hz(); // period = 10ms
+        let freq = 100_u64.hz(); // period = 10ms
         let deadline = freq.deadline_default();
         assert_eq!(deadline, Duration::from_micros(9500)); // 95% of 10ms
     }
 
     #[test]
     fn high_frequency() {
-        let freq = 10_000.hz(); // 10kHz, period = 100us
+        let freq = 10_000_u64.hz(); // 10kHz, period = 100us
         assert_eq!(freq.period(), Duration::from_micros(100));
         assert_eq!(freq.budget_default(), Duration::from_micros(80));
         assert_eq!(freq.deadline_default(), Duration::from_nanos(95_000));
@@ -272,7 +308,7 @@ mod tests {
 
     #[test]
     fn low_frequency() {
-        let freq = 1.hz(); // 1Hz, period = 1s
+        let freq = 1_u64.hz(); // 1Hz, period = 1s
         assert_eq!(freq.period(), Duration::from_secs(1));
         assert_eq!(freq.budget_default(), Duration::from_millis(800));
         assert_eq!(freq.deadline_default(), Duration::from_millis(950));
@@ -287,13 +323,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "positive")]
     fn zero_hz_u64_panics() {
-        0.hz();
+        0_u64.hz();
     }
 
     #[test]
     #[should_panic(expected = "positive")]
     fn zero_hz_f64_panics() {
-        0.hz();
+        0_u64.hz();
     }
 
     #[test]

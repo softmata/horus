@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use horus_core::core::DurationExt;
 
 /// CPU information for benchmark context
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,10 +173,10 @@ fn read_cache_size(path: &str) -> Option<usize> {
 /// Detect CPU frequency by measuring RDTSC cycles over a known duration
 #[cfg(target_arch = "x86_64")]
 pub fn detect_cpu_frequency() -> Option<f64> {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     // Measure over 100ms for reasonable accuracy
-    let measure_duration = Duration::from_millis(100);
+    let measure_duration = 100_u64.ms();
 
     // SAFETY: _rdtsc is a read-only x86_64 intrinsic with no side effects.
     let start_cycles = unsafe { core::arch::x86_64::_rdtsc() };

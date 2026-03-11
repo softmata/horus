@@ -9,7 +9,7 @@ mod common;
 use common::TestTempDir;
 use horus_core::scheduling::{
     BlackBox, BlackBoxEvent, NodeRecording, NodeReplayer, NodeTickSnapshot, Recording,
-    RecordingConfig, RecordingManager,
+    RecordingConfig, RecordingManager, diff_recordings,
 };
 use std::path::PathBuf;
 
@@ -171,6 +171,9 @@ fn test_recording_config_paths() {
         record_inputs: true,
         record_outputs: true,
         record_timing: true,
+        max_size_bytes: 0,
+        compress: false,
+        max_snapshots: 0,
     };
 
     let session_dir = config.session_dir();
@@ -338,4 +341,172 @@ fn test_recording_manager_list_sessions() {
     assert!(sessions.contains(&"session_alpha".to_string()));
     assert!(sessions.contains(&"session_beta".to_string()));
     assert!(sessions.contains(&"session_gamma".to_string()));
+}
+
+// ============================================================================
+// E2E: Record → Save → Load → Replay → Verify tick-perfect reproduction
+// ============================================================================
+
+#[test]
+fn test_e2e_record_replay_tick_perfect() {
+    let tmp = TestTempDir::new("horus_e2e_replay");
+    let path = tmp.path().join("motor@id1.horus");
+
+    // Simulate recording 100 ticks of a motor controller node
+    let mut recording = NodeRecording::new("motor_ctrl", "id1", "e2e_test");
+    for tick in 0..100u64 {
+        recording.add_snapshot(
+            NodeTickSnapshot::new(tick)
+                .with_input("encoder", tick.to_le_bytes().to_vec())
+                .with_output("velocity", (tick * 2).to_le_bytes().to_vec())
+                .with_duration(tick * 100),
+        );
+    }
+    recording.finish();
+    recording.save(&path).expect("save should succeed");
+
+    // Load and replay — verify every tick matches exactly
+    let mut replayer = NodeReplayer::load(&path).expect("load should succeed");
+    assert_eq!(replayer.total_ticks(), 100);
+
+    for tick in 0..100u64 {
+        let snap = replayer.current_snapshot().expect("should have snapshot");
+        assert_eq!(snap.tick, tick, "tick mismatch at {}", tick);
+        assert_eq!(
+            snap.inputs.get("encoder").unwrap(),
+            &tick.to_le_bytes().to_vec(),
+            "input mismatch at tick {}",
+            tick
+        );
+        assert_eq!(
+            snap.outputs.get("velocity").unwrap(),
+            &(tick * 2).to_le_bytes().to_vec(),
+            "output mismatch at tick {}",
+            tick
+        );
+        assert_eq!(snap.duration_ns, tick * 100, "duration mismatch at tick {}", tick);
+
+        if tick < 99 {
+            assert!(replayer.advance(), "should advance at tick {}", tick);
+        }
+    }
+}
+
+#[test]
+fn test_e2e_diff_detects_divergence() {
+    // Record two runs of the same node, with a fault injected in run 2
+    let mut run1 = NodeRecording::new("motor_ctrl", "r1", "diff_test");
+    let mut run2 = NodeRecording::new("motor_ctrl", "r2", "diff_test");
+
+    for tick in 0..50u64 {
+        let normal_output = (tick * 10).to_le_bytes().to_vec();
+
+        run1.add_snapshot(
+            NodeTickSnapshot::new(tick).with_output("cmd", normal_output.clone()),
+        );
+
+        // Inject fault at tick 25: run2 produces different output
+        let r2_output = if tick == 25 {
+            vec![0xFF; 8] // Faulty output
+        } else {
+            normal_output
+        };
+        run2.add_snapshot(NodeTickSnapshot::new(tick).with_output("cmd", r2_output));
+    }
+
+    let diffs = diff_recordings(&run1, &run2);
+    assert_eq!(diffs.len(), 1, "should detect exactly 1 diff at tick 25");
+}
+
+#[test]
+fn test_e2e_seek_time_travel() {
+    let tmp = TestTempDir::new("horus_e2e_seek");
+    let path = tmp.path().join("sensor@s1.horus");
+
+    // Record a long run
+    let mut recording = NodeRecording::new("lidar", "s1", "seek_test");
+    for tick in 0..1000u64 {
+        recording.add_snapshot(
+            NodeTickSnapshot::new(tick).with_output("scan", vec![tick as u8]),
+        );
+    }
+    recording.save(&path).expect("save should succeed");
+
+    let mut replayer = NodeReplayer::load(&path).expect("load should succeed");
+
+    // Seek to tick 500
+    assert!(replayer.seek(500));
+    assert_eq!(replayer.current_tick(), 500);
+    assert_eq!(
+        replayer.current_snapshot().unwrap().outputs.get("scan").unwrap(),
+        &vec![(500u16 % 256) as u8]
+    );
+
+    // Seek backward
+    assert!(replayer.seek(100));
+    assert_eq!(replayer.current_tick(), 100);
+
+    // Seek to end
+    assert!(replayer.seek(999));
+    assert_eq!(replayer.current_tick(), 999);
+}
+
+#[test]
+fn test_e2e_recording_manager_full_lifecycle() {
+    let tmp = TestTempDir::new("horus_e2e_manager");
+    let manager = RecordingManager::with_base_dir(tmp.path().to_path_buf());
+
+    // Create a session with recordings
+    let session_dir = tmp.path().join("crash_2026_03_11");
+    std::fs::create_dir_all(&session_dir).unwrap();
+
+    // Save two node recordings in the session
+    let mut r1 = NodeRecording::new("motor", "m1", "crash_2026_03_11");
+    r1.add_snapshot(NodeTickSnapshot::new(0).with_output("cmd", vec![1]));
+    r1.save(&session_dir.join("motor@m1.horus")).unwrap();
+
+    let mut r2 = NodeRecording::new("sensor", "s1", "crash_2026_03_11");
+    r2.add_snapshot(NodeTickSnapshot::new(0).with_output("data", vec![2]));
+    r2.save(&session_dir.join("sensor@s1.horus")).unwrap();
+
+    // List sessions
+    let sessions = manager.list_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert!(sessions.contains(&"crash_2026_03_11".to_string()));
+
+    // List recordings in session
+    let recordings = manager.session_recordings("crash_2026_03_11").unwrap();
+    assert_eq!(recordings.len(), 2);
+
+    // Total size should be > 0
+    let total = manager.total_size().unwrap();
+    assert!(total > 0, "total size should be non-zero");
+
+    // Delete session
+    manager.delete_session("crash_2026_03_11").unwrap();
+    let sessions = manager.list_sessions().unwrap();
+    assert!(sessions.is_empty());
+}
+
+#[test]
+fn test_e2e_versioned_format_backward_compat() {
+    let tmp = TestTempDir::new("horus_e2e_compat");
+
+    // Write a "legacy" recording (no magic/version header, just raw bincode)
+    let mut rec = NodeRecording::new("legacy_node", "l1", "legacy_session");
+    rec.add_snapshot(NodeTickSnapshot::new(0).with_output("out", vec![42]));
+
+    let legacy_path = tmp.path().join("legacy.horus");
+    {
+        use std::io::Write;
+        let file = std::fs::File::create(&legacy_path).unwrap();
+        let mut writer = std::io::BufWriter::new(file);
+        bincode::serialize_into(&mut writer, &rec).unwrap();
+        writer.flush().unwrap();
+    }
+
+    // Load should fall back to legacy format
+    let loaded = NodeRecording::load(&legacy_path).expect("should load legacy format");
+    assert_eq!(loaded.node_name, "legacy_node");
+    assert_eq!(loaded.snapshot_count(), 1);
 }

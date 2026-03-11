@@ -14,8 +14,8 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::{assert_json_ok, get_request};
 
-use std::time::Duration;
 use tower::ServiceExt;
+use horus_core::core::DurationExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  STATUS HANDLER  (GET /api/status)
@@ -66,7 +66,7 @@ async fn status_healthy_with_all_healthy_nodes() {
         .add_node(TestNodeConfig::bare("handler_healthy_b"));
 
     assert!(
-        rt.wait_ready(Duration::from_secs(2)),
+        rt.wait_ready(2_u64.secs()),
         "nodes should become discoverable"
     );
     rt.refresh_discovery();
@@ -89,7 +89,7 @@ async fn status_reports_correct_node_and_topic_counts() {
         .add_topic("handler_count_topic_2", 2048);
 
     assert!(
-        rt.wait_ready(Duration::from_secs(2)),
+        rt.wait_ready(2_u64.secs()),
         "nodes should become discoverable"
     );
     rt.refresh_discovery();
@@ -190,7 +190,7 @@ async fn nodes_returns_all_added_nodes() {
             "MsgC",
         ));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -228,7 +228,7 @@ async fn nodes_response_json_schema() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("handler_schema_node"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -270,7 +270,7 @@ async fn nodes_memory_formatted_as_mb() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("handler_mem_fmt_node"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -304,7 +304,7 @@ async fn nodes_cpu_formatted_as_percent() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::bare("handler_cpu_fmt_node"));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -500,7 +500,7 @@ async fn graph_shows_node_and_topic_entries() {
         "SensorMsg",
     ));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();
@@ -593,7 +593,7 @@ async fn graph_edges_have_correct_types() {
         "Msg",
     ));
 
-    assert!(rt.wait_ready(Duration::from_secs(2)));
+    assert!(rt.wait_ready(2_u64.secs()));
     rt.refresh_discovery();
 
     let app = builders::test_router();

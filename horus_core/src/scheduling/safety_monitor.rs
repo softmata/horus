@@ -152,7 +152,7 @@ impl TickTimingRing {
     }
 
     /// Number of samples recorded (total, not just in buffer).
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub(crate) fn total_count(&self) -> u64 {
         self.count
     }
@@ -193,7 +193,6 @@ impl TickTimingRing {
 
 /// Timing statistics for a node.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // fields read by tests and print_timing_report
 pub struct TimingStats {
     pub min_us: u64,
     pub max_us: u64,
@@ -268,7 +267,7 @@ impl NodeTimingState {
     }
 
     /// Whether this node is chronically missing deadlines (3+ consecutive).
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub(crate) fn is_chronic(&self) -> bool {
         self.consecutive_misses >= 3
     }
@@ -276,38 +275,22 @@ impl NodeTimingState {
 
 /// Policy for how nodes degrade under sustained timing violations.
 ///
-/// `LogOnly` matches the old behavior (count misses, emergency stop after max).
-/// `Graduated` adds intermediate stages: warn → reduce rate → isolate → safe state.
+/// Graduated response: warn → reduce rate → isolate → safe state.
 #[derive(Debug, Clone)]
-pub enum DegradationPolicy {
-    /// Log violations but take no corrective action (legacy behavior).
-    #[allow(dead_code)] // used by tests
-    LogOnly,
-    /// Graduated response with configurable thresholds.
-    ///
-    /// On consecutive misses:
-    /// 1. After `warn_after` misses: log warning
-    /// 2. After `reduce_after` misses: reduce node rate to half
-    /// 3. After `isolate_after` misses: isolate node (skip in tick loop)
-    /// 4. Critical nodes at isolation → `enter_safe_state()`
-    ///
-    /// Recovery: after `recovery_ticks` successful ticks at reduced rate,
-    /// restore original rate.
-    Graduated {
-        /// Consecutive misses before logging a warning (default: 3)
-        warn_after: u64,
-        /// Consecutive misses before reducing node rate (default: 5)
-        reduce_after: u64,
-        /// Consecutive misses before isolating node (default: 10)
-        isolate_after: u64,
-        /// Successful ticks at reduced rate before restoring original (default: 100)
-        recovery_ticks: u64,
-    },
+pub struct DegradationPolicy {
+    /// Consecutive misses before logging a warning (default: 3)
+    pub warn_after: u64,
+    /// Consecutive misses before reducing node rate (default: 5)
+    pub reduce_after: u64,
+    /// Consecutive misses before isolating node (default: 10)
+    pub isolate_after: u64,
+    /// Successful ticks at reduced rate before restoring original (default: 100)
+    pub recovery_ticks: u64,
 }
 
 impl Default for DegradationPolicy {
     fn default() -> Self {
-        Self::Graduated {
+        Self {
             warn_after: 3,
             reduce_after: 5,
             isolate_after: 10,
@@ -427,7 +410,7 @@ impl BudgetEnforcer {
     }
 
     /// Get timing stats for a specific node.
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub(crate) fn node_stats(&self, node: &str) -> Option<TimingStats> {
         self.node_timing.get(node).map(|s| s.ring.stats())
     }
@@ -480,7 +463,7 @@ pub(crate) struct SafetyMonitor {
     /// Maximum allowed deadline misses before emergency
     max_deadline_misses: u64,
     /// Safe mode activation counter
-    safe_mode_activations: AtomicU64,
+    degrade_activations: AtomicU64,
     /// Degradation policy for timing violations
     degradation_policy: DegradationPolicy,
     /// Per-node degradation state
@@ -497,14 +480,14 @@ impl SafetyMonitor {
             critical_nodes: Arc::new(RwLock::new(Vec::new())),
             deadline_misses: AtomicU64::new(0),
             max_deadline_misses,
-            safe_mode_activations: AtomicU64::new(0),
+            degrade_activations: AtomicU64::new(0),
             degradation_policy: DegradationPolicy::default(),
             degradation_states: Mutex::new(HashMap::new()),
         }
     }
 
     /// Set the degradation policy for this safety monitor.
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub(crate) fn set_degradation_policy(&mut self, policy: DegradationPolicy) {
         self.degradation_policy = policy;
     }
@@ -689,48 +672,37 @@ impl SafetyMonitor {
         consecutive_misses: u64,
         current_rate_hz: Option<f64>,
     ) -> DegradationAction {
-        match &self.degradation_policy {
-            DegradationPolicy::LogOnly => DegradationAction::None,
-            DegradationPolicy::Graduated {
-                warn_after,
-                reduce_after,
-                isolate_after,
-                ..
-            } => {
-                let mut states = self.degradation_states.lock();
-                let state = states
-                    .entry(node_name.to_string())
-                    .or_default();
+        let policy = &self.degradation_policy;
+        let mut states = self.degradation_states.lock();
+        let state = states
+            .entry(node_name.to_string())
+            .or_default();
 
-                if consecutive_misses >= *isolate_after && state.stage != DegradationStage::Isolated
-                {
-                    state.stage = DegradationStage::Isolated;
-                    state.recovery_counter = 0;
-                    DegradationAction::Isolate(node_name.to_string())
-                } else if consecutive_misses >= *reduce_after
-                    && state.stage != DegradationStage::RateReduced
-                    && state.stage != DegradationStage::Isolated
-                {
-                    state.stage = DegradationStage::RateReduced;
-                    state.recovery_counter = 0;
-                    // Save original rate before reducing
-                    if state.original_rate_hz.is_none() {
-                        state.original_rate_hz = current_rate_hz;
-                    }
-                    let new_rate = current_rate_hz.unwrap_or(100.0) / 2.0;
-                    DegradationAction::ReduceRate {
-                        node: node_name.to_string(),
-                        new_rate_hz: new_rate,
-                    }
-                } else if consecutive_misses >= *warn_after
-                    && state.stage == DegradationStage::Normal
-                {
-                    state.stage = DegradationStage::Warned;
-                    DegradationAction::Warn(node_name.to_string())
-                } else {
-                    DegradationAction::None
-                }
+        if consecutive_misses >= policy.isolate_after && state.stage != DegradationStage::Isolated {
+            state.stage = DegradationStage::Isolated;
+            state.recovery_counter = 0;
+            DegradationAction::Isolate(node_name.to_string())
+        } else if consecutive_misses >= policy.reduce_after
+            && state.stage != DegradationStage::RateReduced
+            && state.stage != DegradationStage::Isolated
+        {
+            state.stage = DegradationStage::RateReduced;
+            state.recovery_counter = 0;
+            if state.original_rate_hz.is_none() {
+                state.original_rate_hz = current_rate_hz;
             }
+            let new_rate = current_rate_hz.unwrap_or(100.0) / 2.0;
+            DegradationAction::ReduceRate {
+                node: node_name.to_string(),
+                new_rate_hz: new_rate,
+            }
+        } else if consecutive_misses >= policy.warn_after
+            && state.stage == DegradationStage::Normal
+        {
+            state.stage = DegradationStage::Warned;
+            DegradationAction::Warn(node_name.to_string())
+        } else {
+            DegradationAction::None
         }
     }
 
@@ -740,10 +712,7 @@ impl SafetyMonitor {
     /// consecutive times, it returns `RestoreRate` to signal the scheduler should
     /// restore the original rate.
     pub(crate) fn record_successful_tick(&self, node_name: &str) -> DegradationAction {
-        let recovery_ticks = match &self.degradation_policy {
-            DegradationPolicy::Graduated { recovery_ticks, .. } => *recovery_ticks,
-            DegradationPolicy::LogOnly => return DegradationAction::None,
-        };
+        let recovery_ticks = self.degradation_policy.recovery_ticks;
 
         let mut states = self.degradation_states.lock();
         let Some(state) = states.get_mut(node_name) else {
@@ -781,7 +750,7 @@ impl SafetyMonitor {
     }
 
     /// Get the current degradation stage for a node.
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub(crate) fn degradation_stage(&self, node_name: &str) -> DegradationStage {
         self.degradation_states
             .lock()
@@ -790,9 +759,9 @@ impl SafetyMonitor {
             .unwrap_or(DegradationStage::Normal)
     }
 
-    /// Record a safe mode activation (Miss::SafeMode triggered on a node).
-    pub(crate) fn record_safe_mode_activation(&self) {
-        self.safe_mode_activations.fetch_add(1, Ordering::SeqCst);
+    /// Record a degrade activation (Miss::Degrade triggered on a node).
+    pub(crate) fn record_degrade_activation(&self) {
+        self.degrade_activations.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Trigger emergency stop
@@ -824,7 +793,7 @@ impl SafetyMonitor {
                 .values()
                 .filter(|w| w.is_expired())
                 .count() as u64,
-            safe_mode_activations: self.safe_mode_activations.load(Ordering::SeqCst),
+            degrade_activations: self.degrade_activations.load(Ordering::SeqCst),
         }
     }
 }
@@ -836,7 +805,7 @@ pub struct SafetyStats {
     budget_overruns: u64,
     deadline_misses: u64,
     watchdog_expirations: u64,
-    safe_mode_activations: u64,
+    degrade_activations: u64,
 }
 
 impl SafetyStats {
@@ -856,14 +825,15 @@ impl SafetyStats {
         self.watchdog_expirations
     }
 
-    pub fn safe_mode_activations(&self) -> u64 {
-        self.safe_mode_activations
+    pub fn degrade_activations(&self) -> u64 {
+        self.degrade_activations
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::duration_ext::DurationExt;
 
     // ── Watchdog TOCTOU fix tests ─────────────────────────────────────────
 
@@ -879,11 +849,11 @@ mod tests {
     fn test_watchdog_feed_then_check_1us_not_expired() {
         use std::thread;
 
-        let wd = Watchdog::new(Duration::from_millis(50));
+        let wd = Watchdog::new(50_u64.ms());
 
         // Feed, then sleep briefly (well under the 50ms timeout), then check.
         wd.feed();
-        thread::sleep(Duration::from_micros(1));
+        thread::sleep(1_u64.us());
         assert!(
             !wd.check(),
             "watchdog should NOT be expired shortly after feed with 50ms timeout"
@@ -895,9 +865,9 @@ mod tests {
     fn test_watchdog_expires_after_timeout() {
         use std::thread;
 
-        let wd = Watchdog::new(Duration::from_millis(10));
+        let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(Duration::from_millis(15));
+        thread::sleep(15_u64.ms());
         assert!(
             wd.check(),
             "watchdog should be expired after 15ms with 10ms timeout"
@@ -909,9 +879,9 @@ mod tests {
     fn test_watchdog_feed_clears_expired() {
         use std::thread;
 
-        let wd = Watchdog::new(Duration::from_millis(10));
+        let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(Duration::from_millis(15));
+        thread::sleep(15_u64.ms());
         assert!(wd.check(), "should be expired before re-feed");
 
         wd.feed();
@@ -944,7 +914,7 @@ mod tests {
         let m_w = monitor.clone();
         let writer = thread::spawn(move || {
             for i in 0..50 {
-                m_w.add_critical_node(format!("node_{}", i), Duration::from_millis(100));
+                m_w.add_critical_node(format!("node_{}", i), 100_u64.ms());
             }
         });
 
@@ -979,7 +949,7 @@ mod tests {
             for i in 0..50 {
                 m_w.add_critical_node(
                     format!("node_{}", i),
-                    Duration::from_millis(500), // long timeout → won't expire
+                    500_u64.ms(), // long timeout → won't expire
                 );
             }
         });
@@ -1001,7 +971,7 @@ mod tests {
     #[test]
     fn test_critical_node_deadline_miss_triggers_emergency_stop() {
         let monitor = SafetyMonitor::new(100);
-        monitor.add_critical_node("critical".to_string(), Duration::from_secs(1));
+        monitor.add_critical_node("critical".to_string(), 1_u64.secs());
 
         assert!(!monitor.is_emergency_stop());
         monitor.record_deadline_miss("critical");
@@ -1038,14 +1008,14 @@ mod tests {
 
         // Register 100 watchdogs with a long timeout (they won't expire in test).
         for i in 0..100 {
-            monitor.add_critical_node(format!("bench_node_{:03}", i), Duration::from_secs(3600));
+            monitor.add_critical_node(format!("bench_node_{:03}", i), 3600_u64.secs());
         }
 
         // Background writer: add more nodes concurrently during the benchmark.
         let m_w = monitor.clone();
         let writer = thread::spawn(move || {
             for i in 100..200 {
-                m_w.add_critical_node(format!("bench_node_{:03}", i), Duration::from_secs(3600));
+                m_w.add_critical_node(format!("bench_node_{:03}", i), 3600_u64.secs());
                 // Slow the writer so it doesn't finish before the benchmark starts.
                 std::hint::spin_loop();
             }
@@ -1081,7 +1051,7 @@ mod tests {
     #[test]
     fn test_non_critical_deadline_miss_no_emergency() {
         let monitor = SafetyMonitor::new(100);
-        monitor.add_critical_node("critical".to_string(), Duration::from_secs(1));
+        monitor.add_critical_node("critical".to_string(), 1_u64.secs());
 
         monitor.record_deadline_miss("other_node");
         assert!(!monitor.is_emergency_stop());
@@ -1093,7 +1063,7 @@ mod tests {
     /// Watchdog returns Ok immediately after feed.
     #[test]
     fn test_watchdog_graduated_ok_after_feed() {
-        let wd = Watchdog::new(Duration::from_millis(50));
+        let wd = Watchdog::new(50_u64.ms());
         wd.feed();
         assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
     }
@@ -1104,9 +1074,9 @@ mod tests {
         use std::thread;
 
         // 10ms timeout, sleep 15ms → 1.5x → Warning
-        let wd = Watchdog::new(Duration::from_millis(10));
+        let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(Duration::from_millis(15));
+        thread::sleep(15_u64.ms());
         assert_eq!(wd.check_graduated(), WatchdogSeverity::Warning);
     }
 
@@ -1116,9 +1086,9 @@ mod tests {
         use std::thread;
 
         // 10ms timeout, sleep 25ms → 2.5x → Expired
-        let wd = Watchdog::new(Duration::from_millis(10));
+        let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(25_u64.ms());
         assert_eq!(wd.check_graduated(), WatchdogSeverity::Expired);
     }
 
@@ -1128,9 +1098,9 @@ mod tests {
         use std::thread;
 
         // 10ms timeout, sleep 35ms → 3.5x → Critical
-        let wd = Watchdog::new(Duration::from_millis(10));
+        let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(Duration::from_millis(35));
+        thread::sleep(35_u64.ms());
         assert_eq!(wd.check_graduated(), WatchdogSeverity::Critical);
     }
 
@@ -1139,9 +1109,9 @@ mod tests {
     fn test_watchdog_graduated_feed_resets() {
         use std::thread;
 
-        let wd = Watchdog::new(Duration::from_millis(10));
+        let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(25_u64.ms());
         assert_eq!(wd.check_graduated(), WatchdogSeverity::Expired);
 
         // Feed → should be Ok again
@@ -1156,11 +1126,11 @@ mod tests {
 
         let monitor = SafetyMonitor::new(100);
         // 10ms timeout watchdog — we'll let it expire to Warning
-        monitor.add_critical_node("fast_node".to_string(), Duration::from_millis(10));
+        monitor.add_critical_node("fast_node".to_string(), 10_u64.ms());
         // 500ms timeout — will stay Ok
-        monitor.add_critical_node("slow_node".to_string(), Duration::from_millis(500));
+        monitor.add_critical_node("slow_node".to_string(), 500_u64.ms());
 
-        thread::sleep(Duration::from_millis(15));
+        thread::sleep(15_u64.ms());
 
         let mut results = Vec::new();
         monitor.check_watchdogs_graduated(&mut results);
@@ -1183,10 +1153,10 @@ mod tests {
         use std::thread;
 
         let monitor = SafetyMonitor::new(100);
-        monitor.add_critical_node("critical_ctrl".to_string(), Duration::from_millis(10));
+        monitor.add_critical_node("critical_ctrl".to_string(), 10_u64.ms());
 
         // Sleep past 3x timeout
-        thread::sleep(Duration::from_millis(35));
+        thread::sleep(35_u64.ms());
 
         let mut results = Vec::new();
         monitor.check_watchdogs_graduated(&mut results);
@@ -1206,10 +1176,10 @@ mod tests {
         // Register a watchdog but NOT as critical
         monitor.watchdogs.write().insert(
             "noncritical".to_string(),
-            Watchdog::new(Duration::from_millis(10)),
+            Watchdog::new(10_u64.ms()),
         );
 
-        thread::sleep(Duration::from_millis(35));
+        thread::sleep(35_u64.ms());
 
         let mut results = Vec::new();
         monitor.check_watchdogs_graduated(&mut results);
@@ -1222,7 +1192,7 @@ mod tests {
     #[test]
     fn test_monitor_graduated_buffer_reuse() {
         let monitor = SafetyMonitor::new(100);
-        monitor.add_critical_node("node_a".to_string(), Duration::from_secs(3600));
+        monitor.add_critical_node("node_a".to_string(), 3600_u64.secs());
 
         let mut results = Vec::new();
         // Pollute buffer with old data
@@ -1269,14 +1239,14 @@ mod tests {
     /// NodeTimingState tracks overruns correctly.
     #[test]
     fn test_node_timing_state_overruns() {
-        let mut state = NodeTimingState::new(Some(Duration::from_micros(100)));
+        let mut state = NodeTimingState::new(Some(100_u64.us()));
 
         // Normal tick — no violation
-        assert!(state.record_tick(Duration::from_micros(50)).is_none());
+        assert!(state.record_tick(50_u64.us()).is_none());
         assert_eq!(state.overrun_count, 0);
 
         // Overrun tick
-        let violation = state.record_tick(Duration::from_micros(150));
+        let violation = state.record_tick(150_u64.us());
         assert!(violation.is_some());
         assert_eq!(state.overrun_count, 1);
         assert_eq!(state.worst_overrun_us, 50); // 150 - 100
@@ -1296,7 +1266,7 @@ mod tests {
         assert!(state.is_chronic());
 
         // Successful tick resets consecutive counter
-        state.record_tick(Duration::from_micros(10));
+        state.record_tick(10_u64.us());
         assert_eq!(state.consecutive_misses, 0);
         assert!(!state.is_chronic());
         // But total misses persist
@@ -1307,53 +1277,34 @@ mod tests {
     #[test]
     fn test_budget_enforcer_per_node() {
         let mut enforcer = BudgetEnforcer::new();
-        enforcer.set_budget("motor".to_string(), Duration::from_micros(100));
+        enforcer.set_budget("motor".to_string(), 100_u64.us());
 
         // Under budget
-        assert!(enforcer.check_budget("motor", Duration::from_micros(80)).is_ok());
+        assert!(enforcer.check_budget("motor", 80_u64.us()).is_ok());
 
         // Over budget
-        assert!(enforcer.check_budget("motor", Duration::from_micros(150)).is_err());
+        assert!(enforcer.check_budget("motor", 150_u64.us()).is_err());
         assert_eq!(enforcer.get_overrun_count(), 1);
 
         // No budget set — should always succeed
-        assert!(enforcer.check_budget("planner", Duration::from_micros(9999)).is_ok());
+        assert!(enforcer.check_budget("planner", 9999_u64.us()).is_ok());
     }
 
     // ── Graduated degradation tests ──────────────────────────────────────
 
     #[test]
-    fn test_degradation_policy_default_is_graduated() {
+    fn test_degradation_policy_default() {
         let policy = DegradationPolicy::default();
-        match policy {
-            DegradationPolicy::Graduated {
-                warn_after,
-                reduce_after,
-                isolate_after,
-                recovery_ticks,
-            } => {
-                assert_eq!(warn_after, 3);
-                assert_eq!(reduce_after, 5);
-                assert_eq!(isolate_after, 10);
-                assert_eq!(recovery_ticks, 100);
-            }
-            _ => panic!("Default should be Graduated"),
-        }
-    }
-
-    #[test]
-    fn test_degradation_log_only_always_returns_none() {
-        let mut monitor = SafetyMonitor::new(100);
-        monitor.set_degradation_policy(DegradationPolicy::LogOnly);
-
-        let action = monitor.evaluate_degradation("node", 100, Some(50.0));
-        assert_eq!(action, DegradationAction::None);
+        assert_eq!(policy.warn_after, 3);
+        assert_eq!(policy.reduce_after, 5);
+        assert_eq!(policy.isolate_after, 10);
+        assert_eq!(policy.recovery_ticks, 100);
     }
 
     #[test]
     fn test_degradation_graduated_stages_in_order() {
         let mut monitor = SafetyMonitor::new(100);
-        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+        monitor.set_degradation_policy(DegradationPolicy {
             warn_after: 3,
             reduce_after: 5,
             isolate_after: 10,
@@ -1390,7 +1341,7 @@ mod tests {
     #[test]
     fn test_degradation_recovery_after_stable_period() {
         let mut monitor = SafetyMonitor::new(100);
-        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+        monitor.set_degradation_policy(DegradationPolicy {
             warn_after: 1,
             reduce_after: 2,
             isolate_after: 100, // high so we test recovery at RateReduced stage
@@ -1431,7 +1382,7 @@ mod tests {
     #[test]
     fn test_degradation_warned_recovers_on_success() {
         let mut monitor = SafetyMonitor::new(100);
-        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+        monitor.set_degradation_policy(DegradationPolicy {
             warn_after: 2,
             reduce_after: 5,
             isolate_after: 10,
@@ -1458,7 +1409,7 @@ mod tests {
     #[test]
     fn test_degradation_no_rate_set_uses_default() {
         let mut monitor = SafetyMonitor::new(100);
-        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+        monitor.set_degradation_policy(DegradationPolicy {
             warn_after: 1,
             reduce_after: 2,
             isolate_after: 10,
@@ -1480,7 +1431,7 @@ mod tests {
     #[test]
     fn test_degradation_multiple_nodes_independent() {
         let mut monitor = SafetyMonitor::new(100);
-        monitor.set_degradation_policy(DegradationPolicy::Graduated {
+        monitor.set_degradation_policy(DegradationPolicy {
             warn_after: 2,
             reduce_after: 5,
             isolate_after: 10,
@@ -1551,7 +1502,7 @@ mod tests {
 
     #[test]
     fn test_node_timing_is_chronic() {
-        let mut state = NodeTimingState::new(Some(Duration::from_millis(1)));
+        let mut state = NodeTimingState::new(Some(1_u64.ms()));
         assert!(!state.is_chronic());
         state.record_miss(100);
         state.record_miss(200);
@@ -1567,10 +1518,10 @@ mod tests {
         assert!(enforcer.node_stats("unknown").is_none());
 
         // Set a budget and record some ticks
-        enforcer.set_budget("motor".to_string(), Duration::from_millis(10));
-        enforcer.check_budget("motor", Duration::from_micros(100)).ok();
-        enforcer.check_budget("motor", Duration::from_micros(200)).ok();
-        enforcer.check_budget("motor", Duration::from_micros(300)).ok();
+        enforcer.set_budget("motor".to_string(), 10_u64.ms());
+        enforcer.check_budget("motor", 100_u64.us()).ok();
+        enforcer.check_budget("motor", 200_u64.us()).ok();
+        enforcer.check_budget("motor", 300_u64.us()).ok();
 
         let stats = enforcer.node_stats("motor");
         assert!(stats.is_some());
@@ -1587,10 +1538,14 @@ mod tests {
         // Default stage is Normal
         assert_eq!(monitor.degradation_stage("motor"), DegradationStage::Normal);
 
-        // Set LogOnly policy
-        monitor.set_degradation_policy(DegradationPolicy::LogOnly);
+        // With high thresholds, low miss counts return None
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 1000,
+            reduce_after: 2000,
+            isolate_after: 3000,
+            recovery_ticks: 100,
+        });
 
-        // Record misses — LogOnly always returns DegradationAction::None
         monitor.record_deadline_miss_with_severity("motor", 500);
         let action = monitor.evaluate_degradation("motor", 1, None);
         assert_eq!(action, DegradationAction::None);

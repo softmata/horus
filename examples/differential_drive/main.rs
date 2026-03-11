@@ -4,7 +4,7 @@
 /// Subscribes to odometry for position feedback.
 
 use horus::prelude::*;
-use std::time::Duration;
+use horus::DurationExt;
 
 message! {
     /// Odometry feedback from the simulator
@@ -111,12 +111,12 @@ impl Node for SafetyNode {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new().tick_rate(50.hz());
+    let mut scheduler = Scheduler::new().tick_rate(50_u64.hz());
 
-    scheduler.add(SquareDriver::new()?).order(0).rate(50.hz()).build()?;
-    scheduler.add(SafetyNode::new()?).order(10).rate(10.hz()).build()?;
+    scheduler.add(SquareDriver::new()?).order(0).rate(50_u64.hz()).build()?;
+    scheduler.add(SafetyNode::new()?).order(10).rate(10_u64.hz()).build()?;
 
     // Run for 30 seconds (enough for ~2 full squares)
-    scheduler.run_for(Duration::from_secs(30))?;
+    scheduler.run_for(30_u64.secs())?;
     Ok(())
 }

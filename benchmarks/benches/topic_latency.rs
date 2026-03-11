@@ -8,7 +8,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use horus::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use horus_core::core::DurationExt;
 
 /// Small message (16 bytes) - typical sensor reading
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ unsafe impl bytemuck::Zeroable for LargeMessage {}
 /// Benchmark native HORUS shared memory IPC latency
 fn bench_native_latency(c: &mut Criterion) {
     let mut group = c.benchmark_group("native_shm_latency");
-    group.measurement_time(Duration::from_secs(5));
+    group.measurement_time(5_u64.secs());
     group.sample_size(1000);
 
     // Small message (16 bytes)
@@ -102,7 +102,7 @@ fn bench_native_latency(c: &mut Criterion) {
 /// Benchmark latency comparison across message sizes
 fn bench_latency_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("latency_comparison");
-    group.measurement_time(Duration::from_secs(3));
+    group.measurement_time(3_u64.secs());
     group.sample_size(100);
 
     // Native SHM baseline
@@ -122,7 +122,7 @@ fn bench_latency_comparison(c: &mut Criterion) {
 /// Benchmark memory footprint (measure allocations)
 fn bench_memory_usage(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory_usage");
-    group.measurement_time(Duration::from_secs(2));
+    group.measurement_time(2_u64.secs());
     group.sample_size(50);
 
     // Topic creation overhead

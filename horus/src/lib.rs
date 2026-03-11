@@ -40,7 +40,7 @@
 //! img.set_pixel(100, 200, &[255, 0, 0]); // Red dot
 //!
 //! // Send — only the 168-byte descriptor goes through the ring buffer
-//! let topic: Topic<Image> = Topic::new("camera/rgb").unwrap();
+//! let topic: Topic<Image> = Topic::new("camera.rgb").unwrap();
 //! topic.send(&img);
 //!
 //! // Receive (in another node or process)
@@ -80,11 +80,11 @@
 //!
 //! ### Scheduler
 //! ```rust,ignore
-//! let mut scheduler = Scheduler::new().tick_rate(100.hz());
-//! scheduler.add(sensor).order(0).rate(100.hz()).build()?;
-//! scheduler.add(controller).order(1).budget(200.us()).build()?;
+//! let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
+//! scheduler.add(sensor).order(0).rate(100_u64.hz()).build()?;
+//! scheduler.add(controller).order(1).budget(200_u64.us()).build()?;
 //! scheduler.add(planner).order(5).compute().build()?;
-//! scheduler.add(logger).order(10).async_io().rate(1.hz()).build()?;
+//! scheduler.add(logger).order(10).async_io().rate(1_u64.hz()).build()?;
 //! scheduler.run()?;
 //! ```
 //!
@@ -125,8 +125,8 @@
 //! }
 //! scheduler.add(MotorCtrl::new())
 //!     .order(0)
-//!     .budget(200.us())        // 200μs tick budget (auto-marks as RT)
-//!     .deadline(1.ms())        // 1ms deadline
+//!     .budget(200_u64.us())        // 200μs tick budget (auto-marks as RT)
+//!     .deadline(1_u64.ms())        // 1ms deadline
 //!     .on_miss(Miss::Skip)     // skip tick on deadline miss
 //!     .build()?;
 //! ```
@@ -207,7 +207,7 @@ pub mod prelude {
     pub use horus_core::scheduling::Scheduler;
 
     // === Execution configuration ===
-    pub use horus_core::scheduling::{ExecutionClass, FailurePolicy};
+    pub use horus_core::scheduling::FailurePolicy;
 
     // === Runtime parameters ===
     pub use horus_core::params::RuntimeParams;

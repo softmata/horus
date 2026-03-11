@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, Read as _, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
+use horus_core::core::DurationExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AuthConfig {
@@ -141,7 +142,7 @@ fn wait_for_oauth_callback(
     // Accept one connection (the browser redirect)
     // Use a timeout via polling to avoid hanging indefinitely
     let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(300);
+    let timeout = 300_u64.secs();
 
     listener.set_nonblocking(true).ok();
 
@@ -152,7 +153,7 @@ fn wait_for_oauth_callback(
                 if start.elapsed() > timeout {
                     return Err("Timed out waiting for authentication (5 minutes)".to_string());
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(100_u64.ms());
                 continue;
             }
             Err(e) => return Err(format!("Failed to accept connection: {}", e)),
@@ -162,7 +163,7 @@ fn wait_for_oauth_callback(
     // Read the HTTP request
     let mut buf = [0u8; 4096];
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(5_u64.secs()))
         .ok();
     let n = stream
         .read(&mut buf)

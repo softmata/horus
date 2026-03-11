@@ -1,12 +1,12 @@
-use horus_core::core::DurationExt;
 use horus_core::{HorusResult as Result, Node, Scheduler, TopicMetadata};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 mod common;
 use common::cleanup_stale_shm;
+use horus_core::core::DurationExt;
 
 /// Test node that simulates CPU-intensive work
 struct CpuNode {
@@ -41,7 +41,7 @@ impl Node for CpuNode {
 
     fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
-            topic_name: format!("{}/output", self.name),
+            topic_name: format!("{}.output", self.name),
             type_name: "std_msgs/Int32".to_string(),
         }]
     }
@@ -70,7 +70,7 @@ impl Node for IoNode {
 
     fn tick(&mut self) {
         // Simulate blocking I/O (e.g., camera read)
-        thread::sleep(Duration::from_millis(self.io_delay_ms));
+        thread::sleep(self.io_delay_ms.ms());
         self.counter.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -81,7 +81,7 @@ impl Node for IoNode {
 
     fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
-            topic_name: format!("{}/data", self.name),
+            topic_name: format!("{}.data", self.name),
             type_name: "sensor_msgs/Image".to_string(),
         }]
     }
@@ -177,7 +177,7 @@ fn test_enhanced_scheduler() {
         .build();
 
     // Run scheduler for 3 seconds
-    let run_duration = Duration::from_secs(3);
+    let run_duration = 3_u64.secs();
     let start = Instant::now();
 
     // Run in a separate thread
@@ -238,12 +238,12 @@ fn test_skip_policy_protection() {
             fail_rate: 1.0, // Always fails
         })
         .order(10)
-        .failure_policy(FailurePolicy::skip(5, 30_000))
+        .failure_policy(FailurePolicy::skip(5, 30_u64.secs()))
         .build();
 
     // Run for 1 second
     scheduler
-        .run_for(Duration::from_secs(1))
+        .run_for(1_u64.secs())
         .expect("Scheduler failed");
 
     // The node should have attempted and failed multiple times, with the scheduler
