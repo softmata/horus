@@ -59,9 +59,6 @@ pub mod landmark;
 pub mod segmentation;
 pub mod tracking;
 
-// ML message types (serde-based, for flexible ML workflows)
-pub mod ml;
-
 // Input messages
 pub mod joystick_msg;
 pub mod keyboard_input_msg;
@@ -87,8 +84,7 @@ pub use clock::{Clock, TimeReference, SOURCE_REPLAY, SOURCE_SIM, SOURCE_WALL};
 
 // Control
 pub use control::{
-    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, PwmCommand, ServoCommand,
-    StepperCommand, TrajectoryPoint,
+    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand, TrajectoryPoint,
 };
 
 // Diagnostics
@@ -104,7 +100,7 @@ pub use vision::{CameraInfo, CompressedImage, RegionOfInterest};
 pub use navigation::{CostMap, NavGoal, NavPath, OccupancyGrid, PathPlan};
 
 // Force
-pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
+pub use force::{ForceCommand, ImpedanceParameters, WrenchStamped};
 
 // Perception
 pub use perception::PlaneDetection;
@@ -114,12 +110,6 @@ pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 pub use landmark::{Landmark, Landmark3D, LandmarkArray};
 pub use segmentation::SegmentationMask;
 pub use tracking::{TrackedObject, TrackingHeader};
-
-// ML types (serde-based)
-pub use ml::{
-    Classification, DeploymentConfig, FeatureVector, InferenceMetrics, MlTrajectoryPoint,
-    ModelFormat, ModelInfo, Predictions, TensorData, TrainingMetrics,
-};
 
 // Input (existing)
 pub use joystick_msg::JoystickInput;

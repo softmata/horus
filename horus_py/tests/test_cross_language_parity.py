@@ -128,103 +128,6 @@ class TestPerceptionHelpers:
 
 
 # =============================================================================
-# ML types
-# =============================================================================
-
-class TestMLTypes:
-    def test_tensor_data_construction(self):
-        t = horus.TensorData(data=[1.0, 2.0, 3.0, 4.0], shape=[2, 2], dtype="f32")
-        assert t.data == [1.0, 2.0, 3.0, 4.0]
-        assert t.shape == [2, 2]
-        assert t.dtype == "float32"
-        assert t.size() == 4
-        assert t.ndim() == 2
-
-    def test_tensor_data_pubsub(self):
-        t = horus.TensorData(data=[1.0, 2.0, 3.0], shape=[3], dtype="f32")
-        received = []
-
-        def pub_fn(node):
-            if node.info.tick_count() == 0:
-                node.send("TensorData", t)
-            elif node.info.tick_count() > 2:
-                node.request_stop()
-
-        def sub_fn(node):
-            m = node.get("TensorData")
-            if m is not None:
-                received.append(m)
-                node.request_stop()
-            elif node.info.tick_count() > 10:
-                node.request_stop()
-
-        horus.run(
-            horus.Node(name="p", pubs="TensorData", tick=pub_fn),
-            horus.Node(name="s", subs="TensorData", tick=sub_fn),
-            duration=1.0,
-        )
-        assert len(received) >= 1
-        assert received[0].data == [1.0, 2.0, 3.0]
-        assert received[0].shape == [3]
-
-    def test_predictions_construction(self):
-        p = horus.Predictions(class_ids=[0, 1, 2], scores=[0.9, 0.8, 0.7], class_names=["a", "b", "c"])
-        assert p.class_ids == [0, 1, 2]
-        assert len(p.scores) == 3
-        assert p.class_names == ["a", "b", "c"]
-
-    def test_inference_metrics_construction(self):
-        m = horus.InferenceMetrics(model_name="yolov8", latency_ms=5.2, throughput=192.0, batch_size=4)
-        assert m.model_name == "yolov8"
-        assert abs(m.latency_ms - 5.2) < 1e-4
-        assert m.batch_size == 4
-
-    def test_model_info_construction(self):
-        mi = horus.ModelInfo(name="detector", version="1.0.0", format="onnx")
-        assert mi.name == "detector"
-        assert mi.version == "1.0.0"
-        assert mi.format == "onnx"
-
-    def test_feature_vector_construction(self):
-        fv = horus.FeatureVector(features=[0.1, 0.2, 0.3], source="image_001")
-        # f32 precision: compare approximately
-        assert len(fv.features) == 3
-        assert abs(fv.features[0] - 0.1) < 1e-6
-        assert abs(fv.features[1] - 0.2) < 1e-6
-        assert abs(fv.features[2] - 0.3) < 1e-6
-        assert fv.source == "image_001"
-        assert fv.dim() == 3
-
-    def test_classification_construction(self):
-        c = horus.Classification(class_ids=[0, 1], class_names=["cat", "dog"], probabilities=[0.7, 0.3])
-        assert c.class_ids == [0, 1]
-        assert c.class_names == ["cat", "dog"]
-
-    def test_training_metrics_construction(self):
-        tm = horus.TrainingMetrics(epoch=5, step=1000, loss=0.0234, accuracy=0.95, learning_rate=0.001)
-        assert tm.epoch == 5
-        assert tm.step == 1000
-        assert abs(tm.loss - 0.0234) < 1e-5
-        assert abs(tm.accuracy - 0.95) < 1e-5
-
-    def test_ml_trajectory_point_construction(self):
-        obs = horus.TensorData(data=[1.0, 2.0], shape=[2])
-        act = horus.TensorData(data=[0.5], shape=[1])
-        tp = horus.MlTrajectoryPoint(observation=obs, action=act, reward=1.0, done=False)
-        assert tp.observation.data == [1.0, 2.0]
-        assert tp.action.data == [0.5]
-        assert tp.reward == 1.0
-        assert tp.done is False
-
-    def test_deployment_config_construction(self):
-        dc = horus.DeploymentConfig(model_path="/models/yolo.onnx", format="onnx", execution_provider="cuda", batch_size=8)
-        assert dc.model_path == "/models/yolo.onnx"
-        assert dc.format == "onnx"
-        assert dc.execution_provider == "cuda"
-        assert dc.batch_size == 8
-
-
-# =============================================================================
 # Vision types
 # =============================================================================
 
@@ -296,19 +199,6 @@ class TestVisionTypes:
 # =============================================================================
 
 class TestForceTypes:
-    def test_tactile_array_construction(self):
-        ta = horus.TactileArray(sensor_count=16, arrangement=0, grid_width=4, grid_height=4)
-        assert ta.sensor_count == 16
-        assert ta.grid_width == 4
-        ta.set_sensor(0, 1.5)
-        assert ta.get_sensor(0) == 1.5
-
-    def test_tactile_array_pubsub(self):
-        ta = horus.TactileArray(sensor_count=4)
-        ta.set_sensor(0, 0.5)
-        ta.set_sensor(1, 1.0)
-        roundtrip(horus.TactileArray, ta, {"sensor_count": 4})
-
     def test_impedance_parameters_construction(self):
         ip = horus.ImpedanceParameters()
         assert ip.enabled is False
@@ -480,44 +370,11 @@ class TestNavigationTypes:
 # =============================================================================
 
 class TestEdgeCases:
-    def test_empty_vec_fields(self):
-        """Empty Vec fields should roundtrip correctly"""
-        t = horus.TensorData(data=[], shape=[], dtype="f32")
-        assert t.data == []
-        assert t.shape == []
-        assert t.size() == 1  # product of empty shape = 1 (scalar convention)
-
-    def test_empty_predictions(self):
-        p = horus.Predictions()
-        assert p.class_ids == []
-        assert p.scores == []
-        assert p.class_names is None
-
-    def test_empty_feature_vector(self):
-        fv = horus.FeatureVector()
-        assert fv.features == []
-        assert fv.dim() == 0
-
     def test_zero_size_image(self):
         img = horus.CompressedImage()
         assert img.width == 0
         assert img.height == 0
         assert img.data == b''
-
-    def test_tensor_dtype_variants(self):
-        """All dtype strings should work"""
-        for dtype in ["f32", "f64", "f16", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "bool"]:
-            t = horus.TensorData(data=[1.0], shape=[1], dtype=dtype)
-            # dtype normalizes to long form
-            assert t.dtype is not None
-
-    def test_invalid_dtype_raises(self):
-        with pytest.raises(ValueError):
-            horus.TensorData(data=[1.0], shape=[1], dtype="invalid_type")
-
-    def test_invalid_model_format_raises(self):
-        with pytest.raises(ValueError):
-            horus.ModelInfo(name="test", format="invalid_format")
 
     def test_diagnostic_report_max_values(self):
         dr = horus.DiagnosticReport(component="test")
@@ -863,14 +720,6 @@ class TestCrossLanguageRustSendsPythonReceives:
         msg = horus.PidConfig(kp=1.0, ki=0.1, kd=0.01)
         roundtrip(horus.PidConfig, msg, {"kp": 1.0, "ki": 0.1, "kd": 0.01})
 
-    def test_pwm_command_roundtrip(self):
-        msg = horus.PwmCommand(channel_id=3, duty_cycle=0.75, frequency=50)
-        roundtrip(horus.PwmCommand, msg, {"channel_id": 3, "duty_cycle": 0.75})
-
-    def test_stepper_command_roundtrip(self):
-        msg = horus.StepperCommand(motor_id=1, target=200.0, max_velocity=100.0)
-        roundtrip(horus.StepperCommand, msg, {"motor_id": 1, "target": 200.0})
-
     def test_trajectory_point_roundtrip(self):
         msg = horus.TrajectoryPoint(time_from_start=1.5)
         roundtrip(horus.TrajectoryPoint, msg, {"time_from_start": 1.5})
@@ -907,51 +756,6 @@ class TestCrossLanguageRustSendsPythonReceives:
     def test_point_field_roundtrip(self):
         msg = horus.PointField(name="x", offset=0, datatype=7, count=1)
         roundtrip(horus.PointField, msg, {"name": "x", "offset": 0, "datatype": 7})
-
-    # --- ML: verify variable-size serde types ---
-
-    def test_predictions_roundtrip(self):
-        msg = horus.Predictions(class_ids=[1, 2, 3], scores=[0.9, 0.8, 0.7])
-        roundtrip(horus.Predictions, msg, {"class_ids": [1, 2, 3]})
-
-    def test_feature_vector_roundtrip(self):
-        msg = horus.FeatureVector(features=[0.1, 0.2, 0.3, 0.4], source="encoder")
-        received = []
-
-        def pub_fn(node):
-            if node.info.tick_count() == 0:
-                node.send("FeatureVector", msg)
-            elif node.info.tick_count() > 2:
-                node.request_stop()
-
-        def sub_fn(node):
-            m = node.get("FeatureVector")
-            if m is not None:
-                received.append(m)
-                node.request_stop()
-            elif node.info.tick_count() > 10:
-                node.request_stop()
-
-        horus.run(
-            horus.Node(name="p", pubs="FeatureVector", tick=pub_fn),
-            horus.Node(name="s", subs="FeatureVector", tick=sub_fn),
-            duration=1.0,
-        )
-        assert len(received) >= 1
-        assert received[0].source == "encoder"
-        assert received[0].dim() == 4
-
-    def test_classification_roundtrip(self):
-        msg = horus.Classification(class_ids=[0, 1], class_names=["cat", "dog"], probabilities=[0.7, 0.3])
-        roundtrip(horus.Classification, msg, {"class_ids": [0, 1], "class_names": ["cat", "dog"]})
-
-    def test_training_metrics_roundtrip(self):
-        msg = horus.TrainingMetrics(epoch=10, step=5000, loss=0.001, accuracy=0.99)
-        roundtrip(horus.TrainingMetrics, msg, {"epoch": 10, "step": 5000})
-
-    def test_inference_metrics_roundtrip(self):
-        msg = horus.InferenceMetrics(model_name="resnet50", latency_ms=3.2, throughput=312.0, batch_size=16)
-        roundtrip(horus.InferenceMetrics, msg, {"model_name": "resnet50", "batch_size": 16})
 
     # --- Vision: verify image data survives roundtrip ---
 

@@ -26,8 +26,8 @@ use horus_core::memory::{DepthImage, Image, PointCloud};
 use horus_library::messages::clock::{Clock, TimeReference};
 use horus_library::messages::cmd_vel::CmdVel;
 use horus_library::messages::control::{
-    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, PwmCommand, ServoCommand,
-    StepperCommand, TrajectoryPoint,
+    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand,
+    TrajectoryPoint,
 };
 use horus_library::messages::detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 use horus_library::messages::diagnostics::{
@@ -35,7 +35,7 @@ use horus_library::messages::diagnostics::{
     ResourceUsage, SafetyStatus,
 };
 use horus_library::messages::force::{
-    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray, WrenchStamped,
+    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, WrenchStamped,
 };
 use horus_library::messages::geometry::{
     Accel, AccelStamped, Point3, Pose2D, Pose3D, PoseStamped, PoseWithCovariance, Quaternion,
@@ -44,10 +44,6 @@ use horus_library::messages::geometry::{
 use horus_library::messages::joystick_msg::JoystickInput;
 use horus_library::messages::keyboard_input_msg::KeyboardInput;
 use horus_library::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
-use horus_library::messages::ml::{
-    Classification, DeploymentConfig, FeatureVector, InferenceMetrics, MlTrajectoryPoint, ModelInfo,
-    Predictions, TensorData, TrainingMetrics,
-};
 use horus_library::messages::navigation::{
     CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
     VelocityObstacles, Waypoint,
@@ -70,19 +66,19 @@ use crate::depth_image::PyDepthImage;
 use crate::image::PyImage;
 use crate::messages::{
     PyAccel, PyAccelStamped, PyBatteryState, PyBoundingBox2DMsg, PyBoundingBox3D, PyCameraInfo,
-    PyClassification, PyClock, PyCmdVel, PyCompressedImage, PyContactInfo,
-    PyCostMap, PyDeploymentConfig, PyDetection3D, PyDetectionMsg, PyDiagnosticReport,
+    PyClock, PyCmdVel, PyCompressedImage, PyContactInfo,
+    PyCostMap, PyDetection3D, PyDetectionMsg, PyDiagnosticReport,
     PyDiagnosticStatus, PyDiagnosticValue, PyDifferentialDriveCommand, PyEmergencyStop,
-    PyFeatureVector, PyFluidPressure, PyForceCommand, PyGoalResult, PyHapticFeedback, PyHeartbeat,
-    PyIlluminance, PyImpedanceParameters, PyImu, PyInferenceMetrics, PyJointCommand, PyJointState,
+    PyFluidPressure, PyForceCommand, PyGoalResult, PyHapticFeedback, PyHeartbeat,
+    PyIlluminance, PyImpedanceParameters, PyImu, PyJointCommand, PyJointState,
     PyJoystickInput, PyKeyboardInput, PyLandmark3D, PyLandmarkArray,
-    PyLandmarkMsg, PyLaserScan, PyMagneticField, PyMlTrajectoryPoint, PyModelInfo, PyMotorCommand,
+    PyLandmarkMsg, PyLaserScan, PyMagneticField, PyMotorCommand,
     PyNavGoal, PyNavPath, PyNavSatFix, PyNodeHeartbeat, PyOccupancyGrid, PyOdometry, PyPathPlan,
     PyPidConfig, PyPlaneArray, PyPlaneDetection, PyPoint3, PyPointField, PyPose2D, PyPose3D,
-    PyPoseStamped, PyPoseWithCovariance, PyPredictions, PyPwmCommand, PyQuaternion, PyRangeSensor,
+    PyPoseStamped, PyPoseWithCovariance, PyQuaternion, PyRangeSensor,
     PyRegionOfInterest, PyResourceUsage, PySafetyStatus, PySegmentationMask, PyServoCommand,
-    PyStepperCommand, PyStereoInfo, PyTactileArray, PyTemperature, PyTensorData, PyTimeReference,
-    PyTrackedObjectMsg, PyTrackingHeader, PyTrainingMetrics, PyTrajectoryPoint, PyTransformStamped,
+    PyStereoInfo, PyTemperature, PyTimeReference,
+    PyTrackedObjectMsg, PyTrackingHeader, PyTrajectoryPoint, PyTransformStamped,
     PyTwist, PyTwistWithCovariance, PyVector3, PyVelocityObstacle, PyVelocityObstacles, PyWaypoint,
     PyWrenchStamped,
 };
@@ -163,8 +159,6 @@ enum TopicType {
     PidConfig(Arc<RwLock<Topic<PidConfig>>>),
     TrajectoryPoint(Arc<RwLock<Topic<TrajectoryPoint>>>),
     JointCommand(Arc<RwLock<Topic<JointCommand>>>),
-    PwmCommand(Arc<RwLock<Topic<PwmCommand>>>),
-    StepperCommand(Arc<RwLock<Topic<StepperCommand>>>),
     // Sensor types
     RangeSensor(Arc<RwLock<Topic<RangeSensor>>>),
     BatteryState(Arc<RwLock<Topic<BatteryState>>>),
@@ -206,23 +200,12 @@ enum TopicType {
     PointField(Arc<RwLock<Topic<PointField>>>),
     PlaneDetection(Arc<RwLock<Topic<PlaneDetection>>>),
     PlaneArray(Arc<RwLock<Topic<PlaneArray>>>),
-    // ML types (serde-based)
-    TensorData(Arc<RwLock<Topic<TensorData>>>),
-    Predictions(Arc<RwLock<Topic<Predictions>>>),
-    InferenceMetrics(Arc<RwLock<Topic<InferenceMetrics>>>),
-    ModelInfo(Arc<RwLock<Topic<ModelInfo>>>),
-    FeatureVector(Arc<RwLock<Topic<FeatureVector>>>),
-    Classification(Arc<RwLock<Topic<Classification>>>),
-    TrainingMetrics(Arc<RwLock<Topic<TrainingMetrics>>>),
-    MlTrajectoryPoint(Arc<RwLock<Topic<MlTrajectoryPoint>>>),
-    DeploymentConfig(Arc<RwLock<Topic<DeploymentConfig>>>),
     // Vision types (serde-based)
     CompressedImage(Arc<RwLock<Topic<CompressedImage>>>),
     CameraInfo(Arc<RwLock<Topic<CameraInfo>>>),
     RegionOfInterest(Arc<RwLock<Topic<RegionOfInterest>>>),
     StereoInfo(Arc<RwLock<Topic<StereoInfo>>>),
     // Force types (additional Pod)
-    TactileArray(Arc<RwLock<Topic<TactileArray>>>),
     ImpedanceParameters(Arc<RwLock<Topic<ImpedanceParameters>>>),
     HapticFeedback(Arc<RwLock<Topic<HapticFeedback>>>),
     // Diagnostics types (additional Pod)
@@ -274,8 +257,6 @@ macro_rules! topic_dispatch {
             TopicType::PidConfig($t) => $body,
             TopicType::TrajectoryPoint($t) => $body,
             TopicType::JointCommand($t) => $body,
-            TopicType::PwmCommand($t) => $body,
-            TopicType::StepperCommand($t) => $body,
             TopicType::RangeSensor($t) => $body,
             TopicType::BatteryState($t) => $body,
             TopicType::NavSatFix($t) => $body,
@@ -308,20 +289,10 @@ macro_rules! topic_dispatch {
             TopicType::PointField($t) => $body,
             TopicType::PlaneDetection($t) => $body,
             TopicType::PlaneArray($t) => $body,
-            TopicType::TensorData($t) => $body,
-            TopicType::Predictions($t) => $body,
-            TopicType::InferenceMetrics($t) => $body,
-            TopicType::ModelInfo($t) => $body,
-            TopicType::FeatureVector($t) => $body,
-            TopicType::Classification($t) => $body,
-            TopicType::TrainingMetrics($t) => $body,
-            TopicType::MlTrajectoryPoint($t) => $body,
-            TopicType::DeploymentConfig($t) => $body,
             TopicType::CompressedImage($t) => $body,
             TopicType::CameraInfo($t) => $body,
             TopicType::RegionOfInterest($t) => $body,
             TopicType::StereoInfo($t) => $body,
-            TopicType::TactileArray($t) => $body,
             TopicType::ImpedanceParameters($t) => $body,
             TopicType::HapticFeedback($t) => $body,
             TopicType::DiagnosticValue($t) => $body,
@@ -535,14 +506,6 @@ impl PyTopic {
                 let topic = create_topic::<JointCommand>(&effective_endpoint, cap)?;
                 TopicType::JointCommand(Arc::new(RwLock::new(topic)))
             }
-            "PwmCommand" => {
-                let topic = create_topic::<PwmCommand>(&effective_endpoint, cap)?;
-                TopicType::PwmCommand(Arc::new(RwLock::new(topic)))
-            }
-            "StepperCommand" => {
-                let topic = create_topic::<StepperCommand>(&effective_endpoint, cap)?;
-                TopicType::StepperCommand(Arc::new(RwLock::new(topic)))
-            }
             // Sensor types
             "RangeSensor" => {
                 let topic = create_topic::<RangeSensor>(&effective_endpoint, cap)?;
@@ -680,43 +643,6 @@ impl PyTopic {
                 let topic = create_topic::<PlaneArray>(&effective_endpoint, cap)?;
                 TopicType::PlaneArray(Arc::new(RwLock::new(topic)))
             }
-            // ML types (serde-based)
-            "TensorData" => {
-                let topic = create_topic::<TensorData>(&effective_endpoint, cap)?;
-                TopicType::TensorData(Arc::new(RwLock::new(topic)))
-            }
-            "Predictions" => {
-                let topic = create_topic::<Predictions>(&effective_endpoint, cap)?;
-                TopicType::Predictions(Arc::new(RwLock::new(topic)))
-            }
-            "InferenceMetrics" => {
-                let topic = create_topic::<InferenceMetrics>(&effective_endpoint, cap)?;
-                TopicType::InferenceMetrics(Arc::new(RwLock::new(topic)))
-            }
-            "ModelInfo" => {
-                let topic = create_topic::<ModelInfo>(&effective_endpoint, cap)?;
-                TopicType::ModelInfo(Arc::new(RwLock::new(topic)))
-            }
-            "FeatureVector" => {
-                let topic = create_topic::<FeatureVector>(&effective_endpoint, cap)?;
-                TopicType::FeatureVector(Arc::new(RwLock::new(topic)))
-            }
-            "Classification" => {
-                let topic = create_topic::<Classification>(&effective_endpoint, cap)?;
-                TopicType::Classification(Arc::new(RwLock::new(topic)))
-            }
-            "TrainingMetrics" => {
-                let topic = create_topic::<TrainingMetrics>(&effective_endpoint, cap)?;
-                TopicType::TrainingMetrics(Arc::new(RwLock::new(topic)))
-            }
-            "MlTrajectoryPoint" => {
-                let topic = create_topic::<MlTrajectoryPoint>(&effective_endpoint, cap)?;
-                TopicType::MlTrajectoryPoint(Arc::new(RwLock::new(topic)))
-            }
-            "DeploymentConfig" => {
-                let topic = create_topic::<DeploymentConfig>(&effective_endpoint, cap)?;
-                TopicType::DeploymentConfig(Arc::new(RwLock::new(topic)))
-            }
             // Vision types (serde-based)
             "CompressedImage" => {
                 let topic = create_topic::<CompressedImage>(&effective_endpoint, cap)?;
@@ -735,10 +661,6 @@ impl PyTopic {
                 TopicType::StereoInfo(Arc::new(RwLock::new(topic)))
             }
             // Force types (additional)
-            "TactileArray" => {
-                let topic = create_topic::<TactileArray>(&effective_endpoint, cap)?;
-                TopicType::TactileArray(Arc::new(RwLock::new(topic)))
-            }
             "ImpedanceParameters" => {
                 let topic = create_topic::<ImpedanceParameters>(&effective_endpoint, cap)?;
                 TopicType::ImpedanceParameters(Arc::new(RwLock::new(topic)))
@@ -1373,46 +1295,6 @@ impl PyTopic {
             }
             TopicType::JointCommand(topic) => {
                 let msg = message.extract::<PyRef<PyJointCommand>>(py)?.inner;
-                let topic_ref = topic.clone();
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    use horus::core::LogSummary;
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        msg.log_summary(),
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::PwmCommand(topic) => {
-                let msg = message.extract::<PyRef<PyPwmCommand>>(py)?.inner;
-                let topic_ref = topic.clone();
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    use horus::core::LogSummary;
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        msg.log_summary(),
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::StepperCommand(topic) => {
-                let msg = message.extract::<PyRef<PyStepperCommand>>(py)?.inner;
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
                     topic_ref.write().expect("topic lock poisoned").send(msg);
@@ -2074,211 +1956,6 @@ impl PyTopic {
                 }
                 success
             }
-            // ML types (serde-based, all use .clone())
-            TopicType::TensorData(topic) => {
-                let msg = message.extract::<PyRef<PyTensorData>>(py)?.inner.clone();
-                let topic_ref = topic.clone();
-                let log_msg = {
-                    use horus::core::LogSummary;
-                    msg.log_summary()
-                };
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::Predictions(topic) => {
-                let msg = message.extract::<PyRef<PyPredictions>>(py)?.inner.clone();
-                let topic_ref = topic.clone();
-                let log_msg = {
-                    use horus::core::LogSummary;
-                    msg.log_summary()
-                };
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::InferenceMetrics(topic) => {
-                let msg = message
-                    .extract::<PyRef<PyInferenceMetrics>>(py)?
-                    .inner
-                    .clone();
-                let topic_ref = topic.clone();
-                let log_msg = {
-                    use horus::core::LogSummary;
-                    msg.log_summary()
-                };
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::ModelInfo(topic) => {
-                let msg = message.extract::<PyRef<PyModelInfo>>(py)?.inner.clone();
-                let topic_ref = topic.clone();
-                let log_msg = format!("{:?}", msg);
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::FeatureVector(topic) => {
-                let msg = message.extract::<PyRef<PyFeatureVector>>(py)?.inner.clone();
-                let topic_ref = topic.clone();
-                let log_msg = format!("{:?}", msg);
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::Classification(topic) => {
-                let msg = message
-                    .extract::<PyRef<PyClassification>>(py)?
-                    .inner
-                    .clone();
-                let topic_ref = topic.clone();
-                let log_msg = format!("{:?}", msg);
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::TrainingMetrics(topic) => {
-                let msg = message
-                    .extract::<PyRef<PyTrainingMetrics>>(py)?
-                    .inner
-                    .clone();
-                let topic_ref = topic.clone();
-                let log_msg = format!("{:?}", msg);
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::MlTrajectoryPoint(topic) => {
-                let msg = message
-                    .extract::<PyRef<PyMlTrajectoryPoint>>(py)?
-                    .inner
-                    .clone();
-                let topic_ref = topic.clone();
-                let log_msg = format!("{:?}", msg);
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::DeploymentConfig(topic) => {
-                let msg = message
-                    .extract::<PyRef<PyDeploymentConfig>>(py)?
-                    .inner
-                    .clone();
-                let topic_ref = topic.clone();
-                let log_msg = format!("{:?}", msg);
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
             // Vision types (serde-based, all use .clone())
             TopicType::CompressedImage(topic) => {
                 let msg = message
@@ -2376,29 +2053,6 @@ impl PyTopic {
                 success
             }
             // Force types (additional Pod)
-            TopicType::TactileArray(topic) => {
-                let msg = message.extract::<PyRef<PyTactileArray>>(py)?.inner;
-                let topic_ref = topic.clone();
-                let log_msg = {
-                    use horus::core::LogSummary;
-                    msg.log_summary()
-                };
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
             TopicType::ImpedanceParameters(topic) => {
                 let msg = message.extract::<PyRef<PyImpedanceParameters>>(py)?.inner;
                 let topic_ref = topic.clone();
@@ -3311,48 +2965,6 @@ impl PyTopic {
                     Ok(None)
                 }
             }
-            TopicType::PwmCommand(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyPwmCommand { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::StepperCommand(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(
-                        Py::new(py, PyStepperCommand { inner: msg })?.into_any(),
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
             // Sensor types — POD-optimized recv
             TopicType::RangeSensor(topic) => {
                 let topic_ref = topic.clone();
@@ -4023,193 +3635,6 @@ impl PyTopic {
                     Ok(None)
                 }
             }
-            // ML types (serde-based)
-            TopicType::TensorData(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyTensorData { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::Predictions(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyPredictions { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::InferenceMetrics(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(
-                        Py::new(py, PyInferenceMetrics { inner: msg })?.into_any(),
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::ModelInfo(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            format!("{:?}", msg),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyModelInfo { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::FeatureVector(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            format!("{:?}", msg),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(
-                        Py::new(py, PyFeatureVector { inner: msg })?.into_any(),
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::Classification(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            format!("{:?}", msg),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(
-                        Py::new(py, PyClassification { inner: msg })?.into_any(),
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::TrainingMetrics(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            format!("{:?}", msg),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(
-                        Py::new(py, PyTrainingMetrics { inner: msg })?.into_any(),
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::MlTrajectoryPoint(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            format!("{:?}", msg),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(
-                        Py::new(py, PyMlTrajectoryPoint { inner: msg })?.into_any(),
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::DeploymentConfig(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            format!("{:?}", msg),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(
-                        Py::new(py, PyDeploymentConfig { inner: msg })?.into_any(),
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
             // Vision types (serde-based)
             TopicType::CompressedImage(topic) => {
                 let topic_ref = topic.clone();
@@ -4296,26 +3721,6 @@ impl PyTopic {
                 }
             }
             // Force types (additional Pod)
-            TopicType::TactileArray(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyTactileArray { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
             TopicType::ImpedanceParameters(topic) => {
                 let topic_ref = topic.clone();
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
@@ -4714,12 +4119,6 @@ impl PyTopic {
             TopicType::JointCommand(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PwmCommand(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::StepperCommand(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
             // Sensor types
             TopicType::RangeSensor(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
@@ -4825,34 +4224,6 @@ impl PyTopic {
             TopicType::PlaneArray(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            // ML types
-            TopicType::TensorData(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::Predictions(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::InferenceMetrics(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::ModelInfo(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::FeatureVector(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::Classification(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::TrainingMetrics(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::MlTrajectoryPoint(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::DeploymentConfig(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
             // Vision types
             TopicType::CompressedImage(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
@@ -4867,9 +4238,6 @@ impl PyTopic {
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Force types (additional)
-            TopicType::TactileArray(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
             TopicType::ImpedanceParameters(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
@@ -4953,8 +4321,6 @@ impl PyTopic {
                 TopicType::PidConfig(t) => read_lock(t)?.metrics(),
                 TopicType::TrajectoryPoint(t) => read_lock(t)?.metrics(),
                 TopicType::JointCommand(t) => read_lock(t)?.metrics(),
-                TopicType::PwmCommand(t) => read_lock(t)?.metrics(),
-                TopicType::StepperCommand(t) => read_lock(t)?.metrics(),
                 // Sensor types
                 TopicType::RangeSensor(t) => read_lock(t)?.metrics(),
                 TopicType::BatteryState(t) => read_lock(t)?.metrics(),
@@ -4996,23 +4362,12 @@ impl PyTopic {
                 TopicType::PointField(t) => read_lock(t)?.metrics(),
                 TopicType::PlaneDetection(t) => read_lock(t)?.metrics(),
                 TopicType::PlaneArray(t) => read_lock(t)?.metrics(),
-                // ML types
-                TopicType::TensorData(t) => read_lock(t)?.metrics(),
-                TopicType::Predictions(t) => read_lock(t)?.metrics(),
-                TopicType::InferenceMetrics(t) => read_lock(t)?.metrics(),
-                TopicType::ModelInfo(t) => read_lock(t)?.metrics(),
-                TopicType::FeatureVector(t) => read_lock(t)?.metrics(),
-                TopicType::Classification(t) => read_lock(t)?.metrics(),
-                TopicType::TrainingMetrics(t) => read_lock(t)?.metrics(),
-                TopicType::MlTrajectoryPoint(t) => read_lock(t)?.metrics(),
-                TopicType::DeploymentConfig(t) => read_lock(t)?.metrics(),
                 // Vision types
                 TopicType::CompressedImage(t) => read_lock(t)?.metrics(),
                 TopicType::CameraInfo(t) => read_lock(t)?.metrics(),
                 TopicType::RegionOfInterest(t) => read_lock(t)?.metrics(),
                 TopicType::StereoInfo(t) => read_lock(t)?.metrics(),
                 // Force types (additional)
-                TopicType::TactileArray(t) => read_lock(t)?.metrics(),
                 TopicType::ImpedanceParameters(t) => read_lock(t)?.metrics(),
                 TopicType::HapticFeedback(t) => read_lock(t)?.metrics(),
                 // Diagnostics types (additional)
@@ -5145,8 +4500,6 @@ impl PyTopic {
             TopicType::PidConfig(t) => rl!(t, py, PyPidConfig),
             TopicType::TrajectoryPoint(t) => rl!(t, py, PyTrajectoryPoint),
             TopicType::JointCommand(t) => rl!(t, py, PyJointCommand),
-            TopicType::PwmCommand(t) => rl!(t, py, PyPwmCommand),
-            TopicType::StepperCommand(t) => rl!(t, py, PyStepperCommand),
             // Sensor types
             TopicType::RangeSensor(t) => rl!(t, py, PyRangeSensor),
             TopicType::BatteryState(t) => rl!(t, py, PyBatteryState),
@@ -5168,7 +4521,6 @@ impl PyTopic {
             TopicType::WrenchStamped(t) => rl!(t, py, PyWrenchStamped),
             TopicType::ForceCommand(t) => rl!(t, py, PyForceCommand),
             TopicType::ContactInfo(t) => rl!(t, py, PyContactInfo),
-            TopicType::TactileArray(t) => rl!(t, py, PyTactileArray),
             TopicType::ImpedanceParameters(t) => rl!(t, py, PyImpedanceParameters),
             TopicType::HapticFeedback(t) => rl!(t, py, PyHapticFeedback),
             // Navigation types (Copy)
@@ -5202,13 +4554,8 @@ impl PyTopic {
             TopicType::CameraInfo(t) => rl!(t, py, PyCameraInfo),
             TopicType::RegionOfInterest(t) => rl!(t, py, PyRegionOfInterest),
             TopicType::StereoInfo(t) => rl!(t, py, PyStereoInfo),
-            // Non-Copy types: ML, pool-backed, dynamic
+            // Non-Copy types: pool-backed, dynamic
             TopicType::Image(_) | TopicType::PointCloud(_) | TopicType::DepthImage(_)
-            | TopicType::TensorData(_) | TopicType::Predictions(_)
-            | TopicType::InferenceMetrics(_) | TopicType::ModelInfo(_)
-            | TopicType::FeatureVector(_) | TopicType::Classification(_)
-            | TopicType::TrainingMetrics(_)
-            | TopicType::MlTrajectoryPoint(_) | TopicType::DeploymentConfig(_)
             | TopicType::OccupancyGrid(_) | TopicType::CostMap(_)
             | TopicType::CompressedImage(_) | TopicType::PlaneArray(_)
             | TopicType::Generic(_) => {

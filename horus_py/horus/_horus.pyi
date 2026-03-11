@@ -748,32 +748,6 @@ class JointCommand:
     def __init__(self, names: Optional[List[str]] = None, positions: Optional[List[float]] = None, velocities: Optional[List[float]] = None, efforts: Optional[List[float]] = None, modes: Optional[List[int]] = None, timestamp_ns: int = 0) -> None: ...
     def __repr__(self) -> str: ...
 
-class PwmCommand:
-    __topic_name__: str
-    channel_id: int
-    duty_cycle: float
-    frequency: int
-    enable: bool
-    brake_mode: bool
-    current_limit: float
-    timestamp_ns: int
-    def __init__(self, channel_id: int = 0, duty_cycle: float = 0.0, frequency: int = 10000, enable: bool = True, brake_mode: bool = False, current_limit: float = 0.0, timestamp_ns: int = 0) -> None: ...
-    def __repr__(self) -> str: ...
-
-class StepperCommand:
-    __topic_name__: str
-    motor_id: int
-    mode: int
-    target: float
-    max_velocity: float
-    acceleration: float
-    enable: bool
-    microsteps: int
-    current_limit: int
-    timestamp_ns: int
-    def __init__(self, motor_id: int = 0, mode: int = 0, target: float = 0.0, max_velocity: float = 0.0, acceleration: float = 0.0, enable: bool = True, microsteps: int = 16, current_limit: int = 0, timestamp_ns: int = 0) -> None: ...
-    def __repr__(self) -> str: ...
-
 # Sensor messages
 
 class RangeSensor:
@@ -1073,76 +1047,6 @@ class PointField:
     datatype: int
     count: int
     def __init__(self, name: str = "", offset: int = 0, datatype: int = 0, count: int = 1) -> None: ...
-    def __repr__(self) -> str: ...
-
-# ML messages
-
-class TensorData:
-    data: List[Any]
-    shape: List[int]
-    dtype: str
-    def __init__(self, data: Optional[List[Any]] = None, shape: Optional[List[int]] = None, dtype: str = "f32") -> None: ...
-    def __repr__(self) -> str: ...
-
-class Predictions:
-    class_ids: List[int]
-    scores: List[float]
-    class_names: Optional[List[str]]
-    def __init__(self, class_ids: Optional[List[int]] = None, scores: Optional[List[float]] = None, class_names: Optional[List[str]] = None) -> None: ...
-    def __repr__(self) -> str: ...
-
-class InferenceMetrics:
-    __topic_name__: str
-    model_name: str
-    latency_ms: float
-    throughput: float
-    batch_size: int
-    timestamp_ns: int
-    def __init__(self, model_name: str = "", latency_ms: float = 0.0, throughput: float = 0.0, batch_size: int = 1, timestamp_ns: int = 0) -> None: ...
-    def __repr__(self) -> str: ...
-
-class ModelInfo:
-    name: str
-    version: str
-    format: str
-    def __init__(self, name: str = "", version: str = "0.1.0", format: str = "onnx") -> None: ...
-    def __repr__(self) -> str: ...
-
-class FeatureVector:
-    features: List[float]
-    source: Optional[str]
-    timestamp_ns: int
-    def __init__(self, features: Optional[List[float]] = None, source: Optional[str] = None, timestamp_ns: int = 0) -> None: ...
-    def __repr__(self) -> str: ...
-
-class Classification:
-    class_ids: List[int]
-    class_names: List[str]
-    probabilities: List[float]
-    timestamp_ns: int
-    def __init__(self, class_ids: Optional[List[int]] = None, class_names: Optional[List[str]] = None, probabilities: Optional[List[float]] = None, timestamp_ns: int = 0) -> None: ...
-    def __repr__(self) -> str: ...
-
-class TrainingMetrics:
-    __topic_name__: str
-    epoch: int
-    step: int
-    loss: float
-    accuracy: Optional[float]
-    learning_rate: float
-    timestamp_ns: int
-    def __init__(self, epoch: int = 0, step: int = 0, loss: float = 0.0, accuracy: Optional[float] = None, learning_rate: float = 0.001, timestamp_ns: int = 0) -> None: ...
-    def __repr__(self) -> str: ...
-
-class DeploymentConfig:
-    model_path: str
-    format: str
-    execution_provider: str
-    batch_size: int
-    use_fp16: bool
-    num_threads: Optional[int]
-    device_id: Optional[int]
-    def __init__(self, model_path: str = "", format: str = "onnx", execution_provider: str = "cpu", batch_size: int = 1, use_fp16: bool = False, num_threads: Optional[int] = None, device_id: Optional[int] = None) -> None: ...
     def __repr__(self) -> str: ...
 
 # ── Perception Submodule ─────────────────────────────────────────────────────

@@ -77,8 +77,6 @@ try:
         PidConfig as _RustPidConfig,
         TrajectoryPoint as _RustTrajectoryPoint,
         JointCommand as _RustJointCommand,
-        PwmCommand as _RustPwmCommand,
-        StepperCommand as _RustStepperCommand,
         # Sensor types
         RangeSensor as _RustRangeSensor,
         BatteryState as _RustBatteryState,
@@ -120,23 +118,12 @@ try:
         PointField as _RustPointField,
         PlaneDetection as _RustPlaneDetection,
         PlaneArray as _RustPlaneArray,
-        # ML types
-        TensorData as _RustTensorData,
-        Predictions as _RustPredictions,
-        InferenceMetrics as _RustInferenceMetrics,
-        ModelInfo as _RustModelInfo,
-        FeatureVector as _RustFeatureVector,
-        Classification as _RustClassification,
-        TrainingMetrics as _RustTrainingMetrics,
-        MlTrajectoryPoint as _RustMlTrajectoryPoint,
-        DeploymentConfig as _RustDeploymentConfig,
         # Vision types
         CompressedImage as _RustCompressedImage,
         CameraInfo as _RustCameraInfo,
         RegionOfInterest as _RustRegionOfInterest,
         StereoInfo as _RustStereoInfo,
         # Force types (additional)
-        TactileArray as _RustTactileArray,
         ImpedanceParameters as _RustImpedanceParameters,
         HapticFeedback as _RustHapticFeedback,
         # Diagnostics types (additional)
@@ -1410,8 +1397,6 @@ try:
         MotorCommand,
         DifferentialDriveCommand,
         ServoCommand,
-        PwmCommand,
-        StepperCommand,
         PidConfig,
         # Sensor messages
         LaserScan,
@@ -1463,8 +1448,6 @@ except ImportError:
         PidConfig = _RustPidConfig
         TrajectoryPoint = _RustTrajectoryPoint
         JointCommand = _RustJointCommand
-        PwmCommand = _RustPwmCommand
-        StepperCommand = _RustStepperCommand
         RangeSensor = _RustRangeSensor
         BatteryState = _RustBatteryState
         NavSatFix = _RustNavSatFix
@@ -1497,20 +1480,10 @@ except ImportError:
         PointField = _RustPointField
         PlaneDetection = _RustPlaneDetection
         PlaneArray = _RustPlaneArray
-        TensorData = _RustTensorData
-        Predictions = _RustPredictions
-        InferenceMetrics = _RustInferenceMetrics
-        ModelInfo = _RustModelInfo
-        FeatureVector = _RustFeatureVector
-        Classification = _RustClassification
-        TrainingMetrics = _RustTrainingMetrics
-        MlTrajectoryPoint = _RustMlTrajectoryPoint
-        DeploymentConfig = _RustDeploymentConfig
         CompressedImage = _RustCompressedImage
         CameraInfo = _RustCameraInfo
         RegionOfInterest = _RustRegionOfInterest
         StereoInfo = _RustStereoInfo
-        TactileArray = _RustTactileArray
         ImpedanceParameters = _RustImpedanceParameters
         HapticFeedback = _RustHapticFeedback
         DiagnosticValue = _RustDiagnosticValue
@@ -1617,23 +1590,12 @@ try:
     PointField = _RustPointField
     PlaneDetection = _RustPlaneDetection
     PlaneArray = _RustPlaneArray
-    # ML types only in Rust
-    TensorData = _RustTensorData
-    Predictions = _RustPredictions
-    InferenceMetrics = _RustInferenceMetrics
-    ModelInfo = _RustModelInfo
-    FeatureVector = _RustFeatureVector
-    Classification = _RustClassification
-    TrainingMetrics = _RustTrainingMetrics
-    MlTrajectoryPoint = _RustMlTrajectoryPoint
-    DeploymentConfig = _RustDeploymentConfig
     # Vision types only in Rust
     CompressedImage = _RustCompressedImage
     CameraInfo = _RustCameraInfo
     RegionOfInterest = _RustRegionOfInterest
     StereoInfo = _RustStereoInfo
     # Force types (additional) only in Rust
-    TactileArray = _RustTactileArray
     ImpedanceParameters = _RustImpedanceParameters
     HapticFeedback = _RustHapticFeedback
     # Diagnostics types (additional) only in Rust
@@ -1671,8 +1633,6 @@ if _has_messages:
         "MotorCommand",
         "DifferentialDriveCommand",
         "ServoCommand",
-        "PwmCommand",
-        "StepperCommand",
         "PidConfig",
         "TrajectoryPoint",
         "JointCommand",
@@ -1724,23 +1684,12 @@ if _has_messages:
         "PointField",
         "PlaneDetection",
         "PlaneArray",
-        # ML types
-        "TensorData",
-        "Predictions",
-        "InferenceMetrics",
-        "ModelInfo",
-        "FeatureVector",
-        "Classification",
-        "TrainingMetrics",
-        "MlTrajectoryPoint",
-        "DeploymentConfig",
         # Vision types
         "CompressedImage",
         "CameraInfo",
         "RegionOfInterest",
         "StereoInfo",
         # Force types (additional)
-        "TactileArray",
         "ImpedanceParameters",
         "HapticFeedback",
         # Diagnostics types (additional)

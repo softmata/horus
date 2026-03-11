@@ -6,7 +6,6 @@ use horus_macros::LogSummary;
 
 use crate::messages::geometry::{Point3, Vector3};
 use serde::{Deserialize, Serialize};
-use serde_arrays;
 
 /// Force and torque measurement (wrench)
 ///
@@ -79,141 +78,6 @@ impl WrenchStamped {
         self.torque.x = alpha * self.torque.x + (1.0 - alpha) * prev_wrench.torque.x;
         self.torque.y = alpha * self.torque.y + (1.0 - alpha) * prev_wrench.torque.y;
         self.torque.z = alpha * self.torque.z + (1.0 - alpha) * prev_wrench.torque.z;
-    }
-}
-
-/// Tactile sensor array data
-///
-/// Represents pressure/force measurements from multiple tactile sensors
-/// arranged in an array (e.g., fingertip sensors, skin patches).
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
-pub struct TactileArray {
-    /// Array of pressure/force readings
-    #[serde(with = "serde_arrays")]
-    pub sensors: [f32; 64],
-    /// Number of active sensors
-    pub sensor_count: u8,
-    /// Sensor arrangement (0=grid, 1=linear, 2=circular)
-    pub arrangement: u8,
-    /// Grid dimensions for grid arrangement
-    pub grid_width: u8,
-    pub grid_height: u8,
-    /// Sensor spacing in millimeters
-    pub sensor_spacing: f32,
-    /// Sensor sensitivity (force per unit reading)
-    pub sensitivity: f32,
-    /// Frame ID for sensor location
-    pub frame_id: [u8; 32],
-    /// Timestamp in nanoseconds since epoch
-    pub timestamp_ns: u64,
-}
-
-impl Default for TactileArray {
-    fn default() -> Self {
-        Self {
-            sensors: [0.0; 64],
-            sensor_count: 0,
-            arrangement: 0,
-            grid_width: 8,
-            grid_height: 8,
-            sensor_spacing: 2.0, // 2mm spacing
-            sensitivity: 1.0,
-            frame_id: [0; 32],
-            timestamp_ns: 0,
-        }
-    }
-}
-
-impl TactileArray {
-    pub const ARRANGEMENT_GRID: u8 = 0;
-    pub const ARRANGEMENT_LINEAR: u8 = 1;
-    pub const ARRANGEMENT_CIRCULAR: u8 = 2;
-
-    /// Create a new tactile array
-    pub fn new(sensor_count: u8, arrangement: u8) -> Self {
-        Self {
-            sensor_count,
-            arrangement,
-            timestamp_ns: crate::transform_frame::timestamp_now(),
-            ..Default::default()
-        }
-    }
-
-    /// Get active sensor readings
-    pub fn active_sensors(&self) -> &[f32] {
-        &self.sensors[..self.sensor_count as usize]
-    }
-
-    /// Set sensor reading
-    pub fn set_sensor(&mut self, index: u8, value: f32) -> bool {
-        if index < self.sensor_count && (index as usize) < self.sensors.len() {
-            self.sensors[index as usize] = value;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Get sensor reading
-    pub fn sensor(&self, index: u8) -> Option<f32> {
-        if index < self.sensor_count && (index as usize) < self.sensors.len() {
-            Some(self.sensors[index as usize])
-        } else {
-            None
-        }
-    }
-
-    /// Calculate total force from all sensors
-    pub fn total_force(&self) -> f32 {
-        self.active_sensors().iter().sum::<f32>() * self.sensitivity
-    }
-
-    /// Calculate center of pressure for grid arrangement
-    pub fn center_of_pressure(&self) -> Option<(f32, f32)> {
-        if self.arrangement != Self::ARRANGEMENT_GRID
-            || self.sensor_count == 0
-            || self.grid_width == 0
-        {
-            return None;
-        }
-
-        let mut total_force = 0.0;
-        let mut weighted_x = 0.0;
-        let mut weighted_y = 0.0;
-
-        for i in 0..self.sensor_count {
-            let sensor_force = self.sensors[i as usize];
-            if sensor_force > 0.0 {
-                let x = (i % self.grid_width) as f32;
-                let y = (i / self.grid_width) as f32;
-
-                weighted_x += x * sensor_force;
-                weighted_y += y * sensor_force;
-                total_force += sensor_force;
-            }
-        }
-
-        if total_force > 0.0 {
-            Some((weighted_x / total_force, weighted_y / total_force))
-        } else {
-            None
-        }
-    }
-
-    /// Detect contact (any sensor above threshold)
-    pub fn detect_contact(&self, threshold: f32) -> bool {
-        self.active_sensors()
-            .iter()
-            .any(|&reading| reading > threshold)
-    }
-
-    /// Get contact pattern as boolean array
-    pub fn contact_pattern(&self, threshold: f32) -> Vec<bool> {
-        self.active_sensors()
-            .iter()
-            .map(|&reading| reading > threshold)
-            .collect()
     }
 }
 
@@ -531,7 +395,6 @@ impl softmata_core::sensor::WrenchData for WrenchStamped {
 
 crate::messages::impl_pod_message!(
     WrenchStamped,
-    TactileArray,
     ImpedanceParameters,
     ForceCommand,
     ContactInfo,
