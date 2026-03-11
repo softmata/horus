@@ -8,6 +8,7 @@
 //! Path-traversal and input-validation tests exercise `is_safe_path_component()`
 //! indirectly through the handlers.  Filesystem-based tests use `tempfile` crate
 //! temp directories with cleanup.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

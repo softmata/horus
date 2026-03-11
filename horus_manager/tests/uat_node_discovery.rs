@@ -11,6 +11,7 @@
 //!
 //! Each test uses unique node name prefixes to avoid collision when running
 //! tests in parallel.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;
@@ -163,7 +164,7 @@ fn all_nodes_have_current_process_pid() {
 #[test]
 fn removed_node_disappears_from_discovery() {
     let pfx = unique_prefix();
-    let mut rt = build_five_nodes(&pfx);
+    let rt = build_five_nodes(&pfx);
     assert!(rt.wait_ready(3_u64.secs()));
 
     let camera_name = format!("{pfx}camera");

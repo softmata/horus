@@ -4,6 +4,7 @@
 //! counts without panics, OOM, or unacceptable latency.
 //!
 //! Run with: cargo test -p horus_manager --test stress_scale -- --test-threads=1
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

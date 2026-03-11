@@ -4,6 +4,7 @@
 //! and builds the correct pub/sub graph from node presence data.
 //!
 //! Each test uses unique node/topic name prefixes for parallel safety.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

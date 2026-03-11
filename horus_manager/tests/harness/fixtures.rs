@@ -1,4 +1,5 @@
 //! Test node configuration and preset fixtures.
+#![allow(dead_code)]
 
 use horus_core::core::HealthStatus;
 

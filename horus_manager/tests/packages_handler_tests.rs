@@ -11,6 +11,7 @@
 //! Tests focus on input validation (path traversal, null bytes, empty names,
 //! missing fields), expected error codes from Axum's extractor layer, and
 //! structural correctness of success responses.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

@@ -19,7 +19,6 @@
 //! // Cleanup happens automatically on drop.
 //! ```
 
-use horus_core::core::DurationExt;
 mod fixtures;
 mod runtime;
 

@@ -14,6 +14,7 @@
 //!   messages correctly (validated via server-side message structure).
 //! - **Error display & auto-refresh**: Error CSS classes, error elements, and
 //!   auto-refresh interval constants are present.
+#![cfg(feature = "monitor")]
 
 mod monitor_tests;
 

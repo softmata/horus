@@ -6,6 +6,7 @@
 //!
 //! Some tests require recording files on disk; those that don't work with
 //! the API's schema validation and error handling.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

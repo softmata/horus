@@ -2,6 +2,7 @@
 //!
 //! Verifies full CRUD lifecycle for runtime parameters via the HTTP API:
 //! set, get, update, delete, export, and import.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

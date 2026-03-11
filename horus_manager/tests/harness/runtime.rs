@@ -1,4 +1,5 @@
 //! Live test runtime that writes real SHM artefacts for acceptance testing.
+#![allow(dead_code)]
 
 use super::fixtures::TestNodeConfig;
 

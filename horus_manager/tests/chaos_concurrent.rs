@@ -2,6 +2,7 @@
 //!
 //! Hits all monitor endpoints concurrently with high parallelism.
 //! Verifies no deadlocks, data corruption, or crashes.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

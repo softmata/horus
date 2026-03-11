@@ -6,6 +6,7 @@
 //!
 //! Tests bind to a random port, start a real axum server, and connect
 //! using a WebSocket client.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

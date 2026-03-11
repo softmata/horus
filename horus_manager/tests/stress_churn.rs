@@ -4,6 +4,7 @@
 //! — while concurrently polling API endpoints.
 //!
 //! Run with: cargo test -p horus_manager --test stress_churn -- --test-threads=1
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

@@ -5,6 +5,7 @@
 //! expired session rejection.
 //!
 //! Tests use a router with production-like auth middleware.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

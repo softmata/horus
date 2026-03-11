@@ -5,6 +5,7 @@
 //! - WebSocket token extraction (cookie and bearer) edge cases
 //! - Path traversal, null byte injection, and other input validation attacks
 //!   across all endpoints that accept user-controlled path components
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

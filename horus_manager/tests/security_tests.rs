@@ -33,6 +33,7 @@
 //! | Sandbox BPF construction doesn't panic      | `plugins::sandbox::tests`      |
 //! | Sandbox seccomp blocks socket (unit test)   | `plugins::sandbox::tests`      |
 //! | Sandbox rlimit applied                      | `plugins::sandbox::tests`      |
+#![cfg(feature = "monitor")]
 
 use axum::{
     body::Body,

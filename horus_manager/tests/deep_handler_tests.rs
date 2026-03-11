@@ -7,6 +7,7 @@
 //!
 //! All tests assume `--test-threads=1` serial execution for debug tests
 //! (which share a global `DEBUG_SESSIONS` mutex).
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

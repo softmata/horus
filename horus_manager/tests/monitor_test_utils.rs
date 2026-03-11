@@ -3,6 +3,7 @@
 //! This file declares the `monitor_tests` module (which lives in
 //! `tests/monitor_tests/`) and contains smoke tests that verify the test
 //! utilities themselves compile and produce valid data.
+#![cfg(feature = "monitor")]
 
 mod monitor_tests;
 

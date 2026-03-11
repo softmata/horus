@@ -6,6 +6,7 @@
 //!
 //! All tests assume `--test-threads=1` serial execution.  The harness cleans up
 //! on [`Drop`], so tests do not rely on ordering or shared state.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

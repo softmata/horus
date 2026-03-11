@@ -8,6 +8,7 @@
 //! Each test uses a unique identifier (PID + test name) in log messages and
 //! node/topic names to avoid collision with parallel tests that share the
 //! global ring buffer.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

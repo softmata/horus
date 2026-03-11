@@ -2,6 +2,7 @@
 //!
 //! Verifies the monitor correctly streams log entries from nodes via the
 //! global log buffer, filters by node name and topic, and handles high volume.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

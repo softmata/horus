@@ -5,6 +5,7 @@
 //!
 //! These tests write directly to the blackbox WAL file that the handler reads,
 //! then verify via the HTTP API.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

@@ -4,6 +4,7 @@
 //! gracefully without crashing.
 //!
 //! Run with: cargo test -p horus_manager --test chaos_failure -- --test-threads=1
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;

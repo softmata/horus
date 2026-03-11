@@ -3,6 +3,7 @@
 //! Uses `HorusTestRuntime` to create real SHM artifacts (presence files, topic
 //! files, log entries) and verifies the monitor API endpoints and discovery
 //! system correctly reflect node/topic state changes.
+#![cfg(feature = "monitor")]
 
 mod harness;
 mod monitor_tests;
