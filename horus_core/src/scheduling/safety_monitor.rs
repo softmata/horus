@@ -117,13 +117,11 @@ impl BudgetEnforcer {
         if let Some(&budget) = self.budgets.get(node) {
             if actual > budget {
                 self.overruns.fetch_add(1, Ordering::SeqCst);
-                let overrun = actual - budget;
-                return Err(BudgetViolation {
-                    node_name: node.to_string(),
+                return Err(BudgetViolation::new(
+                    node.to_string(),
                     budget,
                     actual,
-                    overrun,
-                });
+                ));
             }
         }
         Ok(())
@@ -261,12 +259,12 @@ impl SafetyMonitor {
             // Critical node budget violation triggers emergency stop.
             // Read lock is acquired for the contains() check and released immediately
             // after (before the budget_enforcer.lock() below — no lock ordering issue).
-            let is_critical = self.critical_nodes.read().contains(&violation.node_name);
+            let is_critical = self.critical_nodes.read().contains(&violation.node_name().to_string());
             if is_critical {
                 self.budget_enforcer.lock().mark_critical_overrun();
                 self.trigger_emergency_stop(format!(
                     "Critical node {} exceeded tick budget: {:?} > {:?}",
-                    violation.node_name, violation.actual, violation.budget
+                    violation.node_name(), violation.actual(), violation.budget()
                 ));
             }
         }
@@ -330,12 +328,33 @@ impl SafetyMonitor {
 /// Safety statistics
 #[derive(Debug, Clone)]
 pub struct SafetyStats {
-    pub state: SafetyState,
-    pub budget_overruns: u64,
-    pub deadline_misses: u64,
-    pub watchdog_expirations: u64,
-    /// Number of times a node entered safe mode via Miss::SafeMode
-    pub safe_mode_activations: u64,
+    state: SafetyState,
+    budget_overruns: u64,
+    deadline_misses: u64,
+    watchdog_expirations: u64,
+    safe_mode_activations: u64,
+}
+
+impl SafetyStats {
+    pub fn state(&self) -> &SafetyState {
+        &self.state
+    }
+
+    pub fn budget_overruns(&self) -> u64 {
+        self.budget_overruns
+    }
+
+    pub fn deadline_misses(&self) -> u64 {
+        self.deadline_misses
+    }
+
+    pub fn watchdog_expirations(&self) -> u64 {
+        self.watchdog_expirations
+    }
+
+    pub fn safe_mode_activations(&self) -> u64 {
+        self.safe_mode_activations
+    }
 }
 
 #[cfg(test)]

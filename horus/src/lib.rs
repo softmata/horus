@@ -9,14 +9,20 @@
 //! use horus::prelude::*;
 //!
 //! pub struct MyNode {
-//!     publisher: Topic<CmdVel>,
+//!     cmd_pub: Topic<CmdVel>,
+//! }
+//!
+//! impl MyNode {
+//!     fn new() -> Self {
+//!         Self { cmd_pub: Topic::new("cmd_vel").unwrap() }
+//!     }
 //! }
 //!
 //! impl Node for MyNode {
-//!     fn name(&self) -> &str { "MyNode" }
+//!     fn name(&self) -> &str { "my_node" }
 //!
 //!     fn tick(&mut self) {
-//!         // Node logic here
+//!         self.cmd_pub.send(&CmdVel { linear: 0.5, angular: 0.0 });
 //!     }
 //! }
 //! ```
@@ -186,7 +192,7 @@ pub use serde;
 /// macros, and message definitions are included.
 pub mod prelude {
     // === Node ===
-    pub use horus_core::core::{LogSummary, Node};
+    pub use horus_core::core::{HealthStatus, LogSummary, Node, NodeState};
 
     // === Real-time node ===
     pub use horus_core::core::{DurationExt, Frequency, Miss, RtStats};
@@ -216,6 +222,7 @@ pub mod prelude {
     };
 
     // === Message types (all standard robotics messages) ===
+    // Includes: CmdVel, Imu, Odometry, LaserScan, Image, GenericMessage, and 60+ more.
     pub use horus_core::types::{
         Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype,
     };
@@ -223,9 +230,10 @@ pub mod prelude {
 
     // === Actions ===
     pub use horus_core::actions::{
-        Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
-        ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
-        GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
+        Action, ActionClient, ActionClientBuilder, ActionClientNode, ActionError, ActionResult,
+        ActionServerBuilder, ActionServerNode, CancelResponse, ClientGoalHandle, GoalId,
+        GoalOutcome, GoalPriority, GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle,
+        SyncActionClient,
     };
 
     // === Services (request/response RPC) ===

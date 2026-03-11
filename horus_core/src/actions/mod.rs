@@ -131,6 +131,11 @@ pub use client::{
     ActionClientBuilder, ActionClientMetrics, ActionClientNode, ClientGoalHandle, FeedbackCallback,
     ResultCallback, StatusCallback, SyncActionClient,
 };
+
+/// Convenience alias — identical to [`SyncActionClient`].
+///
+/// Named `ActionClient` for symmetry with [`crate::services::ServiceClient`].
+pub type ActionClient<A> = SyncActionClient<A>;
 pub use server::{
     ActionServerBuilder, ActionServerMetrics, ActionServerNode, CancelCallback, ExecuteCallback,
     GoalCallback, GoalOutcome, ServerGoalHandle,

@@ -100,7 +100,7 @@ mod tests {
 
         // Verify metrics were updated
         let metrics = info.metrics();
-        assert_eq!(metrics.warnings_count, 1);
-        assert_eq!(metrics.errors_count, 1);
+        assert_eq!(metrics.warnings_count(), 1);
+        assert_eq!(metrics.errors_count(), 1);
     }
 }

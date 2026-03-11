@@ -1021,6 +1021,887 @@ pub fn monitor_rates(window: Option<usize>) -> HorusResult<()> {
     Ok(())
 }
 
+// ============================================================================
+// TF Recording / Replay / Diff
+// ============================================================================
+
+/// Magic bytes for TF recording file format
+const TFR_MAGIC: &[u8; 4] = b"TFR1";
+/// Version of the recording format
+const TFR_VERSION: u8 = 1;
+
+/// Header for a TF recording file (.tfr)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TfrHeader {
+    magic: [u8; 4],
+    version: u8,
+    _padding: [u8; 3],
+    /// Wall-clock start time (nanos since epoch)
+    start_time_ns: u64,
+    /// Total number of entries in the file
+    entry_count: u64,
+}
+
+/// Entry type tag
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TfrEntryType {
+    /// Dynamic transform update
+    Dynamic = 0,
+    /// Static transform (recorded once)
+    Static = 1,
+}
+
+/// Single entry in a TF recording file
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TfrEntry {
+    entry_type: u8,
+    _padding: [u8; 7],
+    /// Simulation time offset from start (nanoseconds)
+    offset_ns: u64,
+    /// The transform data
+    stamped: TransformStamped,
+}
+
+/// Record TF transforms from shared memory to a .tfr file
+///
+/// Usage: `horus tf record --output recording.tfr [--duration 60]`
+pub fn record_transforms(
+    output_path: &str,
+    max_duration_secs: Option<f64>,
+) -> HorusResult<()> {
+    use std::io::Write;
+
+    println!("{}", "Recording TF transforms...".green().bold());
+    println!("  Output: {}", output_path.cyan());
+    if let Some(d) = max_duration_secs {
+        println!("  Duration: {:.1}s", d);
+    }
+    println!("  Press Ctrl+C to stop\n");
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    let _ = ctrlc::set_handler(move || r.store(false, Ordering::SeqCst));
+
+    let start = Instant::now();
+    let start_time_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    // Open output file and write placeholder header (will update entry_count later)
+    let mut file = std::fs::File::create(output_path).map_err(|e| {
+        HorusError::Config(ConfigError::other(format!("Failed to create output file: {e}")))
+    })?;
+
+    let header = TfrHeader {
+        magic: *TFR_MAGIC,
+        version: TFR_VERSION,
+        _padding: [0; 3],
+        start_time_ns,
+        entry_count: 0,
+    };
+    let header_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &header as *const TfrHeader as *const u8,
+            std::mem::size_of::<TfrHeader>(),
+        )
+    };
+    file.write_all(header_bytes).map_err(|e| {
+        HorusError::Config(ConfigError::other(format!("Failed to write header: {e}")))
+    })?;
+
+    let mut entry_count: u64 = 0;
+    let mut recorded_static: HashSet<String> = HashSet::new();
+
+    // Open SHM topics
+    let tf_topic = Topic::<TFMessage>::new(TF_TOPIC).ok();
+    let tf_static_topic = Topic::<TFMessage>::new(TF_STATIC_TOPIC).ok();
+
+    while running.load(Ordering::Relaxed) {
+        if let Some(max) = max_duration_secs {
+            if start.elapsed().as_secs_f64() >= max {
+                break;
+            }
+        }
+
+        let offset_ns = start.elapsed().as_nanos() as u64;
+
+        // Read dynamic transforms
+        if let Some(ref topic) = tf_topic {
+            if let Some(msg) = topic.recv() {
+                for stamped in msg.iter() {
+                    let entry = TfrEntry {
+                        entry_type: TfrEntryType::Dynamic as u8,
+                        _padding: [0; 7],
+                        offset_ns,
+                        stamped: *stamped,
+                    };
+                    let entry_bytes: &[u8] = unsafe {
+                        std::slice::from_raw_parts(
+                            &entry as *const TfrEntry as *const u8,
+                            std::mem::size_of::<TfrEntry>(),
+                        )
+                    };
+                    if file.write_all(entry_bytes).is_ok() {
+                        entry_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Read static transforms (only record each once)
+        if let Some(ref topic) = tf_static_topic {
+            if let Some(msg) = topic.read_latest() {
+                for stamped in msg.iter() {
+                    let child = stamped.child_frame_id();
+                    if !recorded_static.contains(&child) {
+                        let entry = TfrEntry {
+                            entry_type: TfrEntryType::Static as u8,
+                            _padding: [0; 7],
+                            offset_ns: 0, // Static frames have no time offset
+                            stamped: *stamped,
+                        };
+                        let entry_bytes: &[u8] = unsafe {
+                            std::slice::from_raw_parts(
+                                &entry as *const TfrEntry as *const u8,
+                                std::mem::size_of::<TfrEntry>(),
+                            )
+                        };
+                        if file.write_all(entry_bytes).is_ok() {
+                            entry_count += 1;
+                            recorded_static.insert(child);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Print progress
+        if entry_count % 100 == 0 && entry_count > 0 {
+            print!(
+                "\r  {} entries, {:.1}s elapsed, {} static frames",
+                entry_count,
+                start.elapsed().as_secs_f64(),
+                recorded_static.len()
+            );
+            let _ = std::io::stdout().flush();
+        }
+
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // Update header with final entry count
+    use std::io::Seek;
+    file.seek(std::io::SeekFrom::Start(0)).map_err(|e| {
+        HorusError::Config(ConfigError::other(format!("Failed to seek: {e}")))
+    })?;
+    let final_header = TfrHeader {
+        magic: *TFR_MAGIC,
+        version: TFR_VERSION,
+        _padding: [0; 3],
+        start_time_ns,
+        entry_count,
+    };
+    let header_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            &final_header as *const TfrHeader as *const u8,
+            std::mem::size_of::<TfrHeader>(),
+        )
+    };
+    file.write_all(header_bytes).map_err(|e| {
+        HorusError::Config(ConfigError::other(format!("Failed to update header: {e}")))
+    })?;
+
+    println!();
+    println!();
+    println!("{}", "Recording complete.".green().bold());
+    println!("  Entries: {}", entry_count);
+    println!("  Duration: {:.1}s", start.elapsed().as_secs_f64());
+    println!("  Static frames: {}", recorded_static.len());
+    println!("  File: {}", output_path);
+
+    Ok(())
+}
+
+/// Read a .tfr recording file and return its entries
+fn read_tfr_file(path: &str) -> HorusResult<(TfrHeader, Vec<TfrEntry>)> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        HorusError::Config(ConfigError::other(format!("Failed to open file '{path}': {e}")))
+    })?;
+
+    // Read header
+    let mut header_bytes = vec![0u8; std::mem::size_of::<TfrHeader>()];
+    file.read_exact(&mut header_bytes).map_err(|e| {
+        HorusError::Config(ConfigError::other(format!("Failed to read header: {e}")))
+    })?;
+    let header: TfrHeader = unsafe { std::ptr::read(header_bytes.as_ptr() as *const TfrHeader) };
+
+    if &header.magic != TFR_MAGIC {
+        return Err(HorusError::Config(ConfigError::other(
+            "Invalid TFR file: bad magic bytes",
+        )));
+    }
+    if header.version != TFR_VERSION {
+        return Err(HorusError::Config(ConfigError::other(format!(
+            "Unsupported TFR version: {} (expected {})",
+            header.version, TFR_VERSION
+        ))));
+    }
+
+    // Read entries
+    let entry_size = std::mem::size_of::<TfrEntry>();
+    let mut entries = Vec::with_capacity(header.entry_count as usize);
+    let mut entry_bytes = vec![0u8; entry_size];
+
+    for _ in 0..header.entry_count {
+        if file.read_exact(&mut entry_bytes).is_err() {
+            break;
+        }
+        let entry: TfrEntry = unsafe { std::ptr::read(entry_bytes.as_ptr() as *const TfrEntry) };
+        entries.push(entry);
+    }
+
+    Ok((header, entries))
+}
+
+/// Replay a .tfr recording file, printing transforms as they play back
+///
+/// Usage: `horus tf play recording.tfr [--speed 2.0]`
+pub fn replay_transforms(path: &str, speed: f64) -> HorusResult<()> {
+    let (_header, entries) = read_tfr_file(path)?;
+
+    println!("{}", "Replaying TF recording...".green().bold());
+    println!("  File: {}", path.cyan());
+    println!("  Entries: {}", entries.len());
+    println!("  Speed: {:.1}x", speed);
+    println!("  Press Ctrl+C to stop\n");
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    let _ = ctrlc::set_handler(move || r.store(false, Ordering::SeqCst));
+
+    // Build TransformFrame from static entries first
+    let tf = TransformFrame::new();
+    let mut frame_parents: HashMap<String, String> = HashMap::new();
+
+    // First pass: register all static frames
+    for entry in &entries {
+        if entry.entry_type == TfrEntryType::Static as u8 {
+            let parent = entry.stamped.parent_frame_id();
+            let child = entry.stamped.child_frame_id();
+            if !tf.has_frame(&parent) {
+                let _ = tf.register_frame(&parent, None);
+            }
+            let _ = tf.register_static_frame(&child, Some(&parent), &entry.stamped.transform);
+            frame_parents.insert(child.clone(), parent.clone());
+            println!(
+                "  {} {} → {} {}",
+                "[static]".green(),
+                parent.dimmed(),
+                child,
+                format_transform_compact(&entry.stamped.transform)
+            );
+        }
+    }
+
+    // Replay dynamic entries with timing
+    let replay_start = Instant::now();
+    let mut last_print = Instant::now();
+
+    for entry in &entries {
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if entry.entry_type != TfrEntryType::Dynamic as u8 {
+            continue;
+        }
+
+        // Wait until the right time (scaled by speed)
+        let target_elapsed = Duration::from_nanos((entry.offset_ns as f64 / speed) as u64);
+        let actual_elapsed = replay_start.elapsed();
+        if target_elapsed > actual_elapsed {
+            std::thread::sleep(target_elapsed - actual_elapsed);
+        }
+
+        // Apply transform
+        let parent = entry.stamped.parent_frame_id();
+        let child = entry.stamped.child_frame_id();
+        if !tf.has_frame(&parent) {
+            let _ = tf.register_frame(&parent, None);
+        }
+        if !tf.has_frame(&child) {
+            let _ = tf.register_frame(&child, Some(&parent));
+            frame_parents.insert(child.clone(), parent.clone());
+        }
+        let _ = tf.update_transform(&child, &entry.stamped.transform, entry.stamped.timestamp_ns);
+
+        // Print at ~10Hz
+        if last_print.elapsed() >= Duration::from_millis(100) {
+            let t = &entry.stamped.transform;
+            println!(
+                "  [{:>8.3}s] {} → {}: {}",
+                entry.offset_ns as f64 / 1_000_000_000.0,
+                parent.dimmed(),
+                child,
+                format_transform_compact(t)
+            );
+            last_print = Instant::now();
+        }
+    }
+
+    println!();
+    println!("{}", "Replay complete.".green().bold());
+    Ok(())
+}
+
+/// Format a transform compactly for display
+fn format_transform_compact(t: &Transform) -> String {
+    format!(
+        "xyz=[{:.3}, {:.3}, {:.3}]",
+        t.translation[0], t.translation[1], t.translation[2]
+    )
+}
+
+/// Compare two .tfr recording files and report per-frame differences
+///
+/// Usage: `horus tf diff file1.tfr file2.tfr [--threshold 0.001]`
+pub fn diff_transforms(
+    path1: &str,
+    path2: &str,
+    threshold_m: f64,
+    threshold_deg: f64,
+    json_output: bool,
+) -> HorusResult<()> {
+    let (_header1, entries1) = read_tfr_file(path1)?;
+    let (_header2, entries2) = read_tfr_file(path2)?;
+
+    if !json_output {
+        println!("{}", "Comparing TF recordings...".green().bold());
+        println!("  File 1: {} ({} entries)", path1.cyan(), entries1.len());
+        println!("  File 2: {} ({} entries)", path2.cyan(), entries2.len());
+        println!();
+    }
+
+    // Build final TF state from each recording
+    let tf1 = build_tf_from_entries(&entries1);
+    let tf2 = build_tf_from_entries(&entries2);
+
+    // Get union of all frame names
+    let frames1: HashSet<String> = tf1.all_frames().into_iter().collect();
+    let frames2: HashSet<String> = tf2.all_frames().into_iter().collect();
+    let all_frames: HashSet<&String> = frames1.union(&frames2).collect();
+
+    let mut diffs: Vec<FrameDiff> = Vec::new();
+
+    for frame in &all_frames {
+        let in1 = frames1.contains(*frame);
+        let in2 = frames2.contains(*frame);
+
+        match (in1, in2) {
+            (true, false) => {
+                diffs.push(FrameDiff {
+                    frame: frame.to_string(),
+                    status: DiffStatus::OnlyIn1,
+                    translation_err_m: 0.0,
+                    rotation_err_deg: 0.0,
+                });
+            }
+            (false, true) => {
+                diffs.push(FrameDiff {
+                    frame: frame.to_string(),
+                    status: DiffStatus::OnlyIn2,
+                    translation_err_m: 0.0,
+                    rotation_err_deg: 0.0,
+                });
+            }
+            (true, true) => {
+                // Compare latest transforms
+                if let (Ok(t1), Ok(t2)) = (tf1.tf(frame, "world"), tf2.tf(frame, "world")) {
+                    // Translation error (Euclidean distance)
+                    let dx = t1.translation[0] - t2.translation[0];
+                    let dy = t1.translation[1] - t2.translation[1];
+                    let dz = t1.translation[2] - t2.translation[2];
+                    let trans_err = (dx * dx + dy * dy + dz * dz).sqrt();
+
+                    // Rotation error (angle of relative rotation)
+                    let relative = t1.inverse().compose(&t2);
+                    let rot_err_rad = relative.rotation_angle();
+                    let rot_err_deg = rot_err_rad.to_degrees();
+
+                    let exceeds = trans_err > threshold_m || rot_err_deg > threshold_deg;
+                    diffs.push(FrameDiff {
+                        frame: frame.to_string(),
+                        status: if exceeds {
+                            DiffStatus::Different
+                        } else {
+                            DiffStatus::Same
+                        },
+                        translation_err_m: trans_err,
+                        rotation_err_deg: rot_err_deg,
+                    });
+                }
+            }
+            (false, false) => unreachable!(),
+        }
+    }
+
+    diffs.sort_by(|a, b| a.frame.cmp(&b.frame));
+
+    if json_output {
+        // JSON output for CI integration
+        let json_diffs: Vec<String> = diffs
+            .iter()
+            .map(|d| {
+                format!(
+                    r#"  {{"frame": "{}", "status": "{}", "translation_err_m": {:.6}, "rotation_err_deg": {:.4}}}"#,
+                    d.frame, d.status.as_str(), d.translation_err_m, d.rotation_err_deg
+                )
+            })
+            .collect();
+        println!("[{}]", json_diffs.join(",\n"));
+    } else {
+        // Table output
+        println!(
+            "  {:<25} {:>12} {:>12} {:>10}",
+            "FRAME".dimmed(),
+            "TRANS (mm)".dimmed(),
+            "ROT (deg)".dimmed(),
+            "STATUS".dimmed()
+        );
+        println!("  {}", "-".repeat(62).dimmed());
+
+        for d in &diffs {
+            let status_str = match d.status {
+                DiffStatus::Same => "OK".green(),
+                DiffStatus::Different => "DIFF".red(),
+                DiffStatus::OnlyIn1 => "FILE1 ONLY".yellow(),
+                DiffStatus::OnlyIn2 => "FILE2 ONLY".yellow(),
+            };
+            let trans_str = format!("{:.3}", d.translation_err_m * 1000.0); // mm
+            let rot_str = format!("{:.3}", d.rotation_err_deg);
+
+            println!(
+                "  {:<25} {:>12} {:>12} {:>10}",
+                d.frame, trans_str, rot_str, status_str
+            );
+        }
+
+        let diff_count = diffs
+            .iter()
+            .filter(|d| !matches!(d.status, DiffStatus::Same))
+            .count();
+        println!();
+        if diff_count == 0 {
+            println!("  {}", "All frames match within threshold.".green());
+        } else {
+            println!(
+                "  {} frame(s) differ.",
+                format!("{diff_count}").red().bold()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a TransformFrame from recording entries
+fn build_tf_from_entries(entries: &[TfrEntry]) -> TransformFrame {
+    let tf = TransformFrame::new();
+    // Register "world" as root
+    let _ = tf.register_frame("world", None);
+
+    for entry in entries {
+        let parent = entry.stamped.parent_frame_id();
+        let child = entry.stamped.child_frame_id();
+
+        if !tf.has_frame(&parent) {
+            let _ = tf.register_frame(&parent, None);
+        }
+
+        if entry.entry_type == TfrEntryType::Static as u8 {
+            if !tf.has_frame(&child) {
+                let _ = tf.register_static_frame(&child, Some(&parent), &entry.stamped.transform);
+            }
+        } else {
+            if !tf.has_frame(&child) {
+                let _ = tf.register_frame(&child, Some(&parent));
+            }
+            let _ = tf.update_transform(&child, &entry.stamped.transform, entry.stamped.timestamp_ns);
+        }
+    }
+
+    tf
+}
+
+#[derive(Debug)]
+struct FrameDiff {
+    frame: String,
+    status: DiffStatus,
+    translation_err_m: f64,
+    rotation_err_deg: f64,
+}
+
+#[derive(Debug)]
+enum DiffStatus {
+    Same,
+    Different,
+    OnlyIn1,
+    OnlyIn2,
+}
+
+impl DiffStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DiffStatus::Same => "same",
+            DiffStatus::Different => "different",
+            DiffStatus::OnlyIn1 => "only_in_file1",
+            DiffStatus::OnlyIn2 => "only_in_file2",
+        }
+    }
+}
+
+// ============================================================================
+// TF Calibration Tools
+// ============================================================================
+
+/// Tune a static frame's offset interactively via CLI
+///
+/// Reads the current transform, lets user adjust it with incremental steps,
+/// then saves the result.
+///
+/// Usage: `horus tf tune <frame_name> [--step 0.001]`
+pub fn tune_static_frame(
+    frame_name: &str,
+    step_m: f64,
+    step_deg: f64,
+) -> HorusResult<()> {
+    println!("{}", "Static Frame Offset Tuner".green().bold());
+    println!("  Frame: {}", frame_name.cyan());
+    println!("  Translation step: {:.4} m", step_m);
+    println!("  Rotation step: {:.2} deg", step_deg);
+    println!();
+
+    // Read current transform from SHM
+    let mut reader = TransformFrameReader::new();
+    // Poll SHM a few times to collect frames
+    for _ in 0..10 {
+        reader.read_from_shm();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let original = if let Some(data) = reader.frame_data.get(frame_name) {
+        data.transform.clone()
+    } else {
+        println!(
+            "  {} Frame '{}' not found in live TF data. Starting from identity.",
+            "Warning:".yellow(),
+            frame_name
+        );
+        Transform::identity()
+    };
+
+    let step_rad = step_deg.to_radians();
+
+    println!("  Original: xyz=[{:.4}, {:.4}, {:.4}]",
+        original.translation[0], original.translation[1], original.translation[2]);
+    let euler = original.to_euler();
+    println!("            rpy=[{:.4}, {:.4}, {:.4}] deg",
+        euler[0].to_degrees(), euler[1].to_degrees(), euler[2].to_degrees());
+    println!();
+    println!("  {}", "Commands:".bold());
+    println!("    x+/x-  : adjust X translation  (+/- {:.4} m)", step_m);
+    println!("    y+/y-  : adjust Y translation");
+    println!("    z+/z-  : adjust Z translation");
+    println!("    r+/r-  : adjust roll           (+/- {:.2} deg)", step_deg);
+    println!("    p+/p-  : adjust pitch");
+    println!("    w+/w-  : adjust yaw");
+    println!("    reset  : revert to original");
+    println!("    save   : save and exit");
+    println!("    quit   : exit without saving");
+    println!();
+
+    let mut current = original.clone();
+
+    loop {
+        // Show current state
+        let delta_t = [
+            current.translation[0] - original.translation[0],
+            current.translation[1] - original.translation[1],
+            current.translation[2] - original.translation[2],
+        ];
+        let current_euler = current.to_euler();
+        print!(
+            "\r  Current: xyz=[{:.4}, {:.4}, {:.4}] delta=[{:.4}, {:.4}, {:.4}]  > ",
+            current.translation[0], current.translation[1], current.translation[2],
+            delta_t[0], delta_t[1], delta_t[2],
+        );
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        // Read command
+        let mut input = String::new();
+        if std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut input).is_err() {
+            break;
+        }
+        let cmd = input.trim();
+
+        match cmd {
+            "x+" => current.translation[0] += step_m,
+            "x-" => current.translation[0] -= step_m,
+            "y+" => current.translation[1] += step_m,
+            "y-" => current.translation[1] -= step_m,
+            "z+" => current.translation[2] += step_m,
+            "z-" => current.translation[2] -= step_m,
+            "r+" | "r-" | "p+" | "p-" | "w+" | "w-" => {
+                let mut e = current.to_euler();
+                match cmd {
+                    "r+" => e[0] += step_rad,
+                    "r-" => e[0] -= step_rad,
+                    "p+" => e[1] += step_rad,
+                    "p-" => e[1] -= step_rad,
+                    "w+" => e[2] += step_rad,
+                    "w-" => e[2] -= step_rad,
+                    _ => {}
+                }
+                current = Transform::from_euler(current.translation, e);
+            }
+            "reset" => {
+                current = original.clone();
+                println!("  {}", "Reset to original.".yellow());
+            }
+            "save" => {
+                println!();
+                println!("  {}", "Final transform:".green().bold());
+                println!("    xyz=[{:.6}, {:.6}, {:.6}]",
+                    current.translation[0], current.translation[1], current.translation[2]);
+                let final_euler = current.to_euler();
+                println!("    rpy=[{:.6}, {:.6}, {:.6}] rad",
+                    final_euler[0], final_euler[1], final_euler[2]);
+                println!("    rpy=[{:.4}, {:.4}, {:.4}] deg",
+                    final_euler[0].to_degrees(), final_euler[1].to_degrees(), final_euler[2].to_degrees());
+
+                // Try to update via SHM
+                let tf = TransformFrame::new();
+                let _ = tf.register_frame("world", None);
+                if let Some(data) = reader.frame_data.get(frame_name) {
+                    let _ = tf.register_frame(frame_name, Some(&data.parent));
+                    let _ = tf.set_static_transform(frame_name, &current);
+                    println!("  {}", "Transform updated in live TF tree.".green());
+                }
+
+                println!("  {}", "Saved.".green().bold());
+                break;
+            }
+            "quit" | "q" => {
+                println!("  {}", "Exiting without saving.".dimmed());
+                break;
+            }
+            "" => {} // empty line, just redisplay
+            _ => println!("  Unknown command: '{}'. Try x+, y-, r+, save, quit.", cmd),
+        }
+    }
+
+    Ok(())
+}
+
+/// Compute a rigid-body calibration transform from point correspondences.
+///
+/// Given N >= 3 paired points (sensor coordinates and world coordinates),
+/// computes the optimal rigid transform using SVD-based registration
+/// (Arun et al. 1987).
+///
+/// Usage: `horus tf calibrate --points-file pairs.csv`
+///
+/// CSV format: `sensor_x,sensor_y,sensor_z,world_x,world_y,world_z`
+pub fn calibrate_from_points(
+    points_file: &str,
+) -> HorusResult<()> {
+    println!("{}", "Sensor-to-Base Calibration".green().bold());
+    println!("  Points file: {}", points_file.cyan());
+    println!();
+
+    // Read point pairs from CSV
+    let content = std::fs::read_to_string(points_file).map_err(|e| {
+        HorusError::Config(ConfigError::other(format!("Failed to read points file: {e}")))
+    })?;
+
+    let mut sensor_points: Vec<[f64; 3]> = Vec::new();
+    let mut world_points: Vec<[f64; 3]> = Vec::new();
+
+    for (i, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("sensor") {
+            continue; // Skip comments and header
+        }
+        let parts: Vec<f64> = line
+            .split(',')
+            .map(|s| s.trim().parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                HorusError::Config(ConfigError::other(format!(
+                    "Failed to parse line {}: {e}",
+                    i + 1
+                )))
+            })?;
+        if parts.len() != 6 {
+            return Err(HorusError::Config(ConfigError::other(format!(
+                "Line {} has {} values, expected 6 (sensor_xyz, world_xyz)",
+                i + 1,
+                parts.len()
+            ))));
+        }
+        sensor_points.push([parts[0], parts[1], parts[2]]);
+        world_points.push([parts[3], parts[4], parts[5]]);
+    }
+
+    let n = sensor_points.len();
+    if n < 3 {
+        return Err(HorusError::Config(ConfigError::other(format!(
+            "Need at least 3 point pairs, got {n}"
+        ))));
+    }
+
+    println!("  Loaded {} point pairs.", n);
+
+    // Compute centroids
+    let mut sensor_centroid = [0.0f64; 3];
+    let mut world_centroid = [0.0f64; 3];
+    for i in 0..n {
+        for j in 0..3 {
+            sensor_centroid[j] += sensor_points[i][j];
+            world_centroid[j] += world_points[i][j];
+        }
+    }
+    for j in 0..3 {
+        sensor_centroid[j] /= n as f64;
+        world_centroid[j] /= n as f64;
+    }
+
+    // Center the points
+    let mut sensor_centered: Vec<[f64; 3]> = sensor_points
+        .iter()
+        .map(|p| [p[0] - sensor_centroid[0], p[1] - sensor_centroid[1], p[2] - sensor_centroid[2]])
+        .collect();
+    let mut world_centered: Vec<[f64; 3]> = world_points
+        .iter()
+        .map(|p| [p[0] - world_centroid[0], p[1] - world_centroid[1], p[2] - world_centroid[2]])
+        .collect();
+
+    // Compute cross-covariance matrix H = sum(sensor_i * world_i^T)
+    let mut h = [[0.0f64; 3]; 3];
+    for i in 0..n {
+        for r in 0..3 {
+            for c in 0..3 {
+                h[r][c] += sensor_centered[i][r] * world_centered[i][c];
+            }
+        }
+    }
+
+    // SVD of H using Jacobi rotations (simple 3x3 SVD)
+    // For production, use nalgebra. Here we use the Transform::from_matrix approach:
+    // Compute R = V * U^T from SVD(H) = U * S * V^T
+    //
+    // Simplified approach: use quaternion-based registration via the method of Horn (1987)
+    // Build the 4x4 symmetric matrix N from the cross-covariance
+    let sxx = h[0][0]; let sxy = h[0][1]; let sxz = h[0][2];
+    let syx = h[1][0]; let syy = h[1][1]; let syz = h[1][2];
+    let szx = h[2][0]; let szy = h[2][1]; let szz = h[2][2];
+
+    // Horn's quaternion method: build 4x4 matrix and find max eigenvalue
+    let n_mat = [
+        [sxx + syy + szz, syz - szy, szx - sxz, sxy - syx],
+        [syz - szy, sxx - syy - szz, sxy + syx, szx + sxz],
+        [szx - sxz, sxy + syx, -sxx + syy - szz, syz + szy],
+        [sxy - syx, szx + sxz, syz + szy, -sxx - syy + szz],
+    ];
+
+    // Power iteration to find dominant eigenvector of N
+    let mut q = [1.0f64, 0.0, 0.0, 0.0]; // Initial guess
+    for _ in 0..100 {
+        let mut q_new = [0.0f64; 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                q_new[i] += n_mat[i][j] * q[j];
+            }
+        }
+        // Normalize
+        let norm = (q_new[0]*q_new[0] + q_new[1]*q_new[1] + q_new[2]*q_new[2] + q_new[3]*q_new[3]).sqrt();
+        if norm > 1e-15 {
+            for i in 0..4 {
+                q_new[i] /= norm;
+            }
+        }
+        q = q_new;
+    }
+
+    // q = [w, x, y, z] from Horn's method
+    // TransformFrame uses [x, y, z, w] convention
+    let rotation = [q[1], q[2], q[3], q[0]];
+
+    // Compute translation: t = world_centroid - R * sensor_centroid
+    let rot_tf = Transform::new([0.0, 0.0, 0.0], rotation);
+    let rotated_centroid = rot_tf.transform_point(sensor_centroid);
+    let translation = [
+        world_centroid[0] - rotated_centroid[0],
+        world_centroid[1] - rotated_centroid[1],
+        world_centroid[2] - rotated_centroid[2],
+    ];
+
+    let result = Transform::new(translation, rotation);
+
+    // Compute RMSE
+    let mut sum_sq_err = 0.0;
+    for i in 0..n {
+        let transformed = result.transform_point(sensor_points[i]);
+        let dx = transformed[0] - world_points[i][0];
+        let dy = transformed[1] - world_points[i][1];
+        let dz = transformed[2] - world_points[i][2];
+        sum_sq_err += dx * dx + dy * dy + dz * dz;
+    }
+    let rmse = (sum_sq_err / n as f64).sqrt();
+
+    // Display results
+    println!();
+    println!("  {}", "Calibration Result:".green().bold());
+    println!("    Translation: [{:.6}, {:.6}, {:.6}] m",
+        result.translation[0], result.translation[1], result.translation[2]);
+    let euler = result.to_euler();
+    println!("    Rotation:    [{:.4}, {:.4}, {:.4}] deg (rpy)",
+        euler[0].to_degrees(), euler[1].to_degrees(), euler[2].to_degrees());
+    println!("    Quaternion:  [{:.6}, {:.6}, {:.6}, {:.6}] (xyzw)",
+        result.rotation[0], result.rotation[1], result.rotation[2], result.rotation[3]);
+    println!();
+    println!("    RMSE: {:.4} mm", rmse * 1000.0);
+    println!("    Points: {}", n);
+
+    if rmse > 0.01 {
+        println!("    {}", "Warning: RMSE > 10mm — check point accuracy".yellow());
+    } else {
+        println!("    {}", "Quality: Good".green());
+    }
+
+    // Print per-point residuals
+    println!();
+    println!("  {}", "Per-point residuals:".dimmed());
+    println!("    {:>5} {:>10} {:>10} {:>10} {:>10}",
+        "Pt".dimmed(), "dx (mm)".dimmed(), "dy (mm)".dimmed(), "dz (mm)".dimmed(), "err (mm)".dimmed());
+    for i in 0..n {
+        let transformed = result.transform_point(sensor_points[i]);
+        let dx = (transformed[0] - world_points[i][0]) * 1000.0;
+        let dy = (transformed[1] - world_points[i][1]) * 1000.0;
+        let dz = (transformed[2] - world_points[i][2]) * 1000.0;
+        let err = (dx*dx + dy*dy + dz*dz).sqrt();
+        println!("    {:>5} {:>10.3} {:>10.3} {:>10.3} {:>10.3}", i + 1, dx, dy, dz, err);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

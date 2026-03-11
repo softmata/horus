@@ -132,11 +132,11 @@ impl RtExecutor {
                 if monitors.verbose {
                     print_line(&format!(
                         "[RT-thread] budget violation in '{}': {:?} > {:?}",
-                        node.name, budget_result.violation.actual, budget_result.violation.budget
+                        node.name, budget_result.violation.actual(), budget_result.violation.budget()
                     ));
                 }
                 if let Some(ref mut stats) = node.rt_stats {
-                    stats.budget_violations += 1;
+                    stats.record_budget_violation();
                 }
                 // Record to blackbox (try_lock to avoid RT priority inversion)
                 if let Some(ref bb) = monitors.blackbox {

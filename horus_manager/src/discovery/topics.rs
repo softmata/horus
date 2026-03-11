@@ -116,8 +116,11 @@ fn discover_topics_from_presence() -> Vec<SharedMemoryInfo> {
 /// Clean up stale topic files from the global topics directory.
 ///
 /// A topic is considered stale if:
-/// 1. No process has it mmap'd (no live readers/writers)
-/// 2. It hasn't been modified in 5+ minutes
+/// 1. No process holds a flock on it (primary signal — survives SIGKILL)
+/// 2. Fallback: no process has it mmap'd AND not modified in 5+ minutes
+///
+/// The flock check is O(1) per file and race-free.  The /proc fallback
+/// is kept for files created before flock support was added.
 ///
 /// Internal: Clean up stale topic files in a specific directory
 pub(super) fn cleanup_stale_topics_in_dir(shm_path: &Path) {
@@ -130,11 +133,17 @@ pub(super) fn cleanup_stale_topics_in_dir(shm_path: &Path) {
                 continue;
             }
 
+            // Primary: flock-based staleness check (O(1), survives SIGKILL)
+            if horus_core::memory::is_shm_file_stale(&path) {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+
+            // Fallback for legacy files without flock: /proc + mtime check
             let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
                 continue;
             };
 
-            // Check if any process has this file mmap'd
             let accessing_procs = find_accessing_processes_fast(&path, name);
             let has_live_processes = accessing_procs.iter().any(|pid| process_exists(*pid));
 
@@ -147,7 +156,6 @@ pub(super) fn cleanup_stale_topics_in_dir(shm_path: &Path) {
                 if let Ok(modified) = metadata.modified() {
                     if let Ok(elapsed) = modified.elapsed() {
                         if elapsed.as_secs() > STALE_THRESHOLD_SECS {
-                            // Topic is stale - remove it
                             let _ = std::fs::remove_file(&path);
                         }
                     }

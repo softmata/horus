@@ -2781,7 +2781,7 @@ impl PyTopic {
                 })?;
 
                 let msg = GenericMessage::new(msgpack_bytes)
-                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
                 use horus::core::LogSummary;
                 let log_summary = msg.log_summary();

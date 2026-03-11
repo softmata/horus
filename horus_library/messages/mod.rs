@@ -223,13 +223,14 @@ impl GenericMessage {
     ///
     /// - Small messages (≤256 bytes): Fast path, only copies inline buffer
     /// - Large messages (>256 bytes): Copies both inline and overflow buffers
-    pub fn new(data: Vec<u8>) -> Result<Self, String> {
+    pub fn new(data: Vec<u8>) -> horus_core::error::HorusResult<Self> {
         if data.len() > MAX_GENERIC_PAYLOAD {
-            return Err(format!(
-                "Data too large: {} bytes (max: {} bytes)",
-                data.len(),
-                MAX_GENERIC_PAYLOAD
-            ));
+            return Err(horus_core::error::ValidationError::OutOfRange {
+                field: "data".into(),
+                actual: data.len().to_string(),
+                min: "0".into(),
+                max: MAX_GENERIC_PAYLOAD.to_string(),
+            }.into());
         }
 
         let mut msg = Self {
@@ -262,14 +263,16 @@ impl GenericMessage {
     /// Create a GenericMessage with metadata
     ///
     /// Metadata is limited to 256 bytes.
-    pub fn with_metadata(data: Vec<u8>, metadata: String) -> Result<Self, String> {
+    pub fn with_metadata(data: Vec<u8>, metadata: String) -> horus_core::error::HorusResult<Self> {
         let mut msg = Self::new(data)?;
 
         if metadata.len() > 255 {
-            return Err(format!(
-                "Metadata too large: {} bytes (max: 255 bytes)",
-                metadata.len()
-            ));
+            return Err(horus_core::error::ValidationError::OutOfRange {
+                field: "metadata".into(),
+                actual: metadata.len().to_string(),
+                min: "0".into(),
+                max: "255".into(),
+            }.into());
         }
 
         let metadata_bytes = metadata.as_bytes();
@@ -321,8 +324,16 @@ impl GenericMessage {
     ///
     /// let msg = GenericMessage::from_value(&data)?;
     /// ```
-    pub fn from_value<T: Serialize>(value: &T) -> Result<Self, String> {
-        let data = rmp_serde::to_vec(value).map_err(|e| format!("Failed to serialize: {}", e))?;
+    pub fn from_value<T: Serialize>(value: &T) -> horus_core::error::HorusResult<Self> {
+        let data = rmp_serde::to_vec(value).map_err(|e| {
+            horus_core::error::HorusError::InvalidInput(
+                horus_core::error::ValidationError::InvalidFormat {
+                    field: "value".into(),
+                    expected_format: "MessagePack-serializable".into(),
+                    actual: e.to_string(),
+                },
+            )
+        })?;
         Self::new(data)
     }
 
@@ -341,9 +352,17 @@ impl GenericMessage {
     ///     println!("x: {}, y: {}", data["x"], data["y"]);
     /// }
     /// ```
-    pub fn to_value<T: for<'de> Deserialize<'de>>(&self) -> Result<T, String> {
+    pub fn to_value<T: for<'de> Deserialize<'de>>(&self) -> horus_core::error::HorusResult<T> {
         let data = self.data();
-        rmp_serde::from_slice(&data).map_err(|e| format!("Failed to deserialize: {}", e))
+        rmp_serde::from_slice(&data).map_err(|e| {
+            horus_core::error::HorusError::InvalidInput(
+                horus_core::error::ValidationError::InvalidFormat {
+                    field: "data".into(),
+                    expected_format: "MessagePack-deserializable".into(),
+                    actual: e.to_string(),
+                },
+            )
+        })
     }
 }
 

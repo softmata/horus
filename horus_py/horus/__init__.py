@@ -159,6 +159,10 @@ try:
         HorusNotFoundError,
         HorusTransformError,
         HorusTimeoutError,
+        # Coordinate transforms
+        TransformFrame,
+        Transform,
+        TransformFrameConfig,
     )
 except ImportError:
     # Fallback for testing without Rust bindings
@@ -859,7 +863,9 @@ class Scheduler:
         elif _PyScheduler:
             cfg = _SchedulerConfig.minimal()
             cfg.tick_rate = tick_rate
-            cfg.fault_tolerance = fault_tolerance
+            if fault_tolerance:
+                cfg.budget_enforcement = True
+                cfg.deadline_monitoring = True
             if rt:
                 cfg.memory_locking = True
                 cfg.rt_scheduling_class = True
@@ -1539,10 +1545,16 @@ __all__ = [
     # Simple async API
     "AsyncNode",
     "AsyncTopic",
+    # Coordinate transforms
+    "TransformFrame",
+    "Transform",
+    "TransformFrameConfig",
     # Structured error types
     "HorusNotFoundError",
     "HorusTransformError",
     "HorusTimeoutError",
+    # Utility
+    "get_version",
 ]
 
 # Use Rust native message classes for zero-copy IPC only if the Python library

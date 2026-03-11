@@ -168,7 +168,7 @@ impl PyNodeInfo {
             .inner
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        Ok(info.metrics().total_ticks)
+        Ok(info.metrics().total_ticks())
     }
 
     /// Get error count
@@ -177,7 +177,7 @@ impl PyNodeInfo {
             .inner
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        Ok(info.metrics().errors_count)
+        Ok(info.metrics().errors_count())
     }
 
     /// Transition to error state
@@ -260,28 +260,28 @@ impl PyNodeInfo {
         let metrics = info.metrics();
         let mut result = std::collections::HashMap::new();
 
-        result.insert("total_ticks".to_string(), metrics.total_ticks as f64);
+        result.insert("total_ticks".to_string(), metrics.total_ticks() as f64);
         result.insert(
             "successful_ticks".to_string(),
-            metrics.successful_ticks as f64,
+            metrics.successful_ticks() as f64,
         );
-        result.insert("failed_ticks".to_string(), metrics.failed_ticks as f64);
-        result.insert("errors_count".to_string(), metrics.errors_count as f64);
+        result.insert("failed_ticks".to_string(), metrics.failed_ticks() as f64);
+        result.insert("errors_count".to_string(), metrics.errors_count() as f64);
         result.insert(
             "avg_tick_duration_ms".to_string(),
-            metrics.avg_tick_duration_ms,
+            metrics.avg_tick_duration_ms(),
         );
         result.insert(
             "min_tick_duration_ms".to_string(),
-            metrics.min_tick_duration_ms,
+            metrics.min_tick_duration_ms(),
         );
         result.insert(
             "max_tick_duration_ms".to_string(),
-            metrics.max_tick_duration_ms,
+            metrics.max_tick_duration_ms(),
         );
         result.insert(
             "last_tick_duration_ms".to_string(),
-            metrics.last_tick_duration_ms,
+            metrics.last_tick_duration_ms(),
         );
 
         Ok(result)
@@ -302,7 +302,7 @@ impl PyNodeInfo {
             .inner
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        Ok(info.metrics().avg_tick_duration_ms)
+        Ok(info.metrics().avg_tick_duration_ms())
     }
 
     /// Get number of failed ticks
@@ -311,7 +311,7 @@ impl PyNodeInfo {
             .inner
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        Ok(info.metrics().failed_ticks)
+        Ok(info.metrics().failed_ticks())
     }
 
     /// Get successful ticks
@@ -320,7 +320,7 @@ impl PyNodeInfo {
             .inner
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        Ok(info.metrics().successful_ticks)
+        Ok(info.metrics().successful_ticks())
     }
 
     /// Request the scheduler to stop
@@ -337,8 +337,8 @@ impl PyNodeInfo {
                 "NodeInfo(name='{}', state='{}', ticks={}, errors={})",
                 info.name(),
                 info.state(),
-                info.metrics().total_ticks,
-                info.metrics().errors_count
+                info.metrics().total_ticks(),
+                info.metrics().errors_count()
             ))
         } else {
             Ok("NodeInfo(locked)".to_string())

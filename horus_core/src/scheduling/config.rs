@@ -5,6 +5,12 @@
 pub struct TimingConfig {
     /// Global tick rate in Hz (default: 60)
     pub global_rate_hz: f64,
+    /// Enable deterministic execution order (default: false).
+    ///
+    /// When true, all nodes tick sequentially on the main thread in
+    /// registration order — no thread pools, no watcher threads, no executors.
+    /// Designed for simulation and testing with `tick_once()`.
+    pub deterministic_order: bool,
 }
 
 /// Real-time configuration for the scheduler thread.
@@ -155,6 +161,7 @@ impl Default for SchedulerConfig {
         Self {
             timing: TimingConfig {
                 global_rate_hz: 60.0,
+                deterministic_order: false,
             },
             realtime: RealTimeConfig {
                 budget_enforcement: false,
@@ -187,7 +194,10 @@ mod tests {
     // ── Arbitrary strategies ────────────────────────────────────────────
 
     fn arb_timing_config() -> impl Strategy<Value = TimingConfig> {
-        (0.001f64..10_000.0).prop_map(|hz| TimingConfig { global_rate_hz: hz })
+        (0.001f64..10_000.0, any::<bool>()).prop_map(|(hz, deterministic)| TimingConfig {
+            global_rate_hz: hz,
+            deterministic_order: deterministic,
+        })
     }
 
     fn arb_realtime_config() -> impl Strategy<Value = RealTimeConfig> {
@@ -326,7 +336,7 @@ mod tests {
         /// TimingConfig: tick period derivation is consistent
         #[test]
         fn timing_config_period_consistency(hz in 0.001f64..10_000.0) {
-            let config = TimingConfig { global_rate_hz: hz };
+            let config = TimingConfig { global_rate_hz: hz, deterministic_order: false };
             let period_secs = 1.0 / config.global_rate_hz;
             let derived_hz = 1.0 / period_secs;
             // Allow small floating point error
@@ -403,6 +413,7 @@ mod tests {
     fn timing_config_very_low_rate() {
         let config = TimingConfig {
             global_rate_hz: 0.001,
+            deterministic_order: false,
         };
         let period = 1.0 / config.global_rate_hz;
         assert!(period > 999.0, "Very low rate should produce long period");
@@ -412,6 +423,7 @@ mod tests {
     fn timing_config_very_high_rate() {
         let config = TimingConfig {
             global_rate_hz: 100_000.0,
+            deterministic_order: false,
         };
         let period = 1.0 / config.global_rate_hz;
         assert!(period < 0.001, "Very high rate should produce tiny period");
@@ -421,6 +433,7 @@ mod tests {
     fn timing_config_exactly_one_hz() {
         let config = TimingConfig {
             global_rate_hz: 1.0,
+            deterministic_order: false,
         };
         let period = 1.0 / config.global_rate_hz;
         assert!((period - 1.0).abs() < f64::EPSILON);

@@ -217,7 +217,7 @@ class TestTransformFrame:
         from horus._horus import TransformFrame
         tf = TransformFrame()
         # Should not raise
-        assert hf is not None
+        assert tf is not None
 
     def test_register_frame(self):
         from horus._horus import TransformFrame, Transform
@@ -230,13 +230,13 @@ class TestTransformFrame:
 
     def test_update_and_query_transform(self):
         from horus._horus import TransformFrame, Transform
-        tf = TransformFrame()
-        tf.register_frame("world")
-        tf.register_frame("base_link", parent="world")
-        tf = Transform(translation=[1.0, 2.0, 3.0])
-        tf.update_transform("base_link", tf)
+        frame = TransformFrame()
+        frame.register_frame("world")
+        frame.register_frame("base_link", parent="world")
+        xform = Transform(translation=[1.0, 2.0, 3.0])
+        frame.update_transform("base_link", xform)
         # tf(base_link, world) = transform from child to parent = the direct transform
-        result = tf.tf("base_link", "world")
+        result = frame.tf("base_link", "world")
         assert result is not None
         assert abs(result.translation[0] - 1.0) < 0.001
         assert abs(result.translation[1] - 2.0) < 0.001

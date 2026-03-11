@@ -149,7 +149,7 @@ fn test_scheduler_add_basic() {
 
     let metrics = scheduler.metrics();
     assert_eq!(metrics.len(), 1);
-    assert_eq!(metrics[0].name, "basic_node");
+    assert_eq!(metrics[0].name(), "basic_node");
 }
 
 // ============================================================================
@@ -235,7 +235,7 @@ fn test_scheduler_metrics_existing() {
 
     let metrics = scheduler.metrics();
     assert_eq!(metrics.len(), 1);
-    assert_eq!(metrics[0].name, "info_node");
+    assert_eq!(metrics[0].name(), "info_node");
 }
 
 #[test]
@@ -1432,9 +1432,9 @@ fn test_budget_violation_detected_for_slow_rt_node() {
     // RT nodes are reclaimed after stop — check per-node rt_stats for budget violations
     if let Some(stats) = scheduler.rt_stats("slow_sensor") {
         assert!(
-            stats.budget_violations > 0,
+            stats.budget_violations() > 0,
             "budget violation should have been detected, got {} violations",
-            stats.budget_violations
+            stats.budget_violations()
         );
     }
 }
@@ -1470,9 +1470,9 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
     // RT nodes are reclaimed after stop — check per-node rt_stats for deadline misses
     if let Some(stats) = scheduler.rt_stats("ctrl_loop") {
         assert!(
-            stats.deadline_misses > 0,
+            stats.deadline_misses() > 0,
             "Deadline miss should have been detected, got {} misses",
-            stats.deadline_misses
+            stats.deadline_misses()
         );
     }
 }
@@ -2247,9 +2247,9 @@ fn test_metrics_populated_after_shutdown() {
 
     let metrics = scheduler.metrics();
     assert_eq!(metrics.len(), 1);
-    assert_eq!(metrics[0].name, "metrics_node");
+    assert_eq!(metrics[0].name(), "metrics_node");
     assert!(
-        metrics[0].total_ticks > 0,
+        metrics[0].total_ticks() > 0,
         "Should have recorded some ticks in metrics"
     );
 }
@@ -2595,7 +2595,7 @@ fn test_restart_policy_stats_tracked() {
     // Check metrics are available (scheduler tracks node metrics even after failures)
     let metrics = scheduler.metrics();
     assert!(!metrics.is_empty());
-    assert_eq!(metrics[0].name, "restart_stats");
+    assert_eq!(metrics[0].name(), "restart_stats");
 }
 
 /// Node fails, gets skipped by fault tolerance, verify scheduler status
@@ -2646,9 +2646,9 @@ fn test_budget_no_violation_within_budget() {
 
     if let Some(stats) = scheduler.rt_stats("fast_node") {
         assert_eq!(
-            stats.budget_violations, 0,
+            stats.budget_violations(), 0,
             "Fast node should have zero budget violations, got {}",
-            stats.budget_violations
+            stats.budget_violations()
         );
     }
 }
@@ -2696,16 +2696,16 @@ fn test_budget_multiple_simultaneous_violations() {
     // Both nodes should have budget violations
     if let Some(stats) = scheduler.rt_stats("slow_a") {
         assert!(
-            stats.budget_violations > 0,
+            stats.budget_violations() > 0,
             "slow_a should have budget violations, got {}",
-            stats.budget_violations
+            stats.budget_violations()
         );
     }
     if let Some(stats) = scheduler.rt_stats("slow_b") {
         assert!(
-            stats.budget_violations > 0,
+            stats.budget_violations() > 0,
             "slow_b should have budget violations, got {}",
-            stats.budget_violations
+            stats.budget_violations()
         );
     }
 }
@@ -2741,17 +2741,17 @@ fn test_budget_mixed_within_and_over_budget() {
 
     if let Some(fast_stats) = scheduler.rt_stats("fast") {
         assert_eq!(
-            fast_stats.budget_violations, 0,
+            fast_stats.budget_violations(), 0,
             "Fast node should have 0 violations, got {}",
-            fast_stats.budget_violations
+            fast_stats.budget_violations()
         );
     }
 
     if let Some(slow_stats) = scheduler.rt_stats("slow") {
         assert!(
-            slow_stats.budget_violations > 0,
+            slow_stats.budget_violations() > 0,
             "Slow node should have violations, got {}",
-            slow_stats.budget_violations
+            slow_stats.budget_violations()
         );
     }
 }
@@ -2804,11 +2804,11 @@ fn test_budget_worst_execution_tracked() {
 
     if let Some(stats) = scheduler.rt_stats("variable") {
         assert!(
-            stats.worst_execution >= Duration::from_millis(4),
+            stats.worst_execution() >= Duration::from_millis(4),
             "Worst execution should be at least ~5ms, got {:?}",
-            stats.worst_execution
+            stats.worst_execution()
         );
-        assert!(stats.total_ticks > 0, "Should have tracked ticks");
+        assert!(stats.total_ticks() > 0, "Should have tracked ticks");
     }
 }
 
@@ -2836,9 +2836,9 @@ fn test_deadline_no_miss_within_budget() {
     if ticks > 0 {
         if let Some(stats) = scheduler.rt_stats("fast_rt") {
             assert_eq!(
-                stats.deadline_misses, 0,
+                stats.deadline_misses(), 0,
                 "Fast node should have zero deadline misses, got {}",
-                stats.deadline_misses
+                stats.deadline_misses()
             );
         }
     }
@@ -2877,16 +2877,16 @@ fn test_deadline_multiple_simultaneous_misses() {
 
     if let Some(stats) = scheduler.rt_stats("slow_a") {
         assert!(
-            stats.deadline_misses > 0,
+            stats.deadline_misses() > 0,
             "slow_a should have deadline misses, got {}",
-            stats.deadline_misses
+            stats.deadline_misses()
         );
     }
     if let Some(stats) = scheduler.rt_stats("slow_b") {
         assert!(
-            stats.deadline_misses > 0,
+            stats.deadline_misses() > 0,
             "slow_b should have deadline misses, got {}",
-            stats.deadline_misses
+            stats.deadline_misses()
         );
     }
 }
@@ -2922,14 +2922,14 @@ fn test_deadline_mixed_meet_and_miss() {
 
     if let Some(fast_stats) = scheduler.rt_stats("meets_deadline") {
         assert_eq!(
-            fast_stats.deadline_misses, 0,
+            fast_stats.deadline_misses(), 0,
             "Fast node should have 0 deadline misses"
         );
     }
 
     if let Some(slow_stats) = scheduler.rt_stats("misses_deadline") {
         assert!(
-            slow_stats.deadline_misses > 0,
+            slow_stats.deadline_misses() > 0,
             "Slow node should have deadline misses"
         );
     }
@@ -2960,9 +2960,9 @@ fn test_deadline_miss_count_accumulates() {
 
     if let Some(stats) = scheduler.rt_stats("repeated_miss") {
         assert!(
-            stats.deadline_misses >= 2,
+            stats.deadline_misses() >= 2,
             "Should have accumulated multiple deadline misses, got {}",
-            stats.deadline_misses
+            stats.deadline_misses()
         );
     }
 }
@@ -2990,7 +2990,7 @@ fn test_deadline_miss_and_budget_violation_both_tracked() {
     let _result = scheduler.run_for(Duration::from_secs(1));
 
     if let Some(stats) = scheduler.rt_stats("double_violation") {
-        assert!(stats.budget_violations > 0, "Should have budget violations");
-        assert!(stats.deadline_misses > 0, "Should have deadline misses");
+        assert!(stats.budget_violations() > 0, "Should have budget violations");
+        assert!(stats.deadline_misses() > 0, "Should have deadline misses");
     }
 }

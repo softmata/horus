@@ -193,6 +193,119 @@ pub fn has_native_shm() -> bool {
 // Stale SHM namespace cleanup
 // ============================================================================
 
+// ============================================================================
+// flock-based stale SHM detection
+// ============================================================================
+
+/// Check whether a shared memory file is stale (no process holds it open).
+///
+/// Every `ShmRegion` holds `flock(LOCK_SH)` on its backing file for its
+/// entire lifetime.  When the process exits — even via SIGKILL — the kernel
+/// closes the fd and releases the lock automatically.
+///
+/// This function attempts `flock(LOCK_EX | LOCK_NB)`:
+/// - **Success** → no process holds a shared lock → the file is stale.
+///   The exclusive lock is immediately released before returning.
+/// - **`EWOULDBLOCK`** → at least one process still holds `LOCK_SH` → alive.
+/// - **Other error** → conservatively returns `false` (not stale).
+///
+/// This is the primary staleness signal for cleanup routines. It is
+/// O(1), race-free, and works even after SIGKILL.
+#[cfg(unix)]
+pub fn is_shm_file_stale(path: &std::path::Path) -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return true, // Can't open → treat as stale (or already gone)
+    };
+
+    let fd = file.as_raw_fd();
+    // SAFETY: fd is a valid open file descriptor from File::open above.
+    // LOCK_EX | LOCK_NB is a valid flock operation.
+    let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+
+    if ret == 0 {
+        // Got exclusive lock → nobody holds it → stale.
+        // Release immediately so we don't block others.
+        // SAFETY: fd is still valid; LOCK_UN is a valid flock operation.
+        unsafe { libc::flock(fd, libc::LOCK_UN) };
+        true
+    } else {
+        let errno = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(0);
+        if errno == libc::EWOULDBLOCK {
+            // At least one process holds LOCK_SH → alive.
+            false
+        } else {
+            // Unexpected error → conservatively assume not stale.
+            false
+        }
+    }
+}
+
+/// Non-Unix fallback: cannot use flock, conservatively returns false.
+#[cfg(not(unix))]
+pub fn is_shm_file_stale(_path: &std::path::Path) -> bool {
+    false
+}
+
+/// Check whether ALL topic files in a namespace directory are stale.
+///
+/// Returns `true` only if every regular file under `topics/` is stale
+/// (no process holds a flock on it). Returns `false` if any file is still
+/// held, or if there are no topic files to check.
+///
+/// This is used by `cleanup_stale_namespaces()` as an additional signal
+/// beyond session/process-group liveness checks.
+#[cfg(unix)]
+pub fn is_namespace_stale_by_flock(namespace_path: &std::path::Path) -> bool {
+    let topics_dir = namespace_path.join("topics");
+    if !topics_dir.exists() {
+        // No topics dir — might have other content, check files directly
+        return is_directory_all_files_stale(namespace_path);
+    }
+    is_directory_all_files_stale(&topics_dir)
+}
+
+/// Check if all regular files in a directory (recursively) are stale by flock.
+#[cfg(unix)]
+fn is_directory_all_files_stale(dir: &std::path::Path) -> bool {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return true, // Can't read → treat as stale
+    };
+
+    let mut found_any_file = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            found_any_file = true;
+            if !is_shm_file_stale(&path) {
+                return false; // At least one file is alive
+            }
+        } else if path.is_dir() {
+            // Recurse into subdirectories (e.g., horus_links/, horus_topic/)
+            if !is_directory_all_files_stale(&path) {
+                return false;
+            }
+            // If subdir had files, count them
+            if dir_file_count(&path) > 0 {
+                found_any_file = true;
+            }
+        }
+    }
+
+    // Only stale if we actually found files to check
+    found_any_file
+}
+
+#[cfg(not(unix))]
+pub fn is_namespace_stale_by_flock(_namespace_path: &std::path::Path) -> bool {
+    false
+}
+
 /// Returns the parent directory where HORUS SHM namespace directories live.
 ///
 /// - Linux: `/dev/shm/`
@@ -916,5 +1029,477 @@ mod tests {
         assert_eq!(count, 2, "Should have 2 files");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ========================================================================
+    // flock-based stale SHM detection tests
+    // ========================================================================
+
+    /// Helper: create a temp dir unique to each test to avoid interference.
+    fn flock_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "horus_flock_test_{}_{}",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A file with no flock held should be detected as stale.
+    #[test]
+    fn test_flock_stale_no_holder() {
+        let dir = flock_test_dir("no_holder");
+        let path = dir.join("topic_a");
+        std::fs::write(&path, b"data").unwrap();
+
+        assert!(
+            is_shm_file_stale(&path),
+            "File with no flock holder should be stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file with LOCK_SH held should NOT be detected as stale.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_alive_with_shared_lock() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = flock_test_dir("alive_shared");
+        let path = dir.join("topic_b");
+        std::fs::write(&path, b"data").unwrap();
+
+        // Hold a shared lock (simulates ShmRegion)
+        let file = std::fs::File::open(&path).unwrap();
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        assert_eq!(ret, 0, "flock(LOCK_SH) should succeed");
+
+        assert!(
+            !is_shm_file_stale(&path),
+            "File with LOCK_SH held should NOT be stale"
+        );
+
+        drop(file); // releases lock
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// After dropping the file (releasing flock), the file should become stale.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_becomes_stale_after_drop() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = flock_test_dir("stale_after_drop");
+        let path = dir.join("topic_c");
+        std::fs::write(&path, b"data").unwrap();
+
+        {
+            let file = std::fs::File::open(&path).unwrap();
+            let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+            assert_eq!(ret, 0);
+            assert!(!is_shm_file_stale(&path), "Should be alive while held");
+            // file drops here → lock released
+        }
+
+        assert!(
+            is_shm_file_stale(&path),
+            "Should be stale after holder dropped"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Multiple shared locks: file is alive as long as ANY holder exists.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_multiple_holders() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = flock_test_dir("multi_holder");
+        let path = dir.join("topic_d");
+        std::fs::write(&path, b"data").unwrap();
+
+        let file1 = std::fs::File::open(&path).unwrap();
+        unsafe { libc::flock(file1.as_raw_fd(), libc::LOCK_SH) };
+
+        let file2 = std::fs::File::open(&path).unwrap();
+        unsafe { libc::flock(file2.as_raw_fd(), libc::LOCK_SH) };
+
+        assert!(!is_shm_file_stale(&path), "Two holders → alive");
+
+        drop(file1);
+        assert!(
+            !is_shm_file_stale(&path),
+            "One holder remaining → still alive"
+        );
+
+        drop(file2);
+        assert!(
+            is_shm_file_stale(&path),
+            "All holders gone → stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nonexistent file should be treated as stale.
+    #[test]
+    fn test_flock_stale_nonexistent_file() {
+        let path = PathBuf::from("/tmp/horus_flock_test_nonexistent_42");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            is_shm_file_stale(&path),
+            "Nonexistent file should be treated as stale"
+        );
+    }
+
+    /// flock survives across child process death (SIGKILL).
+    /// Spawn a child that holds LOCK_SH, kill it with SIGKILL,
+    /// verify the file becomes stale.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_released_on_sigkill() {
+        use std::process::{Command, Stdio};
+
+        let dir = flock_test_dir("sigkill");
+        let path = dir.join("topic_sigkill");
+        std::fs::write(&path, b"data").unwrap();
+
+        // Spawn a child process that holds flock and then sleeps forever
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "exec python3 -c \"
+import fcntl, time, sys
+fd = open('{}', 'r')
+fcntl.flock(fd, fcntl.LOCK_SH)
+sys.stdout.write('locked\\n')
+sys.stdout.flush()
+time.sleep(3600)
+\"",
+                path.display()
+            ))
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn child");
+
+        // Wait for child to acquire the lock
+        let stdout = child.stdout.as_mut().unwrap();
+        let mut buf = [0u8; 16];
+        use std::io::Read;
+        let n = stdout.read(&mut buf).unwrap();
+        let msg = std::str::from_utf8(&buf[..n]).unwrap().trim();
+        assert_eq!(msg, "locked", "child should report lock acquired");
+
+        // File should be alive (child holds LOCK_SH)
+        assert!(
+            !is_shm_file_stale(&path),
+            "Child holds flock → should be alive"
+        );
+
+        // SIGKILL the child
+        let pid = child.id() as i32;
+        // SAFETY: pid is a valid child process id; SIGKILL is a valid signal
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let _ = child.wait(); // reap zombie
+
+        // Now the file should be stale — kernel released the lock
+        assert!(
+            is_shm_file_stale(&path),
+            "After SIGKILL, flock should be released → stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// is_namespace_stale_by_flock with a mix of held and unheld files.
+    #[cfg(unix)]
+    #[test]
+    fn test_namespace_stale_by_flock_mixed() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = flock_test_dir("ns_mixed");
+        let topics_dir = dir.join("topics");
+        std::fs::create_dir_all(&topics_dir).unwrap();
+
+        // Create two topic files
+        let path_a = topics_dir.join("horus_topic_a");
+        let path_b = topics_dir.join("horus_topic_b");
+        std::fs::write(&path_a, b"data_a").unwrap();
+        std::fs::write(&path_b, b"data_b").unwrap();
+
+        // Hold lock on topic_a only
+        let file_a = std::fs::File::open(&path_a).unwrap();
+        unsafe { libc::flock(file_a.as_raw_fd(), libc::LOCK_SH) };
+
+        assert!(
+            !is_namespace_stale_by_flock(&dir),
+            "One file still held → namespace not stale"
+        );
+
+        drop(file_a);
+        assert!(
+            is_namespace_stale_by_flock(&dir),
+            "All files released → namespace stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// is_namespace_stale_by_flock with empty topics directory.
+    #[test]
+    fn test_namespace_stale_by_flock_empty_dir() {
+        let dir = flock_test_dir("ns_empty");
+        let topics_dir = dir.join("topics");
+        std::fs::create_dir_all(&topics_dir).unwrap();
+
+        // Empty directory → no files to check → not stale (conservative)
+        assert!(
+            !is_namespace_stale_by_flock(&dir),
+            "Empty topics dir should not be considered stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// is_namespace_stale_by_flock with subdirectories (horus_links/, horus_topic/).
+    #[cfg(unix)]
+    #[test]
+    fn test_namespace_stale_by_flock_with_subdirs() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = flock_test_dir("ns_subdirs");
+        let topics_dir = dir.join("topics");
+        let links_dir = topics_dir.join("horus_links");
+        std::fs::create_dir_all(&links_dir).unwrap();
+
+        let path = links_dir.join("sensor_data");
+        std::fs::write(&path, b"link_data").unwrap();
+
+        // No lock → stale
+        assert!(is_namespace_stale_by_flock(&dir));
+
+        // Hold lock → alive
+        let file = std::fs::File::open(&path).unwrap();
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        assert!(!is_namespace_stale_by_flock(&dir));
+
+        drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ========================================================================
+    // Stress tests
+    // ========================================================================
+
+    /// Stress test: many threads racing to acquire/release flock + check staleness.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_stress_concurrent_acquire_release() {
+        use std::os::unix::io::AsRawFd;
+        use std::sync::{Arc, Barrier};
+
+        let dir = flock_test_dir("stress_concurrent");
+        let path = dir.join("topic_stress");
+        std::fs::write(&path, b"stress_data").unwrap();
+
+        let n_threads = 16;
+        let n_iterations = 100;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let path = Arc::new(path);
+
+        let handles: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let b = barrier.clone();
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    for _ in 0..n_iterations {
+                        let file = std::fs::File::open(p.as_ref()).unwrap();
+                        let fd = file.as_raw_fd();
+                        // SAFETY: fd is valid; LOCK_SH is valid
+                        unsafe { libc::flock(fd, libc::LOCK_SH) };
+                        // Briefly hold, then drop (releases lock)
+                        std::thread::yield_now();
+                        drop(file);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All threads done → should be stale
+        assert!(
+            is_shm_file_stale(path.as_ref()),
+            "After all threads finish, file should be stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stress test: staleness checks concurrent with holders.
+    /// Some threads hold locks, others check staleness.
+    /// Staleness should NEVER report true while any holder exists.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_stress_no_false_stale() {
+        use std::os::unix::io::AsRawFd;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = flock_test_dir("stress_no_false");
+        let path = dir.join("topic_no_false_stale");
+        std::fs::write(&path, b"data").unwrap();
+
+        let path = Arc::new(path);
+        let holder_count = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let false_stale_seen = Arc::new(AtomicBool::new(false));
+
+        // Holder threads: repeatedly acquire and release locks
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let p = path.clone();
+            let hc = holder_count.clone();
+            let s = stop.clone();
+            handles.push(std::thread::spawn(move || {
+                while !s.load(Ordering::Relaxed) {
+                    let file = std::fs::File::open(p.as_ref()).unwrap();
+                    // SAFETY: fd valid; LOCK_SH valid
+                    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+                    hc.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                    hc.fetch_sub(1, Ordering::SeqCst);
+                    drop(file);
+                    std::thread::yield_now();
+                }
+            }));
+        }
+
+        // Checker threads: verify staleness is consistent with holder count
+        for _ in 0..4 {
+            let p = path.clone();
+            let hc = holder_count.clone();
+            let s = stop.clone();
+            let fs = false_stale_seen.clone();
+            handles.push(std::thread::spawn(move || {
+                while !s.load(Ordering::Relaxed) {
+                    let stale = is_shm_file_stale(p.as_ref());
+                    if stale {
+                        // Recheck: if holders > 0, this is a false stale.
+                        // (There's a tiny race window between our check and the
+                        //  atomic read, so we do a conservative double-check.)
+                        std::thread::sleep(std::time::Duration::from_micros(50));
+                        if hc.load(Ordering::SeqCst) > 0 && is_shm_file_stale(p.as_ref()) {
+                            fs.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    std::thread::yield_now();
+                }
+            }));
+        }
+
+        // Run for a bit
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        stop.store(true, Ordering::SeqCst);
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert!(
+            !false_stale_seen.load(Ordering::SeqCst),
+            "flock must never report stale while holders exist"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stress test: flock works correctly across forked child processes.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_stress_multiprocess() {
+        let dir = flock_test_dir("stress_multiproc");
+        let path = dir.join("topic_multiproc");
+        std::fs::write(&path, b"data").unwrap();
+
+        // Spawn N child processes that each hold flock for a short time
+        let n_children = 8;
+        let mut children = Vec::new();
+
+        for _i in 0..n_children {
+            let child = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!(
+                    "python3 -c \"
+import fcntl, time
+fd = open('{}', 'r')
+fcntl.flock(fd, fcntl.LOCK_SH)
+time.sleep(0.2)
+\"",
+                    path.display()
+                ))
+                .spawn()
+                .expect("spawn child");
+            children.push(child);
+        }
+
+        // Give children time to acquire locks
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // File should be alive while children hold it
+        assert!(
+            !is_shm_file_stale(&path),
+            "Children holding flock → alive"
+        );
+
+        // Wait for all children to finish
+        for mut child in children {
+            let _ = child.wait();
+        }
+
+        // Now should be stale
+        assert!(
+            is_shm_file_stale(&path),
+            "All children exited → stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Edge case: is_shm_file_stale on a directory (not a file).
+    #[test]
+    fn test_flock_stale_on_directory() {
+        let dir = flock_test_dir("stale_dir");
+        // Calling is_shm_file_stale on a directory — should not panic.
+        // On Linux, flock works on dirs too, but we don't hold locks on them.
+        let result = is_shm_file_stale(&dir);
+        // Should be stale (no lock held on it)
+        assert!(result, "Directory with no lock should be treated as stale");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Edge case: file deleted while checking staleness.
+    #[cfg(unix)]
+    #[test]
+    fn test_flock_stale_file_deleted_during_check() {
+        let dir = flock_test_dir("deleted_during");
+        let path = dir.join("ephemeral");
+        std::fs::write(&path, b"data").unwrap();
+
+        // Delete the file, then check — should handle gracefully
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            is_shm_file_stale(&path),
+            "Deleted file should be treated as stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

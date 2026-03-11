@@ -246,11 +246,11 @@ impl PyTransformFrameConfig {
 ///
 /// Example:
 ///     >>> from horus import TransformFrame, Transform
-///     >>> hf = TransformFrame()
-///     >>> hf.register_frame("world", None)
-///     >>> hf.register_frame("base_link", "world")
-///     >>> hf.update_transform("base_link", Transform.from_translation([1.0, 0.0, 0.0]))
-///     >>> tf = hf.tf("base_link", "world")
+///     >>> tf = TransformFrame()
+///     >>> tf.register_frame("world", None)
+///     >>> tf.register_frame("base_link", "world")
+///     >>> tf.update_transform("base_link", Transform.from_translation([1.0, 0.0, 0.0]))
+///     >>> result = tf.tf("base_link", "world")
 ///     >>> print(tf.translation)  # [1.0, 0.0, 0.0]
 #[pyclass(name = "TransformFrame")]
 pub struct PyTransformFrame {
@@ -585,6 +585,28 @@ impl PyTransformFrame {
             .map_err(to_py_err)
     }
 
+    /// Get transform at timestamp with strict mode (no extrapolation).
+    ///
+    /// Unlike tf_at(), this will error if the requested timestamp falls
+    /// outside the buffered time range rather than extrapolating.
+    ///
+    /// Args:
+    ///     src: Source frame name
+    ///     dst: Destination frame name
+    ///     timestamp_ns: Target timestamp in nanoseconds
+    ///
+    /// Returns:
+    ///     Interpolated transform at the given timestamp
+    ///
+    /// Raises:
+    ///     ValueError: If timestamp is outside buffered range
+    fn tf_at_strict(&self, src: &str, dst: &str, timestamp_ns: u64) -> PyResult<PyTransform> {
+        self.inner
+            .tf_at_strict(src, dst, timestamp_ns)
+            .map(|t| PyTransform { inner: t })
+            .map_err(to_py_err)
+    }
+
     /// Check if a transform is available at a specific timestamp.
     ///
     /// Non-throwing alternative to tf_at() — returns bool instead of
@@ -599,6 +621,27 @@ impl PyTransformFrame {
     ///     True if transform data exists at the given time
     fn can_transform_at(&self, src: &str, dst: &str, timestamp_ns: u64) -> bool {
         self.inner.can_transform_at(src, dst, timestamp_ns)
+    }
+
+    /// Check if a transform is available at a timestamp within tolerance.
+    ///
+    /// Args:
+    ///     src: Source frame name
+    ///     dst: Destination frame name
+    ///     timestamp_ns: Timestamp to check
+    ///     tolerance_ns: Tolerance window in nanoseconds
+    ///
+    /// Returns:
+    ///     True if transform data exists within the tolerance window
+    fn can_transform_at_with_tolerance(
+        &self,
+        src: &str,
+        dst: &str,
+        timestamp_ns: u64,
+        tolerance_ns: u64,
+    ) -> bool {
+        self.inner
+            .can_transform_at_with_tolerance(src, dst, timestamp_ns, tolerance_ns)
     }
 
     // ════════════════════════════════════════════════════════════
@@ -667,6 +710,62 @@ impl PyTransformFrame {
             }
             Ok(Some(dict.into()))
         })
+    }
+
+    /// Get detailed info for all frames.
+    ///
+    /// Returns:
+    ///     List of dicts, each with name, id, parent, is_static,
+    ///     children_count, depth, time_range
+    fn frame_info_all(&self) -> PyResult<Vec<pyo3::Py<pyo3::types::PyDict>>> {
+        let infos = self.inner.frame_info_all();
+        Python::attach(|py| {
+            infos
+                .into_iter()
+                .map(|info| {
+                    let dict = pyo3::types::PyDict::new(py);
+                    dict.set_item("name", &info.name)?;
+                    dict.set_item("id", info.id)?;
+                    dict.set_item("parent", &info.parent)?;
+                    dict.set_item("is_static", info.is_static)?;
+                    dict.set_item("children_count", info.children_count)?;
+                    dict.set_item("depth", info.depth)?;
+                    if let Some((oldest, newest)) = info.time_range {
+                        let range = pyo3::types::PyTuple::new(py, [oldest, newest])?;
+                        dict.set_item("time_range", range)?;
+                    } else {
+                        dict.set_item("time_range", py.None())?;
+                    }
+                    Ok(dict.into())
+                })
+                .collect()
+        })
+    }
+
+    /// Export frame tree as Graphviz DOT format.
+    ///
+    /// Visualize with: `echo "$dot" | dot -Tpng -o tree.png`
+    ///
+    /// Returns:
+    ///     DOT-format string representing the frame tree
+    fn frames_as_dot(&self) -> String {
+        self.inner.frames_as_dot()
+    }
+
+    /// Export frame tree as TF2-compatible YAML.
+    ///
+    /// Returns:
+    ///     YAML string matching ROS2 TF2 allFramesAsYAML format
+    fn frames_as_yaml(&self) -> String {
+        self.inner.frames_as_yaml()
+    }
+
+    /// Format frame tree as readable ASCII art.
+    ///
+    /// Returns:
+    ///     Multi-line string showing tree hierarchy with indentation
+    fn format_tree(&self) -> String {
+        self.inner.format_tree()
     }
 
     fn __repr__(&self) -> String {

@@ -17,35 +17,54 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Node presence data written to shared memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodePresence {
-    /// Node name
-    pub name: String,
-    /// Process ID
-    pub pid: u32,
-    /// Scheduler name (if running under a scheduler)
-    pub scheduler: Option<String>,
-    /// Topics this node publishes to
-    pub publishers: Vec<TopicMetadata>,
-    /// Topics this node subscribes to
-    pub subscribers: Vec<TopicMetadata>,
-    /// Unix timestamp when node started (seconds)
-    pub start_time: u64,
-    /// Node priority (from scheduler)
-    pub priority: u32,
-    /// Target tick rate in Hz
-    pub rate_hz: Option<f64>,
-    /// OS-level process start time for PID-reuse detection.
-    ///
-    /// On Linux this is the `starttime` field from `/proc/PID/stat` (jiffies
-    /// since system boot).  On macOS it is microseconds derived from
-    /// `kinfo_proc.kp_proc.p_starttime`.  On other platforms it is 0.
-    ///
-    /// A value of 0 means "start-time unavailable"; in that case the liveness
-    /// check falls back to `kill(pid, 0)` alone (no PID-reuse protection).
-    ///
-    /// `#[serde(default)]` ensures presence files written before this field
-    /// was added deserialise with `pid_start_time = 0` (backward compatible).
+    name: String,
+    pid: u32,
+    scheduler: Option<String>,
+    publishers: Vec<TopicMetadata>,
+    subscribers: Vec<TopicMetadata>,
+    start_time: u64,
+    priority: u32,
+    rate_hz: Option<f64>,
     #[serde(default)]
-    pub pid_start_time: u64,
+    pid_start_time: u64,
+}
+
+impl NodePresence {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    pub fn scheduler(&self) -> Option<&str> {
+        self.scheduler.as_deref()
+    }
+
+    pub fn publishers(&self) -> &[TopicMetadata] {
+        &self.publishers
+    }
+
+    pub fn subscribers(&self) -> &[TopicMetadata] {
+        &self.subscribers
+    }
+
+    pub fn start_time(&self) -> u64 {
+        self.start_time
+    }
+
+    pub fn priority(&self) -> u32 {
+        self.priority
+    }
+
+    pub fn rate_hz(&self) -> Option<f64> {
+        self.rate_hz
+    }
+
+    pub fn pid_start_time(&self) -> u64 {
+        self.pid_start_time
+    }
 }
 
 impl NodePresence {

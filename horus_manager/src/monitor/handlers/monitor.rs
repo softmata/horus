@@ -263,17 +263,17 @@ pub async fn network_handler() -> impl IntoResponse {
         .iter()
         .map(|s| {
             serde_json::json!({
-                "node_name": s.node_name,
-                "transport_type": s.transport_type,
-                "local_endpoint": s.local_endpoint,
-                "remote_endpoints": s.remote_endpoints,
-                "network_topics_pub": s.network_topics_pub,
-                "network_topics_sub": s.network_topics_sub,
-                "bytes_sent": s.bytes_sent,
-                "bytes_received": s.bytes_received,
-                "packets_sent": s.packets_sent,
-                "packets_received": s.packets_received,
-                "timestamp_secs": s.timestamp_secs,
+                "node_name": s.node_name(),
+                "transport_type": s.transport_type(),
+                "local_endpoint": s.local_endpoint(),
+                "remote_endpoints": s.remote_endpoints(),
+                "network_topics_pub": s.network_topics_pub(),
+                "network_topics_sub": s.network_topics_sub(),
+                "bytes_sent": s.bytes_sent(),
+                "bytes_received": s.bytes_received(),
+                "packets_sent": s.packets_sent(),
+                "packets_received": s.packets_received(),
+                "timestamp_secs": s.timestamp_secs(),
             })
         })
         .collect::<Vec<_>>();

@@ -218,16 +218,16 @@ pub fn get_network_summary() -> NetworkSummary {
 
     for status in &statuses {
         summary.total_nodes += 1;
-        summary.total_bytes_sent += status.bytes_sent;
-        summary.total_bytes_received += status.bytes_received;
-        summary.total_packets_sent += status.packets_sent;
-        summary.total_packets_received += status.packets_received;
+        summary.total_bytes_sent += status.bytes_sent();
+        summary.total_bytes_received += status.bytes_received();
+        summary.total_packets_sent += status.packets_sent();
+        summary.total_packets_received += status.packets_received();
 
         *transport_counts
-            .entry(status.transport_type.clone())
+            .entry(status.transport_type().to_string())
             .or_insert(0) += 1;
 
-        for endpoint in &status.remote_endpoints {
+        for endpoint in status.remote_endpoints() {
             if !summary.unique_endpoints.contains(endpoint) {
                 summary.unique_endpoints.push(endpoint.clone());
             }

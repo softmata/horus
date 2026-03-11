@@ -133,16 +133,49 @@ pub enum FailureAction {
 /// Summary of a node's failure handler state for monitoring
 #[derive(Debug, Clone)]
 pub struct FailureHandlerStats {
-    /// The policy kind
-    pub policy: String,
-    /// Current state description
-    pub state: String,
-    /// Number of failures recorded
-    pub failure_count: u32,
-    /// Number of restarts (for Restart policy)
-    pub restart_count: u32,
-    /// Whether the node is currently being skipped/in backoff
-    pub is_suppressed: bool,
+    policy: String,
+    state: String,
+    failure_count: u32,
+    restart_count: u32,
+    is_suppressed: bool,
+}
+
+impl FailureHandlerStats {
+    pub(crate) fn new(
+        policy: String,
+        state: String,
+        failure_count: u32,
+        restart_count: u32,
+        is_suppressed: bool,
+    ) -> Self {
+        Self {
+            policy,
+            state,
+            failure_count,
+            restart_count,
+            is_suppressed,
+        }
+    }
+
+    pub fn policy(&self) -> &str {
+        &self.policy
+    }
+
+    pub fn state(&self) -> &str {
+        &self.state
+    }
+
+    pub fn failure_count(&self) -> u32 {
+        self.failure_count
+    }
+
+    pub fn restart_count(&self) -> u32 {
+        self.restart_count
+    }
+
+    pub fn is_suppressed(&self) -> bool {
+        self.is_suppressed
+    }
 }
 
 impl FailureHandler {

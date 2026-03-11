@@ -408,10 +408,60 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Create a new topic with custom capacity and optional slot size
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
+        // Validate topic name
+        if name.is_empty() {
+            return Err(crate::HorusError::InvalidInput(
+                crate::error::ValidationError::Other(
+                    "Topic name cannot be empty".to_string(),
+                ),
+            ));
+        }
+        if name.len() > 255 {
+            return Err(crate::HorusError::InvalidInput(
+                crate::error::ValidationError::Other(format!(
+                    "Topic name too long ({} chars, max 255)",
+                    name.len()
+                )),
+            ));
+        }
+        if !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'/' | b'-' | b'.'))
+        {
+            return Err(crate::HorusError::InvalidInput(
+                crate::error::ValidationError::Other(format!(
+                    "Topic name '{}' contains invalid characters \
+                     (allowed: alphanumeric, _, /, -, .)",
+                    name
+                )),
+            ));
+        }
+
+        // Validate capacity
         if capacity == 0 {
             return Err(crate::HorusError::InvalidInput(
                 crate::error::ValidationError::Other("Topic capacity must be >= 1".to_string()),
             ));
+        }
+
+        // Validate slot size
+        const MAX_SLOT_SIZE: usize = 1024 * 1024; // 1 MB
+        if let Some(size) = slot_size {
+            if size == 0 {
+                return Err(crate::HorusError::InvalidInput(
+                    crate::error::ValidationError::Other(
+                        "Slot size must be > 0".to_string(),
+                    ),
+                ));
+            }
+            if size > MAX_SLOT_SIZE {
+                return Err(crate::HorusError::InvalidInput(
+                    crate::error::ValidationError::Other(format!(
+                        "Slot size {} exceeds maximum (1 MB)",
+                        size
+                    )),
+                ));
+            }
         }
         let is_pod = Self::check_is_pod();
         let type_size = mem::size_of::<T>() as u32;
@@ -2054,7 +2104,7 @@ impl<T: TopicMessage> Topic<T> {
     /// }
     /// ```
     pub fn dropped_count(&self) -> u64 {
-        self.ring.metrics().send_failures
+        self.ring.metrics().send_failures()
     }
 
     /// Check if a message is available without consuming it.

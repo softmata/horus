@@ -527,7 +527,7 @@ impl TuiDashboard {
             .node_statuses
             .iter()
             .map(|status| {
-                let transport_color = match status.transport_type.as_str() {
+                let transport_color = match status.transport_type() {
                     "SharedMemory" => Color::Green,
                     "BatchUdp" | "Udp" => Color::Cyan,
                     "Quic" => Color::Magenta,
@@ -536,32 +536,32 @@ impl TuiDashboard {
                     _ => Color::White,
                 };
 
-                let endpoints = if status.remote_endpoints.is_empty() {
+                let endpoints = if status.remote_endpoints().is_empty() {
                     "-".to_string()
                 } else {
-                    status.remote_endpoints.join(", ")
+                    status.remote_endpoints().join(", ")
                 };
 
-                let topics_pub = if status.network_topics_pub.is_empty() {
+                let topics_pub = if status.network_topics_pub().is_empty() {
                     "-".to_string()
                 } else {
-                    status.network_topics_pub.join(", ")
+                    status.network_topics_pub().join(", ")
                 };
 
                 Row::new(vec![
-                    Cell::from(status.node_name.clone()),
-                    Cell::from(status.transport_type.clone())
+                    Cell::from(status.node_name().to_string()),
+                    Cell::from(status.transport_type().to_string())
                         .style(Style::default().fg(transport_color)),
                     Cell::from(
                         status
-                            .local_endpoint
-                            .clone()
-                            .unwrap_or_else(|| "-".to_string()),
+                            .local_endpoint()
+                            .unwrap_or("-")
+                            .to_string(),
                     ),
                     Cell::from(endpoints),
                     Cell::from(topics_pub),
-                    Cell::from(format_bytes(status.bytes_sent)),
-                    Cell::from(format_bytes(status.bytes_received)),
+                    Cell::from(format_bytes(status.bytes_sent())),
+                    Cell::from(format_bytes(status.bytes_received())),
                 ])
             })
             .collect();

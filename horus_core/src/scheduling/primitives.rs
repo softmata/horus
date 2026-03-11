@@ -97,12 +97,11 @@ impl TimingEnforcer {
     ) -> Option<BudgetViolationResult> {
         if tick_duration > tick_budget {
             Some(BudgetViolationResult {
-                violation: BudgetViolation {
-                    node_name: node_name.to_string(),
-                    budget: tick_budget,
-                    actual: tick_duration,
-                    overrun: tick_duration - tick_budget,
-                },
+                violation: BudgetViolation::new(
+                    node_name.to_string(),
+                    tick_budget,
+                    tick_duration,
+                ),
             })
         } else {
             None
@@ -220,10 +219,10 @@ mod tests {
             Duration::from_micros(500),
         );
         let v = result.expect("should detect violation");
-        assert_eq!(v.violation.node_name, "motor_ctrl");
-        assert_eq!(v.violation.budget, Duration::from_micros(500));
-        assert_eq!(v.violation.actual, Duration::from_micros(800));
-        assert_eq!(v.violation.overrun, Duration::from_micros(300));
+        assert_eq!(v.violation.node_name(), "motor_ctrl");
+        assert_eq!(v.violation.budget(), Duration::from_micros(500));
+        assert_eq!(v.violation.actual(), Duration::from_micros(800));
+        assert_eq!(v.violation.overrun(), Duration::from_micros(300));
     }
 
     #[test]

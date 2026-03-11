@@ -570,20 +570,20 @@ impl PyScheduler {
     /// Build a Python dict from a NodeMetrics.
     fn metric_to_dict(py: Python, metric: &NodeMetrics, tick_rate: f64) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
-        dict.set_item("name", &metric.name)?;
-        dict.set_item("order", metric.order)?;
+        dict.set_item("name", metric.name())?;
+        dict.set_item("order", metric.order())?;
         dict.set_item("rate_hz", tick_rate)?;
-        dict.set_item("total_ticks", metric.total_ticks)?;
-        dict.set_item("successful_ticks", metric.successful_ticks)?;
-        dict.set_item("failed_ticks", metric.failed_ticks)?;
-        dict.set_item("errors_count", metric.errors_count)?;
-        dict.set_item("avg_tick_duration_ms", metric.avg_tick_duration_ms)?;
-        dict.set_item("min_tick_duration_ms", metric.min_tick_duration_ms)?;
-        dict.set_item("max_tick_duration_ms", metric.max_tick_duration_ms)?;
-        dict.set_item("last_tick_duration_ms", metric.last_tick_duration_ms)?;
-        dict.set_item("uptime_seconds", metric.uptime_seconds)?;
-        dict.set_item("messages_sent", metric.messages_sent)?;
-        dict.set_item("messages_received", metric.messages_received)?;
+        dict.set_item("total_ticks", metric.total_ticks())?;
+        dict.set_item("successful_ticks", metric.successful_ticks())?;
+        dict.set_item("failed_ticks", metric.failed_ticks())?;
+        dict.set_item("errors_count", metric.errors_count())?;
+        dict.set_item("avg_tick_duration_ms", metric.avg_tick_duration_ms())?;
+        dict.set_item("min_tick_duration_ms", metric.min_tick_duration_ms())?;
+        dict.set_item("max_tick_duration_ms", metric.max_tick_duration_ms())?;
+        dict.set_item("last_tick_duration_ms", metric.last_tick_duration_ms())?;
+        dict.set_item("uptime_seconds", metric.uptime_seconds())?;
+        dict.set_item("messages_sent", metric.messages_sent())?;
+        dict.set_item("messages_received", metric.messages_received())?;
 
         Ok(dict.into())
     }
@@ -781,7 +781,7 @@ impl PyScheduler {
         })?;
 
         for metric in inner.metrics() {
-            if metric.name == node_name {
+            if metric.name() == node_name {
                 return Self::metric_to_dict(py, &metric, self.tick_rate_hz);
             }
         }
@@ -818,7 +818,7 @@ impl PyScheduler {
 
         let mut result = Vec::new();
         for metric in inner.metrics() {
-            if removed.contains(&metric.name) {
+            if removed.contains(metric.name()) {
                 continue;
             }
             result.push(Self::metric_to_dict(py, &metric, self.tick_rate_hz)?);
@@ -894,8 +894,8 @@ impl PyScheduler {
         match guard.as_ref() {
             Some(sched) => {
                 for metric in sched.metrics() {
-                    if metric.name == name {
-                        return Ok(Some(metric.order));
+                    if metric.name() == name {
+                        return Ok(Some(metric.order()));
                     }
                 }
                 Ok(None)

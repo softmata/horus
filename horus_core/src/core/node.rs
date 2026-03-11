@@ -135,28 +135,17 @@ impl LogSummary for HealthStatus {
 /// Network transport status for monitoring
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NetworkStatus {
-    /// Node name
-    pub node_name: String,
-    /// Active transport type (SharedMemory, Udp, BatchUdp, Quic, Unix, etc.)
-    pub transport_type: String,
-    /// Local endpoint address (if network-based)
-    pub local_endpoint: Option<String>,
-    /// Remote endpoints this node connects to
-    pub remote_endpoints: Vec<String>,
-    /// Topics being published over network
-    pub network_topics_pub: Vec<String>,
-    /// Topics being subscribed over network
-    pub network_topics_sub: Vec<String>,
-    /// Bytes sent
-    pub bytes_sent: u64,
-    /// Bytes received
-    pub bytes_received: u64,
-    /// Packets sent
-    pub packets_sent: u64,
-    /// Packets received
-    pub packets_received: u64,
-    /// Last update timestamp (Unix seconds)
-    pub timestamp_secs: u64,
+    node_name: String,
+    transport_type: String,
+    local_endpoint: Option<String>,
+    remote_endpoints: Vec<String>,
+    network_topics_pub: Vec<String>,
+    network_topics_sub: Vec<String>,
+    bytes_sent: u64,
+    bytes_received: u64,
+    packets_sent: u64,
+    packets_received: u64,
+    timestamp_secs: u64,
 }
 
 impl NetworkStatus {
@@ -191,27 +180,195 @@ impl NetworkStatus {
 
         now.saturating_sub(self.timestamp_secs) <= max_age_secs
     }
+
+    // ── Getters ──
+
+    pub fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    pub fn transport_type(&self) -> &str {
+        &self.transport_type
+    }
+
+    pub fn local_endpoint(&self) -> Option<&str> {
+        self.local_endpoint.as_deref()
+    }
+
+    pub fn remote_endpoints(&self) -> &[String] {
+        &self.remote_endpoints
+    }
+
+    pub fn network_topics_pub(&self) -> &[String] {
+        &self.network_topics_pub
+    }
+
+    pub fn network_topics_sub(&self) -> &[String] {
+        &self.network_topics_sub
+    }
+
+    pub fn bytes_sent(&self) -> u64 {
+        self.bytes_sent
+    }
+
+    pub fn bytes_received(&self) -> u64 {
+        self.bytes_received
+    }
+
+    pub fn packets_sent(&self) -> u64 {
+        self.packets_sent
+    }
+
+    pub fn packets_received(&self) -> u64 {
+        self.packets_received
+    }
+
+    pub fn timestamp_secs(&self) -> u64 {
+        self.timestamp_secs
+    }
+
+    // ── Builder / mutation methods ──
+
+    pub fn with_local_endpoint(mut self, endpoint: String) -> Self {
+        self.local_endpoint = Some(endpoint);
+        self
+    }
+
+    pub fn add_remote_endpoint(&mut self, endpoint: String) {
+        self.remote_endpoints.push(endpoint);
+    }
+
+    pub fn add_network_topic_pub(&mut self, topic: String) {
+        self.network_topics_pub.push(topic);
+    }
+
+    pub fn add_network_topic_sub(&mut self, topic: String) {
+        self.network_topics_sub.push(topic);
+    }
+
+    pub fn add_bytes_sent(&mut self, n: u64) {
+        self.bytes_sent += n;
+    }
+
+    pub fn add_bytes_received(&mut self, n: u64) {
+        self.bytes_received += n;
+    }
+
+    pub fn add_packets_sent(&mut self, n: u64) {
+        self.packets_sent += n;
+    }
+
+    pub fn add_packets_received(&mut self, n: u64) {
+        self.packets_received += n;
+    }
 }
 
 /// Performance metrics for node execution
 #[derive(Debug, Clone, Default)]
 pub struct NodeMetrics {
-    /// Node name
-    pub name: String,
-    /// Execution order (lower = earlier in tick sequence)
-    pub order: u32,
-    pub total_ticks: u64,
-    pub successful_ticks: u64,
-    pub failed_ticks: u64,
-    pub avg_tick_duration_ms: f64,
-    pub max_tick_duration_ms: f64,
-    pub min_tick_duration_ms: f64,
-    pub last_tick_duration_ms: f64,
-    pub messages_sent: u64,
-    pub messages_received: u64,
-    pub errors_count: u64,
-    pub warnings_count: u64,
-    pub uptime_seconds: f64,
+    name: String,
+    order: u32,
+    total_ticks: u64,
+    successful_ticks: u64,
+    failed_ticks: u64,
+    avg_tick_duration_ms: f64,
+    max_tick_duration_ms: f64,
+    min_tick_duration_ms: f64,
+    last_tick_duration_ms: f64,
+    messages_sent: u64,
+    messages_received: u64,
+    errors_count: u64,
+    warnings_count: u64,
+    uptime_seconds: f64,
+}
+
+impl NodeMetrics {
+    /// Create metrics with a name and execution order.
+    pub(crate) fn new(name: String, order: u32) -> Self {
+        Self {
+            name,
+            order,
+            ..Default::default()
+        }
+    }
+
+    /// Create a snapshot copy with an overridden name and order.
+    pub(crate) fn snapshot(&self, name: String, order: u32) -> Self {
+        Self {
+            name,
+            order,
+            total_ticks: self.total_ticks,
+            successful_ticks: self.successful_ticks,
+            failed_ticks: self.failed_ticks,
+            avg_tick_duration_ms: self.avg_tick_duration_ms,
+            max_tick_duration_ms: self.max_tick_duration_ms,
+            min_tick_duration_ms: self.min_tick_duration_ms,
+            last_tick_duration_ms: self.last_tick_duration_ms,
+            messages_sent: self.messages_sent,
+            messages_received: self.messages_received,
+            errors_count: self.errors_count,
+            warnings_count: self.warnings_count,
+            uptime_seconds: self.uptime_seconds,
+        }
+    }
+
+    /// Node name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Execution order (lower = earlier in tick sequence).
+    pub fn order(&self) -> u32 {
+        self.order
+    }
+
+    pub fn total_ticks(&self) -> u64 {
+        self.total_ticks
+    }
+
+    pub fn successful_ticks(&self) -> u64 {
+        self.successful_ticks
+    }
+
+    pub fn failed_ticks(&self) -> u64 {
+        self.failed_ticks
+    }
+
+    pub fn avg_tick_duration_ms(&self) -> f64 {
+        self.avg_tick_duration_ms
+    }
+
+    pub fn max_tick_duration_ms(&self) -> f64 {
+        self.max_tick_duration_ms
+    }
+
+    pub fn min_tick_duration_ms(&self) -> f64 {
+        self.min_tick_duration_ms
+    }
+
+    pub fn last_tick_duration_ms(&self) -> f64 {
+        self.last_tick_duration_ms
+    }
+
+    pub fn messages_sent(&self) -> u64 {
+        self.messages_sent
+    }
+
+    pub fn messages_received(&self) -> u64 {
+        self.messages_received
+    }
+
+    pub fn errors_count(&self) -> u64 {
+        self.errors_count
+    }
+
+    pub fn warnings_count(&self) -> u64 {
+        self.warnings_count
+    }
+
+    pub fn uptime_seconds(&self) -> f64 {
+        self.uptime_seconds
+    }
 }
 
 impl NodeMetrics {
@@ -298,7 +455,7 @@ impl NodeInfo {
         &self.state
     }
 
-    pub fn set_state(&mut self, new_state: NodeState) {
+    pub(crate) fn set_state(&mut self, new_state: NodeState) {
         if self.state != new_state {
             self.previous_state = self.state.clone();
             self.state = new_state;
@@ -312,25 +469,25 @@ impl NodeInfo {
         self.set_state(NodeState::Error(error_msg));
     }
 
-    pub fn transition_to_crashed(&mut self, crash_msg: String) {
+    pub(crate) fn transition_to_crashed(&mut self, crash_msg: String) {
         crate::hlog!(error, "{}", crash_msg);
         self.track_error(&crash_msg);
         self.set_state(NodeState::Crashed(crash_msg));
     }
 
-    pub fn transition_to_stopped(&mut self) {
+    pub(crate) fn transition_to_stopped(&mut self) {
         self.set_state(NodeState::Stopped);
     }
 
     // Lifecycle Methods
-    pub fn initialize(&mut self) -> crate::error::HorusResult<()> {
+    pub(crate) fn initialize(&mut self) -> crate::error::HorusResult<()> {
         self.set_state(NodeState::Initializing);
         // Initialization logic can be added here
         self.set_state(NodeState::Running);
         Ok(())
     }
 
-    pub fn shutdown(&mut self) -> crate::error::HorusResult<()> {
+    pub(crate) fn shutdown(&mut self) -> crate::error::HorusResult<()> {
         self.set_state(NodeState::Stopping);
         // Cleanup logic can be added here
         self.set_state(NodeState::Stopped);
@@ -338,7 +495,7 @@ impl NodeInfo {
     }
 
     /// Reset node context for restart (preserves identity, clears runtime state)
-    pub fn reset_for_restart(&mut self) {
+    pub(crate) fn reset_for_restart(&mut self) {
         self.restart_count += 1;
         self.state = NodeState::Uninitialized;
         self.previous_state = NodeState::Stopped;
@@ -349,7 +506,7 @@ impl NodeInfo {
         self.metrics.reset_timing();
     }
 
-    pub fn restart(&mut self) -> crate::error::HorusResult<()> {
+    pub(crate) fn restart(&mut self) -> crate::error::HorusResult<()> {
         self.restart_count += 1;
         self.shutdown()?;
         self.initialize()?;
@@ -403,11 +560,11 @@ impl NodeInfo {
     }
 
     /// Record node shutdown
-    pub fn record_shutdown(&mut self) {
+    pub(crate) fn record_shutdown(&mut self) {
         self.transition_to_stopped();
     }
 
-    pub fn record_tick_failure(&mut self, error_msg: String) {
+    pub(crate) fn record_tick_failure(&mut self, error_msg: String) {
         {
             let _guard = self
                 .metrics_lock
@@ -480,7 +637,7 @@ impl NodeInfo {
     ///
     /// The notifier is an atomic counter that publishers bump to signal new data.
     /// The event watcher thread checks this counter to decide when to tick.
-    pub fn set_event_notifier(&mut self, notifier: Arc<std::sync::atomic::AtomicU64>) {
+    pub(crate) fn set_event_notifier(&mut self, notifier: Arc<std::sync::atomic::AtomicU64>) {
         // Also register in the global registry for external notification
         EVENT_NOTIFIER_REGISTRY
             .lock()
@@ -752,36 +909,35 @@ mod tests {
     #[test]
     fn test_node_metrics_default() {
         let metrics = NodeMetrics::default();
-        assert_eq!(metrics.total_ticks, 0);
-        assert_eq!(metrics.successful_ticks, 0);
-        assert_eq!(metrics.failed_ticks, 0);
-        assert_eq!(metrics.avg_tick_duration_ms, 0.0);
-        assert_eq!(metrics.messages_sent, 0);
-        assert_eq!(metrics.messages_received, 0);
-        assert_eq!(metrics.errors_count, 0);
+        assert_eq!(metrics.total_ticks(), 0);
+        assert_eq!(metrics.successful_ticks(), 0);
+        assert_eq!(metrics.failed_ticks(), 0);
+        assert_eq!(metrics.avg_tick_duration_ms(), 0.0);
+        assert_eq!(metrics.messages_sent(), 0);
+        assert_eq!(metrics.messages_received(), 0);
+        assert_eq!(metrics.errors_count(), 0);
     }
 
     #[test]
     fn test_node_metrics_clone() {
-        let metrics = NodeMetrics {
-            total_ticks: 100,
-            successful_ticks: 95,
-            failed_ticks: 5,
-            avg_tick_duration_ms: 10.5,
-            max_tick_duration_ms: 50.0,
-            min_tick_duration_ms: 1.0,
-            last_tick_duration_ms: 8.0,
-            messages_sent: 500,
-            messages_received: 300,
-            errors_count: 2,
-            warnings_count: 10,
-            uptime_seconds: 3600.0,
-            ..Default::default()
-        };
+        let mut metrics = NodeMetrics::new("test".to_string(), 0);
+        metrics.total_ticks = 100;
+        metrics.successful_ticks = 95;
+        metrics.failed_ticks = 5;
+        metrics.avg_tick_duration_ms = 10.5;
+        metrics.max_tick_duration_ms = 50.0;
+        metrics.min_tick_duration_ms = 1.0;
+        metrics.last_tick_duration_ms = 8.0;
+        metrics.messages_sent = 500;
+        metrics.messages_received = 300;
+        metrics.errors_count = 2;
+        metrics.warnings_count = 10;
+        metrics.uptime_seconds = 3600.0;
+
         let cloned = metrics.clone();
-        assert_eq!(cloned.total_ticks, 100);
-        assert_eq!(cloned.successful_ticks, 95);
-        assert_eq!(cloned.avg_tick_duration_ms, 10.5);
+        assert_eq!(cloned.total_ticks(), 100);
+        assert_eq!(cloned.successful_ticks(), 95);
+        assert_eq!(cloned.avg_tick_duration_ms(), 10.5);
     }
 
     // =========================================================================
@@ -835,12 +991,12 @@ mod tests {
     #[test]
     fn test_network_status_new() {
         let status = NetworkStatus::new("test_node", "SharedMemory");
-        assert_eq!(status.node_name, "test_node");
-        assert_eq!(status.transport_type, "SharedMemory");
-        assert!(status.local_endpoint.is_none());
-        assert!(status.remote_endpoints.is_empty());
-        assert_eq!(status.bytes_sent, 0);
-        assert_eq!(status.bytes_received, 0);
+        assert_eq!(status.node_name(), "test_node");
+        assert_eq!(status.transport_type(), "SharedMemory");
+        assert!(status.local_endpoint().is_none());
+        assert!(status.remote_endpoints().is_empty());
+        assert_eq!(status.bytes_sent(), 0);
+        assert_eq!(status.bytes_received(), 0);
     }
 
     #[test]
@@ -853,13 +1009,13 @@ mod tests {
     #[test]
     fn test_network_status_clone() {
         let mut status = NetworkStatus::new("test_node", "Udp");
-        status.bytes_sent = 1000;
-        status.bytes_received = 500;
-        status.remote_endpoints.push("192.168.1.1:9000".to_string());
+        status.add_bytes_sent(1000);
+        status.add_bytes_received(500);
+        status.add_remote_endpoint("192.168.1.1:9000".to_string());
 
         let cloned = status.clone();
-        assert_eq!(cloned.bytes_sent, 1000);
-        assert_eq!(cloned.remote_endpoints.len(), 1);
+        assert_eq!(cloned.bytes_sent(), 1000);
+        assert_eq!(cloned.remote_endpoints().len(), 1);
     }
 
     // =========================================================================
@@ -896,9 +1052,9 @@ mod tests {
     fn test_node_info_metrics_initial() {
         let info = NodeInfo::new("test_node".to_string());
         let metrics = info.metrics();
-        assert_eq!(metrics.total_ticks, 0);
-        assert_eq!(metrics.successful_ticks, 0);
-        assert_eq!(metrics.failed_ticks, 0);
+        assert_eq!(metrics.total_ticks(), 0);
+        assert_eq!(metrics.successful_ticks(), 0);
+        assert_eq!(metrics.failed_ticks(), 0);
     }
 
     #[test]
@@ -909,7 +1065,7 @@ mod tests {
         info.track_error("Test error 2");
 
         let metrics = info.metrics();
-        assert_eq!(metrics.errors_count, 2);
+        assert_eq!(metrics.errors_count(), 2);
     }
 
     #[test]

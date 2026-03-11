@@ -20,12 +20,41 @@ pub(crate) struct MigrationMetrics {
 /// Non-atomic snapshot of topic metrics (for external consumers)
 #[derive(Debug, Clone, Default)]
 pub struct TopicMetrics {
-    /// Number of messages successfully sent
-    pub messages_sent: u64,
-    /// Number of messages successfully received
-    pub messages_received: u64,
-    /// Number of send failures
-    pub send_failures: u64,
-    /// Number of receive failures
-    pub recv_failures: u64,
+    messages_sent: u64,
+    messages_received: u64,
+    send_failures: u64,
+    recv_failures: u64,
+}
+
+impl TopicMetrics {
+    /// Create a metrics snapshot.
+    pub(crate) fn new(
+        messages_sent: u64,
+        messages_received: u64,
+        send_failures: u64,
+        recv_failures: u64,
+    ) -> Self {
+        Self {
+            messages_sent,
+            messages_received,
+            send_failures,
+            recv_failures,
+        }
+    }
+
+    pub fn messages_sent(&self) -> u64 {
+        self.messages_sent
+    }
+
+    pub fn messages_received(&self) -> u64 {
+        self.messages_received
+    }
+
+    pub fn send_failures(&self) -> u64 {
+        self.send_failures
+    }
+
+    pub fn recv_failures(&self) -> u64 {
+        self.recv_failures
+    }
 }

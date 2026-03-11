@@ -18,6 +18,8 @@ use memmap2::{MmapMut, MmapOptions};
 use std::fs::{File, OpenOptions};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 
 /// Cross-platform shared memory region for high-performance IPC
 ///
@@ -109,6 +111,24 @@ impl ShmRegion {
             Err(e) => return Err(e.into()),
         };
 
+        // Acquire a shared (read) flock on the backing file.  Every process
+        // that has this SHM region open holds LOCK_SH.  When a process exits —
+        // even via SIGKILL — the kernel closes the fd and releases the lock.
+        // To test staleness, try LOCK_EX|LOCK_NB: success means nobody holds it.
+        //
+        // SAFETY: file.as_raw_fd() is a valid open fd; LOCK_SH is a valid flock op.
+        let flock_ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        if flock_ret != 0 {
+            return Err(crate::error::HorusError::Memory(
+                format!(
+                    "Failed to acquire shared lock on SHM file '{}': {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                )
+                .into(),
+            ));
+        }
+
         // SAFETY: file is a valid open file with sufficient size set above; len(size) matches the file size
         let mut mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
 
@@ -134,6 +154,8 @@ impl ShmRegion {
 #[cfg(target_os = "linux")]
 impl Drop for ShmRegion {
     fn drop(&mut self) {
+        // flock(LOCK_SH) is automatically released when _file is dropped (fd closed).
+        // We only need to unlink the file if we're the owner.
         if self.owner && self.path.exists() {
             let _ = std::fs::remove_file(&self.path);
         }
@@ -969,6 +991,166 @@ mod tests {
             );
         }
     }
+
+    // ── flock integration tests ─────────────────────────────────────────
+
+    /// ShmRegion holds flock(LOCK_SH) — file should NOT be stale while alive.
+    #[test]
+    fn shm_flock_alive_while_region_exists() {
+        let name = unique_name("test_flock_alive");
+        let size = 4096;
+
+        let region = ShmRegion::new(&name, size).expect("create");
+        assert!(
+            !crate::memory::platform::is_shm_file_stale(&region.path),
+            "ShmRegion should hold flock → not stale"
+        );
+    }
+
+    /// After ALL ShmRegions for the same name are dropped (normally, not
+    /// forgotten), the owner deletes the file, so staleness is moot.
+    /// This test verifies the non-owner drop path: drop non-owner first,
+    /// then drop owner — file should be cleaned up.
+    #[test]
+    fn shm_flock_non_owner_drop_keeps_file() {
+        let name = unique_name("test_flock_nonowner_drop");
+        let size = 4096;
+
+        let region1 = ShmRegion::new(&name, size).expect("create owner");
+        let path = region1.path.clone();
+
+        let region2 = ShmRegion::new(&name, size).expect("open non-owner");
+        assert!(!region2.is_owner());
+
+        // Both hold flock → not stale
+        assert!(!crate::memory::platform::is_shm_file_stale(&path));
+
+        // Drop non-owner first — file should still exist and still be alive
+        drop(region2);
+        assert!(path.exists(), "File should still exist after non-owner drop");
+        assert!(
+            !crate::memory::platform::is_shm_file_stale(&path),
+            "Owner still holds flock → not stale"
+        );
+
+        // Drop owner — file gets deleted
+        drop(region1);
+        assert!(!path.exists(), "Owner drop should remove file");
+    }
+
+    /// Multiple ShmRegion instances on same file all hold flock.
+    /// Dropping them one by one keeps file alive until the last one drops.
+    #[test]
+    fn shm_flock_multiple_regions_progressive_drop() {
+        let name = unique_name("test_flock_multi");
+        let size = 4096;
+
+        let r1 = ShmRegion::new(&name, size).expect("create");
+        let path = r1.path.clone();
+        let r2 = ShmRegion::new(&name, size).expect("open 2");
+        let r3 = ShmRegion::new(&name, size).expect("open 3");
+
+        assert!(!crate::memory::platform::is_shm_file_stale(&path));
+
+        // Drop non-owners first — owner keeps file alive
+        drop(r3);
+        assert!(
+            !crate::memory::platform::is_shm_file_stale(&path),
+            "r1 (owner) + r2 still hold → not stale"
+        );
+
+        drop(r2);
+        assert!(
+            !crate::memory::platform::is_shm_file_stale(&path),
+            "r1 (owner) still holds → not stale"
+        );
+
+        // Owner drop deletes file
+        drop(r1);
+        assert!(!path.exists(), "Owner drop removes file");
+    }
+
+    /// Simulate crash (mem::forget) and verify flock is still held
+    /// (because the File is leaked, fd stays open in this process).
+    /// is_shm_file_stale correctly reports NOT stale.
+    #[test]
+    fn shm_flock_forget_keeps_lock() {
+        let name = unique_name("test_flock_forget");
+        let size = 4096;
+
+        let region = ShmRegion::new(&name, size).expect("create");
+        let path = region.path.clone();
+
+        // mem::forget leaks the region — fd stays open → flock held
+        std::mem::forget(region);
+
+        assert!(path.exists(), "File should still exist (no Drop ran)");
+        assert!(
+            !crate::memory::platform::is_shm_file_stale(&path),
+            "Forgotten region still holds fd → flock → not stale"
+        );
+
+        // Clean up the leaked file manually
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Cross-process flock test: spawn a child holding ShmRegion,
+    /// kill it, verify staleness.
+    #[test]
+    fn shm_flock_cross_process_sigkill() {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+
+        let name = unique_name("test_flock_xproc");
+
+        // Create the SHM file ourselves so we know the path
+        let region = ShmRegion::new(&name, 4096).expect("create");
+        let path = region.path.clone();
+
+        // Forget owner so file persists but our flock is still held
+        std::mem::forget(region);
+        assert!(!crate::memory::platform::is_shm_file_stale(&path));
+
+        // Now spawn a child that also opens it and holds flock
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "exec python3 -c \"
+import fcntl, time, sys
+fd = open('{}', 'r')
+fcntl.flock(fd, fcntl.LOCK_SH)
+sys.stdout.write('ready\\n')
+sys.stdout.flush()
+time.sleep(3600)
+\"",
+                path.display()
+            ))
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn child");
+
+        // Wait for child to be ready
+        let stdout = child.stdout.as_mut().unwrap();
+        let mut buf = [0u8; 16];
+        let n = stdout.read(&mut buf).unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().contains("ready"));
+
+        // SIGKILL the child
+        let pid = child.id() as i32;
+        // SAFETY: pid is valid; SIGKILL is valid
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let _ = child.wait();
+
+        // Our process still holds flock (from the forgotten ShmRegion)
+        // so it should NOT be stale yet
+        assert!(
+            !crate::memory::platform::is_shm_file_stale(&path),
+            "Our process still holds flock even after child killed"
+        );
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 // ============================================================================
@@ -981,6 +1163,8 @@ use crate::memory::platform::shm_topics_dir;
 use memmap2::{MmapMut, MmapOptions};
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use std::fs::{File, OpenOptions};
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+use std::os::unix::io::AsRawFd;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 impl ShmRegion {
@@ -1005,6 +1189,20 @@ impl ShmRegion {
             file.set_len(size as u64)?;
             (file, true)
         };
+
+        // Acquire shared flock — see Linux impl for rationale.
+        // SAFETY: file.as_raw_fd() is a valid open fd; LOCK_SH is a valid flock op.
+        let flock_ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        if flock_ret != 0 {
+            return Err(crate::error::HorusError::Memory(
+                format!(
+                    "Failed to acquire shared lock on SHM file '{}': {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                )
+                .into(),
+            ));
+        }
 
         // SAFETY: file is a valid open file with sufficient size set above; len(size) matches the file size
         let mut mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };

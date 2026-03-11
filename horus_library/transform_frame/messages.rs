@@ -170,10 +170,6 @@ pub struct TFMessage {
 unsafe impl Pod for TFMessage {}
 unsafe impl Zeroable for TFMessage {}
 
-/// Legacy alias — use [`TFMessage`] directly.
-#[deprecated(note = "Renamed to TFMessage")]
-pub type HFMessage = TFMessage;
-
 impl Default for TFMessage {
     fn default() -> Self {
         Self {

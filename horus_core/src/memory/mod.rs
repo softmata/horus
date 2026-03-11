@@ -28,9 +28,9 @@ pub(crate) mod tensor_descriptor;
 // Re-export platform functions needed by horus_manager
 #[doc(hidden)]
 pub use platform::{
-    cleanup_stale_namespaces, has_native_shm, list_all_horus_namespaces, shm_base_dir,
-    shm_control_dir, shm_logs_path, shm_namespace, shm_network_dir, shm_topics_dir,
-    NamespaceCleanupResult, NamespaceInfo,
+    cleanup_stale_namespaces, has_native_shm, is_namespace_stale_by_flock, is_shm_file_stale,
+    list_all_horus_namespaces, shm_base_dir, shm_control_dir, shm_logs_path, shm_namespace,
+    shm_network_dir, shm_topics_dir, NamespaceCleanupResult, NamespaceInfo,
 };
 #[doc(hidden)]
 pub mod tensor_handle;

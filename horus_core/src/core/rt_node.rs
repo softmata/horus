@@ -84,10 +84,42 @@ impl From<DeadlineMissPolicy> for Miss {
 /// Tick budget violation — node exceeded its allowed execution time.
 #[derive(Debug, Clone)]
 pub struct BudgetViolation {
-    pub node_name: String,
-    pub budget: Duration,
-    pub actual: Duration,
-    pub overrun: Duration,
+    node_name: String,
+    budget: Duration,
+    actual: Duration,
+    overrun: Duration,
+}
+
+impl BudgetViolation {
+    /// Create a new budget violation. Overrun is computed automatically.
+    pub fn new(node_name: String, budget: Duration, actual: Duration) -> Self {
+        Self {
+            node_name,
+            budget,
+            actual,
+            overrun: actual.saturating_sub(budget),
+        }
+    }
+
+    /// Node that violated its budget.
+    pub fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    /// The configured tick budget.
+    pub fn budget(&self) -> Duration {
+        self.budget
+    }
+
+    /// Actual execution time.
+    pub fn actual(&self) -> Duration {
+        self.actual
+    }
+
+    /// How much the budget was exceeded by.
+    pub fn overrun(&self) -> Duration {
+        self.overrun
+    }
 }
 
 /// Real-time statistics for a node.
@@ -113,23 +145,56 @@ pub struct BudgetViolation {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct RtStats {
-    /// Number of deadline misses
-    pub deadline_misses: u64,
-    /// Number of Budget violations
-    pub budget_violations: u64,
-    /// Worst observed execution time
-    pub worst_execution: Duration,
-    /// Last execution time
-    pub last_execution: Duration,
-    /// Jitter (variance in execution time) in microseconds
-    pub jitter_us: f64,
-    /// Average execution time (for jitter calculation)
-    pub avg_execution_us: f64,
-    /// Total ticks (for statistics)
-    pub total_ticks: u64,
+    deadline_misses: u64,
+    budget_violations: u64,
+    worst_execution: Duration,
+    last_execution: Duration,
+    jitter_us: f64,
+    avg_execution_us: f64,
+    total_ticks: u64,
 }
 
 impl RtStats {
+    /// Number of deadline misses.
+    pub fn deadline_misses(&self) -> u64 {
+        self.deadline_misses
+    }
+
+    /// Number of budget violations.
+    pub fn budget_violations(&self) -> u64 {
+        self.budget_violations
+    }
+
+    /// Worst observed execution time.
+    pub fn worst_execution(&self) -> Duration {
+        self.worst_execution
+    }
+
+    /// Last execution time.
+    pub fn last_execution(&self) -> Duration {
+        self.last_execution
+    }
+
+    /// Jitter (variance in execution time) in microseconds.
+    pub fn jitter_us(&self) -> f64 {
+        self.jitter_us
+    }
+
+    /// Average execution time in microseconds.
+    pub fn avg_execution_us(&self) -> f64 {
+        self.avg_execution_us
+    }
+
+    /// Total ticks recorded.
+    pub fn total_ticks(&self) -> u64 {
+        self.total_ticks
+    }
+
+    /// Record a budget violation.
+    pub fn record_budget_violation(&mut self) {
+        self.budget_violations += 1;
+    }
+
     /// Update statistics with new execution time
     pub fn record_execution(&mut self, duration: Duration) {
         let duration_us = duration.as_micros() as f64;
@@ -218,11 +283,11 @@ mod tests {
         let mut stats = RtStats::default();
         stats.record_execution(Duration::from_micros(100));
 
-        assert_eq!(stats.total_ticks, 1);
-        assert!((stats.avg_execution_us - 100.0).abs() < 1e-6);
-        assert!((stats.jitter_us - 0.0).abs() < 1e-6);
-        assert_eq!(stats.worst_execution, Duration::from_micros(100));
-        assert_eq!(stats.last_execution, Duration::from_micros(100));
+        assert_eq!(stats.total_ticks(), 1);
+        assert!((stats.avg_execution_us() - 100.0).abs() < 1e-6);
+        assert!((stats.jitter_us() - 0.0).abs() < 1e-6);
+        assert_eq!(stats.worst_execution(), Duration::from_micros(100));
+        assert_eq!(stats.last_execution(), Duration::from_micros(100));
     }
 
     /// EMA with alpha=0.1 over a known 10-element sequence.
@@ -254,18 +319,18 @@ mod tests {
         }
 
         assert!(
-            (stats.avg_execution_us - expected_avg).abs() < 1e-6,
+            (stats.avg_execution_us() - expected_avg).abs() < 1e-6,
             "EMA avg mismatch: got {}, expected {}",
-            stats.avg_execution_us,
+            stats.avg_execution_us(),
             expected_avg
         );
         assert!(
-            (stats.jitter_us - expected_jitter).abs() < 1e-6,
+            (stats.jitter_us() - expected_jitter).abs() < 1e-6,
             "Jitter mismatch: got {}, expected {}",
-            stats.jitter_us,
+            stats.jitter_us(),
             expected_jitter
         );
-        assert_eq!(stats.total_ticks, 10);
+        assert_eq!(stats.total_ticks(), 10);
     }
 
     /// Constant execution time → jitter converges to zero.
@@ -280,14 +345,14 @@ mod tests {
         }
 
         assert!(
-            (stats.avg_execution_us - 200.0).abs() < 1e-6,
+            (stats.avg_execution_us() - 200.0).abs() < 1e-6,
             "Avg should converge to constant: {}",
-            stats.avg_execution_us
+            stats.avg_execution_us()
         );
         assert!(
-            stats.jitter_us < 0.01,
+            stats.jitter_us() < 0.01,
             "Jitter should be near zero for constant input: {}",
-            stats.jitter_us
+            stats.jitter_us()
         );
     }
 
@@ -298,21 +363,21 @@ mod tests {
         let mut stats = RtStats::default();
 
         stats.record_execution(Duration::from_micros(100));
-        assert_eq!(stats.worst_execution, Duration::from_micros(100));
+        assert_eq!(stats.worst_execution(), Duration::from_micros(100));
 
         stats.record_execution(Duration::from_micros(50));
         assert_eq!(
-            stats.worst_execution,
+            stats.worst_execution(),
             Duration::from_micros(100),
             "Worst should not decrease"
         );
 
         stats.record_execution(Duration::from_micros(500));
-        assert_eq!(stats.worst_execution, Duration::from_micros(500));
+        assert_eq!(stats.worst_execution(), Duration::from_micros(500));
 
         stats.record_execution(Duration::from_micros(200));
         assert_eq!(
-            stats.worst_execution,
+            stats.worst_execution(),
             Duration::from_micros(500),
             "Worst should stay at 500"
         );
@@ -321,7 +386,7 @@ mod tests {
         for _ in 0..100 {
             stats.record_execution(Duration::from_micros(100));
         }
-        assert_eq!(stats.worst_execution, Duration::from_micros(500));
+        assert_eq!(stats.worst_execution(), Duration::from_micros(500));
     }
 
     /// Last execution always tracks the most recent value.
@@ -330,27 +395,27 @@ mod tests {
         let mut stats = RtStats::default();
 
         stats.record_execution(Duration::from_micros(100));
-        assert_eq!(stats.last_execution, Duration::from_micros(100));
+        assert_eq!(stats.last_execution(), Duration::from_micros(100));
 
         stats.record_execution(Duration::from_micros(250));
-        assert_eq!(stats.last_execution, Duration::from_micros(250));
+        assert_eq!(stats.last_execution(), Duration::from_micros(250));
 
         stats.record_execution(Duration::from_micros(50));
-        assert_eq!(stats.last_execution, Duration::from_micros(50));
+        assert_eq!(stats.last_execution(), Duration::from_micros(50));
     }
 
     /// Deadline miss counter increments correctly.
     #[test]
     fn rtstats_deadline_miss_counter() {
         let mut stats = RtStats::default();
-        assert_eq!(stats.deadline_misses, 0);
+        assert_eq!(stats.deadline_misses(), 0);
 
         stats.record_deadline_miss();
-        assert_eq!(stats.deadline_misses, 1);
+        assert_eq!(stats.deadline_misses(), 1);
 
         stats.record_deadline_miss();
         stats.record_deadline_miss();
-        assert_eq!(stats.deadline_misses, 3);
+        assert_eq!(stats.deadline_misses(), 3);
     }
 
     /// Summary string includes all key metrics.
@@ -375,7 +440,7 @@ mod tests {
         for _ in 0..20 {
             stats.record_execution(Duration::from_micros(100));
         }
-        let avg_before = stats.avg_execution_us;
+        let avg_before = stats.avg_execution_us();
         assert!((avg_before - 100.0).abs() < 1.0);
 
         // Step to 500µs — avg should increase
@@ -383,9 +448,9 @@ mod tests {
             stats.record_execution(Duration::from_micros(500));
         }
         assert!(
-            stats.avg_execution_us > avg_before + 50.0,
+            stats.avg_execution_us() > avg_before + 50.0,
             "EMA should respond to step change: avg={}, was={}",
-            stats.avg_execution_us,
+            stats.avg_execution_us(),
             avg_before
         );
     }
@@ -394,19 +459,18 @@ mod tests {
     // Section 4: BudgetViolation struct
     // =========================================================================
 
-    /// BudgetViolation stores correct values.
+    /// BudgetViolation stores correct values and auto-computes overrun.
     #[test]
     fn budget_violation_fields() {
-        let v = BudgetViolation {
-            node_name: "motor_ctrl".to_string(),
-            budget: Duration::from_micros(100),
-            actual: Duration::from_micros(250),
-            overrun: Duration::from_micros(150),
-        };
-        assert_eq!(v.node_name, "motor_ctrl");
-        assert_eq!(v.budget, Duration::from_micros(100));
-        assert_eq!(v.actual, Duration::from_micros(250));
-        assert_eq!(v.overrun, Duration::from_micros(150));
+        let v = BudgetViolation::new(
+            "motor_ctrl".to_string(),
+            Duration::from_micros(100),
+            Duration::from_micros(250),
+        );
+        assert_eq!(v.node_name(), "motor_ctrl");
+        assert_eq!(v.budget(), Duration::from_micros(100));
+        assert_eq!(v.actual(), Duration::from_micros(250));
+        assert_eq!(v.overrun(), Duration::from_micros(150));
     }
 
     // =========================================================================

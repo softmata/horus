@@ -10,7 +10,7 @@ use horus_manager::{commands, monitor, monitor_tui, security};
 
 #[derive(Parser)]
 #[command(name = "horus")]
-#[command(about = "HORUS - Hybrid Optimized Robotics Unified System")]
+#[command(about = "Real-time robotics framework with zero-copy IPC and deterministic scheduling")]
 #[command(version = "0.1.9")]
 #[command(propagate_version = true)]
 #[command(disable_help_subcommand = true)]
@@ -37,10 +37,14 @@ Introspection:
   param, p          Parameter management (get, set, list, delete)
   frame, frames     Coordinate frame operations (list, echo, tree)
   msg, m            Message type introspection
+  discover          Discover HORUS nodes on the local network
+
+Debugging:
   log               View and filter logs
   blackbox, bb      Inspect the BlackBox flight recorder
   monitor, mon      Monitor nodes, topics, and system health
-  discover          Discover HORUS nodes on the local network
+  record, rec       Record/replay management
+  cache             Cache management (info, clean, purge)
 
 Packages:
   install, i        Install a package or plugin (name@version supported)
@@ -62,18 +66,20 @@ Publishing & Deploy:
   deploy            Deploy project to a remote robot
   env               Environment management (freeze/restore)
   auth              Authentication commands
-  cache             Cache management (info, clean, purge)
-  record, rec       Record/replay management for debugging
 
 {options}
 {after-help}")]
 #[command(after_help = "\
-Examples:
-  horus new my_robot --rust       Create a Rust project
-  horus run                       Build and run current project
-  horus topic list                List active topics
-  horus install rplidar@1.2.0     Install a specific version
+Quick Start:
+  horus new my_robot -r           Create a new Rust project
+  cd my_robot && horus run        Build and run it
+  horus topic list                See active topics
+
+More examples:
+  horus init                      Initialize workspace in current directory
+  horus install rplidar@1.2.0     Install a specific package version
   horus bb --anomalies            Show crash anomalies
+  horus deploy robot@192.168.1.5  Deploy to a remote robot
 
 Docs: https://docs.horus-registry.dev")]
 struct Cli {
@@ -110,7 +116,7 @@ enum Commands {
         #[arg(short = 'p', long = "python", conflicts_with = "rust")]
         python: bool,
         /// Use Rust
-        #[arg(short = 'R', long = "rust", conflicts_with = "python")]
+        #[arg(short = 'r', long = "rust", conflicts_with = "python")]
         rust: bool,
         /// Use Rust with macros
         #[arg(short = 'm', long = "macro", conflicts_with = "python")]

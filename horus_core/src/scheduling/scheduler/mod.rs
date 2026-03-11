@@ -303,8 +303,112 @@ impl Scheduler {
     }
 
     // ========================================================================
-    // BUILDER METHODS — opt in to features one at a time
+    // BUILDER METHODS — composable, chainable, explicit
     // ========================================================================
+
+    /// Try to enable OS-level RT features (mlockall, SCHED_FIFO).
+    ///
+    /// If the system lacks RT capabilities, logs degradation warnings and
+    /// continues running with reduced capabilities. **Never panics.**
+    ///
+    /// Use `.require_rt()` instead if you need hard failure on non-RT systems.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .prefer_rt()           // try RT, warn if unavailable
+    ///     .monitoring(true)
+    ///     .tick_rate(100.hz());
+    /// ```
+    pub fn prefer_rt(mut self) -> Self {
+        self.pending_config.realtime.memory_locking = true;
+        self.pending_config.realtime.rt_scheduling_class = true;
+        self
+    }
+
+    /// Enable OS-level RT features (mlockall, SCHED_FIFO).
+    ///
+    /// **Panics** if the system lacks RT capabilities. The name `require_rt`
+    /// makes this explicit — you chose to fail loudly.
+    ///
+    /// Use `.prefer_rt()` for graceful degradation instead.
+    ///
+    /// # Panics
+    /// Panics if the system has neither `SCHED_FIFO` nor `mlockall` support.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .require_rt()          // panic if RT unavailable
+    ///     .monitoring(true)
+    ///     .tick_rate(1000.hz());
+    /// ```
+    pub fn require_rt(mut self) -> Self {
+        let can_rt = self
+            .rt
+            .capabilities
+            .as_ref()
+            .is_some_and(|c| c.rt_priority_available || c.mlockall_permitted);
+        assert!(
+            can_rt,
+            "require_rt(): system lacks RT capabilities.\n\
+             Use .prefer_rt() to run with graceful degradation instead."
+        );
+        self.pending_config.realtime.memory_locking = true;
+        self.pending_config.realtime.rt_scheduling_class = true;
+        self
+    }
+
+    /// Enable or disable all monitoring features at once.
+    ///
+    /// Sets: budget enforcement, deadline monitoring, watchdog (500ms), and
+    /// safety monitor. These four flags always go together in practice.
+    ///
+    /// For individual control, use `apply_config()` directly.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .monitoring(true)      // budget + deadline + watchdog + safety
+    ///     .with_blackbox(64)     // add flight recorder
+    ///     .tick_rate(100.hz());
+    /// ```
+    pub fn monitoring(mut self, enabled: bool) -> Self {
+        self.pending_config.realtime.budget_enforcement = enabled;
+        self.pending_config.realtime.deadline_monitoring = enabled;
+        self.pending_config.realtime.watchdog_enabled = enabled;
+        self.pending_config.realtime.safety_monitor = enabled;
+        if enabled {
+            self.pending_config.realtime.watchdog_timeout_ms = 500;
+        }
+        self
+    }
+
+    /// Enable or disable deterministic execution order.
+    ///
+    /// When enabled, **all** nodes tick sequentially on the main thread in
+    /// registration order. No thread pools, no watcher threads, no executors.
+    /// This guarantees identical execution order across runs.
+    ///
+    /// Designed for use with `tick_once()` in simulation and testing.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::new()
+    ///     .deterministic(true)
+    ///     .tick_rate(100.hz());
+    ///
+    /// // Simulation loop — you control time
+    /// loop {
+    ///     sim.step_physics(dt);
+    ///     scheduler.tick_once()?;
+    ///     sim.render();
+    /// }
+    /// ```
+    pub fn deterministic(mut self, enabled: bool) -> Self {
+        self.pending_config.timing.deterministic_order = enabled;
+        self
+    }
 
     /// Set the global tick rate.
     ///
@@ -566,8 +670,8 @@ impl Scheduler {
     /// // ... run scheduler for a while ...
     ///
     /// if let Some(stats) = scheduler.safety_stats() {
-    ///     println!("budget overruns: {}", stats.budget_overruns);
-    ///     println!("Deadline misses: {}", stats.deadline_misses);
+    ///     println!("budget overruns: {}", stats.budget_overruns());
+    ///     println!("Deadline misses: {}", stats.deadline_misses());
     /// }
     /// ```
     #[doc(hidden)]
@@ -737,21 +841,21 @@ impl Scheduler {
         // budget Stats
         if let Some(ref monitor) = self.monitor.safety {
             let stats = monitor.get_stats();
-            if stats.budget_overruns > 0 || stats.deadline_misses > 0 {
+            if stats.budget_overruns() > 0 || stats.deadline_misses() > 0 {
                 lines.push(thin_sep.to_string());
                 lines.push("budget / Deadline Statistics:".to_string());
-                if stats.budget_overruns > 0 {
+                if stats.budget_overruns() > 0 {
                     lines.push(format!(
                         "  [WARN] {} budget overruns",
-                        stats.budget_overruns
+                        stats.budget_overruns()
                     ));
                 } else {
                     lines.push("  [OK] No budget overruns".to_string());
                 }
-                if stats.deadline_misses > 0 {
+                if stats.deadline_misses() > 0 {
                     lines.push(format!(
                         "  [WARN] {} deadline misses",
-                        stats.deadline_misses
+                        stats.deadline_misses()
                     ));
                 } else {
                     lines.push("  [OK] No deadline misses".to_string());
@@ -2008,7 +2112,7 @@ impl Scheduler {
                     ctx.record_shutdown();
 
                     // Set node context for hlog!() macro
-                    set_node_context(node_name, ctx.metrics().total_ticks);
+                    set_node_context(node_name, ctx.metrics().total_ticks());
                     let shutdown_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             registered.node.shutdown()
@@ -2108,29 +2212,9 @@ impl Scheduler {
                 let order = registered.priority;
 
                 if let Some(ref ctx) = registered.context {
-                    let m = ctx.metrics();
-                    NodeMetrics {
-                        name,
-                        order,
-                        total_ticks: m.total_ticks,
-                        successful_ticks: m.successful_ticks,
-                        failed_ticks: m.failed_ticks,
-                        avg_tick_duration_ms: m.avg_tick_duration_ms,
-                        max_tick_duration_ms: m.max_tick_duration_ms,
-                        min_tick_duration_ms: m.min_tick_duration_ms,
-                        last_tick_duration_ms: m.last_tick_duration_ms,
-                        messages_sent: m.messages_sent,
-                        messages_received: m.messages_received,
-                        errors_count: m.errors_count,
-                        warnings_count: m.warnings_count,
-                        uptime_seconds: m.uptime_seconds,
-                    }
+                    ctx.metrics().snapshot(name, order)
                 } else {
-                    NodeMetrics {
-                        name,
-                        order,
-                        ..Default::default()
-                    }
+                    NodeMetrics::new(name, order)
                 }
             })
             .collect()
@@ -2358,8 +2442,8 @@ impl Scheduler {
                     (
                         ctx.state().to_string(),
                         metrics.calculate_health().as_str().to_string(),
-                        metrics.errors_count,
-                        metrics.total_ticks,
+                        metrics.errors_count(),
+                        metrics.total_ticks(),
                     )
                 } else {
                     ("Unknown".to_string(), "Unknown".to_string(), 0, 0)
@@ -2476,7 +2560,7 @@ impl Scheduler {
                     context.start_tick();
 
                     // Set node context for hlog!() macro
-                    let tick_number = context.metrics().total_ticks;
+                    let tick_number = context.metrics().total_ticks();
                     set_node_context(&registered.name, tick_number);
 
                     // Execute node tick via NodeRunner (timing + panic isolation)
@@ -2566,12 +2650,12 @@ impl Scheduler {
                     let violation = &budget_result.violation;
                     print_line(&format!(
                         " budget violation in {}: {:?} > {:?}",
-                        violation.node_name, violation.actual, violation.budget
+                        violation.node_name(), violation.actual(), violation.budget()
                     ));
 
                     // Update RtStats
                     if let Some(ref mut stats) = self.nodes[i].rt_stats {
-                        stats.budget_violations += 1;
+                        stats.record_budget_violation();
                     }
 
                     // Record in blackbox
@@ -2579,8 +2663,8 @@ impl Scheduler {
                         bb.lock().unwrap().record(
                             super::blackbox::BlackBoxEvent::BudgetViolation {
                                 name: node_name.to_string(),
-                                budget_us: violation.budget.as_micros() as u64,
-                                actual_us: violation.actual.as_micros() as u64,
+                                budget_us: violation.budget().as_micros() as u64,
+                                actual_us: violation.actual().as_micros() as u64,
                             },
                         );
                     }
@@ -2683,7 +2767,7 @@ impl Scheduler {
             context.record_tick_failure(error_msg.clone());
 
             // Set context for on_error handler
-            set_node_context(&node_name, context.metrics().total_ticks);
+            set_node_context(&node_name, context.metrics().total_ticks());
             registered.node.on_error(&error_msg);
             clear_node_context();
 
