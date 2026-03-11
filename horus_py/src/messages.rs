@@ -38,9 +38,8 @@ use horus_library::messages::joystick_msg::JoystickInput;
 use horus_library::messages::keyboard_input_msg::KeyboardInput;
 use horus_library::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
 use horus_library::messages::ml::{
-    ChatMessage, Classification, DeploymentConfig, FeatureVector, InferenceMetrics, LLMRequest,
-    LLMResponse, MlTrajectoryPoint, ModelFormat, ModelInfo, Predictions, TensorData,
-    TrainingMetrics,
+    Classification, DeploymentConfig, FeatureVector, InferenceMetrics, MlTrajectoryPoint,
+    ModelFormat, ModelInfo, Predictions, TensorData, TrainingMetrics,
 };
 use horus_library::messages::navigation::{
     CostMap, GoalResult, GoalStatus, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
@@ -6694,204 +6693,6 @@ impl PyClassification {
 }
 
 // ============================================================================
-// ChatMessage — LLM chat message
-// ============================================================================
-
-#[pyclass(name = "ChatMessage")]
-#[derive(Clone)]
-pub struct PyChatMessage {
-    pub(crate) inner: ChatMessage,
-}
-
-#[pymethods]
-impl PyChatMessage {
-    #[new]
-    #[pyo3(signature = (role="user", content=""))]
-    fn new(role: &str, content: &str) -> Self {
-        Self {
-            inner: ChatMessage {
-                role: role.to_string(),
-                content: content.to_string(),
-            },
-        }
-    }
-    #[getter]
-    fn role(&self) -> &str {
-        &self.inner.role
-    }
-    #[setter]
-    fn set_role(&mut self, v: String) {
-        self.inner.role = v;
-    }
-    #[getter]
-    fn content(&self) -> &str {
-        &self.inner.content
-    }
-    #[setter]
-    fn set_content(&mut self, v: String) {
-        self.inner.content = v;
-    }
-    #[classattr]
-    fn __topic_name__() -> &'static str {
-        "chat_message"
-    }
-    fn __repr__(&self) -> String {
-        let preview = if self.inner.content.len() > 50 {
-            &self.inner.content[..50]
-        } else {
-            &self.inner.content
-        };
-        format!("ChatMessage({}: \"{}\")", self.inner.role, preview)
-    }
-}
-
-// ============================================================================
-// LLMRequest — LLM generation request
-// ============================================================================
-
-#[pyclass(name = "LLMRequest")]
-#[derive(Clone)]
-pub struct PyLLMRequest {
-    pub(crate) inner: LLMRequest,
-}
-
-#[pymethods]
-impl PyLLMRequest {
-    #[new]
-    #[pyo3(signature = (messages=vec![]))]
-    fn new(messages: Vec<PyChatMessage>) -> Self {
-        Self {
-            inner: LLMRequest {
-                messages: messages.into_iter().map(|m| m.inner).collect(),
-            },
-        }
-    }
-    #[getter]
-    fn messages(&self) -> Vec<PyChatMessage> {
-        self.inner
-            .messages
-            .iter()
-            .map(|m| PyChatMessage { inner: m.clone() })
-            .collect()
-    }
-    #[setter]
-    fn set_messages(&mut self, msgs: Vec<PyChatMessage>) {
-        self.inner.messages = msgs.into_iter().map(|m| m.inner).collect();
-    }
-    fn add_message(&mut self, role: &str, content: &str) {
-        self.inner.messages.push(ChatMessage {
-            role: role.to_string(),
-            content: content.to_string(),
-        });
-    }
-    #[classattr]
-    fn __topic_name__() -> &'static str {
-        "llm_request"
-    }
-    fn __repr__(&self) -> String {
-        format!("LLMRequest({} messages)", self.inner.messages.len())
-    }
-}
-
-// ============================================================================
-// LLMResponse — LLM generation response
-// ============================================================================
-
-#[pyclass(name = "LLMResponse")]
-#[derive(Clone)]
-pub struct PyLLMResponse {
-    pub(crate) inner: LLMResponse,
-}
-
-#[pymethods]
-impl PyLLMResponse {
-    #[new]
-    #[pyo3(signature = (response="", tokens_used=0, latency_ms=0, model="", finish_reason="stop", timestamp_ns=0))]
-    fn new(
-        response: &str,
-        tokens_used: u64,
-        latency_ms: u64,
-        model: &str,
-        finish_reason: &str,
-        timestamp_ns: u64,
-    ) -> Self {
-        Self {
-            inner: LLMResponse {
-                response: response.to_string(),
-                tokens_used,
-                latency_ms,
-                model: model.to_string(),
-                finish_reason: finish_reason.to_string(),
-                timestamp_ns,
-            },
-        }
-    }
-    #[getter]
-    fn response(&self) -> &str {
-        &self.inner.response
-    }
-    #[setter]
-    fn set_response(&mut self, v: String) {
-        self.inner.response = v;
-    }
-    #[getter]
-    fn tokens_used(&self) -> u64 {
-        self.inner.tokens_used
-    }
-    #[setter]
-    fn set_tokens_used(&mut self, v: u64) {
-        self.inner.tokens_used = v;
-    }
-    #[getter]
-    fn latency_ms(&self) -> u64 {
-        self.inner.latency_ms
-    }
-    #[setter]
-    fn set_latency_ms(&mut self, v: u64) {
-        self.inner.latency_ms = v;
-    }
-    #[getter]
-    fn model(&self) -> &str {
-        &self.inner.model
-    }
-    #[setter]
-    fn set_model(&mut self, v: String) {
-        self.inner.model = v;
-    }
-    #[getter]
-    fn finish_reason(&self) -> &str {
-        &self.inner.finish_reason
-    }
-    #[setter]
-    fn set_finish_reason(&mut self, v: String) {
-        self.inner.finish_reason = v;
-    }
-    #[getter]
-    fn timestamp_ns(&self) -> u64 {
-        self.inner.timestamp_ns
-    }
-    #[setter]
-    fn set_timestamp_ns(&mut self, v: u64) {
-        self.inner.timestamp_ns = v;
-    }
-    #[classattr]
-    fn __topic_name__() -> &'static str {
-        "llm_response"
-    }
-    fn __repr__(&self) -> String {
-        let preview = if self.inner.response.len() > 50 {
-            &self.inner.response[..50]
-        } else {
-            &self.inner.response
-        };
-        format!(
-            "LLMResponse(\"{}\", {} tokens, {}ms)",
-            preview, self.inner.tokens_used, self.inner.latency_ms
-        )
-    }
-}
-
-// ============================================================================
 // TrainingMetrics — ML training progress
 // ============================================================================
 
@@ -8665,9 +8466,6 @@ pub fn register_message_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelInfo>()?;
     m.add_class::<PyFeatureVector>()?;
     m.add_class::<PyClassification>()?;
-    m.add_class::<PyChatMessage>()?;
-    m.add_class::<PyLLMRequest>()?;
-    m.add_class::<PyLLMResponse>()?;
     m.add_class::<PyTrainingMetrics>()?;
     m.add_class::<PyMlTrajectoryPoint>()?;
     m.add_class::<PyDeploymentConfig>()?;

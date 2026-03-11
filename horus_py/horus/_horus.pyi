@@ -1123,28 +1123,6 @@ class Classification:
     def __init__(self, class_ids: Optional[List[int]] = None, class_names: Optional[List[str]] = None, probabilities: Optional[List[float]] = None, timestamp_ns: int = 0) -> None: ...
     def __repr__(self) -> str: ...
 
-class ChatMessage:
-    role: str
-    content: str
-    def __init__(self, role: str = "user", content: str = "") -> None: ...
-    def __repr__(self) -> str: ...
-
-class LLMRequest:
-    messages: List[Any]
-    def __init__(self, messages: Optional[List[Any]] = None) -> None: ...
-    def __repr__(self) -> str: ...
-
-class LLMResponse:
-    __topic_name__: str
-    response: str
-    tokens_used: int
-    latency_ms: int
-    model: str
-    finish_reason: str
-    timestamp_ns: int
-    def __init__(self, response: str = "", tokens_used: int = 0, latency_ms: int = 0, model: str = "", finish_reason: str = "stop", timestamp_ns: int = 0) -> None: ...
-    def __repr__(self) -> str: ...
-
 class TrainingMetrics:
     __topic_name__: str
     epoch: int

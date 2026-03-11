@@ -45,8 +45,8 @@ use horus_library::messages::joystick_msg::JoystickInput;
 use horus_library::messages::keyboard_input_msg::KeyboardInput;
 use horus_library::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
 use horus_library::messages::ml::{
-    ChatMessage, Classification, DeploymentConfig, FeatureVector, InferenceMetrics, LLMRequest,
-    LLMResponse, MlTrajectoryPoint, ModelInfo, Predictions, TensorData, TrainingMetrics,
+    Classification, DeploymentConfig, FeatureVector, InferenceMetrics, MlTrajectoryPoint, ModelInfo,
+    Predictions, TensorData, TrainingMetrics,
 };
 use horus_library::messages::navigation::{
     CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
@@ -70,12 +70,12 @@ use crate::depth_image::PyDepthImage;
 use crate::image::PyImage;
 use crate::messages::{
     PyAccel, PyAccelStamped, PyBatteryState, PyBoundingBox2DMsg, PyBoundingBox3D, PyCameraInfo,
-    PyChatMessage, PyClassification, PyClock, PyCmdVel, PyCompressedImage, PyContactInfo,
+    PyClassification, PyClock, PyCmdVel, PyCompressedImage, PyContactInfo,
     PyCostMap, PyDeploymentConfig, PyDetection3D, PyDetectionMsg, PyDiagnosticReport,
     PyDiagnosticStatus, PyDiagnosticValue, PyDifferentialDriveCommand, PyEmergencyStop,
     PyFeatureVector, PyFluidPressure, PyForceCommand, PyGoalResult, PyHapticFeedback, PyHeartbeat,
     PyIlluminance, PyImpedanceParameters, PyImu, PyInferenceMetrics, PyJointCommand, PyJointState,
-    PyJoystickInput, PyKeyboardInput, PyLLMRequest, PyLLMResponse, PyLandmark3D, PyLandmarkArray,
+    PyJoystickInput, PyKeyboardInput, PyLandmark3D, PyLandmarkArray,
     PyLandmarkMsg, PyLaserScan, PyMagneticField, PyMlTrajectoryPoint, PyModelInfo, PyMotorCommand,
     PyNavGoal, PyNavPath, PyNavSatFix, PyNodeHeartbeat, PyOccupancyGrid, PyOdometry, PyPathPlan,
     PyPidConfig, PyPlaneArray, PyPlaneDetection, PyPoint3, PyPointField, PyPose2D, PyPose3D,
@@ -213,9 +213,6 @@ enum TopicType {
     ModelInfo(Arc<RwLock<Topic<ModelInfo>>>),
     FeatureVector(Arc<RwLock<Topic<FeatureVector>>>),
     Classification(Arc<RwLock<Topic<Classification>>>),
-    ChatMessage(Arc<RwLock<Topic<ChatMessage>>>),
-    LLMRequest(Arc<RwLock<Topic<LLMRequest>>>),
-    LLMResponse(Arc<RwLock<Topic<LLMResponse>>>),
     TrainingMetrics(Arc<RwLock<Topic<TrainingMetrics>>>),
     MlTrajectoryPoint(Arc<RwLock<Topic<MlTrajectoryPoint>>>),
     DeploymentConfig(Arc<RwLock<Topic<DeploymentConfig>>>),
@@ -317,9 +314,6 @@ macro_rules! topic_dispatch {
             TopicType::ModelInfo($t) => $body,
             TopicType::FeatureVector($t) => $body,
             TopicType::Classification($t) => $body,
-            TopicType::ChatMessage($t) => $body,
-            TopicType::LLMRequest($t) => $body,
-            TopicType::LLMResponse($t) => $body,
             TopicType::TrainingMetrics($t) => $body,
             TopicType::MlTrajectoryPoint($t) => $body,
             TopicType::DeploymentConfig($t) => $body,
@@ -710,18 +704,6 @@ impl PyTopic {
             "Classification" => {
                 let topic = create_topic::<Classification>(&effective_endpoint, cap)?;
                 TopicType::Classification(Arc::new(RwLock::new(topic)))
-            }
-            "ChatMessage" => {
-                let topic = create_topic::<ChatMessage>(&effective_endpoint, cap)?;
-                TopicType::ChatMessage(Arc::new(RwLock::new(topic)))
-            }
-            "LLMRequest" => {
-                let topic = create_topic::<LLMRequest>(&effective_endpoint, cap)?;
-                TopicType::LLMRequest(Arc::new(RwLock::new(topic)))
-            }
-            "LLMResponse" => {
-                let topic = create_topic::<LLMResponse>(&effective_endpoint, cap)?;
-                TopicType::LLMResponse(Arc::new(RwLock::new(topic)))
             }
             "TrainingMetrics" => {
                 let topic = create_topic::<TrainingMetrics>(&effective_endpoint, cap)?;
@@ -2212,75 +2194,6 @@ impl PyTopic {
                     .clone();
                 let topic_ref = topic.clone();
                 let log_msg = format!("{:?}", msg);
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::ChatMessage(topic) => {
-                let msg = message.extract::<PyRef<PyChatMessage>>(py)?.inner.clone();
-                let topic_ref = topic.clone();
-                let log_msg = {
-                    use horus::core::LogSummary;
-                    msg.log_summary()
-                };
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::LLMRequest(topic) => {
-                let msg = message.extract::<PyRef<PyLLMRequest>>(py)?.inner.clone();
-                let topic_ref = topic.clone();
-                let log_msg = {
-                    use horus::core::LogSummary;
-                    msg.log_summary()
-                };
-                let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
-                    true
-                });
-                if node.is_some() {
-                    log_ipc_event(
-                        py,
-                        &node,
-                        &self.name,
-                        log_msg,
-                        start.elapsed().as_nanos() as u64,
-                        "log_pub",
-                    );
-                }
-                success
-            }
-            TopicType::LLMResponse(topic) => {
-                let msg = message.extract::<PyRef<PyLLMResponse>>(py)?.inner.clone();
-                let topic_ref = topic.clone();
-                let log_msg = {
-                    use horus::core::LogSummary;
-                    msg.log_summary()
-                };
                 let success = py.detach(|| {
                     topic_ref.write().expect("topic lock poisoned").send(msg);
                     true
@@ -4234,66 +4147,6 @@ impl PyTopic {
                     Ok(None)
                 }
             }
-            TopicType::ChatMessage(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyChatMessage { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::LLMRequest(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyLLMRequest { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
-            TopicType::LLMResponse(topic) => {
-                let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(msg) = msg_opt {
-                    if node.is_some() {
-                        use horus::core::LogSummary;
-                        log_ipc_event(
-                            py,
-                            &node,
-                            &self.name,
-                            msg.log_summary(),
-                            start.elapsed().as_nanos() as u64,
-                            "log_sub",
-                        );
-                    }
-                    Ok(Some(Py::new(py, PyLLMResponse { inner: msg })?.into_any()))
-                } else {
-                    Ok(None)
-                }
-            }
             TopicType::TrainingMetrics(topic) => {
                 let topic_ref = topic.clone();
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
@@ -4991,15 +4844,6 @@ impl PyTopic {
             TopicType::Classification(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::ChatMessage(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::LLMRequest(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
-            TopicType::LLMResponse(t) => read_lock(t)
-                .map(|g| g.backend_name().to_string())
-                .unwrap_or_default(),
             TopicType::TrainingMetrics(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
@@ -5159,9 +5003,6 @@ impl PyTopic {
                 TopicType::ModelInfo(t) => read_lock(t)?.metrics(),
                 TopicType::FeatureVector(t) => read_lock(t)?.metrics(),
                 TopicType::Classification(t) => read_lock(t)?.metrics(),
-                TopicType::ChatMessage(t) => read_lock(t)?.metrics(),
-                TopicType::LLMRequest(t) => read_lock(t)?.metrics(),
-                TopicType::LLMResponse(t) => read_lock(t)?.metrics(),
                 TopicType::TrainingMetrics(t) => read_lock(t)?.metrics(),
                 TopicType::MlTrajectoryPoint(t) => read_lock(t)?.metrics(),
                 TopicType::DeploymentConfig(t) => read_lock(t)?.metrics(),
@@ -5366,8 +5207,7 @@ impl PyTopic {
             | TopicType::TensorData(_) | TopicType::Predictions(_)
             | TopicType::InferenceMetrics(_) | TopicType::ModelInfo(_)
             | TopicType::FeatureVector(_) | TopicType::Classification(_)
-            | TopicType::ChatMessage(_) | TopicType::LLMRequest(_)
-            | TopicType::LLMResponse(_) | TopicType::TrainingMetrics(_)
+            | TopicType::TrainingMetrics(_)
             | TopicType::MlTrajectoryPoint(_) | TopicType::DeploymentConfig(_)
             | TopicType::OccupancyGrid(_) | TopicType::CostMap(_)
             | TopicType::CompressedImage(_) | TopicType::PlaneArray(_)

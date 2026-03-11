@@ -200,57 +200,6 @@ class TestMLTypes:
         assert c.class_ids == [0, 1]
         assert c.class_names == ["cat", "dog"]
 
-    def test_chat_message_construction(self):
-        cm = horus.ChatMessage(role="user", content="Hello robot")
-        assert cm.role == "user"
-        assert cm.content == "Hello robot"
-
-    def test_llm_request_construction(self):
-        req = horus.LLMRequest(messages=[
-            horus.ChatMessage(role="system", content="You are a robot"),
-            horus.ChatMessage(role="user", content="Move forward"),
-        ])
-        assert len(req.messages) == 2
-        assert req.messages[0].role == "system"
-        assert req.messages[1].content == "Move forward"
-
-    def test_llm_request_add_message(self):
-        req = horus.LLMRequest()
-        req.add_message("user", "Hello")
-        assert len(req.messages) == 1
-
-    def test_llm_response_construction(self):
-        resp = horus.LLMResponse(response="Moving forward", tokens_used=15, latency_ms=200, model="gpt4")
-        assert resp.response == "Moving forward"
-        assert resp.tokens_used == 15
-        assert resp.model == "gpt4"
-
-    def test_llm_request_pubsub(self):
-        req = horus.LLMRequest(messages=[horus.ChatMessage(role="user", content="test")])
-        received = []
-
-        def pub_fn(node):
-            if node.info.tick_count() == 0:
-                node.send("LLMRequest", req)
-            elif node.info.tick_count() > 2:
-                node.request_stop()
-
-        def sub_fn(node):
-            m = node.get("LLMRequest")
-            if m is not None:
-                received.append(m)
-                node.request_stop()
-            elif node.info.tick_count() > 10:
-                node.request_stop()
-
-        horus.run(
-            horus.Node(name="p", pubs="LLMRequest", tick=pub_fn),
-            horus.Node(name="s", subs="LLMRequest", tick=sub_fn),
-            duration=1.0,
-        )
-        assert len(received) >= 1
-        assert received[0].messages[0].content == "test"
-
     def test_training_metrics_construction(self):
         tm = horus.TrainingMetrics(epoch=5, step=1000, loss=0.0234, accuracy=0.95, learning_rate=0.001)
         assert tm.epoch == 5
@@ -548,10 +497,6 @@ class TestEdgeCases:
         fv = horus.FeatureVector()
         assert fv.features == []
         assert fv.dim() == 0
-
-    def test_empty_llm_request(self):
-        req = horus.LLMRequest()
-        assert len(req.messages) == 0
 
     def test_zero_size_image(self):
         img = horus.CompressedImage()

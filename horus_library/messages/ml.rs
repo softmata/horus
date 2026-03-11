@@ -175,41 +175,6 @@ pub struct Classification {
     pub timestamp_ns: u64,
 }
 
-/// LLM generation request
-///
-/// Input for LLM inference nodes.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LLMRequest {
-    /// Conversation messages
-    pub messages: Vec<ChatMessage>,
-}
-
-/// Chat message for LLM conversations
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChatMessage {
-    /// Role: "system", "user", or "assistant"
-    pub role: String,
-    /// Message content
-    pub content: String,
-}
-
-/// LLM generation response
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LLMResponse {
-    /// Generated response text
-    pub response: String,
-    /// Total tokens used (input + output)
-    pub tokens_used: u64,
-    /// Inference time in milliseconds
-    pub latency_ms: u64,
-    /// Model name/ID
-    pub model: String,
-    /// Finish reason: "stop", "length", "error"
-    pub finish_reason: String,
-    /// Timestamp in nanoseconds
-    pub timestamp_ns: u64,
-}
-
 /// Training metrics
 ///
 /// Tracks training progress for online learning or fine-tuning.
@@ -306,63 +271,3 @@ impl LogSummary for InferenceMetrics {
     }
 }
 
-impl LogSummary for LLMRequest {
-    fn log_summary(&self) -> String {
-        if self.messages.is_empty() {
-            return "LLMRequest { no messages }".to_string();
-        }
-        let last_msg = &self.messages[self.messages.len() - 1];
-        let preview = if last_msg.content.len() > 50 {
-            let end = last_msg
-                .content
-                .char_indices()
-                .take_while(|&(i, _)| i < 50)
-                .last()
-                .map(|(i, c)| i + c.len_utf8())
-                .unwrap_or(0);
-            format!("{}...", &last_msg.content[..end])
-        } else {
-            last_msg.content.clone()
-        };
-        format!("LLMRequest {{ {}: \"{}\" }}", last_msg.role, preview)
-    }
-}
-
-impl LogSummary for LLMResponse {
-    fn log_summary(&self) -> String {
-        let preview = if self.response.len() > 50 {
-            let end = self
-                .response
-                .char_indices()
-                .take_while(|&(i, _)| i < 50)
-                .last()
-                .map(|(i, c)| i + c.len_utf8())
-                .unwrap_or(0);
-            format!("{}...", &self.response[..end])
-        } else {
-            self.response.clone()
-        };
-        format!(
-            "LLMResponse {{ \"{}\", {} tokens, {:.1}ms }}",
-            preview, self.tokens_used, self.latency_ms
-        )
-    }
-}
-
-impl LogSummary for ChatMessage {
-    fn log_summary(&self) -> String {
-        let preview = if self.content.len() > 40 {
-            let end = self
-                .content
-                .char_indices()
-                .take_while(|&(i, _)| i < 40)
-                .last()
-                .map(|(i, c)| i + c.len_utf8())
-                .unwrap_or(0);
-            format!("{}...", &self.content[..end])
-        } else {
-            self.content.clone()
-        };
-        format!("ChatMessage {{ {}: \"{}\" }}", self.role, preview)
-    }
-}

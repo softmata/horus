@@ -127,9 +127,6 @@ try:
         ModelInfo as _RustModelInfo,
         FeatureVector as _RustFeatureVector,
         Classification as _RustClassification,
-        ChatMessage as _RustChatMessage,
-        LLMRequest as _RustLLMRequest,
-        LLMResponse as _RustLLMResponse,
         TrainingMetrics as _RustTrainingMetrics,
         MlTrajectoryPoint as _RustMlTrajectoryPoint,
         DeploymentConfig as _RustDeploymentConfig,
@@ -1506,9 +1503,6 @@ except ImportError:
         ModelInfo = _RustModelInfo
         FeatureVector = _RustFeatureVector
         Classification = _RustClassification
-        ChatMessage = _RustChatMessage
-        LLMRequest = _RustLLMRequest
-        LLMResponse = _RustLLMResponse
         TrainingMetrics = _RustTrainingMetrics
         MlTrajectoryPoint = _RustMlTrajectoryPoint
         DeploymentConfig = _RustDeploymentConfig
@@ -1630,9 +1624,6 @@ try:
     ModelInfo = _RustModelInfo
     FeatureVector = _RustFeatureVector
     Classification = _RustClassification
-    ChatMessage = _RustChatMessage
-    LLMRequest = _RustLLMRequest
-    LLMResponse = _RustLLMResponse
     TrainingMetrics = _RustTrainingMetrics
     MlTrajectoryPoint = _RustMlTrajectoryPoint
     DeploymentConfig = _RustDeploymentConfig
@@ -1740,9 +1731,6 @@ if _has_messages:
         "ModelInfo",
         "FeatureVector",
         "Classification",
-        "ChatMessage",
-        "LLMRequest",
-        "LLMResponse",
         "TrainingMetrics",
         "MlTrajectoryPoint",
         "DeploymentConfig",

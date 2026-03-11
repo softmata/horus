@@ -117,9 +117,8 @@ pub use tracking::{TrackedObject, TrackingHeader};
 
 // ML types (serde-based)
 pub use ml::{
-    ChatMessage, Classification, DeploymentConfig, FeatureVector, InferenceMetrics, LLMRequest,
-    LLMResponse, MlTrajectoryPoint, ModelFormat, ModelInfo, Predictions, TensorData,
-    TrainingMetrics,
+    Classification, DeploymentConfig, FeatureVector, InferenceMetrics, MlTrajectoryPoint,
+    ModelFormat, ModelInfo, Predictions, TensorData, TrainingMetrics,
 };
 
 // Input (existing)

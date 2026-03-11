@@ -67,7 +67,7 @@ scheduler.add(detector).order(1).async_io().build();         // GPU inference (n
 scheduler.add(controller).order(2).budget(200.us()).build(); // real-time control
 ```
 
-**ML message types** — `TensorData`, `Predictions`, `FeatureVector`, `LLMRequest/LLMResponse` are built-in. No custom serialization needed.
+**ML message types** — `TensorData`, `Predictions`, `FeatureVector`, `InferenceMetrics` are built-in. No custom serialization needed.
 
 **Python for ML, Rust for control** — Run PyTorch inference in a Python node, feed results to a Rust control node at 1kHz. Same shared memory, same topics.
 
@@ -177,7 +177,7 @@ fn main() -> Result<()> {
 | Vision | `Image`, `CameraInfo`, `Detection`, `BoundingBox2D` |
 | Navigation | `Path`, `OccupancyGrid`, `Goal` |
 | Control | `CmdVel`, `MotorCommand`, `JointState`, `ServoCommand` |
-| AI/ML | `TensorData`, `Predictions`, `FeatureVector`, `LLMRequest` |
+| AI/ML | `TensorData`, `Predictions`, `FeatureVector`, `InferenceMetrics` |
 
 **Transforms** — coordinate frame management via `TransformFrame`:
 ```rust
