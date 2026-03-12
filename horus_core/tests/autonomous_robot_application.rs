@@ -323,8 +323,7 @@ impl Node for CameraPerceptionNode {
     }
 
     fn tick(&mut self) {
-        // Simulate camera capture (blocking I/O - will be moved to async tier)
-        std::thread::sleep((1000 / self.fps as u64).ms());
+        // Simulate camera capture (rate-limited via scheduler, no blocking sleep)
 
         // Create fake image data
         let mut image_data = vec![0u8; (self.resolution.0 * self.resolution.1 * 3) as usize];
@@ -405,8 +404,7 @@ impl Node for LidarProcessingNode {
     }
 
     fn tick(&mut self) {
-        // Simulate lidar scan (blocking I/O - will be moved to async tier)
-        std::thread::sleep(100_u64.ms()); // 10Hz lidar
+        // Simulate lidar scan (rate-limited via scheduler to 10Hz, no blocking sleep)
 
         // Generate fake scan data
         let mut ranges = vec![30.0; 360];
@@ -1082,24 +1080,27 @@ fn test_autonomous_robot_complete_system() {
         .order(30)
         .build();
 
-    // Camera perception (I/O heavy)
+    // Camera perception (rate-limited to 30Hz to match camera fps)
     scheduler
         .add(CameraPerceptionNode::new(0).expect("Failed to create front camera"))
         .order(40)
+        .rate(30_u64.hz())
         .build();
 
     scheduler
         .add(CameraPerceptionNode::new(1).expect("Failed to create rear camera"))
         .order(45)
+        .rate(30_u64.hz())
         .build();
 
-    // Lidar processing (I/O heavy)
+    // Lidar processing (rate-limited to 10Hz to match lidar scan rate)
     scheduler
         .add(CountingNode {
             inner: LidarProcessingNode::new().expect("Failed to create lidar processor"),
             counter: Arc::clone(&lidar_counter),
         })
         .order(50)
+        .rate(10_u64.hz())
         .build();
 
     // Battery monitor (prone to failures)

@@ -1,7 +1,6 @@
 //! Check command - validate horus.toml, source files, or entire workspace
 
 use crate::cli_output;
-use crate::commands::run::check_hardware_requirements;
 use crate::config::CARGO_TOML;
 use crate::manifest::{detect_languages, HorusManifest, Language, HORUS_TOML};
 use colored::*;
@@ -510,11 +509,6 @@ fn check_rust_file(path: &Path) -> HorusResult<()> {
                 e
             ))));
         }
-    }
-
-    if let Err(e) = check_hardware_requirements(path, "rust") {
-        log::warn!("Hardware check error: {}", e);
-        eprintln!("\n{} Hardware check error: {}", "[WARNING]".yellow(), e);
     }
 
     Ok(())

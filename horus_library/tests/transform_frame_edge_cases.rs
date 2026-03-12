@@ -156,11 +156,11 @@ fn edge_timestamp_zero() {
         .unwrap();
 
     // Read at timestamp 0
-    let tf = tf.tf_at("sensor", "world", 0).unwrap();
+    let resolved = tf.tf_at("sensor", "world", 0).unwrap();
     assert!(
-        (tf.translation[0] - 1.0).abs() < 1e-10,
+        (resolved.translation[0] - 1.0).abs() < 1e-10,
         "Timestamp 0 read failed: {:?}",
-        tf.translation
+        resolved.translation
     );
 
     // Write second entry at 0 as well (duplicate timestamp)
@@ -168,11 +168,11 @@ fn edge_timestamp_zero() {
         .unwrap();
 
     // Interpolation between two entries with same timestamp should not divide by zero
-    let tf = tf.tf_at("sensor", "world", 0).unwrap();
+    let resolved2 = tf.tf_at("sensor", "world", 0).unwrap();
     assert!(
-        tf.translation[0].is_finite(),
+        resolved2.translation[0].is_finite(),
         "Duplicate timestamp 0 caused NaN: {:?}",
-        tf.translation
+        resolved2.translation
     );
 }
 
@@ -192,11 +192,11 @@ fn edge_timestamp_u64_max() {
     .unwrap();
 
     // Read at u64::MAX
-    let tf = tf.tf_at("sensor", "world", u64::MAX).unwrap();
+    let resolved = tf.tf_at("sensor", "world", u64::MAX).unwrap();
     assert!(
-        (tf.translation[0] - 5.0).abs() < 1e-10,
+        (resolved.translation[0] - 5.0).abs() < 1e-10,
         "u64::MAX timestamp failed: {:?}",
-        tf.translation
+        resolved.translation
     );
 
     // Interpolation query near u64::MAX
@@ -207,11 +207,11 @@ fn edge_timestamp_u64_max() {
     )
     .unwrap();
 
-    let tf = tf.tf_at("sensor", "world", u64::MAX - 500).unwrap();
+    let resolved2 = tf.tf_at("sensor", "world", u64::MAX - 500).unwrap();
     assert!(
-        tf.translation[0].is_finite(),
+        resolved2.translation[0].is_finite(),
         "Near-u64::MAX interpolation produced NaN: {:?}",
-        tf.translation
+        resolved2.translation
     );
 }
 
@@ -337,30 +337,30 @@ fn edge_ring_buffer_overflow() {
 
     // Write 8 entries into a history buffer of size 4
     for i in 0..8u64 {
-        let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
-        tf.update_transform("a", &tf, i * 1000).unwrap();
+        let xform = Transform::from_translation([i as f64, 0.0, 0.0]);
+        tf.update_transform("a", &xform, i * 1000).unwrap();
     }
 
     // Latest should be the most recent write (i=7)
-    let tf = tf.tf("a", "world").unwrap();
+    let resolved = tf.tf("a", "world").unwrap();
     assert!(
-        (tf.translation[0] - 7.0).abs() < 1e-10,
+        (resolved.translation[0] - 7.0).abs() < 1e-10,
         "After overflow, latest should be 7.0, got {}",
-        tf.translation[0]
+        resolved.translation[0]
     );
 
     // Query at old timestamp (i=0, t=0) — oldest entries evicted,
     // should return the oldest available entry
-    let tf = tf.tf_at("a", "world", 0).unwrap();
+    let resolved_old = tf.tf_at("a", "world", 0).unwrap();
     assert!(
-        tf.translation[0].is_finite(),
+        resolved_old.translation[0].is_finite(),
         "Query at evicted timestamp produced NaN"
     );
     // The oldest available should be entry 4 (entries 0-3 evicted by ring buffer)
     assert!(
-        tf.translation[0] >= 4.0,
+        resolved_old.translation[0] >= 4.0,
         "Expected oldest entry >= 4.0, got {}",
-        tf.translation[0]
+        resolved_old.translation[0]
     );
 }
 
@@ -378,8 +378,8 @@ fn edge_ring_buffer_exact_capacity() {
 
     // Write exactly 4 entries
     for i in 0..4u64 {
-        let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
-        tf.update_transform("a", &tf, i * 1000).unwrap();
+        let xform = Transform::from_translation([i as f64, 0.0, 0.0]);
+        tf.update_transform("a", &xform, i * 1000).unwrap();
     }
 
     // All 4 entries should be accessible
@@ -997,27 +997,27 @@ fn edge_min_history_single_entry() {
         .unwrap();
 
     // read_latest should return it
-    let tf = tf.tf("a", "world").unwrap();
+    let resolved = tf.tf("a", "world").unwrap();
     assert!(
-        (tf.translation[0] - 42.0).abs() < 1e-10,
+        (resolved.translation[0] - 42.0).abs() < 1e-10,
         "Single entry read failed: {}",
-        tf.translation[0]
+        resolved.translation[0]
     );
 
     // tf_at at exact timestamp
-    let tf = tf.tf_at("a", "world", 5000).unwrap();
+    let resolved2 = tf.tf_at("a", "world", 5000).unwrap();
     assert!(
-        (tf.translation[0] - 42.0).abs() < 1e-10,
+        (resolved2.translation[0] - 42.0).abs() < 1e-10,
         "Single entry tf_at failed: {}",
-        tf.translation[0]
+        resolved2.translation[0]
     );
 
     // tf_at at different timestamp — should still return the single entry
-    let tf = tf.tf_at("a", "world", 9999).unwrap();
+    let resolved3 = tf.tf_at("a", "world", 9999).unwrap();
     assert!(
-        (tf.translation[0] - 42.0).abs() < 1e-10,
+        (resolved3.translation[0] - 42.0).abs() < 1e-10,
         "Single entry extrapolation failed: {}",
-        tf.translation[0]
+        resolved3.translation[0]
     );
 }
 
@@ -1042,19 +1042,19 @@ fn edge_exact_timestamp_match() {
         .unwrap();
 
     // Query at exact t=2000 — should return [2.0, 0, 0] with no interpolation
-    let tf = tf.tf_at("a", "world", 2000).unwrap();
+    let resolved = tf.tf_at("a", "world", 2000).unwrap();
     assert!(
-        (tf.translation[0] - 2.0).abs() < 1e-10,
+        (resolved.translation[0] - 2.0).abs() < 1e-10,
         "Exact timestamp match: expected 2.0, got {}",
-        tf.translation[0]
+        resolved.translation[0]
     );
 
     // Query at exact t=1000
-    let tf = tf.tf_at("a", "world", 1000).unwrap();
+    let resolved2 = tf.tf_at("a", "world", 1000).unwrap();
     assert!(
-        (tf.translation[0] - 1.0).abs() < 1e-10,
+        (resolved2.translation[0] - 1.0).abs() < 1e-10,
         "Exact timestamp match: expected 1.0, got {}",
-        tf.translation[0]
+        resolved2.translation[0]
     );
 }
 
@@ -1073,16 +1073,16 @@ fn edge_ring_buffer_wraparound_boundary() {
 
     // Fill exactly 4 slots
     for i in 0..4u64 {
-        let tf = Transform::from_translation([i as f64 * 10.0, 0.0, 0.0]);
-        tf.update_transform("a", &tf, (i + 1) * 1000).unwrap();
+        let xform = Transform::from_translation([i as f64 * 10.0, 0.0, 0.0]);
+        tf.update_transform("a", &xform, (i + 1) * 1000).unwrap();
     }
 
     // Latest should be entry 3 (x=30.0, t=4000)
-    let tf = tf.tf("a", "world").unwrap();
+    let resolved = tf.tf("a", "world").unwrap();
     assert!(
-        (tf.translation[0] - 30.0).abs() < 1e-10,
+        (resolved.translation[0] - 30.0).abs() < 1e-10,
         "Pre-wraparound latest: expected 30.0, got {}",
-        tf.translation[0]
+        resolved.translation[0]
     );
 
     // 5th write: should evict entry 0 (x=0.0, t=1000)
@@ -1090,19 +1090,19 @@ fn edge_ring_buffer_wraparound_boundary() {
         .unwrap();
 
     // Latest should now be entry 4 (x=40.0)
-    let tf = tf.tf("a", "world").unwrap();
+    let resolved2 = tf.tf("a", "world").unwrap();
     assert!(
-        (tf.translation[0] - 40.0).abs() < 1e-10,
+        (resolved2.translation[0] - 40.0).abs() < 1e-10,
         "Post-wraparound latest: expected 40.0, got {}",
-        tf.translation[0]
+        resolved2.translation[0]
     );
 
     // Query at t=1000 (evicted) — should return oldest available (entry 1, x=10.0)
-    let tf = tf.tf_at("a", "world", 1000).unwrap();
+    let resolved_old = tf.tf_at("a", "world", 1000).unwrap();
     assert!(
-        tf.translation[0] >= 10.0,
+        resolved_old.translation[0] >= 10.0,
         "Evicted timestamp should return oldest available (>= 10.0), got {}",
-        tf.translation[0]
+        resolved_old.translation[0]
     );
 }
 

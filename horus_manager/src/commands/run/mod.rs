@@ -1,12 +1,10 @@
 pub(crate) mod deps;
 pub(crate) mod features;
-pub(crate) mod hardware;
 pub(crate) mod install;
 pub(crate) mod run_python;
 pub(crate) mod run_rust;
 
 // Re-export public API
-pub use hardware::check_hardware_requirements;
 pub use run_rust::execute_build_only;
 pub(crate) use run_rust::find_horus_source_dir;
 
@@ -20,13 +18,14 @@ use crate::progress;
 use anyhow::{anyhow, bail, Context, Result};
 use colored::*;
 use glob::glob;
+use horus_core::core::DurationExt;
+use horus_core::params::RuntimeParams;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use horus_core::core::DurationExt;
 
 #[derive(Debug, Clone)]
 enum ExecutionTarget {
@@ -83,7 +82,7 @@ pub fn execute_run(
     // 1. ./params.yaml (project root)
     // 2. ./config/params.yaml
     // 3. .horus/config/params.yaml (created by `horus param`)
-    hardware::load_params_from_project()?;
+    load_params_from_project()?;
 
     let mode = if release { "release" } else { "debug" };
     cli_output::info(&format!("Starting HORUS runtime in {} mode...", mode.yellow()));
@@ -143,12 +142,6 @@ fn execute_single_file(
     log::info!("Scanning imports for {}", file_path.display());
     cli_output::info("Scanning imports...");
     let dependencies = deps::scan_imports(&file_path, &language, &ignore)?;
-
-    // Check hardware requirements
-    if let Err(e) = hardware::check_hardware_requirements(&file_path, &language) {
-        log::warn!("Hardware check error: {}", e);
-        eprintln!("[WARNING] Hardware check error: {}", e);
-    }
 
     if !dependencies.is_empty() {
         log::debug!("Found {} dependencies", dependencies.len());
@@ -685,7 +678,7 @@ fn load_ignore_patterns() -> features::IgnorePatterns {
 ///
 /// Returns the env vars instead of calling `env::set_var` to avoid UB in
 /// multi-threaded contexts. Callers should pass these via `Command::envs()`.
-pub(super) fn build_child_env() -> Result<Vec<(String, String)>> {
+pub(crate) fn build_child_env() -> Result<Vec<(String, String)>> {
     let current_dir = env::current_dir()?;
     let horus_bin = current_dir.join(".horus/bin");
     let horus_lib = current_dir.join(".horus/lib");
@@ -738,4 +731,417 @@ pub(super) fn build_child_env() -> Result<Vec<(String, String)>> {
     env_vars.push(("PYTHONPATH".to_string(), python_path));
 
     Ok(env_vars)
+}
+
+/// Load runtime parameters from project files
+///
+/// Searches for params.yaml in the following locations (in priority order):
+/// 1. `./params.yaml` - Project root (most common)
+/// 2. `./config/params.yaml` - Config subdirectory (ROS-style)
+/// 3. `.horus/config/params.yaml` - HORUS cache (created by `horus param`)
+///
+/// If found, loads parameters into RuntimeParams which will be available
+/// to all nodes during execution.
+pub(crate) fn load_params_from_project() -> Result<()> {
+    let params_locations = [
+        PathBuf::from("params.yaml"),
+        PathBuf::from("config/params.yaml"),
+        PathBuf::from(".horus/config/params.yaml"),
+    ];
+
+    let params_file = params_locations.iter().find(|p| p.exists());
+
+    if let Some(path) = params_file {
+        let params = RuntimeParams::new().map_err(|e| anyhow!("Failed to init params: {}", e))?;
+
+        params
+            .load_from_disk(path)
+            .map_err(|e| anyhow!("Failed to load params from {}: {}", path.display(), e))?;
+
+        let count = params.get_all().len();
+
+        if count > 0 {
+            eprintln!(
+                "{} Loaded {} parameters from {}",
+                "".cyan(),
+                count.to_string().green(),
+                path.display().to_string().cyan()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_target_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let targets = resolve_execution_target(file.clone()).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], ExecutionTarget::File(p) if p == &file));
+    }
+
+    #[test]
+    fn resolve_target_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let targets = resolve_execution_target(tmp.path().to_path_buf()).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], ExecutionTarget::Directory(_)));
+    }
+
+    #[test]
+    fn resolve_target_manifest_horus_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = tmp.path().join(HORUS_TOML);
+        fs::write(&manifest, "[package]\nname = \"test\"\n").unwrap();
+
+        let targets = resolve_execution_target(manifest).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], ExecutionTarget::Manifest(_)));
+    }
+
+    #[test]
+    fn resolve_target_manifest_cargo_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let targets = resolve_execution_target(manifest).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], ExecutionTarget::Manifest(_)));
+    }
+
+    #[test]
+    fn resolve_target_nonexistent_fails() {
+        let result = resolve_execution_target(PathBuf::from("/tmp/definitely_not_exist_abc123"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn auto_detect_main_rs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("main.rs"));
+    }
+
+    #[test]
+    fn auto_detect_main_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("main.py"), "print('hello')").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("main.py"));
+    }
+
+    #[test]
+    fn auto_detect_main_rs_over_main_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+        fs::write(tmp.path().join("main.py"), "print('hello')").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("main.rs"));
+    }
+
+    #[test]
+    fn auto_detect_src_main_rs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("src/main.rs"));
+    }
+
+    #[test]
+    fn auto_detect_single_rs_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("robot.rs"), "fn main() {}").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn auto_detect_empty_dir_fails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ensure_horus_directory_creates_all_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = ensure_horus_directory();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert!(tmp.path().join(".horus").is_dir());
+        assert!(tmp.path().join(".horus/packages").is_dir());
+        assert!(tmp.path().join(".horus/bin").is_dir());
+        assert!(tmp.path().join(".horus/lib").is_dir());
+        assert!(tmp.path().join(".horus/cache").is_dir());
+    }
+
+    #[test]
+    fn ensure_horus_directory_idempotent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        ensure_horus_directory().unwrap();
+        fs::write(tmp.path().join(".horus/bin/test"), "keep").unwrap();
+        ensure_horus_directory().unwrap();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(tmp.path().join(".horus/bin/test").exists());
+    }
+
+    #[test]
+    fn build_child_env_returns_required_vars() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/lib")).unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/packages")).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let env_vars = result.unwrap();
+        let names: Vec<&str> = env_vars.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(names.contains(&"PATH"), "Must set PATH");
+        assert!(names.contains(&"LD_LIBRARY_PATH"), "Must set LD_LIBRARY_PATH");
+        assert!(names.contains(&"PYTHONPATH"), "Must set PYTHONPATH");
+    }
+
+    #[test]
+    fn build_child_env_path_includes_horus_bin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/lib")).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let env_vars = result.unwrap();
+        let path_val = env_vars.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert!(
+            path_val.1.contains(".horus/bin"),
+            "PATH should include .horus/bin, got: {}",
+            path_val.1
+        );
+    }
+
+    #[test]
+    fn execution_target_debug() {
+        let target = ExecutionTarget::File(PathBuf::from("main.rs"));
+        let debug = format!("{:?}", target);
+        assert!(debug.contains("File"));
+
+        let target = ExecutionTarget::Directory(PathBuf::from("src/"));
+        assert!(format!("{:?}", target).contains("Directory"));
+
+        let target = ExecutionTarget::Manifest(PathBuf::from("horus.toml"));
+        assert!(format!("{:?}", target).contains("Manifest"));
+
+        let target = ExecutionTarget::Multiple(vec![]);
+        assert!(format!("{:?}", target).contains("Multiple"));
+    }
+
+    #[test]
+    fn load_params_no_files_returns_ok() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_params_with_root_params_yaml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("params.yaml"),
+            "robot_name: test_bot\nmax_speed: 1.5\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_params_with_config_subdir_params() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("config")).unwrap();
+        fs::write(
+            tmp.path().join("config/params.yaml"),
+            "sensor_rate: 100\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_params_with_horus_cache_params() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+        fs::write(
+            tmp.path().join(".horus/config/params.yaml"),
+            "debug: true\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_params_root_has_priority_over_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("params.yaml"), "source: root\n").unwrap();
+        fs::create_dir_all(tmp.path().join("config")).unwrap();
+        fs::write(
+            tmp.path().join("config/params.yaml"),
+            "source: config\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_params_invalid_yaml_returns_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("params.yaml"),
+            "{{{{ invalid yaml: [[[not closed",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_params_empty_yaml_returns_ok() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("params.yaml"), "").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
 }

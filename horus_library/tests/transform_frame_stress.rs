@@ -79,19 +79,19 @@ fn stress_1000_frame_chain() {
     for i in 0..1000 {
         let name = format!("f{}", i);
         tf.register_frame(&name, Some(&prev_name)).unwrap();
-        let tf = Transform::from_translation([0.001, 0.0, 0.0]);
-        tf.update_transform(&name, &tf, 1000).unwrap();
+        let xform = Transform::from_translation([0.001, 0.0, 0.0]);
+        tf.update_transform(&name, &xform, 1000).unwrap();
         prev_name = name;
     }
 
     assert_eq!(tf.frame_count(), 1001); // world + 1000 frames
 
     // Resolve from leaf to root — composed translation should be ~1.0 (1000 * 0.001)
-    let tf = tf.tf("f999", "world").unwrap();
+    let resolved = tf.tf("f999", "world").unwrap();
     assert!(
-        (tf.translation[0] - 1.0).abs() < 1e-6,
+        (resolved.translation[0] - 1.0).abs() < 1e-6,
         "Expected ~1.0, got {}",
-        tf.translation[0]
+        resolved.translation[0]
     );
 
     // can_transform should work across the full chain
@@ -118,24 +118,24 @@ fn stress_1000_frame_wide_tree() {
     for i in 0..1000 {
         let name = format!("child_{}", i);
         tf.register_frame(&name, Some("world")).unwrap();
-        let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
-        tf.update_transform(&name, &tf, 1000).unwrap();
+        let xform = Transform::from_translation([i as f64, 0.0, 0.0]);
+        tf.update_transform(&name, &xform, 1000).unwrap();
     }
 
     assert_eq!(tf.frame_count(), 1001);
 
     // All children should be queryable relative to each other
     // child_500 -> world -> child_200
-    let tf = tf.tf("child_500", "child_200").unwrap();
+    let resolved = tf.tf("child_500", "child_200").unwrap();
     // child_500 is at [500,0,0] in world, child_200 is at [200,0,0] in world
     // transform from child_500 frame to child_200 frame:
     // point_in_world = child_500_tf * point_in_child_500
     // point_in_child_200 = child_200_tf.inverse() * point_in_world
     // net translation in child_200 frame: 500 - 200 = 300 on X
     assert!(
-        (tf.translation[0] - 300.0).abs() < 1e-6,
+        (resolved.translation[0] - 300.0).abs() < 1e-6,
         "Expected 300.0, got {}",
-        tf.translation[0]
+        resolved.translation[0]
     );
 
     // children() should return 1000 entries
@@ -158,8 +158,8 @@ fn stress_4096_frames_large_preset() {
     assert_eq!(tf.frame_count(), 4096);
 
     // Verify we can still resolve transforms
-    let tf = Transform::from_translation([1.0, 2.0, 3.0]);
-    tf.update_transform("f0", &tf, 1000).unwrap();
+    let xform = Transform::from_translation([1.0, 2.0, 3.0]);
+    tf.update_transform("f0", &xform, 1000).unwrap();
 
     let resolved = tf.tf("f0", "world").unwrap();
     assert!((resolved.translation[0] - 1.0).abs() < 1e-10);
@@ -340,8 +340,8 @@ fn stress_repeated_slot_reuse_cycles() {
         assert_eq!(tf.frame_count(), 16);
 
         // Set and verify a transform on the replacement
-        let tf = Transform::from_translation([cycle as f64, 0.0, 0.0]);
-        tf.update_transform(&replacement, &tf, cycle as u64 * 1000)
+        let xform = Transform::from_translation([cycle as f64, 0.0, 0.0]);
+        tf.update_transform(&replacement, &xform, cycle as u64 * 1000)
             .unwrap();
 
         // Track the new name for this slot
@@ -542,17 +542,17 @@ fn stress_depth_100_chain() {
         let name = format!("link_{}", i);
         tf.register_frame(&name, Some(&prev)).unwrap();
         // Each link adds [0.01, 0.0, 0.0] translation
-        let tf = Transform::from_translation([0.01, 0.0, 0.0]);
-        tf.update_transform(&name, &tf, 1000).unwrap();
+        let xform = Transform::from_translation([0.01, 0.0, 0.0]);
+        tf.update_transform(&name, &xform, 1000).unwrap();
         prev = name;
     }
 
     // Composed transform: 100 * 0.01 = 1.0
-    let tf = tf.tf("link_99", "world").unwrap();
+    let resolved = tf.tf("link_99", "world").unwrap();
     assert!(
-        (tf.translation[0] - 1.0).abs() < 1e-4,
+        (resolved.translation[0] - 1.0).abs() < 1e-4,
         "Depth 100 chain: expected ~1.0, got {}",
-        tf.translation[0]
+        resolved.translation[0]
     );
 }
 
@@ -573,32 +573,32 @@ fn stress_depth_200_chain_with_rotation() {
         let name = format!("j{}", i);
         tf.register_frame(&name, Some(&prev)).unwrap();
         // Small translation + tiny rotation around Z
-        let tf = Transform::from_euler([0.01, 0.0, 0.0], [0.0, 0.0, 0.001]);
-        tf.update_transform(&name, &tf, 1000).unwrap();
+        let xform = Transform::from_euler([0.01, 0.0, 0.0], [0.0, 0.0, 0.001]);
+        tf.update_transform(&name, &xform, 1000).unwrap();
         prev = name;
     }
 
-    let tf = tf.tf("j199", "world").unwrap();
+    let resolved = tf.tf("j199", "world").unwrap();
 
     // Result should be finite (no NaN/Inf from accumulated floating point)
     assert!(
-        tf.translation[0].is_finite()
-            && tf.translation[1].is_finite()
-            && tf.translation[2].is_finite(),
+        resolved.translation[0].is_finite()
+            && resolved.translation[1].is_finite()
+            && resolved.translation[2].is_finite(),
         "Deep chain produced non-finite translation: {:?}",
-        tf.translation
+        resolved.translation
     );
     assert!(
-        tf.rotation.iter().all(|r| r.is_finite()),
+        resolved.rotation.iter().all(|r| r.is_finite()),
         "Deep chain produced non-finite rotation: {:?}",
-        tf.rotation
+        resolved.rotation
     );
 
     // Quaternion should still be approximately unit (norm ~1.0)
-    let qnorm = (tf.rotation[0].powi(2)
-        + tf.rotation[1].powi(2)
-        + tf.rotation[2].powi(2)
-        + tf.rotation[3].powi(2))
+    let qnorm = (resolved.rotation[0].powi(2)
+        + resolved.rotation[1].powi(2)
+        + resolved.rotation[2].powi(2)
+        + resolved.rotation[3].powi(2))
     .sqrt();
     assert!(
         (qnorm - 1.0).abs() < 0.01,
@@ -650,8 +650,8 @@ fn stress_concurrent_4_writers_8_readers() {
             barrier.wait();
             for i in 0..iterations {
                 let val = (w * iterations + i) as f64 * 0.001;
-                let tf = Transform::from_translation([val, 0.0, 0.0]);
-                tf.update_transform(&frame, &tf, i as u64 * 1000).unwrap();
+                let xform = Transform::from_translation([val, 0.0, 0.0]);
+                tf.update_transform(&frame, &xform, i as u64 * 1000).unwrap();
             }
         }));
     }
@@ -699,11 +699,11 @@ fn stress_concurrent_4_writers_8_readers() {
     );
 
     // Final verify: transform should be resolvable and finite
-    let tf = tf.tf("hand", "world").unwrap();
+    let final_result = tf.tf("hand", "world").unwrap();
     assert!(
-        tf.translation.iter().all(|v| v.is_finite()),
+        final_result.translation.iter().all(|v| v.is_finite()),
         "Final transform has NaN/Inf: {:?}",
-        tf.translation
+        final_result.translation
     );
 }
 
@@ -838,8 +838,8 @@ fn stress_high_throughput_100k() {
                 // Vary both translation and rotation to exercise quaternion path
                 let angle = (i as f64) * 0.00001 * (w as f64 + 1.0);
                 let x = (i as f64) * 0.0001;
-                let tf = Transform::from_euler([x, 0.0, 0.0], [0.0, 0.0, angle]);
-                tf.update_transform(&frame, &tf, i * 1000).unwrap();
+                let xform = Transform::from_euler([x, 0.0, 0.0], [0.0, 0.0, angle]);
+                tf.update_transform(&frame, &xform, i * 1000).unwrap();
                 write_count += 1;
             }
             write_count
