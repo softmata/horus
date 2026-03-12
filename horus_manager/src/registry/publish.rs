@@ -262,7 +262,7 @@ impl RegistryClient {
                 use crate::manifest::{HorusManifest, HORUS_TOML};
                 let horus_path = current_dir.join(HORUS_TOML);
                 if horus_path.exists() {
-                    if let Ok((horus_manifest, _)) = HorusManifest::load_from(&horus_path) {
+                    if let Ok(horus_manifest) = HorusManifest::load_from(&horus_path) {
                         let mut has_path_deps = false;
                         for (dep_name, dep_value) in &horus_manifest.dependencies {
                             if dep_value.is_path() {
@@ -1020,7 +1020,7 @@ impl RegistryClient {
             use crate::manifest::{HorusManifest, DepSource, HORUS_TOML};
             let horus_path = PathBuf::from(HORUS_TOML);
             if horus_path.exists() {
-                if let Ok((horus_manifest, _)) = HorusManifest::load_from(&horus_path) {
+                if let Ok(horus_manifest) = HorusManifest::load_from(&horus_path) {
                     for (dep_name, dep_value) in &horus_manifest.dependencies {
                         if tracked_names.contains(dep_name) {
                             continue;

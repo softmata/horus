@@ -30,7 +30,7 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
         );
     }
 
-    let (mut manifest, _, _) = HorusManifest::find_and_load()?;
+    let (mut manifest, _) = HorusManifest::find_and_load()?;
     let mut changes = Vec::new();
 
     // ── Parse Cargo.toml ─────────────────────────────────────────────────
@@ -323,6 +323,8 @@ fn parse_pep_dep(spec: &str) -> (String, Option<String>) {
 mod tests {
     use super::*;
 
+    // ── parse_pep_dep ──────────────────────────────────────────────────────
+
     #[test]
     fn parse_pep_dep_with_version() {
         let (name, ver) = parse_pep_dep("numpy>=1.24");
@@ -342,5 +344,570 @@ mod tests {
         let (name, ver) = parse_pep_dep("torch>=2.0,<3.0");
         assert_eq!(name, "torch");
         assert_eq!(ver, Some(">=2.0,<3.0".to_string()));
+    }
+
+    #[test]
+    fn parse_pep_dep_tilde() {
+        let (name, ver) = parse_pep_dep("flask~=2.3");
+        assert_eq!(name, "flask");
+        assert_eq!(ver, Some("~=2.3".to_string()));
+    }
+
+    #[test]
+    fn parse_pep_dep_exact() {
+        let (name, ver) = parse_pep_dep("pytest==7.4.0");
+        assert_eq!(name, "pytest");
+        assert_eq!(ver, Some("==7.4.0".to_string()));
+    }
+
+    #[test]
+    fn parse_pep_dep_not_equal() {
+        let (name, ver) = parse_pep_dep("setuptools!=60.0");
+        assert_eq!(name, "setuptools");
+        assert_eq!(ver, Some("!=60.0".to_string()));
+    }
+
+    #[test]
+    fn parse_pep_dep_whitespace_trimmed() {
+        let (name, ver) = parse_pep_dep("  numpy >= 1.24  ");
+        assert_eq!(name, "numpy");
+        assert_eq!(ver, Some(">= 1.24".to_string()));
+    }
+
+    // ── extract_cargo_deps ─────────────────────────────────────────────────
+
+    #[test]
+    fn extract_cargo_deps_simple_versions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo_path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+tokio = "1.35"
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cargo_deps(&cargo_path).unwrap();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains_key("serde"));
+        assert!(deps.contains_key("tokio"));
+
+        match &deps["serde"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.version.as_deref(), Some("1.0"));
+                assert_eq!(d.source, Some(DepSource::CratesIo));
+            }
+            _ => panic!("Expected Detailed variant"),
+        }
+    }
+
+    #[test]
+    fn extract_cargo_deps_inline_table_with_features() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo_path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.35", features = ["full"], optional = true }
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cargo_deps(&cargo_path).unwrap();
+        assert_eq!(deps.len(), 2);
+
+        match &deps["serde"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.version.as_deref(), Some("1.0"));
+                assert_eq!(d.features, vec!["derive".to_string()]);
+                assert!(!d.optional);
+            }
+            _ => panic!("Expected Detailed"),
+        }
+
+        match &deps["tokio"] {
+            DependencyValue::Detailed(d) => {
+                assert!(d.optional);
+                assert_eq!(d.features, vec!["full".to_string()]);
+            }
+            _ => panic!("Expected Detailed"),
+        }
+    }
+
+    #[test]
+    fn extract_cargo_deps_table_style() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo_path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.my-lib]
+path = "../my-lib"
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cargo_deps(&cargo_path).unwrap();
+        assert_eq!(deps.len(), 2);
+
+        match &deps["my-lib"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.source, Some(DepSource::Path));
+                assert_eq!(d.path.as_deref(), Some("../my-lib"));
+            }
+            _ => panic!("Expected Detailed"),
+        }
+    }
+
+    #[test]
+    fn extract_cargo_deps_skips_horus_internal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo_path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+horus_core = "0.1.9"
+horus_library = { version = "0.1.9", path = "../horus_library" }
+serde = "1.0"
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cargo_deps(&cargo_path).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains_key("serde"));
+        assert!(!deps.contains_key("horus_core"));
+        assert!(!deps.contains_key("horus_library"));
+    }
+
+    #[test]
+    fn extract_cargo_deps_git_dependency() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo_path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+my-crate = { git = "https://github.com/user/repo", branch = "main" }
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cargo_deps(&cargo_path).unwrap();
+        assert_eq!(deps.len(), 1);
+
+        match &deps["my-crate"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.source, Some(DepSource::Git));
+                assert_eq!(d.git.as_deref(), Some("https://github.com/user/repo"));
+                assert_eq!(d.branch.as_deref(), Some("main"));
+            }
+            _ => panic!("Expected Detailed"),
+        }
+    }
+
+    #[test]
+    fn extract_cargo_deps_empty_deps_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo_path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cargo_deps(&cargo_path).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn extract_cargo_deps_no_deps_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo_path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cargo_deps(&cargo_path).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    // ── extract_pyproject_deps ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_pyproject_deps_pep621() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pyproject_path = tmp.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_path,
+            r#"
+[project]
+name = "my-robot"
+version = "0.1.0"
+dependencies = [
+    "numpy>=1.24",
+    "requests",
+    "torch>=2.0,<3.0",
+]
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_pyproject_deps(&pyproject_path).unwrap();
+        assert_eq!(deps.len(), 3);
+        assert!(deps.contains_key("numpy"));
+        assert!(deps.contains_key("requests"));
+        assert!(deps.contains_key("torch"));
+
+        match &deps["numpy"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.version.as_deref(), Some(">=1.24"));
+                assert_eq!(d.source, Some(DepSource::PyPI));
+            }
+            _ => panic!("Expected Detailed"),
+        }
+
+        match &deps["requests"] {
+            DependencyValue::Detailed(d) => {
+                assert!(d.version.is_none());
+                assert_eq!(d.source, Some(DepSource::PyPI));
+            }
+            _ => panic!("Expected Detailed"),
+        }
+    }
+
+    #[test]
+    fn extract_pyproject_deps_skips_horus_internal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pyproject_path = tmp.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_path,
+            r#"
+[project]
+name = "my-robot"
+dependencies = [
+    "horus-py>=0.1.9",
+    "numpy>=1.24",
+]
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_pyproject_deps(&pyproject_path).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains_key("numpy"));
+        assert!(!deps.contains_key("horus-py"));
+    }
+
+    #[test]
+    fn extract_pyproject_deps_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pyproject_path = tmp.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_path,
+            r#"
+[project]
+name = "my-robot"
+dependencies = []
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_pyproject_deps(&pyproject_path).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn extract_pyproject_deps_no_project_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pyproject_path = tmp.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_path,
+            r#"
+[build-system]
+requires = ["setuptools"]
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_pyproject_deps(&pyproject_path).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    // ── run_migrate end-to-end ─────────────────────────────────────────────
+
+    #[test]
+    fn migrate_fails_without_horus_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("No horus.toml found"),
+            "Expected 'No horus.toml found', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn migrate_nothing_to_migrate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create minimal horus.toml only
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn migrate_dry_run_does_not_modify_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        let cargo_content = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+"#;
+        fs::write(tmp.path().join("Cargo.toml"), cargo_content).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(true, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // Cargo.toml should NOT be moved
+        assert!(tmp.path().join("Cargo.toml").exists());
+        // horus.toml should NOT have deps added
+        let horus = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
+        assert!(!horus.contains("serde"), "Dry run should not modify horus.toml");
+        // No backup dir
+        assert!(!tmp.path().join(".horus/backup").exists());
+    }
+
+    #[test]
+    fn migrate_imports_cargo_deps_and_backs_up() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+tokio = "1.35"
+"#,
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // Cargo.toml should be moved to backup
+        assert!(!tmp.path().join("Cargo.toml").exists());
+        assert!(tmp.path().join(".horus/backup/Cargo.toml").exists());
+        // horus.toml should now contain imported deps
+        let horus = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
+        assert!(horus.contains("serde"), "horus.toml should contain serde dep");
+        assert!(horus.contains("tokio"), "horus.toml should contain tokio dep");
+    }
+
+    #[test]
+    fn migrate_imports_pyproject_deps_and_backs_up() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        fs::write(
+            tmp.path().join("pyproject.toml"),
+            r#"
+[project]
+name = "test"
+dependencies = ["numpy>=1.24", "requests"]
+"#,
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert!(!tmp.path().join("pyproject.toml").exists());
+        assert!(tmp.path().join(".horus/backup/pyproject.toml").exists());
+        let horus = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
+        assert!(horus.contains("numpy"), "horus.toml should contain numpy dep");
+        assert!(horus.contains("requests"), "horus.toml should contain requests dep");
+    }
+
+    #[test]
+    fn migrate_moves_src_main_rs_when_only_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // main.rs moved to root
+        assert!(tmp.path().join("main.rs").exists());
+        assert!(!tmp.path().join("src/main.rs").exists());
+        // src/ should be removed (was empty after move)
+        assert!(!tmp.path().join("src").exists());
+        // Content preserved
+        let content = fs::read_to_string(tmp.path().join("main.rs")).unwrap();
+        assert_eq!(content, "fn main() {}");
+    }
+
+    #[test]
+    fn migrate_does_not_move_src_main_when_other_files_exist() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(tmp.path().join("src/lib.rs"), "pub mod foo;").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // main.rs should NOT be moved — src/ has multiple files
+        assert!(tmp.path().join("src/main.rs").exists());
+        assert!(!tmp.path().join("main.rs").exists());
+    }
+
+    #[test]
+    fn migrate_does_not_move_src_main_when_root_main_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn main() { old }").unwrap();
+        fs::write(tmp.path().join("main.rs"), "fn main() { new }").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_migrate(false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // Neither moved — root main.rs already exists
+        assert!(tmp.path().join("src/main.rs").exists());
+        let content = fs::read_to_string(tmp.path().join("main.rs")).unwrap();
+        assert_eq!(content, "fn main() { new }");
     }
 }

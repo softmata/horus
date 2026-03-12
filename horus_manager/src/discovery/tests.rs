@@ -131,14 +131,6 @@ impl TestPresenceWriter {
         }).collect()
     }
 
-    #[allow(dead_code)]
-    fn invalidate_cache(&self) {
-        if let Ok(mut cache) = DISCOVERY_CACHE.write() {
-            cache.nodes_last_updated = std::time::Instant::now() - 10_u64.secs();
-            cache.shared_memory_last_updated = std::time::Instant::now() - 10_u64.secs();
-            cache.presence_last_updated = std::time::Instant::now() - 10_u64.secs();
-        }
-    }
 }
 
 impl Drop for TestPresenceWriter {

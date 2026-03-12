@@ -58,42 +58,41 @@ fn test_cleanup_handles_missing_parent() {
 fn test_panic_hook_writes_crash_report() {
     use std::process::Command;
 
-    // Run ourselves as a subprocess with a special env var that triggers a panic
+    // Run ourselves as a subprocess with a special env var that triggers a panic.
+    // Use spawn() instead of output() so we can capture the child PID for
+    // finding the exact crash report file (/tmp/horus_crash_<pid>.log).
     let exe = std::env::current_exe().expect("no current exe");
-    let output = Command::new(&exe)
+    let mut child = Command::new(&exe)
         .arg("--test-threads=1")
         .arg("--exact")
+        .arg("--ignored")
         .arg("panic_hook_subprocess_helper")
         .env("HORUS_CRASH_TEST", "1")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("failed to spawn subprocess");
+
+    let pid = child.id();
+    let status = child.wait().expect("failed to wait on subprocess");
 
     // The subprocess should have exited non-zero (panic)
     assert!(
-        !output.status.success(),
+        !status.success(),
         "Subprocess should have exited non-zero due to panic"
     );
 
-    // Check if crash report was created. The hook writes to
-    // /tmp/horus_crash_<pid>.log — find by pattern matching.
-    let tmp_dir = std::path::Path::new("/tmp");
-    let crash_files: Vec<_> = std::fs::read_dir(tmp_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("horus_crash_"))
-        .collect();
-
+    // Find the crash report by the subprocess PID
+    let crash_path = std::path::PathBuf::from(format!("/tmp/horus_crash_{pid}.log"));
     assert!(
-        !crash_files.is_empty(),
-        "Panic hook should have written at least one crash report to /tmp/horus_crash_*.log"
+        crash_path.exists(),
+        "Crash report not found at {}",
+        crash_path.display()
     );
 
-    // Verify the crash report contains the expected panic message
-    let latest = &crash_files[crash_files.len() - 1];
-    let content = std::fs::read_to_string(latest.path()).expect("Should read crash report");
+    let content = std::fs::read_to_string(&crash_path).expect("Should read crash report");
     assert!(
-        content.contains("HORUS CRASH REPORT"),
+        content.contains("HORUS Crash Report"),
         "Crash report should contain header, got: {}",
         &content[..content.len().min(200)]
     );
@@ -102,32 +101,53 @@ fn test_panic_hook_writes_crash_report() {
         "Crash report should contain panic message"
     );
 
-    // Clean up crash files
-    for f in &crash_files {
-        std::fs::remove_file(f.path()).ok();
-    }
+    // Clean up
+    std::fs::remove_file(&crash_path).ok();
 }
 
 /// Helper test that exists only to be called as a subprocess by
 /// test_panic_hook_writes_crash_report. It installs the panic hook and panics.
 ///
-/// This test is skipped in normal runs (no HORUS_CRASH_TEST env var).
+/// Ignored in normal test runs — only invoked explicitly as a subprocess
+/// via `--exact panic_hook_subprocess_helper` with HORUS_CRASH_TEST=1.
 #[test]
+#[ignore]
 fn panic_hook_subprocess_helper() {
     if std::env::var("HORUS_CRASH_TEST").is_err() {
         // Skip unless explicitly invoked as subprocess
         return;
     }
 
-    // Install the panic hook via creating a minimal scheduler
-    // (The hook is installed during scheduler.run())
-    // For simplicity, we just set a custom panic hook that writes the file
+    // Install a panic hook matching the real scheduler format
+    // (see Scheduler::setup_panic_hook in scheduler/mod.rs)
     let pid = std::process::id();
     let crash_path = format!("/tmp/horus_crash_{}.log", pid);
 
     std::panic::set_hook(Box::new(move |info| {
-        let msg = format!("HORUS CRASH REPORT\n{}\n", info);
-        std::fs::write(&crash_path, msg).ok();
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic payload".to_string()
+        };
+        let thread_name = std::thread::current().name().unwrap_or("unknown").to_string();
+        let report = format!(
+            "=== HORUS Crash Report ===\n\
+             Scheduler: test\n\
+             PID: {}\n\
+             Thread: {}\n\
+             Location: {}\n\
+             Panic: {}\n\
+             Blackbox flushed: false\n\
+             ===========================\n",
+            pid, thread_name, location, payload,
+        );
+        std::fs::write(&crash_path, &report).ok();
     }));
 
     panic!("intentional crash for testing");

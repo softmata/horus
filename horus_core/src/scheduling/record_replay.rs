@@ -135,8 +135,8 @@ impl RecordingConfig {
 
 /// Convert YAML-based recording config to runtime recording config.
 ///
-/// This bridges the declarative `SchedulerConfig` preset system with the
-/// runtime `RecordingConfig` used by `NodeRecorder` and `Scheduler::apply_config()`.
+/// This bridges the declarative `SchedulerConfig` with the runtime
+/// `RecordingConfig` used by `NodeRecorder` and `Scheduler::apply_config()`.
 impl From<super::config::RecordingConfigYaml> for RecordingConfig {
     fn from(yaml: super::config::RecordingConfigYaml) -> Self {
         let base_dir = yaml.output_dir.map(PathBuf::from).unwrap_or_else(|| {
@@ -680,7 +680,7 @@ impl NodeRecorder {
 
 impl NodeRecorder {
     /// Get a reference to the underlying recording.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn recording(&self) -> &NodeRecording {
         &self.recording
     }

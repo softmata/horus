@@ -384,6 +384,301 @@ pub(crate) fn is_cargo_package(package_name: &str) -> bool {
     common_cli_tools.contains(&package_name)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── PipPackage ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn pip_package_simple_name() {
+        let pkg = PipPackage::from_string("numpy").unwrap();
+        assert_eq!(pkg.name, "numpy");
+        assert!(pkg.version.is_none());
+        assert_eq!(pkg.requirement_string(), "numpy");
+    }
+
+    #[test]
+    fn pip_package_with_gte_version() {
+        let pkg = PipPackage::from_string("numpy>=1.24.0").unwrap();
+        assert_eq!(pkg.name, "numpy");
+        assert_eq!(pkg.version, Some(">=1.24.0".to_string()));
+        assert_eq!(pkg.requirement_string(), "numpy>=1.24.0");
+    }
+
+    #[test]
+    fn pip_package_with_exact_version() {
+        let pkg = PipPackage::from_string("requests==2.31.0").unwrap();
+        assert_eq!(pkg.name, "requests");
+        assert_eq!(pkg.version, Some("==2.31.0".to_string()));
+    }
+
+    #[test]
+    fn pip_package_with_tilde_version() {
+        let pkg = PipPackage::from_string("flask~=2.3").unwrap();
+        assert_eq!(pkg.name, "flask");
+        assert_eq!(pkg.version, Some("~=2.3".to_string()));
+    }
+
+    #[test]
+    fn pip_package_with_at_version() {
+        let pkg = PipPackage::from_string("torch@2.0.1").unwrap();
+        assert_eq!(pkg.name, "torch");
+        assert_eq!(pkg.version, Some("==2.0.1".to_string()));
+    }
+
+    #[test]
+    fn pip_package_at_no_version() {
+        let pkg = PipPackage::from_string("torch@").unwrap();
+        assert_eq!(pkg.name, "torch");
+        assert!(pkg.version.is_none());
+    }
+
+    // ── CargoPackage ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cargo_package_simple() {
+        let pkg = CargoPackage::from_string("serde").unwrap();
+        assert_eq!(pkg.name, "serde");
+        assert!(pkg.version.is_none());
+    }
+
+    #[test]
+    fn cargo_package_with_version() {
+        let pkg = CargoPackage::from_string("serde@1.0.193").unwrap();
+        assert_eq!(pkg.name, "serde");
+        assert_eq!(pkg.version, Some("1.0.193".to_string()));
+    }
+
+    #[test]
+    fn cargo_package_with_features() {
+        let pkg = CargoPackage::from_string("serde@1.0:features=derive").unwrap();
+        assert_eq!(pkg.name, "serde");
+        assert_eq!(pkg.version, Some("1.0".to_string()));
+    }
+
+    #[test]
+    fn cargo_package_empty_name_fails() {
+        assert!(CargoPackage::from_string("").is_err());
+    }
+
+    #[test]
+    fn cargo_package_empty_features_fails() {
+        assert!(CargoPackage::from_string("serde@1.0:features=").is_err());
+    }
+
+    #[test]
+    fn cargo_package_latest_version_fails() {
+        assert!(CargoPackage::from_string("serde@latest").is_err());
+    }
+
+    #[test]
+    fn cargo_package_whitespace_version_fails() {
+        assert!(CargoPackage::from_string("serde@1.0 beta").is_err());
+    }
+
+    // ── detect_language ────────────────────────────────────────────────────
+
+    #[test]
+    fn detect_language_rust() {
+        assert_eq!(detect_language(Path::new("main.rs")).unwrap(), "rust");
+    }
+
+    #[test]
+    fn detect_language_python() {
+        assert_eq!(detect_language(Path::new("main.py")).unwrap(), "python");
+    }
+
+    #[test]
+    fn detect_language_unsupported() {
+        assert!(detect_language(Path::new("main.cpp")).is_err());
+        assert!(detect_language(Path::new("main.js")).is_err());
+        assert!(detect_language(Path::new("noext")).is_err());
+    }
+
+    // ── parse_rust_import ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_rust_import_use() {
+        assert_eq!(
+            parse_rust_import("use horus_core::Node;"),
+            Some("horus_core".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_rust_import_extern() {
+        assert_eq!(
+            parse_rust_import("extern crate horus_library;"),
+            Some("horus_library".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_rust_import_non_horus() {
+        assert!(parse_rust_import("use serde::Serialize;").is_none());
+        assert!(parse_rust_import("use std::io;").is_none());
+    }
+
+    #[test]
+    fn parse_rust_import_comment_line() {
+        assert!(parse_rust_import("// use horus_core::Node;").is_none());
+    }
+
+    // ── parse_all_python_imports ───────────────────────────────────────────
+
+    #[test]
+    fn parse_python_import() {
+        assert_eq!(
+            parse_all_python_imports("import numpy"),
+            Some("numpy".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_python_import_as() {
+        assert_eq!(
+            parse_all_python_imports("import numpy as np"),
+            Some("numpy".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_python_from_import() {
+        assert_eq!(
+            parse_all_python_imports("from torch import nn"),
+            Some("torch".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_python_stdlib_skipped() {
+        assert!(parse_all_python_imports("import os").is_none());
+        assert!(parse_all_python_imports("import sys").is_none());
+        assert!(parse_all_python_imports("from pathlib import Path").is_none());
+    }
+
+    #[test]
+    fn parse_python_comment_skipped() {
+        assert!(parse_all_python_imports("# import numpy").is_none());
+    }
+
+    // ── is_stdlib_package ──────────────────────────────────────────────────
+
+    #[test]
+    fn stdlib_packages() {
+        assert!(is_stdlib_package("os"));
+        assert!(is_stdlib_package("sys"));
+        assert!(is_stdlib_package("json"));
+        assert!(is_stdlib_package("dataclasses"));
+    }
+
+    #[test]
+    fn non_stdlib_packages() {
+        assert!(!is_stdlib_package("numpy"));
+        assert!(!is_stdlib_package("torch"));
+        assert!(!is_stdlib_package("horus"));
+    }
+
+    // ── is_horus_package ───────────────────────────────────────────────────
+
+    #[test]
+    fn horus_package_detection() {
+        assert!(is_horus_package("horus"));
+        assert!(is_horus_package("horus_core"));
+        assert!(is_horus_package("horus_library"));
+        assert!(!is_horus_package("serde"));
+        assert!(!is_horus_package("numpy"));
+    }
+
+    // ── is_cargo_package ───────────────────────────────────────────────────
+
+    #[test]
+    fn cargo_cli_tools() {
+        assert!(is_cargo_package("bat"));
+        assert!(is_cargo_package("ripgrep"));
+        assert!(is_cargo_package("cargo-watch"));
+    }
+
+    #[test]
+    fn non_cargo_packages() {
+        assert!(!is_cargo_package("numpy"));
+        assert!(!is_cargo_package("flask"));
+        assert!(!is_cargo_package("random_name_xyz"));
+    }
+
+    // ── split_dependencies_with_context ────────────────────────────────────
+
+    #[test]
+    fn split_deps_explicit_prefixes() {
+        let deps: HashSet<String> = [
+            "pip:numpy>=1.24".to_string(),
+            "cargo:serde@1.0".to_string(),
+            "horus_core".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        let (horus, pip, cargo) = split_dependencies_with_context(deps, None);
+        assert_eq!(horus.len(), 1);
+        assert_eq!(pip.len(), 1);
+        assert_eq!(cargo.len(), 1);
+        assert_eq!(pip[0].name, "numpy");
+        assert_eq!(cargo[0].name, "serde");
+    }
+
+    #[test]
+    fn split_deps_python_context() {
+        let deps: HashSet<String> = ["numpy".to_string(), "requests".to_string()]
+            .into_iter()
+            .collect();
+
+        let (horus, pip, cargo) = split_dependencies_with_context(deps, Some("python"));
+        assert!(horus.is_empty());
+        assert_eq!(pip.len(), 2);
+        assert!(cargo.is_empty());
+    }
+
+    #[test]
+    fn split_deps_rust_context() {
+        let deps: HashSet<String> = ["serde".to_string(), "tokio".to_string()]
+            .into_iter()
+            .collect();
+
+        let (horus, pip, cargo) = split_dependencies_with_context(deps, Some("rust"));
+        assert!(horus.is_empty());
+        assert!(pip.is_empty());
+        assert_eq!(cargo.len(), 2);
+    }
+
+    #[test]
+    fn split_deps_horus_py_maps_to_pip() {
+        let deps: HashSet<String> = ["horus_py".to_string()].into_iter().collect();
+        let (horus, pip, _cargo) = split_dependencies_with_context(deps, Some("python"));
+        assert!(horus.is_empty());
+        assert_eq!(pip.len(), 1);
+        assert_eq!(pip[0].name, "horus-robotics");
+    }
+
+    #[test]
+    fn split_deps_bare_horus_in_python() {
+        let deps: HashSet<String> = ["horus".to_string()].into_iter().collect();
+        let (horus, pip, _cargo) = split_dependencies_with_context(deps, Some("python"));
+        assert!(horus.is_empty());
+        assert_eq!(pip.len(), 1);
+        assert_eq!(pip[0].name, "horus-robotics");
+    }
+
+    #[test]
+    fn split_deps_bare_horus_in_rust() {
+        let deps: HashSet<String> = ["horus".to_string()].into_iter().collect();
+        let (horus, pip, _cargo) = split_dependencies_with_context(deps, Some("rust"));
+        // In Rust context, "horus" is a horus registry package
+        assert_eq!(horus.len(), 1);
+        assert!(pip.is_empty());
+    }
+}
+
 /// Separate HORUS packages, pip packages, and cargo packages
 ///
 /// # Arguments

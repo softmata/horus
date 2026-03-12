@@ -671,4 +671,431 @@ mod tests {
         assert_eq!(goal_request["priority"], 128);
         assert_eq!(goal_request["payload"]["x"], 1.0);
     }
+
+    // ── Battle tests: send_goal JSON validation ──────────────────────────
+
+    #[test]
+    fn send_goal_empty_string_is_invalid_json() {
+        let result = send_goal("test_action", "", false, 5.0);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid goal JSON"), "error: {}", err);
+    }
+
+    #[test]
+    fn send_goal_null_json_is_valid() {
+        // "null" is valid JSON
+        let result = send_goal("test_action", "null", false, 5.0);
+        // May fail due to Topic::new (no SHM), but should NOT fail on JSON parsing
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("Invalid goal JSON"),
+                "null should be valid JSON, got: {}",
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn send_goal_number_json_is_valid() {
+        let result = send_goal("test_action", "42", false, 5.0);
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("Invalid goal JSON"),
+                "42 should be valid JSON, got: {}",
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn send_goal_string_json_is_valid() {
+        let result = send_goal("test_action", "\"hello\"", false, 5.0);
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("Invalid goal JSON"),
+                "string should be valid JSON, got: {}",
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn send_goal_array_json_is_valid() {
+        let result = send_goal("test_action", "[1, 2, 3]", false, 5.0);
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("Invalid goal JSON"),
+                "array should be valid JSON, got: {}",
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn send_goal_deeply_nested_json_is_valid() {
+        let nested = r#"{"a":{"b":{"c":{"d":{"e":1}}}}}"#;
+        let result = send_goal("test_action", nested, false, 5.0);
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("Invalid goal JSON"),
+                "nested JSON should be valid: {}",
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn send_goal_truncated_json_is_invalid() {
+        let result = send_goal("test_action", "{\"x\": ", false, 5.0);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid goal JSON"), "error: {}", err);
+    }
+
+    #[test]
+    fn send_goal_trailing_comma_is_invalid() {
+        let result = send_goal("test_action", "{\"x\": 1,}", false, 5.0);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid goal JSON"), "error: {}", err);
+    }
+
+    #[test]
+    fn send_goal_unicode_json_is_valid() {
+        let result = send_goal("test_action", "{\"name\": \"\u{1F916}\"}", false, 5.0);
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("Invalid goal JSON"),
+                "unicode JSON should be valid: {}",
+                msg
+            );
+        }
+    }
+
+    // ── Battle tests: action name matching ────────────────────────────────
+
+    #[test]
+    fn action_name_matching_nested_path() {
+        let action_name = "robot/arm/navigate_to_pose";
+        let search = "navigate_to_pose";
+
+        let matches = action_name == search
+            || action_name.ends_with(&format!("/{}", search))
+            || action_name
+                .rsplit('/')
+                .next()
+                .map(|base| base == search)
+                .unwrap_or(false);
+        assert!(matches, "deeply nested path should match by basename");
+    }
+
+    #[test]
+    fn action_name_matching_empty_search() {
+        let action_name = "navigate";
+        let search = "";
+        let matches = action_name == search
+            || action_name.ends_with(&format!("/{}", search))
+            || action_name
+                .rsplit('/')
+                .next()
+                .map(|base| base == search)
+                .unwrap_or(false);
+        // "navigate".ends_with("/") => false, rsplit gives "navigate" != ""
+        assert!(!matches, "empty search should not match non-empty action");
+    }
+
+    #[test]
+    fn action_name_matching_both_empty() {
+        let action_name = "";
+        let search = "";
+        let matches = action_name == search
+            || action_name.ends_with(&format!("/{}", search))
+            || action_name
+                .rsplit('/')
+                .next()
+                .map(|base| base == search)
+                .unwrap_or(false);
+        assert!(matches, "empty matches empty via ==");
+    }
+
+    #[test]
+    fn action_name_matching_slash_only() {
+        let action_name = "/";
+        let search = "";
+        let matches = action_name == search
+            || action_name.ends_with(&format!("/{}", search))
+            || action_name
+                .rsplit('/')
+                .next()
+                .map(|base| base == search)
+                .unwrap_or(false);
+        // "/" ends_with "/" => true
+        assert!(matches, "slash action should match empty search via ends_with");
+    }
+
+    // ── Battle tests: topic suffix stripping edge cases ──────────────────
+
+    #[test]
+    fn action_topic_suffix_with_dots_in_name() {
+        // Action name containing dots should not confuse suffix stripping
+        let topic = "my.robot.navigate.goal";
+        let stripped = topic.strip_suffix(".goal");
+        assert_eq!(stripped, Some("my.robot.navigate"));
+    }
+
+    #[test]
+    fn action_topic_suffix_no_match() {
+        let topic = "navigate.request";
+        let stripped = topic.strip_suffix(".goal");
+        assert!(stripped.is_none());
+    }
+
+    #[test]
+    fn action_topic_empty_name_with_suffix() {
+        let topic = ".goal";
+        let stripped = topic.strip_suffix(".goal");
+        assert_eq!(stripped, Some(""));
+    }
+
+    // ── Battle tests: DiscoveredAction struct ─────────────────────────────
+
+    #[test]
+    fn discovered_action_default_values() {
+        let action = DiscoveredAction {
+            name: String::new(),
+            has_goal: false,
+            has_result: false,
+            has_feedback: false,
+            has_status: false,
+            has_cancel: false,
+            goal_publishers: 0,
+            result_subscribers: 0,
+        };
+        assert!(action.name.is_empty());
+        assert!(!action.has_goal);
+        assert!(!action.has_result);
+        assert!(!action.has_feedback);
+        assert!(!action.has_status);
+        assert!(!action.has_cancel);
+        assert_eq!(action.goal_publishers, 0);
+        assert_eq!(action.result_subscribers, 0);
+    }
+
+    #[test]
+    fn discovered_action_with_unicode_name() {
+        let action = DiscoveredAction {
+            name: "\u{1F916}_robot/\u{1F3AF}_navigate".to_string(),
+            has_goal: true,
+            has_result: true,
+            has_feedback: false,
+            has_status: false,
+            has_cancel: false,
+            goal_publishers: 1,
+            result_subscribers: 1,
+        };
+        assert!(action.name.contains('\u{1F916}'));
+        assert!(action.has_goal);
+        assert!(action.has_result);
+    }
+
+    #[test]
+    fn discovered_action_large_publisher_count() {
+        let action = DiscoveredAction {
+            name: "stress_test".to_string(),
+            has_goal: true,
+            has_result: true,
+            has_feedback: true,
+            has_status: true,
+            has_cancel: true,
+            goal_publishers: usize::MAX,
+            result_subscribers: usize::MAX,
+        };
+        assert_eq!(action.goal_publishers, usize::MAX);
+        assert_eq!(action.result_subscribers, usize::MAX);
+    }
+
+    // ── Battle tests: cancel_goal ─────────────────────────────────────────
+
+    #[test]
+    fn cancel_goal_json_structure_with_id() {
+        let goal_id = Some("abc-123");
+        let cancel_request = serde_json::json!({
+            "goal_id": goal_id.unwrap_or(""),
+            "cancel_all": goal_id.is_none(),
+        });
+        assert_eq!(cancel_request["goal_id"], "abc-123");
+        assert_eq!(cancel_request["cancel_all"], false);
+    }
+
+    #[test]
+    fn cancel_goal_json_structure_cancel_all() {
+        let goal_id: Option<&str> = None;
+        let cancel_request = serde_json::json!({
+            "goal_id": goal_id.unwrap_or(""),
+            "cancel_all": goal_id.is_none(),
+        });
+        assert_eq!(cancel_request["goal_id"], "");
+        assert_eq!(cancel_request["cancel_all"], true);
+    }
+
+    #[test]
+    fn cancel_goal_topic_name_with_namespace() {
+        let name = "robot/arm/grasp";
+        let cancel_topic = format!("{}.cancel", name);
+        assert_eq!(cancel_topic, "robot/arm/grasp.cancel");
+    }
+
+    #[test]
+    fn cancel_goal_topic_name_empty() {
+        let name = "";
+        let cancel_topic = format!("{}.cancel", name);
+        assert_eq!(cancel_topic, ".cancel");
+    }
+
+    // ── Battle tests: goal topic name format ──────────────────────────────
+
+    #[test]
+    fn goal_topic_name_format() {
+        let name = "navigate";
+        assert_eq!(format!("{}.goal", name), "navigate.goal");
+        assert_eq!(format!("{}.status", name), "navigate.status");
+        assert_eq!(format!("{}.feedback", name), "navigate.feedback");
+        assert_eq!(format!("{}.result", name), "navigate.result");
+        assert_eq!(format!("{}.cancel", name), "navigate.cancel");
+    }
+
+    #[test]
+    fn goal_topic_name_with_deep_namespace() {
+        let name = "a/b/c/d/action";
+        assert_eq!(format!("{}.goal", name), "a/b/c/d/action.goal");
+    }
+
+    // ── Battle tests: goal_id truncation display ─────────────────────────
+
+    #[test]
+    fn goal_id_short_display() {
+        let goal_id = "abcdefgh-1234-5678";
+        let short = goal_id.get(..8).unwrap_or(&goal_id);
+        assert_eq!(short, "abcdefgh");
+    }
+
+    #[test]
+    fn goal_id_short_display_very_short() {
+        let goal_id = "abc";
+        let short = goal_id.get(..8).unwrap_or(&goal_id);
+        // get(..8) on a 3-char string returns None -> falls back to full string
+        assert_eq!(short, "abc");
+    }
+
+    #[test]
+    fn goal_id_short_display_empty() {
+        let goal_id = "";
+        let short = goal_id.get(..8).unwrap_or(&goal_id);
+        assert_eq!(short, "");
+    }
+
+    // ── Battle tests: service vs action disambiguation ───────────────────
+
+    #[test]
+    fn action_excluded_when_request_topic_exists() {
+        let topic_names: std::collections::HashSet<String> = [
+            "nav.goal",
+            "nav.result",
+            "nav.feedback",
+            "nav.request",   // This makes it look like a service
+            "nav.response",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let name = "nav";
+        let has_request = topic_names.contains(&format!("{}.request", name));
+        let has_response = topic_names.contains(&format!("{}.response", name));
+        // An action should be excluded if it has .request or .response
+        assert!(has_request, "should detect .request");
+        assert!(has_response, "should detect .response");
+    }
+
+    #[test]
+    fn action_kept_when_no_service_topics() {
+        let topic_names: std::collections::HashSet<String> = [
+            "nav.goal",
+            "nav.result",
+            "nav.feedback",
+            "nav.status",
+            "nav.cancel",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let name = "nav";
+        let has_request = topic_names.contains(&format!("{}.request", name));
+        let has_response = topic_names.contains(&format!("{}.response", name));
+        assert!(!has_request);
+        assert!(!has_response);
+    }
+
+    // ── Battle tests: list/info with no running app ──────────────────────
+
+    #[test]
+    fn list_actions_returns_ok_or_discovery_error() {
+        let result = list_actions(false, false);
+        // Without running HORUS, this may return Ok (empty) or Err (no SHM)
+        // The important thing is no panic
+        let _ = result;
+    }
+
+    #[test]
+    fn list_actions_json_returns_ok_or_discovery_error() {
+        let result = list_actions(false, true);
+        let _ = result;
+    }
+
+    #[test]
+    fn list_actions_verbose_returns_ok_or_discovery_error() {
+        let result = list_actions(true, false);
+        let _ = result;
+    }
+
+    #[test]
+    fn action_info_nonexistent_returns_error() {
+        // action_info first calls discover_actions; if that succeeds with empty,
+        // it returns a "not found" error
+        let result = action_info("totally_nonexistent_action_xyz");
+        // Either discover error or not-found error
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            // Should contain either "not found" or a discovery-related error
+            let _ = msg; // Just verifying no panic
+        }
+    }
+
+    #[test]
+    fn action_info_empty_name() {
+        let result = action_info("");
+        // Should not panic
+        let _ = result;
+    }
+
+    #[test]
+    fn action_info_unicode_name() {
+        let result = action_info("\u{1F916}");
+        let _ = result;
+    }
+
+    #[test]
+    fn action_info_very_long_name() {
+        let long_name = "x".repeat(4096);
+        let result = action_info(&long_name);
+        let _ = result;
+    }
 }

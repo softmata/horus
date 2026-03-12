@@ -758,4 +758,474 @@ mod tests {
         assert!(detail.contains("1500"));
         assert!(detail.contains("+500")); // overshoot
     }
+
+    // ── Battle tests: TickRange parsing edge cases ────────────────────────
+
+    #[test]
+    fn tick_range_zero() {
+        let r = TickRange::parse("0").unwrap();
+        assert_eq!(r.start, 0);
+        assert_eq!(r.end, 0);
+    }
+
+    #[test]
+    fn tick_range_max_u64() {
+        let s = u64::MAX.to_string();
+        let r = TickRange::parse(&s).unwrap();
+        assert_eq!(r.start, u64::MAX);
+        assert_eq!(r.end, u64::MAX);
+    }
+
+    #[test]
+    fn tick_range_reversed_still_parses() {
+        // 200-100 is technically valid (start > end), just won't match anything
+        let r = TickRange::parse("200-100").unwrap();
+        assert_eq!(r.start, 200);
+        assert_eq!(r.end, 100);
+    }
+
+    #[test]
+    fn tick_range_empty_string_fails() {
+        assert!(TickRange::parse("").is_err());
+    }
+
+    #[test]
+    fn tick_range_negative_fails() {
+        assert!(TickRange::parse("-5").is_err());
+    }
+
+    #[test]
+    fn tick_range_float_fails() {
+        assert!(TickRange::parse("1.5").is_err());
+    }
+
+    #[test]
+    fn tick_range_too_many_dashes() {
+        assert!(TickRange::parse("1-2-3-4").is_err());
+    }
+
+    #[test]
+    fn tick_range_whitespace_only_fails() {
+        assert!(TickRange::parse("   ").is_err());
+    }
+
+    // ── Battle tests: event_type_name exhaustive ──────────────────────────
+
+    #[test]
+    fn event_type_name_all_variants() {
+        assert_eq!(event_type_name(&BlackBoxEvent::SchedulerStop { reason: "".into(), total_ticks: 0 }), "SchedulerStop");
+        assert_eq!(event_type_name(&BlackBoxEvent::NodeAdded { name: "".into(), order: 0 }), "NodeAdded");
+        assert_eq!(event_type_name(&BlackBoxEvent::NodeTick { name: "".into(), duration_us: 0, success: true }), "NodeTick");
+        assert_eq!(event_type_name(&BlackBoxEvent::BudgetViolation { name: "".into(), budget_us: 0, actual_us: 0 }), "BudgetViolation");
+        assert_eq!(event_type_name(&BlackBoxEvent::LearningComplete { duration_ms: 0, tier_summary: "".into() }), "LearningComplete");
+        assert_eq!(event_type_name(&BlackBoxEvent::Custom { category: "".into(), message: "".into() }), "Custom");
+        assert_eq!(event_type_name(&BlackBoxEvent::DeadlineMiss { name: "".into(), deadline_us: 0, actual_us: 0 }), "DeadlineMiss");
+    }
+
+    // ── Battle tests: is_anomaly exhaustive ───────────────────────────────
+
+    #[test]
+    fn is_anomaly_budget_violation() {
+        assert!(is_anomaly(&BlackBoxEvent::BudgetViolation {
+            name: "node".into(),
+            budget_us: 100,
+            actual_us: 200,
+        }));
+    }
+
+    #[test]
+    fn is_anomaly_non_anomaly_variants() {
+        assert!(!is_anomaly(&BlackBoxEvent::NodeAdded { name: "n".into(), order: 0 }));
+        assert!(!is_anomaly(&BlackBoxEvent::SchedulerStop { reason: "done".into(), total_ticks: 0 }));
+        assert!(!is_anomaly(&BlackBoxEvent::LearningComplete { duration_ms: 100, tier_summary: "ok".into() }));
+        assert!(!is_anomaly(&BlackBoxEvent::Custom { category: "test".into(), message: "msg".into() }));
+    }
+
+    // ── Battle tests: event_node_name exhaustive ──────────────────────────
+
+    #[test]
+    fn event_node_name_all_empty_name_variants() {
+        // Variants that return empty string for node name
+        assert_eq!(event_node_name(&BlackBoxEvent::LearningComplete { duration_ms: 0, tier_summary: "".into() }), "");
+        assert_eq!(event_node_name(&BlackBoxEvent::EmergencyStop { reason: "".into() }), "");
+        assert_eq!(event_node_name(&BlackBoxEvent::Custom { category: "".into(), message: "".into() }), "");
+    }
+
+    #[test]
+    fn event_node_name_all_named_variants() {
+        assert_eq!(event_node_name(&BlackBoxEvent::SchedulerStart { name: "sched".into(), node_count: 0, config: "".into() }), "sched");
+        assert_eq!(event_node_name(&BlackBoxEvent::NodeAdded { name: "added".into(), order: 0 }), "added");
+        assert_eq!(event_node_name(&BlackBoxEvent::NodeError { name: "err_node".into(), error: "".into(), severity: horus_core::error::Severity::Transient }), "err_node");
+        assert_eq!(event_node_name(&BlackBoxEvent::DeadlineMiss { name: "miss".into(), deadline_us: 0, actual_us: 0 }), "miss");
+        assert_eq!(event_node_name(&BlackBoxEvent::BudgetViolation { name: "budget".into(), budget_us: 0, actual_us: 0 }), "budget");
+    }
+
+    // ── Battle tests: record_matches combined filters ─────────────────────
+
+    #[test]
+    fn record_matches_combined_anomaly_and_node_filter() {
+        let anomaly_motor = BlackBoxRecord {
+            tick: 10,
+            timestamp_us: 0,
+            event: BlackBoxEvent::DeadlineMiss {
+                name: "motor_ctrl".into(),
+                deadline_us: 100,
+                actual_us: 200,
+            },
+        };
+        let anomaly_sensor = BlackBoxRecord {
+            tick: 10,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeError {
+                name: "sensor".into(),
+                error: "timeout".into(),
+                severity: horus_core::error::Severity::Transient,
+            },
+        };
+        let normal_motor = BlackBoxRecord {
+            tick: 10,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeTick {
+                name: "motor_ctrl".into(),
+                duration_us: 50,
+                success: true,
+            },
+        };
+        let motor_filter = Some("motor".to_string());
+        // anomaly + motor filter: only anomaly_motor matches
+        assert!(record_matches(&anomaly_motor, true, &None, &motor_filter, &None));
+        assert!(!record_matches(&anomaly_sensor, true, &None, &motor_filter, &None));
+        assert!(!record_matches(&normal_motor, true, &None, &motor_filter, &None));
+    }
+
+    #[test]
+    fn record_matches_tick_range_boundary() {
+        let make_record = |tick: u64| BlackBoxRecord {
+            tick,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeTick { name: "n".into(), duration_us: 10, success: true },
+        };
+        let range = Some(TickRange { start: 100, end: 200 });
+        // Boundary values
+        assert!(record_matches(&make_record(100), false, &range, &None, &None)); // inclusive start
+        assert!(record_matches(&make_record(200), false, &range, &None, &None)); // inclusive end
+        assert!(record_matches(&make_record(150), false, &range, &None, &None)); // middle
+        assert!(!record_matches(&make_record(99), false, &range, &None, &None)); // just below
+        assert!(!record_matches(&make_record(201), false, &range, &None, &None)); // just above
+    }
+
+    #[test]
+    fn record_matches_node_filter_case_insensitive() {
+        let record = BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeTick {
+                name: "MotorController".into(),
+                duration_us: 10,
+                success: true,
+            },
+        };
+        assert!(record_matches(&record, false, &None, &Some("motor".to_string()), &None));
+        assert!(record_matches(&record, false, &None, &Some("MOTOR".to_string()), &None));
+        assert!(record_matches(&record, false, &None, &Some("controller".to_string()), &None));
+    }
+
+    #[test]
+    fn record_matches_event_filter_case_insensitive() {
+        let record = BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 0,
+            event: BlackBoxEvent::EmergencyStop { reason: "test".into() },
+        };
+        assert!(record_matches(&record, false, &None, &None, &Some("EmergencyStop".to_string())));
+        assert!(record_matches(&record, false, &None, &None, &Some("emergencystop".to_string())));
+        assert!(record_matches(&record, false, &None, &None, &Some("EMERGENCYSTOP".to_string())));
+        assert!(!record_matches(&record, false, &None, &None, &Some("NodeError".to_string())));
+    }
+
+    // ── Battle tests: format_event_detail all variants ────────────────────
+
+    #[test]
+    fn format_event_detail_scheduler_stop() {
+        let detail = format_event_detail(&BlackBoxEvent::SchedulerStop {
+            reason: "shutdown".into(),
+            total_ticks: 42000,
+        });
+        assert!(detail.contains("shutdown"));
+        assert!(detail.contains("42000"));
+    }
+
+    #[test]
+    fn format_event_detail_node_added() {
+        let detail = format_event_detail(&BlackBoxEvent::NodeAdded {
+            name: "lidar_proc".into(),
+            order: 3,
+        });
+        assert!(detail.contains("lidar_proc"));
+        assert!(detail.contains("3"));
+    }
+
+    #[test]
+    fn format_event_detail_node_tick_success() {
+        let detail = format_event_detail(&BlackBoxEvent::NodeTick {
+            name: "ctrl".into(),
+            duration_us: 250,
+            success: true,
+        });
+        assert!(detail.contains("ctrl"));
+        assert!(detail.contains("250"));
+        assert!(detail.contains("ok"));
+    }
+
+    #[test]
+    fn format_event_detail_node_tick_failure() {
+        let detail = format_event_detail(&BlackBoxEvent::NodeTick {
+            name: "ctrl".into(),
+            duration_us: 9999,
+            success: false,
+        });
+        assert!(detail.contains("FAIL"));
+    }
+
+    #[test]
+    fn format_event_detail_node_error() {
+        let detail = format_event_detail(&BlackBoxEvent::NodeError {
+            name: "sensor".into(),
+            error: "I2C timeout".into(),
+            severity: horus_core::error::Severity::Transient,
+        });
+        assert!(detail.contains("sensor"));
+        assert!(detail.contains("I2C timeout"));
+        assert!(detail.contains("Transient"));
+    }
+
+    #[test]
+    fn format_event_detail_budget_violation() {
+        let detail = format_event_detail(&BlackBoxEvent::BudgetViolation {
+            name: "planner".into(),
+            budget_us: 500,
+            actual_us: 800,
+        });
+        assert!(detail.contains("planner"));
+        assert!(detail.contains("500"));
+        assert!(detail.contains("800"));
+        assert!(detail.contains("+300"));
+    }
+
+    #[test]
+    fn format_event_detail_budget_violation_zero_overshoot() {
+        let detail = format_event_detail(&BlackBoxEvent::BudgetViolation {
+            name: "n".into(),
+            budget_us: 100,
+            actual_us: 100,
+        });
+        assert!(detail.contains("+0"));
+    }
+
+    #[test]
+    fn format_event_detail_learning_complete() {
+        let detail = format_event_detail(&BlackBoxEvent::LearningComplete {
+            duration_ms: 5000,
+            tier_summary: "tier1=3, tier2=2".into(),
+        });
+        assert!(detail.contains("5000"));
+        assert!(detail.contains("tier1=3"));
+    }
+
+    #[test]
+    fn format_event_detail_emergency_stop() {
+        let detail = format_event_detail(&BlackBoxEvent::EmergencyStop {
+            reason: "watchdog expired".into(),
+        });
+        assert_eq!(detail, "watchdog expired");
+    }
+
+    #[test]
+    fn format_event_detail_custom() {
+        let detail = format_event_detail(&BlackBoxEvent::Custom {
+            category: "safety".into(),
+            message: "proximity alert".into(),
+        });
+        assert!(detail.contains("[safety]"));
+        assert!(detail.contains("proximity alert"));
+    }
+
+    // ── Battle tests: event_color ─────────────────────────────────────────
+
+    #[test]
+    fn event_color_green_for_lifecycle_events() {
+        assert!(matches!(event_color(&BlackBoxEvent::SchedulerStart { name: "".into(), node_count: 0, config: "".into() }), EventColor::Green));
+        assert!(matches!(event_color(&BlackBoxEvent::SchedulerStop { reason: "".into(), total_ticks: 0 }), EventColor::Green));
+        assert!(matches!(event_color(&BlackBoxEvent::NodeAdded { name: "".into(), order: 0 }), EventColor::Green));
+        assert!(matches!(event_color(&BlackBoxEvent::LearningComplete { duration_ms: 0, tier_summary: "".into() }), EventColor::Green));
+    }
+
+    #[test]
+    fn event_color_red_for_critical_events() {
+        assert!(matches!(event_color(&BlackBoxEvent::NodeError { name: "".into(), error: "".into(), severity: horus_core::error::Severity::Fatal }), EventColor::Red));
+        assert!(matches!(event_color(&BlackBoxEvent::DeadlineMiss { name: "".into(), deadline_us: 0, actual_us: 0 }), EventColor::Red));
+        assert!(matches!(event_color(&BlackBoxEvent::EmergencyStop { reason: "".into() }), EventColor::Red));
+    }
+
+    #[test]
+    fn event_color_yellow_for_warnings() {
+        assert!(matches!(event_color(&BlackBoxEvent::BudgetViolation { name: "".into(), budget_us: 0, actual_us: 0 }), EventColor::Yellow));
+        assert!(matches!(event_color(&BlackBoxEvent::NodeTick { name: "".into(), duration_us: 0, success: false }), EventColor::Yellow));
+    }
+
+    #[test]
+    fn event_color_white_for_normal_tick() {
+        assert!(matches!(event_color(&BlackBoxEvent::NodeTick { name: "".into(), duration_us: 0, success: true }), EventColor::White));
+    }
+
+    // ── Battle tests: format_timestamp edge cases ─────────────────────────
+
+    #[test]
+    fn format_timestamp_large_value() {
+        let ts = format_timestamp(1_700_000_000_000_000); // ~2023 epoch in us
+        // Should produce a human-readable time, not "us" fallback
+        assert!(!ts.is_empty());
+        assert!(ts.contains(':'), "should have HH:MM:SS format: {}", ts);
+    }
+
+    #[test]
+    fn format_timestamp_max_u64_does_not_panic() {
+        let ts = format_timestamp(u64::MAX);
+        assert!(!ts.is_empty());
+    }
+
+    // ── Battle tests: load_wal with tempfile ──────────────────────────────
+
+    #[test]
+    fn load_wal_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("blackbox.wal");
+        std::fs::write(&wal_path, "").unwrap();
+        let records = load_wal(&wal_path).unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn load_wal_valid_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("blackbox.wal");
+        let line1 = serde_json::to_string(&BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 1000,
+            event: BlackBoxEvent::NodeTick {
+                name: "sensor".into(),
+                duration_us: 50,
+                success: true,
+            },
+        }).unwrap();
+        let line2 = serde_json::to_string(&BlackBoxRecord {
+            tick: 2,
+            timestamp_us: 2000,
+            event: BlackBoxEvent::EmergencyStop {
+                reason: "watchdog".into(),
+            },
+        }).unwrap();
+        std::fs::write(&wal_path, format!("{}\n{}\n", line1, line2)).unwrap();
+        let records = load_wal(&wal_path).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].tick, 1);
+        assert_eq!(records[1].tick, 2);
+    }
+
+    #[test]
+    fn load_wal_skips_corrupt_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("blackbox.wal");
+        let valid = serde_json::to_string(&BlackBoxRecord {
+            tick: 5,
+            timestamp_us: 5000,
+            event: BlackBoxEvent::NodeAdded { name: "ok".into(), order: 1 },
+        }).unwrap();
+        let content = format!("not valid json\n{}\n{{broken\n\n", valid);
+        std::fs::write(&wal_path, content).unwrap();
+        let records = load_wal(&wal_path).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tick, 5);
+    }
+
+    #[test]
+    fn load_wal_nonexistent_file_errors() {
+        let result = load_wal(Path::new("/nonexistent/blackbox.wal"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_blackbox_records_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = load_blackbox_records(dir.path()).unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn load_blackbox_records_prefers_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write JSON with 1 record
+        let json_records = vec![BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 1000,
+            event: BlackBoxEvent::NodeTick { name: "json".into(), duration_us: 10, success: true },
+        }];
+        std::fs::write(dir.path().join("blackbox.json"), serde_json::to_string(&json_records).unwrap()).unwrap();
+        // Write WAL with 2 records
+        let wal_line1 = serde_json::to_string(&BlackBoxRecord {
+            tick: 10,
+            timestamp_us: 10000,
+            event: BlackBoxEvent::NodeTick { name: "wal1".into(), duration_us: 20, success: true },
+        }).unwrap();
+        let wal_line2 = serde_json::to_string(&BlackBoxRecord {
+            tick: 11,
+            timestamp_us: 11000,
+            event: BlackBoxEvent::NodeTick { name: "wal2".into(), duration_us: 30, success: true },
+        }).unwrap();
+        std::fs::write(dir.path().join("blackbox.wal"), format!("{}\n{}\n", wal_line1, wal_line2)).unwrap();
+        let records = load_blackbox_records(dir.path()).unwrap();
+        assert_eq!(records.len(), 2, "should prefer WAL over JSON");
+        assert_eq!(records[0].tick, 10);
+    }
+
+    #[test]
+    fn load_blackbox_records_falls_back_to_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_records = vec![BlackBoxRecord {
+            tick: 42,
+            timestamp_us: 42000,
+            event: BlackBoxEvent::EmergencyStop { reason: "test".into() },
+        }];
+        std::fs::write(dir.path().join("blackbox.json"), serde_json::to_string(&json_records).unwrap()).unwrap();
+        let records = load_blackbox_records(dir.path()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tick, 42);
+    }
+
+    // ── Battle tests: format_record does not panic ────────────────────────
+
+    #[test]
+    fn format_record_all_event_types_no_panic() {
+        let events = vec![
+            BlackBoxEvent::SchedulerStart { name: "main".into(), node_count: 3, config: "rt".into() },
+            BlackBoxEvent::SchedulerStop { reason: "done".into(), total_ticks: 1000 },
+            BlackBoxEvent::NodeAdded { name: "ctrl".into(), order: 1 },
+            BlackBoxEvent::NodeTick { name: "ctrl".into(), duration_us: 100, success: true },
+            BlackBoxEvent::NodeTick { name: "ctrl".into(), duration_us: 99999, success: false },
+            BlackBoxEvent::NodeError { name: "n".into(), error: "fail".into(), severity: horus_core::error::Severity::Fatal },
+            BlackBoxEvent::DeadlineMiss { name: "n".into(), deadline_us: 100, actual_us: 200 },
+            BlackBoxEvent::BudgetViolation { name: "n".into(), budget_us: 50, actual_us: 75 },
+            BlackBoxEvent::LearningComplete { duration_ms: 2000, tier_summary: "ok".into() },
+            BlackBoxEvent::EmergencyStop { reason: "critical fault".into() },
+            BlackBoxEvent::Custom { category: "user".into(), message: "hello".into() },
+        ];
+        for (i, event) in events.into_iter().enumerate() {
+            let record = BlackBoxRecord {
+                tick: i as u64,
+                timestamp_us: i as u64 * 1000,
+                event,
+            };
+            format_record(&record); // should not panic
+        }
+    }
 }

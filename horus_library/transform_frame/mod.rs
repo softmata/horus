@@ -161,7 +161,7 @@ pub use core::TransformFrameCore;
 pub use query::{TransformQuery, TransformQueryFrom};
 pub use registry::FrameRegistry;
 pub use slot::{FrameSlot, TransformEntry};
-pub use types::{FrameId, INVALID_FRAME, NO_PARENT};
+pub use types::{FrameId, NO_PARENT};
 
 // Re-export Transform and message types
 pub use messages::{

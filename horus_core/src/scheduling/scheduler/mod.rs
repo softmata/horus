@@ -192,7 +192,7 @@ impl Scheduler {
     /// Create a minimal scheduler — **lightweight, no syscalls**.
     ///
     /// Detects runtime capabilities (~30-100μs) but does NOT auto-apply
-    /// any OS-level features. Use presets or builder methods to opt in:
+    /// any OS-level features. Use builder methods to opt in:
     ///
     /// ```rust,ignore
     /// use horus_core::Scheduler;
@@ -257,9 +257,6 @@ impl Scheduler {
             initialized: false,
         }
     }
-
-    // CPU core pinning removed from public API.
-    // Use HORUS_RT_CORES env var (e.g., HORUS_RT_CORES=2,3) or prefer_rt() auto-selects.
 
     // ========================================================================
     // BUILDER METHODS — composable, chainable, explicit
@@ -800,7 +797,7 @@ impl Scheduler {
         lines
     }
 
-    /// Apply a full configuration struct. Used internally by presets and horus_py.
+    /// Apply a full configuration struct. Used internally by horus_py.
     #[doc(hidden)]
     pub fn apply_config(&mut self, config: super::config::SchedulerConfig) {
         // Global tick rate
@@ -1046,8 +1043,6 @@ impl Scheduler {
             ))
         }
     }
-
-    // .with_name() removed — auto-derived from binary name.
 
     // ============================================================================
     // OS Integration Methods (low-level, genuinely different from config)
@@ -1397,8 +1392,6 @@ impl Scheduler {
 
     /// Execute exactly one tick cycle for specific named nodes only.
     ///
-    // .tick_once_nodes() removed — register only the nodes you need instead.
-
     /// Internal: run one tick cycle. No loop, no sleep.
     fn execute_single_tick(&mut self, node_filter: Option<&[&str]>) -> HorusResult<()> {
         self.process_control_commands();

@@ -29,3 +29,7 @@ pub mod security;
 pub mod system_deps;
 pub mod version;
 pub mod workspace;
+
+/// Global mutex to serialize tests that change the current working directory.
+#[cfg(test)]
+pub static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

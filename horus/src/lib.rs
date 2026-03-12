@@ -147,39 +147,19 @@
 #[doc(hidden)]
 pub use horus_core;
 #[doc(hidden)]
-pub use horus_core::actions;
-#[doc(hidden)]
-pub use horus_core::bytemuck;
-#[doc(hidden)]
 pub use horus_core::communication;
 #[doc(hidden)]
 pub use horus_core::core;
-#[doc(hidden)]
-pub use horus_core::dlpack;
-#[doc(hidden)]
-pub use horus_core::error;
 #[doc(hidden)]
 pub use horus_core::hlog;
 #[doc(hidden)]
 pub use horus_core::memory;
 #[doc(hidden)]
-pub use horus_core::params;
-#[doc(hidden)]
-pub use horus_core::paste;
-#[doc(hidden)]
 pub use horus_core::scheduling;
 #[doc(hidden)]
 pub use horus_core::serde_json;
 #[doc(hidden)]
-pub use horus_core::serde_yaml;
-#[doc(hidden)]
-pub use horus_core::services;
-#[doc(hidden)]
-pub use horus_core::types;
-#[doc(hidden)]
 pub use horus_library as library;
-#[doc(hidden)]
-pub use serde;
 
 /// The HORUS prelude — everything you need for building robotics applications.
 ///

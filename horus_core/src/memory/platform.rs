@@ -304,7 +304,7 @@ pub fn is_namespace_stale_by_flock(_namespace_path: &std::path::Path) -> bool {
 /// - Linux: `/dev/shm/`
 /// - macOS: `/tmp/`
 /// - Windows: `%TEMP%`
-pub fn shm_parent_dir() -> PathBuf {
+pub(crate) fn shm_parent_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         PathBuf::from("/dev/shm")
@@ -330,7 +330,7 @@ pub fn shm_parent_dir() -> PathBuf {
 ///
 /// Returns `Some((sid, uid))` for names matching `horus_sid{N}_uid{N}`.
 /// Returns `None` for other formats.
-pub fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
+pub(crate) fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
     let suffix = dir_name.strip_prefix("horus_sid")?;
     let (sid_str, rest) = suffix.split_once("_uid")?;
     let sid: i32 = sid_str.parse().ok()?;
@@ -342,7 +342,7 @@ pub fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
 ///
 /// Uses `kill(sid, 0)` to check if the session leader process exists.
 #[cfg(unix)]
-pub fn session_alive(sid: i32) -> bool {
+pub(crate) fn session_alive(sid: i32) -> bool {
     if sid <= 0 {
         return false;
     }

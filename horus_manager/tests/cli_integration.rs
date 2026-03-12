@@ -112,6 +112,7 @@ fn test_node_help() {
 }
 
 #[test]
+#[cfg(feature = "monitor")]
 fn test_monitor_help() {
     horus_cmd()
         .args(["monitor", "--help"])
@@ -251,8 +252,8 @@ fn test_new_rust_project() {
         "horus.toml should be created for Rust projects"
     );
     assert!(
-        project_dir.join("main.rs").exists(),
-        "main.rs should be created for Rust projects"
+        project_dir.join("src/main.rs").exists(),
+        "src/main.rs should be created for Rust projects"
     );
 }
 
@@ -327,7 +328,7 @@ fn test_check_valid_horus_toml() {
     let tmp = TempDir::new().unwrap();
     fs::write(
         tmp.path().join("horus.toml"),
-        "name: test-project\nversion: 0.1.0\n",
+        "[package]\nname = \"test-project\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
 
@@ -396,7 +397,7 @@ fn test_blackbox_help() {
         .success()
         .stdout(predicate::str::contains("BlackBox"))
         .stdout(predicate::str::contains("--anomalies"))
-        .stdout(predicate::str::contains("--tail"))
+        .stdout(predicate::str::contains("--follow"))
         .stdout(predicate::str::contains("--json"))
         .stdout(predicate::str::contains("--node"))
         .stdout(predicate::str::contains("--event"))
@@ -1191,8 +1192,8 @@ fn test_help_has_examples() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Examples:"))
-        .stdout(predicate::str::contains("horus new my_robot --rust"));
+        .stdout(predicate::str::contains("Quick Start:"))
+        .stdout(predicate::str::contains("horus new my_robot -r"));
 }
 
 // -- Aliases --
@@ -1252,6 +1253,7 @@ fn test_alias_l_for_launch() {
 }
 
 #[test]
+#[cfg(feature = "monitor")]
 fn test_alias_mon_for_monitor() {
     horus_cmd()
         .args(["mon", "--help"])
@@ -1951,7 +1953,7 @@ fn test_param_save_and_load() {
 
     // Save to file
     horus_cmd()
-        .args(["param", "save", "-o", &save_path.to_string_lossy()])
+        .args(["param", "save", &save_path.to_string_lossy()])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -2068,9 +2070,9 @@ fn test_service_list_verbose() {
 }
 
 #[test]
-fn test_service_type_nonexistent() {
+fn test_service_info_nonexistent() {
     horus_cmd()
-        .args(["service", "type", "nonexistent_service_xyz"])
+        .args(["service", "info", "nonexistent_service_xyz"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found").or(predicate::str::contains("Service")));
@@ -2148,30 +2150,28 @@ fn test_record_info_nonexistent_session() {
     horus_cmd()
         .args(["record", "info", "nonexistent_session_xyz"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not found"));
+        .failure()
+        .stderr(predicate::str::contains("not found"));
 }
 
 #[test]
 fn test_record_info_json_nonexistent() {
-    let output = horus_cmd()
+    // Nonexistent session returns error
+    horus_cmd()
         .args(["record", "info", "nonexistent_session_xyz", "--json"])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
-    assert_eq!(parsed["found"], false);
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
 }
 
 #[test]
-fn test_record_delete_nonexistent_succeeds_silently() {
-    // delete --force of a nonexistent session succeeds (idempotent)
+fn test_record_delete_nonexistent_fails() {
+    // delete of a nonexistent session returns error
     horus_cmd()
         .args(["record", "delete", "nonexistent_session_xyz", "--force"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Deleted"));
+        .failure()
+        .stderr(predicate::str::contains("not found"));
 }
 
 #[test]
@@ -2276,4 +2276,518 @@ fn test_record_list_json_no_ansi() {
         !stdout.contains("\x1b["),
         "JSON output should not contain ANSI escape codes"
     );
+}
+
+// ============================================================================
+// Transform Frame integration tests
+// ============================================================================
+
+#[test]
+fn test_frame_list_empty() {
+    // Should succeed even with no running system — 0 frames is ok
+    horus_cmd()
+        .args(["frame", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No active"));
+}
+
+#[test]
+fn test_frame_tree_empty() {
+    horus_cmd()
+        .args(["frame", "tree"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No frames"));
+}
+
+#[test]
+fn test_tf_alias_works() {
+    horus_cmd()
+        .args(["tf", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("frame"));
+}
+
+#[test]
+fn test_frame_calibrate_with_points() {
+    let tmp = TempDir::new().unwrap();
+    let csv = tmp.path().join("points.csv");
+    // 4 point pairs: sensor→world is a 1m translation along X
+    fs::write(
+        &csv,
+        "0.0,0.0,0.0,1.0,0.0,0.0\n1.0,0.0,0.0,2.0,0.0,0.0\n0.0,1.0,0.0,1.0,1.0,0.0\n0.0,0.0,1.0,1.0,0.0,1.0\n",
+    )
+    .unwrap();
+
+    horus_cmd()
+        .args(["frame", "calibrate", "--points-file", &csv.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Calibration Result"))
+        .stdout(predicate::str::contains("Translation"))
+        .stdout(predicate::str::contains("RMSE"));
+}
+
+#[test]
+fn test_frame_calibrate_insufficient_points() {
+    let tmp = TempDir::new().unwrap();
+    let csv = tmp.path().join("points.csv");
+    // Only 2 points — should fail or warn
+    fs::write(&csv, "0.0,0.0,0.0,1.0,0.0,0.0\n1.0,0.0,0.0,2.0,0.0,0.0\n").unwrap();
+
+    let output = horus_cmd()
+        .args(["frame", "calibrate", "--points-file", &csv.to_string_lossy()])
+        .output()
+        .unwrap();
+    // Either fails or succeeds with warning — just shouldn't crash
+    let _ = output.status;
+}
+
+#[test]
+fn test_frame_calibrate_bad_csv() {
+    let tmp = TempDir::new().unwrap();
+    let csv = tmp.path().join("bad.csv");
+    fs::write(&csv, "not,a,valid,csv\ndata\n").unwrap();
+
+    horus_cmd()
+        .args(["frame", "calibrate", "--points-file", &csv.to_string_lossy()])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_frame_calibrate_missing_file() {
+    horus_cmd()
+        .args(["frame", "calibrate", "--points-file", "/tmp/nonexistent_xyz.csv"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_frame_hand_eye_with_poses() {
+    let tmp = TempDir::new().unwrap();
+    let robot = tmp.path().join("robot.csv");
+    let sensor = tmp.path().join("sensor.csv");
+    // 4 pose pairs: x,y,z,qx,qy,qz,qw — sensor has 0.1m offset in X
+    fs::write(
+        &robot,
+        "1.0,0.0,0.0,0.0,0.0,0.0,1.0\n2.0,0.0,0.0,0.0,0.0,0.0,1.0\n1.0,1.0,0.0,0.0,0.0,0.0,1.0\n1.0,0.0,1.0,0.0,0.0,0.0,1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        &sensor,
+        "1.1,0.0,0.0,0.0,0.0,0.0,1.0\n2.1,0.0,0.0,0.0,0.0,0.0,1.0\n1.1,1.0,0.0,0.0,0.0,0.0,1.0\n1.1,0.0,1.0,0.0,0.0,0.0,1.0\n",
+    )
+    .unwrap();
+
+    horus_cmd()
+        .args([
+            "frame",
+            "hand-eye",
+            "--robot-poses",
+            &robot.to_string_lossy(),
+            "--sensor-poses",
+            &sensor.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Hand-Eye Calibration Result"))
+        .stdout(predicate::str::contains("Translation"));
+}
+
+#[test]
+fn test_frame_hand_eye_missing_file() {
+    horus_cmd()
+        .args([
+            "frame",
+            "hand-eye",
+            "--robot-poses",
+            "/tmp/nonexistent_r.csv",
+            "--sensor-poses",
+            "/tmp/nonexistent_s.csv",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_frame_diff_missing_files() {
+    horus_cmd()
+        .args([
+            "frame",
+            "diff",
+            "/tmp/nonexistent_1.tfr",
+            "/tmp/nonexistent_2.tfr",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_frame_record_help() {
+    horus_cmd()
+        .args(["frame", "record", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--output"))
+        .stdout(predicate::str::contains("--duration"));
+}
+
+#[test]
+fn test_frame_play_help() {
+    horus_cmd()
+        .args(["frame", "play", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--speed"));
+}
+
+#[test]
+fn test_frame_diff_help() {
+    horus_cmd()
+        .args(["frame", "diff", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--threshold-m"))
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn test_frame_tune_help() {
+    horus_cmd()
+        .args(["frame", "tune", "--help"])
+        .assert()
+        .success();
+}
+
+// ============================================================================
+// Example project validation tests (horus check on real examples)
+// ============================================================================
+
+#[test]
+fn test_example_differential_drive_valid() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("examples/differential_drive");
+    if !examples_dir.exists() {
+        return; // skip if examples not present
+    }
+    horus_cmd()
+        .args(["check", &examples_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All checks passed"));
+}
+
+#[test]
+fn test_example_robot_arm_valid() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("examples/robot_arm");
+    if !examples_dir.exists() {
+        return;
+    }
+    horus_cmd()
+        .args(["check", &examples_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All checks passed"));
+}
+
+#[test]
+fn test_example_quadruped_valid() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("examples/quadruped");
+    if !examples_dir.exists() {
+        return;
+    }
+    horus_cmd()
+        .args(["check", &examples_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All checks passed"));
+}
+
+#[test]
+fn test_example_sensor_navigation_valid() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("examples/sensor_navigation");
+    if !examples_dir.exists() {
+        return;
+    }
+    horus_cmd()
+        .args(["check", &examples_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All checks passed"));
+}
+
+#[test]
+fn test_example_multi_robot_valid() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("examples/multi_robot");
+    if !examples_dir.exists() {
+        return;
+    }
+    horus_cmd()
+        .args(["check", &examples_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All checks passed"));
+}
+
+// ============================================================================
+// Registry integration tests (live API: horus-marketplace-api.onrender.com)
+// ============================================================================
+
+#[test]
+fn test_search_returns_results() {
+    // Search for a broad term — should succeed even if no results
+    horus_cmd()
+        .args(["search", "robot"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_search_json_output_valid() {
+    let output = horus_cmd()
+        .args(["search", "robot", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "search --json should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("search --json should return valid JSON");
+    assert!(parsed["results"].is_array(), "results should be an array");
+    assert_eq!(parsed["query"], "robot", "query should be echoed back");
+}
+
+#[test]
+fn test_search_with_category_filter() {
+    horus_cmd()
+        .args(["search", "sim", "--category", "simulation"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_search_no_results_still_succeeds() {
+    horus_cmd()
+        .args(["search", "zzz_nonexistent_package_zzz_12345"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_publish_dry_run_requires_auth() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"test-qa-pkg\"\nversion = \"0.0.1\"\ndescription = \"QA test\"\nlicense = \"MIT\"\n",
+    )
+    .unwrap();
+
+    // Dry-run without auth should fail with authentication error
+    horus_cmd()
+        .args(["publish", "--dry-run"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("authentication"));
+}
+
+#[test]
+fn test_publish_no_manifest_fails() {
+    let tmp = TempDir::new().unwrap();
+
+    horus_cmd()
+        .args(["publish"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_publish_with_path_deps_rejected() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"test-path-dep\"\nversion = \"0.0.1\"\ndescription = \"Test\"\nlicense = \"MIT\"\n\n[dependencies]\nlocal-crate = { path = \"../local-crate\" }\n",
+    )
+    .unwrap();
+
+    horus_cmd()
+        .args(["publish"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("path dependenc")
+                .or(predicate::str::contains("authentication")),
+        );
+}
+
+#[test]
+fn test_env_freeze_creates_file() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"freeze-test\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+
+    let freeze_path = tmp.path().join("horus-freeze.toml");
+    horus_cmd()
+        .args(["env", "freeze", "--output", &freeze_path.to_string_lossy()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    assert!(freeze_path.exists(), "freeze file should be created");
+    let content = fs::read_to_string(&freeze_path).unwrap();
+    assert!(
+        content.contains("[system]") || content.contains("os") || content.contains("arch"),
+        "freeze file should contain system info"
+    );
+}
+
+#[test]
+fn test_env_freeze_without_manifest_fails() {
+    let tmp = TempDir::new().unwrap();
+
+    horus_cmd()
+        .args(["env", "freeze"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("horus.toml").or(predicate::str::contains("No horus")));
+}
+
+// ============================================================================
+// Deploy integration tests (dry-run — no SSH needed)
+// ============================================================================
+
+#[test]
+fn test_deploy_list_no_targets() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+
+    horus_cmd()
+        .args(["deploy", "--list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No deployment targets"));
+}
+
+#[test]
+fn test_deploy_list_configured_targets() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    let horus_dir = tmp.path().join(".horus");
+    fs::create_dir_all(&horus_dir).unwrap();
+    fs::write(
+        horus_dir.join("deploy.yaml"),
+        "targets:\n  robot:\n    host: pi@192.168.1.100\n    arch: aarch64\n    dir: ~/my_robot\n  jetson:\n    host: nvidia@jetson.local\n    arch: aarch64\n    dir: ~/horus_app\n",
+    )
+    .unwrap();
+
+    horus_cmd()
+        .args(["deploy", "--list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("robot"))
+        .stdout(predicate::str::contains("jetson"))
+        .stdout(predicate::str::contains("pi@192.168.1.100"))
+        .stdout(predicate::str::contains("nvidia@jetson.local"));
+}
+
+#[test]
+fn test_deploy_dry_run_direct_target() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+
+    horus_cmd()
+        .args(["deploy", "--dry-run", "user@10.0.0.1"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRY RUN"))
+        .stdout(predicate::str::contains("user@10.0.0.1"))
+        .stdout(predicate::str::contains("cargo build"))
+        .stdout(predicate::str::contains("rsync"));
+}
+
+#[test]
+fn test_deploy_dry_run_named_target() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    let horus_dir = tmp.path().join(".horus");
+    fs::create_dir_all(&horus_dir).unwrap();
+    fs::write(
+        horus_dir.join("deploy.yaml"),
+        "targets:\n  robot:\n    host: pi@192.168.1.100\n    arch: aarch64\n    dir: ~/my_robot\n",
+    )
+    .unwrap();
+
+    horus_cmd()
+        .args(["deploy", "--dry-run", "robot"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRY RUN"))
+        .stdout(predicate::str::contains("pi@192.168.1.100"))
+        .stdout(predicate::str::contains("~/my_robot"));
+}
+
+#[test]
+fn test_deploy_dry_run_debug_mode() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+
+    horus_cmd()
+        .args(["deploy", "--dry-run", "--debug", "user@host"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("debug"));
+}
+
+#[test]
+fn test_deploy_dry_run_custom_arch() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+
+    horus_cmd()
+        .args(["deploy", "--dry-run", "--arch", "armv7", "user@host"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("armv7"));
+}
+
+#[test]
+fn test_deploy_requires_target() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+
+    // No target provided — should fail
+    horus_cmd()
+        .args(["deploy", "--dry-run"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
 }

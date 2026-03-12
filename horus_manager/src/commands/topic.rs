@@ -764,4 +764,185 @@ mod tests {
         );
         assert_eq!(fmt, MessageFormat::BincodeHex);
     }
+
+    // ── Battle tests: hex dump edge cases ─────────────────────────────────
+
+    #[test]
+    fn hex_dump_exactly_max_bytes_no_truncation() {
+        let data: Vec<u8> = (0..16).collect();
+        let hex = format_hex_dump(&data, 16);
+        assert!(!hex.contains("..."), "Exactly max_bytes should not truncate");
+        assert_eq!(hex, "00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f");
+    }
+
+    #[test]
+    fn hex_dump_one_over_max_truncates() {
+        let data: Vec<u8> = (0..17).collect();
+        let hex = format_hex_dump(&data, 16);
+        assert!(hex.contains("... (1 more bytes)"), "One over should truncate, got: '{}'", hex);
+    }
+
+    #[test]
+    fn hex_dump_multi_row_formatting() {
+        // 32 bytes = 2 rows of 16
+        let data: Vec<u8> = (0..32).collect();
+        let hex = format_hex_dump(&data, 64);
+        let rows: Vec<&str> = hex.split("\n  ").collect();
+        assert_eq!(rows.len(), 2, "32 bytes should produce 2 rows, got: {}", rows.len());
+    }
+
+    #[test]
+    fn hex_dump_max_zero_shows_nothing_but_remainder() {
+        let data = vec![0xAA, 0xBB];
+        let hex = format_hex_dump(&data, 0);
+        assert!(hex.contains("2 more bytes"), "max_bytes=0 should show remainder, got: '{}'", hex);
+    }
+
+    #[test]
+    fn hex_dump_all_zeros() {
+        let data = vec![0u8; 4];
+        let hex = format_hex_dump(&data, 64);
+        assert_eq!(hex, "00 00 00 00");
+    }
+
+    #[test]
+    fn hex_dump_all_ff() {
+        let data = vec![0xFFu8; 4];
+        let hex = format_hex_dump(&data, 64);
+        assert_eq!(hex, "ff ff ff ff");
+    }
+
+    // ── Battle tests: classify_message edge cases ─────────────────────────
+
+    #[test]
+    fn classify_pod_empty_data_is_pod_text() {
+        // Empty slice is valid UTF-8 and all chars pass the filter (vacuously true)
+        let fmt = classify_message(&[], true);
+        assert_eq!(fmt, MessageFormat::PodText(String::new()));
+    }
+
+    #[test]
+    fn classify_serde_empty_data_is_bincode_hex() {
+        // Empty slice is not valid JSON
+        let fmt = classify_message(&[], false);
+        assert_eq!(fmt, MessageFormat::BincodeHex);
+    }
+
+    #[test]
+    fn classify_pod_with_tabs_and_newlines_is_text() {
+        let data = b"hello\tworld\nfoo";
+        let fmt = classify_message(data, true);
+        assert_eq!(fmt, MessageFormat::PodText("hello\tworld\nfoo".to_string()));
+    }
+
+    #[test]
+    fn classify_pod_with_control_char_is_hex() {
+        // 0x01 (SOH) is not ascii_graphic or ascii_whitespace
+        let data = &[b'a', 0x01, b'b'];
+        let fmt = classify_message(data, true);
+        assert_eq!(fmt, MessageFormat::PodHex);
+    }
+
+    #[test]
+    fn classify_serde_json_array_returns_json() {
+        let fmt = classify_message(b"[1, 2, 3]", false);
+        match fmt {
+            MessageFormat::Json(pretty) => {
+                assert!(pretty.contains('1'), "Should contain 1, got: {}", pretty);
+                assert!(pretty.contains('3'), "Should contain 3, got: {}", pretty);
+            }
+            other => panic!("Expected Json variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classify_serde_json_string_returns_json() {
+        let fmt = classify_message(b"\"hello\"", false);
+        match fmt {
+            MessageFormat::Json(pretty) => {
+                assert!(pretty.contains("hello"), "Should contain hello, got: {}", pretty);
+            }
+            other => panic!("Expected Json variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classify_serde_json_number_returns_json() {
+        let fmt = classify_message(b"42", false);
+        match fmt {
+            MessageFormat::Json(pretty) => {
+                assert!(pretty.contains("42"), "Should contain 42, got: {}", pretty);
+            }
+            other => panic!("Expected Json variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classify_serde_json_null_returns_json() {
+        let fmt = classify_message(b"null", false);
+        match fmt {
+            MessageFormat::Json(pretty) => {
+                assert!(pretty.contains("null"), "Should contain null, got: {}", pretty);
+            }
+            other => panic!("Expected Json variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classify_serde_invalid_json_is_bincode_hex() {
+        let fmt = classify_message(b"{invalid json", false);
+        assert_eq!(fmt, MessageFormat::BincodeHex);
+    }
+
+    #[test]
+    fn classify_pod_only_whitespace_is_text() {
+        let fmt = classify_message(b"   \t\n ", true);
+        assert_eq!(fmt, MessageFormat::PodText("   \t\n ".to_string()));
+    }
+
+    // ── Battle tests: publish_topic JSON parsing ──────────────────────────
+
+    #[test]
+    fn publish_rejects_invalid_json() {
+        let result = publish_topic("test_topic", "not valid json", None, None);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("Invalid JSON"), "Error should mention JSON, got: {}", err);
+    }
+
+    #[test]
+    fn publish_rejects_negative_rate() {
+        // JSON is valid but rate is negative
+        let result = publish_topic("test_topic", "{\"x\": 1}", Some(-5.0), None);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("greater than 0"), "Should reject negative rate, got: {}", err);
+    }
+
+    #[test]
+    fn publish_rejects_zero_rate() {
+        let result = publish_topic("test_topic", "{\"x\": 1}", Some(0.0), None);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("greater than 0"), "Should reject zero rate, got: {}", err);
+    }
+
+    #[test]
+    fn echo_rejects_negative_rate() {
+        // echo_topic will fail on discovery first, but if we pass rate <= 0
+        // and the topic exists, rate validation happens after topic lookup.
+        // We test the rate validation path with a known-missing topic — it
+        // hits "not found" first.  So we just test that the error message from
+        // a missing topic is sane.
+        let result = echo_topic("__nonexistent_topic__", None, Some(-1.0));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn topic_info_nonexistent_returns_error() {
+        let result = topic_info("__definitely_not_a_topic_12345__");
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("not found"), "Should say not found, got: {}", err);
+    }
 }

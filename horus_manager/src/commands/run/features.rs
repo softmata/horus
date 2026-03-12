@@ -233,21 +233,6 @@ pub fn enable_to_features(capability: &str) -> Vec<String> {
         // Language bindings
         "python" | "py" => vec!["python".to_string()],
 
-        // Hardware interface features (shortcuts without -hardware suffix)
-        "gpio" => vec!["gpio-hardware".to_string()],
-        "i2c" => vec!["i2c-hardware".to_string()],
-        "spi" => vec!["spi-hardware".to_string()],
-        "can" => vec!["can-hardware".to_string()],
-        "serial" => vec!["serial-hardware".to_string()],
-
-        // Full hardware feature names (pass through)
-        "gpio-hardware" => vec!["gpio-hardware".to_string()],
-        "i2c-hardware" => vec!["i2c-hardware".to_string()],
-        "spi-hardware" => vec!["spi-hardware".to_string()],
-        "serial-hardware" => vec!["serial-hardware".to_string()],
-        "motor-hardware" => vec!["motor-hardware".to_string()],
-        "all-hardware" => vec!["all-hardware".to_string()],
-
         // Backend features
         "opencv" | "opencv-backend" => vec!["opencv-backend".to_string()],
 
@@ -335,8 +320,484 @@ pub fn get_all_cargo_features() -> Option<String> {
 fn load_manifest() -> Option<HorusManifest> {
     let path = Path::new(HORUS_TOML);
     if path.exists() {
-        HorusManifest::load_from(path).ok().map(|(m, _)| m)
+        HorusManifest::load_from(path).ok()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::{IgnoreConfig, PackageInfo};
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    /// Helper: build a minimal HorusManifest for testing.
+    fn minimal_manifest() -> HorusManifest {
+        HorusManifest {
+            package: PackageInfo {
+                name: "test-pkg".to_string(),
+                version: "0.1.0".to_string(),
+                description: None,
+                authors: vec![],
+                license: None,
+                edition: "1".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+            },
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+        }
+    }
+
+    // ── resolve_driver_alias ────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_driver_alias_vision() {
+        let drivers = resolve_driver_alias("vision").unwrap();
+        assert_eq!(drivers, vec!["camera", "depth-camera"]);
+    }
+
+    #[test]
+    fn resolve_driver_alias_navigation() {
+        let drivers = resolve_driver_alias("navigation").unwrap();
+        assert_eq!(drivers, vec!["lidar", "gps", "imu"]);
+    }
+
+    #[test]
+    fn resolve_driver_alias_manipulation() {
+        let drivers = resolve_driver_alias("manipulation").unwrap();
+        assert_eq!(drivers, vec!["servo", "motor", "force-torque"]);
+    }
+
+    #[test]
+    fn resolve_driver_alias_locomotion() {
+        let drivers = resolve_driver_alias("locomotion").unwrap();
+        assert_eq!(drivers, vec!["motor", "encoder", "imu"]);
+    }
+
+    #[test]
+    fn resolve_driver_alias_sensing() {
+        let drivers = resolve_driver_alias("sensing").unwrap();
+        assert_eq!(drivers, vec!["camera", "lidar", "ultrasonic", "imu"]);
+    }
+
+    #[test]
+    fn resolve_driver_alias_unknown_returns_none() {
+        assert!(resolve_driver_alias("unknown").is_none());
+        assert!(resolve_driver_alias("").is_none());
+        assert!(resolve_driver_alias("camera").is_none());
+    }
+
+    // ── glob_match ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn glob_match_double_star_directory_recursion() {
+        assert!(glob_match("**/test.py", "src/foo/test.py"));
+        assert!(glob_match("**/test.py", "test.py"));
+    }
+
+    #[test]
+    fn glob_match_double_star_literal_suffix() {
+        // When the suffix after **/ contains no wildcards, it matches via contains/ends_with.
+        assert!(glob_match("**/Cargo.toml", "deep/nested/Cargo.toml"));
+        assert!(glob_match("**/build/", "project/build/output"));
+    }
+
+    #[test]
+    fn glob_match_double_star_wildcard_suffix_limitation() {
+        // NOTE: The current glob_match implementation treats the suffix after **/
+        // as a literal string, so **/*.log checks for literal "*.log" in the text.
+        // This means **/ + wildcard suffix does NOT work as a recursive glob.
+        assert!(!glob_match("**/*.log", "a/b/c/debug.log"));
+    }
+
+    #[test]
+    fn glob_match_single_star_wildcard() {
+        assert!(glob_match("*.py", "main.py"));
+        assert!(glob_match("test_*", "test_hello"));
+        assert!(glob_match("test_*.py", "test_module.py"));
+    }
+
+    #[test]
+    fn glob_match_exact_match_no_wildcards() {
+        assert!(glob_match("main.py", "main.py"));
+        assert!(glob_match("Cargo.toml", "Cargo.toml"));
+    }
+
+    #[test]
+    fn glob_match_ends_with_for_simple_patterns() {
+        // Without wildcards, glob_match also matches via ends_with
+        assert!(glob_match("main.py", "src/main.py"));
+    }
+
+    #[test]
+    fn glob_match_no_match() {
+        assert!(!glob_match("*.py", "main.rs"));
+        assert!(!glob_match("test_*.py", "hello.py"));
+    }
+
+    #[test]
+    fn glob_match_leading_star() {
+        assert!(glob_match("*.rs", "lib.rs"));
+        assert!(glob_match("*.rs", "deeply/nested/file.rs"));
+    }
+
+    #[test]
+    fn glob_match_trailing_star() {
+        assert!(glob_match("debug_*", "debug_log"));
+        assert!(glob_match("debug_*", "debug_"));
+    }
+
+    #[test]
+    fn glob_match_pattern_without_wildcards_no_match() {
+        assert!(!glob_match("main.py", "other.py"));
+        assert!(!glob_match("Cargo.toml", "pyproject.toml"));
+    }
+
+    #[test]
+    fn glob_match_star_in_middle() {
+        assert!(glob_match("test_*.py", "test_foo.py"));
+        assert!(!glob_match("test_*.py", "test_foo.rs"));
+    }
+
+    // ── IgnorePatterns::should_ignore_file ──────────────────────────────────
+
+    #[test]
+    fn should_ignore_file_directory_match() {
+        let patterns = IgnorePatterns {
+            files: vec![],
+            directories: vec!["target/".to_string(), "node_modules".to_string()],
+            packages: vec![],
+        };
+        assert!(patterns.should_ignore_file(Path::new("project/target/debug/main")));
+        assert!(patterns.should_ignore_file(Path::new("node_modules/foo/index.js")));
+    }
+
+    #[test]
+    fn should_ignore_file_glob_match() {
+        let patterns = IgnorePatterns {
+            files: vec!["*.log".to_string(), "debug_*".to_string()],
+            directories: vec![],
+            packages: vec![],
+        };
+        assert!(patterns.should_ignore_file(Path::new("output.log")));
+        assert!(patterns.should_ignore_file(Path::new("debug_trace")));
+    }
+
+    #[test]
+    fn should_ignore_file_no_match() {
+        let patterns = IgnorePatterns {
+            files: vec!["*.log".to_string()],
+            directories: vec!["target/".to_string()],
+            packages: vec![],
+        };
+        assert!(!patterns.should_ignore_file(Path::new("src/main.rs")));
+        assert!(!patterns.should_ignore_file(Path::new("Cargo.toml")));
+    }
+
+    #[test]
+    fn should_ignore_file_directory_trailing_slash_stripped() {
+        // The impl trims trailing '/' before checking contains()
+        let patterns = IgnorePatterns {
+            files: vec![],
+            directories: vec!["build/".to_string()],
+            packages: vec![],
+        };
+        assert!(patterns.should_ignore_file(Path::new("build/output.bin")));
+        assert!(patterns.should_ignore_file(Path::new("project/build/output.bin")));
+    }
+
+    // ── IgnorePatterns::should_ignore_package ───────────────────────────────
+
+    #[test]
+    fn should_ignore_package_exact_match() {
+        let patterns = IgnorePatterns {
+            files: vec![],
+            directories: vec![],
+            packages: vec!["ipython".to_string(), "pytest".to_string()],
+        };
+        assert!(patterns.should_ignore_package("ipython"));
+        assert!(patterns.should_ignore_package("pytest"));
+    }
+
+    #[test]
+    fn should_ignore_package_no_match() {
+        let patterns = IgnorePatterns {
+            files: vec![],
+            directories: vec![],
+            packages: vec!["ipython".to_string()],
+        };
+        assert!(!patterns.should_ignore_package("numpy"));
+        assert!(!patterns.should_ignore_package("ipython3")); // not an exact match
+        assert!(!patterns.should_ignore_package(""));
+    }
+
+    #[test]
+    fn should_ignore_package_empty_list() {
+        let patterns = IgnorePatterns::default();
+        assert!(!patterns.should_ignore_package("anything"));
+    }
+
+    // ── DriverConfig::from_manifest ─────────────────────────────────────────
+
+    #[test]
+    fn driver_config_empty_drivers() {
+        let manifest = minimal_manifest();
+        let config = DriverConfig::from_manifest(&manifest);
+        assert!(config.drivers.is_empty());
+        assert!(config.backends.is_empty());
+    }
+
+    #[test]
+    fn driver_config_alias_expansion() {
+        let mut manifest = minimal_manifest();
+        manifest
+            .drivers
+            .insert("vision".to_string(), DriverValue::Enabled(true));
+        let config = DriverConfig::from_manifest(&manifest);
+        assert_eq!(config.drivers, vec!["camera", "depth-camera"]);
+        assert!(config.backends.is_empty());
+    }
+
+    #[test]
+    fn driver_config_direct_driver_name() {
+        let mut manifest = minimal_manifest();
+        manifest
+            .drivers
+            .insert("lidar".to_string(), DriverValue::Enabled(true));
+        let config = DriverConfig::from_manifest(&manifest);
+        assert_eq!(config.drivers, vec!["lidar"]);
+    }
+
+    #[test]
+    fn driver_config_backend_override() {
+        let mut manifest = minimal_manifest();
+        manifest.drivers.insert(
+            "lidar".to_string(),
+            DriverValue::Backend("rplidar-a2".to_string()),
+        );
+        let config = DriverConfig::from_manifest(&manifest);
+        assert_eq!(config.drivers, vec!["lidar"]);
+        assert_eq!(config.backends.get("lidar").unwrap(), "rplidar-a2");
+    }
+
+    #[test]
+    fn driver_config_alias_with_backend_stores_alias_key() {
+        // When an alias like "vision" has a Backend value, the backend is stored
+        // under the alias key, and the alias is expanded into individual drivers.
+        let mut manifest = minimal_manifest();
+        manifest.drivers.insert(
+            "vision".to_string(),
+            DriverValue::Backend("realsense".to_string()),
+        );
+        let config = DriverConfig::from_manifest(&manifest);
+        assert_eq!(config.drivers, vec!["camera", "depth-camera"]);
+        assert_eq!(config.backends.get("vision").unwrap(), "realsense");
+    }
+
+    #[test]
+    fn driver_config_multiple_entries() {
+        let mut manifest = minimal_manifest();
+        // BTreeMap iterates in sorted order: "camera" then "navigation"
+        manifest
+            .drivers
+            .insert("camera".to_string(), DriverValue::Enabled(true));
+        manifest
+            .drivers
+            .insert("navigation".to_string(), DriverValue::Enabled(true));
+        let config = DriverConfig::from_manifest(&manifest);
+        // "camera" (direct) then "navigation" expands to lidar, gps, imu
+        assert_eq!(config.drivers, vec!["camera", "lidar", "gps", "imu"]);
+    }
+
+    // ── enable_to_features ──────────────────────────────────────────────────
+
+    #[test]
+    fn enable_to_features_cuda() {
+        assert_eq!(enable_to_features("cuda"), vec!["cuda"]);
+    }
+
+    #[test]
+    fn enable_to_features_gpu_alias() {
+        assert_eq!(enable_to_features("gpu"), vec!["cuda"]);
+    }
+
+    #[test]
+    fn enable_to_features_python() {
+        assert_eq!(enable_to_features("python"), vec!["python"]);
+    }
+
+    #[test]
+    fn enable_to_features_py_alias() {
+        assert_eq!(enable_to_features("py"), vec!["python"]);
+    }
+
+    #[test]
+    fn enable_to_features_sim_empty() {
+        let features = enable_to_features("sim");
+        assert!(features.is_empty(), "sim should map to empty vec");
+    }
+
+    #[test]
+    fn enable_to_features_simulation_alias_empty() {
+        let features = enable_to_features("simulation");
+        assert!(features.is_empty(), "simulation should map to empty vec");
+    }
+
+    #[test]
+    fn enable_to_features_full() {
+        assert_eq!(enable_to_features("full"), vec!["full"]);
+    }
+
+    #[test]
+    fn enable_to_features_editor() {
+        assert_eq!(enable_to_features("editor"), vec!["editor"]);
+    }
+
+    #[test]
+    fn enable_to_features_headless() {
+        assert_eq!(enable_to_features("headless"), vec!["headless"]);
+    }
+
+    #[test]
+    fn enable_to_features_visual() {
+        assert_eq!(enable_to_features("visual"), vec!["visual"]);
+    }
+
+    #[test]
+    fn enable_to_features_opencv() {
+        assert_eq!(enable_to_features("opencv"), vec!["opencv-backend"]);
+        assert_eq!(
+            enable_to_features("opencv-backend"),
+            vec!["opencv-backend"]
+        );
+    }
+
+    #[test]
+    fn enable_to_features_performance() {
+        assert_eq!(enable_to_features("io-uring"), vec!["io-uring-net"]);
+        assert_eq!(enable_to_features("io-uring-net"), vec!["io-uring-net"]);
+        assert_eq!(
+            enable_to_features("ultra-low-latency"),
+            vec!["ultra-low-latency"]
+        );
+    }
+
+    #[test]
+    fn enable_to_features_unknown_passthrough() {
+        assert_eq!(
+            enable_to_features("my-custom-feature"),
+            vec!["my-custom-feature"]
+        );
+    }
+
+    #[test]
+    fn enable_to_features_case_insensitive() {
+        assert_eq!(enable_to_features("CUDA"), vec!["cuda"]);
+        assert_eq!(enable_to_features("Python"), vec!["python"]);
+        assert_eq!(enable_to_features("GPU"), vec!["cuda"]);
+    }
+
+    // ── get_cargo_features_from_enable ──────────────────────────────────────
+
+    #[test]
+    fn get_cargo_features_from_enable_empty() {
+        let config = EnableConfig {
+            capabilities: vec![],
+        };
+        let features = get_cargo_features_from_enable(&config);
+        assert!(features.is_empty());
+    }
+
+    #[test]
+    fn get_cargo_features_from_enable_single() {
+        let config = EnableConfig {
+            capabilities: vec!["cuda".to_string()],
+        };
+        let features = get_cargo_features_from_enable(&config);
+        assert_eq!(features, vec!["cuda"]);
+    }
+
+    #[test]
+    fn get_cargo_features_from_enable_deduplication() {
+        // "cuda" and "gpu" both map to "cuda" -- should appear only once
+        let config = EnableConfig {
+            capabilities: vec!["cuda".to_string(), "gpu".to_string()],
+        };
+        let features = get_cargo_features_from_enable(&config);
+        assert_eq!(features, vec!["cuda"]);
+    }
+
+    #[test]
+    fn get_cargo_features_from_enable_mixed() {
+        let config = EnableConfig {
+            capabilities: vec![
+                "cuda".to_string(),
+                "python".to_string(),
+                "editor".to_string(),
+            ],
+        };
+        let features = get_cargo_features_from_enable(&config);
+        assert_eq!(features, vec!["cuda", "python", "editor"]);
+    }
+
+    #[test]
+    fn get_cargo_features_from_enable_sim_adds_nothing() {
+        let config = EnableConfig {
+            capabilities: vec!["sim".to_string()],
+        };
+        let features = get_cargo_features_from_enable(&config);
+        assert!(features.is_empty());
+    }
+
+    #[test]
+    fn get_cargo_features_from_enable_sim_mixed_with_others() {
+        let config = EnableConfig {
+            capabilities: vec!["sim".to_string(), "cuda".to_string()],
+        };
+        let features = get_cargo_features_from_enable(&config);
+        assert_eq!(features, vec!["cuda"]);
+    }
+
+    #[test]
+    fn get_cargo_features_from_enable_dedup_python_py() {
+        // "python" and "py" both map to "python"
+        let config = EnableConfig {
+            capabilities: vec!["python".to_string(), "py".to_string()],
+        };
+        let features = get_cargo_features_from_enable(&config);
+        assert_eq!(features, vec!["python"]);
+    }
+
+    // ── IgnorePatterns from IgnoreConfig ────────────────────────────────────
+
+    #[test]
+    fn ignore_patterns_from_config() {
+        let cfg = IgnoreConfig {
+            files: vec!["*.log".to_string()],
+            directories: vec!["target/".to_string()],
+            packages: vec!["ipython".to_string()],
+        };
+        let patterns = IgnorePatterns::from(cfg);
+        assert_eq!(patterns.files, vec!["*.log"]);
+        assert_eq!(patterns.directories, vec!["target/"]);
+        assert_eq!(patterns.packages, vec!["ipython"]);
+    }
+
+    #[test]
+    fn ignore_patterns_default_is_empty() {
+        let patterns = IgnorePatterns::default();
+        assert!(patterns.files.is_empty());
+        assert!(patterns.directories.is_empty());
+        assert!(patterns.packages.is_empty());
+        assert!(!patterns.should_ignore_file(Path::new("anything.rs")));
+        assert!(!patterns.should_ignore_package("anything"));
     }
 }

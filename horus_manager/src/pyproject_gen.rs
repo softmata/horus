@@ -436,4 +436,387 @@ mod tests {
         let dep = DependencyValue::Simple(">=2.0".to_string());
         assert_eq!(format_pypi_dep("numpy", &dep), "numpy>=2.0");
     }
+
+    // ── Battle tests ────────────────────────────────────────────────────────
+
+    /// Helper: build a detailed dep with explicit source.
+    fn pypi_dep(version: Option<&str>, features: &[&str]) -> DependencyValue {
+        DependencyValue::Detailed(DetailedDependency {
+            version: version.map(|v| v.to_string()),
+            source: Some(DepSource::PyPI),
+            features: features.iter().map(|s| s.to_string()).collect(),
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        })
+    }
+
+    fn crates_dep(version: &str) -> DependencyValue {
+        DependencyValue::Detailed(DetailedDependency {
+            version: Some(version.to_string()),
+            source: Some(DepSource::CratesIo),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        })
+    }
+
+    fn py_git_dep(url: &str, branch: Option<&str>, tag: Option<&str>, rev: Option<&str>) -> DependencyValue {
+        DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            source: Some(DepSource::Git),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: Some(url.to_string()),
+            branch: branch.map(|s| s.to_string()),
+            tag: tag.map(|s| s.to_string()),
+            rev: rev.map(|s| s.to_string()),
+        })
+    }
+
+    fn py_path_dep(p: &str) -> DependencyValue {
+        DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            source: Some(DepSource::Path),
+            features: vec![],
+            optional: false,
+            path: Some(p.to_string()),
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        })
+    }
+
+    #[test]
+    fn battle_pep508_git_with_tag() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("my-lib".into(), py_git_dep("https://github.com/org/my-lib", None, Some("v2.0.0"), None));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("my-lib @ git+https://github.com/org/my-lib@v2.0.0"),
+            "git+tag format wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_pep508_git_with_rev() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("torch-custom".into(), py_git_dep("https://github.com/org/torch-custom", None, None, Some("abc123")));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("torch-custom @ git+https://github.com/org/torch-custom@abc123"),
+            "git+rev format wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_pep508_path_dep() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("local-utils".into(), py_path_dep("/home/user/libs/local-utils"));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("local-utils @ file:///home/user/libs/local-utils"),
+            "path dep format wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_version_operators() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("numpy".into(), pypi_dep(Some(">=1.24"), &[]));
+        deps.insert("scipy".into(), pypi_dep(Some("<2.0"), &[]));
+        deps.insert("pandas".into(), pypi_dep(Some("~=1.5"), &[]));
+        deps.insert("pillow".into(), pypi_dep(Some("!=9.0"), &[]));
+        deps.insert("requests".into(), pypi_dep(Some("2.31.0"), &[]));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("\"numpy>=1.24\""), "ge version wrong: {}", content);
+        assert!(content.contains("\"scipy<2.0\""), "lt version wrong: {}", content);
+        assert!(content.contains("\"pandas~=1.5\""), "compatible version wrong: {}", content);
+        assert!(content.contains("\"pillow!=9.0\""), "ne version wrong: {}", content);
+        assert!(content.contains("\"requests==2.31.0\""), "exact version wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_extras_multiple_features() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("fastapi".into(), pypi_dep(Some(">=0.100"), &["all", "jinja"]));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("\"fastapi>=0.100[all,jinja]\""),
+            "multiple extras wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_mixed_deps_only_python() {
+        // crates.io, registry, system deps should be filtered; only pypi, git, path remain
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("serde".into(), crates_dep("1.0"));
+        deps.insert("horus-nav".into(), DependencyValue::Simple("0.3.0".to_string())); // Registry
+        deps.insert("libz-sys".into(), DependencyValue::Detailed(DetailedDependency {
+            version: Some("1.0".to_string()),
+            source: Some(DepSource::System),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        }));
+        deps.insert("numpy".into(), pypi_dep(Some(">=1.24"), &[]));
+        deps.insert("my-py-lib".into(), py_git_dep("https://github.com/org/my-py-lib", Some("main"), None, None));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        // Python deps present
+        assert!(content.contains("numpy"), "pypi dep missing");
+        assert!(content.contains("my-py-lib"), "git dep missing");
+        // Non-Python deps absent
+        assert!(!content.contains("serde"), "crates.io dep should be filtered");
+        assert!(!content.contains("horus-nav"), "registry dep should be filtered");
+        assert!(!content.contains("libz-sys"), "system dep should be filtered");
+    }
+
+    #[test]
+    fn battle_author_propagation_single() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::new());
+        // Default test_manifest has authors = ["Test Author"]
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("authors = ["), "authors section missing");
+        assert!(content.contains("name = \"Test Author\""), "author name missing: {}", content);
+    }
+
+    #[test]
+    fn battle_author_propagation_multiple() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.package.authors = vec![
+            "Alice".to_string(),
+            "Bob".to_string(),
+            "Charlie".to_string(),
+        ];
+
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("name = \"Alice\""), "Alice missing");
+        assert!(content.contains("name = \"Bob\""), "Bob missing");
+        assert!(content.contains("name = \"Charlie\""), "Charlie missing");
+    }
+
+    #[test]
+    fn battle_no_authors_no_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.package.authors = vec![];
+
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(!content.contains("authors = ["), "empty authors should not produce section");
+    }
+
+    #[test]
+    fn battle_dev_deps_only_python_filtered() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut dev_deps = BTreeMap::new();
+        dev_deps.insert("pytest".into(), pypi_dep(Some(">=7.0"), &[]));
+        dev_deps.insert("criterion".into(), crates_dep("0.5")); // Rust dev dep, should be filtered
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.dev_dependencies = dev_deps;
+
+        let result = generate(&manifest, dir.path(), true).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("[project.optional-dependencies]"), "dev section missing");
+        assert!(content.contains("\"pytest>=7.0\""), "pytest missing");
+        assert!(!content.contains("criterion"), "criterion (crates.io) should be filtered");
+    }
+
+    #[test]
+    fn battle_dev_deps_all_non_python_no_section() {
+        // When all dev deps are crates.io, the optional-dependencies section should not appear
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut dev_deps = BTreeMap::new();
+        dev_deps.insert("criterion".into(), crates_dep("0.5"));
+        dev_deps.insert("proptest".into(), crates_dep("1.4"));
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.dev_dependencies = dev_deps;
+
+        let result = generate(&manifest, dir.path(), true).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        // dev_deps is non-empty BUT after filtering, no Python deps → no section
+        assert!(!content.contains("[project.optional-dependencies]"),
+            "should not have optional-dependencies when all dev deps are Rust: {}", content);
+    }
+
+    #[test]
+    fn battle_header_always_generated() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.starts_with("# Generated by horus from horus.toml"),
+            "missing generated header");
+    }
+
+    #[test]
+    fn battle_build_system_always_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("[build-system]"), "build-system missing");
+        assert!(content.contains("setuptools>=68.0"), "setuptools version missing");
+        assert!(content.contains("build-backend = \"setuptools.build_meta\""), "build-backend missing");
+    }
+
+    #[test]
+    fn battle_description_propagation() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::new());
+        // Default test_manifest has description = Some("A test project")
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("description = \"A test project\""),
+            "description missing: {}", content);
+    }
+
+    #[test]
+    fn battle_no_description_omitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.package.description = None;
+
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(!content.contains("description ="), "description should be omitted when None");
+    }
+
+    #[test]
+    fn battle_sanitize_pypi_name_edge_cases() {
+        assert_eq!(sanitize_pypi_name("pkg@1.0/beta"), "pkg-1.0-beta");
+        assert_eq!(sanitize_pypi_name("my.robot"), "my.robot");
+        assert_eq!(sanitize_pypi_name(""), "");
+        assert_eq!(sanitize_pypi_name("a!b#c"), "a-b-c");
+        assert_eq!(sanitize_pypi_name("simple"), "simple");
+    }
+
+    #[test]
+    fn battle_format_detailed_no_version() {
+        // Detailed dep with no version at all
+        let dep = DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            source: Some(DepSource::PyPI),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        });
+        // Should produce just the name with no version specifier
+        assert_eq!(format_pypi_dep("my-pkg", &dep), "my-pkg");
+    }
+
+    #[test]
+    fn battle_format_detailed_features_before_version_position() {
+        // Features (extras) come after version in PEP 508: name>=1.0[extra1,extra2]
+        let dep = DependencyValue::Detailed(DetailedDependency {
+            version: Some(">=2.0".to_string()),
+            source: Some(DepSource::PyPI),
+            features: vec!["async".to_string(), "http2".to_string()],
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        });
+        let result = format_pypi_dep("httpx", &dep);
+        assert_eq!(result, "httpx>=2.0[async,http2]");
+    }
+
+    #[test]
+    fn battle_tool_configs_always_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("[tool.setuptools.packages.find]"), "setuptools packages config missing");
+        assert!(content.contains("where = [\"..\"]"), "package find config missing");
+        assert!(content.contains("[tool.ruff]"), "ruff config missing");
+        assert!(content.contains("line-length = 100"), "ruff line-length missing");
+        assert!(content.contains("target-version = \"py310\""), "ruff target missing");
+    }
+
+    #[test]
+    fn battle_requires_python_always_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("requires-python = \">=3.10\""), "requires-python missing");
+    }
+
+    #[test]
+    fn battle_empty_deps_produces_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("dependencies = []"), "empty deps should produce empty array");
+    }
 }

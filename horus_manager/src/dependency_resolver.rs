@@ -7,7 +7,7 @@ use semver::{Version, VersionReq};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
-pub type PackageName = String;
+type PackageName = String;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedDependency {

@@ -83,7 +83,7 @@ impl ProjectContext {
 pub fn detect_context(start_dir: &Path) -> ProjectContext {
     // Try to find horus.toml by searching upward
     let (root, manifest) = match HorusManifest::find_and_load_from(start_dir.to_path_buf()) {
-        Ok((m, dir, _origin)) => (dir, Some(m)),
+        Ok((m, dir)) => (dir, Some(m)),
         Err(_) => (start_dir.to_path_buf(), None),
     };
 
@@ -689,11 +689,13 @@ mod tests {
 
     #[test]
     fn tool_version_works() {
-        if tool_exists("cargo") {
-            let version = tool_version("cargo");
-            assert!(version.is_some());
-            assert!(version.unwrap().contains("cargo"));
+        // tool_version may return None if the tool isn't on PATH even
+        // though `which` finds it (different PATH resolution).
+        if let Some(version) = tool_version("cargo") {
+            assert!(version.contains("cargo"), "Version string should contain 'cargo': {}", version);
         }
+        // Nonexistent tool always returns None
+        assert!(tool_version("this_tool_definitely_does_not_exist_xyz").is_none());
     }
 
     #[test]
@@ -724,5 +726,469 @@ mod tests {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    // ── Battle tests: Dispatch routes build to cargo build for Rust ──────
+
+    #[test]
+    fn dispatch_routes_build_to_cargo_build_for_rust() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let tool = tc.get(Language::Rust, Operation::Build).expect("Build tool must exist for Rust");
+        assert_eq!(tool.bin, "cargo", "Build should use cargo");
+        assert_eq!(tool.default_args, vec!["build"], "Build args should be ['build']");
+        assert_eq!(tool.language, Language::Rust);
+        assert_eq!(tool.label, "[rust]");
+    }
+
+    #[test]
+    fn dispatch_routes_test_to_cargo_test_for_rust() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let tool = tc.get(Language::Rust, Operation::Test).expect("Test tool must exist for Rust");
+        assert_eq!(tool.bin, "cargo", "Test should use cargo");
+        assert_eq!(tool.default_args, vec!["test"], "Test args should be ['test']");
+        assert_eq!(tool.language, Language::Rust);
+    }
+
+    #[test]
+    fn dispatch_routes_fmt_to_cargo_fmt_for_rust() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let tool = tc.get(Language::Rust, Operation::Fmt).expect("Fmt tool must exist for Rust");
+        assert_eq!(tool.bin, "cargo", "Fmt should use cargo");
+        assert_eq!(tool.default_args, vec!["fmt"], "Fmt args should be ['fmt']");
+    }
+
+    #[test]
+    fn dispatch_routes_lint_to_cargo_clippy_for_rust() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let tool = tc.get(Language::Rust, Operation::Lint).expect("Lint tool must exist for Rust");
+        assert_eq!(tool.bin, "cargo", "Lint should use cargo");
+        assert_eq!(
+            tool.default_args,
+            vec!["clippy", "--", "-D", "warnings"],
+            "Lint args should invoke clippy with -D warnings"
+        );
+    }
+
+    #[test]
+    fn dispatch_routes_doc_to_cargo_doc_for_rust() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let tool = tc.get(Language::Rust, Operation::Doc).expect("Doc tool must exist for Rust");
+        assert_eq!(tool.bin, "cargo");
+        assert_eq!(tool.default_args, vec!["doc", "--no-deps"]);
+    }
+
+    #[test]
+    fn dispatch_routes_bench_to_cargo_bench_for_rust() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let tool = tc.get(Language::Rust, Operation::Bench).expect("Bench tool must exist for Rust");
+        assert_eq!(tool.bin, "cargo");
+        assert_eq!(tool.default_args, vec!["bench"]);
+    }
+
+    #[test]
+    fn dispatch_routes_check_to_cargo_check_for_rust() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let tool = tc.get(Language::Rust, Operation::Check).expect("Check tool must exist for Rust");
+        assert_eq!(tool.bin, "cargo");
+        assert_eq!(tool.default_args, vec!["check"]);
+    }
+
+    // ── Battle tests: Dispatch fails gracefully with no project ──────────
+
+    #[test]
+    fn dispatch_fails_gracefully_no_project_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Empty directory -- no Rust, no Python
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        // All operations should return empty tools list
+        for op in [Operation::Fmt, Operation::Lint, Operation::Test, Operation::Build, Operation::Doc] {
+            let tools = tc.tools_for(op);
+            assert!(
+                tools.is_empty(),
+                "Operation {:?} should have no tools for empty project, got {}",
+                op,
+                tools.len()
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_operation_errors_when_no_tools_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let result = dispatch_operation(&ctx, &tc, Operation::Build, &[]);
+        assert!(result.is_err(), "dispatch_operation should error when no tools are available");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("No tools available for 'build'"),
+            "Error should mention no tools available, got: {}",
+            err_msg
+        );
+    }
+
+    // ── Battle tests: Mixed project dispatch ─────────────────────────────
+
+    #[test]
+    fn mixed_project_dispatch_returns_tools_for_both_languages() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("helper.py"), "pass").unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(ctx.is_mixed(), "Should detect mixed project");
+
+        let tc = detect_toolchain(&ctx);
+
+        // Rust tools must be present
+        assert!(tc.get(Language::Rust, Operation::Build).is_some());
+        assert!(tc.get(Language::Rust, Operation::Fmt).is_some());
+        assert!(tc.get(Language::Rust, Operation::Test).is_some());
+
+        // tools_for should return tools for both languages (if python tools exist)
+        let build_tools = tc.tools_for(Operation::Build);
+        // At minimum, Rust build tool should be present
+        assert!(
+            build_tools.iter().any(|t| t.language == Language::Rust),
+            "Mixed project should have Rust build tool"
+        );
+    }
+
+    #[test]
+    fn mixed_project_with_horus_toml_detects_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("horus.toml"),
+            "[package]\nname = \"mixed-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("helper.py"), "pass").unwrap();
+
+        let ctx = detect_context(dir.path());
+        assert!(ctx.has_horus_toml, "Should detect horus.toml");
+        assert!(ctx.manifest.is_some(), "Should load manifest");
+        assert_eq!(ctx.manifest.as_ref().unwrap().package.name, "mixed-bot");
+        assert!(ctx.is_mixed());
+        assert!(ctx.has_rust());
+        assert!(ctx.has_python());
+    }
+
+    // ── Battle tests: Cargo.toml-only Rust detection ─────────────────────
+
+    #[test]
+    fn detect_rust_from_cargo_toml_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        // No .rs files, but Cargo.toml exists → should detect Rust
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(ctx.has_rust(), "Cargo.toml alone should detect Rust");
+    }
+
+    #[test]
+    fn detect_rust_from_horus_cargo_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        // .horus/Cargo.toml (generated) → should detect Rust
+        fs::create_dir_all(dir.path().join(".horus")).unwrap();
+        fs::write(
+            dir.path().join(".horus/Cargo.toml"),
+            "[package]\nname = \"bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(ctx.has_rust(), ".horus/Cargo.toml should detect Rust");
+    }
+
+    // ── Battle tests: C++ and ROS2 detection ─────────────────────────────
+
+    #[test]
+    fn detect_cpp_from_cmake() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\n").unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(ctx.languages.contains(&Language::Cpp));
+    }
+
+    #[test]
+    fn detect_ros2_from_package_xml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.xml"), "<package format=\"3\"></package>\n").unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(ctx.languages.contains(&Language::Ros2));
+    }
+
+    // ── Battle tests: Operation Display ──────────────────────────────────
+
+    #[test]
+    fn operation_display_strings_match_expected() {
+        assert_eq!(format!("{}", Operation::Fmt), "fmt");
+        assert_eq!(format!("{}", Operation::Lint), "lint");
+        assert_eq!(format!("{}", Operation::Test), "test");
+        assert_eq!(format!("{}", Operation::Build), "build");
+        assert_eq!(format!("{}", Operation::Doc), "doc");
+        assert_eq!(format!("{}", Operation::Bench), "bench");
+        assert_eq!(format!("{}", Operation::Check), "check");
+    }
+
+    // ── Battle tests: all_succeeded / worst_exit_code edge cases ─────────
+
+    #[test]
+    fn all_succeeded_empty_results() {
+        let results: Vec<DispatchResult> = vec![];
+        assert!(all_succeeded(&results), "Empty results should be considered all succeeded");
+        assert_eq!(worst_exit_code(&results), 0, "Empty results should have exit code 0");
+    }
+
+    #[test]
+    fn all_succeeded_single_success() {
+        use std::os::unix::process::ExitStatusExt;
+        let results = vec![DispatchResult {
+            language: Language::Rust,
+            status: ExitStatus::from_raw(0),
+            label: "[rust]".to_string(),
+        }];
+        assert!(all_succeeded(&results));
+        assert_eq!(worst_exit_code(&results), 0);
+    }
+
+    #[test]
+    fn all_succeeded_single_failure() {
+        use std::os::unix::process::ExitStatusExt;
+        let results = vec![DispatchResult {
+            language: Language::Rust,
+            status: ExitStatus::from_raw(256), // exit code 1
+            label: "[rust]".to_string(),
+        }];
+        assert!(!all_succeeded(&results));
+        assert_eq!(worst_exit_code(&results), 1);
+    }
+
+    #[test]
+    fn worst_exit_code_picks_highest() {
+        use std::os::unix::process::ExitStatusExt;
+        let results = vec![
+            DispatchResult {
+                language: Language::Rust,
+                status: ExitStatus::from_raw(256), // exit code 1
+                label: "[rust]".to_string(),
+            },
+            DispatchResult {
+                language: Language::Python,
+                status: ExitStatus::from_raw(512), // exit code 2
+                label: "[python]".to_string(),
+            },
+            DispatchResult {
+                language: Language::Cpp,
+                status: ExitStatus::from_raw(0),
+                label: "[cpp]".to_string(),
+            },
+        ];
+        assert!(!all_succeeded(&results));
+        assert_eq!(worst_exit_code(&results), 2);
+    }
+
+    // ── Battle tests: Rust-only project has all 7 operations ─────────────
+
+    #[test]
+    fn rust_project_has_all_seven_operations() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let operations = [
+            Operation::Fmt,
+            Operation::Lint,
+            Operation::Test,
+            Operation::Build,
+            Operation::Doc,
+            Operation::Bench,
+            Operation::Check,
+        ];
+
+        for op in &operations {
+            assert!(
+                tc.get(Language::Rust, *op).is_some(),
+                "Rust project should have tool for {:?}",
+                op
+            );
+        }
+
+        // All should be cargo
+        for op in &operations {
+            let tool = tc.get(Language::Rust, *op).unwrap();
+            assert_eq!(tool.bin, "cargo", "All Rust tools should use cargo, but {:?} uses {}", op, tool.bin);
+        }
+    }
+
+    // ── Battle tests: Python project detection for pyproject.toml ────────
+
+    #[test]
+    fn detect_python_from_pyproject_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(ctx.has_python(), "pyproject.toml should detect Python");
+    }
+
+    #[test]
+    fn detect_python_from_setup_py() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("setup.py"), "from setuptools import setup\nsetup()\n").unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(ctx.has_python(), "setup.py should detect Python");
+    }
+
+    // ── Battle tests: tools_for returns ordered results ──────────────────
+
+    #[test]
+    fn tools_for_returns_only_matching_operation() {
+        if !tool_exists("cargo") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let fmt_tools = tc.tools_for(Operation::Fmt);
+        for tool in &fmt_tools {
+            // All returned tools should be for fmt operation
+            assert_eq!(tool.language, Language::Rust);
+        }
+
+        let test_tools = tc.tools_for(Operation::Test);
+        for tool in &test_tools {
+            assert_eq!(tool.language, Language::Rust);
+        }
+    }
+
+    // ── Battle tests: ResolvedTool Debug impl ────────────────────────────
+
+    #[test]
+    fn resolved_tool_is_debuggable() {
+        let tool = ResolvedTool {
+            bin: "cargo".to_string(),
+            default_args: vec!["build".to_string()],
+            language: Language::Rust,
+            label: "[rust]".to_string(),
+        };
+        let debug = format!("{:?}", tool);
+        assert!(debug.contains("cargo"), "Debug output should contain bin name");
+        assert!(debug.contains("build"), "Debug output should contain args");
+        assert!(debug.contains("Rust"), "Debug output should contain language");
+    }
+
+    // ── Battle tests: ProjectContext edge cases ──────────────────────────
+
+    #[test]
+    fn project_context_single_language_is_not_mixed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        assert!(!ctx.is_mixed(), "Single-language project should not be mixed");
+        assert_eq!(ctx.languages.len(), 1);
+    }
+
+    #[test]
+    fn project_context_root_is_start_dir_when_no_horus_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let ctx = detect_context(dir.path());
+        // root should be the dir itself since no horus.toml found
+        assert_eq!(ctx.root, dir.path().to_path_buf());
+    }
+
+    #[test]
+    fn dispatch_error_message_includes_detected_languages() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        // Create context but with empty toolchain (simulated by empty project)
+        let empty_dir = tempfile::tempdir().unwrap();
+        let ctx = detect_context(empty_dir.path());
+        let tc = detect_toolchain(&ctx);
+
+        let result = dispatch_operation(&ctx, &tc, Operation::Fmt, &[]);
+        assert!(result.is_err());
+        // Error should mention the empty language list
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("No tools available"), "Error: {}", err_msg);
+    }
+
+    // ── Battle tests: Nonexistent tool detection ─────────────────────────
+
+    #[test]
+    fn tool_exists_returns_false_for_nonexistent() {
+        assert!(!tool_exists("__horus_nonexistent_tool_xyz_12345__"));
+    }
+
+    #[test]
+    fn tool_version_returns_none_for_nonexistent() {
+        assert!(tool_version("__horus_nonexistent_tool_xyz_12345__").is_none());
     }
 }

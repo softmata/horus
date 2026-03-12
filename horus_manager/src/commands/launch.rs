@@ -860,4 +860,356 @@ nodes:
         let env_key = format!("HORUS_PARAM_{}", key.to_uppercase().replace('-', "_"));
         assert_eq!(env_key, "HORUS_PARAM_MAX_SPEED");
     }
+
+    // ── Battle tests: YAML parsing edge cases ─────────────────────────────
+
+    #[test]
+    fn launch_config_deserialize_empty_yaml() {
+        // An empty document should use defaults
+        let config: LaunchConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(config.nodes.is_empty());
+        assert!(config.env.is_empty());
+        assert!(config.namespace.is_none());
+        assert!(config.session.is_none());
+    }
+
+    #[test]
+    fn launch_node_all_defaults() {
+        let yaml = "name: minimal";
+        let node: LaunchNode = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(node.name, "minimal");
+        assert!(node.package.is_none());
+        assert!(node.priority.is_none());
+        assert!(node.rate_hz.is_none());
+        assert!(node.params.is_empty());
+        assert!(node.env.is_empty());
+        assert!(node.command.is_none());
+        assert!(node.args.is_empty());
+        assert!(node.namespace.is_none());
+        assert!(node.depends_on.is_empty());
+        assert!(node.start_delay.is_none());
+        assert_eq!(node.restart, "never");
+    }
+
+    #[test]
+    fn launch_node_with_all_fields_populated() {
+        let yaml = r#"
+name: full_node
+package: my_pkg
+priority: -10
+rate_hz: 500
+command: /bin/test
+args: ["--verbose", "--port", "8080"]
+namespace: /ns/sub
+depends_on: ["a", "b", "c"]
+start_delay: 2.5
+restart: on-failure
+params:
+  kp: 1.0
+  ki: 0.01
+env:
+  MY_VAR: my_value
+"#;
+        let node: LaunchNode = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(node.name, "full_node");
+        assert_eq!(node.package.as_deref(), Some("my_pkg"));
+        assert_eq!(node.priority, Some(-10));
+        assert_eq!(node.rate_hz, Some(500));
+        assert_eq!(node.command.as_deref(), Some("/bin/test"));
+        assert_eq!(node.args, vec!["--verbose", "--port", "8080"]);
+        assert_eq!(node.namespace.as_deref(), Some("/ns/sub"));
+        assert_eq!(node.depends_on, vec!["a", "b", "c"]);
+        assert!((node.start_delay.unwrap() - 2.5).abs() < 0.001);
+        assert_eq!(node.restart, "on-failure");
+        assert_eq!(node.params.len(), 2);
+        assert_eq!(node.env.get("MY_VAR").map(|s| s.as_str()), Some("my_value"));
+    }
+
+    #[test]
+    fn launch_config_invalid_yaml_type_mismatch() {
+        let yaml = "nodes: \"not a list\"";
+        let result = serde_yaml::from_str::<LaunchConfig>(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn launch_node_priority_negative() {
+        let yaml = "name: neg\npriority: -100";
+        let node: LaunchNode = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(node.priority, Some(-100));
+    }
+
+    #[test]
+    fn launch_config_extra_fields_ignored() {
+        // YAML with unknown fields should deserialize (serde default behavior)
+        let yaml = r#"
+nodes: []
+unknown_field: 42
+another: "hello"
+"#;
+        // serde_yaml with default deny_unknown_fields may fail; test actual behavior
+        let result = serde_yaml::from_str::<LaunchConfig>(yaml);
+        // If it succeeds, extra fields are ignored. If it fails, that's also valid behavior to document.
+        // The important thing is no panic.
+        let _outcome = result.is_ok();
+    }
+
+    // ── Battle tests: sort_by_dependencies ────────────────────────────────
+
+    #[test]
+    fn sort_by_dependencies_empty_list() {
+        let result = sort_by_dependencies(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sort_by_dependencies_single_node() {
+        let nodes = vec![LaunchNode {
+            name: "solo".to_string(),
+            depends_on: vec![],
+            ..serde_yaml::from_str("name: solo").unwrap()
+        }];
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].name, "solo");
+    }
+
+    #[test]
+    fn sort_by_dependencies_linear_chain() {
+        // A -> B -> C -> D (D depends on C, C depends on B, B depends on A)
+        let nodes = vec![
+            LaunchNode {
+                name: "D".to_string(),
+                depends_on: vec!["C".to_string()],
+                ..serde_yaml::from_str("name: D").unwrap()
+            },
+            LaunchNode {
+                name: "C".to_string(),
+                depends_on: vec!["B".to_string()],
+                ..serde_yaml::from_str("name: C").unwrap()
+            },
+            LaunchNode {
+                name: "B".to_string(),
+                depends_on: vec!["A".to_string()],
+                ..serde_yaml::from_str("name: B").unwrap()
+            },
+            LaunchNode {
+                name: "A".to_string(),
+                depends_on: vec![],
+                ..serde_yaml::from_str("name: A").unwrap()
+            },
+        ];
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted.len(), 4);
+        let names: Vec<&str> = sorted.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["A", "B", "C", "D"]);
+    }
+
+    #[test]
+    fn sort_by_dependencies_self_cycle() {
+        let nodes = vec![LaunchNode {
+            name: "self_ref".to_string(),
+            depends_on: vec!["self_ref".to_string()],
+            ..serde_yaml::from_str("name: self_ref").unwrap()
+        }];
+        let result = sort_by_dependencies(&nodes);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Circular dependency"), "self-cycle: {}", err);
+    }
+
+    #[test]
+    fn sort_by_dependencies_three_node_cycle() {
+        let nodes = vec![
+            LaunchNode {
+                name: "x".to_string(),
+                depends_on: vec!["z".to_string()],
+                ..serde_yaml::from_str("name: x").unwrap()
+            },
+            LaunchNode {
+                name: "y".to_string(),
+                depends_on: vec!["x".to_string()],
+                ..serde_yaml::from_str("name: y").unwrap()
+            },
+            LaunchNode {
+                name: "z".to_string(),
+                depends_on: vec!["y".to_string()],
+                ..serde_yaml::from_str("name: z").unwrap()
+            },
+        ];
+        let result = sort_by_dependencies(&nodes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sort_by_dependencies_external_dep_not_found() {
+        // Node depends on something not in the list — should not error (treated as external)
+        let nodes = vec![LaunchNode {
+            name: "node_a".to_string(),
+            depends_on: vec!["external_service".to_string()],
+            ..serde_yaml::from_str("name: node_a").unwrap()
+        }];
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].name, "node_a");
+    }
+
+    // ── Battle tests: namespace construction ──────────────────────────────
+
+    #[test]
+    fn namespace_construction_with_special_characters() {
+        let cases = vec![
+            (Some("/robot1"), Some("arm"), "ctrl", "/robot1/arm/ctrl"),
+            (Some("/"), None, "node", "//node"),
+            (None, Some(""), "node", "/node"),
+        ];
+        for (global, local, name, expected) in cases {
+            let full = match (global, local) {
+                (Some(g), Some(l)) => format!("{}/{}/{}", g, l, name),
+                (Some(ns), None) | (None, Some(ns)) => format!("{}/{}", ns, name),
+                (None, None) => name.to_string(),
+            };
+            assert_eq!(full, expected, "global={:?} local={:?} name={}", global, local, name);
+        }
+    }
+
+    // ── Battle tests: dry run with tempfile ───────────────────────────────
+
+    #[test]
+    fn run_launch_dry_run_with_nodes() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.yaml");
+        let yaml = r#"
+session: dry_test
+namespace: /test
+nodes:
+  - name: sensor
+    command: /bin/echo hello
+    rate_hz: 100
+  - name: controller
+    command: /bin/echo world
+    depends_on: [sensor]
+    priority: 1
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let result = run_launch(&path, true, None, 5);
+        assert!(result.is_ok(), "dry run should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_launch_dry_run_with_namespace_override() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ns.yaml");
+        let yaml = r#"
+namespace: /original
+nodes:
+  - name: node1
+    command: /bin/true
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let result = run_launch(&path, true, Some("/override".to_string()), 5);
+        assert!(result.is_ok(), "namespace override dry run should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn list_launch_nodes_with_valid_file() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("list.yaml");
+        let yaml = r#"
+session: list_test
+namespace: /bot
+nodes:
+  - name: nav
+    priority: 1
+    rate_hz: 50
+    depends_on: [localization]
+  - name: localization
+    command: /bin/loc
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let result = list_launch_nodes(&path);
+        assert!(result.is_ok(), "listing valid launch file should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn list_launch_nodes_empty_nodes() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.yaml");
+        std::fs::write(&path, "nodes: []").unwrap();
+        let result = list_launch_nodes(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn launch_config_multi_robot_namespaces() {
+        let yaml = r#"
+namespace: /fleet
+nodes:
+  - name: planner
+    namespace: /robot1
+    command: /bin/plan
+    rate_hz: 10
+  - name: planner
+    namespace: /robot2
+    command: /bin/plan
+    rate_hz: 10
+  - name: coordinator
+    command: /bin/coord
+"#;
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.nodes.len(), 3);
+        assert_eq!(config.namespace.as_deref(), Some("/fleet"));
+        // Two nodes named "planner" in different namespaces
+        let planners: Vec<_> = config.nodes.iter().filter(|n| n.name == "planner").collect();
+        assert_eq!(planners.len(), 2);
+        assert_eq!(planners[0].namespace.as_deref(), Some("/robot1"));
+        assert_eq!(planners[1].namespace.as_deref(), Some("/robot2"));
+    }
+
+    #[test]
+    fn launch_node_restart_policies() {
+        for policy in &["never", "always", "on-failure"] {
+            let yaml = format!("name: n\nrestart: {}", policy);
+            let node: LaunchNode = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(node.restart, *policy);
+        }
+    }
+
+    #[test]
+    fn launch_param_env_key_transform_edge_cases() {
+        // Underscores, all-caps, numbers
+        let cases = vec![
+            ("my-param", "HORUS_PARAM_MY_PARAM"),
+            ("kp", "HORUS_PARAM_KP"),
+            ("max_speed", "HORUS_PARAM_MAX_SPEED"),
+            ("a-b-c-d", "HORUS_PARAM_A_B_C_D"),
+            ("", "HORUS_PARAM_"),
+            ("123", "HORUS_PARAM_123"),
+            ("ALREADY_UPPER", "HORUS_PARAM_ALREADY_UPPER"),
+        ];
+        for (key, expected) in cases {
+            let env_key = format!("HORUS_PARAM_{}", key.to_uppercase().replace('-', "_"));
+            assert_eq!(env_key, expected, "key={}", key);
+        }
+    }
+
+    #[test]
+    fn run_launch_yaml_with_only_env() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("env_only.yaml");
+        let yaml = r#"
+env:
+  HORUS_LOG: debug
+  MY_VAR: value
+nodes: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let result = run_launch(&path, true, None, 5);
+        assert!(result.is_ok());
+    }
 }

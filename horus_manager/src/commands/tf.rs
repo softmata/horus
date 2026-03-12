@@ -1034,7 +1034,7 @@ const TFR_VERSION: u8 = 1;
 
 /// Header for a TF recording file (.tfr)
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct TfrHeader {
     magic: [u8; 4],
     version: u8,
@@ -1057,7 +1057,7 @@ enum TfrEntryType {
 
 /// Single entry in a TF recording file
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct TfrEntry {
     entry_type: u8,
     _padding: [u8; 7],
@@ -2392,5 +2392,918 @@ mod tests {
         let reader = TransformFrameReader::new();
         assert!(reader.frame_data.is_empty());
         assert!(reader.root_frames.is_empty());
+    }
+
+    // ── Battle tests: quaternion_to_euler ─────────────────────────────────
+
+    #[test]
+    fn test_quaternion_to_euler_90_yaw() {
+        // 90 degree yaw rotation: quat = [0, 0, sin(45deg), cos(45deg)]
+        let s = std::f64::consts::FRAC_PI_4.sin();
+        let c = std::f64::consts::FRAC_PI_4.cos();
+        let (roll, pitch, yaw) = quaternion_to_euler([0.0, 0.0, s, c]);
+        assert!(roll.abs() < 1e-6, "roll should be ~0, got {}", roll);
+        assert!(pitch.abs() < 1e-6, "pitch should be ~0, got {}", pitch);
+        assert!(
+            (yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+            "yaw should be ~pi/2, got {}",
+            yaw
+        );
+    }
+
+    #[test]
+    fn test_quaternion_to_euler_90_roll() {
+        let s = std::f64::consts::FRAC_PI_4.sin();
+        let c = std::f64::consts::FRAC_PI_4.cos();
+        let (roll, pitch, yaw) = quaternion_to_euler([s, 0.0, 0.0, c]);
+        assert!(
+            (roll - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+            "roll should be ~pi/2, got {}",
+            roll
+        );
+        assert!(pitch.abs() < 1e-6, "pitch should be ~0, got {}", pitch);
+        assert!(yaw.abs() < 1e-6, "yaw should be ~0, got {}", yaw);
+    }
+
+    #[test]
+    fn test_quaternion_to_euler_gimbal_lock() {
+        // Pitch = +90 degrees (gimbal lock): quat = [0, sin(45deg), 0, cos(45deg)]
+        let s = std::f64::consts::FRAC_PI_4.sin();
+        let c = std::f64::consts::FRAC_PI_4.cos();
+        let (_roll, pitch, _yaw) = quaternion_to_euler([0.0, s, 0.0, c]);
+        assert!(
+            (pitch - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+            "pitch should be ~pi/2, got {}",
+            pitch
+        );
+    }
+
+    #[test]
+    fn test_quaternion_to_euler_zero_quaternion() {
+        // Zero quaternion is degenerate — should not panic
+        let (roll, pitch, yaw) = quaternion_to_euler([0.0, 0.0, 0.0, 0.0]);
+        // Just ensure no panic; values may be NaN
+        let _ = (roll, pitch, yaw);
+    }
+
+    // ── Battle tests: echo_transform ──────────────────────────────────────
+
+    #[test]
+    fn test_echo_transform_zero_rate_returns_error() {
+        let result = echo_transform("a", "b", Some(0.0), Some(1), None);
+        assert!(result.is_err(), "zero rate should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("greater than 0"),
+            "error should mention rate constraint: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_echo_transform_negative_rate_returns_error() {
+        let result = echo_transform("a", "b", Some(-5.0), Some(1), None);
+        assert!(result.is_err(), "negative rate should be rejected");
+    }
+
+    #[test]
+    fn test_echo_transform_count_one_succeeds() {
+        // count=1 with no live data: should print "not available" once and return Ok
+        let result = echo_transform("frame_a", "frame_b", Some(100.0), Some(1), None);
+        assert!(
+            result.is_ok(),
+            "echo with count=1 should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_echo_transform_timeout_zero_succeeds() {
+        // A timeout of 0.0 should cause immediate exit
+        let result = echo_transform("x", "y", Some(100.0), None, Some(0.0));
+        assert!(
+            result.is_ok(),
+            "echo with timeout=0 should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_echo_transform_empty_frame_names() {
+        let result = echo_transform("", "", Some(100.0), Some(1), None);
+        assert!(
+            result.is_ok(),
+            "echo with empty names should succeed (prints 'not available'): {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_echo_transform_same_frame() {
+        let result = echo_transform("base", "base", Some(100.0), Some(1), None);
+        assert!(
+            result.is_ok(),
+            "echo from frame to itself should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_echo_transform_unicode_frame_names() {
+        let result = echo_transform("\u{1F916}", "\u{1F4BB}", Some(100.0), Some(1), None);
+        assert!(
+            result.is_ok(),
+            "echo with unicode names should not panic: {:?}",
+            result.err()
+        );
+    }
+
+    // ── Battle tests: TransformFrameReader ─────────────────────────────────
+
+    #[test]
+    fn test_reader_default_is_new() {
+        let a = TransformFrameReader::new();
+        let b = TransformFrameReader::default();
+        assert_eq!(a.frame_data.len(), b.frame_data.len());
+        assert_eq!(a.root_frames.len(), b.root_frames.len());
+    }
+
+    #[test]
+    fn test_reader_get_all_frames_empty() {
+        let reader = TransformFrameReader::new();
+        assert!(reader.get_all_frames().is_empty());
+    }
+
+    #[test]
+    fn test_reader_get_frame_tree_empty() {
+        let reader = TransformFrameReader::new();
+        assert!(reader.get_frame_tree().is_empty());
+    }
+
+    #[test]
+    fn test_reader_read_from_shm_no_data() {
+        let mut reader = TransformFrameReader::new();
+        // Without running HORUS, there should be nothing in SHM
+        let found = reader.read_from_shm();
+        // We don't assert found==false because there might be leftover SHM files
+        // But we assert no panic
+        let _ = found;
+    }
+
+    // ── Battle tests: frame_info ──────────────────────────────────────────
+
+    #[test]
+    fn test_frame_info_nonexistent_succeeds() {
+        // frame_info prints "not found" but returns Ok
+        let result = frame_info("totally_missing_frame");
+        assert!(
+            result.is_ok(),
+            "frame_info on missing frame should return Ok: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_frame_info_empty_name() {
+        let result = frame_info("");
+        assert!(
+            result.is_ok(),
+            "frame_info with empty name should not panic: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_frame_info_unicode_name() {
+        let result = frame_info("\u{00E9}l\u{00E8}ve_frame");
+        assert!(
+            result.is_ok(),
+            "frame_info with unicode name should not panic: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_frame_info_very_long_name() {
+        let long_name = "f".repeat(4096);
+        let result = frame_info(&long_name);
+        assert!(
+            result.is_ok(),
+            "frame_info with very long name should not panic: {:?}",
+            result.err()
+        );
+    }
+
+    // ── Battle tests: can_transform ───────────────────────────────────────
+
+    #[test]
+    fn test_can_transform_empty_frames() {
+        let result = can_transform("", "");
+        assert!(
+            result.is_ok(),
+            "can_transform with empty names should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_can_transform_same_frame() {
+        let result = can_transform("world", "world");
+        assert!(
+            result.is_ok(),
+            "can_transform from frame to itself should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_can_transform_long_frame_names() {
+        let a = "a".repeat(512);
+        let b = "b".repeat(512);
+        let result = can_transform(&a, &b);
+        assert!(
+            result.is_ok(),
+            "can_transform with long names should not panic: {:?}",
+            result.err()
+        );
+    }
+
+    // ── Battle tests: list_frames ─────────────────────────────────────────
+
+    #[test]
+    fn test_list_frames_verbose() {
+        let result = list_frames(true, false);
+        assert!(
+            result.is_ok(),
+            "list_frames verbose should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_list_frames_json() {
+        let result = list_frames(false, true);
+        assert!(
+            result.is_ok(),
+            "list_frames json should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_list_frames_verbose_json() {
+        let result = list_frames(true, true);
+        assert!(
+            result.is_ok(),
+            "list_frames verbose+json should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    // ── Battle tests: view_frames ─────────────────────────────────────────
+
+    #[test]
+    fn test_view_frames_with_invalid_output_path() {
+        // Writing to a directory that does not exist should succeed if no frames
+        // (DOT file is only written when there are frames)
+        let result = view_frames(Some("/tmp/nonexistent_dir_abc123/frames.dot"));
+        // Either Ok (no frames so no file written) or Err (if it tries to write)
+        // The important thing is no panic
+        let _ = result;
+    }
+
+    // ── Battle tests: format_transform_compact ────────────────────────────
+
+    #[test]
+    fn test_format_transform_compact_identity() {
+        let t = Transform::identity();
+        let s = format_transform_compact(&t);
+        assert!(s.contains("0.000"), "identity should have zeros: {}", s);
+        assert!(s.starts_with("xyz="), "should start with xyz=: {}", s);
+    }
+
+    #[test]
+    fn test_format_transform_compact_nonzero() {
+        let t = Transform::new([1.5, -2.3, 0.001], [0.0, 0.0, 0.0, 1.0]);
+        let s = format_transform_compact(&t);
+        assert!(s.contains("1.500"), "should contain x value: {}", s);
+        assert!(s.contains("-2.300"), "should contain y value: {}", s);
+        assert!(s.contains("0.001"), "should contain z value: {}", s);
+    }
+
+    // ── Battle tests: DiffStatus ──────────────────────────────────────────
+
+    #[test]
+    fn test_diff_status_as_str() {
+        assert_eq!(DiffStatus::Same.as_str(), "same");
+        assert_eq!(DiffStatus::Different.as_str(), "different");
+        assert_eq!(DiffStatus::OnlyIn1.as_str(), "only_in_file1");
+        assert_eq!(DiffStatus::OnlyIn2.as_str(), "only_in_file2");
+    }
+
+    #[test]
+    fn test_diff_status_debug() {
+        let d = DiffStatus::Same;
+        let s = format!("{:?}", d);
+        assert!(s.contains("Same"), "debug should contain variant name: {}", s);
+    }
+
+    // ── Battle tests: FrameDiff ───────────────────────────────────────────
+
+    #[test]
+    fn test_frame_diff_debug() {
+        let d = FrameDiff {
+            frame: "base_link".to_string(),
+            status: DiffStatus::Different,
+            translation_err_m: 0.005,
+            rotation_err_deg: 1.2,
+        };
+        let s = format!("{:?}", d);
+        assert!(s.contains("base_link"), "debug should contain frame name: {}", s);
+        assert!(s.contains("Different"), "debug should contain status: {}", s);
+    }
+
+    // ── Battle tests: FrameData ───────────────────────────────────────────
+
+    #[test]
+    fn test_frame_data_clone() {
+        let data = FrameData {
+            parent: "world".to_string(),
+            child: "base".to_string(),
+            transform: Transform::identity(),
+            timestamp_ns: 12345,
+            is_static: true,
+            last_update: Instant::now(),
+            update_count: 42,
+        };
+        let cloned = data.clone();
+        assert_eq!(cloned.parent, "world");
+        assert_eq!(cloned.child, "base");
+        assert_eq!(cloned.timestamp_ns, 12345);
+        assert!(cloned.is_static);
+        assert_eq!(cloned.update_count, 42);
+    }
+
+    #[test]
+    fn test_frame_data_debug() {
+        let data = FrameData {
+            parent: "world".to_string(),
+            child: "base".to_string(),
+            transform: Transform::identity(),
+            timestamp_ns: 0,
+            is_static: false,
+            last_update: Instant::now(),
+            update_count: 0,
+        };
+        let s = format!("{:?}", data);
+        assert!(s.contains("world"), "debug should contain parent: {}", s);
+        assert!(s.contains("base"), "debug should contain child: {}", s);
+    }
+
+    // ── Battle tests: TFR file format constants ───────────────────────────
+
+    #[test]
+    fn test_tfr_magic_bytes() {
+        assert_eq!(TFR_MAGIC, b"TFR1");
+        assert_eq!(TFR_MAGIC.len(), 4);
+    }
+
+    #[test]
+    fn test_tfr_version() {
+        assert_eq!(TFR_VERSION, 1);
+    }
+
+    #[test]
+    fn test_tfr_header_size() {
+        let size = std::mem::size_of::<TfrHeader>();
+        // Header: 4 magic + 1 version + 3 padding + 8 start_time + 8 entry_count = 24
+        assert_eq!(size, 24, "TfrHeader should be 24 bytes, got {}", size);
+    }
+
+    #[test]
+    fn test_read_tfr_file_nonexistent() {
+        let result = read_tfr_file("/tmp/this_file_does_not_exist_at_all.tfr");
+        assert!(result.is_err(), "reading nonexistent file should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Failed to open"),
+            "error should mention open failure: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_tfr_file_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.tfr");
+        std::fs::write(&path, b"").unwrap();
+        let result = read_tfr_file(path.to_str().unwrap());
+        assert!(result.is_err(), "empty file should fail to read header");
+    }
+
+    #[test]
+    fn test_read_tfr_file_bad_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_magic.tfr");
+        // Write a valid-sized header but with wrong magic bytes
+        let mut data = vec![0u8; std::mem::size_of::<TfrHeader>()];
+        data[0] = b'X';
+        data[1] = b'X';
+        data[2] = b'X';
+        data[3] = b'X';
+        std::fs::write(&path, &data).unwrap();
+        let result = read_tfr_file(path.to_str().unwrap());
+        assert!(result.is_err(), "bad magic should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("bad magic"),
+            "error should mention bad magic: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_tfr_file_bad_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_version.tfr");
+        let mut data = vec![0u8; std::mem::size_of::<TfrHeader>()];
+        // Set correct magic
+        data[0] = b'T';
+        data[1] = b'F';
+        data[2] = b'R';
+        data[3] = b'1';
+        // Set wrong version
+        data[4] = 99;
+        std::fs::write(&path, &data).unwrap();
+        let result = read_tfr_file(path.to_str().unwrap());
+        assert!(result.is_err(), "bad version should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unsupported TFR version"),
+            "error should mention version: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_tfr_file_valid_empty_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("valid_empty.tfr");
+        // Write a valid header with entry_count=0
+        let header = TfrHeader {
+            magic: *TFR_MAGIC,
+            version: TFR_VERSION,
+            _padding: [0; 3],
+            start_time_ns: 1234567890,
+            entry_count: 0,
+        };
+        let header_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &header as *const TfrHeader as *const u8,
+                std::mem::size_of::<TfrHeader>(),
+            )
+        };
+        std::fs::write(&path, header_bytes).unwrap();
+        let result = read_tfr_file(path.to_str().unwrap());
+        assert!(result.is_ok(), "valid empty recording should succeed: {:?}", result.err());
+        let (h, entries) = result.unwrap();
+        assert_eq!(h.entry_count, 0);
+        assert!(entries.is_empty());
+        assert_eq!(h.start_time_ns, 1234567890);
+    }
+
+    // ── Battle tests: build_tf_from_entries ───────────────────────────────
+
+    #[test]
+    fn test_build_tf_from_empty_entries() {
+        let tf = build_tf_from_entries(&[]);
+        // Should have at least "world" registered
+        assert!(tf.has_frame("world"), "world should be registered as root");
+    }
+
+    // ── Battle tests: helper functions ────────────────────────────────────
+
+    #[test]
+    fn test_rotation_to_modified_rodrigues_identity() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let p = rotation_to_modified_rodrigues(&identity);
+        assert!(p[0].abs() < 1e-10);
+        assert!(p[1].abs() < 1e-10);
+        assert!(p[2].abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_rotation_to_matrix_identity_quaternion() {
+        let pose = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        let m = rotation_to_matrix(&pose);
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (m[i][j] - expected).abs() < 1e-10,
+                    "m[{}][{}] = {}, expected {}",
+                    i, j, m[i][j], expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_invert_pose_identity() {
+        let pose = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        let inv = invert_pose(&pose);
+        assert!((inv.0[0]).abs() < 1e-10);
+        assert!((inv.0[1]).abs() < 1e-10);
+        assert!((inv.0[2]).abs() < 1e-10);
+        // Conjugate of identity quat
+        assert!((inv.1[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_invert_pose_roundtrip() {
+        let pose = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        let inv = invert_pose(&pose);
+        let roundtrip = multiply_poses(&pose, &inv);
+        // Should be approximately identity
+        assert!((roundtrip.0[0]).abs() < 1e-10, "x: {}", roundtrip.0[0]);
+        assert!((roundtrip.0[1]).abs() < 1e-10, "y: {}", roundtrip.0[1]);
+        assert!((roundtrip.0[2]).abs() < 1e-10, "z: {}", roundtrip.0[2]);
+        assert!((roundtrip.1[3].abs() - 1.0).abs() < 1e-10, "w: {}", roundtrip.1[3]);
+    }
+
+    #[test]
+    fn test_multiply_poses_identity() {
+        let id = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        let pose = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        let result = multiply_poses(&id, &pose);
+        assert!((result.0[0] - 1.0).abs() < 1e-10);
+        assert!((result.0[1] - 2.0).abs() < 1e-10);
+        assert!((result.0[2] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_3x3_least_squares_identity_system() {
+        // Solve I * x = [1, 2, 3]
+        let rows = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let rhs = vec![1.0, 2.0, 3.0];
+        let x = solve_3x3_least_squares(&rows, &rhs);
+        assert!((x[0] - 1.0).abs() < 1e-10);
+        assert!((x[1] - 2.0).abs() < 1e-10);
+        assert!((x[2] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_3x3_least_squares_degenerate() {
+        // All zero rows: degenerate system
+        let rows = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let rhs = vec![1.0, 2.0, 3.0];
+        let x = solve_3x3_least_squares(&rows, &rhs);
+        // Should return [0, 0, 0] for degenerate case
+        assert_eq!(x, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_solve_3x3_least_squares_overdetermined() {
+        // 4 equations, 3 unknowns, consistent system
+        let rows = vec![
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let rhs = vec![2.0, 3.0, 5.0, 5.0]; // consistent: x=2, y=3, z=5
+        let x = solve_3x3_least_squares(&rows, &rhs);
+        assert!((x[0] - 2.0).abs() < 1e-6, "x[0]={}", x[0]);
+        assert!((x[1] - 3.0).abs() < 1e-6, "x[1]={}", x[1]);
+        assert!((x[2] - 5.0).abs() < 1e-6, "x[2]={}", x[2]);
+    }
+
+    // ── Battle tests: TF topic constants ──────────────────────────────────
+
+    #[test]
+    fn test_tf_topic_names() {
+        assert_eq!(TF_TOPIC, "tf");
+        assert_eq!(TF_STATIC_TOPIC, "tf_static");
+    }
+
+    // ── Battle tests: diff_transforms with files ──────────────────────────
+
+    #[test]
+    fn test_diff_transforms_nonexistent_file() {
+        let result = diff_transforms(
+            "/tmp/does_not_exist_1.tfr",
+            "/tmp/does_not_exist_2.tfr",
+            0.001,
+            0.1,
+            false,
+        );
+        assert!(result.is_err(), "diff with nonexistent files should fail");
+    }
+
+    #[test]
+    fn test_diff_transforms_one_bad_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path1 = dir.path().join("valid.tfr");
+        // Write a valid empty recording
+        let header = TfrHeader {
+            magic: *TFR_MAGIC,
+            version: TFR_VERSION,
+            _padding: [0; 3],
+            start_time_ns: 0,
+            entry_count: 0,
+        };
+        let header_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &header as *const TfrHeader as *const u8,
+                std::mem::size_of::<TfrHeader>(),
+            )
+        };
+        std::fs::write(&path1, header_bytes).unwrap();
+
+        let result = diff_transforms(
+            path1.to_str().unwrap(),
+            "/tmp/does_not_exist.tfr",
+            0.001,
+            0.1,
+            false,
+        );
+        assert!(result.is_err(), "diff with one bad file should fail");
+    }
+
+    #[test]
+    fn test_diff_transforms_two_empty_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let write_empty_tfr = |name: &str| -> String {
+            let path = dir.path().join(name);
+            let header = TfrHeader {
+                magic: *TFR_MAGIC,
+                version: TFR_VERSION,
+                _padding: [0; 3],
+                start_time_ns: 0,
+                entry_count: 0,
+            };
+            let header_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    &header as *const TfrHeader as *const u8,
+                    std::mem::size_of::<TfrHeader>(),
+                )
+            };
+            std::fs::write(&path, header_bytes).unwrap();
+            path.to_str().unwrap().to_string()
+        };
+
+        let p1 = write_empty_tfr("rec1.tfr");
+        let p2 = write_empty_tfr("rec2.tfr");
+
+        let result = diff_transforms(&p1, &p2, 0.001, 0.1, false);
+        assert!(
+            result.is_ok(),
+            "diff of two empty recordings should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_diff_transforms_json_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let write_empty_tfr = |name: &str| -> String {
+            let path = dir.path().join(name);
+            let header = TfrHeader {
+                magic: *TFR_MAGIC,
+                version: TFR_VERSION,
+                _padding: [0; 3],
+                start_time_ns: 0,
+                entry_count: 0,
+            };
+            let header_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    &header as *const TfrHeader as *const u8,
+                    std::mem::size_of::<TfrHeader>(),
+                )
+            };
+            std::fs::write(&path, header_bytes).unwrap();
+            path.to_str().unwrap().to_string()
+        };
+
+        let p1 = write_empty_tfr("j1.tfr");
+        let p2 = write_empty_tfr("j2.tfr");
+
+        let result = diff_transforms(&p1, &p2, 0.001, 0.1, true);
+        assert!(
+            result.is_ok(),
+            "json diff should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    // ── Battle tests: replay_transforms ───────────────────────────────────
+
+    #[test]
+    fn test_replay_transforms_nonexistent_file() {
+        let result = replay_transforms("/tmp/no_such_recording.tfr", 1.0);
+        assert!(result.is_err(), "replay nonexistent file should fail");
+    }
+
+    #[test]
+    fn test_replay_transforms_empty_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty_replay.tfr");
+        let header = TfrHeader {
+            magic: *TFR_MAGIC,
+            version: TFR_VERSION,
+            _padding: [0; 3],
+            start_time_ns: 0,
+            entry_count: 0,
+        };
+        let header_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &header as *const TfrHeader as *const u8,
+                std::mem::size_of::<TfrHeader>(),
+            )
+        };
+        std::fs::write(&path, header_bytes).unwrap();
+        let result = replay_transforms(path.to_str().unwrap(), 1.0);
+        assert!(
+            result.is_ok(),
+            "replay empty recording should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    // ── Battle tests: calibrate_from_points ───────────────────────────────
+
+    #[test]
+    fn test_calibrate_nonexistent_file() {
+        let result = calibrate_from_points("/tmp/no_such_points.csv");
+        assert!(result.is_err(), "calibrate with nonexistent file should fail");
+    }
+
+    #[test]
+    fn test_calibrate_too_few_points() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("too_few.csv");
+        std::fs::write(&path, "1,2,3,4,5,6\n2,3,4,5,6,7\n").unwrap();
+        let result = calibrate_from_points(path.to_str().unwrap());
+        assert!(result.is_err(), "calibrate with 2 points should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("at least 3"),
+            "should mention minimum points: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_calibrate_bad_csv_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.csv");
+        std::fs::write(&path, "1,2,3\n4,5,6\n7,8,9\n").unwrap();
+        let result = calibrate_from_points(path.to_str().unwrap());
+        assert!(result.is_err(), "calibrate with 3-column CSV should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expected 6"), "should mention expected 6 values: {}", err);
+    }
+
+    #[test]
+    fn test_calibrate_non_numeric_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nan.csv");
+        std::fs::write(&path, "a,b,c,d,e,f\n").unwrap();
+        // First line starts with "a" which is not a comment/header... but wait,
+        // the code skips lines starting with "sensor". "a,b,c,..." is not skipped.
+        let result = calibrate_from_points(path.to_str().unwrap());
+        assert!(result.is_err(), "calibrate with non-numeric data should fail");
+    }
+
+    #[test]
+    fn test_calibrate_identity_transform() {
+        // 4 points that are the same in sensor and world coords -> identity transform
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.csv");
+        let content = "\
+# sensor_x,sensor_y,sensor_z,world_x,world_y,world_z
+1.0,0.0,0.0,1.0,0.0,0.0
+0.0,1.0,0.0,0.0,1.0,0.0
+0.0,0.0,1.0,0.0,0.0,1.0
+1.0,1.0,1.0,1.0,1.0,1.0
+";
+        std::fs::write(&path, content).unwrap();
+        let result = calibrate_from_points(path.to_str().unwrap());
+        assert!(
+            result.is_ok(),
+            "identity calibration should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_calibrate_skips_comments_and_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("comments.csv");
+        let content = "\
+# This is a comment
+sensor_x,sensor_y,sensor_z,world_x,world_y,world_z
+1.0,0.0,0.0,1.0,0.0,0.0
+0.0,1.0,0.0,0.0,1.0,0.0
+0.0,0.0,1.0,0.0,0.0,1.0
+";
+        std::fs::write(&path, content).unwrap();
+        let result = calibrate_from_points(path.to_str().unwrap());
+        assert!(
+            result.is_ok(),
+            "should skip comments and header: {:?}",
+            result.err()
+        );
+    }
+
+    // ── Battle tests: hand_eye_calibration ────────────────────────────────
+
+    #[test]
+    fn test_hand_eye_nonexistent_robot_file() {
+        let result = hand_eye_calibration("/tmp/no_robot.csv", "/tmp/no_sensor.csv");
+        assert!(result.is_err(), "should fail with nonexistent files");
+    }
+
+    #[test]
+    fn test_hand_eye_mismatched_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let robot = dir.path().join("robot.csv");
+        let sensor = dir.path().join("sensor.csv");
+        std::fs::write(&robot, "0,0,0,0,0,0,1\n1,0,0,0,0,0,1\n2,0,0,0,0,0,1\n").unwrap();
+        std::fs::write(&sensor, "0,0,0,0,0,0,1\n1,0,0,0,0,0,1\n").unwrap();
+        let result = hand_eye_calibration(robot.to_str().unwrap(), sensor.to_str().unwrap());
+        assert!(result.is_err(), "mismatched counts should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("mismatch"), "should mention mismatch: {}", err);
+    }
+
+    #[test]
+    fn test_hand_eye_too_few_poses() {
+        let dir = tempfile::tempdir().unwrap();
+        let robot = dir.path().join("robot2.csv");
+        let sensor = dir.path().join("sensor2.csv");
+        std::fs::write(&robot, "0,0,0,0,0,0,1\n1,0,0,0,0,0,1\n").unwrap();
+        std::fs::write(&sensor, "0,0,0,0,0,0,1\n1,0,0,0,0,0,1\n").unwrap();
+        let result = hand_eye_calibration(robot.to_str().unwrap(), sensor.to_str().unwrap());
+        assert!(result.is_err(), "too few poses should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 3"), "should mention min poses: {}", err);
+    }
+
+    #[test]
+    fn test_hand_eye_bad_csv_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let robot = dir.path().join("robot_bad.csv");
+        let sensor = dir.path().join("sensor_bad.csv");
+        // 6 values instead of 7
+        std::fs::write(&robot, "0,0,0,0,0,0\n1,0,0,0,0,0\n2,0,0,0,0,0\n").unwrap();
+        std::fs::write(&sensor, "0,0,0,0,0,0,1\n1,0,0,0,0,0,1\n2,0,0,0,0,0,1\n").unwrap();
+        let result = hand_eye_calibration(robot.to_str().unwrap(), sensor.to_str().unwrap());
+        assert!(result.is_err(), "bad CSV format should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expected 7"), "should mention expected 7: {}", err);
+    }
+
+    // ── Battle tests: read_poses_csv ──────────────────────────────────────
+
+    #[test]
+    fn test_read_poses_csv_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty_poses.csv");
+        std::fs::write(&path, "").unwrap();
+        let result = read_poses_csv(path.to_str().unwrap());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_read_poses_csv_comments_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("comments_only.csv");
+        std::fs::write(&path, "# comment 1\n# comment 2\n\n").unwrap();
+        let result = read_poses_csv(path.to_str().unwrap());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_read_poses_csv_valid_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("valid_poses.csv");
+        std::fs::write(&path, "1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0\n").unwrap();
+        let result = read_poses_csv(path.to_str().unwrap());
+        assert!(result.is_ok());
+        let poses = result.unwrap();
+        assert_eq!(poses.len(), 1);
+        assert!((poses[0].0[0] - 1.0).abs() < 1e-10);
+        assert!((poses[0].0[1] - 2.0).abs() < 1e-10);
+        assert!((poses[0].0[2] - 3.0).abs() < 1e-10);
+        assert!((poses[0].1[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_read_poses_csv_nonexistent() {
+        let result = read_poses_csv("/tmp/no_such_poses_file.csv");
+        assert!(result.is_err());
     }
 }

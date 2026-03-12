@@ -345,7 +345,7 @@ fn detect_version(package_dir: &Path) -> Option<String> {
     // Try horus.toml
     let horus_toml_path = package_dir.join(HORUS_TOML);
     if horus_toml_path.exists() {
-        if let Ok((manifest, _)) = HorusManifest::load_from(&horus_toml_path) {
+        if let Ok(manifest) = HorusManifest::load_from(&horus_toml_path) {
             return Some(manifest.package.version);
         }
     }
@@ -770,7 +770,7 @@ fn read_package_name_from_path(path: &Path) -> Result<String> {
     // Try horus.toml first
     let horus_toml_path = path.join(HORUS_TOML);
     if horus_toml_path.exists() {
-        if let Ok((manifest, _)) = HorusManifest::load_from(&horus_toml_path) {
+        if let Ok(manifest) = HorusManifest::load_from(&horus_toml_path) {
             return Ok(manifest.package.name);
         }
     }
@@ -850,7 +850,6 @@ pub fn run_install(
     let manifest_path = Path::new(HORUS_TOML);
     let mut manifest = if manifest_path.exists() {
         HorusManifest::load_from(manifest_path)
-            .map(|(m, _)| m)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
     } else {
         return Err(HorusError::Config(ConfigError::Other(
@@ -1388,7 +1387,7 @@ fn remove_from_horus_toml(package: &str) {
         return;
     }
 
-    let Ok((mut manifest, _)) = HorusManifest::load_from(manifest_path) else {
+    let Ok(mut manifest) = HorusManifest::load_from(manifest_path) else {
         return;
     };
 
@@ -1835,135 +1834,66 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
 ///
 /// Detects the project language from CWD and delegates to the native package
 /// manager (`cargo add` for Rust, `pip install` for Python).
-pub fn run_add(name: String, ver: Option<String>, _driver: bool, _plugin: bool) -> HorusResult<()> {
-    use crate::manifest::{detect_languages, Language};
-    use std::process::Command;
+pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -> HorusResult<()> {
+    use crate::manifest::{DependencyValue, DriverValue};
 
-    let cwd = std::env::current_dir()
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to get CWD: {}", e))))?;
+    // ── Write to horus.toml (single source of truth) ─────────────────────
+    let manifest_path = Path::new(HORUS_TOML);
+    if !manifest_path.exists() {
+        return Err(HorusError::Config(ConfigError::Other(
+            "No horus.toml found. Run `horus new` to create a project first.".to_string(),
+        )));
+    }
 
-    let languages = detect_languages(&cwd);
+    let mut manifest = HorusManifest::load_from(manifest_path)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-    // Pick the best language to use.
-    // If the package name starts with "horus_", prefer Rust.
-    // If multiple languages detected, prefer Rust when Cargo.toml exists, else first.
-    let lang = if languages.is_empty() {
-        // No build files found -- fall back to helpful message.
+    if driver {
+        // Add as driver to [drivers] section
+        let backend = ver.clone().unwrap_or_else(|| "true".to_string());
+        let driver_value = if backend == "true" {
+            DriverValue::Enabled(true)
+        } else {
+            DriverValue::Backend(backend)
+        };
+        manifest.drivers.insert(name.clone(), driver_value);
+        manifest
+            .save_to(manifest_path)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
         println!(
-            "{} No build files detected in current directory.",
-            cli_output::ICON_INFO.cyan()
+            "{} Added driver {} to horus.toml [drivers]",
+            cli_output::ICON_SUCCESS.green(),
+            name.green(),
         );
-        let version_suffix = ver.as_ref().map(|v| format!("@{}", v)).unwrap_or_default();
-        println!(
-            "  For Rust projects:   {}",
-            format!("cargo add {}{}", name, version_suffix).cyan()
-        );
-        println!(
-            "  For Python projects: {}",
-            format!(
-                "pip install {}{}",
-                name,
-                ver.as_deref()
-                    .map(|v| format!("=={}", v))
-                    .unwrap_or_default()
-            )
-            .cyan()
-        );
-        return Ok(());
-    } else if languages.len() == 1 {
-        languages[0]
-    } else if languages.contains(&Language::Rust) {
-        Language::Rust
     } else {
-        languages[0]
-    };
+        // Add as dependency — auto-detect source from the dependency name.
+        // Default to registry (horus packages). Users can use `horus install --source crates.io`
+        // for explicit crates.io deps, but `horus add` defaults to horus registry.
+        let dep_value = if let Some(ref v) = ver {
+            DependencyValue::Simple(v.clone())
+        } else {
+            DependencyValue::Simple("*".to_string())
+        };
 
-    match lang {
-        Language::Rust => {
-            let pkg_spec = match &ver {
-                Some(v) => format!("{}@{}", name, v),
-                None => name.clone(),
-            };
-            let cmd_str = format!("cargo add {}", pkg_spec);
-            println!(
-                "{} Running: {}",
-                cli_output::ICON_INFO.cyan(),
-                cmd_str.cyan()
-            );
-            let status = Command::new("cargo")
-                .arg("add")
-                .arg(&pkg_spec)
-                .current_dir(&cwd)
-                .status()
-                .map_err(|e| {
-                    HorusError::Config(ConfigError::Other(format!("Failed to run cargo: {}", e)))
-                })?;
-            if !status.success() {
-                return Err(HorusError::Config(ConfigError::Other(format!(
-                    "cargo add failed with exit code {}",
-                    status.code().unwrap_or(-1)
-                ))));
-            }
-            println!(
-                "{} Added {} via cargo",
-                cli_output::ICON_SUCCESS.green(),
-                name.green()
-            );
-        }
-        Language::Python => {
-            let pkg_spec = match &ver {
-                Some(v) => format!("{}=={}", name, v),
-                None => name.clone(),
-            };
-            let cmd_str = format!("pip install {}", pkg_spec);
-            println!(
-                "{} Running: {}",
-                cli_output::ICON_INFO.cyan(),
-                cmd_str.cyan()
-            );
-            let status = Command::new("pip")
-                .arg("install")
-                .arg(&pkg_spec)
-                .current_dir(&cwd)
-                .status()
-                .map_err(|e| {
-                    HorusError::Config(ConfigError::Other(format!("Failed to run pip: {}", e)))
-                })?;
-            if !status.success() {
-                return Err(HorusError::Config(ConfigError::Other(format!(
-                    "pip install failed with exit code {}",
-                    status.code().unwrap_or(-1)
-                ))));
-            }
-            println!(
-                "{} Added {} via pip",
-                cli_output::ICON_SUCCESS.green(),
-                name.green()
-            );
-        }
-        Language::Cpp => {
-            println!(
-                "{} C++ dependencies should be added via {}",
-                cli_output::ICON_INFO.cyan(),
-                "CMakeLists.txt".cyan()
-            );
-            println!(
-                "  Edit {} and add the dependency with find_package() or FetchContent.",
-                "CMakeLists.txt".cyan()
-            );
-        }
-        Language::Ros2 => {
-            println!(
-                "{} ROS2 dependencies should be added via {}",
-                cli_output::ICON_INFO.cyan(),
-                "package.xml".cyan()
-            );
-            println!(
-                "  Edit {} and add the appropriate <depend>{}</depend> entry.",
-                "package.xml".cyan(),
-                name
-            );
-        }
+        let was_present = manifest.dependencies.contains_key(&name);
+        manifest.dependencies.insert(name.clone(), dep_value);
+        manifest
+            .save_to(manifest_path)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+        let action = if was_present { "Updated" } else { "Added" };
+        let version_str = ver
+            .as_deref()
+            .map(|v| format!("@{}", v))
+            .unwrap_or_default();
+        println!(
+            "{} {} {}{} to horus.toml [dependencies]",
+            cli_output::ICON_SUCCESS.green(),
+            action,
+            name.green(),
+            version_str,
+        );
     }
 
     Ok(())
@@ -1974,115 +1904,47 @@ pub fn run_add(name: String, ver: Option<String>, _driver: bool, _plugin: bool) 
 /// Detects the project language from CWD and delegates to the native package
 /// manager (`cargo remove` for Rust, `pip uninstall -y` for Python).
 pub fn run_remove_dep(name: String) -> HorusResult<()> {
-    use crate::manifest::{detect_languages, Language};
-    use std::process::Command;
+    // ── Remove from horus.toml first (single source of truth) ────────────
+    let manifest_path = Path::new(HORUS_TOML);
+    if manifest_path.exists() {
+        let mut manifest = HorusManifest::load_from(manifest_path)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-    let cwd = std::env::current_dir()
-        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to get CWD: {}", e))))?;
+        let removed_from_deps = manifest.dependencies.remove(&name).is_some();
+        let removed_from_dev = manifest.dev_dependencies.remove(&name).is_some();
+        let removed_from_drivers = manifest.drivers.remove(&name).is_some();
 
-    let languages = detect_languages(&cwd);
+        if removed_from_deps || removed_from_dev || removed_from_drivers {
+            manifest
+                .save_to(manifest_path)
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-    let lang = if languages.is_empty() {
-        println!(
-            "{} No build files detected in current directory.",
-            cli_output::ICON_INFO.cyan()
-        );
-        println!(
-            "  For Rust projects:   {}",
-            format!("cargo remove {}", name).cyan()
-        );
-        println!(
-            "  For Python projects: {}",
-            format!("pip uninstall {}", name).cyan()
-        );
-        return Ok(());
-    } else if languages.len() == 1 {
-        languages[0]
-    } else if languages.contains(&Language::Rust) {
-        Language::Rust
+            let sections: Vec<&str> = [
+                if removed_from_deps { Some("[dependencies]") } else { None },
+                if removed_from_dev { Some("[dev-dependencies]") } else { None },
+                if removed_from_drivers { Some("[drivers]") } else { None },
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            println!(
+                "{} Removed {} from horus.toml {}",
+                cli_output::ICON_SUCCESS.green(),
+                name.green(),
+                sections.join(", "),
+            );
+        } else {
+            println!(
+                "{} {} not found in horus.toml dependencies, dev-dependencies, or drivers",
+                cli_output::ICON_WARN.yellow(),
+                name,
+            );
+        }
     } else {
-        languages[0]
-    };
-
-    match lang {
-        Language::Rust => {
-            let cmd_str = format!("cargo remove {}", name);
-            println!(
-                "{} Running: {}",
-                cli_output::ICON_INFO.cyan(),
-                cmd_str.cyan()
-            );
-            let status = Command::new("cargo")
-                .arg("remove")
-                .arg(&name)
-                .current_dir(&cwd)
-                .status()
-                .map_err(|e| {
-                    HorusError::Config(ConfigError::Other(format!("Failed to run cargo: {}", e)))
-                })?;
-            if !status.success() {
-                return Err(HorusError::Config(ConfigError::Other(format!(
-                    "cargo remove failed with exit code {}",
-                    status.code().unwrap_or(-1)
-                ))));
-            }
-            println!(
-                "{} Removed {} via cargo",
-                cli_output::ICON_SUCCESS.green(),
-                name.green()
-            );
-        }
-        Language::Python => {
-            let cmd_str = format!("pip uninstall -y {}", name);
-            println!(
-                "{} Running: {}",
-                cli_output::ICON_INFO.cyan(),
-                cmd_str.cyan()
-            );
-            let status = Command::new("pip")
-                .arg("uninstall")
-                .arg("-y")
-                .arg(&name)
-                .current_dir(&cwd)
-                .status()
-                .map_err(|e| {
-                    HorusError::Config(ConfigError::Other(format!("Failed to run pip: {}", e)))
-                })?;
-            if !status.success() {
-                return Err(HorusError::Config(ConfigError::Other(format!(
-                    "pip uninstall failed with exit code {}",
-                    status.code().unwrap_or(-1)
-                ))));
-            }
-            println!(
-                "{} Removed {} via pip",
-                cli_output::ICON_SUCCESS.green(),
-                name.green()
-            );
-        }
-        Language::Cpp => {
-            println!(
-                "{} C++ dependencies should be removed via {}",
-                cli_output::ICON_INFO.cyan(),
-                "CMakeLists.txt".cyan()
-            );
-            println!(
-                "  Edit {} and remove the dependency entry.",
-                "CMakeLists.txt".cyan()
-            );
-        }
-        Language::Ros2 => {
-            println!(
-                "{} ROS2 dependencies should be removed via {}",
-                cli_output::ICON_INFO.cyan(),
-                "package.xml".cyan()
-            );
-            println!(
-                "  Edit {} and remove the <depend>{}</depend> entry.",
-                "package.xml".cyan(),
-                name
-            );
-        }
+        return Err(HorusError::Config(ConfigError::Other(
+            "No horus.toml found. Run `horus new` to create a project first.".to_string(),
+        )));
     }
 
     Ok(())
@@ -2093,12 +1955,381 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // ── detect_plugin_metadata ──────────────────────────────────────────
+
     #[test]
     fn test_detect_plugin_metadata_none() {
         let temp_dir = TempDir::new().unwrap();
         let result = detect_plugin_metadata(temp_dir.path());
         assert!(result.is_none());
     }
+
+    #[test]
+    fn test_detect_plugin_metadata_from_horus_toml_plugin_section() {
+        let temp_dir = TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "horus-sim"
+version = "0.3.0"
+
+[plugin]
+command = "sim"
+binary = "bin/horus-sim"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), toml_content).unwrap();
+
+        // Create the binary file so the path resolves
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("horus-sim"), "#!/bin/sh\n").unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.command, "sim");
+        assert_eq!(meta.package_name, "horus-sim");
+        assert_eq!(meta.version, "0.3.0");
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_horus_toml_with_subcommands() {
+        let temp_dir = TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "horus-deploy"
+version = "1.0.0"
+
+[plugin]
+command = "deploy"
+binary = "bin/horus-deploy"
+
+[[plugin.subcommands]]
+name = "start"
+description = "Start deployment"
+
+[[plugin.subcommands]]
+name = "stop"
+description = "Stop deployment"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), toml_content).unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("horus-deploy"), "#!/bin/sh\n").unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.command, "deploy");
+        assert_eq!(meta.commands.len(), 2);
+        assert_eq!(meta.commands[0].name, "start");
+        assert_eq!(meta.commands[0].description, "Start deployment");
+        assert_eq!(meta.commands[1].name, "stop");
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_horus_toml_with_compatibility() {
+        let temp_dir = TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "horus-ext"
+version = "0.1.0"
+
+[plugin]
+command = "ext"
+binary = "bin/horus-ext"
+
+[plugin.compatibility]
+horus = ">=0.5.0,<1.0.0"
+platforms = ["linux-x86_64", "linux-aarch64"]
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), toml_content).unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("horus-ext"), "#!/bin/sh\n").unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.compatibility.horus_min, "0.5.0");
+        assert_eq!(meta.compatibility.horus_max, "1.0.0");
+        assert_eq!(meta.compatibility.platforms.len(), 2);
+        assert!(meta.compatibility.platforms.contains(&"linux-x86_64".to_string()));
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_horus_toml_with_permissions() {
+        let temp_dir = TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "horus-net"
+version = "0.2.0"
+
+[plugin]
+command = "net"
+binary = "bin/horus-net"
+permissions = ["network", "filesystem"]
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), toml_content).unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("horus-net"), "#!/bin/sh\n").unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.permissions, vec!["network", "filesystem"]);
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_horus_toml_missing_command_field() {
+        let temp_dir = TempDir::new().unwrap();
+        // plugin section exists but no command field => None from parse_plugin_toml_manifest
+        let toml_content = r#"
+[package]
+name = "horus-bad"
+version = "0.1.0"
+
+[plugin]
+binary = "bin/horus-bad"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), toml_content).unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("horus-bad"), "#!/bin/sh\n").unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_horus_toml_missing_binary_field() {
+        let temp_dir = TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "horus-bad"
+version = "0.1.0"
+
+[plugin]
+command = "bad"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), toml_content).unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_invalid_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(HORUS_TOML), "not valid {{{ toml").unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_from_cargo_toml_metadata_section() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_content = r#"
+[package]
+name = "horus-tools"
+version = "2.0.0"
+
+[package.metadata.horus]
+cli_extension = true
+command_name = "tools"
+"#;
+        fs::write(temp_dir.path().join(CARGO_TOML), cargo_content).unwrap();
+
+        // parse_plugin_toml calls find_binary which needs the binary on disk
+        // Without a binary, parse_plugin_toml returns None, so detect falls through
+        let result = detect_plugin_metadata(temp_dir.path());
+        // No binary means None for this path, but the auto-detect [[bin]] path
+        // also won't match since package name is "horus-tools" and it needs a binary.
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_cargo_toml_cli_extension_false() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_content = r#"
+[package]
+name = "my-lib"
+version = "1.0.0"
+
+[package.metadata.horus]
+cli_extension = false
+command_name = "mylib"
+"#;
+        fs::write(temp_dir.path().join(CARGO_TOML), cargo_content).unwrap();
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_cargo_toml_no_horus_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_content = r#"
+[package]
+name = "some-lib"
+version = "0.5.0"
+"#;
+        fs::write(temp_dir.path().join(CARGO_TOML), cargo_content).unwrap();
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_invalid_cargo_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(CARGO_TOML), "garbage {{{{ not toml").unwrap();
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_detect_plugin_metadata_from_bin_dir_horus_prefix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // Create an executable named horus-check
+        let binary_path = bin_dir.join("horus-check");
+        fs::write(&binary_path, "#!/bin/sh\necho check").unwrap();
+        fs::set_permissions(&binary_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Also write a horus.toml so detect_version can find a version
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"checker\"\nversion = \"0.9.0\"\n",
+        )
+        .unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.command, "check");
+        assert_eq!(meta.version, "0.9.0");
+        assert_eq!(meta.binary, binary_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_detect_plugin_metadata_bin_dir_non_executable() {
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // Create a non-executable file
+        let binary_path = bin_dir.join("horus-notexec");
+        fs::write(&binary_path, "#!/bin/sh\necho").unwrap();
+        // default permissions are typically 0o644, not executable
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_bin_dir_no_horus_prefix() {
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // File without horus- prefix
+        fs::write(bin_dir.join("some-tool"), "#!/bin/sh").unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_detect_plugin_metadata_auto_detect_cargo_horus_pkg() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Cargo.toml with horus- prefixed package and [[bin]]
+        let cargo_content = r#"
+[package]
+name = "horus-flash"
+version = "3.0.0"
+description = "Flash firmware tool"
+
+[[bin]]
+name = "flash"
+path = "src/main.rs"
+"#;
+        fs::write(temp_dir.path().join(CARGO_TOML), cargo_content).unwrap();
+
+        // Create the binary at target/debug/flash
+        let debug_dir = temp_dir.path().join("target/debug");
+        fs::create_dir_all(&debug_dir).unwrap();
+        let binary = debug_dir.join("flash");
+        fs::write(&binary, "#!/bin/sh").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.command, "flash");
+        assert_eq!(meta.package_name, "horus-flash");
+        assert_eq!(meta.version, "3.0.0");
+        assert_eq!(meta.commands.len(), 1);
+        assert_eq!(meta.commands[0].name, "flash");
+        assert_eq!(meta.commands[0].description, "Flash firmware tool");
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_auto_detect_non_horus_pkg() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_content = r#"
+[package]
+name = "not-a-horus-pkg"
+version = "1.0.0"
+
+[[bin]]
+name = "mybin"
+path = "src/main.rs"
+"#;
+        fs::write(temp_dir.path().join(CARGO_TOML), cargo_content).unwrap();
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_detect_plugin_metadata_auto_detect_fallback_package_name_as_command() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        // Cargo.toml with horus- prefix but no [[bin]] section
+        let cargo_content = r#"
+[package]
+name = "horus-monitor"
+version = "1.5.0"
+"#;
+        fs::write(temp_dir.path().join(CARGO_TOML), cargo_content).unwrap();
+
+        // Command name falls back to stripping "horus-" => "monitor"
+        // Create a binary named "monitor" in target/release
+        let release_dir = temp_dir.path().join("target/release");
+        fs::create_dir_all(&release_dir).unwrap();
+        let binary = release_dir.join("monitor");
+        fs::write(&binary, "#!/bin/sh").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.command, "monitor");
+        assert_eq!(meta.package_name, "horus-monitor");
+    }
+
+    // ── detect_version ──────────────────────────────────────────────────
 
     #[test]
     fn test_detect_version_from_horus_toml() {
@@ -2112,5 +2343,3725 @@ mod tests {
 
         let version = detect_version(temp_dir.path());
         assert_eq!(version, Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_detect_version_from_cargo_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_path = temp_dir.path().join(CARGO_TOML);
+        fs::write(
+            &cargo_path,
+            "[package]\nname = \"test-crate\"\nversion = \"4.5.6\"\n",
+        )
+        .unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, Some("4.5.6".to_string()));
+    }
+
+    #[test]
+    fn test_detect_version_from_metadata_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let json_path = temp_dir.path().join("metadata.json");
+        fs::write(&json_path, r#"{"version": "7.8.9"}"#).unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, Some("7.8.9".to_string()));
+    }
+
+    #[test]
+    fn test_detect_version_priority_horus_over_cargo() {
+        let temp_dir = TempDir::new().unwrap();
+        // horus.toml should take priority over Cargo.toml
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"pkg\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nname = \"pkg\"\nversion = \"2.0.0\"\n",
+        )
+        .unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_detect_version_priority_cargo_over_json() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nname = \"pkg\"\nversion = \"2.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.path().join("metadata.json"),
+            r#"{"version": "3.0.0"}"#,
+        )
+        .unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, Some("2.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_detect_version_none_empty_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn test_detect_version_invalid_horus_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(HORUS_TOML), "not valid toml {{{").unwrap();
+        // Falls through to Cargo.toml, which doesn't exist => None
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn test_detect_version_cargo_toml_no_version() {
+        let temp_dir = TempDir::new().unwrap();
+        // Cargo.toml exists but has no version field
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nname = \"no-ver\"\n",
+        )
+        .unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn test_detect_version_metadata_json_no_version() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("metadata.json"),
+            r#"{"name": "no-ver"}"#,
+        )
+        .unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn test_detect_version_invalid_metadata_json() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("metadata.json"), "not json at all").unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, None);
+    }
+
+    // ── find_binary ─────────────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn test_find_binary_in_bin_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let bin_path = bin_dir.join("my-tool");
+        fs::write(&bin_path, "#!/bin/sh").unwrap();
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = find_binary(temp_dir.path(), "my-tool");
+        assert_eq!(result, Some(bin_path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_find_binary_in_target_release() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let release_dir = temp_dir.path().join("target/release");
+        fs::create_dir_all(&release_dir).unwrap();
+        let bin_path = release_dir.join("my-tool");
+        fs::write(&bin_path, "#!/bin/sh").unwrap();
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = find_binary(temp_dir.path(), "my-tool");
+        assert_eq!(result, Some(bin_path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_find_binary_in_target_debug() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let debug_dir = temp_dir.path().join("target/debug");
+        fs::create_dir_all(&debug_dir).unwrap();
+        let bin_path = debug_dir.join("my-tool");
+        fs::write(&bin_path, "#!/bin/sh").unwrap();
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = find_binary(temp_dir.path(), "my-tool");
+        assert_eq!(result, Some(bin_path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_find_binary_in_package_dir_root() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bin_path = temp_dir.path().join("my-tool");
+        fs::write(&bin_path, "#!/bin/sh").unwrap();
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = find_binary(temp_dir.path(), "my-tool");
+        assert_eq!(result, Some(bin_path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_find_binary_prefers_bin_dir_over_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        // Put binary in both bin/ and target/release/ — bin/ should be returned
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let bin_path = bin_dir.join("tool");
+        fs::write(&bin_path, "#!/bin/sh").unwrap();
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let release_dir = temp_dir.path().join("target/release");
+        fs::create_dir_all(&release_dir).unwrap();
+        let release_bin = release_dir.join("tool");
+        fs::write(&release_bin, "#!/bin/sh").unwrap();
+        fs::set_permissions(&release_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = find_binary(temp_dir.path(), "tool");
+        assert_eq!(result, Some(bin_path));
+    }
+
+    #[test]
+    fn test_find_binary_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = find_binary(temp_dir.path(), "nonexistent");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_binary_file_exists_but_not_executable() {
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        // Write a non-executable file
+        fs::write(bin_dir.join("my-tool"), "not executable").unwrap();
+
+        // On unix, default permissions are 0o644 (not executable)
+        // On non-unix, is_executable just checks existence, so this may pass
+        #[cfg(unix)]
+        {
+            let result = find_binary(temp_dir.path(), "my-tool");
+            assert_eq!(result, None);
+        }
+    }
+
+    // ── read_package_name_from_path ─────────────────────────────────────
+
+    #[test]
+    fn test_read_package_name_from_horus_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"my-horus-pkg\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(temp_dir.path()).unwrap();
+        assert_eq!(name, "my-horus-pkg");
+    }
+
+    #[test]
+    fn test_read_package_name_from_cargo_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(temp_dir.path()).unwrap();
+        assert_eq!(name, "my-crate");
+    }
+
+    #[test]
+    fn test_read_package_name_horus_toml_priority_over_cargo() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"from-horus\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nname = \"from-cargo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(temp_dir.path()).unwrap();
+        assert_eq!(name, "from-horus");
+    }
+
+    #[test]
+    fn test_read_package_name_fallback_to_dir_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let sub_dir = temp_dir.path().join("my-awesome-package");
+        fs::create_dir_all(&sub_dir).unwrap();
+        // No manifests => falls back to directory name
+        let name = read_package_name_from_path(&sub_dir).unwrap();
+        assert_eq!(name, "my-awesome-package");
+    }
+
+    #[test]
+    fn test_read_package_name_cargo_toml_no_name_field() {
+        let temp_dir = TempDir::new().unwrap();
+        // Cargo.toml without a name field
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Falls back to directory name
+        let name = read_package_name_from_path(temp_dir.path()).unwrap();
+        // The temp dir name is random, just verify it's not empty
+        assert!(!name.is_empty());
+    }
+
+    // ── resolve_installed_package_dir ────────────────────────────────────
+
+    #[test]
+    fn test_resolve_installed_package_dir_global_versioned() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_dir = temp_dir.path().join(".horus/cache");
+        let versioned_dir = cache_dir.join("my-pkg@1.0.0");
+        fs::create_dir_all(&versioned_dir).unwrap();
+
+        // This test is tricky because it uses dirs::home_dir() internally.
+        // We can only test the non-global (local) path without mocking HOME.
+        // The global path always uses the real home directory.
+        // We verify the function doesn't panic for non-existent paths.
+        let result = resolve_installed_package_dir("nonexistent-pkg", "1.0.0", true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_installed_package_dir_local_not_found() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = resolve_installed_package_dir("nonexistent-pkg", "1.0.0", false);
+        assert!(result.is_none());
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    // ── print_package_info ──────────────────────────────────────────────
+
+    #[test]
+    fn test_print_package_info_path_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let packages_dir = temp_dir.path();
+        let entry_path = packages_dir.join("my-pkg");
+        fs::create_dir_all(&entry_path).unwrap();
+
+        // Create path metadata file
+        fs::write(
+            packages_dir.join("my-pkg.path.json"),
+            r#"{"version": "dev", "source_path": "/some/path"}"#,
+        )
+        .unwrap();
+
+        let printed = print_package_info(packages_dir, "my-pkg", &entry_path);
+        assert!(printed);
+    }
+
+    #[test]
+    fn test_print_package_info_system_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let packages_dir = temp_dir.path();
+        let entry_path = packages_dir.join("sys-pkg");
+        fs::create_dir_all(&entry_path).unwrap();
+
+        fs::write(
+            packages_dir.join("sys-pkg.system.json"),
+            r#"{"version": "2.0.0"}"#,
+        )
+        .unwrap();
+
+        let printed = print_package_info(packages_dir, "sys-pkg", &entry_path);
+        assert!(printed);
+    }
+
+    #[test]
+    fn test_print_package_info_registry_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let packages_dir = temp_dir.path();
+        let entry_path = packages_dir.join("reg-pkg");
+        fs::create_dir_all(&entry_path).unwrap();
+
+        // Create metadata.json inside the package directory
+        fs::write(
+            entry_path.join("metadata.json"),
+            r#"{"version": "1.0.0"}"#,
+        )
+        .unwrap();
+
+        let printed = print_package_info(packages_dir, "reg-pkg", &entry_path);
+        assert!(printed);
+    }
+
+    #[test]
+    fn test_print_package_info_no_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let packages_dir = temp_dir.path();
+        let entry_path = packages_dir.join("bare-pkg");
+        fs::create_dir_all(&entry_path).unwrap();
+
+        let printed = print_package_info(packages_dir, "bare-pkg", &entry_path);
+        assert!(!printed);
+    }
+
+    #[test]
+    fn test_print_package_info_invalid_json_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let packages_dir = temp_dir.path();
+        let entry_path = packages_dir.join("bad-pkg");
+        fs::create_dir_all(&entry_path).unwrap();
+
+        // Invalid JSON in all metadata files
+        fs::write(packages_dir.join("bad-pkg.path.json"), "not json").unwrap();
+        fs::write(packages_dir.join("bad-pkg.system.json"), "not json").unwrap();
+        fs::write(entry_path.join("metadata.json"), "not json").unwrap();
+
+        let printed = print_package_info(packages_dir, "bad-pkg", &entry_path);
+        assert!(!printed);
+    }
+
+    #[test]
+    fn test_print_package_info_priority_path_over_system() {
+        let temp_dir = TempDir::new().unwrap();
+        let packages_dir = temp_dir.path();
+        let entry_path = packages_dir.join("multi-pkg");
+        fs::create_dir_all(&entry_path).unwrap();
+
+        // Both path and system metadata exist
+        fs::write(
+            packages_dir.join("multi-pkg.path.json"),
+            r#"{"version": "dev", "source_path": "/path"}"#,
+        )
+        .unwrap();
+        fs::write(
+            packages_dir.join("multi-pkg.system.json"),
+            r#"{"version": "1.0"}"#,
+        )
+        .unwrap();
+
+        // path.json takes priority (checked first)
+        let printed = print_package_info(packages_dir, "multi-pkg", &entry_path);
+        assert!(printed);
+    }
+
+    // ── remove_from_horus_toml ──────────────────────────────────────────
+
+    #[test]
+    fn test_remove_from_horus_toml_removes_dependency() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let manifest_content = r#"[package]
+name = "test-proj"
+version = "0.1.0"
+
+[dependencies]
+rplidar = "1.0.0"
+other-dep = "2.0.0"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), manifest_content).unwrap();
+
+        remove_from_horus_toml("rplidar");
+
+        // Verify rplidar was removed
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("rplidar"));
+        assert!(manifest.dependencies.contains_key("other-dep"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_remove_from_horus_toml_removes_dev_dependency() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let manifest_content = r#"[package]
+name = "test-proj"
+version = "0.1.0"
+
+[dev-dependencies]
+test-helper = "1.0.0"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), manifest_content).unwrap();
+
+        remove_from_horus_toml("test-helper");
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dev_dependencies.contains_key("test-helper"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_remove_from_horus_toml_nonexistent_package() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let manifest_content = r#"[package]
+name = "test-proj"
+version = "0.1.0"
+
+[dependencies]
+existing = "1.0.0"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), manifest_content).unwrap();
+
+        // Should not panic when removing a package that doesn't exist
+        remove_from_horus_toml("nonexistent");
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("existing"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_remove_from_horus_toml_no_manifest_file() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Should not panic when no horus.toml exists
+        remove_from_horus_toml("anything");
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    // ── remove_from_horus_lock ──────────────────────────────────────────
+
+    #[test]
+    fn test_remove_from_horus_lock_removes_package() {
+        use crate::lockfile::{HorusLockfile, LockedPackage, HORUS_LOCK};
+
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let lockfile = HorusLockfile {
+            version: 3,
+            config_hash: None,
+            packages: vec![
+                LockedPackage {
+                    name: "keep-me".to_string(),
+                    version: "1.0.0".to_string(),
+                    source: "registry".to_string(),
+                    checksum: None,
+                },
+                LockedPackage {
+                    name: "remove-me".to_string(),
+                    version: "2.0.0".to_string(),
+                    source: "registry".to_string(),
+                    checksum: None,
+                },
+            ],
+        };
+        lockfile
+            .save_to(std::path::Path::new(HORUS_LOCK))
+            .unwrap();
+
+        remove_from_horus_lock("remove-me");
+
+        let loaded = HorusLockfile::load_from(std::path::Path::new(HORUS_LOCK)).unwrap();
+        assert_eq!(loaded.packages.len(), 1);
+        assert_eq!(loaded.packages[0].name, "keep-me");
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_remove_from_horus_lock_no_lockfile() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Should not panic when no lockfile exists
+        remove_from_horus_lock("anything");
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_remove_from_horus_lock_package_not_in_lockfile() {
+        use crate::lockfile::{HorusLockfile, LockedPackage, HORUS_LOCK};
+
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let lockfile = HorusLockfile {
+            version: 3,
+            config_hash: None,
+            packages: vec![LockedPackage {
+                name: "existing".to_string(),
+                version: "1.0.0".to_string(),
+                source: "registry".to_string(),
+                checksum: None,
+            }],
+        };
+        lockfile
+            .save_to(std::path::Path::new(HORUS_LOCK))
+            .unwrap();
+
+        remove_from_horus_lock("nonexistent");
+
+        let loaded = HorusLockfile::load_from(std::path::Path::new(HORUS_LOCK)).unwrap();
+        assert_eq!(loaded.packages.len(), 1);
+        assert_eq!(loaded.packages[0].name, "existing");
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    // ── PluginMetadata struct ───────────────────────────────────────────
+
+    #[test]
+    fn test_plugin_metadata_clone() {
+        let meta = PluginMetadata {
+            command: "test".to_string(),
+            binary: PathBuf::from("/usr/bin/test"),
+            package_name: "horus-test".to_string(),
+            version: "1.0.0".to_string(),
+            commands: vec![CommandInfo {
+                name: "run".to_string(),
+                description: "Run tests".to_string(),
+            }],
+            compatibility: Compatibility::default(),
+            permissions: vec!["network".to_string()],
+        };
+
+        let cloned = meta.clone();
+        assert_eq!(cloned.command, "test");
+        assert_eq!(cloned.binary, PathBuf::from("/usr/bin/test"));
+        assert_eq!(cloned.package_name, "horus-test");
+        assert_eq!(cloned.version, "1.0.0");
+        assert_eq!(cloned.commands.len(), 1);
+        assert_eq!(cloned.permissions, vec!["network"]);
+    }
+
+    #[test]
+    fn test_plugin_metadata_debug() {
+        let meta = PluginMetadata {
+            command: "dbg".to_string(),
+            binary: PathBuf::from("/bin/horus-dbg"),
+            package_name: "horus-dbg".to_string(),
+            version: "0.1.0".to_string(),
+            commands: vec![],
+            compatibility: Compatibility::default(),
+            permissions: vec![],
+        };
+
+        let debug_str = format!("{:?}", meta);
+        assert!(debug_str.contains("dbg"));
+        assert!(debug_str.contains("horus-dbg"));
+    }
+
+    // ── run_install source detection ────────────────────────────────────
+
+    #[test]
+    fn test_run_install_detects_path_source_from_slash() {
+        // Tests the source detection logic:
+        // package containing "/" should be treated as path
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // No horus.toml => error, but the source detection itself works
+        let result = run_install(
+            "./local/pkg".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        );
+        // Should error about missing horus.toml (not about source detection)
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("horus.toml"),
+            "Expected horus.toml error, got: {}",
+            err_msg
+        );
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_detects_git_source() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = run_install(
+            "https://github.com/user/repo.git".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("horus.toml"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_with_invalid_source_flag() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = run_install(
+            "some-pkg".to_string(),
+            None,
+            false,
+            None,
+            Some("invalid-source".to_string()),
+            None,
+            false,
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("Unknown source"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_source_flag_crates_io_variants() {
+        // All crates.io aliases should be accepted; they all fail at manifest
+        // loading since there's no horus.toml, which proves the source was parsed.
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        for alias in &["crates.io", "crates", "cargo"] {
+            let result = run_install(
+                "serde".to_string(),
+                None,
+                false,
+                None,
+                Some(alias.to_string()),
+                None,
+                false,
+            );
+            assert!(result.is_err(), "Expected error for alias '{}'", alias);
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(
+                err_msg.contains("horus.toml"),
+                "Alias '{}' should fail at manifest, got: {}",
+                alias,
+                err_msg
+            );
+        }
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_source_flag_pypi_variants() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        for alias in &["pypi", "pip", "python"] {
+            let result = run_install(
+                "numpy".to_string(),
+                None,
+                false,
+                None,
+                Some(alias.to_string()),
+                None,
+                false,
+            );
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("horus.toml"));
+        }
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_source_flag_system_variants() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        for alias in &["system", "apt", "brew"] {
+            let result = run_install(
+                "curl".to_string(),
+                None,
+                false,
+                None,
+                Some(alias.to_string()),
+                None,
+                false,
+            );
+            assert!(result.is_err());
+        }
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_source_flag_registry_variants() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        for alias in &["registry", "horus"] {
+            let result = run_install(
+                "some-pkg".to_string(),
+                None,
+                false,
+                None,
+                Some(alias.to_string()),
+                None,
+                false,
+            );
+            assert!(result.is_err());
+        }
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_path_source_nonexistent_path() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Create horus.toml so we get past the manifest check
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "./nonexistent/path".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("Path does not exist"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_path_source_existing_path() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Create horus.toml for the project
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-proj\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Create a local package directory with its own manifest
+        let local_pkg = temp_dir.path().join("local-dep");
+        fs::create_dir_all(&local_pkg).unwrap();
+        fs::write(
+            local_pkg.join(HORUS_TOML),
+            "[package]\nname = \"local-dep\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "./local-dep".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        );
+        // Should succeed — path dependency gets written to horus.toml
+        assert!(result.is_ok(), "run_install failed: {:?}", result.err());
+
+        // Verify the dependency was added to horus.toml
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("local-dep"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_git_dep_writes_to_manifest() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-proj\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Must use --source git because URL contains '/' which triggers is_path detection
+        let result = run_install(
+            "https://github.com/user/my-pkg.git".to_string(),
+            None,
+            false,
+            None,
+            Some("git".to_string()),
+            None,
+            false,
+        );
+
+        // Restore CWD before any assertions to prevent CWD leak on panic
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        assert!(result.is_ok(), "run_install failed: {:?}", result.err());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        // Git dep name derived from URL: "my-pkg" (strips .git suffix)
+        assert!(
+            manifest.dependencies.contains_key("my-pkg"),
+            "Expected 'my-pkg' in deps, found: {:?}",
+            manifest.dependencies.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_run_install_dev_flag_adds_to_dev_deps() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-proj\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let local_pkg = temp_dir.path().join("test-util");
+        fs::create_dir_all(&local_pkg).unwrap();
+        fs::write(
+            local_pkg.join(HORUS_TOML),
+            "[package]\nname = \"test-util\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "./test-util".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            true, // dev = true
+        );
+        assert!(result.is_ok(), "run_install failed: {:?}", result.err());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dev_dependencies.contains_key("test-util"),
+            "Expected 'test-util' in dev-deps"
+        );
+        assert!(
+            !manifest.dependencies.contains_key("test-util"),
+            "'test-util' should not be in regular deps"
+        );
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_crates_io_with_version_and_features() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-proj\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "serde".to_string(),
+            Some("1.0.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string()]),
+            false,
+        );
+        assert!(result.is_ok(), "run_install failed: {:?}", result.err());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("serde"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_no_manifest_errors() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = run_install(
+            "some-pkg".to_string(),
+            None,
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("horus.toml"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_update_existing_dep() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let manifest_content = r#"[package]
+name = "test-proj"
+version = "0.1.0"
+
+[dependencies]
+my-pkg = "1.0.0"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), manifest_content).unwrap();
+
+        let local_pkg = temp_dir.path().join("my-pkg");
+        fs::create_dir_all(&local_pkg).unwrap();
+        fs::write(
+            local_pkg.join(HORUS_TOML),
+            "[package]\nname = \"my-pkg\"\nversion = \"2.0.0\"\n",
+        )
+        .unwrap();
+
+        // Re-install with path source replaces the existing entry
+        let result = run_install(
+            "./my-pkg".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("my-pkg"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    // ── run_install path detection helpers ───────────────────────────────
+
+    #[test]
+    fn test_path_detection_logic() {
+        // Test the is_path detection logic used in run_install
+        let test_cases = vec![
+            ("./local", true),
+            ("../sibling", true),
+            ("~/my-pkg", true),
+            ("/absolute/path", true),
+            ("path/to/pkg", true),
+            ("simple-name", false),
+            ("serde", false),
+        ];
+
+        for (input, expected_is_path) in test_cases {
+            let is_path = input.contains('/')
+                || input.starts_with('.')
+                || input.starts_with('~');
+            assert_eq!(
+                is_path, expected_is_path,
+                "Path detection for '{}': expected {}, got {}",
+                input, expected_is_path, is_path
+            );
+        }
+    }
+
+    #[test]
+    fn test_git_detection_logic() {
+        let test_cases = vec![
+            ("https://github.com/user/repo", true),
+            ("https://gitlab.com/user/repo.git", true),
+            ("git://example.com/repo", true),
+            ("http://example.com/repo", false),
+            ("simple-name", false),
+            ("./local", false),
+        ];
+
+        for (input, expected_is_git) in test_cases {
+            let is_git = input.starts_with("https://") || input.starts_with("git://");
+            assert_eq!(
+                is_git, expected_is_git,
+                "Git detection for '{}': expected {}, got {}",
+                input, expected_is_git, is_git
+            );
+        }
+    }
+
+    // ── git dep name extraction ─────────────────────────────────────────
+
+    #[test]
+    fn test_git_dep_name_extraction() {
+        let cases = vec![
+            ("https://github.com/user/my-repo.git", "my-repo"),
+            ("https://github.com/user/my-repo", "my-repo"),
+            ("git://example.com/toolbox.git", "toolbox"),
+            ("https://github.com/user/a", "a"),
+        ];
+
+        for (url, expected_name) in cases {
+            let dep_name = url
+                .rsplit('/')
+                .next()
+                .unwrap_or(url)
+                .trim_end_matches(".git")
+                .to_string();
+            assert_eq!(
+                dep_name, expected_name,
+                "Git name extraction for '{}': expected '{}', got '{}'",
+                url, expected_name, dep_name
+            );
+        }
+    }
+
+    // ── parse_plugin_toml (Cargo metadata) ──────────────────────────────
+
+    #[test]
+    fn test_parse_plugin_toml_cli_extension_missing() {
+        let metadata: toml::Value = toml::from_str(r#"command_name = "test""#).unwrap();
+        let toml: toml::Table = toml::from_str(
+            r#"[package]
+name = "test"
+version = "0.1.0""#,
+        )
+        .unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml(&metadata, &toml, temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_plugin_toml_cli_extension_not_bool() {
+        let metadata: toml::Value =
+            toml::from_str(r#"cli_extension = "yes""#).unwrap();
+        let toml: toml::Table = toml::from_str(
+            r#"[package]
+name = "test"
+version = "0.1.0""#,
+        )
+        .unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml(&metadata, &toml, temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_plugin_toml_missing_command_name() {
+        let metadata: toml::Value =
+            toml::from_str(r#"cli_extension = true"#).unwrap();
+        let toml: toml::Table = toml::from_str(
+            r#"[package]
+name = "test"
+version = "0.1.0""#,
+        )
+        .unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml(&metadata, &toml, temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    // ── parse_plugin_toml_manifest ──────────────────────────────────────
+
+    #[test]
+    fn test_parse_plugin_toml_manifest_minimal() {
+        let plugin: toml::Value = toml::from_str(
+            r#"
+command = "test-cmd"
+binary = "bin/horus-test"
+"#,
+        )
+        .unwrap();
+
+        let toml_table: toml::Table = toml::from_str(
+            r#"
+[package]
+name = "my-plugin"
+version = "1.2.3"
+"#,
+        )
+        .unwrap();
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml_manifest(&plugin, &toml_table, temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.command, "test-cmd");
+        assert_eq!(meta.package_name, "my-plugin");
+        assert_eq!(meta.version, "1.2.3");
+        assert_eq!(meta.binary, temp_dir.path().join("bin/horus-test"));
+        assert!(meta.commands.is_empty());
+        assert!(meta.permissions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_plugin_toml_manifest_defaults_when_package_missing() {
+        let plugin: toml::Value = toml::from_str(
+            r#"
+command = "x"
+binary = "bin/x"
+"#,
+        )
+        .unwrap();
+
+        // No [package] section at all
+        let toml_table: toml::Table = toml::from_str("").unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml_manifest(&plugin, &toml_table, temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.package_name, "unknown");
+        assert_eq!(meta.version, "0.0.0");
+    }
+
+    #[test]
+    fn test_parse_plugin_toml_manifest_compatibility_defaults() {
+        let plugin: toml::Value = toml::from_str(
+            r#"
+command = "y"
+binary = "bin/y"
+
+[compatibility]
+horus = ">=1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let toml_table: toml::Table = toml::from_str("").unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml_manifest(&plugin, &toml_table, temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        // Only min specified, max should default to "2.0.0"
+        assert_eq!(meta.compatibility.horus_min, "1.0.0");
+        assert_eq!(meta.compatibility.horus_max, "2.0.0");
+        assert!(meta.compatibility.platforms.is_empty());
+    }
+
+    #[test]
+    fn test_parse_plugin_toml_manifest_no_compatibility() {
+        let plugin: toml::Value = toml::from_str(
+            r#"
+command = "z"
+binary = "bin/z"
+"#,
+        )
+        .unwrap();
+
+        let toml_table: toml::Table = toml::from_str("").unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml_manifest(&plugin, &toml_table, temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        // Should use Compatibility::default()
+        let default_compat = Compatibility::default();
+        assert_eq!(meta.compatibility.horus_min, default_compat.horus_min);
+        assert_eq!(meta.compatibility.horus_max, default_compat.horus_max);
+    }
+
+    // ── Edge cases and misc ─────────────────────────────────────────────
+
+    #[test]
+    fn test_detect_plugin_metadata_empty_bin_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        // bin/ exists but is empty => no plugins detected
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_plugin_metadata_horus_toml_no_plugin_section() {
+        let temp_dir = TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "regular-pkg"
+version = "1.0.0"
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), toml_content).unwrap();
+        let result = detect_plugin_metadata(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_detect_version_empty_version_string() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nname = \"pkg\"\nversion = \"\"\n",
+        )
+        .unwrap();
+
+        let version = detect_version(temp_dir.path());
+        assert_eq!(version, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_read_package_name_invalid_horus_toml_falls_to_cargo() {
+        let temp_dir = TempDir::new().unwrap();
+        // Invalid horus.toml
+        fs::write(temp_dir.path().join(HORUS_TOML), "invalid {{").unwrap();
+        // Valid Cargo.toml
+        fs::write(
+            temp_dir.path().join(CARGO_TOML),
+            "[package]\nname = \"from-cargo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(temp_dir.path()).unwrap();
+        assert_eq!(name, "from-cargo");
+    }
+
+    #[test]
+    fn test_print_package_info_missing_version_field() {
+        let temp_dir = TempDir::new().unwrap();
+        let packages_dir = temp_dir.path();
+        let entry_path = packages_dir.join("pkg");
+        fs::create_dir_all(&entry_path).unwrap();
+
+        // metadata.json with no version field — should print "unknown"
+        fs::write(entry_path.join("metadata.json"), r#"{"name": "pkg"}"#).unwrap();
+
+        let printed = print_package_info(packages_dir, "pkg", &entry_path);
+        assert!(printed);
+    }
+
+    #[test]
+    fn test_parse_plugin_toml_manifest_subcommands_missing_name() {
+        let plugin: toml::Value = toml::from_str(
+            r#"
+command = "test"
+binary = "bin/test"
+
+[[subcommands]]
+description = "no name field here"
+
+[[subcommands]]
+name = "valid"
+description = "this one is valid"
+"#,
+        )
+        .unwrap();
+
+        let toml_table: toml::Table = toml::from_str("").unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml_manifest(&plugin, &toml_table, temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        // Only the valid subcommand should be included
+        assert_eq!(meta.commands.len(), 1);
+        assert_eq!(meta.commands[0].name, "valid");
+    }
+
+    #[test]
+    fn test_parse_plugin_toml_manifest_subcommand_no_description() {
+        let plugin: toml::Value = toml::from_str(
+            r#"
+command = "test"
+binary = "bin/test"
+
+[[subcommands]]
+name = "minimal"
+"#,
+        )
+        .unwrap();
+
+        let toml_table: toml::Table = toml::from_str("").unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = parse_plugin_toml_manifest(&plugin, &toml_table, temp_dir.path());
+        assert!(result.is_some());
+        let meta = result.unwrap();
+        assert_eq!(meta.commands.len(), 1);
+        assert_eq!(meta.commands[0].name, "minimal");
+        assert_eq!(meta.commands[0].description, "");
+    }
+
+    #[test]
+    fn test_run_install_registry_simple_form_no_version() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Registry source with no version and no features => Simple("*")
+        let _result = run_install(
+            "rplidar".to_string(),
+            None,
+            false,
+            None,
+            Some("registry".to_string()),
+            None,
+            false,
+        );
+        // This will fail at physical installation (RegistryClient), but
+        // the manifest should have been written.
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("rplidar"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    // ── Battle-testing: run_add writes to horus.toml ─────────────────────
+
+    #[test]
+    fn test_run_add_writes_dep_to_horus_toml() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_add("my-sensor".to_string(), Some("1.2.0".to_string()), false, false);
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok(), "run_add should succeed: {:?}", result);
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("my-sensor"));
+        assert_eq!(manifest.dependencies["my-sensor"].version(), Some("1.2.0"));
+    }
+
+    #[test]
+    fn test_run_add_no_version_uses_wildcard() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_add("rplidar".to_string(), None, false, false);
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("rplidar"));
+        assert_eq!(manifest.dependencies["rplidar"].version(), Some("*"));
+    }
+
+    #[test]
+    fn test_run_add_driver_writes_to_drivers_section() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_add("camera".to_string(), Some("opencv".to_string()), true, false);
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.drivers.contains_key("camera"));
+        assert!(!manifest.dependencies.contains_key("camera"), "driver should not appear in deps");
+    }
+
+    #[test]
+    fn test_run_add_driver_boolean_form() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // No version for driver = boolean true form
+        let result = run_add("gps".to_string(), None, true, false);
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.drivers.contains_key("gps"));
+    }
+
+    #[test]
+    fn test_run_add_updates_existing_dep() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\nmy-sensor = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_add("my-sensor".to_string(), Some("2.0.0".to_string()), false, false);
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["my-sensor"].version(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn test_run_add_no_manifest_errors() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // No horus.toml exists
+        let result = run_add("foo".to_string(), None, false, false);
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_err());
+    }
+
+    // ── Battle-testing: run_remove_dep removes from horus.toml ───────────
+
+    #[test]
+    fn test_run_remove_dep_removes_from_dependencies() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\nmy-sensor = \"1.0.0\"\nother-lib = \"2.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_remove_dep("my-sensor".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("my-sensor"), "dep should be removed");
+        assert!(manifest.dependencies.contains_key("other-lib"), "other dep should remain");
+    }
+
+    #[test]
+    fn test_run_remove_dep_removes_from_dev_dependencies() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n\n[dev-dependencies]\ncriterion = { version = \"0.5\", source = \"crates.io\" }\n",
+        )
+        .unwrap();
+
+        let result = run_remove_dep("criterion".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dev_dependencies.contains_key("criterion"));
+    }
+
+    #[test]
+    fn test_run_remove_dep_removes_from_drivers() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n\n[drivers]\ncamera = \"opencv\"\nlidar = \"rplidar-a2\"\n",
+        )
+        .unwrap();
+
+        let result = run_remove_dep("camera".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.drivers.contains_key("camera"));
+        assert!(manifest.drivers.contains_key("lidar"), "lidar driver should remain");
+    }
+
+    #[test]
+    fn test_run_remove_dep_nonexistent_warns_gracefully() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"test-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Should succeed (warn but not error) when dep doesn't exist
+        let result = run_remove_dep("nonexistent-pkg".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_remove_dep_no_manifest_errors() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = run_remove_dep("foo".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_err());
+    }
+
+    // ── Battle-testing: full add → remove lifecycle via horus.toml ───────
+
+    #[test]
+    fn test_add_then_remove_lifecycle() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"lifecycle-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Add a dependency
+        run_add("motor-ctrl".to_string(), Some("1.0.0".to_string()), false, false).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("motor-ctrl"));
+
+        // Add a driver
+        run_add("lidar".to_string(), Some("rplidar-a2".to_string()), true, false).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.drivers.contains_key("lidar"));
+
+        // Remove the dependency
+        run_remove_dep("motor-ctrl".to_string()).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("motor-ctrl"));
+        assert!(manifest.drivers.contains_key("lidar"), "driver should survive dep removal");
+
+        // Remove the driver
+        run_remove_dep("lidar".to_string()).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.drivers.contains_key("lidar"));
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    // ── Battle-testing: run_install + run_remove_dep round-trip ──────────
+
+    #[test]
+    fn test_install_then_remove_round_trip() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"round-trip-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Install a crates.io dep
+        let _result = run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string()]),
+            false,
+        );
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("serde"));
+        assert!(manifest.dependencies["serde"].is_crates_io());
+
+        // Remove it
+        run_remove_dep("serde".to_string()).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("serde"));
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    // ── Battle-testing: cargo_gen integration with horus.toml ────────────
+
+    #[test]
+    fn test_cargo_gen_from_horus_toml_deps() {
+        use crate::manifest::*;
+        use std::collections::BTreeMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert(
+            "serde".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some("1.0".to_string()),
+                source: Some(DepSource::CratesIo),
+                features: vec!["derive".to_string()],
+                optional: false,
+                path: None,
+                git: None,
+                branch: None,
+                tag: None,
+                rev: None,
+            }),
+        );
+        deps.insert(
+            "numpy".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some(">=1.24".to_string()),
+                source: Some(DepSource::PyPI),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                branch: None,
+                tag: None,
+                rev: None,
+            }),
+        );
+
+        let manifest = HorusManifest {
+            package: PackageInfo {
+                name: "test-bot".to_string(),
+                version: "0.1.0".to_string(),
+                description: None,
+                authors: vec![],
+                license: None,
+                edition: "1".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+            },
+            dependencies: deps,
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+        };
+
+        // Save to horus.toml then generate Cargo.toml from it
+        let horus_path = dir.path().join(HORUS_TOML);
+        manifest.save_to(&horus_path).unwrap();
+
+        let cargo_path = crate::cargo_gen::generate(&manifest, dir.path(), &[], false).unwrap();
+        let cargo_content = fs::read_to_string(&cargo_path).unwrap();
+
+        // Rust dep should appear in Cargo.toml
+        assert!(cargo_content.contains("serde"), "Rust dep should be in generated Cargo.toml");
+        assert!(cargo_content.contains("derive"), "features should be preserved");
+        // PyPI dep should NOT appear in Cargo.toml
+        assert!(!cargo_content.contains("numpy"), "Python dep should not be in Cargo.toml");
+    }
+
+    #[test]
+    fn test_pyproject_gen_from_horus_toml_deps() {
+        use crate::manifest::*;
+        use std::collections::BTreeMap;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert(
+            "numpy".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some(">=1.24".to_string()),
+                source: Some(DepSource::PyPI),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                branch: None,
+                tag: None,
+                rev: None,
+            }),
+        );
+        deps.insert(
+            "serde".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some("1.0".to_string()),
+                source: Some(DepSource::CratesIo),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                branch: None,
+                tag: None,
+                rev: None,
+            }),
+        );
+
+        let manifest = HorusManifest {
+            package: PackageInfo {
+                name: "test-bot".to_string(),
+                version: "0.1.0".to_string(),
+                description: Some("A test bot".to_string()),
+                authors: vec!["Test".to_string()],
+                license: None,
+                edition: "1".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+            },
+            dependencies: deps,
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+        };
+
+        let horus_path = dir.path().join(HORUS_TOML);
+        manifest.save_to(&horus_path).unwrap();
+
+        let pyproject_path = crate::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(&pyproject_path).unwrap();
+
+        // PyPI dep should appear
+        assert!(content.contains("numpy>=1.24"), "Python dep should be in pyproject.toml");
+        // Rust dep should NOT appear
+        assert!(!content.contains("serde"), "Rust dep should not be in pyproject.toml");
+    }
+
+    // ── Battle-testing: mixed deps in horus.toml ─────────────────────────
+
+    #[test]
+    fn test_horus_toml_mixed_deps_roundtrip() {
+        use crate::manifest::*;
+
+        let toml_str = r#"
+enable = ["cuda"]
+
+[package]
+name = "mixed-robot"
+version = "0.1.0"
+
+[dependencies]
+horus_library = "0.1.9"
+serde = { version = "1.0", features = ["derive"], source = "crates.io" }
+numpy = { version = ">=1.24", source = "pypi" }
+motor-ctrl = { path = "../motor-ctrl" }
+my-fork = { git = "https://github.com/org/repo", branch = "main" }
+
+[drivers]
+camera = "opencv"
+lidar = "rplidar-a2"
+"#;
+
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+
+        // Verify all dep types parsed correctly
+        assert_eq!(manifest.dependencies.len(), 5);
+        assert!(manifest.dependencies["horus_library"].is_registry());
+        assert!(manifest.dependencies["serde"].is_crates_io());
+        assert!(manifest.dependencies["numpy"].is_pypi());
+        assert!(manifest.dependencies["motor-ctrl"].is_path());
+        assert_eq!(
+            manifest.dependencies["my-fork"].effective_source(),
+            DepSource::Git
+        );
+
+        // Verify language detection from deps
+        let langs = manifest.languages_from_deps();
+        assert!(langs.contains(&Language::Rust));
+        assert!(langs.contains(&Language::Python));
+
+        // Round-trip through save/load
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HORUS_TOML);
+        manifest.save_to(&path).unwrap();
+        let loaded = HorusManifest::load_from(&path).unwrap();
+
+        assert_eq!(loaded.dependencies.len(), 5);
+        assert_eq!(loaded.drivers.len(), 2);
+        assert_eq!(loaded.enable, vec!["cuda"]);
+    }
+
+    // ── Battle-testing: drivers config propagates to cargo_gen ────────────
+
+    #[test]
+    fn test_drivers_enable_features_in_cargo_gen() {
+        use crate::manifest::*;
+        use std::collections::BTreeMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut drivers = BTreeMap::new();
+        drivers.insert("camera".to_string(), DriverValue::Backend("opencv".to_string()));
+        drivers.insert("lidar".to_string(), DriverValue::Backend("rplidar-a2".to_string()));
+
+        let manifest = HorusManifest {
+            package: PackageInfo {
+                name: "hw-bot".to_string(),
+                version: "0.1.0".to_string(),
+                description: None,
+                authors: vec![],
+                license: None,
+                edition: "1".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+            },
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers,
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+        };
+
+        // Save and verify drivers section is preserved
+        let horus_path = dir.path().join(HORUS_TOML);
+        manifest.save_to(&horus_path).unwrap();
+        let loaded = HorusManifest::load_from(&horus_path).unwrap();
+        assert_eq!(loaded.drivers.len(), 2);
+        assert!(matches!(loaded.drivers["camera"], DriverValue::Backend(ref s) if s == "opencv"));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Phase 3 battle tests: install/remove/search comprehensive coverage
+    // ══════════════════════════════════════════════════════════════════════
+
+    // ── run_install: system source writes to manifest ────────────────────
+
+    #[test]
+    fn test_run_install_system_source_writes_manifest() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"sys-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "libopencv-dev".to_string(),
+            Some("4.5".to_string()),
+            false,
+            None,
+            Some("system".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok(), "system install failed: {:?}", result.err());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("libopencv-dev"));
+        assert_eq!(
+            manifest.dependencies["libopencv-dev"].effective_source(),
+            crate::manifest::DepSource::System
+        );
+        assert_eq!(manifest.dependencies["libopencv-dev"].version(), Some("4.5"));
+    }
+
+    #[test]
+    fn test_run_install_system_source_no_version() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"sys-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "curl".to_string(),
+            None,
+            false,
+            None,
+            Some("apt".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("curl"));
+        assert_eq!(manifest.dependencies["curl"].version(), Some("*"));
+    }
+
+    // ── run_install: dev flag with various sources ───────────────────────
+
+    #[test]
+    fn test_run_install_dev_crates_io() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"dev-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "criterion".to_string(),
+            Some("0.5".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            true, // dev
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok(), "dev crates.io install failed: {:?}", result.err());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dev_dependencies.contains_key("criterion"),
+            "criterion should be in dev-dependencies"
+        );
+        assert!(
+            !manifest.dependencies.contains_key("criterion"),
+            "criterion should NOT be in regular dependencies"
+        );
+        assert!(manifest.dev_dependencies["criterion"].is_crates_io());
+    }
+
+    #[test]
+    fn test_run_install_dev_pypi() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"py-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "pytest".to_string(),
+            Some(">=7.0".to_string()),
+            false,
+            None,
+            Some("pypi".to_string()),
+            None,
+            true,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dev_dependencies.contains_key("pytest"));
+        assert!(manifest.dev_dependencies["pytest"].is_pypi());
+        assert_eq!(manifest.dev_dependencies["pytest"].version(), Some(">=7.0"));
+    }
+
+    #[test]
+    fn test_run_install_dev_system_source() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"sys-test-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "valgrind".to_string(),
+            None,
+            false,
+            None,
+            Some("system".to_string()),
+            None,
+            true,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dev_dependencies.contains_key("valgrind"));
+        assert!(!manifest.dependencies.contains_key("valgrind"));
+    }
+
+    // ── run_install: features flag ──────────────────────────────────────
+
+    #[test]
+    fn test_run_install_path_with_features() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"feat-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let local_pkg = temp_dir.path().join("sensor-lib");
+        fs::create_dir_all(&local_pkg).unwrap();
+        fs::write(
+            local_pkg.join(HORUS_TOML),
+            "[package]\nname = \"sensor-lib\"\nversion = \"0.3.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "./sensor-lib".to_string(),
+            None,
+            false,
+            None,
+            None,
+            Some(vec!["lidar".to_string(), "imu".to_string()]),
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok(), "path+features install failed: {:?}", result.err());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("sensor-lib"));
+        let feats = manifest.dependencies["sensor-lib"].features();
+        assert_eq!(feats.len(), 2);
+        assert!(feats.contains(&"lidar".to_string()));
+        assert!(feats.contains(&"imu".to_string()));
+    }
+
+    #[test]
+    fn test_run_install_registry_with_features() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"feat-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "horus-nav".to_string(),
+            Some("2.0".to_string()),
+            false,
+            None,
+            Some("registry".to_string()),
+            Some(vec!["slam".to_string(), "path-planning".to_string()]),
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        // Registry install writes manifest first, then tries physical install which may fail
+        // but manifest should be written
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("horus-nav"));
+        let feats = manifest.dependencies["horus-nav"].features();
+        assert_eq!(feats.len(), 2);
+        assert!(feats.contains(&"slam".to_string()));
+    }
+
+    #[test]
+    fn test_run_install_pypi_with_features() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"ml-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "torch".to_string(),
+            Some("2.0".to_string()),
+            false,
+            None,
+            Some("pip".to_string()),
+            Some(vec!["cuda".to_string()]),
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("torch"));
+        assert!(manifest.dependencies["torch"].is_pypi());
+        let feats = manifest.dependencies["torch"].features();
+        assert!(feats.contains(&"cuda".to_string()));
+    }
+
+    #[test]
+    fn test_run_install_dev_with_features_combined() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"combo-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "tokio".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["full".to_string(), "test-util".to_string()]),
+            true, // dev
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dev_dependencies.contains_key("tokio"));
+        assert!(!manifest.dependencies.contains_key("tokio"));
+        let feats = manifest.dev_dependencies["tokio"].features();
+        assert_eq!(feats.len(), 2);
+        assert!(feats.contains(&"full".to_string()));
+        assert!(feats.contains(&"test-util".to_string()));
+    }
+
+    // ── run_install: version constraint operators ────────────────────────
+
+    #[test]
+    fn test_run_install_version_constraint_caret() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"ver-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "serde".to_string(),
+            Some("^1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["serde"].version(), Some("^1.0"));
+    }
+
+    #[test]
+    fn test_run_install_version_constraint_tilde() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"ver-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "tokio".to_string(),
+            Some("~1.25".to_string()),
+            false,
+            None,
+            Some("cargo".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["tokio"].version(), Some("~1.25"));
+    }
+
+    #[test]
+    fn test_run_install_version_constraint_gte() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"ver-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "numpy".to_string(),
+            Some(">=1.24,<2.0".to_string()),
+            false,
+            None,
+            Some("pypi".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["numpy"].version(), Some(">=1.24,<2.0"));
+    }
+
+    #[test]
+    fn test_run_install_version_exact_pinned() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"pin-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "rapier3d".to_string(),
+            Some("=0.22.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["rapier3d"].version(), Some("=0.22.0"));
+    }
+
+    // ── Multiple sequential installs ────────────────────────────────────
+
+    #[test]
+    fn test_sequential_installs_accumulate_deps() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"multi-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Install 1: crates.io dep
+        run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string()]),
+            false,
+        )
+        .unwrap();
+
+        // Install 2: pypi dep
+        run_install(
+            "numpy".to_string(),
+            Some(">=1.24".to_string()),
+            false,
+            None,
+            Some("pypi".to_string()),
+            None,
+            false,
+        )
+        .unwrap();
+
+        // Install 3: system dep
+        run_install(
+            "libssl-dev".to_string(),
+            None,
+            false,
+            None,
+            Some("system".to_string()),
+            None,
+            false,
+        )
+        .unwrap();
+
+        // Install 4: dev dep
+        run_install(
+            "criterion".to_string(),
+            Some("0.5".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            true,
+        )
+        .unwrap();
+
+        // Install 5: path dep
+        let local_pkg = temp_dir.path().join("motor-lib");
+        fs::create_dir_all(&local_pkg).unwrap();
+        fs::write(
+            local_pkg.join(HORUS_TOML),
+            "[package]\nname = \"motor-lib\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+        run_install(
+            "./motor-lib".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        // Verify all deps are present in the manifest
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+
+        assert_eq!(manifest.dependencies.len(), 4, "should have 4 regular deps");
+        assert!(manifest.dependencies.contains_key("serde"));
+        assert!(manifest.dependencies.contains_key("numpy"));
+        assert!(manifest.dependencies.contains_key("libssl-dev"));
+        assert!(manifest.dependencies.contains_key("motor-lib"));
+
+        assert_eq!(manifest.dev_dependencies.len(), 1, "should have 1 dev dep");
+        assert!(manifest.dev_dependencies.contains_key("criterion"));
+
+        // Verify sources
+        assert!(manifest.dependencies["serde"].is_crates_io());
+        assert!(manifest.dependencies["numpy"].is_pypi());
+        assert!(manifest.dependencies["motor-lib"].is_path());
+    }
+
+    // ── Remove all deps leaving empty sections ──────────────────────────
+
+    #[test]
+    fn test_remove_all_deps_leaves_empty_sections() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"strip-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\nalpha = \"1.0\"\nbeta = \"2.0\"\n\n[drivers]\ncamera = \"opencv\"\n",
+        )
+        .unwrap();
+
+        // Remove everything
+        run_remove_dep("alpha".to_string()).unwrap();
+        run_remove_dep("beta".to_string()).unwrap();
+        run_remove_dep("camera".to_string()).unwrap();
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.is_empty(), "all deps should be removed");
+        assert!(manifest.drivers.is_empty(), "all drivers should be removed");
+        // Package info should survive
+        assert_eq!(manifest.package.name, "strip-bot");
+        assert_eq!(manifest.package.version, "0.1.0");
+    }
+
+    // ── Install same package with different version (upgrade) ───────────
+
+    #[test]
+    fn test_install_upgrade_version_crates_io() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"upgrade-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Install v1
+        run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["serde"].version(), Some("1.0"));
+
+        // Upgrade to v2
+        run_install(
+            "serde".to_string(),
+            Some("2.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["serde"].version(), Some("2.0"));
+        assert_eq!(manifest.dependencies.len(), 1, "should not duplicate");
+    }
+
+    #[test]
+    fn test_install_upgrade_registry_to_crates_io() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"switch-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\nmy-lib = \"1.0\"\n",
+        )
+        .unwrap();
+
+        // Overwrite with crates.io source
+        run_install(
+            "my-lib".to_string(),
+            Some("2.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies["my-lib"].is_crates_io());
+        assert_eq!(manifest.dependencies["my-lib"].version(), Some("2.0"));
+    }
+
+    // ── run_remove_dep: dep in multiple sections simultaneously ─────────
+
+    #[test]
+    fn test_remove_dep_present_in_deps_and_drivers() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Same name in both [dependencies] and [drivers]
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"dual-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\ncamera = \"1.0\"\n\n[drivers]\ncamera = \"opencv\"\n",
+        )
+        .unwrap();
+
+        let result = run_remove_dep("camera".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("camera"), "removed from deps");
+        assert!(!manifest.drivers.contains_key("camera"), "removed from drivers");
+    }
+
+    #[test]
+    fn test_remove_dep_present_in_deps_and_dev_deps() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Same name in both [dependencies] and [dev-dependencies]
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"dual-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1.0\"\n\n[dev-dependencies]\ntokio = { version = \"1.0\", source = \"crates.io\", features = [\"test-util\"] }\n",
+        )
+        .unwrap();
+
+        let result = run_remove_dep("tokio".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("tokio"));
+        assert!(!manifest.dev_dependencies.contains_key("tokio"));
+    }
+
+    // ── Git dep with source flag ────────────────────────────────────────
+
+    #[test]
+    fn test_run_install_git_with_source_flag() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"git-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "https://github.com/org/robot-lib.git".to_string(),
+            None,
+            false,
+            None,
+            Some("git".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok(), "git install failed: {:?}", result.err());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("robot-lib"));
+        assert_eq!(
+            manifest.dependencies["robot-lib"].effective_source(),
+            crate::manifest::DepSource::Git
+        );
+    }
+
+    #[test]
+    fn test_run_install_git_dep_name_extraction_edge_cases() {
+        // Verify name extraction from various git URL formats
+        let cases = vec![
+            ("https://github.com/user/repo.git", "repo"),
+            ("https://github.com/user/my-long-name.git", "my-long-name"),
+            ("git://example.com/project", "project"),
+            ("https://gitlab.com/group/sub/deep-repo.git", "deep-repo"),
+        ];
+
+        for (url, expected) in cases {
+            let dep_name = url
+                .rsplit('/')
+                .next()
+                .unwrap_or(url)
+                .trim_end_matches(".git")
+                .to_string();
+            assert_eq!(dep_name, expected, "for URL: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_run_install_git_with_features() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"git-feat-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "https://github.com/org/sensor-fusion.git".to_string(),
+            None,
+            false,
+            None,
+            Some("git".to_string()),
+            Some(vec!["kalman".to_string(), "ekf".to_string()]),
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("sensor-fusion"));
+        let feats = manifest.dependencies["sensor-fusion"].features();
+        assert_eq!(feats.len(), 2);
+        assert!(feats.contains(&"kalman".to_string()));
+        assert!(feats.contains(&"ekf".to_string()));
+    }
+
+    // ── Git dep branch/tag/rev via DetailedDependency round-trip ────────
+
+    #[test]
+    fn test_detailed_git_dep_with_branch_roundtrip() {
+        use crate::manifest::*;
+
+        let toml_str = r#"
+[package]
+name = "git-branch-bot"
+version = "0.1.0"
+
+[dependencies]
+my-fork = { git = "https://github.com/org/repo", branch = "develop" }
+"#;
+
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.dependencies.contains_key("my-fork"));
+
+        if let DependencyValue::Detailed(ref d) = manifest.dependencies["my-fork"] {
+            assert_eq!(d.git.as_deref(), Some("https://github.com/org/repo"));
+            assert_eq!(d.branch.as_deref(), Some("develop"));
+            assert!(d.tag.is_none());
+            assert!(d.rev.is_none());
+        } else {
+            panic!("Expected Detailed variant");
+        }
+
+        // Round-trip
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HORUS_TOML);
+        manifest.save_to(&path).unwrap();
+        let loaded = HorusManifest::load_from(&path).unwrap();
+        if let DependencyValue::Detailed(ref d) = loaded.dependencies["my-fork"] {
+            assert_eq!(d.branch.as_deref(), Some("develop"));
+        }
+    }
+
+    #[test]
+    fn test_detailed_git_dep_with_tag_roundtrip() {
+        use crate::manifest::*;
+
+        let toml_str = r#"
+[package]
+name = "git-tag-bot"
+version = "0.1.0"
+
+[dependencies]
+pinned-lib = { git = "https://github.com/org/lib", tag = "v3.2.1" }
+"#;
+
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        if let DependencyValue::Detailed(ref d) = manifest.dependencies["pinned-lib"] {
+            assert_eq!(d.tag.as_deref(), Some("v3.2.1"));
+            assert!(d.branch.is_none());
+            assert!(d.rev.is_none());
+        } else {
+            panic!("Expected Detailed variant");
+        }
+    }
+
+    #[test]
+    fn test_detailed_git_dep_with_rev_roundtrip() {
+        use crate::manifest::*;
+
+        let toml_str = r#"
+[package]
+name = "git-rev-bot"
+version = "0.1.0"
+
+[dependencies]
+exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
+"#;
+
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        if let DependencyValue::Detailed(ref d) = manifest.dependencies["exact-lib"] {
+            assert_eq!(d.rev.as_deref(), Some("abc123def"));
+            assert!(d.branch.is_none());
+            assert!(d.tag.is_none());
+        } else {
+            panic!("Expected Detailed variant");
+        }
+    }
+
+    // ── Sequential add + install interop ────────────────────────────────
+
+    #[test]
+    fn test_add_then_install_different_deps() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"interop-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Use run_add for one dep
+        run_add("motor-ctrl".to_string(), Some("1.0".to_string()), false, false).unwrap();
+
+        // Use run_install for another
+        run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string()]),
+            false,
+        )
+        .unwrap();
+
+        // Add a driver via run_add
+        run_add("gps".to_string(), Some("ublox".to_string()), true, false).unwrap();
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 2);
+        assert!(manifest.dependencies.contains_key("motor-ctrl"));
+        assert!(manifest.dependencies.contains_key("serde"));
+        assert!(manifest.drivers.contains_key("gps"));
+    }
+
+    // ── Install overwrites add (same dep name) ─────────────────────────
+
+    #[test]
+    fn test_install_overwrites_add_same_dep() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"overwrite-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Add simple dep via run_add (registry, Simple form)
+        run_add("serde".to_string(), Some("1.0".to_string()), false, false).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies["serde"].is_registry());
+
+        // Overwrite with crates.io source via run_install
+        run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string()]),
+            false,
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 1, "should not duplicate");
+        assert!(manifest.dependencies["serde"].is_crates_io());
+        assert!(manifest.dependencies["serde"].features().contains(&"derive".to_string()));
+    }
+
+    // ── Stress test: many deps ──────────────────────────────────────────
+
+    #[test]
+    fn test_many_deps_stress() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"stress-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Add 20 deps via run_add
+        for i in 0..20 {
+            run_add(
+                format!("dep-{}", i),
+                Some(format!("{}.0.0", i + 1)),
+                false,
+                false,
+            )
+            .unwrap();
+        }
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 20);
+
+        for i in 0..20 {
+            let name = format!("dep-{}", i);
+            assert!(manifest.dependencies.contains_key(&name), "missing {}", name);
+            assert_eq!(
+                manifest.dependencies[&name].version(),
+                Some(format!("{}.0.0", i + 1).as_str())
+            );
+        }
+    }
+
+    // ── Remove in reverse order ─────────────────────────────────────────
+
+    #[test]
+    fn test_sequential_remove_preserves_remaining() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"seq-rm-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\nalpha = \"1.0\"\nbeta = \"2.0\"\ngamma = \"3.0\"\ndelta = \"4.0\"\n",
+        )
+        .unwrap();
+
+        // Remove one by one and verify remaining
+        run_remove_dep("beta".to_string()).unwrap();
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 3);
+        assert!(!manifest.dependencies.contains_key("beta"));
+        assert!(manifest.dependencies.contains_key("alpha"));
+        assert!(manifest.dependencies.contains_key("gamma"));
+        assert!(manifest.dependencies.contains_key("delta"));
+
+        run_remove_dep("delta".to_string()).unwrap();
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 2);
+
+        run_remove_dep("alpha".to_string()).unwrap();
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert!(manifest.dependencies.contains_key("gamma"));
+
+        run_remove_dep("gamma".to_string()).unwrap();
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.is_empty());
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    // ── run_install: auto-detect without source flag ────────────────────
+
+    #[test]
+    fn test_run_install_auto_detects_registry_for_simple_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"auto-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Simple name without source flag => registry
+        let _result = run_install(
+            "rplidar".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            None, // no source flag
+            None,
+            false,
+        );
+        // Registry install may fail at physical install, but manifest should be written
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("rplidar"));
+        assert!(manifest.dependencies["rplidar"].is_registry());
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_run_install_auto_detects_path_for_dotslash() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"auto-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let local_pkg = temp_dir.path().join("my-lib");
+        fs::create_dir_all(&local_pkg).unwrap();
+        fs::write(
+            local_pkg.join(HORUS_TOML),
+            "[package]\nname = \"my-lib\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "./my-lib".to_string(),
+            None,
+            false,
+            None,
+            None, // auto-detect path
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies["my-lib"].is_path());
+    }
+
+    #[test]
+    fn test_run_install_auto_detects_path_for_tilde() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // No horus.toml => will fail, but we just test detection
+        let result = run_install(
+            "~/my-pkg".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_err());
+        // Error should be about horus.toml not about source detection
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("horus.toml"), "got: {}", err_msg);
+    }
+
+    // ── Detailed dep: optional field ────────────────────────────────────
+
+    #[test]
+    fn test_detailed_dep_optional_field_roundtrip() {
+        use crate::manifest::*;
+
+        let toml_str = r#"
+[package]
+name = "opt-bot"
+version = "0.1.0"
+
+[dependencies]
+cuda-support = { version = "1.0", source = "crates.io", optional = true }
+"#;
+
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        if let DependencyValue::Detailed(ref d) = manifest.dependencies["cuda-support"] {
+            assert!(d.optional);
+        } else {
+            panic!("Expected Detailed variant");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HORUS_TOML);
+        manifest.save_to(&path).unwrap();
+        let loaded = HorusManifest::load_from(&path).unwrap();
+        if let DependencyValue::Detailed(ref d) = loaded.dependencies["cuda-support"] {
+            assert!(d.optional);
+        }
+    }
+
+    // ── Mixed removal: dep + dev-dep + driver all at once ───────────────
+
+    #[test]
+    fn test_remove_dep_from_all_three_sections() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Extreme edge case: same name in all three sections
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"triple-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\ncamera = \"1.0\"\n\n[dev-dependencies]\ncamera = { version = \"1.0\", source = \"crates.io\" }\n\n[drivers]\ncamera = \"opencv\"\n",
+        )
+        .unwrap();
+
+        let result = run_remove_dep("camera".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("camera"));
+        assert!(!manifest.dev_dependencies.contains_key("camera"));
+        assert!(!manifest.drivers.contains_key("camera"));
+    }
+
+    // ── Install + remove + reinstall cycle ──────────────────────────────
+
+    #[test]
+    fn test_install_remove_reinstall_cycle() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"cycle-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Install
+        run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string()]),
+            false,
+        )
+        .unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("serde"));
+
+        // Remove
+        run_remove_dep("serde".to_string()).unwrap();
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("serde"));
+
+        // Reinstall with different config
+        run_install(
+            "serde".to_string(),
+            Some("2.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string(), "rc".to_string()]),
+            false,
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("serde"));
+        assert_eq!(manifest.dependencies["serde"].version(), Some("2.0"));
+        let feats = manifest.dependencies["serde"].features();
+        assert_eq!(feats.len(), 2);
+        assert!(feats.contains(&"derive".to_string()));
+        assert!(feats.contains(&"rc".to_string()));
+    }
+
+    // ── run_install: dev git dep ────────────────────────────────────────
+
+    #[test]
+    fn test_run_install_dev_git_dep() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"dev-git-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "https://github.com/test/mock-hw.git".to_string(),
+            None,
+            false,
+            None,
+            Some("git".to_string()),
+            None,
+            true, // dev
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dev_dependencies.contains_key("mock-hw"));
+        assert!(!manifest.dependencies.contains_key("mock-hw"));
+    }
+
+    // ── Empty and special character package names ────────────────────────
+
+    #[test]
+    fn test_run_install_hyphenated_package_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"name-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "my-long-hyphenated-package-name".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("my-long-hyphenated-package-name"));
+    }
+
+    #[test]
+    fn test_run_install_underscored_package_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"name-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = run_install(
+            "horus_library".to_string(),
+            Some("0.1.9".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("horus_library"));
+    }
+
+    // ── run_add then run_remove_dep for driver ──────────────────────────
+
+    #[test]
+    fn test_add_driver_then_remove_cycle() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"driver-cycle\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Add multiple drivers
+        run_add("camera".to_string(), Some("opencv".to_string()), true, false).unwrap();
+        run_add("lidar".to_string(), Some("rplidar-a2".to_string()), true, false).unwrap();
+        run_add("imu".to_string(), None, true, false).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.drivers.len(), 3);
+
+        // Remove one driver
+        run_remove_dep("lidar".to_string()).unwrap();
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.drivers.len(), 2);
+        assert!(!manifest.drivers.contains_key("lidar"));
+        assert!(manifest.drivers.contains_key("camera"));
+        assert!(manifest.drivers.contains_key("imu"));
+
+        // Remove all drivers
+        run_remove_dep("camera".to_string()).unwrap();
+        run_remove_dep("imu".to_string()).unwrap();
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.drivers.is_empty());
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    // ── run_install: verify Simple vs Detailed stored form ──────────────
+
+    #[test]
+    fn test_run_install_registry_no_features_produces_simple() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"form-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let _result = run_install(
+            "rplidar".to_string(),
+            Some("1.2.0".to_string()),
+            false,
+            None,
+            Some("registry".to_string()),
+            None,
+            false,
+        );
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        // Registry with no features => Simple form
+        assert!(matches!(manifest.dependencies["rplidar"], crate::manifest::DependencyValue::Simple(ref v) if v == "1.2.0"));
+    }
+
+    #[test]
+    fn test_run_install_registry_with_features_produces_detailed() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"form-bot2\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let _result = run_install(
+            "rplidar".to_string(),
+            Some("1.2.0".to_string()),
+            false,
+            None,
+            Some("registry".to_string()),
+            Some(vec!["sdk".to_string()]),
+            false,
+        );
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        // Registry with features => Detailed form
+        assert!(matches!(manifest.dependencies["rplidar"], crate::manifest::DependencyValue::Detailed(_)));
+        assert!(manifest.dependencies["rplidar"].features().contains(&"sdk".to_string()));
+    }
+
+    // ── remove_from_horus_toml helper: removes from both deps and dev ───
+
+    #[test]
+    fn test_remove_from_horus_toml_both_deps_and_dev() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let manifest_content = r#"[package]
+name = "test-proj"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+
+[dev-dependencies]
+serde = { version = "1.0", source = "crates.io" }
+"#;
+        fs::write(temp_dir.path().join(HORUS_TOML), manifest_content).unwrap();
+
+        remove_from_horus_toml("serde");
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("serde"));
+        assert!(!manifest.dev_dependencies.contains_key("serde"));
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    // ── run_install: multiple features edge case ────────────────────────
+
+    #[test]
+    fn test_run_install_many_features() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"many-feat-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let features = vec![
+            "derive".to_string(),
+            "alloc".to_string(),
+            "rc".to_string(),
+            "unstable".to_string(),
+        ];
+
+        let result = run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(features.clone()),
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let stored_feats = manifest.dependencies["serde"].features();
+        assert_eq!(stored_feats.len(), 4);
+        for f in &features {
+            assert!(stored_feats.contains(f), "missing feature: {}", f);
+        }
+    }
+
+    // ── run_install: empty features vec behaves like None ───────────────
+
+    #[test]
+    fn test_run_install_empty_features_vec() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"empty-feat-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Empty features vec, no version => should produce simple form for crates.io
+        let result = run_install(
+            "log".to_string(),
+            None,
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec![]),
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        assert!(result.is_ok());
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.contains_key("log"));
+        assert_eq!(manifest.dependencies["log"].version(), Some("*"));
+    }
+
+    // ── Full ecosystem lifecycle: build up, modify, tear down ───────────
+
+    #[test]
+    fn test_full_ecosystem_lifecycle() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"full-lifecycle-bot\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // Phase 1: Add deps via different methods
+        run_add("motor-ctrl".to_string(), Some("1.0".to_string()), false, false).unwrap();
+        run_add("camera".to_string(), Some("opencv".to_string()), true, false).unwrap();
+        run_install(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string()]),
+            false,
+        )
+        .unwrap();
+
+        let local_pkg = temp_dir.path().join("sensor-lib");
+        fs::create_dir_all(&local_pkg).unwrap();
+        fs::write(
+            local_pkg.join(HORUS_TOML),
+            "[package]\nname = \"sensor-lib\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        run_install(
+            "./sensor-lib".to_string(),
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 3);
+        assert_eq!(manifest.drivers.len(), 1);
+
+        // Phase 2: Upgrade serde
+        run_install(
+            "serde".to_string(),
+            Some("2.0".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            Some(vec!["derive".to_string(), "rc".to_string()]),
+            false,
+        )
+        .unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies["serde"].version(), Some("2.0"));
+        assert_eq!(manifest.dependencies.len(), 3, "count should not change on upgrade");
+
+        // Phase 3: Remove some deps
+        run_remove_dep("motor-ctrl".to_string()).unwrap();
+        run_remove_dep("camera".to_string()).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 2);
+        assert!(manifest.drivers.is_empty());
+
+        // Phase 4: Add dev dep
+        run_install(
+            "criterion".to_string(),
+            Some("0.5".to_string()),
+            false,
+            None,
+            Some("crates.io".to_string()),
+            None,
+            true,
+        )
+        .unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dev_dependencies.len(), 1);
+
+        // Phase 5: Remove everything
+        run_remove_dep("serde".to_string()).unwrap();
+        run_remove_dep("sensor-lib".to_string()).unwrap();
+        run_remove_dep("criterion".to_string()).unwrap();
+
+        let manifest =
+            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies.is_empty());
+        assert!(manifest.dev_dependencies.is_empty());
+        assert!(manifest.drivers.is_empty());
+        assert_eq!(manifest.package.name, "full-lifecycle-bot");
+
+        std::env::set_current_dir(&original_dir).unwrap();
     }
 }

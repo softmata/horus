@@ -1,53 +1,56 @@
 //! Auto-detect HORUS nodes used in Python and Rust code
 //!
-//! Parses source files to find which built-in nodes are imported/used,
-//! then automatically enables the required Cargo features.
+//! Parses source files to find which built-in nodes are imported/used.
+//! Feature resolution is delegated to the driver/registry system.
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-/// Node to feature mapping
-/// Maps node names to the Cargo features they require
-const NODE_FEATURES: &[(&str, &[&str])] = &[
+/// Node name list used for auto-detection in source files.
+///
+/// Previously mapped node names to Cargo features, but those hardware features
+/// (e.g. `i2c-hardware`, `gpio-hardware`) never existed in any horus crate.
+/// Feature resolution now happens through the driver/registry system instead.
+const NODE_NAMES: &[&str] = &[
     // Vision nodes
-    ("CameraNode", &["opencv-backend"]),
-    ("DepthCameraNode", &[]),
-    ("ImageProcessorNode", &["opencv-backend"]),
+    "CameraNode",
+    "DepthCameraNode",
+    "ImageProcessorNode",
     // Input devices
-    ("JoystickInputNode", &["gilrs"]),
-    ("KeyboardInputNode", &["crossterm"]),
+    "JoystickInputNode",
+    "KeyboardInputNode",
     // Sensors
-    ("BatteryMonitorNode", &["i2c-hardware"]),
-    ("ImuNode", &["bno055-imu"]), // Will detect specific backend later
-    ("GpsNode", &["nmea-gps"]),
-    ("LidarNode", &["rplidar"]),
-    ("ForceTorqueSensorNode", &["netft"]),
-    ("EncoderNode", &["gpio-hardware"]),
-    ("UltrasonicNode", &["gpio-hardware"]),
+    "BatteryMonitorNode",
+    "ImuNode",
+    "GpsNode",
+    "LidarNode",
+    "ForceTorqueSensorNode",
+    "EncoderNode",
+    "UltrasonicNode",
     // Motors/Actuators
-    ("BldcMotorNode", &["gpio-hardware"]),
-    ("DcMotorNode", &["gpio-hardware"]),
-    ("StepperMotorNode", &["gpio-hardware"]),
-    ("ServoControllerNode", &["gpio-hardware"]),
-    ("DynamixelNode", &["serial-hardware"]),
-    ("RoboclawMotorNode", &["serial-hardware"]),
+    "BldcMotorNode",
+    "DcMotorNode",
+    "StepperMotorNode",
+    "ServoControllerNode",
+    "DynamixelNode",
+    "RoboclawMotorNode",
     // Industrial interfaces
-    ("CanBusNode", &[]),
-    ("DigitalIONode", &["gpio-hardware"]),
-    ("I2cBusNode", &["i2c-hardware"]),
-    ("ModbusNode", &["modbus-hardware"]),
-    ("SerialNode", &["serial-hardware"]),
-    ("SpiBusNode", &["spi-hardware"]),
-    // Hardware-independent nodes (no features needed)
-    ("CollisionDetectorNode", &[]),
-    ("DifferentialDriveNode", &[]),
-    ("EmergencyStopNode", &[]),
-    ("LocalizationNode", &[]),
-    ("OdometryNode", &[]),
-    ("PathPlannerNode", &[]),
-    ("PidControllerNode", &[]),
-    ("SafetyMonitorNode", &[]),
+    "CanBusNode",
+    "DigitalIONode",
+    "I2cBusNode",
+    "ModbusNode",
+    "SerialNode",
+    "SpiBusNode",
+    // Hardware-independent nodes
+    "CollisionDetectorNode",
+    "DifferentialDriveNode",
+    "EmergencyStopNode",
+    "LocalizationNode",
+    "OdometryNode",
+    "PathPlannerNode",
+    "PidControllerNode",
+    "SafetyMonitorNode",
 ];
 
 /// Detect nodes used in Python code
@@ -70,7 +73,7 @@ pub fn detect_python_nodes(source: &str) -> HashSet<String> {
 
         // Pattern 2: import horus; horus.CameraNode()
         if line.contains("horus.") {
-            for (node_name, _) in NODE_FEATURES {
+            for node_name in NODE_NAMES {
                 if line.contains(&format!("horus.{}", node_name)) {
                     nodes.insert(node_name.to_string());
                 }
@@ -78,7 +81,7 @@ pub fn detect_python_nodes(source: &str) -> HashSet<String> {
         }
 
         // Pattern 3: Direct usage like CameraNode()
-        for (node_name, _) in NODE_FEATURES {
+        for node_name in NODE_NAMES {
             if line.contains(&format!("{}(", node_name)) {
                 nodes.insert(node_name.to_string());
             }
@@ -99,7 +102,7 @@ pub fn detect_rust_nodes(source: &str) -> HashSet<String> {
         // Pattern 2: use horus_library::nodes::CameraNode;
         // Pattern 3: use horus::library::nodes::CameraNode;
         if line.starts_with("use horus_library::") || line.starts_with("use horus::library::") {
-            for (node_name, _) in NODE_FEATURES {
+            for node_name in NODE_NAMES {
                 if line.contains(node_name) {
                     nodes.insert(node_name.to_string());
                 }
@@ -107,7 +110,7 @@ pub fn detect_rust_nodes(source: &str) -> HashSet<String> {
         }
 
         // Pattern 4: Direct usage like CameraNode::new()
-        for (node_name, _) in NODE_FEATURES {
+        for node_name in NODE_NAMES {
             if line.contains(&format!("{}::", node_name)) {
                 nodes.insert(node_name.to_string());
             }
@@ -117,22 +120,12 @@ pub fn detect_rust_nodes(source: &str) -> HashSet<String> {
     nodes
 }
 
-/// Convert detected nodes to required Cargo features
-pub fn nodes_to_features(nodes: &HashSet<String>) -> Vec<String> {
-    let mut features = HashSet::new();
-
-    for node_name in nodes {
-        // Find matching features for this node
-        for (name, node_features) in NODE_FEATURES {
-            if *name == node_name {
-                features.extend(node_features.iter().map(|s| s.to_string()));
-            }
-        }
-    }
-
-    let mut feature_list: Vec<String> = features.into_iter().collect();
-    feature_list.sort();
-    feature_list
+/// Convert detected nodes to required Cargo features.
+///
+/// Feature resolution now happens through the driver/registry system,
+/// so this always returns an empty list. Kept for API compatibility.
+pub fn nodes_to_features(_nodes: &HashSet<String>) -> Vec<String> {
+    Vec::new()
 }
 
 /// Scan a file and detect required features
@@ -199,7 +192,6 @@ lidar = horus.LidarNode()
 
     #[test]
     fn test_detect_rust_horus_library_nodes() {
-        // This is the pattern used in snakesim
         let code = "use horus::library::nodes::{KeyboardInputNode, JoystickInputNode};";
         let nodes = detect_rust_nodes(code);
         assert!(
@@ -209,16 +201,6 @@ lidar = horus.LidarNode()
         assert!(
             nodes.contains("JoystickInputNode"),
             "Should detect JoystickInputNode"
-        );
-
-        let features = nodes_to_features(&nodes);
-        assert!(
-            features.contains(&"crossterm".to_string()),
-            "KeyboardInputNode requires crossterm"
-        );
-        assert!(
-            features.contains(&"gilrs".to_string()),
-            "JoystickInputNode requires gilrs"
         );
     }
 
@@ -234,24 +216,16 @@ let lidar = LidarNode::new();
     }
 
     #[test]
-    fn test_nodes_to_features() {
+    fn test_nodes_to_features_returns_empty() {
         let mut nodes = HashSet::new();
         nodes.insert("CameraNode".to_string());
         nodes.insert("LidarNode".to_string());
-        nodes.insert("DifferentialDriveNode".to_string()); // No features
-
-        let features = nodes_to_features(&nodes);
-        assert!(features.contains(&"opencv-backend".to_string()));
-        assert!(features.contains(&"rplidar".to_string()));
-    }
-
-    #[test]
-    fn test_hardware_independent_nodes_no_features() {
-        let mut nodes = HashSet::new();
         nodes.insert("DifferentialDriveNode".to_string());
-        nodes.insert("EmergencyStopNode".to_string());
 
         let features = nodes_to_features(&nodes);
-        assert!(features.is_empty());
+        assert!(
+            features.is_empty(),
+            "Feature resolution now happens via driver/registry system"
+        );
     }
 }

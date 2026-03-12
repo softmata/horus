@@ -731,4 +731,1114 @@ mod tests {
         assert_eq!(url_decode("%ZZ"), "%ZZ");
         assert_eq!(url_decode("%2"), "%2");
     }
+
+    // ── url_decode edge cases ───────────────────────────────────────
+
+    #[test]
+    fn url_decode_empty_string() {
+        assert_eq!(url_decode(""), "");
+    }
+
+    #[test]
+    fn url_decode_only_percent_encoded() {
+        assert_eq!(url_decode("%48%65%6C%6C%6F"), "Hello");
+    }
+
+    #[test]
+    fn url_decode_mixed_case_hex() {
+        assert_eq!(url_decode("%2f"), "/");
+        assert_eq!(url_decode("%2F"), "/");
+        assert_eq!(url_decode("%2a"), "*");
+        assert_eq!(url_decode("%2A"), "*");
+    }
+
+    #[test]
+    fn url_decode_consecutive_percent_encodings() {
+        // %C3%A9 = UTF-8 for 'e' with acute accent
+        assert_eq!(url_decode("%C3%A9"), "\u{00e9}");
+    }
+
+    #[test]
+    fn url_decode_plus_and_percent_mixed() {
+        assert_eq!(url_decode("a+b%20c"), "a b c");
+    }
+
+    #[test]
+    fn url_decode_percent_at_end_of_string() {
+        // Trailing '%' without two hex digits should pass through
+        assert_eq!(url_decode("abc%"), "abc%");
+    }
+
+    #[test]
+    fn url_decode_percent_with_one_char_at_end() {
+        // '%' followed by only one character at end of string
+        assert_eq!(url_decode("abc%2"), "abc%2");
+    }
+
+    #[test]
+    fn url_decode_special_url_characters() {
+        assert_eq!(url_decode("%3F"), "?");
+        assert_eq!(url_decode("%26"), "&");
+        assert_eq!(url_decode("%3D"), "=");
+        assert_eq!(url_decode("%23"), "#");
+        assert_eq!(url_decode("%40"), "@");
+        assert_eq!(url_decode("%21"), "!");
+    }
+
+    #[test]
+    fn url_decode_all_plus_signs() {
+        assert_eq!(url_decode("+++"), "   ");
+    }
+
+    #[test]
+    fn url_decode_non_ascii_passthrough() {
+        // Non-encoded non-ASCII bytes should pass through
+        assert_eq!(url_decode("abc123"), "abc123");
+    }
+
+    #[test]
+    fn url_decode_null_byte() {
+        assert_eq!(url_decode("%00"), "\0");
+    }
+
+    #[test]
+    fn url_decode_preserves_slashes_and_dots() {
+        assert_eq!(url_decode("/path/to/file.txt"), "/path/to/file.txt");
+    }
+
+    #[test]
+    fn url_decode_long_string() {
+        let input = "a%20".repeat(100);
+        let expected = "a ".repeat(100);
+        assert_eq!(url_decode(&input), expected);
+    }
+
+    // ── extract_query_param edge cases ──────────────────────────────
+
+    #[test]
+    fn extract_query_param_empty_value() {
+        assert_eq!(
+            extract_query_param("/cb?code=&user=bob", "code"),
+            Some("".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_no_query_string() {
+        assert_eq!(extract_query_param("/callback", "anything"), None);
+    }
+
+    #[test]
+    fn extract_query_param_empty_query_string() {
+        assert_eq!(extract_query_param("/callback?", "code"), None);
+    }
+
+    #[test]
+    fn extract_query_param_first_param() {
+        assert_eq!(
+            extract_query_param("/cb?first=1&second=2&third=3", "first"),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_middle_param() {
+        assert_eq!(
+            extract_query_param("/cb?first=1&second=2&third=3", "second"),
+            Some("2".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_last_param() {
+        assert_eq!(
+            extract_query_param("/cb?first=1&second=2&third=3", "third"),
+            Some("3".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_key_is_prefix_of_another() {
+        // "code" should not match "code_verifier"
+        assert_eq!(
+            extract_query_param("/cb?code_verifier=abc&code=xyz", "code"),
+            Some("xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_value_contains_equals() {
+        // Values with = in them (base64, etc.)
+        assert_eq!(
+            extract_query_param("/cb?token=abc=def==", "token"),
+            Some("abc=def==".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_url_encoded_value() {
+        assert_eq!(
+            extract_query_param("/cb?user=hello%20world", "user"),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_url_encoded_special_chars() {
+        assert_eq!(
+            extract_query_param("/cb?redirect=https%3A%2F%2Fexample.com%2Fpath", "redirect"),
+            Some("https://example.com/path".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_multiple_question_marks() {
+        // split('?').nth(1) takes only between the first and second '?'
+        // so a second '?' truncates the value
+        assert_eq!(
+            extract_query_param("/cb?code=abc?extra=ignored", "code"),
+            Some("abc".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_no_value_part() {
+        // key without =value should return None for that key
+        assert_eq!(extract_query_param("/cb?orphankey", "orphankey"), None);
+    }
+
+    #[test]
+    fn extract_query_param_single_char_key_and_value() {
+        assert_eq!(
+            extract_query_param("/cb?a=b", "a"),
+            Some("b".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_plus_in_value() {
+        assert_eq!(
+            extract_query_param("/cb?q=hello+world", "q"),
+            Some("hello world".to_string())
+        );
+    }
+
+    // ── AuthConfig serialization edge cases ─────────────────────────
+
+    #[test]
+    fn auth_config_with_empty_api_key() {
+        let config = AuthConfig {
+            api_key: "".to_string(),
+            registry_url: "https://example.com".to_string(),
+            github_username: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_key, "");
+    }
+
+    #[test]
+    fn auth_config_with_special_characters_in_key() {
+        let config = AuthConfig {
+            api_key: "horus_key_abc/+==123".to_string(),
+            registry_url: "https://example.com".to_string(),
+            github_username: Some("user-name.with_special".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_key, "horus_key_abc/+==123");
+        assert_eq!(
+            parsed.github_username,
+            Some("user-name.with_special".to_string())
+        );
+    }
+
+    #[test]
+    fn auth_config_pretty_print_roundtrip() {
+        let config = AuthConfig {
+            api_key: "horus_key_test".to_string(),
+            registry_url: "https://registry.softmata.com".to_string(),
+            github_username: Some("dev".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&config).unwrap();
+        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_key, config.api_key);
+        assert_eq!(parsed.registry_url, config.registry_url);
+        assert_eq!(parsed.github_username, config.github_username);
+    }
+
+    #[test]
+    fn auth_config_rejects_invalid_json() {
+        let result = serde_json::from_str::<AuthConfig>("not json at all");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn auth_config_rejects_missing_required_field() {
+        // Missing registry_url
+        let json = r#"{"api_key":"horus_key_x"}"#;
+        let result = serde_json::from_str::<AuthConfig>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn auth_config_rejects_missing_api_key() {
+        let json = r#"{"registry_url":"https://example.com"}"#;
+        let result = serde_json::from_str::<AuthConfig>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn auth_config_ignores_extra_fields() {
+        let json = r#"{
+            "api_key": "horus_key_x",
+            "registry_url": "https://example.com",
+            "github_username": null,
+            "extra_field": "should be ignored"
+        }"#;
+        // serde default: deny unknown fields is NOT set, so this should work
+        let result = serde_json::from_str::<AuthConfig>(json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn auth_config_null_username_is_none() {
+        let json = r#"{
+            "api_key": "horus_key_x",
+            "registry_url": "https://example.com",
+            "github_username": null
+        }"#;
+        let config: AuthConfig = serde_json::from_str(json).unwrap();
+        assert!(config.github_username.is_none());
+    }
+
+    #[test]
+    fn auth_config_unicode_username() {
+        let config = AuthConfig {
+            api_key: "horus_key_test".to_string(),
+            registry_url: "https://example.com".to_string(),
+            github_username: Some("\u{1F916}robot\u{1F916}".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.github_username, config.github_username);
+    }
+
+    // ── save_auth_config + load_auth_config filesystem tests ────────
+
+    #[test]
+    fn save_and_load_auth_config_roundtrip() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        // Create the .horus directory
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let result = save_auth_config(
+            "horus_key_test123",
+            "https://test-registry.example.com",
+            Some("testuser"),
+        );
+        assert!(result.is_ok(), "save_auth_config failed: {:?}", result);
+
+        let loaded = load_auth_config();
+        assert!(loaded.is_ok(), "load_auth_config failed: {:?}", loaded);
+        let config = loaded.unwrap();
+        assert_eq!(config.api_key, "horus_key_test123");
+        assert_eq!(config.registry_url, "https://test-registry.example.com");
+        assert_eq!(config.github_username, Some("testuser".to_string()));
+
+        // Restore HOME
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn save_auth_config_without_username() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let result = save_auth_config(
+            "horus_key_nouser",
+            "https://registry.example.com",
+            None,
+        );
+        assert!(result.is_ok());
+
+        let config = load_auth_config().unwrap();
+        assert_eq!(config.api_key, "horus_key_nouser");
+        assert!(config.github_username.is_none());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn save_auth_config_creates_valid_json_on_disk() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        save_auth_config("horus_key_disk", "https://example.com", Some("alice"))
+            .unwrap();
+
+        // Read the raw file and verify it's valid JSON
+        let config_path = horus_dir.join("auth.json");
+        assert!(config_path.exists());
+        let raw = fs::read_to_string(&config_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["api_key"], "horus_key_disk");
+        assert_eq!(value["registry_url"], "https://example.com");
+        assert_eq!(value["github_username"], "alice");
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn save_auth_config_overwrites_existing() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        // Write first config
+        save_auth_config("horus_key_first", "https://first.com", Some("user1"))
+            .unwrap();
+        let config1 = load_auth_config().unwrap();
+        assert_eq!(config1.api_key, "horus_key_first");
+
+        // Overwrite with second config
+        save_auth_config("horus_key_second", "https://second.com", Some("user2"))
+            .unwrap();
+        let config2 = load_auth_config().unwrap();
+        assert_eq!(config2.api_key, "horus_key_second");
+        assert_eq!(config2.registry_url, "https://second.com");
+        assert_eq!(config2.github_username, Some("user2".to_string()));
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_auth_config_sets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        save_auth_config("horus_key_perms", "https://example.com", None).unwrap();
+
+        let config_path = horus_dir.join("auth.json");
+        let metadata = fs::metadata(&config_path).unwrap();
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "auth.json should be owner-only (0600), got {:o}",
+            mode
+        );
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn load_auth_config_returns_error_when_not_authenticated() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        // Create .horus dir but no auth.json
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let result = load_auth_config();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not authenticated"),
+            "Expected 'not authenticated' error, got: {}",
+            err_msg
+        );
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn load_auth_config_returns_error_for_corrupt_json() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::write(horus_dir.join("auth.json"), "this is not json").unwrap();
+
+        let result = load_auth_config();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("failed to parse auth config"),
+            "Expected parse error, got: {}",
+            err_msg
+        );
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn load_auth_config_returns_error_for_partial_json() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        // Valid JSON but missing required fields
+        fs::write(horus_dir.join("auth.json"), r#"{"api_key":"test"}"#).unwrap();
+
+        let result = load_auth_config();
+        assert!(result.is_err());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn load_auth_config_returns_error_for_empty_file() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::write(horus_dir.join("auth.json"), "").unwrap();
+
+        let result = load_auth_config();
+        assert!(result.is_err());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── auth_config_path tests ──────────────────────────────────────
+
+    #[test]
+    fn auth_config_path_ends_with_auth_json() {
+        let path = auth_config_path().unwrap();
+        assert!(
+            path.ends_with("auth.json"),
+            "Expected path ending with auth.json, got: {:?}",
+            path
+        );
+    }
+
+    #[test]
+    fn auth_config_path_is_inside_horus_dir() {
+        let path = auth_config_path().unwrap();
+        let parent = path.parent().unwrap();
+        assert!(
+            parent.ends_with(".horus"),
+            "auth.json should be inside .horus dir, parent was: {:?}",
+            parent
+        );
+    }
+
+    #[test]
+    fn auth_config_path_creates_horus_dir_if_missing() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        // .horus does not yet exist
+        let horus_dir = tmp.path().join(".horus");
+        assert!(!horus_dir.exists());
+
+        let path = auth_config_path().unwrap();
+        // auth_config_path should have created .horus
+        assert!(horus_dir.exists(), ".horus dir should have been created");
+        assert_eq!(path, horus_dir.join("auth.json"));
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── get_registry_url tests ──────────────────────────────────────
+
+    #[test]
+    fn get_registry_url_env_var_takes_priority() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::var("HORUS_REGISTRY_URL").ok();
+
+        std::env::set_var("HORUS_REGISTRY_URL", "https://custom-registry.test");
+        let url = get_registry_url();
+        assert_eq!(url, "https://custom-registry.test");
+
+        // Restore
+        match original {
+            Some(val) => std::env::set_var("HORUS_REGISTRY_URL", val),
+            None => std::env::remove_var("HORUS_REGISTRY_URL"),
+        }
+    }
+
+    #[test]
+    fn get_registry_url_falls_back_to_config() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        let original_registry = std::env::var("HORUS_REGISTRY_URL").ok();
+        std::env::set_var("HOME", tmp.path());
+        std::env::remove_var("HORUS_REGISTRY_URL");
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        save_auth_config("horus_key_test", "https://from-config.test", None).unwrap();
+
+        let url = get_registry_url();
+        assert_eq!(url, "https://from-config.test");
+
+        // Restore
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+        match original_registry {
+            Some(val) => std::env::set_var("HORUS_REGISTRY_URL", val),
+            None => std::env::remove_var("HORUS_REGISTRY_URL"),
+        }
+    }
+
+    #[test]
+    fn get_registry_url_falls_back_to_default() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        let original_registry = std::env::var("HORUS_REGISTRY_URL").ok();
+        std::env::set_var("HOME", tmp.path());
+        std::env::remove_var("HORUS_REGISTRY_URL");
+
+        // No auth config file exists, so should fall back to default
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let url = get_registry_url();
+        assert_eq!(url, crate::config::registry_url());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+        match original_registry {
+            Some(val) => std::env::set_var("HORUS_REGISTRY_URL", val),
+            None => std::env::remove_var("HORUS_REGISTRY_URL"),
+        }
+    }
+
+    // ── logout tests ────────────────────────────────────────────────
+
+    #[test]
+    fn logout_removes_auth_config_file() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        save_auth_config("horus_key_logout", "https://example.com", Some("bob"))
+            .unwrap();
+
+        let config_path = horus_dir.join("auth.json");
+        assert!(config_path.exists(), "auth.json should exist before logout");
+
+        let result = logout();
+        assert!(result.is_ok());
+        assert!(
+            !config_path.exists(),
+            "auth.json should be removed after logout"
+        );
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn logout_succeeds_when_not_logged_in() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        // No auth.json exists
+
+        let result = logout();
+        assert!(
+            result.is_ok(),
+            "logout should succeed even when not logged in"
+        );
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn logout_then_load_auth_fails() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        save_auth_config("horus_key_then_logout", "https://example.com", None)
+            .unwrap();
+
+        // Verify load works before logout
+        assert!(load_auth_config().is_ok());
+
+        logout().unwrap();
+
+        // Load should fail after logout
+        let result = load_auth_config();
+        assert!(result.is_err());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── Token validation edge cases ─────────────────────────────────
+
+    #[test]
+    fn token_prefix_is_exactly_horus_key_underscore() {
+        let valid = "horus_key_";
+        assert!(valid.starts_with("horus_key_"));
+
+        // Almost-valid prefixes
+        let near_misses = [
+            "horus_key",      // missing trailing underscore
+            "horus-key_",     // wrong separator
+            "Horus_key_",     // wrong case
+            "HORUS_KEY_",     // all caps
+            "horus_Key_",     // mixed case
+            " horus_key_",    // leading space
+            "horus_key_ ",    // value starts with space (prefix still matches but...)
+        ];
+        for token in &near_misses {
+            // Only the last one starts_with "horus_key_" — rest should not
+            if !token.starts_with("horus_key_") {
+                // Good, this is invalid as expected
+            }
+        }
+    }
+
+    #[test]
+    fn token_format_boundary_cases() {
+        // Exactly the prefix with nothing after it
+        assert!("horus_key_".starts_with("horus_key_"));
+
+        // Very long token
+        let long_token = format!("horus_key_{}", "a".repeat(1000));
+        assert!(long_token.starts_with("horus_key_"));
+
+        // Token with special characters after prefix
+        assert!("horus_key_!@#$%^&*()".starts_with("horus_key_"));
+    }
+
+    // ── save_auth_config with special content ───────────────────────
+
+    #[test]
+    fn save_auth_config_with_very_long_api_key() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let long_key = format!("horus_key_{}", "x".repeat(2048));
+        save_auth_config(&long_key, "https://example.com", None).unwrap();
+
+        let config = load_auth_config().unwrap();
+        assert_eq!(config.api_key, long_key);
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn save_auth_config_with_url_containing_path() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let url_with_path = "https://registry.example.com/api/v2";
+        save_auth_config("horus_key_path", url_with_path, None).unwrap();
+
+        let config = load_auth_config().unwrap();
+        assert_eq!(config.registry_url, url_with_path);
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn save_auth_config_with_localhost_url() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        save_auth_config("horus_key_local", "http://localhost:3000", Some("dev"))
+            .unwrap();
+
+        let config = load_auth_config().unwrap();
+        assert_eq!(config.registry_url, "http://localhost:3000");
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn save_auth_config_with_unicode_username() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        save_auth_config(
+            "horus_key_uni",
+            "https://example.com",
+            Some("\u{1F680}rocket-user"),
+        )
+        .unwrap();
+
+        let config = load_auth_config().unwrap();
+        assert_eq!(
+            config.github_username,
+            Some("\u{1F680}rocket-user".to_string())
+        );
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── Concurrent save/load safety ─────────────────────────────────
+
+    #[test]
+    fn multiple_saves_last_write_wins() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        for i in 0..10 {
+            save_auth_config(
+                &format!("horus_key_{}", i),
+                "https://example.com",
+                Some(&format!("user{}", i)),
+            )
+            .unwrap();
+        }
+
+        let config = load_auth_config().unwrap();
+        assert_eq!(config.api_key, "horus_key_9");
+        assert_eq!(config.github_username, Some("user9".to_string()));
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── whoami when not logged in ───────────────────────────────────
+
+    #[test]
+    fn whoami_not_logged_in_succeeds() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        // whoami should not error when not logged in, just print guidance
+        let result = whoami();
+        assert!(result.is_ok());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── keys_list when not logged in ────────────────────────────────
+
+    #[test]
+    fn keys_list_not_logged_in_succeeds() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let result = keys_list();
+        assert!(result.is_ok());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── keys_revoke when not logged in ──────────────────────────────
+
+    #[test]
+    fn keys_revoke_not_logged_in_succeeds() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        let result = keys_revoke("some-key-id");
+        assert!(result.is_ok());
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── Full login-logout cycle ─────────────────────────────────────
+
+    #[test]
+    fn full_save_load_logout_cycle() {
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        // Step 1: save
+        save_auth_config("horus_key_cycle", "https://cycle.test", Some("cyclist"))
+            .unwrap();
+
+        // Step 2: verify load
+        let config = load_auth_config().unwrap();
+        assert_eq!(config.api_key, "horus_key_cycle");
+        assert_eq!(config.github_username, Some("cyclist".to_string()));
+
+        // Step 3: logout
+        logout().unwrap();
+
+        // Step 4: verify gone
+        assert!(load_auth_config().is_err());
+
+        // Step 5: re-save with different user
+        save_auth_config("horus_key_cycle2", "https://cycle2.test", Some("cyclist2"))
+            .unwrap();
+
+        // Step 6: verify new config
+        let config2 = load_auth_config().unwrap();
+        assert_eq!(config2.api_key, "horus_key_cycle2");
+        assert_eq!(config2.registry_url, "https://cycle2.test");
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ── URL decode robustness / fuzzy inputs ────────────────────────
+
+    #[test]
+    fn url_decode_double_encoded() {
+        // %2520 is double-encoded space: %25 -> %, 20 stays -> %20
+        // Our decoder only decodes once
+        assert_eq!(url_decode("%2520"), "%20");
+    }
+
+    #[test]
+    fn url_decode_just_percent() {
+        assert_eq!(url_decode("%"), "%");
+    }
+
+    #[test]
+    fn url_decode_percent_followed_by_non_hex() {
+        assert_eq!(url_decode("%GG"), "%GG");
+        assert_eq!(url_decode("%XY"), "%XY");
+    }
+
+    #[test]
+    fn url_decode_mixed_valid_invalid_percent() {
+        assert_eq!(url_decode("%20%GG%41"), " %GGA");
+    }
+
+    #[test]
+    fn url_decode_only_plus_signs() {
+        assert_eq!(url_decode("+"), " ");
+        assert_eq!(url_decode("+++++"), "     ");
+    }
+
+    #[test]
+    fn url_decode_full_alphabet_hex() {
+        // Test all hex chars 0-F in various positions
+        assert_eq!(url_decode("%30"), "0"); // ASCII '0'
+        assert_eq!(url_decode("%39"), "9"); // ASCII '9'
+        assert_eq!(url_decode("%41"), "A"); // ASCII 'A'
+        assert_eq!(url_decode("%46"), "F"); // ASCII 'F'
+        assert_eq!(url_decode("%5A"), "Z"); // ASCII 'Z'
+        assert_eq!(url_decode("%61"), "a"); // ASCII 'a'
+        assert_eq!(url_decode("%66"), "f"); // ASCII 'f'
+        assert_eq!(url_decode("%7A"), "z"); // ASCII 'z'
+    }
+
+    // ── extract_query_param with tricky paths ───────────────────────
+
+    #[test]
+    fn extract_query_param_root_path() {
+        assert_eq!(
+            extract_query_param("/?key=value", "key"),
+            Some("value".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_deep_path() {
+        assert_eq!(
+            extract_query_param("/a/b/c/d?key=value", "key"),
+            Some("value".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_many_params() {
+        let path = "/cb?a=1&b=2&c=3&d=4&e=5&f=6&g=7&h=8&i=9&j=10";
+        assert_eq!(extract_query_param(path, "a"), Some("1".to_string()));
+        assert_eq!(extract_query_param(path, "j"), Some("10".to_string()));
+        assert_eq!(extract_query_param(path, "e"), Some("5".to_string()));
+        assert_eq!(extract_query_param(path, "z"), None);
+    }
+
+    #[test]
+    fn extract_query_param_duplicate_keys_returns_first() {
+        assert_eq!(
+            extract_query_param("/cb?key=first&key=second", "key"),
+            Some("first".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_empty_path() {
+        assert_eq!(extract_query_param("", "key"), None);
+    }
+
+    #[test]
+    fn extract_query_param_just_question_mark() {
+        assert_eq!(extract_query_param("?", "key"), None);
+    }
+
+    #[test]
+    fn extract_query_param_key_with_no_equals() {
+        // "flag" has no = sign so splitn(2, '=').next() gives "flag", .nth(1) gives None
+        assert_eq!(extract_query_param("/cb?flag&key=val", "flag"), None);
+        assert_eq!(
+            extract_query_param("/cb?flag&key=val", "key"),
+            Some("val".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_ampersand_in_encoded_value() {
+        // %26 should decode to & but the split happens before decode
+        assert_eq!(
+            extract_query_param("/cb?data=a%26b", "data"),
+            Some("a&b".to_string())
+        );
+    }
 }

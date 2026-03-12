@@ -276,8 +276,41 @@ mod tests {
 
     #[test]
     fn test_service_error_is_std_error() {
+        // Verify the trait object coercion works at runtime
         let err = ServiceError::Timeout;
-        let _: &dyn std::error::Error = &err;
+        let std_err: &dyn std::error::Error = &err;
+
+        // Display should produce a meaningful message
+        let display = format!("{}", std_err);
+        assert!(
+            !display.is_empty(),
+            "Display output should not be empty"
+        );
+        assert!(
+            display.contains("timed out"),
+            "Timeout display should mention 'timed out', got: {}",
+            display
+        );
+
+        // Timeout has no underlying source
+        assert!(
+            std_err.source().is_none(),
+            "Timeout error should have no source"
+        );
+
+        // Also verify a variant with an inner message
+        let err2 = ServiceError::Transport("link down".to_string());
+        let std_err2: &dyn std::error::Error = &err2;
+        let display2 = format!("{}", std_err2);
+        assert!(
+            display2.contains("link down"),
+            "Transport display should contain inner message, got: {}",
+            display2
+        );
+        assert!(
+            std_err2.source().is_none(),
+            "Transport error (thiserror transparent=false) should have no source"
+        );
     }
 
     #[test]

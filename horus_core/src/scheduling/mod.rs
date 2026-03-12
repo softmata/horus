@@ -1,6 +1,6 @@
 //! # HORUS Scheduling System
 //!
-//! Orchestrates node execution with preset configurations:
+//! Orchestrates node execution with composable builder methods:
 //!
 //! ```rust,ignore
 //! use horus_core::Scheduler;

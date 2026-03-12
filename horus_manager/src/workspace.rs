@@ -564,7 +564,7 @@ mod tests {
         let horus_dir = tmp.path().join(".horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        // Save and set current dir
+        let _guard = crate::CWD_LOCK.lock().unwrap();
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
@@ -572,7 +572,6 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap(), tmp.path());
 
-        // Restore
         std::env::set_current_dir(original_dir).unwrap();
     }
 
@@ -585,6 +584,7 @@ mod tests {
         )
         .unwrap();
 
+        let _guard = crate::CWD_LOCK.lock().unwrap();
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
@@ -604,6 +604,7 @@ mod tests {
         let sub_dir = tmp.path().join("src/nodes");
         fs::create_dir_all(&sub_dir).unwrap();
 
+        let _guard = crate::CWD_LOCK.lock().unwrap();
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(&sub_dir).unwrap();
 

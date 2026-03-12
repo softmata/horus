@@ -82,15 +82,25 @@ impl fmt::Display for Language {
 pub fn detect_languages(project_dir: &Path) -> Vec<Language> {
     let mut languages = Vec::new();
 
-    if project_dir.join("Cargo.toml").exists() {
+    // Rust: root Cargo.toml (legacy), .horus/Cargo.toml (generated), or .rs source files
+    let has_rust = project_dir.join("Cargo.toml").exists()
+        || project_dir.join(".horus/Cargo.toml").exists()
+        || has_files_with_ext(project_dir, "rs");
+    if has_rust {
         languages.push(Language::Rust);
     }
-    if project_dir.join("pyproject.toml").exists()
+
+    // Python: root pyproject.toml (legacy), .horus/pyproject.toml (generated), setup.py,
+    // requirements.txt, or .py source files
+    let has_python = project_dir.join("pyproject.toml").exists()
+        || project_dir.join(".horus/pyproject.toml").exists()
         || project_dir.join("setup.py").exists()
         || project_dir.join("requirements.txt").exists()
-    {
+        || has_files_with_ext(project_dir, "py");
+    if has_python {
         languages.push(Language::Python);
     }
+
     if project_dir.join("CMakeLists.txt").exists() {
         languages.push(Language::Cpp);
     }
@@ -101,7 +111,25 @@ pub fn detect_languages(project_dir: &Path) -> Vec<Language> {
     languages
 }
 
+/// Check if a directory contains files with the given extension (root + src/).
+fn has_files_with_ext(dir: &Path, ext: &str) -> bool {
+    let check = |d: &Path| -> bool {
+        if let Ok(entries) = std::fs::read_dir(d) {
+            for entry in entries.flatten() {
+                if let Some(e) = entry.path().extension() {
+                    if e == ext {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
+    check(dir) || check(&dir.join("src"))
+}
+
 /// Detect languages or return an error with a helpful message.
+#[cfg(test)]
 pub fn detect_languages_or_error(project_dir: &Path) -> Result<Vec<Language>> {
     let languages = detect_languages(project_dir);
     if languages.is_empty() {
@@ -159,6 +187,7 @@ pub struct HorusManifest {
     pub enable: Vec<String>,
 }
 
+#[cfg(test)]
 impl HorusManifest {
     /// Get all crates.io dependencies (for Cargo.toml generation).
     pub fn crates_io_deps(&self) -> BTreeMap<&str, &DependencyValue> {
@@ -511,40 +540,34 @@ impl IgnoreConfig {
 
 // ─── HorusManifest: loading ─────────────────────────────────────────────────
 
-/// The format the manifest was loaded from.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ManifestOrigin {
-    Toml,
-}
-
 impl HorusManifest {
     /// Load manifest from a TOML file path.
-    pub fn load_from(path: &Path) -> Result<(Self, ManifestOrigin)> {
+    pub fn load_from(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read manifest: {}", path.display()))?;
 
         let manifest: HorusManifest = toml::from_str(&content)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
-        Ok((manifest, ManifestOrigin::Toml))
+        Ok(manifest)
     }
 
     /// Search upward from the current directory to find and load a manifest.
     ///
     /// Searches for `horus.toml` in the current directory and parent directories.
     /// Returns the manifest and the directory it was found in.
-    pub fn find_and_load() -> Result<(Self, PathBuf, ManifestOrigin)> {
+    pub fn find_and_load() -> Result<(Self, PathBuf)> {
         Self::find_and_load_from(std::env::current_dir()?)
     }
 
     /// Search upward from `start_dir` to find and load a manifest.
-    pub fn find_and_load_from(start_dir: PathBuf) -> Result<(Self, PathBuf, ManifestOrigin)> {
+    pub fn find_and_load_from(start_dir: PathBuf) -> Result<(Self, PathBuf)> {
         let mut current = start_dir;
 
         for _ in 0..10 {
             let toml_path = current.join(HORUS_TOML);
             if toml_path.exists() {
-                let (manifest, origin) = Self::load_from(&toml_path)?;
-                return Ok((manifest, current, origin));
+                let manifest = Self::load_from(&toml_path)?;
+                return Ok((manifest, current));
             }
 
             if let Some(parent) = current.parent() {
@@ -855,8 +878,7 @@ version = "not-semver"
         assert!(path.exists());
 
         // 2. Load from disk
-        let (loaded, origin) = HorusManifest::load_from(&path).unwrap();
-        assert!(matches!(origin, ManifestOrigin::Toml));
+        let loaded = HorusManifest::load_from(&path).unwrap();
         assert_eq!(loaded.package.name, "lifecycle-test");
         assert_eq!(loaded.drivers.len(), 2);
         assert_eq!(loaded.enable, vec!["cuda"]);
@@ -1142,6 +1164,197 @@ version = "0.1.0"
         assert!(manifest.scripts.is_empty());
     }
 
+    // ── DependencyValue helpers ──────────────────────────────────────
+
+    #[test]
+    fn dep_value_simple_version() {
+        let dep = DependencyValue::Simple("1.0".to_string());
+        assert_eq!(dep.version(), Some("1.0"));
+        assert!(dep.features().is_empty());
+        assert!(dep.is_registry());
+        assert!(!dep.is_crates_io());
+        assert!(!dep.is_pypi());
+        assert!(!dep.is_path());
+    }
+
+    #[test]
+    fn dep_value_detailed_optional() {
+        let dep = DependencyValue::Detailed(DetailedDependency {
+            version: Some("1.0".to_string()),
+            source: Some(DepSource::CratesIo),
+            features: vec!["derive".to_string(), "serde".to_string()],
+            optional: true,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        });
+        assert_eq!(dep.version(), Some("1.0"));
+        assert_eq!(dep.features().len(), 2);
+        assert!(dep.is_crates_io());
+        match dep {
+            DependencyValue::Detailed(d) => assert!(d.optional),
+            _ => panic!("expected Detailed"),
+        }
+    }
+
+    #[test]
+    fn dep_value_no_version() {
+        let dep = DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            source: Some(DepSource::System),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        });
+        assert!(dep.version().is_none());
+        assert_eq!(dep.effective_source(), DepSource::System);
+    }
+
+    // ── Display impls ─────────────────────────────────────────────────
+
+    #[test]
+    fn language_display() {
+        assert_eq!(format!("{}", Language::Rust), "rust");
+        assert_eq!(format!("{}", Language::Python), "python");
+        assert_eq!(format!("{}", Language::Cpp), "cpp");
+        assert_eq!(format!("{}", Language::Ros2), "ros2");
+    }
+
+    #[test]
+    fn dep_source_display() {
+        assert_eq!(format!("{}", DepSource::Registry), "registry");
+        assert_eq!(format!("{}", DepSource::CratesIo), "crates.io");
+        assert_eq!(format!("{}", DepSource::PyPI), "pypi");
+        assert_eq!(format!("{}", DepSource::System), "system");
+        assert_eq!(format!("{}", DepSource::Path), "path");
+        assert_eq!(format!("{}", DepSource::Git), "git");
+    }
+
+    #[test]
+    fn dep_source_default_is_registry() {
+        assert_eq!(DepSource::default(), DepSource::Registry);
+    }
+
+    #[test]
+    fn package_type_display() {
+        assert_eq!(format!("{}", PackageType::Node), "node");
+        assert_eq!(format!("{}", PackageType::Driver), "driver");
+        assert_eq!(format!("{}", PackageType::Tool), "tool");
+        assert_eq!(format!("{}", PackageType::Algorithm), "algorithm");
+        assert_eq!(format!("{}", PackageType::Model), "model");
+        assert_eq!(format!("{}", PackageType::Message), "message");
+        assert_eq!(format!("{}", PackageType::App), "app");
+    }
+
+    // ── File I/O ──────────────────────────────────────────────────────
+
+    #[test]
+    fn load_from_nonexistent_fails() {
+        let result = HorusManifest::load_from(Path::new("/tmp/nonexistent_horus_toml_xyz.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_from_invalid_toml_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HORUS_TOML);
+        fs::write(&path, "this is not valid toml {{{{").unwrap();
+        let result = HorusManifest::load_from(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn save_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HORUS_TOML);
+
+        let manifest = HorusManifest {
+            package: PackageInfo {
+                name: "save-test".to_string(),
+                version: "1.2.3".to_string(),
+                description: None,
+                authors: vec![],
+                license: None,
+                edition: "1".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+            },
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+        };
+
+        manifest.save_to(&path).unwrap();
+        let loaded = HorusManifest::load_from(&path).unwrap();
+        assert_eq!(loaded.package.name, "save-test");
+        assert_eq!(loaded.package.version, "1.2.3");
+    }
+
+    // ── Validation edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_empty_name() {
+        let toml = r#"
+[package]
+name = ""
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml).unwrap();
+        manifest.validate().unwrap_err();
+    }
+
+    #[test]
+    fn validate_name_at_min_length() {
+        let toml = r#"
+[package]
+name = "ab"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml).unwrap();
+        // 2-char name should pass
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_core_reserved() {
+        let toml = r#"
+[package]
+name = "core"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml).unwrap();
+        manifest.validate().unwrap_err();
+    }
+
+    // ── path_deps filter ──────────────────────────────────────────────
+
+    #[test]
+    fn path_deps_filter() {
+        let toml_str = r#"
+[package]
+name = "dep-filter"
+version = "0.1.0"
+
+[dependencies]
+my-lib = { path = "../my-lib" }
+serde = { version = "1.0", source = "crates.io" }
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        let path = manifest.path_deps();
+        assert_eq!(path.len(), 1);
+        assert!(path.contains_key("my-lib"));
+    }
+
     #[test]
     fn dep_roundtrip_serialization() {
         let toml_str = r#"
@@ -1161,6 +1374,926 @@ serde = { version = "1.0", features = ["derive"], source = "crates.io" }
         assert_eq!(
             reloaded.dependencies["serde"].features(),
             &["derive"]
+        );
+    }
+
+    // ── Battle-testing: edge cases & robustness ──────────────────────
+
+    /// 1. Parse a manifest with ALL sections populated.
+    #[test]
+    fn battle_parse_all_sections_populated() {
+        let toml_str = r#"
+enable = ["cuda", "editor", "profiling"]
+
+[package]
+name = "mega-robot"
+version = "2.3.1"
+description = "All sections populated"
+authors = ["Alice <alice@example.com>", "Bob <bob@example.com>"]
+license = "MIT"
+edition = "1"
+repository = "https://github.com/softmata/mega-robot"
+package-type = "app"
+categories = ["robotics", "planning", "simulation"]
+
+[dependencies]
+horus_library = "0.1.9"
+serde = { version = "1.0", features = ["derive"], source = "crates.io" }
+numpy = { version = ">=1.24", source = "pypi" }
+my-lib = { path = "../my-lib" }
+some-fork = { git = "https://github.com/org/repo", branch = "dev" }
+libudev-dev = { source = "system" }
+my-registry-pkg = { version = "^3.0", source = "registry" }
+
+[dev-dependencies]
+criterion = { version = "0.5", source = "crates.io" }
+pytest = { version = ">=7.0", source = "pypi" }
+
+[drivers]
+camera = "opencv"
+lidar = "rplidar-a2"
+gps = true
+imu = false
+
+[scripts]
+sim = "horus sim start --world warehouse"
+deploy-pi = "horus deploy robot@192.168.1.5 --release"
+test-hw = "cargo test --features hardware"
+lint = "cargo clippy -- -D warnings"
+
+[ignore]
+files = ["debug_*.py", "*.bak"]
+directories = ["old/", "experiments/"]
+packages = ["ipython", "debugpy"]
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+
+        // Package
+        assert_eq!(manifest.package.name, "mega-robot");
+        assert_eq!(manifest.package.version, "2.3.1");
+        assert_eq!(
+            manifest.package.description.as_deref(),
+            Some("All sections populated")
+        );
+        assert_eq!(manifest.package.authors.len(), 2);
+        assert_eq!(manifest.package.license.as_deref(), Some("MIT"));
+        assert_eq!(
+            manifest.package.repository.as_deref(),
+            Some("https://github.com/softmata/mega-robot")
+        );
+        assert_eq!(manifest.package.package_type, Some(PackageType::App));
+        assert_eq!(manifest.package.categories.len(), 3);
+
+        // Dependencies — 7 total with mixed sources
+        assert_eq!(manifest.dependencies.len(), 7);
+        assert!(manifest.dependencies["horus_library"].is_registry());
+        assert!(manifest.dependencies["serde"].is_crates_io());
+        assert!(manifest.dependencies["numpy"].is_pypi());
+        assert!(manifest.dependencies["my-lib"].is_path());
+        assert_eq!(
+            manifest.dependencies["some-fork"].effective_source(),
+            DepSource::Git
+        );
+        assert_eq!(
+            manifest.dependencies["libudev-dev"].effective_source(),
+            DepSource::System
+        );
+        assert!(manifest.dependencies["my-registry-pkg"].is_registry());
+
+        // Dev deps
+        assert_eq!(manifest.dev_dependencies.len(), 2);
+
+        // Drivers — 4 total
+        assert_eq!(manifest.drivers.len(), 4);
+        assert!(matches!(
+            manifest.drivers["camera"],
+            DriverValue::Backend(_)
+        ));
+        assert!(matches!(
+            manifest.drivers["gps"],
+            DriverValue::Enabled(true)
+        ));
+        assert!(matches!(
+            manifest.drivers["imu"],
+            DriverValue::Enabled(false)
+        ));
+
+        // Scripts
+        assert_eq!(manifest.scripts.len(), 4);
+        assert_eq!(manifest.scripts["lint"], "cargo clippy -- -D warnings");
+
+        // Ignore
+        assert_eq!(manifest.ignore.files.len(), 2);
+        assert_eq!(manifest.ignore.directories.len(), 2);
+        assert_eq!(manifest.ignore.packages.len(), 2);
+
+        // Enable
+        assert_eq!(manifest.enable, vec!["cuda", "editor", "profiling"]);
+
+        // Validate
+        let warnings = manifest.validate().unwrap();
+        assert!(warnings.is_empty());
+    }
+
+    /// 2. Validate rejects names with uppercase letters.
+    #[test]
+    fn battle_validate_rejects_uppercase_name() {
+        let toml_str = r#"
+[package]
+name = "MyRobot"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        let err = manifest.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("lowercase"),
+            "Error should mention lowercase requirement: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn battle_validate_rejects_mixed_case_name() {
+        let toml_str = r#"
+[package]
+name = "my-Robot"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.validate().is_err());
+    }
+
+    /// 3. Validate rejects names with dots, spaces, or special characters.
+    #[test]
+    fn battle_validate_rejects_name_with_dot() {
+        let toml_str = r#"
+[package]
+name = "my.robot"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn battle_validate_rejects_name_with_space() {
+        let toml_str = r#"
+[package]
+name = "my robot"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn battle_validate_rejects_name_with_special_chars() {
+        for name in &["my!robot", "my#robot", "my$robot", "my%robot", "my+robot", "my=robot"] {
+            let toml_str = format!(
+                r#"
+[package]
+name = "{}"
+version = "0.1.0"
+"#,
+                name
+            );
+            let manifest: HorusManifest = toml::from_str(&toml_str).unwrap();
+            assert!(
+                manifest.validate().is_err(),
+                "Name '{}' should be rejected",
+                name
+            );
+        }
+    }
+
+    /// 4. Dependencies with ALL source types parse correctly.
+    #[test]
+    fn battle_all_dep_source_types() {
+        let toml_str = r#"
+[package]
+name = "all-sources"
+version = "0.1.0"
+
+[dependencies]
+reg-pkg = "1.0"
+crate-pkg = { version = "2.0", source = "crates.io" }
+pypi-pkg = { version = ">=3.0", source = "pypi" }
+path-pkg = { path = "../local-lib" }
+git-pkg = { git = "https://github.com/org/repo" }
+sys-pkg = { source = "system" }
+explicit-registry = { version = "^4.0", source = "registry" }
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.dependencies.len(), 7);
+
+        assert_eq!(
+            manifest.dependencies["reg-pkg"].effective_source(),
+            DepSource::Registry
+        );
+        assert_eq!(
+            manifest.dependencies["crate-pkg"].effective_source(),
+            DepSource::CratesIo
+        );
+        assert_eq!(
+            manifest.dependencies["pypi-pkg"].effective_source(),
+            DepSource::PyPI
+        );
+        assert_eq!(
+            manifest.dependencies["path-pkg"].effective_source(),
+            DepSource::Path
+        );
+        assert_eq!(
+            manifest.dependencies["git-pkg"].effective_source(),
+            DepSource::Git
+        );
+        assert_eq!(
+            manifest.dependencies["sys-pkg"].effective_source(),
+            DepSource::System
+        );
+        assert_eq!(
+            manifest.dependencies["explicit-registry"].effective_source(),
+            DepSource::Registry
+        );
+    }
+
+    /// 5. Optional deps parse and round-trip correctly.
+    #[test]
+    fn battle_optional_dep_roundtrip() {
+        let toml_str = r#"
+[package]
+name = "optional-test"
+version = "0.1.0"
+
+[dependencies]
+serde = { version = "1.0", source = "crates.io", optional = true }
+tokio = { version = "1.0", source = "crates.io", optional = false }
+simple-dep = "2.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+
+        // Check optional flag parsed
+        match &manifest.dependencies["serde"] {
+            DependencyValue::Detailed(d) => assert!(d.optional, "serde should be optional"),
+            _ => panic!("serde should be Detailed"),
+        }
+        match &manifest.dependencies["tokio"] {
+            DependencyValue::Detailed(d) => assert!(!d.optional, "tokio should not be optional"),
+            _ => panic!("tokio should be Detailed"),
+        }
+
+        // Round-trip
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+        let reloaded: HorusManifest = toml::from_str(&serialized).unwrap();
+
+        match &reloaded.dependencies["serde"] {
+            DependencyValue::Detailed(d) => {
+                assert!(d.optional, "serde should be optional after roundtrip");
+                assert_eq!(d.version.as_deref(), Some("1.0"));
+                assert_eq!(d.source, Some(DepSource::CratesIo));
+            }
+            _ => panic!("serde should remain Detailed after roundtrip"),
+        }
+        // `optional = false` is skip_serializing_if = is_false, so it gets omitted
+        // and re-parsed as default (false) — still correct
+        match &reloaded.dependencies["tokio"] {
+            DependencyValue::Detailed(d) => assert!(!d.optional),
+            _ => panic!("tokio should remain Detailed after roundtrip"),
+        }
+    }
+
+    /// 6. Git deps with tag, rev, branch all parse correctly.
+    #[test]
+    fn battle_git_deps_tag_rev_branch() {
+        let toml_str = r#"
+[package]
+name = "git-variants"
+version = "0.1.0"
+
+[dependencies]
+branch-dep = { git = "https://github.com/org/branch-repo", branch = "develop" }
+tag-dep = { git = "https://github.com/org/tag-repo", tag = "v1.2.3" }
+rev-dep = { git = "https://github.com/org/rev-repo", rev = "abc123def456" }
+bare-git = { git = "https://github.com/org/bare-repo" }
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+
+        // All are git deps
+        for name in &["branch-dep", "tag-dep", "rev-dep", "bare-git"] {
+            assert_eq!(
+                manifest.dependencies[*name].effective_source(),
+                DepSource::Git,
+                "{} should be Git source",
+                name
+            );
+        }
+
+        // Check specific git fields
+        match &manifest.dependencies["branch-dep"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.git.as_deref(), Some("https://github.com/org/branch-repo"));
+                assert_eq!(d.branch.as_deref(), Some("develop"));
+                assert!(d.tag.is_none());
+                assert!(d.rev.is_none());
+            }
+            _ => panic!("expected Detailed"),
+        }
+        match &manifest.dependencies["tag-dep"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.tag.as_deref(), Some("v1.2.3"));
+                assert!(d.branch.is_none());
+                assert!(d.rev.is_none());
+            }
+            _ => panic!("expected Detailed"),
+        }
+        match &manifest.dependencies["rev-dep"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.rev.as_deref(), Some("abc123def456"));
+                assert!(d.branch.is_none());
+                assert!(d.tag.is_none());
+            }
+            _ => panic!("expected Detailed"),
+        }
+        match &manifest.dependencies["bare-git"] {
+            DependencyValue::Detailed(d) => {
+                assert!(d.branch.is_none());
+                assert!(d.tag.is_none());
+                assert!(d.rev.is_none());
+            }
+            _ => panic!("expected Detailed"),
+        }
+    }
+
+    /// 7. `find_and_load_from` searches upward and finds horus.toml in parent.
+    #[test]
+    fn battle_find_and_load_from_parent_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let parent_dir = root.path();
+        let child_dir = parent_dir.join("src").join("nested");
+        fs::create_dir_all(&child_dir).unwrap();
+
+        // Put horus.toml in the parent (root)
+        let toml_content = r#"
+[package]
+name = "found-in-parent"
+version = "0.1.0"
+"#;
+        fs::write(parent_dir.join(HORUS_TOML), toml_content).unwrap();
+
+        // Search from nested child
+        let (manifest, found_dir) =
+            HorusManifest::find_and_load_from(child_dir).unwrap();
+        assert_eq!(manifest.package.name, "found-in-parent");
+        assert_eq!(found_dir, parent_dir);
+    }
+
+    /// 8. `find_and_load_from` returns error when no horus.toml within 10 levels.
+    #[test]
+    fn battle_find_and_load_from_not_found() {
+        let root = tempfile::tempdir().unwrap();
+        // Create a deeply nested directory (no horus.toml anywhere)
+        let mut deep = root.path().to_path_buf();
+        for i in 0..12 {
+            deep = deep.join(format!("level{}", i));
+        }
+        fs::create_dir_all(&deep).unwrap();
+
+        let result = HorusManifest::find_and_load_from(deep);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("No horus.toml found"),
+            "Expected 'No horus.toml found' in error: {}",
+            err_msg
+        );
+    }
+
+    /// 9. Filter methods: crates_io_deps, pypi_deps, registry_deps, path_deps.
+    #[test]
+    fn battle_filter_deps_comprehensive() {
+        let toml_str = r#"
+[package]
+name = "filter-test"
+version = "0.1.0"
+
+[dependencies]
+reg-a = "1.0"
+reg-b = { version = "2.0", source = "registry" }
+crate-a = { version = "1.0", source = "crates.io" }
+crate-b = { version = "2.0", source = "crates.io", features = ["full"] }
+crate-c = { version = "3.0", source = "crates.io" }
+pypi-a = { version = ">=1.0", source = "pypi" }
+pypi-b = { version = ">=2.0", source = "pypi" }
+path-a = { path = "../lib-a" }
+path-b = { path = "../lib-b" }
+path-c = { path = "../lib-c" }
+path-d = { path = "../lib-d" }
+git-dep = { git = "https://github.com/org/repo" }
+sys-dep = { source = "system" }
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.dependencies.len(), 13);
+
+        let crates = manifest.crates_io_deps();
+        assert_eq!(crates.len(), 3);
+        assert!(crates.contains_key("crate-a"));
+        assert!(crates.contains_key("crate-b"));
+        assert!(crates.contains_key("crate-c"));
+
+        let pypi = manifest.pypi_deps();
+        assert_eq!(pypi.len(), 2);
+        assert!(pypi.contains_key("pypi-a"));
+        assert!(pypi.contains_key("pypi-b"));
+
+        let registry = manifest.registry_deps();
+        assert_eq!(registry.len(), 2);
+        assert!(registry.contains_key("reg-a"));
+        assert!(registry.contains_key("reg-b"));
+
+        let path = manifest.path_deps();
+        assert_eq!(path.len(), 4);
+        assert!(path.contains_key("path-a"));
+        assert!(path.contains_key("path-b"));
+        assert!(path.contains_key("path-c"));
+        assert!(path.contains_key("path-d"));
+
+        // git and system deps should not appear in any of the above filters
+        assert!(!crates.contains_key("git-dep"));
+        assert!(!pypi.contains_key("git-dep"));
+        assert!(!registry.contains_key("git-dep"));
+        assert!(!path.contains_key("git-dep"));
+        assert!(!crates.contains_key("sys-dep"));
+    }
+
+    /// 10. Save -> Load round-trip preserves all fields including optional ones.
+    #[test]
+    fn battle_full_roundtrip_preserves_all_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HORUS_TOML);
+
+        let manifest = HorusManifest {
+            package: PackageInfo {
+                name: "roundtrip-full".to_string(),
+                version: "3.2.1".to_string(),
+                description: Some("Full roundtrip test".to_string()),
+                authors: vec![
+                    "Alice <alice@example.com>".to_string(),
+                    "Bob <bob@example.com>".to_string(),
+                ],
+                license: Some("Apache-2.0".to_string()),
+                edition: "1".to_string(),
+                repository: Some("https://github.com/softmata/roundtrip".to_string()),
+                package_type: Some(PackageType::Algorithm),
+                categories: vec!["planning".to_string(), "ml".to_string()],
+            },
+            dependencies: {
+                let mut deps = BTreeMap::new();
+                deps.insert(
+                    "simple-reg".to_string(),
+                    DependencyValue::Simple("1.0".to_string()),
+                );
+                deps.insert(
+                    "crate-dep".to_string(),
+                    DependencyValue::Detailed(DetailedDependency {
+                        version: Some("2.0".to_string()),
+                        source: Some(DepSource::CratesIo),
+                        features: vec!["feat-a".to_string(), "feat-b".to_string()],
+                        optional: true,
+                        path: None,
+                        git: None,
+                        branch: None,
+                        tag: None,
+                        rev: None,
+                    }),
+                );
+                deps.insert(
+                    "git-dep".to_string(),
+                    DependencyValue::Detailed(DetailedDependency {
+                        version: None,
+                        source: Some(DepSource::Git),
+                        features: vec![],
+                        optional: false,
+                        path: None,
+                        git: Some("https://github.com/org/repo".to_string()),
+                        branch: None,
+                        tag: Some("v1.0.0".to_string()),
+                        rev: None,
+                    }),
+                );
+                deps.insert(
+                    "path-dep".to_string(),
+                    DependencyValue::Detailed(DetailedDependency {
+                        version: None,
+                        source: None,
+                        features: vec![],
+                        optional: false,
+                        path: Some("../local".to_string()),
+                        git: None,
+                        branch: None,
+                        tag: None,
+                        rev: None,
+                    }),
+                );
+                deps
+            },
+            dev_dependencies: {
+                let mut dd = BTreeMap::new();
+                dd.insert(
+                    "test-crate".to_string(),
+                    DependencyValue::Detailed(DetailedDependency {
+                        version: Some("0.5".to_string()),
+                        source: Some(DepSource::CratesIo),
+                        features: vec![],
+                        optional: false,
+                        path: None,
+                        git: None,
+                        branch: None,
+                        tag: None,
+                        rev: None,
+                    }),
+                );
+                dd
+            },
+            drivers: {
+                let mut d = BTreeMap::new();
+                d.insert("camera".to_string(), DriverValue::Backend("opencv".to_string()));
+                d.insert("gps".to_string(), DriverValue::Enabled(true));
+                d
+            },
+            scripts: {
+                let mut s = BTreeMap::new();
+                s.insert("build".to_string(), "cargo build --release".to_string());
+                s.insert("test".to_string(), "cargo test".to_string());
+                s
+            },
+            ignore: IgnoreConfig {
+                files: vec!["*.bak".to_string(), "debug_*".to_string()],
+                directories: vec!["tmp/".to_string()],
+                packages: vec!["ipython".to_string()],
+            },
+            enable: vec!["cuda".to_string(), "profiling".to_string()],
+        };
+
+        manifest.save_to(&path).unwrap();
+        let loaded = HorusManifest::load_from(&path).unwrap();
+
+        // Package fields
+        assert_eq!(loaded.package.name, "roundtrip-full");
+        assert_eq!(loaded.package.version, "3.2.1");
+        assert_eq!(
+            loaded.package.description.as_deref(),
+            Some("Full roundtrip test")
+        );
+        assert_eq!(loaded.package.authors.len(), 2);
+        assert_eq!(loaded.package.license.as_deref(), Some("Apache-2.0"));
+        assert_eq!(
+            loaded.package.repository.as_deref(),
+            Some("https://github.com/softmata/roundtrip")
+        );
+        assert_eq!(loaded.package.package_type, Some(PackageType::Algorithm));
+        assert_eq!(loaded.package.categories, vec!["planning", "ml"]);
+
+        // Dependencies preserved
+        assert_eq!(loaded.dependencies.len(), 4);
+        assert!(loaded.dependencies["simple-reg"].is_registry());
+        assert!(loaded.dependencies["crate-dep"].is_crates_io());
+        match &loaded.dependencies["crate-dep"] {
+            DependencyValue::Detailed(d) => {
+                assert!(d.optional);
+                assert_eq!(d.features, vec!["feat-a", "feat-b"]);
+            }
+            _ => panic!("expected Detailed"),
+        }
+        match &loaded.dependencies["git-dep"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.tag.as_deref(), Some("v1.0.0"));
+                assert_eq!(d.git.as_deref(), Some("https://github.com/org/repo"));
+            }
+            _ => panic!("expected Detailed"),
+        }
+        assert!(loaded.dependencies["path-dep"].is_path());
+
+        // Dev deps
+        assert_eq!(loaded.dev_dependencies.len(), 1);
+        assert!(loaded.dev_dependencies["test-crate"].is_crates_io());
+
+        // Drivers
+        assert_eq!(loaded.drivers.len(), 2);
+
+        // Scripts
+        assert_eq!(loaded.scripts.len(), 2);
+        assert_eq!(loaded.scripts["build"], "cargo build --release");
+
+        // Ignore
+        assert_eq!(loaded.ignore.files.len(), 2);
+        assert_eq!(loaded.ignore.directories, vec!["tmp/"]);
+        assert_eq!(loaded.ignore.packages, vec!["ipython"]);
+
+        // Enable
+        assert_eq!(loaded.enable, vec!["cuda", "profiling"]);
+    }
+
+    /// 11. Empty sections are omitted in serialized output (skip_serializing_if).
+    #[test]
+    fn battle_empty_sections_omitted_in_serialized() {
+        let manifest = HorusManifest {
+            package: PackageInfo {
+                name: "minimal-out".to_string(),
+                version: "0.1.0".to_string(),
+                description: None,
+                authors: vec![],
+                license: None,
+                edition: "1".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+            },
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+        };
+
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+
+        // Empty sections should NOT appear
+        assert!(
+            !serialized.contains("[dependencies]"),
+            "Empty dependencies should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("[dev-dependencies]"),
+            "Empty dev-dependencies should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("[drivers]"),
+            "Empty drivers should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("[scripts]"),
+            "Empty scripts should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("[ignore]"),
+            "Empty ignore should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("enable"),
+            "Empty enable should be omitted: {}",
+            serialized
+        );
+
+        // Optional package fields should also be omitted
+        assert!(
+            !serialized.contains("description"),
+            "None description should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("license"),
+            "None license should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("repository"),
+            "None repository should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("package-type"),
+            "None package_type should be omitted: {}",
+            serialized
+        );
+        assert!(
+            !serialized.contains("edition"),
+            "Default edition '1' should be omitted: {}",
+            serialized
+        );
+
+        // But [package], name, version must exist
+        assert!(serialized.contains("[package]"));
+        assert!(serialized.contains("minimal-out"));
+        assert!(serialized.contains("0.1.0"));
+    }
+
+    /// 12. Manifest with no dependencies at all is valid.
+    #[test]
+    fn battle_no_deps_is_valid() {
+        let toml_str = r#"
+[package]
+name = "no-deps"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        let warnings = manifest.validate().unwrap();
+        assert!(warnings.is_empty());
+        assert!(manifest.dependencies.is_empty());
+        assert!(manifest.dev_dependencies.is_empty());
+        assert_eq!(manifest.crates_io_deps().len(), 0);
+        assert_eq!(manifest.pypi_deps().len(), 0);
+        assert_eq!(manifest.registry_deps().len(), 0);
+        assert_eq!(manifest.path_deps().len(), 0);
+        assert!(manifest.languages_from_deps().is_empty());
+    }
+
+    /// 13. Multiple drivers with both Backend and Enabled forms.
+    #[test]
+    fn battle_multiple_drivers_mixed_forms() {
+        let toml_str = r#"
+[package]
+name = "multi-driver"
+version = "0.1.0"
+
+[drivers]
+camera = "opencv"
+lidar = "rplidar-a2"
+gps = true
+imu = false
+depth-camera = "realsense"
+motor-controller = true
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.drivers.len(), 6);
+
+        // Backend forms
+        match &manifest.drivers["camera"] {
+            DriverValue::Backend(s) => assert_eq!(s, "opencv"),
+            _ => panic!("expected Backend"),
+        }
+        match &manifest.drivers["lidar"] {
+            DriverValue::Backend(s) => assert_eq!(s, "rplidar-a2"),
+            _ => panic!("expected Backend"),
+        }
+        match &manifest.drivers["depth-camera"] {
+            DriverValue::Backend(s) => assert_eq!(s, "realsense"),
+            _ => panic!("expected Backend"),
+        }
+
+        // Enabled forms
+        assert!(matches!(
+            manifest.drivers["gps"],
+            DriverValue::Enabled(true)
+        ));
+        assert!(matches!(
+            manifest.drivers["imu"],
+            DriverValue::Enabled(false)
+        ));
+        assert!(matches!(
+            manifest.drivers["motor-controller"],
+            DriverValue::Enabled(true)
+        ));
+
+        // Round-trip drivers
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+        let reloaded: HorusManifest = toml::from_str(&serialized).unwrap();
+        assert_eq!(reloaded.drivers.len(), 6);
+        assert!(matches!(
+            reloaded.drivers["camera"],
+            DriverValue::Backend(_)
+        ));
+        assert!(matches!(
+            reloaded.drivers["gps"],
+            DriverValue::Enabled(true)
+        ));
+    }
+
+    // ── Additional robustness edge cases ─────────────────────────────
+
+    /// Name with allowed special chars: @ and / (scoped names).
+    #[test]
+    fn battle_validate_accepts_scoped_name() {
+        let toml_str = r#"
+[package]
+name = "@softmata/my-robot"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.validate().is_ok());
+    }
+
+    /// Name at maximum length (64 chars).
+    #[test]
+    fn battle_validate_name_at_max_length() {
+        // 64 chars of lowercase
+        let name = "a".repeat(64);
+        let toml_str = format!(
+            r#"
+[package]
+name = "{}"
+version = "0.1.0"
+"#,
+            name
+        );
+        let manifest: HorusManifest = toml::from_str(&toml_str).unwrap();
+        assert!(manifest.validate().is_ok());
+    }
+
+    /// Name exceeding maximum length (65 chars).
+    #[test]
+    fn battle_validate_name_exceeds_max_length() {
+        let name = "a".repeat(65);
+        let toml_str = format!(
+            r#"
+[package]
+name = "{}"
+version = "0.1.0"
+"#,
+            name
+        );
+        let manifest: HorusManifest = toml::from_str(&toml_str).unwrap();
+        assert!(manifest.validate().is_err());
+    }
+
+    /// Git dep with version + features together.
+    #[test]
+    fn battle_git_dep_with_version_and_features() {
+        let toml_str = r#"
+[package]
+name = "git-feat"
+version = "0.1.0"
+
+[dependencies]
+complex-git = { git = "https://github.com/org/repo", tag = "v2.0", version = "2.0", features = ["async", "tls"] }
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        match &manifest.dependencies["complex-git"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.git.as_deref(), Some("https://github.com/org/repo"));
+                assert_eq!(d.tag.as_deref(), Some("v2.0"));
+                assert_eq!(d.version.as_deref(), Some("2.0"));
+                assert_eq!(d.features, vec!["async", "tls"]);
+                assert_eq!(d.effective_source(), DepSource::Git);
+            }
+            _ => panic!("expected Detailed"),
+        }
+    }
+
+    /// Verify find_and_load_from finds horus.toml in current dir (not just parent).
+    #[test]
+    fn battle_find_and_load_from_current_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_content = r#"
+[package]
+name = "found-here"
+version = "0.1.0"
+"#;
+        fs::write(dir.path().join(HORUS_TOML), toml_content).unwrap();
+
+        let (manifest, found_dir) =
+            HorusManifest::find_and_load_from(dir.path().to_path_buf()).unwrap();
+        assert_eq!(manifest.package.name, "found-here");
+        assert_eq!(found_dir, dir.path());
+    }
+
+    /// All reserved names are rejected.
+    #[test]
+    fn battle_validate_all_reserved_names() {
+        let reserved = [
+            "horus", "core", "std", "lib", "test", "main", "admin", "api", "root", "system",
+            "internal", "config", "setup", "install",
+        ];
+        for name in &reserved {
+            let toml_str = format!(
+                r#"
+[package]
+name = "{}"
+version = "0.1.0"
+"#,
+                name
+            );
+            let manifest: HorusManifest = toml::from_str(&toml_str).unwrap();
+            assert!(
+                manifest.validate().is_err(),
+                "Reserved name '{}' should be rejected",
+                name
+            );
+        }
+    }
+
+    /// Verify that multiple validation errors are aggregated.
+    #[test]
+    fn battle_validate_multiple_errors_aggregated() {
+        // Name too short AND has uppercase → both errors should be reported
+        let toml_str = r#"
+[package]
+name = "X"
+version = "not-semver"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        let err = manifest.validate().unwrap_err();
+        let msg = format!("{}", err);
+        // Should contain at least 2 error items (name length, name chars, bad version)
+        assert!(
+            msg.contains("2.") || msg.contains("3."),
+            "Should have multiple numbered errors: {}",
+            msg
         );
     }
 }

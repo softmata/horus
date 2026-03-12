@@ -99,7 +99,7 @@ impl RuntimeProfiler {
     }
 
     /// Disable profiling
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn disable(&mut self) {
         self.enabled = false;
     }

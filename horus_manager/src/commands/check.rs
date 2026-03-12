@@ -200,7 +200,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             }
 
             match HorusManifest::load_from(toml_path) {
-                Ok((manifest, _)) => {
+                Ok(manifest) => {
                     let mut file_errors: Vec<String> = Vec::new();
                     let base_dir = toml_path.parent().unwrap_or(Path::new("."));
 
@@ -576,7 +576,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     // 1. TOML Syntax Validation
     print!("  {} Validating TOML syntax... ", "▸".cyan());
     let manifest = match HorusManifest::load_from(manifest_path) {
-        Ok((m, _)) => {
+        Ok(m) => {
             println!("{}", cli_output::ICON_SUCCESS.green());
             Some(m)
         }
@@ -969,7 +969,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
             let horus_toml_path = base_dir.join(HORUS_TOML);
             if horus_toml_path.exists() {
                 HorusManifest::load_from(&horus_toml_path)
-                    .map(|(m, _)| {
+                    .map(|m| {
                         m.dependencies.keys().any(|k| k.contains("horus"))
                     })
                     .unwrap_or(false)
@@ -1323,7 +1323,7 @@ mod tests {
         );
         // Also verify the manifest can be independently loaded and parsed
         let toml_path = dir.path().join("horus.toml");
-        let (manifest, _) = HorusManifest::load_from(&toml_path).unwrap();
+        let manifest = HorusManifest::load_from(&toml_path).unwrap();
         assert_eq!(manifest.package.version, "1.2.3");
         assert_eq!(manifest.package.name, "my-robot");
     }
@@ -1367,7 +1367,7 @@ mod tests {
         );
         // Verify the name round-trips correctly through manifest parsing
         let toml_path = dir.path().join("horus.toml");
-        let (manifest, _) = HorusManifest::load_from(&toml_path).unwrap();
+        let manifest = HorusManifest::load_from(&toml_path).unwrap();
         assert_eq!(manifest.package.name, "my-robot_v2",
             "name with hyphens and underscores should round-trip through parsing");
     }
@@ -1555,6 +1555,133 @@ mod tests {
         assert_eq!(install_local, MissingSystemChoice::InstallLocal);
         assert_eq!(skip, MissingSystemChoice::Skip);
         assert_ne!(install_global, skip);
+    }
+
+    // ── Battle-testing: check on full project structure ──────────────────
+
+    #[test]
+    fn battle_check_valid_rust_project() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, r#"[package]
+name = "my-robot"
+version = "0.1.0"
+"#);
+        // Create a Cargo.toml so it detects Rust
+        fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n").unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let result = run_check(Some(dir.path().to_path_buf()), true, false);
+        assert!(result.is_ok(), "Valid Rust project should pass check: {:?}", result.err());
+    }
+
+    #[test]
+    fn battle_check_valid_python_project() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, r#"[package]
+name = "py-robot"
+version = "0.1.0"
+"#);
+        fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"py-robot\"\n").unwrap();
+        fs::write(dir.path().join("main.py"), "print('hello')").unwrap();
+
+        let result = run_check(Some(dir.path().to_path_buf()), true, false);
+        assert!(result.is_ok(), "Valid Python project should pass check: {:?}", result.err());
+    }
+
+    #[test]
+    fn battle_check_directory_without_horus_toml() {
+        let dir = TempDir::new().unwrap();
+        // No horus.toml at all
+        let result = run_check(Some(dir.path().to_path_buf()), true, false);
+        // Should still work — check reports warnings but doesn't necessarily error
+        // (depends on what check.rs does for a dir without horus.toml)
+        // The important thing is it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn battle_check_json_mode_valid() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, r#"[package]
+name = "json-robot"
+version = "1.0.0"
+"#);
+        let result = run_check(Some(dir.path().join("horus.toml")), true, true);
+        assert!(result.is_ok(), "JSON mode check on valid toml should pass");
+    }
+
+    #[test]
+    fn battle_check_json_mode_nonexistent() {
+        let result = run_check(
+            Some(PathBuf::from("/tmp/nonexistent_path_battle_test")),
+            true,
+            true,
+        );
+        assert!(result.is_err(), "JSON mode check on nonexistent path should fail");
+    }
+
+    #[test]
+    fn battle_check_toml_with_all_sections() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, r#"[package]
+name = "full-robot"
+version = "2.0.0"
+description = "A complete robot project"
+authors = ["dev@example.com"]
+license = "MIT"
+
+enable = ["cuda", "profiling"]
+
+[dependencies]
+serde = "1.0"
+tokio = { version = "1.28", features = ["full"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[drivers]
+camera = "opencv"
+lidar = true
+
+[scripts]
+sim = "echo simulation"
+test-hw = "echo hardware test"
+"#);
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        assert!(result.is_ok(), "Full horus.toml with all sections should pass: {:?}", result.err());
+    }
+
+    #[test]
+    fn battle_check_empty_package_name() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, "[package]\nname = \"\"\nversion = \"0.1.0\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        assert!(result.is_err(), "Empty package name should fail");
+    }
+
+    #[test]
+    fn battle_check_reserved_name() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, "[package]\nname = \"horus\"\nversion = \"0.1.0\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        assert!(result.is_err(), "Reserved name 'horus' should fail check");
+    }
+
+    #[test]
+    fn battle_check_version_with_prerelease() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, "[package]\nname = \"pre-robot\"\nversion = \"1.0.0-alpha.1\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        assert!(result.is_ok(), "Pre-release semver should pass: {:?}", result.err());
+    }
+
+    #[test]
+    fn battle_check_version_with_build_metadata() {
+        let dir = TempDir::new().unwrap();
+        write_toml(&dir, "[package]\nname = \"build-robot\"\nversion = \"1.0.0+build.123\"\n");
+        let result = run_check(Some(dir.path().join("horus.toml")), true, false);
+        assert!(result.is_ok(), "Build metadata version should pass: {:?}", result.err());
     }
 }
 

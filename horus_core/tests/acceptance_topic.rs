@@ -538,12 +538,42 @@ fn test_topics_macro_type_safety_compile_time() {
     // If the types were wrong, this test wouldn't compile at all.
 
     // MOTOR_CMD is TopicDescriptor<MotorCommand> — name() gives the topic string
-    let _pub: horus_core::Topic<MotorCommand> =
+    let cmd_topic: horus_core::Topic<MotorCommand> =
         horus_core::Topic::new(MOTOR_CMD.name()).expect("typed topic");
 
     // ENCODER_FB is TopicDescriptor<EncoderFeedback>
-    let _sub: horus_core::Topic<EncoderFeedback> =
+    let fb_topic: horus_core::Topic<EncoderFeedback> =
         horus_core::Topic::new(ENCODER_FB.name()).expect("typed topic");
+
+    // Verify descriptor names are wired correctly
+    assert_eq!(MOTOR_CMD.name(), "test_topics_macro_motor_cmd");
+    assert_eq!(ENCODER_FB.name(), "test_topics_macro_encoder_fb");
+
+    // Roundtrip: send on cmd_topic and receive back
+    let cmd = MotorCommand {
+        velocity: 3.14,
+        torque: 2.71,
+    };
+    cmd_topic.send(cmd.clone());
+    let received = cmd_topic.recv();
+    assert_eq!(
+        received,
+        Some(cmd),
+        "Typed topic from macro descriptor should support send/recv roundtrip"
+    );
+
+    // Roundtrip on feedback topic
+    let fb = EncoderFeedback {
+        position: 1.0,
+        velocity: 2.0,
+    };
+    fb_topic.send(fb.clone());
+    let received_fb = fb_topic.recv();
+    assert_eq!(
+        received_fb,
+        Some(fb),
+        "Feedback topic from macro descriptor should support send/recv roundtrip"
+    );
 }
 
 #[test]

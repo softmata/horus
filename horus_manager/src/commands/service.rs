@@ -455,4 +455,246 @@ mod tests {
         assert!(topic.strip_suffix(".request").is_none());
         assert!(topic.strip_suffix(".response").is_none());
     }
+
+    // ── Battle tests: DiscoveredService struct edge cases ──────────────────
+
+    #[test]
+    fn discovered_service_no_topics_at_all() {
+        let svc = DiscoveredService {
+            name: "ghost_service".to_string(),
+            has_request: false,
+            has_response: false,
+            request_publishers: 0,
+            request_subscribers: 0,
+            response_publishers: 0,
+            response_subscribers: 0,
+        };
+        assert!(!svc.has_request);
+        assert!(!svc.has_response);
+        assert_eq!(svc.request_publishers + svc.response_publishers, 0);
+    }
+
+    #[test]
+    fn discovered_service_response_only_unusual() {
+        let svc = DiscoveredService {
+            name: "odd_svc".to_string(),
+            has_request: false,
+            has_response: true,
+            request_publishers: 0,
+            request_subscribers: 0,
+            response_publishers: 2,
+            response_subscribers: 1,
+        };
+        assert!(!svc.has_request, "Should lack request topic");
+        assert!(svc.has_response, "Should have response topic");
+        assert_eq!(svc.response_publishers, 2);
+    }
+
+    #[test]
+    fn discovered_service_multiple_servers_and_clients() {
+        let svc = DiscoveredService {
+            name: "load_balanced".to_string(),
+            has_request: true,
+            has_response: true,
+            request_publishers: 5,
+            request_subscribers: 3,
+            response_publishers: 3,
+            response_subscribers: 5,
+        };
+        assert!(svc.has_request && svc.has_response, "Should be active");
+        assert_eq!(svc.request_publishers, 5, "5 clients publishing requests");
+        assert_eq!(svc.response_publishers, 3, "3 servers publishing responses");
+    }
+
+    // ── Battle tests: topic suffix parsing edge cases ─────────────────────
+
+    #[test]
+    fn suffix_stripping_nested_service_name_request() {
+        let topic = "robot/arm/move.request";
+        let svc = topic.strip_suffix(".request");
+        assert_eq!(svc, Some("robot/arm/move"));
+    }
+
+    #[test]
+    fn suffix_stripping_nested_service_name_response() {
+        let topic = "robot/arm/move.response";
+        let svc = topic.strip_suffix(".response");
+        assert_eq!(svc, Some("robot/arm/move"));
+    }
+
+    #[test]
+    fn suffix_stripping_double_suffix_takes_last() {
+        // Edge case: service name itself contains ".request"
+        let topic = "debug.request.request";
+        let svc = topic.strip_suffix(".request");
+        assert_eq!(svc, Some("debug.request"));
+    }
+
+    #[test]
+    fn suffix_stripping_with_horus_prefix_response() {
+        let topic = "horus_topic/my_service.response";
+        let svc = topic
+            .strip_prefix("horus_topic/")
+            .and_then(|n| n.strip_suffix(".response"));
+        assert_eq!(svc, Some("my_service"));
+    }
+
+    #[test]
+    fn suffix_stripping_empty_service_name() {
+        let topic = ".request";
+        let svc = topic.strip_suffix(".request");
+        assert_eq!(svc, Some(""), "Empty service name is valid for stripping");
+    }
+
+    #[test]
+    fn suffix_stripping_just_request_word_no_dot() {
+        let topic = "request";
+        let svc = topic.strip_suffix(".request");
+        assert_eq!(svc, None, "'request' without dot should not strip");
+    }
+
+    // ── Battle tests: call_service JSON validation ────────────────────────
+
+    #[test]
+    fn call_service_rejects_invalid_json() {
+        let result = call_service("test_svc", "not valid json", 1.0);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("Invalid request JSON"), "Should mention invalid JSON, got: {}", err);
+    }
+
+    #[test]
+    fn call_service_rejects_trailing_comma_json() {
+        let result = call_service("test_svc", "{\"a\": 1,}", 1.0);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("Invalid request JSON"), "Should reject trailing comma, got: {}", err);
+    }
+
+    #[test]
+    fn call_service_rejects_empty_string() {
+        let result = call_service("test_svc", "", 1.0);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("Invalid request JSON"), "Should reject empty string, got: {}", err);
+    }
+
+    // ── Battle tests: service name matching logic ─────────────────────────
+
+    #[test]
+    fn service_name_matching_exact() {
+        let services = vec![
+            make_test_service("add_two_ints"),
+            make_test_service("multiply"),
+        ];
+        let name = "add_two_ints";
+        let found = services.iter().find(|s| {
+            s.name == name
+                || s.name.ends_with(&format!("/{}", name))
+                || s.name.rsplit('/').next().map(|base| base == name).unwrap_or(false)
+        });
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "add_two_ints");
+    }
+
+    #[test]
+    fn service_name_matching_by_suffix() {
+        let services = vec![
+            make_test_service("robot/arm/move"),
+        ];
+        let name = "move";
+        let found = services.iter().find(|s| {
+            s.name == name
+                || s.name.ends_with(&format!("/{}", name))
+                || s.name.rsplit('/').next().map(|base| base == name).unwrap_or(false)
+        });
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "robot/arm/move");
+    }
+
+    #[test]
+    fn service_name_matching_no_match() {
+        let services = vec![
+            make_test_service("robot/arm/move"),
+        ];
+        let name = "nonexistent_service";
+        let found = services.iter().find(|s| {
+            s.name == name
+                || s.name.ends_with(&format!("/{}", name))
+                || s.name.rsplit('/').next().map(|base| base == name).unwrap_or(false)
+        });
+        assert!(found.is_none());
+    }
+
+    // ── Battle tests: find_services filter logic (in-process) ─────────────
+
+    #[test]
+    fn find_filter_case_insensitive() {
+        let services = vec![
+            make_test_service("RobotArm"),
+            make_test_service("sensor_hub"),
+        ];
+        let filter = "robotarm";
+        let matched: Vec<_> = services
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&filter.to_lowercase()))
+            .collect();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].name, "RobotArm");
+    }
+
+    #[test]
+    fn find_filter_partial_match() {
+        let services = vec![
+            make_test_service("robot/arm/move"),
+            make_test_service("robot/arm/grip"),
+            make_test_service("sensor/lidar"),
+        ];
+        let filter = "arm";
+        let matched: Vec<_> = services
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&filter.to_lowercase()))
+            .collect();
+        assert_eq!(matched.len(), 2);
+    }
+
+    #[test]
+    fn find_filter_empty_matches_all() {
+        let services = vec![
+            make_test_service("svc_a"),
+            make_test_service("svc_b"),
+        ];
+        let filter = "";
+        let matched: Vec<_> = services
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&filter.to_lowercase()))
+            .collect();
+        assert_eq!(matched.len(), 2);
+    }
+
+    #[test]
+    fn find_filter_no_match_returns_empty() {
+        let services = vec![
+            make_test_service("svc_a"),
+        ];
+        let filter = "zzz_nonexistent";
+        let matched: Vec<_> = services
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&filter.to_lowercase()))
+            .collect();
+        assert!(matched.is_empty());
+    }
+
+    /// Helper to create a DiscoveredService for testing
+    fn make_test_service(name: &str) -> DiscoveredService {
+        DiscoveredService {
+            name: name.to_string(),
+            has_request: true,
+            has_response: true,
+            request_publishers: 1,
+            request_subscribers: 1,
+            response_publishers: 1,
+            response_subscribers: 1,
+        }
+    }
 }

@@ -1947,7 +1947,6 @@ fn backend_name_matches_mode() {
     let _ = t.recv();
     // Same-thread should be DirectChannel
     assert_eq!(t.backend_name(), "DirectChannel");
-    // backend_type() was removed — backend_name() is the canonical method
 }
 
 // ============================================================================
@@ -7881,8 +7880,10 @@ fn topic_clone_shares_backend() {
 
     topic1.send(42u64);
     // After migration to SPSC (separate instances), the clone should see the message
-    // The exact behavior depends on backend detection, but no panic should occur
-    let _ = topic2.recv();
+    // The exact behavior depends on backend detection, but recv should not error/panic
+    let received = topic2.recv();
+    // Clone shares the same backend, so the message should be available
+    assert_eq!(received, Some(42u64), "Cloned topic should receive the value sent on the original");
 }
 
 /// SendBlockingError displays correctly
@@ -8447,9 +8448,18 @@ fn corrupted_flipped_bits_returns_error() {
     bytes[1] ^= 0xFF;
 
     let result: Result<Vec<f32>, _> = bincode::deserialize(&bytes);
-    // With corrupted length field, bincode either fails or produces wrong data
-    // Either way, it should not panic
-    let _ = result;
+    // With corrupted length field, bincode should either fail or produce wrong data.
+    // Either outcome is acceptable — the key invariant is no panic.
+    match &result {
+        Ok(v) => {
+            // If bincode somehow decoded it, the data must differ from original
+            // since we flipped the length-prefix bytes
+            assert_ne!(v, &original, "Flipped length bytes should not produce the original data");
+        }
+        Err(_) => {
+            // Error is the expected outcome for a corrupted length field
+        }
+    }
 }
 
 /// Bincode with oversized length field — should error, not allocate huge buffer.
@@ -8496,11 +8506,14 @@ fn corrupted_wrong_type_tag() {
     let val: u64 = 0xDEADBEEF;
     let bytes = bincode::serialize(&val).unwrap();
 
-    // Try to deserialize as a String — should either fail or produce garbage, not panic
+    // Try to deserialize as a String — should fail because the u64 bytes
+    // will be interpreted as a String length prefix pointing past the buffer
     let result: Result<String, _> = bincode::deserialize(&bytes);
-    // bincode may interpret the u64 bytes as a String length + data
-    // It should either error or produce a (possibly mangled) string, but never panic
-    let _ = result;
+    assert!(
+        result.is_err(),
+        "Deserializing u64 bytes as String should return an error, got: {:?}",
+        result
+    );
 }
 
 /// Recv on empty ring returns None (no partial/corrupted data).
@@ -8637,33 +8650,59 @@ fn corrupted_nested_struct_deserialization() {
 
     let bytes = bincode::serialize(&original).unwrap();
 
-    // Test various corruption patterns — none should panic
-    // 1. Zero out the middle
+    // Test various corruption patterns — none should panic, and most should error
+    let mut error_count = 0;
+
+    // 1. Zero out the middle — corrupts field boundaries
     let mut corrupted1 = bytes.clone();
     let mid = corrupted1.len() / 2;
     let end = mid + 4.min(corrupted1.len() - mid);
     for b in &mut corrupted1[mid..end] {
         *b = 0;
     }
-    let _: Result<SensorPacket, _> = bincode::deserialize(&corrupted1); // should not panic
+    let result1: Result<SensorPacket, _> = bincode::deserialize(&corrupted1);
+    if result1.is_err() {
+        error_count += 1;
+    }
 
-    // 2. Truncate to 8 bytes
-    let _: Result<SensorPacket, _> = bincode::deserialize(&bytes[..8.min(bytes.len())]); // should not panic
+    // 2. Truncate to 8 bytes — too short for this struct
+    let result2: Result<SensorPacket, _> = bincode::deserialize(&bytes[..8.min(bytes.len())]);
+    assert!(
+        result2.is_err(),
+        "Truncated struct with nested allocations must fail deserialization"
+    );
+    error_count += 1;
 
     // 3. Append garbage
     let mut corrupted3 = bytes.clone();
     corrupted3.extend_from_slice(&[0xFF; 100]);
     let result3: Result<SensorPacket, _> = bincode::deserialize(&corrupted3);
-    // Extra trailing bytes — bincode may or may not fail, but shouldn't panic
-    let _ = result3;
+    if result3.is_err() {
+        error_count += 1;
+    }
 
-    // 4. All zeros
+    // 4. All zeros — will interpret 0 as zero-length strings/vecs, may succeed with empty fields
     let zeros = vec![0u8; bytes.len()];
-    let _: Result<SensorPacket, _> = bincode::deserialize(&zeros); // should not panic
+    let result4: Result<SensorPacket, _> = bincode::deserialize(&zeros);
+    if result4.is_err() {
+        error_count += 1;
+    }
 
-    // 5. All 0xFF
+    // 5. All 0xFF — huge length fields, should definitely error
     let ones = vec![0xFFu8; bytes.len()];
-    let _: Result<SensorPacket, _> = bincode::deserialize(&ones); // should not panic
+    let result5: Result<SensorPacket, _> = bincode::deserialize(&ones);
+    assert!(
+        result5.is_err(),
+        "All-0xFF bytes (huge length fields) must fail deserialization"
+    );
+    error_count += 1;
+
+    // At least truncation + all-0xFF must error; usually more patterns do too
+    assert!(
+        error_count >= 2,
+        "Expected at least 2 corruption patterns to produce errors, got {}",
+        error_count
+    );
 }
 
 /// Integer overflow in message size — verify no panic or UB.

@@ -554,7 +554,7 @@ fn find_binary_name() -> Option<String> {
     use crate::manifest::{HorusManifest, HORUS_TOML};
     let manifest_path = Path::new(HORUS_TOML);
     if manifest_path.exists() {
-        if let Ok((manifest, _)) = HorusManifest::load_from(manifest_path) {
+        if let Ok(manifest) = HorusManifest::load_from(manifest_path) {
             if !manifest.package.name.is_empty() {
                 return Some(manifest.package.name.replace('-', "_"));
             }

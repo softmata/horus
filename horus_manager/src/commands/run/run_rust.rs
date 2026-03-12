@@ -50,7 +50,6 @@ pub(super) fn get_color_for_index(index: usize) -> &'static str {
 pub(crate) fn load_or_default_manifest(extra_drivers: &[String]) -> Result<HorusManifest> {
     let mut manifest = if Path::new(HORUS_TOML).exists() {
         HorusManifest::load_from(Path::new(HORUS_TOML))
-            .map(|(m, _)| m)
             .unwrap_or_else(|_| default_manifest())
     } else {
         default_manifest()
@@ -838,4 +837,479 @@ pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
          2. Set HORUS_SOURCE environment variable to your HORUS source directory\n\
          3. Clone HORUS to ~/softmata/horus or ~/horus"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // ── get_color_for_index ──────────────────────────────────────────────
+
+    #[test]
+    fn color_for_index_0_through_5_are_distinct() {
+        let colors: Vec<&str> = (0..6).map(get_color_for_index).collect();
+        assert_eq!(
+            colors,
+            vec!["cyan", "green", "yellow", "magenta", "blue", "red"]
+        );
+    }
+
+    #[test]
+    fn color_for_index_wraps_at_6() {
+        assert_eq!(get_color_for_index(6), get_color_for_index(0));
+        assert_eq!(get_color_for_index(7), get_color_for_index(1));
+        assert_eq!(get_color_for_index(12), get_color_for_index(0));
+    }
+
+    #[test]
+    fn color_for_large_index() {
+        // Should never panic, just wrap
+        let _ = get_color_for_index(1000);
+        assert_eq!(get_color_for_index(1000), get_color_for_index(1000 % 6));
+    }
+
+    // ── load_or_default_manifest ─────────────────────────────────────────
+
+    #[test]
+    fn load_or_default_manifest_no_toml_returns_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = load_or_default_manifest(&[]);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let manifest = result.unwrap();
+        assert_eq!(manifest.package.name, "horus-project");
+        assert_eq!(manifest.package.version, "0.1.0");
+        assert!(manifest.drivers.is_empty());
+        assert!(manifest.dependencies.is_empty());
+    }
+
+    #[test]
+    fn load_or_default_manifest_with_toml_loads_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "my-robot"
+version = "2.0.0"
+edition = "1"
+
+[drivers]
+camera = true
+"#;
+        fs::write(tmp.path().join(HORUS_TOML), toml_content).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = load_or_default_manifest(&[]);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let manifest = result.unwrap();
+        assert_eq!(manifest.package.name, "my-robot");
+        assert_eq!(manifest.package.version, "2.0.0");
+        assert!(manifest.drivers.contains_key("camera"));
+    }
+
+    #[test]
+    fn load_or_default_manifest_merges_extra_drivers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = load_or_default_manifest(&[
+            "lidar".to_string(),
+            "imu".to_string(),
+        ]);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let manifest = result.unwrap();
+        assert!(manifest.drivers.contains_key("lidar"));
+        assert!(manifest.drivers.contains_key("imu"));
+        assert!(
+            matches!(manifest.drivers["lidar"], DriverValue::Enabled(true)),
+            "Expected Enabled(true) for lidar driver",
+        );
+    }
+
+    #[test]
+    fn load_or_default_manifest_extra_drivers_do_not_overwrite_existing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "test"
+version = "0.1.0"
+edition = "1"
+
+[drivers]
+camera = "opencv"
+"#;
+        fs::write(tmp.path().join(HORUS_TOML), toml_content).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = load_or_default_manifest(&["camera".to_string()]);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let manifest = result.unwrap();
+        // The existing "opencv" backend must not be overwritten by Enabled(true)
+        assert!(
+            matches!(&manifest.drivers["camera"], DriverValue::Backend(s) if s == "opencv"),
+            "Expected Backend(\"opencv\") for camera driver, got {:?}",
+            manifest.drivers["camera"],
+        );
+    }
+
+    #[test]
+    fn load_or_default_manifest_malformed_toml_falls_back_to_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join(HORUS_TOML), "{{{{not valid toml").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = load_or_default_manifest(&[]);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let manifest = result.unwrap();
+        assert_eq!(manifest.package.name, "horus-project");
+    }
+
+    // ── get_project_name ─────────────────────────────────────────────────
+
+    #[test]
+    fn get_project_name_from_cargo_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo = r#"[package]
+name = "my-cool-robot"
+version = "0.1.0"
+"#;
+        fs::write(tmp.path().join(CARGO_TOML), cargo).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = get_project_name();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(result.unwrap(), "my-cool-robot");
+    }
+
+    #[test]
+    fn get_project_name_strips_quotes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Name with single quotes
+        let cargo = "name = 'single-quoted'\nversion = \"0.1.0\"\n";
+        fs::write(tmp.path().join(CARGO_TOML), cargo).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = get_project_name();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(result.unwrap(), "single-quoted");
+    }
+
+    #[test]
+    fn get_project_name_falls_back_to_dir_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // No Cargo.toml at all
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = get_project_name();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // Should return the temp directory name (whatever it is), not panic
+        let name = result.unwrap();
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn get_project_name_cargo_toml_without_name_field() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo = "[package]\nversion = \"0.1.0\"\n";
+        fs::write(tmp.path().join(CARGO_TOML), cargo).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = get_project_name();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // No name field means fallback to dir name
+        let name = result.unwrap();
+        assert!(!name.is_empty());
+    }
+
+    // ── clean_build_cache ────────────────────────────────────────────────
+
+    #[test]
+    fn clean_build_cache_with_all_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create directories with files inside
+        fs::create_dir_all(tmp.path().join(".horus/cache")).unwrap();
+        fs::write(tmp.path().join(".horus/cache/binary1"), b"data").unwrap();
+        fs::write(tmp.path().join(".horus/cache/binary2"), b"data").unwrap();
+
+        fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
+        fs::write(tmp.path().join(".horus/bin/tool"), b"data").unwrap();
+
+        fs::create_dir_all(tmp.path().join("target/debug")).unwrap();
+        fs::write(tmp.path().join("target/debug/something"), b"data").unwrap();
+
+        fs::create_dir_all(tmp.path().join("__pycache__")).unwrap();
+        fs::write(tmp.path().join("__pycache__/mod.pyc"), b"data").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = clean_build_cache();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // .horus/cache and .horus/bin directories should still exist (only contents removed)
+        assert!(tmp.path().join(".horus/cache").is_dir());
+        assert!(tmp.path().join(".horus/bin").is_dir());
+        // But files inside should be gone
+        assert!(!tmp.path().join(".horus/cache/binary1").exists());
+        assert!(!tmp.path().join(".horus/cache/binary2").exists());
+        assert!(!tmp.path().join(".horus/bin/tool").exists());
+        // target/ should be completely removed
+        assert!(!tmp.path().join("target").exists());
+        // __pycache__ should be completely removed
+        assert!(!tmp.path().join("__pycache__").exists());
+    }
+
+    #[test]
+    fn clean_build_cache_with_no_dirs_existing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Empty dir — nothing to clean
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = clean_build_cache();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // Should succeed silently, not error
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn clean_build_cache_partial_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Only __pycache__ exists
+        fs::create_dir_all(tmp.path().join("__pycache__")).unwrap();
+        fs::write(tmp.path().join("__pycache__/a.pyc"), b"x").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = clean_build_cache();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert!(!tmp.path().join("__pycache__").exists());
+    }
+
+    #[test]
+    fn clean_build_cache_empty_cache_and_bin_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/cache")).unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
+        // Directories exist but are empty
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = clean_build_cache();
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // Dirs should still exist
+        assert!(tmp.path().join(".horus/cache").is_dir());
+        assert!(tmp.path().join(".horus/bin").is_dir());
+    }
+
+    // ── find_horus_source_dir ────────────────────────────────────────────
+
+    #[test]
+    fn find_horus_source_dir_with_env_var() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create the expected marker file structure
+        fs::create_dir_all(tmp.path().join("horus")).unwrap();
+        fs::write(
+            tmp.path().join("horus/Cargo.toml"),
+            "[package]\nname = \"horus\"\n",
+        )
+        .unwrap();
+
+        // Use a lock since we temporarily set an env var (env vars are process-global)
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let old_val = env::var("HORUS_SOURCE").ok();
+        env::set_var("HORUS_SOURCE", tmp.path().to_str().unwrap());
+        let result = find_horus_source_dir();
+        // Restore
+        match old_val {
+            Some(v) => env::set_var("HORUS_SOURCE", v),
+            None => env::remove_var("HORUS_SOURCE"),
+        }
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), tmp.path().to_path_buf());
+    }
+
+    #[test]
+    fn find_horus_source_dir_env_var_missing_marker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Dir exists but no horus/Cargo.toml inside — env var should be skipped
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let old_val = env::var("HORUS_SOURCE").ok();
+        env::set_var("HORUS_SOURCE", tmp.path().to_str().unwrap());
+        let result = find_horus_source_dir();
+        match old_val {
+            Some(v) => env::set_var("HORUS_SOURCE", v),
+            None => env::remove_var("HORUS_SOURCE"),
+        }
+        drop(_guard);
+
+        // In CI / test env, it might still find the real horus source at a
+        // candidate path. If it does, that's fine. If not, we check the error.
+        if result.is_err() {
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(
+                err_msg.contains("HORUS source not found"),
+                "Expected 'HORUS source not found' error, got: {}",
+                err_msg
+            );
+        }
+    }
+
+    #[test]
+    fn find_horus_source_dir_no_env_var_no_candidates() {
+        // Without HORUS_SOURCE and with no candidate paths matching, we should
+        // get an error (unless run inside the real softmata workspace, where
+        // ~/softmata/horus will be found — which is also valid behavior).
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let old_val = env::var("HORUS_SOURCE").ok();
+        env::remove_var("HORUS_SOURCE");
+        let result = find_horus_source_dir();
+        match old_val {
+            Some(v) => env::set_var("HORUS_SOURCE", v),
+            None => {}
+        }
+        drop(_guard);
+
+        // If running in the real dev workspace, this will succeed (finding
+        // ~/softmata/horus). That is correct behavior. We only assert that
+        // if it fails, the message is sensible.
+        if result.is_err() {
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(err_msg.contains("HORUS source not found"));
+        }
+    }
+
+    // ── ExecutableInfo::create_command ────────────────────────────────────
+
+    #[test]
+    fn create_command_uses_user_args_when_no_override() {
+        let info = ExecutableInfo {
+            name: "test-node".to_string(),
+            command: "/usr/bin/test".to_string(),
+            args_override: vec![],
+            env_vars: vec![],
+        };
+
+        let user_args = vec!["--port".to_string(), "8080".to_string()];
+        let cmd = info.create_command(&user_args);
+
+        // Command::get_program / get_args
+        assert_eq!(cmd.get_program(), "/usr/bin/test");
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args, &["--port", "8080"]);
+    }
+
+    #[test]
+    fn create_command_uses_override_args_when_set() {
+        let info = ExecutableInfo {
+            name: "test-node".to_string(),
+            command: "/usr/bin/python3".to_string(),
+            args_override: vec!["script.py".to_string(), "--fast".to_string()],
+            env_vars: vec![],
+        };
+
+        let user_args = vec!["--port".to_string(), "8080".to_string()];
+        let cmd = info.create_command(&user_args);
+
+        // Override takes precedence, user_args ignored
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args, &["script.py", "--fast"]);
+    }
+
+    #[test]
+    fn create_command_applies_env_vars() {
+        let info = ExecutableInfo {
+            name: "node".to_string(),
+            command: "/bin/echo".to_string(),
+            args_override: vec![],
+            env_vars: vec![
+                ("HORUS_LOG".to_string(), "debug".to_string()),
+                ("RUST_BACKTRACE".to_string(), "1".to_string()),
+            ],
+        };
+
+        let cmd = info.create_command(&[]);
+        let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> =
+            cmd.get_envs().collect();
+
+        // Verify env vars were set
+        let horus_log = envs
+            .iter()
+            .find(|(k, _)| *k == "HORUS_LOG")
+            .expect("HORUS_LOG should be set");
+        assert_eq!(horus_log.1, Some(std::ffi::OsStr::new("debug")));
+
+        let backtrace = envs
+            .iter()
+            .find(|(k, _)| *k == "RUST_BACKTRACE")
+            .expect("RUST_BACKTRACE should be set");
+        assert_eq!(backtrace.1, Some(std::ffi::OsStr::new("1")));
+    }
+
+    #[test]
+    fn create_command_with_empty_args_and_no_override() {
+        let info = ExecutableInfo {
+            name: "simple".to_string(),
+            command: "/bin/true".to_string(),
+            args_override: vec![],
+            env_vars: vec![],
+        };
+
+        let cmd = info.create_command(&[]);
+        assert_eq!(cmd.get_program(), "/bin/true");
+        assert_eq!(cmd.get_args().count(), 0);
+    }
 }

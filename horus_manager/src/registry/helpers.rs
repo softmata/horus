@@ -633,7 +633,7 @@ pub(crate) fn detect_package_version(dir: &Path) -> Option<String> {
     // Try horus.toml first (primary HORUS manifest)
     let horus_toml = dir.join(HORUS_TOML);
     if horus_toml.exists() {
-        if let Ok((manifest, _)) = crate::manifest::HorusManifest::load_from(&horus_toml) {
+        if let Ok(manifest) = crate::manifest::HorusManifest::load_from(&horus_toml) {
             return Some(manifest.package.version);
         }
     }
@@ -768,7 +768,7 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
     // Try horus.toml first (primary manifest)
     let horus_toml = dir.join(HORUS_TOML);
     if horus_toml.exists() {
-        let (manifest, _) = crate::manifest::HorusManifest::load_from(&horus_toml)?;
+        let manifest = crate::manifest::HorusManifest::load_from(&horus_toml)?;
 
         let package_type = manifest
             .package

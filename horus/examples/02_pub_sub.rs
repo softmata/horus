@@ -8,7 +8,7 @@
 //! ```
 
 use horus::prelude::*;
-use horus::DurationExt;
+
 
 // Define a custom message type with the message! macro.
 // This auto-derives Clone, Debug, Serialize, Deserialize, and LogSummary.

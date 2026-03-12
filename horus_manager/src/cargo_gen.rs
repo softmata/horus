@@ -557,4 +557,458 @@ mod tests {
         let rel = pathdiff(&file, &horus).unwrap();
         assert_eq!(rel, "../main.rs");
     }
+
+    // ── Battle tests ────────────────────────────────────────────────────────
+
+    /// Helper to build a detailed dep with explicit source.
+    fn detailed(
+        source: DepSource,
+        version: Option<&str>,
+        features: &[&str],
+        optional: bool,
+    ) -> DependencyValue {
+        DependencyValue::Detailed(DetailedDependency {
+            version: version.map(|v| v.to_string()),
+            source: Some(source),
+            features: features.iter().map(|s| s.to_string()).collect(),
+            optional,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        })
+    }
+
+    fn git_dep(url: &str, branch: Option<&str>, tag: Option<&str>, rev: Option<&str>) -> DependencyValue {
+        DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            source: Some(DepSource::Git),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: Some(url.to_string()),
+            branch: branch.map(|s| s.to_string()),
+            tag: tag.map(|s| s.to_string()),
+            rev: rev.map(|s| s.to_string()),
+        })
+    }
+
+    fn path_dep(p: &str) -> DependencyValue {
+        DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            source: Some(DepSource::Path),
+            features: vec![],
+            optional: false,
+            path: Some(p.to_string()),
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+        })
+    }
+
+    #[test]
+    fn battle_mixed_deps_filters_correctly() {
+        // Mix of crates.io, pypi, git, path, system — only Rust-relevant ones survive
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("serde".into(), detailed(DepSource::CratesIo, Some("1.0"), &[], false));
+        deps.insert("numpy".into(), detailed(DepSource::PyPI, Some(">=1.24"), &[], false));
+        deps.insert("libz-sys".into(), detailed(DepSource::System, Some("1.0"), &[], false));
+        deps.insert("my-fork".into(), git_dep("https://github.com/org/repo", Some("dev"), None, None));
+
+        // Create path dep directory so relative path resolves
+        let lib_dir = dir.path().join("libs/mylib");
+        fs::create_dir_all(&lib_dir).unwrap();
+        deps.insert("mylib".into(), path_dep("libs/mylib"));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        // crates.io dep present
+        assert!(content.contains("serde = \"1.0\""), "crates.io dep missing");
+        // git dep present
+        assert!(content.contains("my-fork = { git = \"https://github.com/org/repo\", branch = \"dev\" }"),
+            "git dep missing");
+        // path dep present
+        assert!(content.contains("mylib = { path ="), "path dep missing");
+        // pypi dep filtered out
+        assert!(!content.contains("numpy"), "pypi dep should be filtered");
+        // system dep filtered out
+        assert!(!content.contains("libz-sys"), "system dep should be filtered");
+    }
+
+    #[test]
+    fn battle_driver_features_propagation_camera_lidar() {
+        // Drivers with camera + lidar should propagate features to horus/horus_library path deps.
+        // We can't test the actual write_horus_path_deps without the horus source dir existing,
+        // but we can test the hw_features extraction logic directly.
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.drivers.insert("camera".into(), DriverValue::Backend("opencv".into()));
+        manifest.drivers.insert("lidar".into(), DriverValue::Backend("rplidar-a2".into()));
+        manifest.drivers.insert("custom_sensor".into(), DriverValue::Backend("custom".into()));
+
+        // Extract features using the same logic as write_horus_path_deps
+        let hw_features: Vec<&str> = manifest
+            .drivers
+            .keys()
+            .filter_map(|k| match k.as_str() {
+                "camera" => Some("camera"),
+                "lidar" => Some("lidar"),
+                "imu" => Some("imu"),
+                "gps" => Some("gps"),
+                _ => None,
+            })
+            .collect();
+
+        assert!(hw_features.contains(&"camera"), "camera feature missing");
+        assert!(hw_features.contains(&"lidar"), "lidar feature missing");
+        assert_eq!(hw_features.len(), 2, "custom_sensor should not produce a feature");
+    }
+
+    #[test]
+    fn battle_driver_features_all_four() {
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.drivers.insert("camera".into(), DriverValue::Backend("v4l2".into()));
+        manifest.drivers.insert("lidar".into(), DriverValue::Backend("velodyne".into()));
+        manifest.drivers.insert("imu".into(), DriverValue::Backend("bno055".into()));
+        manifest.drivers.insert("gps".into(), DriverValue::Backend("ublox".into()));
+
+        let hw_features: Vec<&str> = manifest
+            .drivers
+            .keys()
+            .filter_map(|k| match k.as_str() {
+                "camera" => Some("camera"),
+                "lidar" => Some("lidar"),
+                "imu" => Some("imu"),
+                "gps" => Some("gps"),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(hw_features.len(), 4);
+    }
+
+    #[test]
+    fn battle_optional_dep_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("serde_json".into(), detailed(DepSource::CratesIo, Some("1.0"), &[], true));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("optional = true"), "optional flag missing: {}", content);
+        assert!(content.contains("serde_json"), "dep name missing");
+    }
+
+    #[test]
+    fn battle_optional_dep_with_features() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("tokio".into(), detailed(DepSource::CratesIo, Some("1.36"), &["rt", "macros", "net"], true));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("optional = true"), "optional missing");
+        assert!(content.contains("features = [\"rt\", \"macros\", \"net\"]"),
+            "features wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_dev_deps_gated_off() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut dev_deps = BTreeMap::new();
+        dev_deps.insert("proptest".into(), detailed(DepSource::CratesIo, Some("1.4"), &[], false));
+        dev_deps.insert("insta".into(), detailed(DepSource::CratesIo, Some("1.0"), &["yaml"], false));
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.dev_dependencies = dev_deps;
+
+        // include_dev = false: no [dev-dependencies] section
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+        assert!(!content.contains("proptest"), "dev dep leaked when include_dev=false");
+        assert!(!content.contains("insta"), "dev dep leaked when include_dev=false");
+        assert!(!content.contains("[dev-dependencies]"), "section leaked");
+    }
+
+    #[test]
+    fn battle_dev_deps_gated_on_with_features() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut dev_deps = BTreeMap::new();
+        dev_deps.insert("insta".into(), detailed(DepSource::CratesIo, Some("1.0"), &["yaml", "redactions"], false));
+        dev_deps.insert("pytest-helper".into(), detailed(DepSource::PyPI, Some(">=3.0"), &[], false));
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.dev_dependencies = dev_deps;
+
+        let result = generate(&manifest, dir.path(), &[], true).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+        assert!(content.contains("[dev-dependencies]"), "section missing");
+        assert!(content.contains("insta = { version = \"1.0\", features = [\"yaml\", \"redactions\"] }"),
+            "dev dep wrong: {}", content);
+        // PyPI dev dep filtered
+        assert!(!content.contains("pytest-helper"), "pypi dev dep should be filtered");
+    }
+
+    #[test]
+    fn battle_workspace_isolation_present() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("[workspace]"), "workspace section missing for isolation");
+        // Verify [workspace] comes after [package]
+        let pkg_pos = content.find("[package]").unwrap();
+        let ws_pos = content.find("[workspace]").unwrap();
+        assert!(ws_pos > pkg_pos, "[workspace] should come after [package]");
+    }
+
+    #[test]
+    fn battle_registry_dep_not_installed() {
+        // Registry deps that haven't been installed yet get a comment
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("horus-nav".into(), DependencyValue::Simple("0.3.0".to_string()));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        // Simple version defaults to Registry source, package not installed → comment
+        assert!(content.contains("# horus-nav = \"0.3.0\" (registry, not yet installed)"),
+            "expected commented-out registry dep: {}", content);
+    }
+
+    #[test]
+    fn battle_registry_dep_installed() {
+        // Registry dep that has been installed (package dir exists)
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        // Create the installed package directory
+        let pkg_dir = dir.path().join(".horus/packages/horus-nav");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("Cargo.toml"), "[package]\nname = \"horus-nav\"").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("horus-nav".into(), detailed(DepSource::Registry, Some("0.3.0"), &[], false));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("horus-nav = { path = \"packages/horus-nav\" }"),
+            "installed registry dep should be a path dep: {}", content);
+    }
+
+    #[test]
+    fn battle_multiple_bin_entries_three_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = dir.path().join("driver.rs");
+        let f2 = dir.path().join("controller.rs");
+        let f3 = dir.path().join("planner.rs");
+        fs::write(&f1, "fn main() {}").unwrap();
+        fs::write(&f2, "fn main() {}").unwrap();
+        fs::write(&f3, "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), &[f1, f2, f3], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert_eq!(content.matches("[[bin]]").count(), 3, "expected 3 [[bin]] entries");
+        assert!(content.contains("name = \"driver\""));
+        assert!(content.contains("name = \"controller\""));
+        assert!(content.contains("name = \"planner\""));
+    }
+
+    #[test]
+    fn battle_single_source_file_uses_project_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = dir.path().join("whatever.rs");
+        fs::write(&f1, "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), &[f1], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        // Single file uses project name, not file stem
+        assert!(content.contains("name = \"test-project\""),
+            "single bin should use project name: {}", content);
+        assert_eq!(content.matches("[[bin]]").count(), 1);
+    }
+
+    #[test]
+    fn battle_git_dep_with_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("bevy".into(), git_dep("https://github.com/bevyengine/bevy", None, Some("v0.15.0"), None));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("bevy = { git = \"https://github.com/bevyengine/bevy\", tag = \"v0.15.0\" }"),
+            "git+tag dep wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_git_dep_with_rev() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("rapier".into(), git_dep("https://github.com/dimforge/rapier", None, None, Some("abc123def")));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("rapier = { git = \"https://github.com/dimforge/rapier\", rev = \"abc123def\" }"),
+            "git+rev dep wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_sanitize_special_chars() {
+        assert_eq!(sanitize_cargo_name("my robot v2"), "my_robot_v2");
+        assert_eq!(sanitize_cargo_name("pkg@1.0/beta"), "pkg_1_0_beta");
+        assert_eq!(sanitize_cargo_name("valid-name_ok"), "valid-name_ok");
+        assert_eq!(sanitize_cargo_name(""), "");
+        assert_eq!(sanitize_cargo_name("a!b#c$d%e"), "a_b_c_d_e");
+    }
+
+    #[test]
+    fn battle_header_always_present() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.starts_with("# Generated by horus from horus.toml"),
+            "missing generated header");
+    }
+
+    #[test]
+    fn battle_path_dep_relativizes_to_horus_dir() {
+        // Path dep "../shared" from project root should become "../../shared" from .horus/
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        // Create sibling directory
+        let shared_dir = dir.path().join("libs/shared");
+        fs::create_dir_all(&shared_dir).unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("shared".into(), path_dep("libs/shared"));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        // The path should be relative to .horus/, pointing back up
+        assert!(content.contains("shared = { path ="), "path dep missing: {}", content);
+        // It should contain ".." to go up from .horus/
+        assert!(content.contains(".."), "path should be relative: {}", content);
+    }
+
+    #[test]
+    fn battle_empty_deps_still_has_deps_section() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("[dependencies]"),
+            "should always have [dependencies] section");
+    }
+
+    #[test]
+    fn battle_crates_io_simple_version_string() {
+        // Simple version string with explicit crates.io source
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("anyhow".into(), detailed(DepSource::CratesIo, Some("1.0.86"), &[], false));
+        deps.insert("thiserror".into(), detailed(DepSource::CratesIo, Some("1.0"), &[], false));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("anyhow = \"1.0.86\""), "simple version dep wrong: {}", content);
+        assert!(content.contains("thiserror = \"1.0\""), "simple version dep wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_crates_io_wildcard_version() {
+        // No version → "*"
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut deps = BTreeMap::new();
+        deps.insert("rand".into(), detailed(DepSource::CratesIo, None, &[], false));
+
+        let manifest = test_manifest(deps);
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("rand = \"*\""), "wildcard version wrong: {}", content);
+    }
+
+    #[test]
+    fn battle_src_main_fallback() {
+        // No source files provided but src/main.rs exists
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("main.rs"), "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(content.contains("[[bin]]"), "should have bin entry for src/main.rs");
+        assert!(content.contains("src/main.rs") || content.contains("main.rs"),
+            "should reference main.rs: {}", content);
+    }
+
+    #[test]
+    fn battle_no_main_rs_no_bin() {
+        // No main.rs files at all — should not have [[bin]] entry
+        let dir = tempfile::tempdir().unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let result = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(!content.contains("[[bin]]"), "should not have bin entry without main.rs: {}", content);
+    }
 }

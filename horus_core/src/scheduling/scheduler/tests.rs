@@ -75,8 +75,6 @@ fn test_scheduler_default() {
     assert_eq!(scheduler.node_list().len(), 0);
 }
 
-// test_scheduler_with_name: DELETED — .with_name() removed from API
-
 // ============================================================================
 // Node Addition Tests
 // ============================================================================
@@ -390,10 +388,6 @@ fn test_scheduler_list_recordings() {
         }
     }
 }
-
-// ============================================================================
-// Builder Pattern Name Test — DELETED (.with_name() removed from API)
-// ============================================================================
 
 // ============================================================================
 // Override Tests
@@ -711,8 +705,6 @@ fn test_blackbox_with_path() {
     // Cleanup
     let _ = std::fs::remove_dir_all(&tmp);
 }
-
-// test_deploy_config_creates_blackbox_with_wal: DELETED — .with_blackbox() removed from API
 
 // ============================================================================
 // Fix 4: Dead Code Cleanup Verification
@@ -1180,8 +1172,6 @@ impl Node for PanickingNode {
     }
 }
 
-// SlowNode: DELETED — was only used by .budget()/.deadline() tests which are removed
-
 /// Fatal policy stops the scheduler when a node panics.
 /// Robotics: motor controller failure must halt the system immediately.
 #[test]
@@ -1340,9 +1330,6 @@ fn test_ignore_policy_continues_after_failure() {
         "critical node should keep running despite failing diagnostic node"
     );
 }
-
-// test_budget_violation_detected_for_slow_rt_node: DELETED — .budget() removed from API
-// test_deadline_miss_detected_for_slow_rt_node: DELETED — .deadline() removed from API
 
 /// Verify shutdown is called for every node even when scheduler stops normally.
 #[test]
@@ -1628,8 +1615,12 @@ fn test_tick_hz_very_large() {
 fn test_set_node_rate_nonexistent() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    // Setting rate on non-existent node should not panic
-    scheduler.set_node_rate("does_not_exist", 100_u64.hz());
+    // Setting rate on non-existent node should not panic and should return &mut Self for chaining
+    let returned = scheduler.set_node_rate("does_not_exist", 100_u64.hz());
+    // Verify the scheduler is still in a valid state (running flag starts true)
+    assert!(returned.is_running(), "Scheduler should still be in valid state after set_node_rate on nonexistent node");
+    // Verify that rt_stats returns None for the nonexistent node (rate was not applied)
+    assert!(scheduler.rt_stats("does_not_exist").is_none(), "Nonexistent node should have no rt_stats");
 }
 
 #[test]
@@ -1683,8 +1674,11 @@ fn test_rt_stats_nonexistent() {
 fn test_stop_before_run() {
     let _lock = lock_scheduler();
     let scheduler = Scheduler::new();
-    // Stopping before running should not panic
+    // A new scheduler starts with running=true
+    assert!(scheduler.is_running(), "New scheduler should start as running");
+    // Stopping before running should not panic and should set running to false
     scheduler.stop();
+    assert!(!scheduler.is_running(), "Scheduler should not be running after stop()");
 }
 
 #[test]
@@ -1699,11 +1693,6 @@ fn test_double_stop() {
     scheduler.stop();
     scheduler.stop(); // Double stop should not panic
 }
-
-// test_with_name_empty: DELETED — .with_name() removed from API
-// test_with_name_long: DELETED — .with_name() removed from API
-// test_with_blackbox_zero_size: DELETED — .with_blackbox() removed from API
-// test_max_deadline_misses_zero: DELETED — .max_deadline_misses() removed from API
 
 #[test]
 fn test_run_for_zero_duration() {
@@ -1724,9 +1713,9 @@ fn test_scheduler_status_empty() {
 #[test]
 fn test_scheduler_capabilities_before_run() {
     let scheduler = Scheduler::new();
-    // Capabilities are only populated after run, should be None before
-    // (or Some if pre-populated — either way, no panic)
-    let _ = scheduler.capabilities();
+    // Capabilities are detected at construction time
+    let caps = scheduler.capabilities();
+    assert!(caps.is_some(), "Capabilities should be detected at construction time");
 }
 
 // ============================================================================
@@ -2455,16 +2444,6 @@ fn test_fault_tolerance_reflected_in_scheduler_status() {
 }
 
 // ============================================================================
-// budget Budget Enforcement Tests — DELETED (entire section)
-// .budget() removed from NodeBuilder API (auto-derived from rate)
-// ============================================================================
-
-// ============================================================================
-// Deadline Miss Policy Tests — DELETED (entire section)
-// .deadline() removed from NodeBuilder API (auto-derived from rate)
-// ============================================================================
-
-// ============================================================================
 // Phase 6: Comprehensive Tests — Builder Methods
 // ============================================================================
 
@@ -2513,13 +2492,6 @@ fn test_max_deadline_misses_sets_value() {
     let scheduler = Scheduler::new().max_deadline_misses(10);
     assert_eq!(scheduler.pending_config.realtime.max_deadline_misses, 10);
 }
-
-// test_deterministic_sets_config: DELETED — .deterministic() removed from API
-// test_deterministic_false_clears_config: DELETED — .deterministic() removed from API
-// test_cores_sets_config: DELETED — .cores() removed from API
-// test_with_profiling_sets_config: DELETED — .with_profiling() removed from API
-// test_with_blackbox_sets_config: DELETED — .with_blackbox() removed from API
-// test_max_deadline_misses_sets_config: DELETED — .max_deadline_misses() removed from API
 
 #[test]
 fn test_builder_full_chain() {
@@ -2609,9 +2581,6 @@ fn test_tick_once_multiple_nodes_execution_order() {
     let recorded = order.lock().unwrap().clone();
     assert_eq!(recorded, vec!["first", "second", "third"]);
 }
-
-// test_tick_once_nodes_filters_correctly: DELETED — .tick_once_nodes() removed from API
-// test_tick_once_nodes_nonexistent_ignored: DELETED — .tick_once_nodes() removed from API
 
 #[test]
 fn test_tick_once_lazy_init() {
@@ -2819,11 +2788,6 @@ fn test_builder_order_independence() {
         s2.pending_config.timing.global_rate_hz
     );
 }
-
-// ============================================================================
-// Phase 6: Budget Enforcement Under Overload — DELETED (entire section)
-// .budget() removed from NodeBuilder API (auto-derived from rate)
-// ============================================================================
 
 // ============================================================================
 // Phase 6: Graduated Safety Monitor Response

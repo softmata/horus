@@ -9,7 +9,7 @@
 //! ```
 
 use horus::prelude::*;
-use horus::DurationExt;
+
 
 message! {
     /// Velocity command for a differential-drive robot

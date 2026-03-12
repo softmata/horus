@@ -14,8 +14,6 @@ exclude = [
     "*/.horus",
     "**/.horus",
     "tests/*/.horus",
-    "horus_marketplace",  # Marketplace packages are standalone
-    "horus_marketplace/*",
 ]
 
 [workspace.package]

@@ -9,7 +9,7 @@
 //! ```
 
 use horus::prelude::*;
-use horus::DurationExt;
+
 
 // Define a service using the service! macro
 service! {

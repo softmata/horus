@@ -147,6 +147,10 @@ impl HorusLockfile {
         });
     }
 
+}
+
+#[cfg(test)]
+impl HorusLockfile {
     /// Remove a pinned package.
     pub fn unpin(&mut self, name: &str, source: &str) {
         self.packages

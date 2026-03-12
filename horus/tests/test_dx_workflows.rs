@@ -208,9 +208,20 @@ fn node_builder_uses_build() {
 
 #[test]
 fn prelude_exports_rt_types() {
-    // These should all be accessible from the prelude
-    let _policy = Miss::Warn;
-    let _stats = RtStats::default();
+    // Verify Miss enum variants are accessible and default is Warn
+    let policy = Miss::Warn;
+    assert_eq!(policy, Miss::default(), "Miss::Warn should be the default variant");
+    assert_ne!(policy, Miss::Skip);
+    assert_ne!(policy, Miss::SafeMode);
+    assert_ne!(policy, Miss::Stop);
+
+    // Verify RtStats default has zeroed counters
+    let stats = RtStats::default();
+    assert_eq!(stats.total_ticks(), 0);
+    assert_eq!(stats.deadline_misses(), 0);
+    assert_eq!(stats.budget_violations(), 0);
+    assert_eq!(stats.worst_execution(), std::time::Duration::ZERO);
+    assert_eq!(stats.avg_execution_us(), 0.0);
 }
 
 // ============================================================================
@@ -281,8 +292,14 @@ fn cmdvel_twist_conversions() {
 #[test]
 fn topic_new_returns_result() {
     let topic: Topic<String> = Topic::new("test_dx_topic").unwrap();
-    // Topic::new() returns HorusResult — no panicking create() shortcut
-    drop(topic);
+
+    // Verify the topic was created with the correct name
+    assert_eq!(topic.name(), "test_dx_topic");
+
+    // No messages pending on a fresh topic
+    assert!(!topic.has_message());
+    assert_eq!(topic.pending_count(), 0);
+    assert_eq!(topic.dropped_count(), 0);
 }
 
 // ============================================================================

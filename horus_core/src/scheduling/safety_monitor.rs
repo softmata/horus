@@ -277,15 +277,15 @@ impl NodeTimingState {
 ///
 /// Graduated response: warn → reduce rate → isolate → safe state.
 #[derive(Debug, Clone)]
-pub struct DegradationPolicy {
+pub(crate) struct DegradationPolicy {
     /// Consecutive misses before logging a warning (default: 3)
-    pub warn_after: u64,
+    pub(crate) warn_after: u64,
     /// Consecutive misses before reducing node rate (default: 5)
-    pub reduce_after: u64,
+    pub(crate) reduce_after: u64,
     /// Consecutive misses before isolating node (default: 10)
-    pub isolate_after: u64,
+    pub(crate) isolate_after: u64,
     /// Successful ticks at reduced rate before restoring original (default: 100)
-    pub recovery_ticks: u64,
+    pub(crate) recovery_ticks: u64,
 }
 
 impl Default for DegradationPolicy {

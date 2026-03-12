@@ -7,7 +7,7 @@
 //! ```
 
 use horus::prelude::*;
-use horus::DurationExt;
+
 
 /// A minimal node that prints "Hello" each tick.
 struct HelloNode {

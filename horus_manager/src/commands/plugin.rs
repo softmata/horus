@@ -545,3 +545,842 @@ pub fn run_remove(plugin: String, global: bool) -> HorusResult<()> {
     // Delegate file removal to pkg::run_remove
     super::pkg::run_remove(plugin, is_global, None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::{PluginCategory, PluginSourceType};
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ── parse_category ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_category_camera() {
+        assert_eq!(parse_category("camera"), Some(PluginCategory::Camera));
+        assert_eq!(parse_category("Camera"), Some(PluginCategory::Camera));
+        assert_eq!(parse_category("CAMERA"), Some(PluginCategory::Camera));
+    }
+
+    #[test]
+    fn test_parse_category_lidar() {
+        assert_eq!(parse_category("lidar"), Some(PluginCategory::Lidar));
+        assert_eq!(parse_category("Lidar"), Some(PluginCategory::Lidar));
+    }
+
+    #[test]
+    fn test_parse_category_imu() {
+        assert_eq!(parse_category("imu"), Some(PluginCategory::Imu));
+        assert_eq!(parse_category("IMU"), Some(PluginCategory::Imu));
+    }
+
+    #[test]
+    fn test_parse_category_motor() {
+        assert_eq!(parse_category("motor"), Some(PluginCategory::Motor));
+    }
+
+    #[test]
+    fn test_parse_category_servo() {
+        assert_eq!(parse_category("servo"), Some(PluginCategory::Servo));
+    }
+
+    #[test]
+    fn test_parse_category_bus() {
+        assert_eq!(parse_category("bus"), Some(PluginCategory::Bus));
+    }
+
+    #[test]
+    fn test_parse_category_gps() {
+        assert_eq!(parse_category("gps"), Some(PluginCategory::Gps));
+    }
+
+    #[test]
+    fn test_parse_category_force_torque_variants() {
+        assert_eq!(
+            parse_category("force_torque"),
+            Some(PluginCategory::ForceTorque)
+        );
+        assert_eq!(
+            parse_category("forcetorque"),
+            Some(PluginCategory::ForceTorque)
+        );
+        assert_eq!(
+            parse_category("force-torque"),
+            Some(PluginCategory::ForceTorque)
+        );
+        assert_eq!(
+            parse_category("Force_Torque"),
+            Some(PluginCategory::ForceTorque)
+        );
+    }
+
+    #[test]
+    fn test_parse_category_simulation() {
+        assert_eq!(
+            parse_category("simulation"),
+            Some(PluginCategory::Simulation)
+        );
+        assert_eq!(parse_category("sim"), Some(PluginCategory::Simulation));
+        assert_eq!(parse_category("SIM"), Some(PluginCategory::Simulation));
+    }
+
+    #[test]
+    fn test_parse_category_cli() {
+        assert_eq!(parse_category("cli"), Some(PluginCategory::Cli));
+    }
+
+    #[test]
+    fn test_parse_category_other() {
+        assert_eq!(parse_category("other"), Some(PluginCategory::Other));
+    }
+
+    #[test]
+    fn test_parse_category_unknown_returns_none() {
+        assert_eq!(parse_category("nonexistent"), None);
+        assert_eq!(parse_category(""), None);
+        assert_eq!(parse_category("robot"), None);
+        assert_eq!(parse_category("sensor"), None);
+    }
+
+    // ── print_search_results ────────────────────────────────────────────
+
+    #[test]
+    fn test_print_search_results_empty_no_category() {
+        // Should not panic with empty results and no category
+        print_search_results(&[], "test-query", None);
+    }
+
+    #[test]
+    fn test_print_search_results_empty_with_category() {
+        // Should not panic; prints category hint
+        print_search_results(&[], "test-query", Some("camera"));
+    }
+
+    #[test]
+    fn test_print_search_results_with_results_no_category() {
+        use crate::plugins::AvailablePlugin;
+
+        let plugins = vec![AvailablePlugin {
+            name: "horus-test-cam".to_string(),
+            version: "0.1.0".to_string(),
+            description: "A test camera plugin".to_string(),
+            category: PluginCategory::Camera,
+            source: PluginSourceType::Local,
+            platforms: vec!["linux-x86_64".to_string()],
+            horus_compat: ">=0.1.0".to_string(),
+            has_prebuilt: false,
+            system_deps: vec![],
+            features: vec!["rgb".to_string(), "depth".to_string()],
+        }];
+
+        // Should not panic
+        print_search_results(&plugins, "cam", None);
+    }
+
+    #[test]
+    fn test_print_search_results_with_prebuilt() {
+        use crate::plugins::AvailablePlugin;
+
+        let plugins = vec![AvailablePlugin {
+            name: "horus-prebuilt".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Prebuilt plugin".to_string(),
+            category: PluginCategory::Motor,
+            source: PluginSourceType::Registry,
+            platforms: vec!["linux-x86_64".to_string()],
+            horus_compat: ">=0.1.0".to_string(),
+            has_prebuilt: true,
+            system_deps: vec![],
+            features: vec![],
+        }];
+
+        print_search_results(&plugins, "prebuilt", None);
+    }
+
+    #[test]
+    fn test_print_search_results_all_source_types() {
+        use crate::plugins::AvailablePlugin;
+
+        let sources = [
+            PluginSourceType::Local,
+            PluginSourceType::Registry,
+            PluginSourceType::CratesIo,
+            PluginSourceType::Git,
+        ];
+
+        for source in &sources {
+            let plugins = vec![AvailablePlugin {
+                name: format!("horus-{:?}", source),
+                version: "0.1.0".to_string(),
+                description: "Test".to_string(),
+                category: PluginCategory::Other,
+                source: source.clone(),
+                platforms: vec![],
+                horus_compat: ">=0.1.0".to_string(),
+                has_prebuilt: false,
+                system_deps: vec![],
+                features: vec![],
+            }];
+            print_search_results(&plugins, "test", Some("other"));
+        }
+    }
+
+    #[test]
+    fn test_print_search_results_no_features() {
+        use crate::plugins::AvailablePlugin;
+
+        let plugins = vec![AvailablePlugin {
+            name: "horus-no-features".to_string(),
+            version: "0.1.0".to_string(),
+            description: "No features".to_string(),
+            category: PluginCategory::Other,
+            source: PluginSourceType::Local,
+            platforms: vec![],
+            horus_compat: ">=0.1.0".to_string(),
+            has_prebuilt: false,
+            system_deps: vec![],
+            features: vec![],
+        }];
+
+        // Should not print "Features:" line
+        print_search_results(&plugins, "no-features", None);
+    }
+
+    #[test]
+    fn test_print_search_results_multiple_plugins() {
+        use crate::plugins::AvailablePlugin;
+
+        let plugins = vec![
+            AvailablePlugin {
+                name: "horus-a".to_string(),
+                version: "0.1.0".to_string(),
+                description: "Plugin A".to_string(),
+                category: PluginCategory::Camera,
+                source: PluginSourceType::Local,
+                platforms: vec![],
+                horus_compat: ">=0.1.0".to_string(),
+                has_prebuilt: false,
+                system_deps: vec![],
+                features: vec!["feat-a".to_string()],
+            },
+            AvailablePlugin {
+                name: "horus-b".to_string(),
+                version: "0.2.0".to_string(),
+                description: "Plugin B".to_string(),
+                category: PluginCategory::Lidar,
+                source: PluginSourceType::Registry,
+                platforms: vec!["linux-x86_64".to_string()],
+                horus_compat: ">=0.1.0".to_string(),
+                has_prebuilt: true,
+                system_deps: vec![],
+                features: vec![],
+            },
+        ];
+
+        print_search_results(&plugins, "horus", None);
+    }
+
+    // ── run_search ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_run_search_delegates_to_search_with_category() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Create a temp dir that does NOT look like a workspace
+        // (no `horus` subdir) so add_local_workspace is a no-op
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // run_search should succeed (discovers known plugins and filters)
+        let result = run_search("camera".to_string());
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    // ── run_search_with_category ────────────────────────────────────────
+
+    #[test]
+    fn test_search_with_category_no_match() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // Search for something that matches no known plugin
+        let result = run_search_with_category(
+            "zzz_nonexistent_zzz".to_string(),
+            None,
+            false,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_search_with_category_filter() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // Known plugins include "horus-rplidar" in Lidar category
+        let result = run_search_with_category(
+            "rplidar".to_string(),
+            Some("lidar".to_string()),
+            false,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_search_with_category_mismatch() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // Search for rplidar but in camera category — should find nothing
+        let result = run_search_with_category(
+            "rplidar".to_string(),
+            Some("camera".to_string()),
+            false,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_search_with_invalid_category_matches_all() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // Invalid category parses to None — acts as if no category filter
+        let result = run_search_with_category(
+            "rplidar".to_string(),
+            Some("invalid_cat".to_string()),
+            false,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_search_json_output() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // JSON output path
+        let result = run_search_with_category(
+            "realsense".to_string(),
+            None,
+            true,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_search_json_with_category() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_search_with_category(
+            "realsense".to_string(),
+            Some("camera".to_string()),
+            true,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_search_by_feature_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // "pointcloud" is a feature of horus-realsense
+        let result = run_search_with_category(
+            "pointcloud".to_string(),
+            None,
+            false,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_search_case_insensitive() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // Uppercase query should still match lowercase plugin names
+        let result = run_search_with_category(
+            "RPLIDAR".to_string(),
+            None,
+            false,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    // ── run_search_with_category + local workspace ──────────────────────
+
+    #[test]
+    fn test_search_discovers_local_workspace_plugins() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        // Create a workspace layout: temp/horus/ exists => add_local_workspace adds it
+        let horus_dir = temp.path().join("horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        // Create a local plugin: temp/horus-test-local/Cargo.toml
+        let plugin_dir = temp.path().join("horus-test-local");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let cargo_content = r#"
+[package]
+name = "horus-test-local"
+version = "0.1.0"
+description = "A local test plugin for unit testing"
+
+[features]
+default = []
+test-feature = []
+"#;
+        fs::write(plugin_dir.join("Cargo.toml"), cargo_content).unwrap();
+
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_search_with_category(
+            "test-local".to_string(),
+            None,
+            false,
+        );
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    // ── add_local_workspace ─────────────────────────────────────────────
+
+    #[test]
+    fn test_add_local_workspace_with_horus_dir() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        // Create the `horus` dir in temp so the condition matches
+        fs::create_dir_all(temp.path().join("horus")).unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let mut discovery = crate::plugins::PluginDiscovery::new();
+        add_local_workspace(&mut discovery);
+
+        // Discovery should have one workspace path added
+        // We verify indirectly: discover_local on temp.path() succeeds
+        let result = discovery.discover_local(temp.path());
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_add_local_workspace_parent_has_horus_dir() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        // Create temp/horus/ and temp/subdir/
+        fs::create_dir_all(temp.path().join("horus")).unwrap();
+        let subdir = temp.path().join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+
+        // CWD = temp/subdir/  (parent has `horus`)
+        std::env::set_current_dir(&subdir).unwrap();
+
+        let mut discovery = crate::plugins::PluginDiscovery::new();
+        add_local_workspace(&mut discovery);
+
+        // Should not panic
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_add_local_workspace_no_horus_dir() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        // No `horus` subdir — workspace should not be added
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let mut discovery = crate::plugins::PluginDiscovery::new();
+        add_local_workspace(&mut discovery);
+        // Should not panic; just no workspace added
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    // ── run_info ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_run_info_known_plugin() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // horus-realsense is a known plugin — should succeed and print info
+        let result = run_info("horus-realsense".to_string());
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_unknown_plugin() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // Unknown plugin — should still succeed (prints "not found" message)
+        let result = run_info("nonexistent-plugin-zzz".to_string());
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_plugin_with_system_deps() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // horus-realsense has system_deps ["librealsense2-dev"]
+        let result = run_info("horus-realsense".to_string());
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    // ── run_info_unified ────────────────────────────────────────────────
+
+    #[test]
+    fn test_run_info_unified_known_plugin_text() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_info_unified("horus-rplidar".to_string(), false);
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_unified_known_plugin_json() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_info_unified("horus-rplidar".to_string(), true);
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_unified_not_found_text() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_info_unified("zzz-totally-nonexistent-zzz".to_string(), false);
+        assert!(result.is_err());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_unified_not_found_json() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_info_unified("zzz-totally-nonexistent-zzz".to_string(), true);
+        assert!(result.is_err());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_unified_local_package_with_horus_toml() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        // Create a workspace with .horus/packages/my-local-pkg/horus.toml
+        let pkg_dir = temp.path().join(".horus/packages/my-local-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        let toml_content = r#"
+[package]
+name = "my-local-pkg"
+
+description = "A locally installed package"
+version = "1.2.3"
+"#;
+        fs::write(pkg_dir.join("horus.toml"), toml_content).unwrap();
+
+        // Also create horus.toml at workspace root so find_workspace_root finds it
+        fs::write(temp.path().join("horus.toml"), "[package]\nname = \"ws\"\n").unwrap();
+
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        // "my-local-pkg" is not a known plugin; registry is unreachable;
+        // but it exists as a local installed package
+        let result = run_info_unified("my-local-pkg".to_string(), false);
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_unified_local_package_json() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        let pkg_dir = temp.path().join(".horus/packages/local-json-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        let toml_content = r#"
+description = "JSON test package"
+version = "2.0.0"
+"#;
+        fs::write(pkg_dir.join("horus.toml"), toml_content).unwrap();
+        fs::write(temp.path().join("horus.toml"), "[package]\nname = \"ws\"\n").unwrap();
+
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_info_unified("local-json-pkg".to_string(), true);
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_run_info_unified_local_package_no_horus_toml() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        // Package dir exists but has no horus.toml
+        let pkg_dir = temp.path().join(".horus/packages/bare-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(temp.path().join("horus.toml"), "[package]\nname = \"ws\"\n").unwrap();
+
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = run_info_unified("bare-pkg".to_string(), false);
+        assert!(result.is_ok());
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    // ── resolve_package_dir ─────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_package_dir_global_versioned() {
+        let home = dirs::home_dir().expect("no home dir");
+        let cache = home.join(".horus/cache");
+        let versioned = cache.join("test-resolve-pkg@9.9.9");
+
+        // Create temp versioned dir
+        fs::create_dir_all(&versioned).unwrap();
+
+        let result = resolve_package_dir("test-resolve-pkg", "9.9.9", true);
+        assert_eq!(result, Some(versioned.clone()));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&versioned);
+    }
+
+    #[test]
+    fn test_resolve_package_dir_global_plain() {
+        let home = dirs::home_dir().expect("no home dir");
+        let cache = home.join(".horus/cache");
+        let plain = cache.join("test-resolve-plain");
+
+        fs::create_dir_all(&plain).unwrap();
+
+        // No versioned dir — falls back to plain name
+        let result = resolve_package_dir("test-resolve-plain", "0.0.0", true);
+        assert_eq!(result, Some(plain.clone()));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&plain);
+    }
+
+    #[test]
+    fn test_resolve_package_dir_global_not_found() {
+        let result = resolve_package_dir("zzz-never-exists-zzz", "0.0.0", true);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_package_dir_local() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+
+        // Create workspace with .horus/packages/my-pkg
+        let pkg_dir = temp.path().join(".horus/packages/my-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = resolve_package_dir("my-pkg", "0.1.0", false);
+        assert_eq!(result, Some(pkg_dir));
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_package_dir_local_not_found() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let result = resolve_package_dir("nonexistent-pkg", "0.1.0", false);
+        assert_eq!(result, None);
+
+        std::env::set_current_dir(&prev).unwrap();
+    }
+
+    // ── run_remove command name derivation ──────────────────────────────
+
+    #[test]
+    fn test_strip_prefix_horus_dash() {
+        // The run_remove function strips "horus-" prefix to derive command name
+        let name = "horus-foo-bar";
+        let command_name = name.strip_prefix("horus-").unwrap_or(name);
+        assert_eq!(command_name, "foo-bar");
+    }
+
+    #[test]
+    fn test_strip_prefix_no_horus_prefix() {
+        let name = "my-plugin";
+        let command_name = name.strip_prefix("horus-").unwrap_or(name);
+        assert_eq!(command_name, "my-plugin");
+    }
+
+    #[test]
+    fn test_strip_prefix_exact_horus() {
+        let name = "horus-";
+        let command_name = name.strip_prefix("horus-").unwrap_or(name);
+        assert_eq!(command_name, "");
+    }
+
+    // ── parse_category exhaustive ───────────────────────────────────────
+
+    #[test]
+    fn test_parse_category_all_valid_categories() {
+        let cases = vec![
+            ("camera", PluginCategory::Camera),
+            ("lidar", PluginCategory::Lidar),
+            ("imu", PluginCategory::Imu),
+            ("motor", PluginCategory::Motor),
+            ("servo", PluginCategory::Servo),
+            ("bus", PluginCategory::Bus),
+            ("gps", PluginCategory::Gps),
+            ("force_torque", PluginCategory::ForceTorque),
+            ("forcetorque", PluginCategory::ForceTorque),
+            ("force-torque", PluginCategory::ForceTorque),
+            ("simulation", PluginCategory::Simulation),
+            ("sim", PluginCategory::Simulation),
+            ("cli", PluginCategory::Cli),
+            ("other", PluginCategory::Other),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_category(input),
+                Some(expected),
+                "parse_category({:?}) mismatch",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_category_mixed_case() {
+        // All inputs are lowercased internally
+        let cases = vec![
+            "Camera", "CAMERA", "cAmErA", "Lidar", "LIDAR", "IMU", "Imu",
+            "MOTOR", "Motor", "SERVO", "BUS", "GPS", "FORCE_TORQUE",
+            "ForCeTorQue", "FORCE-TORQUE", "SIMULATION", "SIM", "CLI", "OTHER",
+        ];
+
+        for input in cases {
+            assert!(
+                parse_category(input).is_some(),
+                "parse_category({:?}) should return Some",
+                input
+            );
+        }
+    }
+}

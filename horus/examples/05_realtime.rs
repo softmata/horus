@@ -8,7 +8,7 @@
 //! ```
 
 use horus::prelude::*;
-use horus::DurationExt;
+
 
 message! {
     /// Motor command

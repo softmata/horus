@@ -593,10 +593,10 @@ fn tf2_parity_pr2_arm_chain() {
         .unwrap();
 
     // Query camera → world (depth 6 chain)
-    let tf = tf.query("camera").to("world").lookup().unwrap();
+    let cam_to_world = tf.query("camera").to("world").lookup().unwrap();
     // Expected: sum of all X translations
     let expected_x = 0.0 + 0.0 + 0.4 + 0.321 + 0.18 + 0.0;
-    assert!((tf.translation[0] - expected_x).abs() < 1e-6);
+    assert!((cam_to_world.translation[0] - expected_x).abs() < 1e-6);
 
     // Verify stats
     let stats = tf.stats();

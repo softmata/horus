@@ -265,45 +265,6 @@ impl NodePresence {
         fs::rename(&tmp_path, &dest)
     }
 
-    /// Update an existing presence file with new topic lists.
-    ///
-    /// Used when a node dynamically adds or removes publishers/subscribers
-    /// at runtime.  The file is rewritten atomically.
-    #[allow(dead_code)]
-    pub(crate) fn update_topics(
-        node_name: &str,
-        publishers: Vec<TopicMetadata>,
-        subscribers: Vec<TopicMetadata>,
-    ) -> std::io::Result<()> {
-        let path = Self::presence_path(node_name);
-        let content = fs::read_to_string(&path)?;
-        let mut presence: NodePresence = serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        presence.publishers = publishers;
-        presence.subscribers = subscribers;
-        presence.write()
-    }
-
-    /// Update runtime metrics (health, tick count, error count) in the presence file.
-    ///
-    /// Called periodically by the scheduler to keep monitor data fresh.
-    #[allow(dead_code)]
-    pub(crate) fn update_metrics(
-        node_name: &str,
-        health: &str,
-        ticks: u64,
-        errors: u32,
-    ) -> std::io::Result<()> {
-        let path = Self::presence_path(node_name);
-        let content = fs::read_to_string(&path)?;
-        let mut presence: NodePresence = serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        presence.health_status = Some(health.to_string());
-        presence.tick_count = ticks;
-        presence.error_count = errors;
-        presence.write()
-    }
-
     /// Remove presence file from shared memory (called at node shutdown)
     pub(crate) fn remove(node_name: &str) -> std::io::Result<()> {
         let path = Self::presence_path(node_name);

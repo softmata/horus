@@ -9,9 +9,6 @@ pub type FrameId = u32;
 /// Sentinel value indicating no parent (root frame)
 pub const NO_PARENT: FrameId = FrameId::MAX;
 
-/// Sentinel value indicating invalid/unallocated frame
-pub const INVALID_FRAME: FrameId = FrameId::MAX - 1;
-
 /// Maximum supported frames (can be configured lower)
 pub const MAX_SUPPORTED_FRAMES: usize = 65536;
 
@@ -61,7 +58,6 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(NO_PARENT, FrameId::MAX);
-        assert_eq!(INVALID_FRAME, FrameId::MAX - 1);
         assert_ne!(MAX_SUPPORTED_FRAMES, 0);
     }
 }

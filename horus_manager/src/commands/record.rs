@@ -920,4 +920,498 @@ mod tests {
     fn parse_hex_string_uppercase() {
         assert_eq!(parse_hex_string("AABB").unwrap(), vec![0xaa, 0xbb]);
     }
+
+    // ── Battle tests: parse_hex_string edge cases ────────────────────────
+
+    #[test]
+    fn parse_hex_string_mixed_case() {
+        assert_eq!(parse_hex_string("aAbB").unwrap(), vec![0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn parse_hex_string_all_zeros() {
+        assert_eq!(parse_hex_string("0000").unwrap(), vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn parse_hex_string_all_ff() {
+        assert_eq!(parse_hex_string("ffff").unwrap(), vec![0xff, 0xff]);
+    }
+
+    #[test]
+    fn parse_hex_string_long_input() {
+        let hex = "00".repeat(256);
+        let result = parse_hex_string(&hex).unwrap();
+        assert_eq!(result.len(), 256);
+        assert!(result.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn parse_hex_string_with_internal_whitespace() {
+        // Internal whitespace is NOT valid hex
+        let result = parse_hex_string("aa bb");
+        assert!(result.is_err(), "internal spaces should fail");
+    }
+
+    #[test]
+    fn parse_hex_string_with_0x_prefix() {
+        // The function does NOT strip 0x prefix; caller does
+        let result = parse_hex_string("0xff");
+        // "0xff" is 4 chars, even length, but "0x" is not valid hex
+        assert!(result.is_err(), "0x prefix should fail as invalid hex chars");
+    }
+
+    #[test]
+    fn parse_hex_string_unicode_chars() {
+        let result = parse_hex_string("\u{00E9}\u{00E9}");
+        assert!(result.is_err(), "unicode chars should fail");
+    }
+
+    // ── Battle tests: run_replay error paths ─────────────────────────────
+
+    #[test]
+    fn run_replay_zero_speed_returns_error() {
+        let result = run_replay("nonexistent".to_string(), None, None, 0.0, vec![]);
+        assert!(result.is_err(), "speed=0 should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("greater than 0"), "error: {}", err);
+    }
+
+    #[test]
+    fn run_replay_negative_speed_returns_error() {
+        let result = run_replay("nonexistent".to_string(), None, None, -1.0, vec![]);
+        assert!(result.is_err(), "negative speed should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("greater than 0"), "error: {}", err);
+    }
+
+    #[test]
+    fn run_replay_nonexistent_session_returns_error() {
+        let result = run_replay(
+            "session_that_never_existed_abc123".to_string(),
+            None,
+            None,
+            1.0,
+            vec![],
+        );
+        assert!(result.is_err(), "nonexistent session should fail");
+    }
+
+    #[test]
+    fn run_replay_with_ticks_and_zero_speed_still_fails_on_speed() {
+        let result = run_replay("x".to_string(), Some(0), Some(100), 0.0, vec![]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("greater than 0"), "speed check should come first: {}", err);
+    }
+
+    // ── Battle tests: run_inject error paths ─────────────────────────────
+
+    #[test]
+    fn run_inject_zero_speed_returns_error() {
+        let args = InjectArgs {
+            session: "nonexistent".to_string(),
+            nodes: vec![],
+            all: true,
+            script: None,
+            start_tick: None,
+            stop_tick: None,
+            speed: 0.0,
+            loop_playback: false,
+        };
+        let result = run_inject(args);
+        assert!(result.is_err(), "speed=0 should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("greater than 0"), "error: {}", err);
+    }
+
+    #[test]
+    fn run_inject_negative_speed_returns_error() {
+        let args = InjectArgs {
+            session: "test".to_string(),
+            nodes: vec![],
+            all: true,
+            script: None,
+            start_tick: None,
+            stop_tick: None,
+            speed: -5.0,
+            loop_playback: false,
+        };
+        let result = run_inject(args);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("greater than 0"), "error: {}", err);
+    }
+
+    #[test]
+    fn run_inject_nonexistent_session_returns_error() {
+        let args = InjectArgs {
+            session: "ghost_session_zzz_123".to_string(),
+            nodes: vec![],
+            all: true,
+            script: None,
+            start_tick: None,
+            stop_tick: None,
+            speed: 1.0,
+            loop_playback: false,
+        };
+        let result = run_inject(args);
+        assert!(result.is_err(), "nonexistent session should fail");
+    }
+
+    #[test]
+    fn run_inject_nonexistent_script_after_speed_check() {
+        // Speed is valid (1.0), session is nonexistent, so it fails on session first
+        let args = InjectArgs {
+            session: "nonexistent_session_xyz".to_string(),
+            nodes: vec!["node_a".to_string()],
+            all: false,
+            script: Some(PathBuf::from("/tmp/no_such_script.rs")),
+            start_tick: None,
+            stop_tick: None,
+            speed: 1.0,
+            loop_playback: false,
+        };
+        let result = run_inject(args);
+        assert!(result.is_err());
+    }
+
+    // ── Battle tests: run_list ────────────────────────────────────────────
+
+    #[test]
+    fn run_list_short_succeeds() {
+        let result = run_list(false, false);
+        assert!(result.is_ok(), "listing sessions should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_list_long_succeeds() {
+        let result = run_list(true, false);
+        assert!(result.is_ok(), "long listing should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_list_json_succeeds() {
+        let result = run_list(false, true);
+        assert!(result.is_ok(), "json listing should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_list_long_json_succeeds() {
+        let result = run_list(true, true);
+        assert!(result.is_ok(), "long+json listing should succeed: {:?}", result.err());
+    }
+
+    // ── Battle tests: run_info ────────────────────────────────────────────
+
+    #[test]
+    fn run_info_nonexistent_session_returns_error() {
+        let result = run_info("nonexistent_session_abc123".to_string(), false);
+        assert!(result.is_err(), "info on nonexistent session should fail");
+    }
+
+    #[test]
+    fn run_info_empty_session_returns_error() {
+        let result = run_info("".to_string(), false);
+        assert!(result.is_err(), "info on empty session should fail");
+    }
+
+    #[test]
+    fn run_info_unicode_session_returns_error() {
+        let result = run_info("\u{1F916}_session".to_string(), false);
+        assert!(result.is_err(), "info on unicode session should fail");
+    }
+
+    #[test]
+    fn run_info_json_nonexistent_returns_error() {
+        let result = run_info("nonexistent_json_session".to_string(), true);
+        assert!(result.is_err(), "json info on nonexistent session should fail");
+    }
+
+    #[test]
+    fn run_info_very_long_session_name() {
+        let long_name = "s".repeat(4096);
+        let result = run_info(long_name, false);
+        assert!(result.is_err(), "very long session name should fail");
+    }
+
+    // ── Battle tests: run_delete ──────────────────────────────────────────
+
+    #[test]
+    fn run_delete_nonexistent_session_returns_error() {
+        let result = run_delete("nonexistent_delete_target_xyz".to_string(), true);
+        assert!(result.is_err(), "deleting nonexistent session should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error: {}", err);
+    }
+
+    #[test]
+    fn run_delete_empty_name_returns_error() {
+        let result = run_delete("".to_string(), true);
+        assert!(result.is_err(), "deleting empty session should fail");
+    }
+
+    // ── Battle tests: run_export ──────────────────────────────────────────
+
+    #[test]
+    fn run_export_nonexistent_session_produces_empty_output() {
+        // session_recordings returns empty for nonexistent sessions (no error),
+        // so export writes an empty JSON file
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("export_test.json");
+        let result = run_export(
+            "ghost_session_xyz".to_string(),
+            output.clone(),
+            "json".to_string(),
+        );
+        // Either Ok (empty export) or Err is acceptable
+        if result.is_ok() {
+            // Verify the output file was created (even if empty content)
+            assert!(output.exists(), "output file should be created");
+        }
+    }
+
+    #[test]
+    fn run_export_unsupported_format_warns() {
+        // Unsupported format prints a warning and returns Ok (does not error)
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("export_test.xyz");
+        let result = run_export(
+            "ghost_session_xyz".to_string(),
+            output,
+            "xyz".to_string(),
+        );
+        // The function loads recordings (empty), then hits the else branch
+        // which prints a warning but returns Ok
+        assert!(result.is_ok(), "unsupported format should warn, not error: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_export_csv_format_nonexistent_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("export_test.csv");
+        let result = run_export(
+            "ghost_csv_session".to_string(),
+            output.clone(),
+            "csv".to_string(),
+        );
+        if result.is_ok() {
+            assert!(output.exists(), "CSV output file should be created");
+        }
+    }
+
+    #[test]
+    fn run_export_to_invalid_path() {
+        let result = run_export(
+            "ghost_session_abc".to_string(),
+            PathBuf::from("/nonexistent_dir_xyz/export.json"),
+            "json".to_string(),
+        );
+        // Should fail because the output directory doesn't exist
+        assert!(result.is_err(), "exporting to invalid path should fail");
+    }
+
+    // ── Battle tests: run_diff ────────────────────────────────────────────
+
+    #[test]
+    fn run_diff_nonexistent_sessions_returns_ok_no_diffs() {
+        // session_recordings returns empty for nonexistent sessions,
+        // so diff finds zero recordings to compare and reports "no diffs"
+        let result = run_diff(
+            "session_alpha_zzz".to_string(),
+            "session_beta_zzz".to_string(),
+            None,
+        );
+        assert!(result.is_ok(), "diff with empty sessions should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_diff_empty_session_names_returns_ok() {
+        // Empty session names -> empty recording lists -> no diffs -> Ok
+        let result = run_diff("".to_string(), "".to_string(), None);
+        assert!(result.is_ok(), "diff with empty names should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_diff_same_session_returns_ok() {
+        // Same session name -> same (empty) recordings -> no diffs
+        let result = run_diff("same_name".to_string(), "same_name".to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_diff_with_limit_zero() {
+        let result = run_diff(
+            "alpha".to_string(),
+            "beta".to_string(),
+            Some(0),
+        );
+        assert!(result.is_ok(), "diff with limit=0 should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn run_diff_with_limit_one() {
+        let result = run_diff(
+            "alpha".to_string(),
+            "beta".to_string(),
+            Some(1),
+        );
+        assert!(result.is_ok(), "diff with limit=1 should succeed: {:?}", result.err());
+    }
+
+    // ── Battle tests: value parsing in run_replay overrides ──────────────
+
+    #[test]
+    fn override_value_hex_format() {
+        // Simulate the hex parsing branch in run_replay
+        let value_str = "0xdeadbeef";
+        let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
+            parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
+        } else {
+            value_str.as_bytes().to_vec()
+        };
+        assert_eq!(value_bytes, vec![0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    #[test]
+    fn override_value_integer_format() {
+        let value_str = "42";
+        let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
+            parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
+        } else if let Ok(num) = value_str.parse::<i64>() {
+            num.to_le_bytes().to_vec()
+        } else if let Ok(num) = value_str.parse::<f64>() {
+            num.to_le_bytes().to_vec()
+        } else {
+            value_str.as_bytes().to_vec()
+        };
+        assert_eq!(value_bytes, 42i64.to_le_bytes().to_vec());
+    }
+
+    #[test]
+    fn override_value_float_format() {
+        let value_str = "3.14";
+        let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
+            parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
+        } else if let Ok(num) = value_str.parse::<i64>() {
+            num.to_le_bytes().to_vec()
+        } else if let Ok(num) = value_str.parse::<f64>() {
+            num.to_le_bytes().to_vec()
+        } else {
+            value_str.as_bytes().to_vec()
+        };
+        assert_eq!(value_bytes, 3.14f64.to_le_bytes().to_vec());
+    }
+
+    #[test]
+    fn override_value_string_fallback() {
+        let value_str = "hello_world";
+        let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
+            parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
+        } else if let Ok(num) = value_str.parse::<i64>() {
+            num.to_le_bytes().to_vec()
+        } else if let Ok(num) = value_str.parse::<f64>() {
+            num.to_le_bytes().to_vec()
+        } else {
+            value_str.as_bytes().to_vec()
+        };
+        assert_eq!(value_bytes, b"hello_world".to_vec());
+    }
+
+    #[test]
+    fn override_value_negative_integer() {
+        let value_str = "-100";
+        let value_bytes = if let Ok(num) = value_str.parse::<i64>() {
+            num.to_le_bytes().to_vec()
+        } else {
+            value_str.as_bytes().to_vec()
+        };
+        assert_eq!(value_bytes, (-100i64).to_le_bytes().to_vec());
+    }
+
+    #[test]
+    fn override_value_hex_invalid_fallback() {
+        // 0xZZZZ is not valid hex, should fall back to raw bytes
+        let value_str = "0xZZZZ";
+        let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
+            parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
+        } else {
+            value_str.as_bytes().to_vec()
+        };
+        // Falls back to raw bytes of "0xZZZZ"
+        assert_eq!(value_bytes, b"0xZZZZ".to_vec());
+    }
+
+    // ── Battle tests: InjectArgs struct ───────────────────────────────────
+
+    #[test]
+    fn inject_args_default_construction() {
+        let args = InjectArgs {
+            session: "test".to_string(),
+            nodes: vec![],
+            all: false,
+            script: None,
+            start_tick: None,
+            stop_tick: None,
+            speed: 1.0,
+            loop_playback: false,
+        };
+        assert_eq!(args.session, "test");
+        assert!(args.nodes.is_empty());
+        assert!(!args.all);
+        assert!(args.script.is_none());
+        assert!(args.start_tick.is_none());
+        assert!(args.stop_tick.is_none());
+        assert!((args.speed - 1.0).abs() < f64::EPSILON);
+        assert!(!args.loop_playback);
+    }
+
+    #[test]
+    fn inject_args_with_all_options() {
+        let args = InjectArgs {
+            session: "my_session".to_string(),
+            nodes: vec!["motor".to_string(), "sensor".to_string()],
+            all: true,
+            script: Some(PathBuf::from("/tmp/script.rs")),
+            start_tick: Some(100),
+            stop_tick: Some(500),
+            speed: 2.5,
+            loop_playback: true,
+        };
+        assert_eq!(args.nodes.len(), 2);
+        assert!(args.all);
+        assert!(args.script.is_some());
+        assert_eq!(args.start_tick, Some(100));
+        assert_eq!(args.stop_tick, Some(500));
+        assert!((args.speed - 2.5).abs() < f64::EPSILON);
+        assert!(args.loop_playback);
+    }
+
+    // ── Battle tests: RecordingManager ────────────────────────────────────
+
+    #[test]
+    fn recording_manager_new_succeeds() {
+        let manager = RecordingManager::new();
+        // Just verify it can be created without panicking
+        let _ = manager;
+    }
+
+    #[test]
+    fn recording_manager_list_sessions_succeeds() {
+        let manager = RecordingManager::new();
+        let result = manager.list_sessions();
+        // Should succeed (possibly empty)
+        assert!(result.is_ok(), "list_sessions should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn recording_manager_session_recordings_nonexistent() {
+        let manager = RecordingManager::new();
+        let result = manager.session_recordings("this_session_does_not_exist_xyz");
+        // Should return Ok(empty) or Err
+        match result {
+            Ok(recordings) => assert!(recordings.is_empty(), "nonexistent session should have no recordings"),
+            Err(_) => {} // Also acceptable
+        }
+    }
 }

@@ -466,4 +466,116 @@ mod tests {
         let large = format_size(1_000_000_000);
         assert_ne!(format_size(100), large, "100 bytes and 1GB should format differently");
     }
+
+    // ── Battle-testing: run_clean ────────────────────────────────────────
+
+    #[test]
+    fn battle_clean_dry_run_no_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // No target/, no shm — dry run should succeed
+        let result = run_clean(false, false, true, false, false);
+        std::env::set_current_dir(&prev).unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn battle_clean_dry_run_with_target_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("dummy"), "build artifact").unwrap();
+
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // Dry run should not delete
+        let result = run_clean(false, false, true, false, false);
+        std::env::set_current_dir(&prev).unwrap();
+        assert!(result.is_ok());
+        assert!(target.exists(), "dry run should NOT delete target/");
+    }
+
+    #[test]
+    fn battle_clean_removes_target_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("dummy.o"), vec![0u8; 50]).unwrap();
+
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = run_clean(false, false, false, false, false);
+        std::env::set_current_dir(&prev).unwrap();
+        assert!(result.is_ok());
+        assert!(!target.exists(), "clean should delete target/");
+    }
+
+    #[test]
+    fn battle_clean_json_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // JSON mode with dry_run — should succeed and output valid JSON
+        let result = run_clean(false, false, true, false, true);
+        std::env::set_current_dir(&prev).unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn battle_clean_shm_only_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("dummy"), "keep me").unwrap();
+
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        // shm=true means only clean shared memory, not target/
+        let result = run_clean(true, false, false, false, false);
+        std::env::set_current_dir(&prev).unwrap();
+        assert!(result.is_ok());
+        assert!(target.exists(), "shm-only clean should NOT touch target/");
+    }
+
+    #[test]
+    fn battle_clean_build_cache_empty_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        // Empty target dir
+
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = clean_build_cache(false);
+        std::env::set_current_dir(&prev).unwrap();
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // Returns true because target existed
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn battle_clean_build_cache_no_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = clean_build_cache(false);
+        std::env::set_current_dir(&prev).unwrap();
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // Returns false because no target/
+    }
 }

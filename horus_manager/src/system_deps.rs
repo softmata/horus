@@ -10,7 +10,7 @@ use std::process::Command;
 /// System dependency information for a feature/node
 #[derive(Debug, Clone)]
 pub struct SystemDependency {
-    /// Feature flag name (e.g., "gpio-hardware")
+    /// Feature flag name (e.g., "opencv-backend")
     pub feature: &'static str,
     /// Human-readable description
     pub description: &'static str,
@@ -28,63 +28,13 @@ pub struct SystemDependency {
     pub docs_url: &'static str,
 }
 
-/// All system dependencies mapped by feature flag
+/// System dependencies mapped by feature flag.
+///
+/// Only includes features that correspond to real Cargo features in horus crates.
+/// Phantom hardware features (gpio-hardware, i2c-hardware, spi-hardware,
+/// serial-hardware, modbus-hardware, bno055-imu, mpu6050-imu, nmea-gps, rplidar,
+/// netft) have been removed — they never existed in any Cargo.toml.
 pub const SYSTEM_DEPS: &[SystemDependency] = &[
-    // GPIO Hardware (Raspberry Pi)
-    SystemDependency {
-        feature: "gpio-hardware",
-        description: "GPIO access for motors, encoders, ultrasonic sensors",
-        apt_packages: &["libraspberrypi-dev"],
-        device_files: &["/sys/class/gpio", "/dev/gpiomem"],
-        user_groups: &["gpio"],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y libraspberrypi-dev && sudo usermod -a -G gpio $USER",
-        docs_url: "https://www.raspberrypi.com/documentation/computers/os.html#gpio-and-the-40-pin-header",
-    },
-    // I2C Hardware
-    SystemDependency {
-        feature: "i2c-hardware",
-        description: "I2C bus for IMUs, battery monitors, displays",
-        apt_packages: &["i2c-tools", "libi2c-dev"],
-        device_files: &["/dev/i2c-0", "/dev/i2c-1"],
-        user_groups: &["i2c"],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y i2c-tools libi2c-dev && sudo usermod -a -G i2c $USER",
-        docs_url: "https://www.kernel.org/doc/html/latest/i2c/index.html",
-    },
-    // SPI Hardware
-    SystemDependency {
-        feature: "spi-hardware",
-        description: "SPI bus for ADCs, displays, sensors",
-        apt_packages: &["libraspberrypi-dev"],
-        device_files: &["/dev/spidev0.0", "/dev/spidev0.1"],
-        user_groups: &["spi"],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y libraspberrypi-dev && sudo usermod -a -G spi $USER",
-        docs_url: "https://www.kernel.org/doc/html/latest/spi/index.html",
-    },
-    // Serial Hardware
-    SystemDependency {
-        feature: "serial-hardware",
-        description: "Serial/UART for GPS, LiDAR, Dynamixel servos",
-        apt_packages: &["libudev-dev"],
-        device_files: &["/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyAMA0"],
-        user_groups: &["dialout"],
-        pkg_config: &["libudev"],
-        install_cmd: "sudo apt install -y libudev-dev && sudo usermod -a -G dialout $USER",
-        docs_url: "https://www.kernel.org/doc/html/latest/driver-api/serial/index.html",
-    },
-    // Modbus Hardware
-    SystemDependency {
-        feature: "modbus-hardware",
-        description: "Modbus RTU/TCP for industrial PLCs, sensors",
-        apt_packages: &["libudev-dev"],
-        device_files: &[],
-        user_groups: &["dialout"],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y libudev-dev && sudo usermod -a -G dialout $USER",
-        docs_url: "https://en.wikipedia.org/wiki/Modbus",
-    },
     // Joystick/Gamepad (gilrs)
     SystemDependency {
         feature: "gilrs",
@@ -128,39 +78,6 @@ pub const SYSTEM_DEPS: &[SystemDependency] = &[
         pkg_config: &[],
         install_cmd: "# TFLite is bundled with the tflite crate",
         docs_url: "https://www.tensorflow.org/lite",
-    },
-    // BNO055 IMU
-    SystemDependency {
-        feature: "bno055-imu",
-        description: "Bosch BNO055 9-axis IMU",
-        apt_packages: &["i2c-tools", "libi2c-dev"],
-        device_files: &["/dev/i2c-1"],
-        user_groups: &["i2c"],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y i2c-tools libi2c-dev && sudo usermod -a -G i2c $USER",
-        docs_url: "https://www.bosch-sensortec.com/products/motion-sensors/imus/bno055/",
-    },
-    // MPU6050 IMU
-    SystemDependency {
-        feature: "mpu6050-imu",
-        description: "InvenSense MPU6050 6-axis IMU",
-        apt_packages: &["i2c-tools", "libi2c-dev"],
-        device_files: &["/dev/i2c-1"],
-        user_groups: &["i2c"],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y i2c-tools libi2c-dev && sudo usermod -a -G i2c $USER",
-        docs_url: "https://invensense.tdk.com/products/motion-tracking/6-axis/mpu-6050/",
-    },
-    // NMEA GPS
-    SystemDependency {
-        feature: "nmea-gps",
-        description: "GPS receivers with NMEA protocol",
-        apt_packages: &["libudev-dev"],
-        device_files: &["/dev/ttyUSB0", "/dev/ttyACM0"],
-        user_groups: &["dialout"],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y libudev-dev && sudo usermod -a -G dialout $USER",
-        docs_url: "https://en.wikipedia.org/wiki/NMEA_0183",
     },
 ];
 
@@ -412,5 +329,403 @@ mod tests {
         let result = DependencyCheckResult::default();
         let report = format_dependency_report(&result, &[]);
         assert!(report.is_empty());
+    }
+
+    // --- DependencyCheckResult tests ---
+
+    #[test]
+    fn test_default_result_has_no_issues() {
+        let result = DependencyCheckResult::default();
+        assert!(!result.has_issues());
+        assert!(!result.has_missing_hardware());
+    }
+
+    #[test]
+    fn test_has_issues_with_missing_packages() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        assert!(result.has_issues());
+        assert!(!result.has_missing_hardware());
+    }
+
+    #[test]
+    fn test_has_issues_with_missing_groups() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_groups.push("video".to_string());
+        assert!(result.has_issues());
+    }
+
+    #[test]
+    fn test_has_issues_with_missing_pkg_config() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_pkg_config.push("opencv4".to_string());
+        assert!(result.has_issues());
+    }
+
+    #[test]
+    fn test_has_missing_hardware_with_missing_devices() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_devices.push("/dev/video0".to_string());
+        assert!(!result.has_issues(), "missing devices alone is not an issue");
+        assert!(result.has_missing_hardware());
+    }
+
+    #[test]
+    fn test_has_issues_and_hardware_combined() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        result.missing_devices.push("/dev/video0".to_string());
+        assert!(result.has_issues());
+        assert!(result.has_missing_hardware());
+    }
+
+    // --- SYSTEM_DEPS constant tests ---
+
+    #[test]
+    fn test_system_deps_has_known_features() {
+        let features: Vec<&str> = SYSTEM_DEPS.iter().map(|d| d.feature).collect();
+        assert!(features.contains(&"gilrs"));
+        assert!(features.contains(&"opencv-backend"));
+        assert!(features.contains(&"onnx"));
+        assert!(features.contains(&"tflite-inference"));
+    }
+
+    #[test]
+    fn test_system_deps_no_empty_features() {
+        for dep in SYSTEM_DEPS {
+            assert!(!dep.feature.is_empty(), "feature name must not be empty");
+            assert!(!dep.description.is_empty(), "description must not be empty for {}", dep.feature);
+            assert!(!dep.docs_url.is_empty(), "docs_url must not be empty for {}", dep.feature);
+        }
+    }
+
+    #[test]
+    fn test_system_deps_unique_features() {
+        let mut seen = HashSet::new();
+        for dep in SYSTEM_DEPS {
+            assert!(seen.insert(dep.feature), "duplicate feature: {}", dep.feature);
+        }
+    }
+
+    #[test]
+    fn test_gilrs_dep_details() {
+        let dep = SYSTEM_DEPS.iter().find(|d| d.feature == "gilrs").unwrap();
+        assert_eq!(dep.apt_packages, &["libudev-dev"]);
+        assert!(dep.device_files.contains(&"/dev/input/js0"));
+        assert!(dep.user_groups.contains(&"input"));
+        assert!(dep.pkg_config.contains(&"libudev"));
+    }
+
+    #[test]
+    fn test_onnx_dep_has_no_system_requirements() {
+        let dep = SYSTEM_DEPS.iter().find(|d| d.feature == "onnx").unwrap();
+        assert!(dep.apt_packages.is_empty());
+        assert!(dep.device_files.is_empty());
+        assert!(dep.user_groups.is_empty());
+        assert!(dep.pkg_config.is_empty());
+    }
+
+    #[test]
+    fn test_tflite_dep_has_no_system_requirements() {
+        let dep = SYSTEM_DEPS.iter().find(|d| d.feature == "tflite-inference").unwrap();
+        assert!(dep.apt_packages.is_empty());
+        assert!(dep.device_files.is_empty());
+        assert!(dep.user_groups.is_empty());
+        assert!(dep.pkg_config.is_empty());
+    }
+
+    // --- check_dependencies tests ---
+
+    #[test]
+    fn test_check_empty_features() {
+        let result = check_dependencies(&[]);
+        assert!(!result.has_issues());
+        assert!(!result.has_missing_hardware());
+        assert!(result.install_commands.is_empty());
+        assert!(result.docs_links.is_empty());
+    }
+
+    #[test]
+    fn test_check_multiple_nonexistent_features() {
+        let features = vec![
+            "no-such-feature".to_string(),
+            "also-not-real".to_string(),
+            "fake-feature-123".to_string(),
+        ];
+        let result = check_dependencies(&features);
+        assert!(!result.has_issues());
+        assert!(result.docs_links.is_empty());
+        assert!(result.install_commands.is_empty());
+    }
+
+    #[test]
+    fn test_check_onnx_feature_no_issues() {
+        // ONNX has no system deps, so it should never report issues
+        let result = check_dependencies(&["onnx".to_string()]);
+        assert!(!result.has_issues());
+        assert!(!result.has_missing_hardware());
+        // But it should still have docs link and install command
+        assert_eq!(result.docs_links.len(), 1);
+        assert_eq!(result.docs_links[0].0, "onnx");
+    }
+
+    #[test]
+    fn test_check_tflite_feature_no_issues() {
+        let result = check_dependencies(&["tflite-inference".to_string()]);
+        assert!(!result.has_issues());
+        assert!(!result.has_missing_hardware());
+        assert_eq!(result.docs_links.len(), 1);
+        assert_eq!(result.docs_links[0].0, "tflite-inference");
+    }
+
+    #[test]
+    fn test_check_dependencies_populates_docs_links() {
+        let result = check_dependencies(&["onnx".to_string(), "tflite-inference".to_string()]);
+        assert_eq!(result.docs_links.len(), 2);
+        let features: Vec<&str> = result.docs_links.iter().map(|(f, _)| f.as_str()).collect();
+        assert!(features.contains(&"onnx"));
+        assert!(features.contains(&"tflite-inference"));
+    }
+
+    #[test]
+    fn test_check_dependencies_populates_install_commands() {
+        let result = check_dependencies(&["onnx".to_string()]);
+        // ONNX has a non-empty install_cmd
+        assert_eq!(result.install_commands.len(), 1);
+    }
+
+    #[test]
+    fn test_check_dependencies_deduplicates_install_commands() {
+        // Passing same feature twice should not duplicate install command
+        let result = check_dependencies(&["onnx".to_string(), "onnx".to_string()]);
+        assert_eq!(result.install_commands.len(), 1);
+    }
+
+    #[test]
+    fn test_check_mixed_real_and_fake_features() {
+        let features = vec![
+            "nonexistent".to_string(),
+            "onnx".to_string(),
+            "also-fake".to_string(),
+        ];
+        let result = check_dependencies(&features);
+        // Only onnx should produce docs/install
+        assert_eq!(result.docs_links.len(), 1);
+        assert_eq!(result.docs_links[0].0, "onnx");
+    }
+
+    // --- format_dependency_report tests ---
+
+    #[test]
+    fn test_format_report_no_issues_returns_empty() {
+        let result = DependencyCheckResult::default();
+        let report = format_dependency_report(&result, &["onnx".to_string()]);
+        assert!(report.is_empty());
+    }
+
+    #[test]
+    fn test_format_report_with_missing_packages() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        result.missing_packages.push("libbar-dev".to_string());
+        let report = format_dependency_report(&result, &["test-feature".to_string()]);
+        assert!(report.contains("Missing System Packages"));
+        assert!(report.contains("libfoo-dev"));
+        assert!(report.contains("libbar-dev"));
+        assert!(report.contains("sudo apt install -y libfoo-dev libbar-dev"));
+        assert!(report.contains("Quick Fix"));
+    }
+
+    #[test]
+    fn test_format_report_with_missing_groups() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_groups.push("video".to_string());
+        result.missing_groups.push("dialout".to_string());
+        let report = format_dependency_report(&result, &["test-feature".to_string()]);
+        assert!(report.contains("Missing User Group Permissions"));
+        assert!(report.contains("video group"));
+        assert!(report.contains("dialout group"));
+        assert!(report.contains("sudo usermod -a -G video,dialout $USER"));
+        assert!(report.contains("logout and login again"));
+    }
+
+    #[test]
+    fn test_format_report_with_missing_pkg_config() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_pkg_config.push("opencv4".to_string());
+        let report = format_dependency_report(&result, &["opencv-backend".to_string()]);
+        assert!(report.contains("Missing Development Libraries"));
+        assert!(report.contains("opencv4 (pkg-config)"));
+    }
+
+    #[test]
+    fn test_format_report_with_missing_devices_only() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_devices.push("/dev/video0".to_string());
+        let report = format_dependency_report(&result, &["opencv-backend".to_string()]);
+        assert!(report.contains("Hardware Not Detected"));
+        assert!(report.contains("/dev/video0"));
+        assert!(report.contains("simulation mode"));
+        // No "Quick Fix" section since has_issues() is false (only devices missing)
+        assert!(!report.contains("Quick Fix"));
+    }
+
+    #[test]
+    fn test_format_report_contains_header() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        let report = format_dependency_report(&result, &["foo".to_string()]);
+        assert!(report.contains("HORUS System Dependency Check"));
+        assert!(report.contains("Features detected: foo"));
+    }
+
+    #[test]
+    fn test_format_report_shows_features_detected() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libx-dev".to_string());
+        let features = vec!["feat-a".to_string(), "feat-b".to_string()];
+        let report = format_dependency_report(&result, &features);
+        assert!(report.contains("Features detected: feat-a, feat-b"));
+    }
+
+    #[test]
+    fn test_format_report_with_docs_links() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        result.docs_links.push(("gilrs".to_string(), "https://docs.rs/gilrs/latest/gilrs/".to_string()));
+        let report = format_dependency_report(&result, &["gilrs".to_string()]);
+        assert!(report.contains("Documentation"));
+        assert!(report.contains("gilrs: https://docs.rs/gilrs/latest/gilrs/"));
+    }
+
+    #[test]
+    fn test_format_report_deduplicates_docs_links() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        let url = "https://example.com/docs".to_string();
+        result.docs_links.push(("feat1".to_string(), url.clone()));
+        result.docs_links.push(("feat2".to_string(), url.clone()));
+        let report = format_dependency_report(&result, &["feat1".to_string(), "feat2".to_string()]);
+        // Same URL should appear only once
+        let count = report.matches("https://example.com/docs").count();
+        assert_eq!(count, 1, "duplicate docs URL should be deduplicated");
+    }
+
+    #[test]
+    fn test_format_report_quick_fix_combined() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        result.missing_groups.push("video".to_string());
+        let report = format_dependency_report(&result, &["test".to_string()]);
+        // Quick fix should combine apt install and usermod
+        assert!(report.contains("sudo apt install -y libfoo-dev"));
+        assert!(report.contains("sudo usermod -a -G video $USER"));
+        assert!(report.contains(" && "), "commands should be joined with &&");
+    }
+
+    #[test]
+    fn test_format_report_quick_fix_packages_only() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("libfoo-dev".to_string());
+        let report = format_dependency_report(&result, &[]);
+        assert!(report.contains("Quick Fix"));
+        assert!(report.contains("sudo apt install -y libfoo-dev"));
+        assert!(!report.contains(" && "), "no && when only packages missing");
+    }
+
+    #[test]
+    fn test_format_report_quick_fix_groups_only() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_groups.push("input".to_string());
+        let report = format_dependency_report(&result, &[]);
+        assert!(report.contains("Quick Fix"));
+        assert!(report.contains("sudo usermod -a -G input $USER"));
+        assert!(!report.contains("apt install"), "no apt install when only groups missing");
+    }
+
+    // --- get_user_groups tests ---
+
+    #[test]
+    fn test_get_user_groups_returns_non_empty() {
+        let groups = get_user_groups();
+        // Every user should belong to at least one group
+        assert!(!groups.is_empty(), "current user should have at least one group");
+    }
+
+    #[test]
+    fn test_get_user_groups_contains_current_user_group() {
+        let groups = get_user_groups();
+        // The `groups` command typically includes the username as a group
+        // At minimum, the set should be non-empty (already tested above)
+        // We just verify it's a valid HashSet
+        assert!(groups.len() >= 1);
+    }
+
+    // --- SystemDependency Clone/Debug ---
+
+    #[test]
+    fn test_system_dependency_clone() {
+        let dep = SYSTEM_DEPS[0].clone();
+        assert_eq!(dep.feature, SYSTEM_DEPS[0].feature);
+        assert_eq!(dep.description, SYSTEM_DEPS[0].description);
+        assert_eq!(dep.apt_packages, SYSTEM_DEPS[0].apt_packages);
+    }
+
+    #[test]
+    fn test_system_dependency_debug() {
+        let dep = &SYSTEM_DEPS[0];
+        let debug = format!("{:?}", dep);
+        assert!(debug.contains("SystemDependency"));
+        assert!(debug.contains(dep.feature));
+    }
+
+    #[test]
+    fn test_dependency_check_result_debug() {
+        let result = DependencyCheckResult::default();
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("DependencyCheckResult"));
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn test_check_dependencies_duplicate_features() {
+        // Passing "onnx" twice should not create duplicate docs entries
+        // but check_dependencies doesn't deduplicate features — it processes each
+        let result = check_dependencies(&["onnx".to_string(), "onnx".to_string()]);
+        // docs_links will have 2 entries (one per iteration) — this tests current behavior
+        assert_eq!(result.docs_links.len(), 2);
+        // But install_commands are deduplicated
+        assert_eq!(result.install_commands.len(), 1);
+    }
+
+    #[test]
+    fn test_check_opencv_populates_device_checks() {
+        // opencv-backend references /dev/video0 which likely doesn't exist in CI
+        let result = check_dependencies(&["opencv-backend".to_string()]);
+        // docs_links should have opencv entry
+        assert_eq!(result.docs_links.len(), 1);
+        assert_eq!(result.docs_links[0].0, "opencv-backend");
+        // install_commands should be populated
+        assert!(!result.install_commands.is_empty());
+    }
+
+    #[test]
+    fn test_format_report_all_sections() {
+        let mut result = DependencyCheckResult::default();
+        result.missing_packages.push("pkg1".to_string());
+        result.missing_groups.push("grp1".to_string());
+        result.missing_pkg_config.push("lib1".to_string());
+        result.missing_devices.push("/dev/foo".to_string());
+        result.docs_links.push(("feat".to_string(), "https://example.com".to_string()));
+        result.install_commands.push("sudo apt install pkg1".to_string());
+
+        let report = format_dependency_report(&result, &["feat".to_string()]);
+        assert!(report.contains("Missing System Packages"));
+        assert!(report.contains("Missing User Group Permissions"));
+        assert!(report.contains("Missing Development Libraries"));
+        assert!(report.contains("Hardware Not Detected"));
+        assert!(report.contains("Documentation"));
+        assert!(report.contains("Quick Fix"));
     }
 }

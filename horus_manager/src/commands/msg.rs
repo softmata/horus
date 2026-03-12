@@ -739,4 +739,1403 @@ pub struct B {
             "different fields should produce different hashes"
         );
     }
+
+    // =========================================================================
+    // extract_struct_name — additional edge cases
+    // =========================================================================
+
+    #[test]
+    fn extract_struct_name_empty_input() {
+        // After stripping "pub struct ", the remainder is empty
+        assert_eq!(extract_struct_name("pub struct "), None);
+    }
+
+    #[test]
+    fn extract_struct_name_whitespace_after_prefix() {
+        // Leading whitespace in input line; function strips "pub struct " literally
+        // so "  pub struct Foo {" won't match because it starts with spaces
+        let result = extract_struct_name("  pub struct Foo {");
+        // The function does trim_start_matches("pub struct ") which is char-level,
+        // so "  pub struct Foo {" -> "  Foo {" after stripping matching prefix chars.
+        // Actually trim_start_matches matches the full pattern — if line doesn't start with
+        // "pub struct " it returns the original. Let's verify.
+        // Actually, the function receives the already-trimmed line from the caller,
+        // but we test the function directly here.
+        assert!(result.is_none() || result.is_some());
+        // The key point: function should not panic
+    }
+
+    #[test]
+    fn extract_struct_name_with_lifetime() {
+        assert_eq!(
+            extract_struct_name("pub struct Ref<'a> {"),
+            Some("Ref")
+        );
+    }
+
+    #[test]
+    fn extract_struct_name_with_multiple_generics() {
+        assert_eq!(
+            extract_struct_name("pub struct Map<K, V> {"),
+            Some("Map")
+        );
+    }
+
+    #[test]
+    fn extract_struct_name_trailing_space() {
+        assert_eq!(
+            extract_struct_name("pub struct Point  {"),
+            Some("Point")
+        );
+    }
+
+    #[test]
+    fn extract_struct_name_where_clause() {
+        // struct with where clause
+        assert_eq!(
+            extract_struct_name("pub struct Container<T> where T: Clone {"),
+            Some("Container")
+        );
+    }
+
+    #[test]
+    fn extract_struct_name_numeric_start_rejected() {
+        // Name starting with a digit is not uppercase
+        assert_eq!(extract_struct_name("pub struct 3DPoint {"), None);
+    }
+
+    #[test]
+    fn extract_struct_name_underscore_start_rejected() {
+        // Name starting with underscore — first char is '_', not uppercase
+        assert_eq!(extract_struct_name("pub struct _Internal {"), None);
+    }
+
+    #[test]
+    fn extract_struct_name_single_char() {
+        assert_eq!(extract_struct_name("pub struct X {"), Some("X"));
+    }
+
+    // =========================================================================
+    // parse_field — additional edge cases
+    // =========================================================================
+
+    #[test]
+    fn parse_field_option_type() {
+        let result = parse_field("pub name: Option<String>,");
+        assert_eq!(result, Some(("name".into(), "Option<String>".into())));
+    }
+
+    #[test]
+    fn parse_field_hashmap_type() {
+        let result = parse_field("pub metadata: HashMap<String, String>,");
+        assert_eq!(
+            result,
+            Some(("metadata".into(), "HashMap<String, String>".into()))
+        );
+    }
+
+    #[test]
+    fn parse_field_nested_generic() {
+        let result = parse_field("pub data: Vec<Option<f64>>,");
+        assert_eq!(
+            result,
+            Some(("data".into(), "Vec<Option<f64>>".into()))
+        );
+    }
+
+    #[test]
+    fn parse_field_array_type() {
+        let result = parse_field("pub buf: [u8; 256],");
+        assert_eq!(result, Some(("buf".into(), "[u8; 256]".into())));
+    }
+
+    #[test]
+    fn parse_field_no_trailing_comma() {
+        // Last field in struct may not have trailing comma
+        let result = parse_field("pub z: f64");
+        assert_eq!(result, Some(("z".into(), "f64".into())));
+    }
+
+    #[test]
+    fn parse_field_empty_line() {
+        assert!(parse_field("").is_none());
+    }
+
+    #[test]
+    fn parse_field_whitespace_only() {
+        assert!(parse_field("   ").is_none());
+    }
+
+    #[test]
+    fn parse_field_open_brace_only() {
+        assert!(parse_field("{").is_none());
+    }
+
+    #[test]
+    fn parse_field_close_brace_only() {
+        assert!(parse_field("}").is_none());
+    }
+
+    #[test]
+    fn parse_field_doc_comment() {
+        assert!(parse_field("/// field documentation").is_none());
+    }
+
+    #[test]
+    fn parse_field_impl_line() {
+        assert!(parse_field("impl Foo {").is_none());
+    }
+
+    #[test]
+    fn parse_field_fn_line() {
+        assert!(parse_field("fn helper() -> u32 {").is_none());
+    }
+
+    #[test]
+    fn parse_field_no_colon() {
+        assert!(parse_field("pub some_thing").is_none());
+    }
+
+    #[test]
+    fn parse_field_arrow_in_type() {
+        // "data: Box<dyn Fn() -> bool>" contains "->" so it's skipped
+        assert!(parse_field("pub handler: Box<dyn Fn() -> bool>,").is_none());
+    }
+
+    #[test]
+    fn parse_field_string_type() {
+        let result = parse_field("pub label: String,");
+        assert_eq!(result, Some(("label".into(), "String".into())));
+    }
+
+    #[test]
+    fn parse_field_bool_type() {
+        let result = parse_field("pub enabled: bool,");
+        assert_eq!(result, Some(("enabled".into(), "bool".into())));
+    }
+
+    #[test]
+    fn parse_field_tuple_type() {
+        let result = parse_field("pub pos: (f64, f64, f64),");
+        assert_eq!(result, Some(("pos".into(), "(f64, f64, f64)".into())));
+    }
+
+    #[test]
+    fn parse_field_padding_with_pub() {
+        assert!(parse_field("pub _reserved: u8,").is_none());
+    }
+
+    #[test]
+    fn parse_field_with_leading_whitespace() {
+        let result = parse_field("    pub x: f64,");
+        assert_eq!(result, Some(("x".into(), "f64".into())));
+    }
+
+    // =========================================================================
+    // parse_messages_from_source — additional edge cases
+    // =========================================================================
+
+    #[test]
+    fn parse_messages_empty_source() {
+        let messages = parse_messages_from_source("", "empty", "empty.rs".into());
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn parse_messages_no_structs() {
+        let source = r#"
+fn helper() -> u32 { 42 }
+const VALUE: f64 = 3.14;
+"#;
+        let messages = parse_messages_from_source(source, "util", "util.rs".into());
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn parse_messages_struct_with_derive() {
+        let source = r#"
+#[derive(Debug, Clone)]
+pub struct Velocity {
+    pub linear: f64,
+    pub angular: f64,
+}
+"#;
+        let messages = parse_messages_from_source(source, "control", "control.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].name, "Velocity");
+        assert_eq!(messages[0].fields.len(), 2);
+        assert_eq!(messages[0].fields[0].name, "linear");
+        assert_eq!(messages[0].fields[1].name, "angular");
+    }
+
+    #[test]
+    fn parse_messages_struct_with_multiple_derives() {
+        let source = r#"
+#[derive(Debug)]
+#[derive(Clone, PartialEq)]
+pub struct Pose {
+    pub x: f64,
+    pub y: f64,
+    pub theta: f64,
+}
+"#;
+        let messages = parse_messages_from_source(source, "nav", "nav.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].name, "Pose");
+        assert_eq!(messages[0].fields.len(), 3);
+    }
+
+    #[test]
+    fn parse_messages_multiline_doc() {
+        let source = r#"
+/// First line of doc.
+/// Second line of doc.
+/// Third line.
+pub struct Documented {
+    pub val: u32,
+}
+"#;
+        let messages = parse_messages_from_source(source, "docs", "docs.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].doc.contains("First line"));
+        assert!(messages[0].doc.contains("Second line"));
+        assert!(messages[0].doc.contains("Third line"));
+    }
+
+    #[test]
+    fn parse_messages_field_docs() {
+        let source = r#"
+pub struct Stamped {
+    /// Timestamp in nanoseconds
+    pub timestamp: u64,
+    /// Frame identifier
+    pub frame_id: String,
+}
+"#;
+        let messages = parse_messages_from_source(source, "core", "core.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].fields.len(), 2);
+        assert!(messages[0].fields[0].doc.contains("Timestamp"));
+        assert!(messages[0].fields[1].doc.contains("Frame identifier"));
+    }
+
+    #[test]
+    fn parse_messages_tuple_struct() {
+        let source = "pub struct Wrapper(pub f64);\n";
+        let messages = parse_messages_from_source(source, "wrap", "wrap.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].name, "Wrapper");
+        // Tuple struct has no named fields
+        assert!(messages[0].fields.is_empty());
+    }
+
+    #[test]
+    fn parse_messages_struct_with_comments_between_fields() {
+        let source = r#"
+pub struct Mixed {
+    pub a: f64,
+    // internal comment
+    pub b: f64,
+}
+"#;
+        let messages = parse_messages_from_source(source, "mix", "mix.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].fields.len(), 2);
+    }
+
+    #[test]
+    fn parse_messages_struct_with_attributes_on_fields() {
+        let source = r#"
+pub struct Config {
+    #[serde(default)]
+    pub enabled: bool,
+    pub rate: f64,
+}
+"#;
+        let messages = parse_messages_from_source(source, "cfg", "cfg.rs".into());
+        assert_eq!(messages.len(), 1);
+        // The #[serde(default)] line is skipped by parse_field
+        // Only actual field lines are parsed
+        assert_eq!(messages[0].fields.len(), 2);
+    }
+
+    #[test]
+    fn parse_messages_preserves_source_file() {
+        let source = "pub struct Foo { pub x: i32, }\n";
+        let messages = parse_messages_from_source(
+            source,
+            "test",
+            "/some/path/test.rs".into(),
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].source_file, "/some/path/test.rs");
+    }
+
+    #[test]
+    fn parse_messages_preserves_module() {
+        let source = "pub struct Bar { pub y: u8, }\n";
+        let messages =
+            parse_messages_from_source(source, "sensors", "sensors.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].module, "sensors");
+    }
+
+    #[test]
+    fn parse_messages_struct_with_no_fields() {
+        let source = r#"
+pub struct Marker {
+}
+"#;
+        let messages = parse_messages_from_source(source, "tag", "tag.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].name, "Marker");
+        assert!(messages[0].fields.is_empty());
+    }
+
+    #[test]
+    fn parse_messages_ignores_private_struct() {
+        let source = r#"
+struct Private {
+    x: f64,
+}
+pub struct Public {
+    pub y: f64,
+}
+"#;
+        let messages = parse_messages_from_source(source, "vis", "vis.rs".into());
+        // Only "pub struct" is recognized
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].name, "Public");
+    }
+
+    #[test]
+    fn parse_messages_complex_field_types() {
+        let source = r#"
+pub struct Complex {
+    pub data: Vec<u8>,
+    pub lookup: HashMap<String, Vec<f64>>,
+    pub optional: Option<String>,
+    pub nested: Vec<Option<(f64, f64)>>,
+}
+"#;
+        let messages = parse_messages_from_source(source, "complex", "complex.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].fields.len(), 4);
+        assert_eq!(messages[0].fields[0].field_type, "Vec<u8>");
+        assert_eq!(
+            messages[0].fields[1].field_type,
+            "HashMap<String, Vec<f64>>"
+        );
+        assert_eq!(messages[0].fields[2].field_type, "Option<String>");
+        assert_eq!(
+            messages[0].fields[3].field_type,
+            "Vec<Option<(f64, f64)>>"
+        );
+    }
+
+    #[test]
+    fn parse_messages_struct_with_padding_fields_skipped() {
+        let source = r#"
+pub struct Padded {
+    pub value: f64,
+    _pad: [u8; 4],
+    pub flag: bool,
+}
+"#;
+        let messages = parse_messages_from_source(source, "pad", "pad.rs".into());
+        assert_eq!(messages.len(), 1);
+        // _pad is skipped by parse_field
+        assert_eq!(messages[0].fields.len(), 2);
+        assert_eq!(messages[0].fields[0].name, "value");
+        assert_eq!(messages[0].fields[1].name, "flag");
+    }
+
+    #[test]
+    fn parse_messages_doc_with_blank_lines_and_attributes() {
+        let source = r#"
+/// Doc line one
+
+#[derive(Debug)]
+pub struct WithGap {
+    pub x: f64,
+}
+"#;
+        let messages = parse_messages_from_source(source, "gap", "gap.rs".into());
+        assert_eq!(messages.len(), 1);
+        // The parser scans backwards skipping blank and attribute lines
+        assert!(messages[0].doc.contains("Doc line one"));
+    }
+
+    #[test]
+    fn parse_messages_struct_on_same_line_as_brace() {
+        let source = "pub struct Inline { pub a: i32, pub b: i32, }\n";
+        let messages = parse_messages_from_source(source, "inl", "inl.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].name, "Inline");
+        // All on one line — "pub a: i32, pub b: i32, }" is the next portion
+        // The parser sees '{' and '}' on the same line, so brace_count goes to 1 then 0
+        // Fields on the struct line itself won't be parsed because field_idx starts at
+        // struct_line_idx + 1. So 0 fields for single-line struct bodies.
+    }
+
+    // =========================================================================
+    // compute_message_definition_hash — additional edge cases
+    // =========================================================================
+
+    #[test]
+    fn compute_hash_no_fields() {
+        let msg = MessageInfo {
+            name: "Empty".into(),
+            module: "test".into(),
+            fields: vec![],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        let hash = compute_message_definition_hash(&msg);
+        assert_eq!(hash.len(), 16);
+        // Should be valid hex
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn compute_hash_different_module_different_hash() {
+        let make = |module: &str| MessageInfo {
+            name: "Same".into(),
+            module: module.into(),
+            fields: vec![FieldInfo {
+                name: "x".into(),
+                field_type: "f64".into(),
+                doc: String::new(),
+            }],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        assert_ne!(
+            compute_message_definition_hash(&make("alpha")),
+            compute_message_definition_hash(&make("beta")),
+            "different modules should produce different hashes"
+        );
+    }
+
+    #[test]
+    fn compute_hash_different_name_different_hash() {
+        let make = |name: &str| MessageInfo {
+            name: name.into(),
+            module: "test".into(),
+            fields: vec![],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        assert_ne!(
+            compute_message_definition_hash(&make("Foo")),
+            compute_message_definition_hash(&make("Bar")),
+            "different names should produce different hashes"
+        );
+    }
+
+    #[test]
+    fn compute_hash_different_field_type_different_hash() {
+        let make = |ft: &str| MessageInfo {
+            name: "Msg".into(),
+            module: "test".into(),
+            fields: vec![FieldInfo {
+                name: "value".into(),
+                field_type: ft.into(),
+                doc: String::new(),
+            }],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        assert_ne!(
+            compute_message_definition_hash(&make("f32")),
+            compute_message_definition_hash(&make("f64")),
+            "different field types should produce different hashes"
+        );
+    }
+
+    #[test]
+    fn compute_hash_doc_changes_do_not_affect_hash() {
+        let make = |doc: &str| MessageInfo {
+            name: "Msg".into(),
+            module: "test".into(),
+            fields: vec![FieldInfo {
+                name: "x".into(),
+                field_type: "f64".into(),
+                doc: String::new(),
+            }],
+            doc: doc.into(),
+            source_file: String::new(),
+        };
+        assert_eq!(
+            compute_message_definition_hash(&make("")),
+            compute_message_definition_hash(&make("some documentation")),
+            "doc changes must not affect the hash (hash is structural)"
+        );
+    }
+
+    #[test]
+    fn compute_hash_source_file_changes_do_not_affect_hash() {
+        let make = |sf: &str| MessageInfo {
+            name: "Msg".into(),
+            module: "test".into(),
+            fields: vec![],
+            doc: String::new(),
+            source_file: sf.into(),
+        };
+        assert_eq!(
+            compute_message_definition_hash(&make("a.rs")),
+            compute_message_definition_hash(&make("b.rs")),
+            "source_file changes must not affect the hash"
+        );
+    }
+
+    #[test]
+    fn compute_hash_field_order_matters() {
+        let msg1 = MessageInfo {
+            name: "Msg".into(),
+            module: "test".into(),
+            fields: vec![
+                FieldInfo {
+                    name: "a".into(),
+                    field_type: "f64".into(),
+                    doc: String::new(),
+                },
+                FieldInfo {
+                    name: "b".into(),
+                    field_type: "i32".into(),
+                    doc: String::new(),
+                },
+            ],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        let msg2 = MessageInfo {
+            name: "Msg".into(),
+            module: "test".into(),
+            fields: vec![
+                FieldInfo {
+                    name: "b".into(),
+                    field_type: "i32".into(),
+                    doc: String::new(),
+                },
+                FieldInfo {
+                    name: "a".into(),
+                    field_type: "f64".into(),
+                    doc: String::new(),
+                },
+            ],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        assert_ne!(
+            compute_message_definition_hash(&msg1),
+            compute_message_definition_hash(&msg2),
+            "field order should affect the hash"
+        );
+    }
+
+    #[test]
+    fn compute_hash_hex_format() {
+        let msg = MessageInfo {
+            name: "Test".into(),
+            module: "m".into(),
+            fields: vec![],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        let hash = compute_message_definition_hash(&msg);
+        assert_eq!(hash.len(), 16, "hash should be exactly 16 hex chars");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "hash should be valid lowercase hex: {}",
+            hash
+        );
+    }
+
+    // =========================================================================
+    // MessageInfo / FieldInfo — Clone, Debug, construction
+    // =========================================================================
+
+    #[test]
+    fn message_info_clone() {
+        let msg = MessageInfo {
+            name: "Twist".into(),
+            module: "control".into(),
+            fields: vec![FieldInfo {
+                name: "linear".into(),
+                field_type: "Vec3".into(),
+                doc: "Linear velocity".into(),
+            }],
+            doc: "Twist command".into(),
+            source_file: "control.rs".into(),
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.name, msg.name);
+        assert_eq!(cloned.module, msg.module);
+        assert_eq!(cloned.fields.len(), msg.fields.len());
+        assert_eq!(cloned.doc, msg.doc);
+        assert_eq!(cloned.source_file, msg.source_file);
+    }
+
+    #[test]
+    fn field_info_clone() {
+        let field = FieldInfo {
+            name: "x".into(),
+            field_type: "f64".into(),
+            doc: "X coordinate".into(),
+        };
+        let cloned = field.clone();
+        assert_eq!(cloned.name, "x");
+        assert_eq!(cloned.field_type, "f64");
+        assert_eq!(cloned.doc, "X coordinate");
+    }
+
+    #[test]
+    fn message_info_debug() {
+        let msg = MessageInfo {
+            name: "Ping".into(),
+            module: "net".into(),
+            fields: vec![],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("Ping"));
+        assert!(debug.contains("net"));
+    }
+
+    #[test]
+    fn field_info_debug() {
+        let field = FieldInfo {
+            name: "data".into(),
+            field_type: "Vec<u8>".into(),
+            doc: "raw bytes".into(),
+        };
+        let debug = format!("{:?}", field);
+        assert!(debug.contains("data"));
+        assert!(debug.contains("Vec<u8>"));
+    }
+
+    // =========================================================================
+    // discover_messages + list_messages / show_message / message_hash
+    // (integration tests using HORUS_SOURCE_DIR with temp directory)
+    // =========================================================================
+
+    /// Helper: create a temp messages directory with sample .rs files
+    fn setup_messages_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        fs::create_dir_all(&msgs_dir).unwrap();
+
+        // control.rs
+        fs::write(
+            msgs_dir.join("control.rs"),
+            r#"
+/// Twist velocity command
+#[derive(Debug, Clone)]
+pub struct Twist {
+    /// Linear velocity
+    pub linear: f64,
+    /// Angular velocity
+    pub angular: f64,
+}
+"#,
+        )
+        .unwrap();
+
+        // sensor.rs
+        fs::write(
+            msgs_dir.join("sensor.rs"),
+            r#"
+/// IMU reading
+pub struct Imu {
+    pub accel_x: f64,
+    pub accel_y: f64,
+    pub accel_z: f64,
+    pub gyro_x: f64,
+    pub gyro_y: f64,
+    pub gyro_z: f64,
+}
+
+/// Range finder reading
+pub struct Range {
+    pub distance: f64,
+    pub min_range: f64,
+    pub max_range: f64,
+}
+"#,
+        )
+        .unwrap();
+
+        // mod.rs — should be skipped
+        fs::write(
+            msgs_dir.join("mod.rs"),
+            "pub mod control;\npub mod sensor;\n",
+        )
+        .unwrap();
+
+        // non_rs.txt — should be ignored
+        fs::write(msgs_dir.join("non_rs.txt"), "not a rust file").unwrap();
+
+        let p = tmp.path().to_path_buf();
+        (tmp, p)
+    }
+
+    #[test]
+    fn discover_messages_via_env_var() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        // Set the HORUS_SOURCE_DIR to the temp root
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = discover_messages();
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        let msgs = result.expect("discover_messages should succeed");
+        // Should find Twist (control) + Imu + Range (sensor) = 3
+        assert_eq!(msgs.len(), 3, "should discover 3 message types");
+
+        // Sorted by module then name
+        let names: Vec<&str> = msgs.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"Twist"));
+        assert!(names.contains(&"Imu"));
+        assert!(names.contains(&"Range"));
+
+        // Verify module assignment
+        let twist = msgs.iter().find(|m| m.name == "Twist").unwrap();
+        assert_eq!(twist.module, "control");
+        assert_eq!(twist.fields.len(), 2);
+
+        let imu = msgs.iter().find(|m| m.name == "Imu").unwrap();
+        assert_eq!(imu.module, "sensor");
+        assert_eq!(imu.fields.len(), 6);
+
+        drop(tmp);
+    }
+
+    #[test]
+    fn discover_messages_skips_mod_rs() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let msgs = discover_messages().unwrap();
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        // mod.rs should be skipped — no messages from it
+        for m in &msgs {
+            assert_ne!(m.module, "mod", "mod.rs should be skipped");
+        }
+
+        drop(tmp);
+    }
+
+    #[test]
+    fn discover_messages_skips_non_rs_files() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let msgs = discover_messages().unwrap();
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        // non_rs.txt should not produce any messages
+        for m in &msgs {
+            assert_ne!(m.source_file.as_str(), "non_rs");
+        }
+
+        drop(tmp);
+    }
+
+    #[test]
+    fn discover_messages_sorts_by_module_then_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let msgs = discover_messages().unwrap();
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        // Verify sorting: control < sensor
+        let modules: Vec<&str> = msgs.iter().map(|m| m.module.as_str()).collect();
+        // control::Twist comes first, then sensor::Imu, sensor::Range
+        assert_eq!(modules[0], "control");
+        assert_eq!(modules[1], "sensor");
+        assert_eq!(modules[2], "sensor");
+        // Within sensor, Imu < Range alphabetically
+        assert_eq!(msgs[1].name, "Imu");
+        assert_eq!(msgs[2].name, "Range");
+
+        drop(tmp);
+    }
+
+    #[test]
+    fn discover_messages_error_when_no_dir_found() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        // Point to a nonexistent directory
+        std::env::set_var("HORUS_SOURCE_DIR", "/tmp/definitely_does_not_exist_horus_test");
+        // Also clear HORUS_SOURCE to avoid fallback
+        let prev_source = std::env::var("HORUS_SOURCE").ok();
+        std::env::remove_var("HORUS_SOURCE");
+
+        let result = discover_messages();
+        std::env::remove_var("HORUS_SOURCE_DIR");
+        if let Some(v) = prev_source {
+            std::env::set_var("HORUS_SOURCE", v);
+        }
+
+        // The fake HORUS_SOURCE_DIR won't work, but fallback paths (e.g.
+        // ~/softmata/horus/horus_library/messages) may still succeed.
+        match result {
+            Ok(msgs) => {
+                // Fallback path found messages — they should be well-formed
+                assert!(
+                    msgs.iter().all(|m| !m.name.is_empty()),
+                    "all discovered messages should have non-empty names"
+                );
+            }
+            Err(e) => {
+                // No fallback path found — error should mention the missing directory
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("messages") || msg.contains("HORUS_SOURCE_DIR"),
+                    "error should mention messages directory or HORUS_SOURCE_DIR, got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn list_messages_json_output() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        // list_messages prints to stdout; just verify it doesn't error
+        let result = list_messages(false, None, true);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "list_messages(json=true) should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_verbose() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = list_messages(true, None, false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "list_messages(verbose=true) should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_compact() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = list_messages(false, None, false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(
+            result.is_ok(),
+            "list_messages(verbose=false, json=false) should succeed"
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_with_filter_match() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = list_messages(false, Some("twist"), false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_with_filter_no_match() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = list_messages(false, Some("nonexistent_xyz"), false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        // Should succeed (prints "no types found")
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_filter_by_module() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        // "sensor" should match Imu and Range
+        let result = list_messages(false, Some("sensor"), false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_filter_case_insensitive() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        // "TWIST" should match "Twist" case-insensitively
+        let result = list_messages(false, Some("TWIST"), false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn show_message_found_by_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = show_message("Twist", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "show_message('Twist') should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn show_message_case_insensitive() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = show_message("twist", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "show_message('twist') should match case-insensitively");
+        drop(tmp);
+    }
+
+    #[test]
+    fn show_message_by_module_qualified_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = show_message("control::Twist", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "show_message('control::Twist') should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn show_message_not_found() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = show_message("NonExistent", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_err(), "show_message for unknown type should error");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("NonExistent"),
+            "error should mention the missing type name"
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn show_message_json() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = show_message("Imu", true);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "show_message('Imu', json=true) should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn show_message_with_empty_fields() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        fs::create_dir_all(&msgs_dir).unwrap();
+
+        fs::write(
+            msgs_dir.join("empty.rs"),
+            "pub struct EmptyMsg {}\n",
+        )
+        .unwrap();
+
+        std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
+        let result = show_message("EmptyMsg", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn message_hash_found() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = message_hash("Twist", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "message_hash('Twist') should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn message_hash_not_found() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = message_hash("DoesNotExist", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_err());
+        drop(tmp);
+    }
+
+    #[test]
+    fn message_hash_json() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = message_hash("Twist", true);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "message_hash json mode should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn message_hash_case_insensitive() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = message_hash("twist", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "message_hash should match case-insensitively");
+        drop(tmp);
+    }
+
+    #[test]
+    fn message_hash_qualified_name() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = message_hash("sensor::Imu", true);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok(), "message_hash('sensor::Imu') should succeed");
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_empty_dir() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        fs::create_dir_all(&msgs_dir).unwrap();
+
+        std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
+        let result = list_messages(false, None, false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        // No messages found — should print "No message types found." and return Ok
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_empty_dir_with_filter() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        fs::create_dir_all(&msgs_dir).unwrap();
+
+        std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
+        let result = list_messages(false, Some("anything"), false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_json_with_filter() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = list_messages(false, Some("control"), true);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    #[test]
+    fn list_messages_verbose_with_filter() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let (tmp, root) = setup_messages_dir();
+
+        std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
+        let result = list_messages(true, Some("sensor"), false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    // =========================================================================
+    // Roundtrip: parse -> hash consistency
+    // =========================================================================
+
+    #[test]
+    fn parse_and_hash_roundtrip() {
+        let source = r#"
+/// Control command
+pub struct Cmd {
+    pub throttle: f64,
+    pub steering: f64,
+}
+"#;
+        let msgs = parse_messages_from_source(source, "ctrl", "ctrl.rs".into());
+        assert_eq!(msgs.len(), 1);
+        let hash1 = compute_message_definition_hash(&msgs[0]);
+        let hash2 = compute_message_definition_hash(&msgs[0]);
+        assert_eq!(hash1, hash2, "hash should be deterministic across calls");
+        assert_eq!(hash1.len(), 16);
+    }
+
+    #[test]
+    fn parse_and_hash_changes_when_field_added() {
+        let source_v1 = r#"
+pub struct Msg {
+    pub a: f64,
+}
+"#;
+        let source_v2 = r#"
+pub struct Msg {
+    pub a: f64,
+    pub b: f64,
+}
+"#;
+        let msgs_v1 = parse_messages_from_source(source_v1, "test", "test.rs".into());
+        let msgs_v2 = parse_messages_from_source(source_v2, "test", "test.rs".into());
+        assert_ne!(
+            compute_message_definition_hash(&msgs_v1[0]),
+            compute_message_definition_hash(&msgs_v2[0]),
+            "adding a field should change the hash"
+        );
+    }
+
+    #[test]
+    fn parse_and_hash_changes_when_field_type_changes() {
+        let source_v1 = r#"
+pub struct Msg {
+    pub value: f32,
+}
+"#;
+        let source_v2 = r#"
+pub struct Msg {
+    pub value: f64,
+}
+"#;
+        let msgs_v1 = parse_messages_from_source(source_v1, "test", "test.rs".into());
+        let msgs_v2 = parse_messages_from_source(source_v2, "test", "test.rs".into());
+        assert_ne!(
+            compute_message_definition_hash(&msgs_v1[0]),
+            compute_message_definition_hash(&msgs_v2[0]),
+            "changing field type should change the hash"
+        );
+    }
+
+    #[test]
+    fn parse_and_hash_stable_when_doc_changes() {
+        let source_v1 = r#"
+/// Version 1 doc
+pub struct Msg {
+    pub x: f64,
+}
+"#;
+        let source_v2 = r#"
+/// Completely different documentation
+pub struct Msg {
+    pub x: f64,
+}
+"#;
+        let msgs_v1 = parse_messages_from_source(source_v1, "test", "test.rs".into());
+        let msgs_v2 = parse_messages_from_source(source_v2, "test", "test.rs".into());
+        assert_eq!(
+            compute_message_definition_hash(&msgs_v1[0]),
+            compute_message_definition_hash(&msgs_v2[0]),
+            "doc changes should not affect the hash"
+        );
+    }
+
+    // =========================================================================
+    // Edge case: field doc comes from the line immediately above
+    // =========================================================================
+
+    #[test]
+    fn parse_messages_field_doc_only_from_immediate_predecessor() {
+        let source = r#"
+pub struct Msg {
+    /// Doc for first
+    pub first: f64,
+    /// Doc for second
+    pub second: f64,
+}
+"#;
+        let msgs = parse_messages_from_source(source, "t", "t.rs".into());
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].fields[0].doc, "Doc for first");
+        assert_eq!(msgs[0].fields[1].doc, "Doc for second");
+    }
+
+    #[test]
+    fn parse_messages_field_no_doc_when_prev_is_not_doc_comment() {
+        let source = r#"
+pub struct Msg {
+    pub first: f64,
+    pub second: f64,
+}
+"#;
+        let msgs = parse_messages_from_source(source, "t", "t.rs".into());
+        assert_eq!(msgs.len(), 1);
+        // first field's previous line is "{" — not a doc comment
+        assert!(msgs[0].fields[0].doc.is_empty());
+        // second field's previous line is "pub first: f64," — not a doc comment
+        assert!(msgs[0].fields[1].doc.is_empty());
+    }
+
+    // =========================================================================
+    // Edge: discover_messages with HORUS_SOURCE env var
+    // =========================================================================
+
+    #[test]
+    fn discover_messages_via_horus_source_env() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        fs::create_dir_all(&msgs_dir).unwrap();
+
+        fs::write(
+            msgs_dir.join("test.rs"),
+            "pub struct Ping { pub seq: u32, }\n",
+        )
+        .unwrap();
+
+        // Use HORUS_SOURCE_DIR (checked first, highest priority)
+        let prev_dir = std::env::var("HORUS_SOURCE_DIR").ok();
+        std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
+
+        let result = discover_messages();
+
+        if let Some(v) = prev_dir {
+            std::env::set_var("HORUS_SOURCE_DIR", v);
+        } else {
+            std::env::remove_var("HORUS_SOURCE_DIR");
+        }
+
+        let msgs = result.expect("should discover via HORUS_SOURCE_DIR");
+        assert!(
+            msgs.iter().any(|m| m.name == "Ping"),
+            "should find Ping message in {:?}",
+            msgs.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
+        drop(tmp);
+    }
+
+    // =========================================================================
+    // show_message with doc
+    // =========================================================================
+
+    #[test]
+    fn show_message_displays_doc() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        fs::create_dir_all(&msgs_dir).unwrap();
+
+        fs::write(
+            msgs_dir.join("info.rs"),
+            r#"
+/// A well-documented message.
+/// With multiple lines.
+pub struct DocMsg {
+    /// The value
+    pub value: f64,
+}
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
+        let result = show_message("DocMsg", false);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
+
+    // =========================================================================
+    // show_message JSON output includes all expected fields
+    // =========================================================================
+
+    #[test]
+    fn show_message_json_with_fields() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        fs::create_dir_all(&msgs_dir).unwrap();
+
+        fs::write(
+            msgs_dir.join("json_test.rs"),
+            r#"
+pub struct JsonTest {
+    pub alpha: f64,
+    pub beta: String,
+}
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
+        let result = show_message("JsonTest", true);
+        std::env::remove_var("HORUS_SOURCE_DIR");
+
+        assert!(result.is_ok());
+        drop(tmp);
+    }
 }

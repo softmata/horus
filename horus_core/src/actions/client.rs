@@ -853,7 +853,7 @@ mod tests {
 
     #[test]
     fn test_action_client_builder() {
-        let _client = ActionClientBuilder::<TestAction>::new()
+        let client = ActionClientBuilder::<TestAction>::new()
             .on_feedback(|goal_id, feedback| {
                 println!("Feedback for {}: {:?}", goal_id, feedback);
             })
@@ -864,6 +864,15 @@ mod tests {
                 println!("Status for {}: {:?}", goal_id, status);
             })
             .build();
+
+        // Verify the client was built with expected initial state
+        assert_eq!(client.name(), "test_action_client");
+        assert_eq!(client.active_goal_count(), 0);
+        let metrics = client.metrics();
+        assert_eq!(metrics.goals_sent, 0);
+        assert_eq!(metrics.goals_succeeded, 0);
+        assert_eq!(metrics.goals_failed, 0);
+        assert_eq!(metrics.cancels_sent, 0);
     }
 
     #[test]

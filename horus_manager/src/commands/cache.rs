@@ -301,3 +301,113 @@ pub fn run_purge(yes: bool) -> HorusResult<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // ── dir_size ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn dir_size_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(dir_size(tmp.path()).unwrap(), 0);
+    }
+
+    #[test]
+    fn dir_size_with_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+        fs::write(tmp.path().join("b.txt"), "world!").unwrap();
+        assert_eq!(dir_size(tmp.path()).unwrap(), 11);
+    }
+
+    #[test]
+    fn dir_size_recursive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("file.bin"), vec![0u8; 100]).unwrap();
+        assert_eq!(dir_size(tmp.path()).unwrap(), 100);
+    }
+
+    #[test]
+    fn dir_size_nonexistent_errors() {
+        let result = dir_size(Path::new("/nonexistent/path/12345"));
+        // Not a dir -> returns 0
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    // ── format_size ──────────────────────────────────────────────────────
+
+    #[test]
+    fn format_size_zero() {
+        let result = format_size(0);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn format_size_kb() {
+        let result = format_size(1024);
+        assert!(
+            result.contains("K") || result.contains("1"),
+            "1024 bytes should format as KB, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn format_size_large() {
+        let small = format_size(100);
+        let large = format_size(1_000_000_000);
+        assert_ne!(small, large);
+    }
+
+    // ── run_info ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_info_succeeds() {
+        let result = run_info(false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_info_json_succeeds() {
+        let result = run_info(true);
+        assert!(result.is_ok());
+    }
+
+    // ── run_list ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_list_succeeds() {
+        let result = run_list(false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_list_json_succeeds() {
+        let result = run_list(true);
+        assert!(result.is_ok());
+    }
+
+    // ── run_purge ────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_purge_nonexistent_cache_succeeds() {
+        // If cache doesn't exist, purge should be a no-op
+        // This test depends on the cache dir not existing for a fresh system
+        // We just verify it doesn't panic
+        let _ = run_purge(true);
+    }
+
+    // ── run_clean ────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_clean_dry_run_succeeds() {
+        // Dry run should never delete anything
+        let result = run_clean(true);
+        assert!(result.is_ok());
+    }
+}

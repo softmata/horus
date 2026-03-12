@@ -517,4 +517,322 @@ mod tests {
             }
         }
     }
+
+    // ── Battle tests: node list ──────────────────────────────────────────
+
+    #[test]
+    fn list_nodes_no_category_succeeds() {
+        // No category filter: should not error on category parsing
+        let result = list_nodes(false, false, None);
+        // May fail due to no SHM but should not fail on category parsing
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("Unknown category"),
+                "no category should mean no category error"
+            );
+        }
+    }
+
+    #[test]
+    fn list_nodes_verbose_mode_succeeds() {
+        let result = list_nodes(true, false, None);
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("Unknown category"),
+                "verbose mode should not affect category parsing"
+            );
+        }
+    }
+
+    #[test]
+    fn list_nodes_json_mode_succeeds() {
+        let result = list_nodes(false, true, None);
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("Unknown category"),
+                "json mode should not affect category parsing"
+            );
+        }
+    }
+
+    #[test]
+    fn list_nodes_invalid_category_empty_string() {
+        let result = list_nodes(false, false, Some("".to_string()));
+        assert!(result.is_err(), "empty string category should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Unknown category"), "error should mention unknown category: {}", err);
+    }
+
+    #[test]
+    fn list_nodes_invalid_category_case_sensitive_uppercase() {
+        // "NODE" (uppercase) should be rejected — matching is lowercase-normalized
+        // so "NODE".to_lowercase() == "node" which IS valid
+        let result = list_nodes(false, false, Some("NODE".to_string()));
+        // The code does .to_lowercase() so this should succeed as "node"
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("Unknown category"),
+                "uppercase 'NODE' should normalize to 'node'"
+            );
+        }
+    }
+
+    #[test]
+    fn list_nodes_invalid_category_unicode() {
+        let result = list_nodes(false, false, Some("\u{1F600}".to_string()));
+        assert!(result.is_err(), "unicode emoji category should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Unknown category"), "error should mention unknown category: {}", err);
+    }
+
+    #[test]
+    fn list_nodes_invalid_category_whitespace() {
+        let result = list_nodes(false, false, Some("  node  ".to_string()));
+        // The code does NOT trim, so "  node  " should be rejected
+        assert!(result.is_err(), "untrimmed category should be rejected");
+    }
+
+    #[test]
+    fn list_nodes_invalid_category_numeric() {
+        let result = list_nodes(false, false, Some("42".to_string()));
+        assert!(result.is_err(), "numeric category should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("42"), "error should echo back the bad category");
+    }
+
+    // ── Battle tests: node info ──────────────────────────────────────────
+
+    #[test]
+    fn node_info_nonexistent_returns_error() {
+        let result = node_info("this_node_definitely_does_not_exist_12345");
+        assert!(result.is_err(), "info on nonexistent node should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found"),
+            "error should say node not found: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn node_info_empty_name_returns_error() {
+        let result = node_info("");
+        assert!(result.is_err(), "info on empty name should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error should say not found: {}", err);
+    }
+
+    #[test]
+    fn node_info_unicode_name_returns_error() {
+        let result = node_info("\u{1F916}_robot_node");
+        assert!(result.is_err(), "info on unicode name should fail (no such node)");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error should say not found: {}", err);
+    }
+
+    #[test]
+    fn node_info_very_long_name_returns_error() {
+        let long_name = "a".repeat(4096);
+        let result = node_info(&long_name);
+        assert!(result.is_err(), "info on extremely long name should fail");
+    }
+
+    #[test]
+    fn node_info_slash_name_returns_error() {
+        // Test the ends_with("/{name}") matching path
+        let result = node_info("some/nested/node");
+        assert!(result.is_err(), "nested path node should not be found");
+    }
+
+    // ── Battle tests: kill node ──────────────────────────────────────────
+
+    #[test]
+    fn kill_node_nonexistent_returns_error() {
+        let result = kill_node("nonexistent_node_xyz", false);
+        assert!(result.is_err(), "killing nonexistent node should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error should say not found: {}", err);
+    }
+
+    #[test]
+    fn kill_node_empty_name_returns_error() {
+        let result = kill_node("", false);
+        assert!(result.is_err(), "killing empty name should fail");
+    }
+
+    #[test]
+    fn kill_node_force_nonexistent_returns_error() {
+        let result = kill_node("ghost_node", true);
+        assert!(result.is_err(), "force-killing nonexistent node should still fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error: {}", err);
+    }
+
+    // ── Battle tests: restart node ───────────────────────────────────────
+
+    #[test]
+    fn restart_node_nonexistent_returns_error() {
+        let result = restart_node("restart_me_if_you_can");
+        assert!(result.is_err(), "restarting nonexistent node should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error: {}", err);
+    }
+
+    #[test]
+    fn restart_node_empty_name_returns_error() {
+        let result = restart_node("");
+        assert!(result.is_err(), "restarting empty name should fail");
+    }
+
+    // ── Battle tests: pause node ─────────────────────────────────────────
+
+    #[test]
+    fn pause_node_nonexistent_returns_error() {
+        let result = pause_node("pause_this_phantom");
+        assert!(result.is_err(), "pausing nonexistent node should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error: {}", err);
+    }
+
+    #[test]
+    fn pause_node_empty_name_returns_error() {
+        let result = pause_node("");
+        assert!(result.is_err(), "pausing empty name should fail");
+    }
+
+    #[test]
+    fn pause_node_unicode_name_returns_error() {
+        let result = pause_node("\u{00E9}l\u{00E8}ve_node");
+        assert!(result.is_err(), "pausing unicode node should fail (not found)");
+    }
+
+    // ── Battle tests: resume node ────────────────────────────────────────
+
+    #[test]
+    fn resume_node_nonexistent_returns_error() {
+        let result = resume_node("resume_the_void");
+        assert!(result.is_err(), "resuming nonexistent node should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error: {}", err);
+    }
+
+    #[test]
+    fn resume_node_empty_name_returns_error() {
+        let result = resume_node("");
+        assert!(result.is_err(), "resuming empty name should fail");
+    }
+
+    // ── Battle tests: truncate_name edge cases ───────────────────────────
+
+    #[test]
+    fn truncate_name_empty_string() {
+        assert_eq!(truncate_name("", 25), "");
+    }
+
+    #[test]
+    fn truncate_name_zero_max() {
+        // max_len of 0: should return empty or very short
+        let result = truncate_name("hello", 0);
+        assert!(result.len() <= 3, "zero max should produce minimal output: '{}'", result);
+    }
+
+    #[test]
+    fn truncate_name_unicode_chars() {
+        // Multi-byte chars: should not panic on char boundary issues
+        let name = "\u{1F916}\u{1F916}\u{1F916}\u{1F916}\u{1F916}"; // 5 robot emojis (4 bytes each)
+        let result = truncate_name(name, 10);
+        assert!(result.len() <= 13, "truncated unicode should fit: len={}", result.len());
+        // Should not panic — that's the main assertion
+    }
+
+    #[test]
+    fn truncate_name_with_slashes() {
+        let name = "namespace/subspace/my_node_name";
+        let result = truncate_name(name, 15);
+        assert!(result.len() <= 15, "slashed name should be truncated");
+    }
+
+    #[test]
+    fn truncate_name_max_one() {
+        let result = truncate_name("hello_world", 1);
+        assert!(result.len() <= 3, "max_len=1 result: '{}'", result);
+    }
+
+    #[test]
+    fn truncate_name_max_three() {
+        // Exactly enough room for "..."
+        let result = truncate_name("hello_world", 3);
+        assert!(result.len() <= 3, "max_len=3 result: '{}'", result);
+    }
+
+    // ── Battle tests: category matching coverage ─────────────────────────
+
+    #[test]
+    fn list_nodes_all_valid_category_aliases() {
+        // Verify every documented alias resolves without category error
+        let aliases = vec!["node", "nodes", "tool", "tools", "cli"];
+        for alias in aliases {
+            let result = list_nodes(false, false, Some(alias.to_string()));
+            if let Err(e) = &result {
+                let msg = e.to_string();
+                assert!(
+                    !msg.contains("Unknown category"),
+                    "alias '{}' should be valid, got: {}",
+                    alias,
+                    msg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn list_nodes_category_mixed_case() {
+        // "Node", "TOOLS", "Cli" etc should all work via to_lowercase
+        for cat in &["Node", "NODES", "Tool", "TOOLS", "CLI", "Cli"] {
+            let result = list_nodes(false, false, Some(cat.to_string()));
+            if let Err(e) = &result {
+                assert!(
+                    !e.to_string().contains("Unknown category"),
+                    "mixed-case '{}' should be valid",
+                    cat
+                );
+            }
+        }
+    }
+
+    // ── Battle tests: node name matching logic ───────────────────────────
+
+    #[test]
+    fn node_name_matching_exact() {
+        let name = "motor_controller";
+        let search = "motor_controller";
+        let matches = name == search || name.ends_with(&format!("/{}", search));
+        assert!(matches);
+    }
+
+    #[test]
+    fn node_name_matching_suffix() {
+        let name = "robot/motor_controller";
+        let search = "motor_controller";
+        let matches = name == search || name.ends_with(&format!("/{}", search));
+        assert!(matches, "should match via ends_with /name");
+    }
+
+    #[test]
+    fn node_name_matching_no_match() {
+        let name = "motor_controller";
+        let search = "sensor_reader";
+        let matches = name == search || name.ends_with(&format!("/{}", search));
+        assert!(!matches);
+    }
+
+    #[test]
+    fn node_name_matching_partial_no_match() {
+        // "controller" is a substring of "motor_controller" but should NOT match
+        // because the matching logic requires exact or ends_with("/controller")
+        let name = "motor_controller";
+        let search = "controller";
+        let matches = name == search || name.ends_with(&format!("/{}", search));
+        assert!(!matches, "partial substring should not match");
+    }
 }

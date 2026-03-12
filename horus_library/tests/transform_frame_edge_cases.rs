@@ -931,7 +931,7 @@ fn edge_concurrent_resolve_during_unregister() {
     let barrier = Arc::new(Barrier::new(2));
 
     // Reader thread: continuously tries to resolve c -> world
-    let hf_reader = tf.clone();
+    let tf_reader = tf.clone();
     let b_reader = barrier.clone();
     let reader = thread::spawn(move || {
         b_reader.wait();
@@ -939,7 +939,7 @@ fn edge_concurrent_resolve_during_unregister() {
         let mut error = 0u64;
         let mut nan = 0u64;
         for _ in 0..10_000 {
-            match hf_reader.tf("c", "world") {
+            match tf_reader.tf("c", "world") {
                 Ok(tf) => {
                     success += 1;
                     if !tf.translation.iter().all(|v| v.is_finite()) {
@@ -953,7 +953,7 @@ fn edge_concurrent_resolve_during_unregister() {
     });
 
     // Unregister thread: removes "b" (mid-chain)
-    let hf_writer = tf.clone();
+    let tf_writer = tf.clone();
     let b_writer = barrier.clone();
     let writer = thread::spawn(move || {
         b_writer.wait();
@@ -961,7 +961,7 @@ fn edge_concurrent_resolve_during_unregister() {
         for _ in 0..1000 {
             std::hint::spin_loop();
         }
-        let _ = hf_writer.unregister_frame("b");
+        let _ = tf_writer.unregister_frame("b");
     });
 
     writer.join().expect("Unregister thread panicked");

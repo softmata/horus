@@ -91,14 +91,22 @@ fn test_node_with_pub_sub_topics() {
 fn test_node_pub_sub_topics_functional() {
     let mut node = SensorFusionNode::new();
 
-    // Publisher can send without panic
-    node.fused_output.send(42.0);
+    // No data yet — recv returns None
+    assert!(node.imu_input.recv().is_none(), "imu_input should be empty before any send");
+    assert!(node.gps_input.recv().is_none(), "gps_input should be empty before any send");
 
-    // Subscribers can recv (returns None when no data sent to that topic yet in this context)
-    let _val = node.imu_input.recv();
-
-    // Tick should not panic even with no data
+    // Tick with no data should not panic and should not publish
     node.tick();
+
+    // Send data to the subscriber topic (simulates incoming sensor data)
+    node.imu_input.send(42.0);
+
+    // Tick should read imu_input and forward to fused_output
+    node.tick();
+
+    // Verify fused_output received the value published by tick
+    let fused = node.fused_output.recv();
+    assert_eq!(fused, Some(42.0), "fused_output should contain the value forwarded from imu_input");
 }
 
 // ============================================================================
@@ -259,7 +267,19 @@ node! {
 fn test_node_rate_via_builder() {
     // Rate is no longer specified in the node! macro.
     // Use scheduler.add(node).rate(100_u64.hz()).build() instead.
-    let _node = HighFreqNode::new();
+    let node = HighFreqNode::new();
+    assert_eq!(node.name(), "high_freq_node");
+
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
+    scheduler
+        .add(HighFreqNode::new())
+        .order(0)
+        .rate(100_u64.hz())
+        .build()
+        .unwrap();
+
+    // tick_once proves the scheduler accepted the rate and can execute the node
+    scheduler.tick_once().unwrap();
 }
 
 // ============================================================================
@@ -268,7 +288,16 @@ fn test_node_rate_via_builder() {
 
 #[test]
 fn test_node_without_rate() {
-    let _node = MinimalNode::new();
+    // A node added without .rate() runs in best-effort mode
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(MinimalNode::new())
+        .order(0)
+        .build()
+        .unwrap();
+
+    // Best-effort node executes successfully via tick_once
+    scheduler.tick_once().unwrap();
 }
 
 // ============================================================================

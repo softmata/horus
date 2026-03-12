@@ -444,4 +444,227 @@ mod tests {
         assert!(parse_entry_time("not-a-time").is_none());
         assert!(parse_entry_time("").is_none());
     }
+
+    // ── Battle tests: LogLevel filtering ──────────────────────────────────
+
+    #[test]
+    fn log_level_from_str_mixed_case_variants() {
+        assert_eq!(LogLevel::from_str("TRACE"), Some(LogLevel::Trace));
+        assert_eq!(LogLevel::from_str("Debug"), Some(LogLevel::Debug));
+        assert_eq!(LogLevel::from_str("wArN"), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::from_str("WARNING"), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::from_str("ERR"), Some(LogLevel::Error));
+    }
+
+    #[test]
+    fn log_level_from_str_whitespace_returns_none() {
+        assert_eq!(LogLevel::from_str(" info"), None);
+        assert_eq!(LogLevel::from_str("info "), None);
+        assert_eq!(LogLevel::from_str(" "), None);
+        assert_eq!(LogLevel::from_str("\t"), None);
+        assert_eq!(LogLevel::from_str("\n"), None);
+    }
+
+    #[test]
+    fn log_level_from_str_partial_match_returns_none() {
+        assert_eq!(LogLevel::from_str("inf"), None);
+        assert_eq!(LogLevel::from_str("e"), None);
+        assert_eq!(LogLevel::from_str("war"), None);
+        assert_eq!(LogLevel::from_str("deb"), None);
+        assert_eq!(LogLevel::from_str("trac"), None);
+    }
+
+    #[test]
+    fn log_level_ordering_all_pairs() {
+        let levels = [
+            LogLevel::Trace,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ];
+        for i in 0..levels.len() {
+            for j in (i + 1)..levels.len() {
+                assert!(levels[i] < levels[j], "{:?} should be < {:?}", levels[i], levels[j]);
+            }
+        }
+        // Equality
+        for level in &levels {
+            assert_eq!(*level, *level);
+        }
+    }
+
+    #[test]
+    fn log_level_color_returns_distinct_colors() {
+        let levels = [
+            LogLevel::Trace,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ];
+        // Each level should return a color (no panic)
+        for level in &levels {
+            let _ = level.color();
+        }
+        // Adjacent severity levels should have distinct colors
+        assert_ne!(LogLevel::Info.color(), LogLevel::Warn.color());
+        assert_ne!(LogLevel::Warn.color(), LogLevel::Error.color());
+    }
+
+    #[test]
+    fn log_level_from_log_type_pub_sub_are_trace() {
+        // Verify IPC events map to lowest severity
+        assert_eq!(LogLevel::from_log_type(&LogType::Publish), LogLevel::Trace);
+        assert_eq!(LogLevel::from_log_type(&LogType::Subscribe), LogLevel::Trace);
+        // Both should be below Info
+        assert!(LogLevel::from_log_type(&LogType::Publish) < LogLevel::Info);
+    }
+
+    // ── Battle tests: parse_since edge cases ──────────────────────────────
+
+    #[test]
+    fn parse_since_zero_value() {
+        // "0s" = zero seconds ago = now
+        let result = parse_since(Some("0s")).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_since_large_values() {
+        // Very large durations should not overflow
+        assert!(parse_since(Some("999999s")).unwrap().is_some());
+        assert!(parse_since(Some("1000m")).unwrap().is_some());
+        assert!(parse_since(Some("365d")).unwrap().is_some());
+    }
+
+    #[test]
+    fn parse_since_negative_number_fails() {
+        let err = parse_since(Some("-5s")).unwrap_err().to_string();
+        assert!(err.contains("Invalid number"), "negative should fail: {}", err);
+    }
+
+    #[test]
+    fn parse_since_float_number_fails() {
+        let err = parse_since(Some("1.5h")).unwrap_err().to_string();
+        assert!(err.contains("Invalid number"), "float should fail: {}", err);
+    }
+
+    #[test]
+    fn parse_since_empty_unit_fails() {
+        let err = parse_since(Some("5")).unwrap_err().to_string();
+        assert!(err.contains("Invalid time format"), "missing unit should fail: {}", err);
+    }
+
+    #[test]
+    fn parse_since_only_unit_fails() {
+        let err = parse_since(Some("s")).unwrap_err().to_string();
+        assert!(err.contains("Invalid number"), "only-unit should fail: {}", err);
+    }
+
+    // ── Battle tests: parse_entry_time edge cases ─────────────────────────
+
+    #[test]
+    fn parse_entry_time_midnight() {
+        let result = parse_entry_time("00:00:00.000");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_entry_time_end_of_day() {
+        let result = parse_entry_time("23:59:59.999");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_entry_time_no_fractional() {
+        // Format requires %.3f but chrono may or may not accept bare seconds
+        let _result = parse_entry_time("12:30:45");
+        // Just ensure no panic — behavior may vary
+    }
+
+    #[test]
+    fn parse_entry_time_garbage_strings() {
+        assert!(parse_entry_time("25:99:99.000").is_none());
+        assert!(parse_entry_time("abc:de:fg.hij").is_none());
+        assert!(parse_entry_time("12:30").is_none());
+        assert!(parse_entry_time(":::").is_none());
+        assert!(parse_entry_time("99999").is_none());
+    }
+
+    // ── Battle tests: level_str formatting ────────────────────────────────
+
+    #[test]
+    fn level_str_all_same_width_except_error() {
+        // All should be 5 chars for alignment
+        assert_eq!(level_str(&LogType::Info).len(), 5);
+        assert_eq!(level_str(&LogType::Warning).len(), 5);
+        assert_eq!(level_str(&LogType::Error).len(), 5);
+        assert_eq!(level_str(&LogType::Debug).len(), 5);
+        assert_eq!(level_str(&LogType::Publish).len(), 5);
+        assert_eq!(level_str(&LogType::Subscribe).len(), 5);
+    }
+
+    // ── Battle tests: LogEntry construction for print_entry ───────────────
+
+    #[test]
+    fn print_entry_with_topic_does_not_panic() {
+        let entry = LogEntry {
+            timestamp: "12:00:00.000".to_string(),
+            tick_number: 0,
+            node_name: "test_node".to_string(),
+            log_type: LogType::Info,
+            topic: Some("/sensor/data".to_string()),
+            message: "received 42 bytes".to_string(),
+            tick_us: 100,
+            ipc_ns: 200,
+        };
+        // Should not panic — output goes to stdout
+        print_entry(&entry);
+    }
+
+    #[test]
+    fn print_entry_without_topic_does_not_panic() {
+        let entry = LogEntry {
+            timestamp: "12:00:00.000".to_string(),
+            tick_number: 0,
+            node_name: "test_node".to_string(),
+            log_type: LogType::Error,
+            topic: None,
+            message: "something failed".to_string(),
+            tick_us: 100,
+            ipc_ns: 0,
+        };
+        print_entry(&entry);
+    }
+
+    #[test]
+    fn print_entry_special_characters_no_panic() {
+        let entry = LogEntry {
+            timestamp: "12:00:00.000".to_string(),
+            tick_number: 0,
+            node_name: "node/with/slashes".to_string(),
+            log_type: LogType::Warning,
+            topic: Some("topic with spaces & <special> chars".to_string()),
+            message: "msg with \"quotes\" and \t tabs".to_string(),
+            tick_us: 0,
+            ipc_ns: 0,
+        };
+        print_entry(&entry);
+    }
+
+    #[test]
+    fn print_entry_empty_fields_no_panic() {
+        let entry = LogEntry {
+            timestamp: String::new(),
+            tick_number: 0,
+            node_name: String::new(),
+            log_type: LogType::Debug,
+            topic: Some(String::new()),
+            message: String::new(),
+            tick_us: 0,
+            ipc_ns: 0,
+        };
+        print_entry(&entry);
+    }
 }

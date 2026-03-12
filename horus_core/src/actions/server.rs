@@ -941,13 +941,21 @@ mod tests {
 
     #[test]
     fn test_action_server_builder() {
-        let _server = ActionServerBuilder::<TestAction>::new()
+        let server = ActionServerBuilder::<TestAction>::new()
             .on_goal(|_goal| GoalResponse::Accept)
             .on_cancel(|_id| CancelResponse::Accept)
             .on_execute(|handle| handle.succeed(TestResult { success: true }))
             .max_concurrent_goals(Some(1))
             .feedback_rate(10.0)
             .build();
+
+        // Verify the server was built with expected initial state
+        assert_eq!(server.name(), "test_action_server");
+        let metrics = server.metrics();
+        assert_eq!(metrics.goals_received, 0);
+        assert_eq!(metrics.goals_accepted, 0);
+        assert_eq!(metrics.goals_rejected, 0);
+        assert_eq!(metrics.goals_succeeded, 0);
     }
 
     #[test]

@@ -731,38 +731,38 @@ fn stress_sustained_concurrent_load() {
     let iterations = 10_000u64;
 
     // Writer 1: Updates odom (simulating odometry at high rate)
-    let hf_w1 = tf.clone();
+    let tf_w1 = tf.clone();
     let b1 = barrier.clone();
     let w1 = thread::spawn(move || {
         b1.wait();
         for i in 0..iterations {
             let x = i as f64 * 0.001;
             let tf = Transform::from_translation([x, 0.0, 0.0]);
-            hf_w1.update_transform("odom", &tf, i * 1000).unwrap();
+            tf_w1.update_transform("odom", &tf, i * 1000).unwrap();
         }
     });
 
     // Writer 2: Updates base_link (simulating joint state)
-    let hf_w2 = tf.clone();
+    let tf_w2 = tf.clone();
     let b2 = barrier.clone();
     let w2 = thread::spawn(move || {
         b2.wait();
         for i in 0..iterations {
             let yaw = i as f64 * 0.0001;
             let tf = Transform::from_euler([0.0, 0.0, 0.0], [0.0, 0.0, yaw]);
-            hf_w2.update_transform("base_link", &tf, i * 1000).unwrap();
+            tf_w2.update_transform("base_link", &tf, i * 1000).unwrap();
         }
     });
 
     // Reader: Resolves laser->world (typical perception query)
-    let hf_r = tf.clone();
+    let tf_r = tf.clone();
     let br = barrier.clone();
     let reader = thread::spawn(move || {
         br.wait();
         let mut success = 0u64;
         let mut finite_count = 0u64;
         for _ in 0..iterations {
-            if let Ok(tf) = hf_r.tf("laser", "world") {
+            if let Ok(tf) = tf_r.tf("laser", "world") {
                 success += 1;
                 if tf.translation.iter().all(|v| v.is_finite())
                     && tf.rotation.iter().all(|v| v.is_finite())

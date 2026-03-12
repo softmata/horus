@@ -1665,13 +1665,16 @@ fn test_tui_and_web_use_same_discovery_backend() {
     // Verify the TUI data model can be populated from the same backend.
 
     let mut dashboard = TuiDashboard::new();
-    let _ = dashboard.update_data();
 
-    // The discovery backend always returns a Result<Vec<_>>, even if empty
-    // Both web handlers and TUI call the same functions
-    // This test verifies the TUI doesn't crash on whatever the backend returns
-    // The node list is always populated (even if just a placeholder)
-    let _ = dashboard.nodes.len();
+    // Nodes and topics start empty before first update
+    assert!(dashboard.nodes.is_empty(), "nodes should be empty before update");
+    assert!(dashboard.topics.is_empty(), "topics should be empty before update");
+
+    // update_data() calls the same get_active_nodes()/get_active_topics()
+    // backend that web handlers use. It should always succeed (Ok), even
+    // when no horus runtime is running — it just returns empty vecs.
+    let result = dashboard.update_data();
+    assert!(result.is_ok(), "update_data should succeed even with no runtime: {:?}", result.err());
 }
 
 #[test]

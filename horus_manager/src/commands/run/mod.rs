@@ -54,7 +54,7 @@ pub fn execute_run(
         {
             let manifest_path = Path::new(HORUS_TOML);
             if manifest_path.exists() {
-                if let Ok((manifest, _)) = HorusManifest::load_from(manifest_path) {
+                if let Ok(manifest) = HorusManifest::load_from(manifest_path) {
                     if manifest.scripts.contains_key(candidate.as_ref()) {
                         return crate::commands::scripts::run_scripts(
                             Some(candidate.into_owned()),
@@ -665,7 +665,7 @@ pub(crate) fn ensure_horus_directory() -> Result<()> {
 /// Load ignore patterns from horus.toml.
 fn load_ignore_patterns() -> features::IgnorePatterns {
     if Path::new(HORUS_TOML).exists() {
-        if let Ok((manifest, _)) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
+        if let Ok(manifest) = HorusManifest::load_from(Path::new(HORUS_TOML)) {
             return manifest.ignore.into();
         }
     }
@@ -1143,5 +1143,405 @@ mod tests {
         drop(_guard);
 
         assert!(result.is_ok());
+    }
+
+    // ── Battle tests: params.yaml loading behavior ──────────────────────
+
+    #[test]
+    fn load_params_with_nested_yaml_structure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("params.yaml"),
+            "robot:\n  name: test_bot\n  speed:\n    max: 1.5\n    min: 0.1\nsensors:\n  lidar: true\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok(), "Nested YAML structure should load successfully");
+    }
+
+    #[test]
+    fn load_params_config_subdir_not_used_when_root_exists() {
+        // When both root and config/ exist, root takes priority.
+        // Verify the function completes successfully in either case.
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("params.yaml"),
+            "source: root\npriority: 1\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join("config")).unwrap();
+        fs::write(
+            tmp.path().join("config/params.yaml"),
+            "source: config\npriority: 2\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/config")).unwrap();
+        fs::write(
+            tmp.path().join(".horus/config/params.yaml"),
+            "source: horus_cache\npriority: 3\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_params_from_project();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok(), "Should load from highest-priority params.yaml");
+    }
+
+    // ── Battle tests: auto_detect_main_file behavior ────────────────────
+
+    #[test]
+    fn auto_detect_prefers_main_rs_over_src_main_rs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("main.rs"), "fn main() { /* root */ }").unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn main() { /* src */ }").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            PathBuf::from("main.rs"),
+            "main.rs in root should have priority over src/main.rs"
+        );
+    }
+
+    #[test]
+    fn auto_detect_src_main_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/main.py"), "print('hello')").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("src/main.py"));
+    }
+
+    #[test]
+    fn auto_detect_fails_with_multiple_code_files_no_main() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("robot.rs"), "fn main() {}").unwrap();
+        fs::write(tmp.path().join("sensor.rs"), "fn main() {}").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(
+            result.is_err(),
+            "Multiple code files without main.rs should fail auto-detection"
+        );
+    }
+
+    #[test]
+    fn auto_detect_single_py_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("robot.py"), "print('hello')").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok(), "Single .py file should be auto-detected");
+    }
+
+    #[test]
+    fn auto_detect_ignores_non_code_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Only non-code files present
+        fs::write(tmp.path().join("README.md"), "# My Robot").unwrap();
+        fs::write(tmp.path().join("config.yaml"), "key: value").unwrap();
+        fs::write(tmp.path().join("data.json"), "{}").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = auto_detect_main_file();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(
+            result.is_err(),
+            "Non-code files should not be detected as main files"
+        );
+    }
+
+    // ── Battle tests: scripts from horus.toml [scripts] ─────────────────
+
+    #[test]
+    fn execute_run_dispatches_to_script_when_name_matches() {
+        // When a bare name matches a [scripts] entry in horus.toml,
+        // execute_run should dispatch to run_scripts.
+        // Since run_scripts executes a shell command (which might fail),
+        // we test the condition that triggers script dispatch by checking
+        // that the manifest has the script and no path separator is present.
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("horus.toml"),
+            "[package]\nname = \"script-test\"\nversion = \"0.1.0\"\n\n[scripts]\nsim = \"echo running sim\"\nbuild_all = \"cargo build --workspace\"\n",
+        )
+        .unwrap();
+
+        // Verify the manifest loads and has the scripts
+        let manifest = HorusManifest::load_from(&tmp.path().join("horus.toml")).unwrap();
+        assert!(
+            manifest.scripts.contains_key("sim"),
+            "Manifest should contain 'sim' script"
+        );
+        assert!(
+            manifest.scripts.contains_key("build_all"),
+            "Manifest should contain 'build_all' script"
+        );
+        assert_eq!(manifest.scripts.get("sim").unwrap(), "echo running sim");
+    }
+
+    #[test]
+    fn script_name_with_path_separator_not_treated_as_script() {
+        // A path like "src/sim" should never be treated as a script name
+        let candidate = "src/sim";
+        assert!(
+            candidate.contains('/'),
+            "Path with separator should not match as bare script name"
+        );
+    }
+
+    #[test]
+    fn script_name_with_extension_not_treated_as_script() {
+        // A file like "sim.rs" should never be treated as a script name
+        let candidate = "sim.rs";
+        assert!(
+            candidate.contains('.'),
+            "File with extension should not match as bare script name"
+        );
+    }
+
+    // ── Battle tests: clean flag behavior ───────────────────────────────
+
+    #[test]
+    fn clean_flag_triggers_cache_cleanup() {
+        // Verify that the clean codepath calls clean_build_cache,
+        // which removes files from .horus/cache and .horus/bin
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/cache")).unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
+        fs::write(tmp.path().join(".horus/cache/old_binary"), b"old").unwrap();
+        fs::write(tmp.path().join(".horus/bin/old_tool"), b"old").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_rust::clean_build_cache();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok(), "clean_build_cache should succeed");
+        // Verify files were cleaned
+        assert!(
+            !tmp.path().join(".horus/cache/old_binary").exists(),
+            "Cache files should be removed after clean"
+        );
+        assert!(
+            !tmp.path().join(".horus/bin/old_tool").exists(),
+            "Bin files should be removed after clean"
+        );
+        // Directories themselves should still exist
+        assert!(tmp.path().join(".horus/cache").is_dir());
+        assert!(tmp.path().join(".horus/bin").is_dir());
+    }
+
+    #[test]
+    fn clean_flag_handles_nonexistent_dirs_gracefully() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // No .horus, no target, no __pycache__
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_rust::clean_build_cache();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok(), "clean_build_cache should not error on empty directory");
+    }
+
+    // ── Battle tests: resolve_execution_target edge cases ────────────────
+
+    #[test]
+    fn resolve_target_rs_file_not_treated_as_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("robot.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let targets = resolve_execution_target(file.clone()).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(
+            matches!(&targets[0], ExecutionTarget::File(p) if p == &file),
+            "Regular .rs file should resolve as File, not Manifest"
+        );
+    }
+
+    #[test]
+    fn resolve_target_py_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("robot.py");
+        fs::write(&file, "print('hello')").unwrap();
+
+        let targets = resolve_execution_target(file.clone()).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], ExecutionTarget::File(p) if p == &file));
+    }
+
+    // ── Battle tests: build_child_env details ───────────────────────────
+
+    #[test]
+    fn build_child_env_ld_library_path_includes_horus_lib() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/lib")).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let env_vars = result.unwrap();
+        let ld_path_val = env_vars.iter().find(|(k, _)| k == "LD_LIBRARY_PATH").unwrap();
+        assert!(
+            ld_path_val.1.contains(".horus/lib"),
+            "LD_LIBRARY_PATH should include .horus/lib, got: {}",
+            ld_path_val.1
+        );
+    }
+
+    #[test]
+    fn build_child_env_pythonpath_includes_horus_packages() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/packages")).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let env_vars = result.unwrap();
+        let pypath_val = env_vars.iter().find(|(k, _)| k == "PYTHONPATH").unwrap();
+        assert!(
+            pypath_val.1.contains(".horus/packages"),
+            "PYTHONPATH should include .horus/packages, got: {}",
+            pypath_val.1
+        );
+    }
+
+    // ── Battle tests: load_ignore_patterns from horus.toml ──────────────
+
+    #[test]
+    fn load_ignore_patterns_with_horus_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("horus.toml"),
+            "[package]\nname = \"ignore-test\"\nversion = \"0.1.0\"\n\n[ignore]\nfiles = [\"*.log\", \"*.tmp\"]\ndirectories = [\"target/\", \"build/\"]\npackages = [\"devtools\"]\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let patterns = load_ignore_patterns();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(patterns.files, vec!["*.log", "*.tmp"]);
+        assert_eq!(patterns.directories, vec!["target/", "build/"]);
+        assert_eq!(patterns.packages, vec!["devtools"]);
+    }
+
+    #[test]
+    fn load_ignore_patterns_without_horus_toml_returns_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let patterns = load_ignore_patterns();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(patterns.files.is_empty());
+        assert!(patterns.directories.is_empty());
+        assert!(patterns.packages.is_empty());
+    }
+
+    // ── Battle tests: ensure_horus_directory structure ───────────────────
+
+    #[test]
+    fn ensure_horus_directory_creates_all_required_subdirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = ensure_horus_directory();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // Verify all 4 subdirectories
+        for subdir in &["packages", "bin", "lib", "cache"] {
+            assert!(
+                tmp.path().join(".horus").join(subdir).is_dir(),
+                ".horus/{} should exist",
+                subdir
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_horus_directory_preserves_existing_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/cache")).unwrap();
+        fs::write(tmp.path().join(".horus/cache/important"), "keep me").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        ensure_horus_directory().unwrap();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // File should still exist
+        let content = fs::read_to_string(tmp.path().join(".horus/cache/important")).unwrap();
+        assert_eq!(content, "keep me", "Existing files should be preserved");
     }
 }

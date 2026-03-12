@@ -1,4 +1,4 @@
-// Scheduler configuration - preset factories and data structs
+// Scheduler configuration data structs
 
 /// Timing configuration
 #[doc(hidden)]

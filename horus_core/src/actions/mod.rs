@@ -168,11 +168,22 @@ mod tests {
 
     #[test]
     fn test_module_exports() {
-        // Verify that main types are accessible
-        let _id = GoalId::new();
-        let _status = GoalStatus::Pending;
-        let _priority = GoalPriority::NORMAL;
-        let _policy = PreemptionPolicy::PreemptOld;
+        // Verify that main types are accessible and have expected values
+        let id = GoalId::new();
+        let id2 = GoalId::new();
+        assert_ne!(id, id2, "Each GoalId should be unique");
+        assert!(!format!("{:?}", id).is_empty(), "GoalId should implement Debug");
+
+        let status = GoalStatus::Pending;
+        assert!(status.is_active(), "Pending should be an active status");
+        assert!(!status.is_terminal(), "Pending should not be terminal");
+
+        let priority = GoalPriority::NORMAL;
+        assert_eq!(priority, GoalPriority::default());
+        assert!(GoalPriority::HIGH.is_higher_than(&priority));
+
+        let policy = PreemptionPolicy::PreemptOld;
+        assert_eq!(policy, PreemptionPolicy::default());
     }
 
     #[test]
