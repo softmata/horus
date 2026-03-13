@@ -1,7 +1,7 @@
 {
   "project": "horus",
   "cycle": 1,
-  "current_plane": 18,
+  "current_plane": 22,
   "plane_status": {
     "1": { "status": "complete", "cycle": 1, "issues_fixed": 1, "roadmap_id": "roadmap-mmojxzm7-tzsizn" },
     "2": { "status": "clean", "cycle": 1 },
@@ -19,8 +19,12 @@
     "14": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmonl0io-mipj2x" },
     "15": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmons551-rqdtwn" },
     "16": { "status": "complete", "cycle": 1, "issues_fixed": 1, "roadmap_id": "roadmap-mmoo3gpm-jg5gje" },
-    "17": { "status": "complete", "cycle": 1, "issues_fixed": 2, "roadmap_id": "roadmap-mmooe0bk-cpgc78" }
+    "17": { "status": "complete", "cycle": 1, "issues_fixed": 2, "roadmap_id": "roadmap-mmooe0bk-cpgc78" },
+    "18": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmoopov7-ag9jd4" },
+    "19": { "status": "clean", "cycle": 1 },
+    "20": { "status": "clean", "cycle": 1 },
+    "21": { "status": "clean", "cycle": 1 }
   },
-  "total_issues_fixed": 31,
-  "false_positives_rejected": 101
+  "total_issues_fixed": 34,
+  "false_positives_rejected": 129
 }
