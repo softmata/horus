@@ -358,8 +358,9 @@ impl OccupancyGrid {
         // This ensures that cell boundary coordinates (like 0.5 with resolution 0.1)
         // map to the correct cell even when FP division gives values like 4.999999
         const EPSILON: f64 = 1e-6;
-        let grid_x = ((x - self.origin.x) / self.resolution as f64 + EPSILON).floor() as i32;
-        let grid_y = ((y - self.origin.y) / self.resolution as f64 + EPSILON).floor() as i32;
+        let res = (self.resolution as f64).max(1e-9);
+        let grid_x = ((x - self.origin.x) / res + EPSILON).floor() as i32;
+        let grid_y = ((y - self.origin.y) / res + EPSILON).floor() as i32;
 
         if grid_x >= 0 && grid_x < self.width as i32 && grid_y >= 0 && grid_y < self.height as i32 {
             Some((grid_x as u32, grid_y as u32))
@@ -494,7 +495,8 @@ impl CostMap {
         let resolution = self.occupancy_grid.resolution;
 
         // Calculate inflation radius in cells
-        let inflation_cells = (self.inflation_radius / resolution).ceil() as i32;
+        let safe_resolution = resolution.max(1e-9);
+        let inflation_cells = (self.inflation_radius / safe_resolution).ceil() as i32;
 
         // Create a copy of current costs to avoid modifying while iterating
         let original_costs = self.costs.clone();
@@ -543,7 +545,7 @@ impl CostMap {
                 if found_obstacle && min_distance <= self.inflation_radius {
                     // Calculate inflated cost using exponential decay
                     // Cost decreases from lethal_cost at obstacle to free space cost at inflation_radius
-                    let factor = 1.0 - (min_distance / self.inflation_radius);
+                    let factor = 1.0 - (min_distance / self.inflation_radius.max(1e-9));
                     let inflation_cost = ((self.lethal_cost as f32 - 1.0)
                         * factor.powf(self.cost_scaling_factor))
                     .min(self.lethal_cost as f32 - 1.0);

@@ -1786,7 +1786,17 @@ fn robotics_multi_sensor_multi_actuator() {
                     if t.recv().is_some() {
                         count += 1;
                     } else if done.load(Ordering::SeqCst) {
-                        // Producers done and no more messages — exit
+                        // Producers done — drain remaining with retries
+                        let mut empty_reads = 0;
+                        while empty_reads < 100 {
+                            if t.recv().is_some() {
+                                count += 1;
+                                empty_reads = 0;
+                            } else {
+                                empty_reads += 1;
+                                std::thread::yield_now();
+                            }
+                        }
                         break;
                     } else {
                         std::thread::yield_now();

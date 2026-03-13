@@ -2219,7 +2219,7 @@ fn rotation_to_modified_rodrigues(r: &[[f64; 3]; 3]) -> [f64; 3] {
 /// Extract 3x3 rotation matrix from a pose (translation, quaternion)
 fn rotation_to_matrix(pose: &([f64; 3], [f64; 4])) -> [[f64; 3]; 3] {
     let [qx, qy, qz, qw] = pose.1;
-    let n = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt();
+    let n = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt().max(1e-12);
     let (qx, qy, qz, qw) = (qx / n, qy / n, qz / n, qw / n);
 
     [

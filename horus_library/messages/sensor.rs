@@ -373,7 +373,7 @@ impl BatteryState {
 
     /// Estimate remaining time in seconds (negative current only)
     pub fn time_remaining(&self) -> Option<f32> {
-        if self.current < 0.0 && !self.charge.is_nan() {
+        if self.current < -1e-9 && !self.charge.is_nan() {
             Some((self.charge / -self.current) * 3600.0)
         } else {
             None
@@ -496,8 +496,9 @@ impl NavSatFix {
         let delta_lat = (other.latitude - self.latitude).to_radians();
         let delta_lon = (other.longitude - self.longitude).to_radians();
 
-        let a = (delta_lat / 2.0).sin().powi(2)
-            + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2);
+        let a = ((delta_lat / 2.0).sin().powi(2)
+            + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2))
+            .clamp(0.0, 1.0);
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
         EARTH_RADIUS * c
