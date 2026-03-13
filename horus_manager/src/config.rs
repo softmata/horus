@@ -5,11 +5,11 @@
 
 /// Default HORUS registry API URL.
 /// Override with `HORUS_REGISTRY_URL` environment variable.
-pub const DEFAULT_REGISTRY_URL: &str = "https://api.horus-robotics.dev";
+pub const DEFAULT_REGISTRY_URL: &str = "https://api.horusrobotics.dev";
 
 /// Default plugin registry URL.
 /// Override with `HORUS_PLUGIN_REGISTRY_URL` environment variable.
-pub const DEFAULT_PLUGIN_REGISTRY_URL: &str = "https://plugins.horus-robotics.dev/api/v1";
+pub const DEFAULT_PLUGIN_REGISTRY_URL: &str = "https://plugins.horusrobotics.dev/api/v1";
 
 /// PyPI JSON API base URL.
 pub const PYPI_API_URL: &str = "https://pypi.org/pypi";

@@ -138,8 +138,14 @@ impl Tensor {
         let ndim = shape.len().min(MAX_TENSOR_DIMS) as u8;
 
         // Calculate size
-        let num_elements: u64 = shape.iter().product();
-        let size = num_elements * dtype.element_size() as u64;
+        let num_elements: u64 = shape
+            .iter()
+            .copied()
+            .try_fold(1u64, |acc, dim| acc.checked_mul(dim))
+            .expect("Tensor::new: shape product overflows u64");
+        let size = num_elements
+            .checked_mul(dtype.element_size() as u64)
+            .expect("Tensor::new: total size overflows u64");
 
         // Calculate row-major strides
         let mut strides = [0u64; MAX_TENSOR_DIMS];

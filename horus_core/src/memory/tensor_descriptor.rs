@@ -41,8 +41,14 @@ impl TensorDescriptor {
             }
         }
 
-        let num_elements: u64 = shape.iter().product();
-        let size_bytes = num_elements * dtype.size_bytes() as u64;
+        let num_elements: u64 = shape
+            .iter()
+            .copied()
+            .try_fold(1u64, |acc, dim| acc.checked_mul(dim))
+            .expect("TensorDescriptor::new: shape product overflows u64");
+        let size_bytes = num_elements
+            .checked_mul(dtype.size_bytes() as u64)
+            .expect("TensorDescriptor::new: total size overflows u64");
 
         Self {
             shape: shape.to_vec(),

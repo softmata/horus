@@ -81,9 +81,9 @@ Rust and Python nodes communicate seamlessly through shared topics. Use Rust for
 
 ## Documentation
 
-- [Full Docs](https://docs.horus-robotics.dev)
-- [Getting Started](https://docs.horus-robotics.dev/getting-started/installation)
-- [Python API](https://docs.horus-robotics.dev/python-api)
+- [Full Docs](https://docs.horusrobotics.dev)
+- [Getting Started](https://docs.horusrobotics.dev/getting-started/installation)
+- [Python API](https://docs.horusrobotics.dev/python-api)
 
 ## Requirements
 
@@ -98,4 +98,4 @@ Apache-2.0 - see [LICENSE](https://github.com/softmata/horus/blob/main/LICENSE)
 
 - [GitHub](https://github.com/softmata/horus)
 - [Discord](https://discord.gg/hEZC3ev2Nf)
-- [Documentation](https://docs.horus-robotics.dev)
+- [Documentation](https://docs.horusrobotics.dev)

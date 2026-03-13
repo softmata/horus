@@ -2547,7 +2547,7 @@ fn test_example_multi_robot_valid() {
 }
 
 // ============================================================================
-// Registry integration tests (live API: api.horus-robotics.dev)
+// Registry integration tests (live API: api.horusrobotics.dev)
 // ============================================================================
 
 #[test]

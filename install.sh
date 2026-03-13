@@ -2804,8 +2804,8 @@ if [ -f "$AUTH_CONFIG" ]; then
     if grep -q "localhost" "$AUTH_CONFIG" 2>/dev/null; then
         echo -e "${CYAN}${NC} Migrating registry configuration..."
         # Update localhost URLs to production
-        sed -i.bak 's|http://localhost:3001|https://api.horus-robotics.dev|g' "$AUTH_CONFIG"
-        sed -i.bak 's|http://localhost:8080|https://api.horus-robotics.dev|g' "$AUTH_CONFIG"
+        sed -i.bak 's|http://localhost:3001|https://api.horusrobotics.dev|g' "$AUTH_CONFIG"
+        sed -i.bak 's|http://localhost:8080|https://api.horusrobotics.dev|g' "$AUTH_CONFIG"
         echo -e "${GREEN}${NC} Registry URL updated to production"
         echo ""
     fi
@@ -3169,7 +3169,7 @@ echo ""
 if [ -z "${HORUS_NO_TELEMETRY:-}" ]; then
     # Send anonymous install count in background (non-blocking)
     (
-        TELEMETRY_URL="https://telemetry.horus-robotics.dev/count"
+        TELEMETRY_URL="https://telemetry.horusrobotics.dev/count"
         TIMESTAMP=$(date +%s)
         OS_NAME=$(uname -s)
 

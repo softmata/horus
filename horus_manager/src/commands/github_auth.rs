@@ -978,7 +978,7 @@ mod tests {
     fn auth_config_pretty_print_roundtrip() {
         let config = AuthConfig {
             api_key: "horus_key_test".to_string(),
-            registry_url: "https://plugins.horus-robotics.dev".to_string(),
+            registry_url: "https://plugins.horusrobotics.dev".to_string(),
             github_username: Some("dev".to_string()),
         };
         let json = serde_json::to_string_pretty(&config).unwrap();

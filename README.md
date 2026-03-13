@@ -8,14 +8,14 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust" alt="Rust"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License"></a>
-  <a href="https://docs.horus-robotics.dev/getting-started/installation"><img src="https://img.shields.io/endpoint?url=https://telemetry.horus-robotics.dev/count/badge" alt="Installations"></a>
+  <a href="https://docs.horusrobotics.dev/getting-started/installation"><img src="https://img.shields.io/endpoint?url=https://telemetry.horusrobotics.dev/count/badge" alt="Installations"></a>
   <a href="https://discord.gg/hEZC3ev2Nf"><img src="https://img.shields.io/badge/Discord-Join-7289da?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
-  <a href="https://docs.horus-robotics.dev"><strong>Docs</strong></a> &middot;
-  <a href="https://docs.horus-robotics.dev/getting-started/installation"><strong>Install</strong></a> &middot;
-  <a href="https://docs.horus-robotics.dev/performance/performance"><strong>Benchmarks</strong></a> &middot;
+  <a href="https://docs.horusrobotics.dev"><strong>Docs</strong></a> &middot;
+  <a href="https://docs.horusrobotics.dev/getting-started/installation"><strong>Install</strong></a> &middot;
+  <a href="https://docs.horusrobotics.dev/performance/performance"><strong>Benchmarks</strong></a> &middot;
   <a href="https://discord.gg/hEZC3ev2Nf"><strong>Discord</strong></a>
 </p>
 
