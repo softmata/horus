@@ -405,17 +405,26 @@ where
 
     /// Handle a result message.
     fn handle_result(&self, result_msg: ActionResult<A::Result>) {
-        let goals = self.goals.read();
-        if let Some(state) = goals.get(&result_msg.goal_id) {
-            let mut state = state.write();
-            state.result = Some(result_msg.result.clone());
-            state.status = result_msg.status;
-            state.updated_at = Instant::now();
+        {
+            let goals = self.goals.read();
+            if let Some(state) = goals.get(&result_msg.goal_id) {
+                let mut state = state.write();
+                state.result = Some(result_msg.result.clone());
+                state.status = result_msg.status;
+                state.updated_at = Instant::now();
+            }
         }
 
         // Call result callback
         if let Some(ref callback) = *self.result_callback.read() {
             callback(result_msg.goal_id, result_msg.status, &result_msg.result);
+        }
+
+        // Remove terminal goals from the map to prevent unbounded growth.
+        // Callers retain their Arc<RwLock<ClientGoalState>> handle and can
+        // still read the final state after removal.
+        if result_msg.status.is_terminal() {
+            self.goals.write().remove(&result_msg.goal_id);
         }
     }
 

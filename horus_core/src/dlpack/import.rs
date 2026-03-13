@@ -154,8 +154,12 @@ pub unsafe fn from_dlpack(
         DLPackImportError::InvalidTensor("size_bytes overflows u64".into())
     })?;
 
-    // Compute actual data pointer (accounting for byte_offset)
-    let data_ptr = (tensor.data as usize + tensor.byte_offset as usize) as u64;
+    // Compute actual data pointer (checked to detect wraparound from adversarial byte_offset)
+    let data_ptr = (tensor.data as usize)
+        .checked_add(tensor.byte_offset as usize)
+        .ok_or_else(|| {
+            DLPackImportError::InvalidTensor("data + byte_offset overflows pointer".into())
+        })? as u64;
 
     Ok(TensorDescriptor {
         shape,

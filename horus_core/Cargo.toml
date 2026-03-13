@@ -15,7 +15,6 @@ memmap2 = "0.9"
 paste = "1.0"  # For macro identifier concatenation
 core_affinity = "0.8"  # CPU core pinning
 crossbeam = "0.8"
-num_cpus = "1.16"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
