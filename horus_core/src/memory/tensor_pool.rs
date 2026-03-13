@@ -681,10 +681,23 @@ impl TensorPool {
             return;
         }
 
-        let prev = slot.refcount.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 {
-            // Last reference — return slot to free list.
-            self.return_slot(tensor.slot_id);
+        // CAS loop: atomically decrement refcount only if it's > 0.
+        // Prevents refcount underflow (wrap to u32::MAX) on double-release.
+        loop {
+            let current = slot.refcount.load(Ordering::Acquire);
+            if current == 0 {
+                return; // Already freed — double-release
+            }
+            if slot
+                .refcount
+                .compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                if current == 1 {
+                    self.return_slot(tensor.slot_id);
+                }
+                return;
+            }
         }
     }
 
@@ -717,11 +730,30 @@ impl TensorPool {
                 .into(),
             ));
         }
-        let prev = slot.refcount.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 {
-            self.return_slot(tensor.slot_id);
+        // CAS loop: atomically decrement refcount only if it's > 0.
+        // Prevents refcount underflow (wrap to u32::MAX) on double-release.
+        loop {
+            let current = slot.refcount.load(Ordering::Acquire);
+            if current == 0 {
+                return Err(HorusError::Memory(
+                    format!(
+                        "Double-release detected for slot {} (refcount already 0)",
+                        tensor.slot_id
+                    )
+                    .into(),
+                ));
+            }
+            if slot
+                .refcount
+                .compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                if current == 1 {
+                    self.return_slot(tensor.slot_id);
+                }
+                return Ok(());
+            }
         }
-        Ok(())
     }
 
     /// Get the base data pointer.
