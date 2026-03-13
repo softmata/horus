@@ -118,6 +118,9 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                if let Some(hint) = crate::error_wrapper::pip_error_hint(&stderr) {
+                    eprintln!("{}", crate::error_wrapper::format_diagnostic("pip", &hint));
+                }
                 bail!("pip install failed for {}: {}", pkg.name, stderr);
             }
 

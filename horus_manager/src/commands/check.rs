@@ -632,6 +632,41 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
             warn_msgs.push(missing_license_warning.to_string());
         }
 
+        // Dependency source check — warn about Simple deps that are actually well-known
+        // crates.io or PyPI packages but aren't tagged with an explicit source.
+        print!("  {} Checking dependency sources... ", "▸".cyan());
+        {
+            use crate::source_resolver::{Confidence, PackageSourceResolver};
+            let resolver = PackageSourceResolver::new(&languages);
+            let mut ambiguous_count = 0u32;
+
+            for (name, dep) in manifest.dependencies.iter().chain(manifest.dev_dependencies.iter()) {
+                if dep.effective_source() == crate::manifest::DepSource::Registry {
+                    let resolved = resolver.resolve(name);
+                    if resolved.confidence >= Confidence::High {
+                        ambiguous_count += 1;
+                        if !quiet {
+                            warn_msgs.push(format!(
+                                "Dep '{}' defaults to registry but looks like a {} package. \
+                                 Consider: horus add {} (or set source explicitly in horus.toml)",
+                                name, resolved.source, name
+                            ));
+                        }
+                    }
+                }
+            }
+
+            if ambiguous_count == 0 {
+                println!("{}", cli_output::ICON_SUCCESS.green());
+            } else {
+                println!(
+                    "{} ({} ambiguous)",
+                    cli_output::ICON_WARN.yellow(),
+                    ambiguous_count
+                );
+            }
+        }
+
         // Language detection
         print!("  {} Detecting project language... ", "▸".cyan());
         if languages.is_empty() {

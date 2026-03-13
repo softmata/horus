@@ -169,6 +169,9 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if !stderr.is_empty() {
                         eprintln!("{}", stderr);
+                        if let Some(hint) = crate::error_wrapper::cargo_error_hint(&stderr) {
+                            eprintln!("{}", crate::error_wrapper::format_diagnostic("cargo", &hint));
+                        }
                     }
                     bail!("Cargo build failed");
                 }
@@ -239,6 +242,9 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if !stderr.is_empty() {
                         eprintln!("{}", stderr);
+                        if let Some(hint) = crate::error_wrapper::cargo_error_hint(&stderr) {
+                            eprintln!("{}", crate::error_wrapper::format_diagnostic("cargo", &hint));
+                        }
                     }
                     bail!("Cargo build failed");
                 }
@@ -317,6 +323,9 @@ pub(super) fn execute_from_cargo_toml(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.is_empty() {
                     eprintln!("{}", stderr);
+                    if let Some(hint) = crate::error_wrapper::cargo_error_hint(&stderr) {
+                        eprintln!("{}", crate::error_wrapper::format_diagnostic("cargo", &hint));
+                    }
                 }
                 bail!("Build failed");
             }

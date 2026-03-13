@@ -156,12 +156,12 @@ impl TensorHandle {
         let ptr = bytes.as_ptr() as *const T;
         if !ptr.is_aligned() {
             return Err(crate::error::HorusError::Memory(
-                crate::error::MemoryError::Other(format!(
+                crate::error::MemoryError::AllocationFailed { reason: format!(
                     "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
                     std::any::type_name::<T>(),
                     std::mem::align_of::<T>(),
                     ptr
-                )),
+                ) },
             ));
         }
         let len = bytes.len() / std::mem::size_of::<T>();
@@ -184,12 +184,12 @@ impl TensorHandle {
         let ptr = bytes.as_mut_ptr() as *mut T;
         if !ptr.is_aligned() {
             return Err(crate::error::HorusError::Memory(
-                crate::error::MemoryError::Other(format!(
+                crate::error::MemoryError::AllocationFailed { reason: format!(
                     "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
                     std::any::type_name::<T>(),
                     std::mem::align_of::<T>(),
                     ptr
-                )),
+                ) },
             ));
         }
         let len = bytes.len() / std::mem::size_of::<T>();

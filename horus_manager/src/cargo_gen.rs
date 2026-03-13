@@ -164,14 +164,35 @@ fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &Hor
 /// Filters for Rust-compatible deps: crates.io, path, git.
 /// Registry deps are resolved to path deps pointing to .horus/packages/.
 /// PyPI and System deps are skipped (not relevant for Cargo).
+///
+/// For Simple deps that default to Registry, the smart source resolver is
+/// consulted — if the package is a well-known crate, it's treated as crates.io.
 fn write_deps_section(
     cargo: &mut String,
     deps: &std::collections::BTreeMap<String, DependencyValue>,
     project_dir: &Path,
     horus_dir: &Path,
 ) -> Result<()> {
+    use crate::manifest::Language;
+    use crate::source_resolver::PackageSourceResolver;
+    let resolver = PackageSourceResolver::new(&[Language::Rust]);
+
     for (name, dep) in deps {
-        match dep.effective_source() {
+        let source = match dep.effective_source() {
+            DepSource::Registry => {
+                // Simple deps default to Registry — use smart resolver to check
+                // if it's actually a well-known crates.io package.
+                // Only upgrade with High confidence to avoid false positives.
+                let resolved = resolver.resolve(name);
+                if resolved.confidence == crate::source_resolver::Confidence::High {
+                    resolved.source
+                } else {
+                    DepSource::Registry
+                }
+            }
+            other => other,
+        };
+        match source {
             DepSource::CratesIo => {
                 write_crates_io_dep(cargo, name, dep);
             }

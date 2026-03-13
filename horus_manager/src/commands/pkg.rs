@@ -838,7 +838,13 @@ pub fn run_install(
     } else if is_git {
         DepSource::Git
     } else {
-        DepSource::Registry
+        // Smart resolution: detect whether it's a crates.io, PyPI, or registry package
+        use crate::source_resolver::PackageSourceResolver;
+        let ctx = crate::dispatch::detect_context(&std::env::current_dir()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?);
+        let resolver = PackageSourceResolver::new(&ctx.languages);
+        let resolved = resolver.resolve(&package);
+        resolved.source
     };
 
     // For global installs, skip horus.toml and install directly
@@ -1835,7 +1841,7 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
 /// Detects the project language from CWD and delegates to the native package
 /// manager (`cargo add` for Rust, `pip install` for Python).
 pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -> HorusResult<()> {
-    use crate::manifest::{DependencyValue, DriverValue};
+    use crate::manifest::DriverValue;
 
     // ── Write to horus.toml (single source of truth) ─────────────────────
     let manifest_path = Path::new(HORUS_TOML);
@@ -1867,13 +1873,36 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
             name.green(),
         );
     } else {
-        // Add as dependency — auto-detect source from the dependency name.
-        // Default to registry (horus packages). Users can use `horus install --source crates.io`
-        // for explicit crates.io deps, but `horus add` defaults to horus registry.
-        let dep_value = if let Some(ref v) = ver {
-            DependencyValue::Simple(v.clone())
-        } else {
-            DependencyValue::Simple("*".to_string())
+        // Auto-detect source from the dependency name using smart resolution.
+        use crate::manifest::{DepSource, DependencyValue, DetailedDependency};
+        use crate::source_resolver::{Confidence, PackageSourceResolver};
+
+        let ctx = crate::dispatch::detect_context(&std::env::current_dir()
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?);
+        let resolver = PackageSourceResolver::new(&ctx.languages);
+        let resolved = resolver.resolve(&name);
+
+        let version_string = ver.clone().unwrap_or_else(|| "*".to_string());
+
+        let dep_value = match resolved.source {
+            DepSource::CratesIo | DepSource::PyPI => {
+                // Known external package — store with explicit source
+                DependencyValue::Detailed(DetailedDependency {
+                    version: Some(version_string.clone()),
+                    source: Some(resolved.source.clone()),
+                    features: vec![],
+                    optional: false,
+                    path: None,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                })
+            }
+            _ => {
+                // Registry or unknown — use simple form (backward compatible)
+                DependencyValue::Simple(version_string.clone())
+            }
         };
 
         let was_present = manifest.dependencies.contains_key(&name);
@@ -1887,12 +1916,27 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
             .as_deref()
             .map(|v| format!("@{}", v))
             .unwrap_or_default();
+
+        // Show source info for transparency
+        let source_hint = match resolved.source {
+            DepSource::Registry => String::new(),
+            _ => {
+                let confidence_label = match resolved.confidence {
+                    Confidence::High => "",
+                    Confidence::Medium => " (inferred)",
+                    Confidence::Low => " (guessed)",
+                };
+                format!(" [source: {}{}]", resolved.source, confidence_label)
+            }
+        };
+
         println!(
-            "{} {} {}{} to horus.toml [dependencies]",
+            "{} {} {}{} to horus.toml [dependencies]{}",
             cli_output::ICON_SUCCESS.green(),
             action,
             name.green(),
             version_str,
+            source_hint.dimmed(),
         );
     }
 
@@ -1934,6 +1978,32 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
                 name.green(),
                 sections.join(", "),
             );
+
+            // ── Regenerate build files so .horus/ stays in sync ──────────
+            let project_dir = std::env::current_dir()
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+            let ctx = crate::dispatch::detect_context(&project_dir);
+
+            let mut regenerated = Vec::new();
+
+            if ctx.languages.contains(&crate::manifest::Language::Rust) {
+                if let Ok(path) = crate::cargo_gen::generate(&manifest, &project_dir, &[], false) {
+                    regenerated.push(path.display().to_string());
+                }
+            }
+
+            if ctx.languages.contains(&crate::manifest::Language::Python) {
+                if let Ok(path) = crate::pyproject_gen::generate(&manifest, &project_dir, false) {
+                    regenerated.push(path.display().to_string());
+                }
+            }
+
+            if !regenerated.is_empty() {
+                println!(
+                    "{} Regenerated build files",
+                    cli_output::ICON_SUCCESS.green(),
+                );
+            }
         } else {
             println!(
                 "{} {} not found in horus.toml dependencies, dev-dependencies, or drivers",
@@ -4045,6 +4115,74 @@ name = "minimal"
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_run_remove_dep_regenerates_cargo_toml() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Create a Rust project with two deps
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"regen-bot\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = { version = \"1.0\", source = \"crates.io\" }\ntokio = { version = \"1\", source = \"crates.io\" }\n",
+        )
+        .unwrap();
+
+        // Create src/main.rs so language detection picks up Rust
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        // Pre-generate .horus/Cargo.toml
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let cargo_path = crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
+        let cargo_content = fs::read_to_string(&cargo_path).unwrap();
+        assert!(cargo_content.contains("serde"), "serde should be in Cargo.toml before removal");
+        assert!(cargo_content.contains("tokio"), "tokio should be in Cargo.toml before removal");
+
+        // Remove serde — should regenerate .horus/Cargo.toml without serde
+        run_remove_dep("serde".to_string()).unwrap();
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let cargo_after = fs::read_to_string(&cargo_path).unwrap();
+        assert!(!cargo_after.contains("serde"), "serde should be gone from Cargo.toml after removal");
+        assert!(cargo_after.contains("tokio"), "tokio should remain in Cargo.toml");
+    }
+
+    #[test]
+    fn test_run_remove_dep_regenerates_pyproject_toml() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Create a Python project with two deps
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"regen-py\"\nversion = \"0.1.0\"\n\n[dependencies]\nnumpy = { version = \">=1.24\", source = \"pypi\" }\nrequests = { version = \">=2.28\", source = \"pypi\" }\n",
+        )
+        .unwrap();
+
+        // Create a .py file so language detection picks up Python
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(temp_dir.path().join("src/main.py"), "print('hello')\n").unwrap();
+
+        // Pre-generate .horus/pyproject.toml
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let pyproj_path = crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
+        let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
+        assert!(pyproj_content.contains("numpy"), "numpy should be in pyproject.toml before removal");
+        assert!(pyproj_content.contains("requests"), "requests should be in pyproject.toml before removal");
+
+        // Remove numpy — should regenerate .horus/pyproject.toml without numpy
+        run_remove_dep("numpy".to_string()).unwrap();
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        let pyproj_after = fs::read_to_string(&pyproj_path).unwrap();
+        assert!(!pyproj_after.contains("numpy"), "numpy should be gone from pyproject.toml after removal");
+        assert!(pyproj_after.contains("requests"), "requests should remain in pyproject.toml");
+    }
+
     // ── Battle-testing: full add → remove lifecycle via horus.toml ───────
 
     #[test]
@@ -5315,12 +5453,13 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         )
         .unwrap();
 
-        // Add simple dep via run_add (registry, Simple form)
+        // Add dep via run_add — smart resolver detects serde as crates.io
         run_add("serde".to_string(), Some("1.0".to_string()), false, false).unwrap();
 
         let manifest =
             HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(manifest.dependencies["serde"].is_registry());
+        assert!(manifest.dependencies["serde"].is_crates_io(),
+            "smart resolver should detect serde as crates.io");
 
         // Overwrite with crates.io source via run_install
         run_install(
@@ -6063,5 +6202,287 @@ serde = { version = "1.0", source = "crates.io" }
         assert_eq!(manifest.package.name, "full-lifecycle-bot");
 
         std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    // ── Phase 6: E2E tests — naive user workflows ───────────────────────
+
+    /// E2E: Naive Rust user — horus add → auto-detect → build file → remove → clean
+    #[test]
+    fn test_e2e_naive_rust_project() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Step 1: Simulate `horus new` — create minimal Rust project
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        // Step 2: `horus add serde` — user doesn't specify source, system auto-detects
+        run_add("serde".to_string(), Some("1.0".to_string()), false, false).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies["serde"].is_crates_io(),
+            "serde should be auto-detected as crates.io"
+        );
+
+        // Step 3: `horus add tokio` — another well-known crate
+        run_add("tokio".to_string(), None, false, false).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies["tokio"].is_crates_io(),
+            "tokio should be auto-detected as crates.io"
+        );
+
+        // Step 4: `horus add my-custom-lib` — unknown package in Rust-only project,
+        // project context fallback guesses crates.io (Low confidence)
+        run_add("my-custom-lib".to_string(), Some("0.1.0".to_string()), false, false).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies["my-custom-lib"].is_crates_io(),
+            "unknown dep in Rust-only project should be guessed as crates.io"
+        );
+        assert_eq!(manifest.dependencies.len(), 3);
+
+        // Step 5: Verify .horus/Cargo.toml is generated with correct sources
+        let cargo_path = crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
+        let cargo_content = fs::read_to_string(&cargo_path).unwrap();
+        assert!(cargo_content.contains("serde"), "serde should be in Cargo.toml");
+        assert!(cargo_content.contains("tokio"), "tokio should be in Cargo.toml");
+
+        // Step 6: `horus remove serde` — should update horus.toml and regenerate build files
+        run_remove_dep("serde".to_string()).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("serde"), "serde removed from manifest");
+        assert_eq!(manifest.dependencies.len(), 2);
+
+        // Verify .horus/Cargo.toml was regenerated without serde
+        let cargo_after = fs::read_to_string(&cargo_path).unwrap();
+        assert!(!cargo_after.contains("serde"), "serde gone from generated Cargo.toml");
+        assert!(cargo_after.contains("tokio"), "tokio still in generated Cargo.toml");
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    /// E2E: Naive Python user — horus add → auto-detect → build file → remove → clean
+    #[test]
+    fn test_e2e_naive_python_project() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Step 1: Simulate `horus new --python` — create minimal Python project
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"my-vision-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(temp_dir.path().join("src/main.py"), "print('hello')\n").unwrap();
+
+        // Step 2: `horus add numpy` — user doesn't know about pip, system auto-detects
+        run_add("numpy".to_string(), Some(">=1.24".to_string()), false, false).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies["numpy"].is_pypi(),
+            "numpy should be auto-detected as PyPI"
+        );
+
+        // Step 3: `horus add requests` — another well-known PyPI package
+        run_add("requests".to_string(), None, false, false).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies["requests"].is_pypi(),
+            "requests should be auto-detected as PyPI"
+        );
+
+        // Step 4: `horus add opencv-python` — PyPI with hyphen
+        run_add("opencv-python".to_string(), None, false, false).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies["opencv-python"].is_pypi(),
+            "opencv-python should be auto-detected as PyPI"
+        );
+        assert_eq!(manifest.dependencies.len(), 3);
+
+        // Step 5: Verify .horus/pyproject.toml is generated correctly
+        let pyproj_path =
+            crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
+        let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
+        assert!(pyproj_content.contains("numpy"), "numpy in pyproject.toml");
+        assert!(pyproj_content.contains("requests"), "requests in pyproject.toml");
+
+        // Step 6: `horus remove numpy` — regenerate build files
+        run_remove_dep("numpy".to_string()).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("numpy"), "numpy removed");
+        assert_eq!(manifest.dependencies.len(), 2);
+
+        let pyproj_after = fs::read_to_string(&pyproj_path).unwrap();
+        assert!(!pyproj_after.contains("numpy"), "numpy gone from pyproject.toml");
+        assert!(pyproj_after.contains("requests"), "requests still in pyproject.toml");
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    /// E2E: Mixed Rust+Python project with deps auto-resolved from both ecosystems
+    #[test]
+    fn test_e2e_mixed_rust_python_project() {
+        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Step 1: Create mixed-language project
+        fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            "[package]\nname = \"hybrid-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(temp_dir.path().join("src/vision.py"), "import cv2\n").unwrap();
+
+        // Step 2: Add Rust deps — should auto-detect as crates.io
+        run_add("serde".to_string(), Some("1.0".to_string()), false, false).unwrap();
+        run_add("nalgebra".to_string(), None, false, false).unwrap();
+
+        // Step 3: Add Python deps — should auto-detect as PyPI
+        run_add("numpy".to_string(), None, false, false).unwrap();
+        run_add("torch".to_string(), None, false, false).unwrap();
+
+        // Step 4: Add unknown dep — should default to registry in mixed context
+        run_add("horus-nav".to_string(), Some("0.3.0".to_string()), false, false).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest.dependencies["serde"].is_crates_io(), "serde → crates.io");
+        assert!(manifest.dependencies["nalgebra"].is_crates_io(), "nalgebra → crates.io");
+        assert!(manifest.dependencies["numpy"].is_pypi(), "numpy → pypi");
+        assert!(manifest.dependencies["torch"].is_pypi(), "torch → pypi");
+        assert!(
+            manifest.dependencies["horus-nav"].is_registry(),
+            "unknown → registry in mixed project"
+        );
+        assert_eq!(manifest.dependencies.len(), 5);
+
+        // Step 5: Verify both build files are generated correctly
+        let cargo_path = crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
+        let cargo_content = fs::read_to_string(&cargo_path).unwrap();
+        assert!(cargo_content.contains("serde"), "serde in Cargo.toml");
+        assert!(cargo_content.contains("nalgebra"), "nalgebra in Cargo.toml");
+        // PyPI deps should NOT appear in Cargo.toml
+        assert!(!cargo_content.contains("numpy"), "numpy NOT in Cargo.toml");
+        assert!(!cargo_content.contains("torch"), "torch NOT in Cargo.toml");
+
+        let pyproj_path =
+            crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
+        let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
+        assert!(pyproj_content.contains("numpy"), "numpy in pyproject.toml");
+        assert!(pyproj_content.contains("torch"), "torch in pyproject.toml");
+        // Crates.io deps should NOT appear in pyproject.toml
+        assert!(!pyproj_content.contains("serde"), "serde NOT in pyproject.toml");
+        assert!(!pyproj_content.contains("nalgebra"), "nalgebra NOT in pyproject.toml");
+
+        // Step 6: Remove one from each ecosystem
+        run_remove_dep("serde".to_string()).unwrap();
+        run_remove_dep("numpy".to_string()).unwrap();
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(manifest.dependencies.len(), 3);
+        assert!(!manifest.dependencies.contains_key("serde"));
+        assert!(!manifest.dependencies.contains_key("numpy"));
+
+        // Verify both build files regenerated correctly
+        let cargo_after = fs::read_to_string(&cargo_path).unwrap();
+        assert!(!cargo_after.contains("serde"), "serde gone from Cargo.toml");
+        assert!(cargo_after.contains("nalgebra"), "nalgebra still in Cargo.toml");
+
+        let pyproj_after = fs::read_to_string(&pyproj_path).unwrap();
+        assert!(!pyproj_after.contains("numpy"), "numpy gone from pyproject.toml");
+        assert!(pyproj_after.contains("torch"), "torch still in pyproject.toml");
+
+        std::env::set_current_dir(&original_dir).unwrap();
+    }
+
+    /// E2E: Error wrapper produces actionable hints for common build failures
+    #[test]
+    fn test_e2e_error_wrapper_actionable_hints() {
+        use crate::error_wrapper::{cargo_error_hint, format_diagnostic, pip_error_hint};
+
+        // ── Cargo: missing crate ─────────────────────────────────────────
+        let stderr = "error: no matching package named `nonexistent-robot-crate` found\nlocation searched: crates.io";
+        let hint = cargo_error_hint(stderr);
+        assert!(hint.is_some(), "should detect missing crate pattern");
+        let hint = hint.unwrap();
+        assert!(hint.contains("nonexistent-robot-crate"), "hint names the crate");
+        assert!(hint.contains("horus add"), "hint suggests horus add");
+
+        let formatted = format_diagnostic("cargo", &hint);
+        assert!(formatted.contains("horus"), "diagnostic has horus prefix");
+        assert!(formatted.contains("hint"), "diagnostic has hint label");
+        assert!(formatted.contains("cargo"), "diagnostic names the tool");
+
+        // ── Cargo: linker library missing ────────────────────────────────
+        let stderr = "error: could not compile\nnote: ld: cannot find -lssl";
+        let hint = cargo_error_hint(stderr);
+        assert!(hint.is_some(), "should detect linker error");
+        let hint = hint.unwrap();
+        assert!(hint.contains("ssl"), "hint names the missing library");
+        assert!(hint.contains("apt install"), "hint suggests apt install");
+
+        // ── Cargo: OpenSSL missing ───────────────────────────────────────
+        let stderr = "Could not find directory of OpenSSL installation\nopenssl headers missing";
+        let hint = cargo_error_hint(stderr);
+        assert!(hint.is_some(), "should detect openssl error");
+        assert!(hint.unwrap().contains("libssl-dev"), "suggests libssl-dev");
+
+        // ── Cargo: no hint for unknown error ─────────────────────────────
+        let stderr = "error[E0308]: mismatched types";
+        assert!(cargo_error_hint(stderr).is_none(), "no hint for type errors");
+
+        // ── Pip: package not found ───────────────────────────────────────
+        let stderr = "ERROR: No matching distribution found for nonexistent-robot-lib";
+        let hint = pip_error_hint(stderr);
+        assert!(hint.is_some(), "should detect pip not-found pattern");
+        let hint = hint.unwrap();
+        assert!(hint.contains("nonexistent-robot-lib"), "hint names the package");
+
+        // ── Pip: externally managed environment ──────────────────────────
+        let stderr = "error: externally-managed-environment\nThis environment is externally managed";
+        let hint = pip_error_hint(stderr);
+        assert!(hint.is_some(), "should detect externally-managed");
+        assert!(hint.unwrap().contains("venv"), "suggests venv");
+
+        // ── Pip: build wheel failure ─────────────────────────────────────
+        let stderr = "ERROR: Failed building wheel for opencv-python-headless";
+        let hint = pip_error_hint(stderr);
+        assert!(hint.is_some(), "should detect build wheel failure");
+        let hint = hint.unwrap();
+        assert!(hint.contains("opencv-python-headless"), "names the failing package");
+        assert!(hint.contains("build-essential"), "suggests build tools");
+
+        // ── Pip: version conflict ────────────────────────────────────────
+        let stderr = "ERROR: ResolutionImpossible: cannot satisfy requirements";
+        let hint = pip_error_hint(stderr);
+        assert!(hint.is_some(), "should detect version conflict");
+        assert!(hint.unwrap().contains("conflict"), "mentions conflict");
+
+        // ── Pip: no hint for unknown error ───────────────────────────────
+        let stderr = "SyntaxError: invalid syntax";
+        assert!(pip_error_hint(stderr).is_none(), "no hint for syntax errors");
     }
 }

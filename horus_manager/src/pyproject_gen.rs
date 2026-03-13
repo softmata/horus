@@ -115,13 +115,34 @@ pub fn generate(
 ///
 /// Filters for PyPI deps and formats as PEP 508 requirement strings.
 /// Also includes git deps formatted for pip (using `@ git+url` syntax).
+///
+/// For Simple deps that default to Registry, the smart source resolver is
+/// consulted — if the package is a well-known PyPI package, it's included.
 fn collect_python_deps(
     deps: &std::collections::BTreeMap<String, DependencyValue>,
 ) -> Vec<String> {
+    use crate::manifest::Language;
+    use crate::source_resolver::PackageSourceResolver;
+    let resolver = PackageSourceResolver::new(&[Language::Python]);
+
     let mut result = Vec::new();
 
     for (name, dep) in deps {
-        match dep.effective_source() {
+        let source = match dep.effective_source() {
+            DepSource::Registry => {
+                // Simple deps default to Registry — use smart resolver to check
+                // if it's actually a well-known PyPI package.
+                // Only upgrade with High confidence to avoid false positives.
+                let resolved = resolver.resolve(name);
+                if resolved.confidence == crate::source_resolver::Confidence::High {
+                    resolved.source
+                } else {
+                    DepSource::Registry
+                }
+            }
+            other => other,
+        };
+        match source {
             DepSource::PyPI => {
                 let dep_str = format_pypi_dep(name, dep);
                 result.push(dep_str);

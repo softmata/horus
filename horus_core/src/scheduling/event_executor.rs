@@ -98,9 +98,9 @@ impl EventExecutor {
     }
 
     /// Stop all watcher threads and reclaim nodes.
-    pub fn stop(self) -> Vec<RegisteredNode> {
+    pub fn stop(mut self) -> Vec<RegisteredNode> {
         let mut nodes = Vec::with_capacity(self.handles.len());
-        for handle in self.handles {
+        for handle in self.handles.drain(..) {
             match handle.join() {
                 Ok(node) => nodes.push(node),
                 Err(_) => {

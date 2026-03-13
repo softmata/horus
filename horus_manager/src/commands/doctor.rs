@@ -59,6 +59,9 @@ pub fn run_doctor(verbose: bool, json: bool) -> Result<()> {
     // ── 6. Project languages ─────────────────────────────────────────────
     results.push(check_languages(&ctx));
 
+    // ── 7. Dependency sources ─────────────────────────────────────────────
+    results.push(check_dep_sources(&ctx));
+
     // ── Output ───────────────────────────────────────────────────────────
     if json {
         print_json(&results);
@@ -326,6 +329,59 @@ fn check_languages(ctx: &dispatch::ProjectContext) -> CheckResult {
         health: Health::Ok,
         summary: langs.join(", "),
         details: vec![],
+    }
+}
+
+fn check_dep_sources(ctx: &dispatch::ProjectContext) -> CheckResult {
+    let manifest = match &ctx.manifest {
+        Some(m) => m,
+        None => {
+            return CheckResult {
+                category: "Dependencies".to_string(),
+                health: Health::Ok,
+                summary: "No manifest — skipped".to_string(),
+                details: vec![],
+            };
+        }
+    };
+
+    if manifest.dependencies.is_empty() && manifest.dev_dependencies.is_empty() {
+        return CheckResult {
+            category: "Dependencies".to_string(),
+            health: Health::Ok,
+            summary: "No dependencies".to_string(),
+            details: vec![],
+        };
+    }
+
+    let issues = crate::source_resolver::validate_deps(
+        &manifest.dependencies,
+        &ctx.languages,
+    );
+    let dev_issues = crate::source_resolver::validate_deps(
+        &manifest.dev_dependencies,
+        &ctx.languages,
+    );
+
+    let all_issues: Vec<_> = issues.into_iter().chain(dev_issues).collect();
+
+    if all_issues.is_empty() {
+        let dep_count = manifest.dependencies.len() + manifest.dev_dependencies.len();
+        CheckResult {
+            category: "Dependencies".to_string(),
+            health: Health::Ok,
+            summary: format!("{} deps, sources look correct", dep_count),
+            details: vec![],
+        }
+    } else {
+        let has_errors = all_issues.iter().any(|i| i.is_error);
+        let details: Vec<String> = all_issues.iter().map(|i| i.message.clone()).collect();
+        CheckResult {
+            category: "Dependencies".to_string(),
+            health: if has_errors { Health::Fail } else { Health::Warn },
+            summary: format!("{} issue(s) found", all_issues.len()),
+            details,
+        }
     }
 }
 

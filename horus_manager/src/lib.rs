@@ -10,6 +10,7 @@ pub mod dispatch;
 pub mod config;
 pub mod dependency_resolver;
 pub mod discovery;
+pub mod error_wrapper;
 pub mod graph;
 pub mod lockfile;
 pub mod manifest;
@@ -26,6 +27,7 @@ pub mod registry;
 pub mod run_with_prefix;
 #[cfg(feature = "monitor")]
 pub mod security;
+pub mod source_resolver;
 pub mod system_deps;
 pub mod version;
 pub mod workspace;
