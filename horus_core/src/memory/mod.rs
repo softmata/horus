@@ -243,19 +243,3 @@ pub use tensor_pool::{PoolAllocator, TensorPool, TensorPoolConfig};
 pub use depth_image::DepthImage;
 pub use image::Image;
 pub use pointcloud::PointCloud;
-
-/// Check if CUDA is available at runtime. Currently always returns false.
-///
-/// Exposed for Python bindings (`horus.cuda_is_available()`).
-#[doc(hidden)]
-pub fn cuda_available() -> bool {
-    false
-}
-
-/// Get number of CUDA devices. Currently always returns 0.
-///
-/// Exposed for Python bindings (`horus.cuda_device_count()`).
-#[doc(hidden)]
-pub fn cuda_device_count() -> usize {
-    0
-}

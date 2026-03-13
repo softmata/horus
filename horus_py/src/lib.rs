@@ -41,10 +41,6 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTransformFrameConfig>()?;
     m.add_function(wrap_pyfunction!(transform_frame::get_timestamp_ns, m)?)?;
 
-    // GPU utility functions
-    m.add_function(wrap_pyfunction!(tensor::cuda_is_available, m)?)?;
-    m.add_function(wrap_pyfunction!(tensor::cuda_device_count, m)?)?;
-
     // Domain types
     m.add_class::<image::PyImage>()?;
     m.add_class::<pointcloud::PyPointCloud>()?;

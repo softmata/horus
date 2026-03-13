@@ -757,22 +757,6 @@ fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
     dtype.numpy_typestr()
 }
 
-/// Check if CUDA is available
-///
-/// Returns True if the HORUS library was compiled with CUDA support
-/// and at least one CUDA device is available.
-#[pyfunction]
-pub fn cuda_is_available() -> bool {
-    horus::memory::cuda_available()
-}
-
-/// Get the number of available CUDA devices
-///
-/// Returns 0 if CUDA is not available or no devices are found.
-#[pyfunction]
-pub fn cuda_device_count() -> usize {
-    horus::memory::cuda_device_count()
-}
 
 #[cfg(test)]
 mod tests {
