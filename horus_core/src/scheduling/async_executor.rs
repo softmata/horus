@@ -82,10 +82,16 @@ impl AsyncExecutor {
         tick_period: Duration,
         monitors: SharedMonitors,
     ) -> Vec<RegisteredNode> {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
-            .expect("Failed to create async I/O tokio runtime");
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                print_line(&format!("[AsyncIO] Failed to create tokio runtime: {}", e));
+                return nodes;
+            }
+        };
 
         rt.block_on(async {
             print_line(&format!(
@@ -250,6 +256,14 @@ impl AsyncExecutor {
                 print_line(&error_msg);
                 node.node.on_error(&error_msg);
             }
+        }
+    }
+}
+
+impl Drop for AsyncExecutor {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
         }
     }
 }

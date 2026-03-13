@@ -297,6 +297,14 @@ impl ComputeExecutor {
     }
 }
 
+impl Drop for ComputeExecutor {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

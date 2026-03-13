@@ -366,6 +366,14 @@ impl RtExecutor {
     }
 }
 
+impl Drop for RtExecutor {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

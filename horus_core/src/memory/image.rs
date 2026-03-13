@@ -88,7 +88,7 @@ impl Image {
             return None;
         }
         let bpp = self.encoding().bytes_per_pixel() as usize;
-        let offset = (y * self.step() + x * self.encoding().bytes_per_pixel()) as usize;
+        let offset = y as usize * self.step() as usize + x as usize * self.encoding().bytes_per_pixel() as usize;
         let data = self.data();
         if offset + bpp <= data.len() {
             Some(&data[offset..offset + bpp])
@@ -109,7 +109,7 @@ impl Image {
         if value.len() != bpp {
             return self;
         }
-        let offset = (y * self.step() + x * self.encoding().bytes_per_pixel()) as usize;
+        let offset = y as usize * self.step() as usize + x as usize * self.encoding().bytes_per_pixel() as usize;
         let data = self.data_mut();
         if offset + bpp <= data.len() {
             data[offset..offset + bpp].copy_from_slice(value);

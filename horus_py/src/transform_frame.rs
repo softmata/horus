@@ -73,10 +73,10 @@ impl PyTransform {
         self.inner.rotation
     }
 
-    /// Set rotation quaternion [x, y, z, w]
+    /// Set rotation quaternion [x, y, z, w] (automatically normalized)
     #[setter]
     fn set_rotation(&mut self, value: [f64; 4]) {
-        self.inner.rotation = value;
+        self.inner = Transform::new(self.inner.translation, value);
     }
 
     /// Convert rotation to Euler angles (roll, pitch, yaw) in radians
@@ -596,9 +596,14 @@ impl PyTransformFrame {
     /// Returns:
     ///     True if the frame hasn't been updated within max_age_sec
     #[pyo3(signature = (name, max_age_sec=1.0))]
-    fn is_stale(&self, name: &str, max_age_sec: f64) -> bool {
+    fn is_stale(&self, name: &str, max_age_sec: f64) -> PyResult<bool> {
+        if !max_age_sec.is_finite() || max_age_sec < 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "max_age_sec must be a non-negative finite number",
+            ));
+        }
         let max_age_ns = (max_age_sec * 1_000_000_000.0) as u64;
-        self.inner.is_stale_now(name, max_age_ns)
+        Ok(self.inner.is_stale_now(name, max_age_ns))
     }
 
     /// Get seconds since a frame was last updated.

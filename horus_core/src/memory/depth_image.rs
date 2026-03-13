@@ -72,7 +72,7 @@ impl DepthImage {
         if x >= self.width() || y >= self.height() {
             return None;
         }
-        let idx = (y * self.width() + x) as usize;
+        let idx = y as usize * self.width() as usize + x as usize;
 
         if self.descriptor.is_meters() {
             let data = self.data();
@@ -117,7 +117,7 @@ impl DepthImage {
         if x >= self.width() || y >= self.height() {
             return Ok(self);
         }
-        let idx = (y * self.width() + x) as usize;
+        let idx = y as usize * self.width() as usize + x as usize;
 
         if self.descriptor.is_meters() {
             let data = self.data_mut();
@@ -154,7 +154,7 @@ impl DepthImage {
         if x >= self.width() || y >= self.height() || !self.descriptor.is_millimeters() {
             return None;
         }
-        let idx = (y * self.width() + x) as usize;
+        let idx = y as usize * self.width() as usize + x as usize;
         let data = self.data();
         let offset = idx * 2;
         if offset + 2 <= data.len() {

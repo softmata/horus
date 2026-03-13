@@ -199,8 +199,9 @@ impl PyTensorHandle {
         // SAFETY: descriptor_bytes length is validated above to match size_of::<Tensor>().
         // Tensor is a POD type (repr(C), all primitive fields).
         // Use read_unaligned since Python byte arrays may not meet Tensor alignment requirements.
-        let tensor: Tensor =
+        let mut tensor: Tensor =
             unsafe { std::ptr::read_unaligned(descriptor_bytes.as_ptr() as *const Tensor) };
+        tensor.sanitize_from_shm();
 
         let pool = get_or_create_pool(pool_id, None)?;
         let handle = TensorHandle::new(tensor, pool);

@@ -1313,17 +1313,28 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         } else {
             let slot_size = local.slot_size;
             let slot_offset = index * slot_size;
+            let max_data_len = slot_size.saturating_sub(16);
             // SAFETY: slot_ptr is within storage bounds
             unsafe {
                 let slot_ptr = self.storage.as_ptr().add(data_off + slot_offset);
                 let len_ptr = slot_ptr.add(8) as *const u64;
                 let len = std::ptr::read_volatile(len_ptr) as usize;
+                if len > max_data_len {
+                    panic!(
+                        "TopicReader::read_shm_slot: corrupted length {} exceeds slot capacity {} for type {}",
+                        len, max_data_len, std::any::type_name::<T>()
+                    );
+                }
                 let data_ptr = slot_ptr.add(16);
                 let slice = std::slice::from_raw_parts(data_ptr, len);
-                bincode::deserialize(slice).unwrap_or_else(|_| {
-                    // This should not happen — the producer serialized it successfully.
-                    // Fallback: create a default-ish value by re-reading as pod.
-                    std::ptr::read(slot_ptr as *const T)
+                bincode::deserialize(slice).unwrap_or_else(|e| {
+                    // Non-Pod types cannot safely fall back to ptr::read — that would
+                    // reinterpret raw SHM bytes as T, causing UB for types with heap
+                    // allocations (String, Vec) or validity invariants (bool, enums).
+                    panic!(
+                        "TopicReader::read_shm_slot: bincode deserialization failed for type {}: {}",
+                        std::any::type_name::<T>(), e
+                    );
                 })
             }
         }

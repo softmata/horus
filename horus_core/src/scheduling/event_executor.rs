@@ -231,6 +231,14 @@ impl EventExecutor {
     }
 }
 
+impl Drop for EventExecutor {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

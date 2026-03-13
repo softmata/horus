@@ -17,6 +17,8 @@ mod recording;
 fn truncate_name(name: &str, max_len: usize) -> String {
     if name.len() <= max_len {
         name.to_string()
+    } else if max_len < 4 {
+        name[..max_len].to_string()
     } else {
         format!("{}...", &name[..max_len - 3])
     }

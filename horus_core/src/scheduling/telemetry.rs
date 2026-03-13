@@ -349,14 +349,21 @@ fn http_post_blocking(url: &str, snapshot: &TelemetrySnapshot) -> Result<(), Str
     let url_stripped = url
         .trim_start_matches("http://")
         .trim_start_matches("https://");
-    let (host, path) = if let Some(idx) = url_stripped.find('/') {
+    let (host_port, path) = if let Some(idx) = url_stripped.find('/') {
         (&url_stripped[..idx], &url_stripped[idx..])
     } else {
         (url_stripped, "/")
     };
 
+    // Parse host and port — host_port may be "hostname", "hostname:8080", or "[::1]:8080"
+    let connect_addr = if host_port.contains(':') {
+        host_port.to_string()
+    } else {
+        format!("{}:80", host_port)
+    };
+
     let mut stream =
-        TcpStream::connect(format!("{}:80", host)).map_err(|e| format!("Connect failed: {}", e))?;
+        TcpStream::connect(&connect_addr).map_err(|e| format!("Connect failed: {}", e))?;
 
     stream.set_write_timeout(Some(5_u64.secs())).ok();
     stream.set_read_timeout(Some(5_u64.secs())).ok();
@@ -370,7 +377,7 @@ fn http_post_blocking(url: &str, snapshot: &TelemetrySnapshot) -> Result<(), Str
          \r\n\
          {}",
         path,
-        host,
+        host_port,
         json.len(),
         json
     );
