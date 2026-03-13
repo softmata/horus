@@ -512,12 +512,13 @@ impl Mdns {
 
 impl Drop for Mdns {
     fn drop(&mut self) {
-        // Try to unregister service on drop
-        let registered = self.registered_service.lock().expect("mutex poisoned");
-        if let Some(ref full_name) = *registered {
-            let _ = self.daemon.unregister(full_name);
+        // Try to unregister service on drop — use .ok() to avoid double-panic abort
+        if let Ok(registered) = self.registered_service.lock() {
+            if let Some(ref full_name) = *registered {
+                let _ = self.daemon.unregister(full_name);
+            }
+            drop(registered);
         }
-        drop(registered);
         // Shutdown the daemon to stop background threads
         let _ = self.daemon.shutdown();
     }
@@ -880,7 +881,10 @@ impl DiscoveryWatcher {
 
     /// Stop the watcher
     pub fn stop(&mut self) {
-        *self.stop_signal.write().expect("rwlock poisoned") = true;
+        // Use .ok() to avoid double-panic abort if called from Drop during unwinding
+        if let Ok(mut signal) = self.stop_signal.write() {
+            *signal = true;
+        }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

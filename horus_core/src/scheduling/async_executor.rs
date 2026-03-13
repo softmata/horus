@@ -220,11 +220,10 @@ impl AsyncExecutor {
         }
 
         // Profiler recording (shared with main thread)
-        monitors
-            .profiler
-            .lock()
-            .unwrap()
-            .record(&node.name, tr.duration);
+        // Use try_lock to avoid priority inversion — skip if contended or poisoned
+        if let Ok(mut profiler) = monitors.profiler.try_lock() {
+            profiler.record(&node.name, tr.duration);
+        }
 
         // End recording tick
         if let Some(ref mut recorder) = node.recorder {
@@ -238,11 +237,9 @@ impl AsyncExecutor {
                 }
             }
             Err(panic_err) => {
-                monitors
-                    .profiler
-                    .lock()
-                    .unwrap()
-                    .record_node_failure(&node.name);
+                if let Ok(mut profiler) = monitors.profiler.try_lock() {
+                    profiler.record_node_failure(&node.name);
+                }
                 let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
                     format!("[AsyncIO] Node '{}' panicked: {}", node.name, s)
                 } else if let Some(s) = panic_err.downcast_ref::<String>() {

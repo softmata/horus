@@ -185,11 +185,10 @@ impl EventExecutor {
                     if let Some(ref mut stats) = node.rt_stats {
                         stats.record_execution(tr.duration);
                     }
-                    monitors
-                        .profiler
-                        .lock()
-                        .unwrap()
-                        .record(&node.name, tr.duration);
+                    // Use try_lock to avoid priority inversion — skip if contended or poisoned
+                    if let Ok(mut profiler) = monitors.profiler.try_lock() {
+                        profiler.record(&node.name, tr.duration);
+                    }
                     if let Some(ref mut recorder) = node.recorder {
                         recorder.end_tick(tr.duration.as_nanos() as u64);
                     }
@@ -202,11 +201,9 @@ impl EventExecutor {
                             tick_count += 1;
                         }
                         Err(panic_err) => {
-                            monitors
-                                .profiler
-                                .lock()
-                                .unwrap()
-                                .record_node_failure(&node.name);
+                            if let Ok(mut profiler) = monitors.profiler.try_lock() {
+                                profiler.record_node_failure(&node.name);
+                            }
                             let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
                                 format!("[Event] Node '{}' panicked: {}", node.name, s)
                             } else if let Some(s) = panic_err.downcast_ref::<String>() {
