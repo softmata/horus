@@ -509,13 +509,17 @@ impl PyTransformFrame {
     /// Returns a callable that releases the GIL and blocks until the transform
     /// is available. Use with asyncio.to_thread() for async/await support:
     ///
-    ///     # In async code:
-    ///     transform = await asyncio.to_thread(tf.wait_for_transform, "src", "dst", 5.0)
+    /// ```text
+    /// # In async code:
+    /// transform = await asyncio.to_thread(tf.wait_for_transform, "src", "dst", 5.0)
+    /// ```
     ///
     /// Or use this convenience method which returns a concurrent.futures.Future:
     ///
-    ///     future = tf.wait_for_transform_async("src", "dst", 5.0)
-    ///     transform = await asyncio.wrap_future(future)
+    /// ```text
+    /// future = tf.wait_for_transform_async("src", "dst", 5.0)
+    /// transform = await asyncio.wrap_future(future)
+    /// ```
     ///
     /// Args:
     ///     src: Source frame name

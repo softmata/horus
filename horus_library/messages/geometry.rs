@@ -170,7 +170,7 @@ impl TransformStamped {
     /// Normalize the quaternion component
     pub fn normalize_rotation(&mut self) {
         let norm = self.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if norm > 0.0 {
+        if norm > 1e-12 {
             for v in &mut self.rotation {
                 *v /= norm;
             }
@@ -232,7 +232,7 @@ impl Vector3 {
 
     pub fn normalize(&mut self) {
         let mag = self.magnitude();
-        if mag > 0.0 {
+        if mag > 1e-12 {
             self.x /= mag;
             self.y /= mag;
             self.z /= mag;

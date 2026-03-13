@@ -44,10 +44,10 @@ use std::time::{Duration, Instant};
 pub const HORUS_SERVICE_TYPE: &str = "_horus._udp.local.";
 
 /// Default timeout for mDNS operations
-pub const MDNS_TIMEOUT: Duration = 100_u64.ms();
+pub const MDNS_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Extended timeout for browsing (need to collect multiple responses)
-pub const BROWSE_TIMEOUT: Duration = 2_u64.secs();
+pub const BROWSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Information about a discovered HORUS service
 #[derive(Debug, Clone)]
@@ -76,7 +76,7 @@ struct CachedResolution {
 }
 
 /// Cache TTL for hostname resolutions (5 minutes)
-const RESOLUTION_CACHE_TTL: Duration = 300_u64.secs();
+const RESOLUTION_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// mDNS service manager for HORUS
 ///

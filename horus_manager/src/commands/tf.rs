@@ -2201,6 +2201,21 @@ fn rotation_to_modified_rodrigues(r: &[[f64; 3]; 3]) -> [f64; 3] {
         return [0.0, 0.0, 0.0];
     }
 
+    // Near theta=pi, sin(theta)→0 and tan(theta/2)→∞, so both k and half_tan blow up.
+    // Fall back to extracting axis from the diagonal of R (valid for 180° rotations).
+    if (std::f64::consts::PI - theta).abs() < 1e-10 {
+        let ax = ((r[0][0] + 1.0) / 2.0).max(0.0).sqrt();
+        let ay = ((r[1][1] + 1.0) / 2.0).max(0.0).sqrt();
+        let az = ((r[2][2] + 1.0) / 2.0).max(0.0).sqrt();
+        // Resolve sign ambiguity from off-diagonal elements
+        let ay = if r[0][1] + r[1][0] < 0.0 { -ay } else { ay };
+        let az = if r[0][2] + r[2][0] < 0.0 { -az } else { az };
+        // tan(pi/2) = infinity, but modified Rodrigues at pi is conventionally large
+        // Use a large but finite scale factor
+        let scale = 1e6;
+        return [ax * scale, ay * scale, az * scale];
+    }
+
     let k = 1.0 / (2.0 * theta.sin());
     let axis = [
         k * (r[2][1] - r[1][2]),

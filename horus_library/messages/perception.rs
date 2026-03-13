@@ -97,7 +97,11 @@ impl PlaneDetection {
     /// Calculate distance from point to plane
     pub fn distance_to_point(&self, point: &Point3) -> f64 {
         let [a, b, c, d] = self.coefficients;
-        (a * point.x + b * point.y + c * point.z + d).abs() / (a * a + b * b + c * c).sqrt()
+        let norm = (a * a + b * b + c * c).sqrt();
+        if norm < 1e-12 {
+            return f64::INFINITY;
+        }
+        (a * point.x + b * point.y + c * point.z + d).abs() / norm
     }
 
     /// Check if point is on the plane (within tolerance)

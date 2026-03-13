@@ -79,6 +79,7 @@ impl BudgetViolation {
 ///
 /// ```rust
 /// use horus_core::core::RtStats;
+/// use horus_core::core::DurationExt;
 /// use std::time::Duration;
 ///
 /// let mut stats = RtStats::default();
