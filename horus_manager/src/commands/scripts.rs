@@ -84,11 +84,15 @@ pub fn run_scripts(name: Option<String>, args: Vec<String>) -> HorusResult<()> {
                 )))
             })?;
 
-            // Append extra args to the command
+            // Append extra args to the command (shell-escaped to prevent injection)
             let full_cmd = if args.is_empty() {
                 script_cmd.clone()
             } else {
-                format!("{} {}", script_cmd, args.join(" "))
+                let escaped_args: Vec<String> = args
+                    .iter()
+                    .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
+                    .collect();
+                format!("{} {}", script_cmd, escaped_args.join(" "))
             };
 
             println!(

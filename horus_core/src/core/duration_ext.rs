@@ -17,6 +17,7 @@
 //! assert_eq!(freq.period(), 10_u64.ms());
 //! ```
 
+use std::fmt;
 use std::time::Duration;
 
 /// A frequency value (in Hz) for configuring node tick rates.
@@ -46,6 +47,12 @@ use std::time::Duration;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frequency(f64);
+
+impl fmt::Display for Frequency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} Hz", self.0)
+    }
+}
 
 impl Frequency {
     /// The frequency in Hz.

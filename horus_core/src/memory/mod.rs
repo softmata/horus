@@ -114,6 +114,12 @@ macro_rules! impl_tensor_backed {
             pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
                 let bytes = self.data();
                 let ptr = bytes.as_ptr() as *const T;
+                assert!(
+                    ptr.is_aligned(),
+                    "data pointer not aligned for {} (requires {} bytes)",
+                    std::any::type_name::<T>(),
+                    std::mem::align_of::<T>(),
+                );
                 let len = bytes.len() / std::mem::size_of::<T>();
                 std::slice::from_raw_parts(ptr, len)
             }
@@ -128,6 +134,12 @@ macro_rules! impl_tensor_backed {
             pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
                 let bytes = self.data_mut();
                 let ptr = bytes.as_mut_ptr() as *mut T;
+                assert!(
+                    ptr.is_aligned(),
+                    "data pointer not aligned for {} (requires {} bytes)",
+                    std::any::type_name::<T>(),
+                    std::mem::align_of::<T>(),
+                );
                 let len = bytes.len() / std::mem::size_of::<T>();
                 std::slice::from_raw_parts_mut(ptr, len)
             }

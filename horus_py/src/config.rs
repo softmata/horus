@@ -105,9 +105,16 @@ impl PySchedulerConfig {
     // ========================================================================
 
     /// Set tick rate in Hz and return self for chaining.
-    pub fn rate(&mut self, hz: f64) -> Self {
+    ///
+    /// Raises `ValueError` for zero, negative, NaN, or infinite values.
+    pub fn rate(&mut self, hz: f64) -> PyResult<Self> {
+        if hz <= 0.0 || !hz.is_finite() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "tick_rate must be a positive finite number",
+            ));
+        }
         self.tick_rate = hz;
-        self.clone()
+        Ok(self.clone())
     }
 
     /// Set watchdog timeout in milliseconds.
@@ -225,6 +232,7 @@ mod tests {
     fn composable_rt_config() {
         let cfg = PySchedulerConfig::with_watchdog()
             .rate(100.0)
+            .unwrap()
             .blackbox_mb(64);
         assert_eq!(cfg.watchdog_timeout_ms, 500);
         assert_eq!(cfg.black_box_size_mb, 64);
@@ -245,6 +253,7 @@ mod tests {
     fn to_core_config_round_trip() {
         let py_cfg = PySchedulerConfig::with_watchdog()
             .rate(100.0)
+            .unwrap()
             .blackbox_mb(64);
         let core_cfg = py_cfg.to_core_config();
 
@@ -257,6 +266,7 @@ mod tests {
     fn builder_methods_chain() {
         let cfg = PySchedulerConfig::minimal()
             .rate(50.0)
+            .unwrap()
             .watchdog_ms(200)
             .blackbox_mb(32)
             .cpu_affinity(vec![0, 1]);

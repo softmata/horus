@@ -1,7 +1,7 @@
 {
   "project": "horus",
   "cycle": 1,
-  "current_plane": 12,
+  "current_plane": 18,
   "plane_status": {
     "1": { "status": "complete", "cycle": 1, "issues_fixed": 1, "roadmap_id": "roadmap-mmojxzm7-tzsizn" },
     "2": { "status": "clean", "cycle": 1 },
@@ -13,8 +13,14 @@
     "8": { "status": "complete", "cycle": 1, "issues_fixed": 1, "roadmap_id": "roadmap-mmokw3a0-ldbjyv" },
     "9": { "status": "complete", "cycle": 1, "issues_fixed": 6, "roadmap_id": "roadmap-mmol7alh-lj54k6" },
     "10": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmolilj9-2qmio6" },
-    "11": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmom6bye-jffhpo" }
+    "11": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmom6bye-jffhpo" },
+    "12": { "status": "complete", "cycle": 1, "issues_fixed": 2, "roadmap_id": "roadmap-mmomx5ln-g4dxdk" },
+    "13": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmon6rtm-9wgh2z" },
+    "14": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmonl0io-mipj2x" },
+    "15": { "status": "complete", "cycle": 1, "issues_fixed": 3, "roadmap_id": "roadmap-mmons551-rqdtwn" },
+    "16": { "status": "complete", "cycle": 1, "issues_fixed": 1, "roadmap_id": "roadmap-mmoo3gpm-jg5gje" },
+    "17": { "status": "complete", "cycle": 1, "issues_fixed": 2, "roadmap_id": "roadmap-mmooe0bk-cpgc78" }
   },
-  "total_issues_fixed": 17,
-  "false_positives_rejected": 80
+  "total_issues_fixed": 31,
+  "false_positives_rejected": 101
 }

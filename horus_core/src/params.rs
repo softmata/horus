@@ -172,10 +172,9 @@ impl RuntimeParams {
     pub fn get_typed<T: for<'de> Deserialize<'de>>(&self, key: &str) -> HorusResult<T> {
         let params = self.params.read()?;
         let value = params.get(key).ok_or_else(|| {
-            HorusError::InvalidInput(ValidationError::Other(format!(
-                "Parameter '{}' not found",
-                key
-            )))
+            HorusError::NotFound(crate::error::NotFoundError::Parameter {
+                name: key.to_string(),
+            })
         })?;
         serde_json::from_value(value.clone()).map_err(|e| {
             HorusError::InvalidInput(ValidationError::Other(format!(
@@ -287,8 +286,22 @@ impl RuntimeParams {
         value: T,
         expected_version: u64,
     ) -> Result<(), HorusError> {
-        // First, check the version
-        let current_version = self.get_version(key);
+        let json_value = serde_json::to_value(value)?;
+
+        // Check read-only and validation
+        if let Some(meta) = self.get_metadata(key) {
+            if meta.read_only() {
+                return Err(HorusError::InvalidInput(ValidationError::Other(format!(
+                    "Parameter '{}' is read-only",
+                    key
+                ))));
+            }
+            self.validate_value(key, &json_value, &meta.validation)?;
+        }
+
+        // Hold versions write lock for atomic check-then-set
+        let mut versions = self.versions.write()?;
+        let current_version = versions.get(key).copied().unwrap_or(0);
         if current_version != expected_version {
             return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                 "Version mismatch for '{}': expected {}, current {}. The parameter was modified by another user.",
@@ -296,8 +309,22 @@ impl RuntimeParams {
             ))));
         }
 
-        // If version matches, proceed with normal set operation
-        self.set(key, value)
+        let old_value = {
+            let params = self.params.read()?;
+            params.get(key).cloned()
+        };
+
+        let mut params = self.params.write()?;
+        params.insert(key.to_string(), json_value.clone());
+        drop(params);
+
+        let version = versions.entry(key.to_string()).or_insert(0);
+        *version += 1;
+        drop(versions);
+
+        self.log_change(key, old_value.as_ref(), &json_value);
+
+        Ok(())
     }
 
     /// Log parameter change to audit log

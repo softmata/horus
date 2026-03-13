@@ -103,6 +103,12 @@ pub enum HealthStatus {
     Unknown = 4,
 }
 
+impl fmt::Display for HealthStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl HealthStatus {
     /// Convert to string representation
     pub fn as_str(&self) -> &'static str {

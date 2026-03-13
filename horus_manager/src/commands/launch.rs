@@ -173,9 +173,15 @@ pub fn run_launch(
 
         // Apply start delay if specified
         if let Some(delay) = node.start_delay {
-            if delay > 0.0 {
+            if delay.is_finite() && delay > 0.0 {
                 println!("  {} Waiting {:.1}s for {}", "".dimmed(), delay, node.name);
                 std::thread::sleep(delay.secs());
+            } else if !delay.is_finite() || delay < 0.0 {
+                log::warn!(
+                    "Ignoring invalid start_delay {} for node '{}'",
+                    delay,
+                    node.name
+                );
             }
         }
 

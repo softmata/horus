@@ -69,6 +69,16 @@ impl Default for ImageDescriptor {
 }
 
 impl ImageDescriptor {
+    /// Sanitize an ImageDescriptor read from untrusted bytes (SHM, network, file).
+    ///
+    /// Clamps inner tensor fields and encoding to valid ranges.
+    #[inline]
+    pub fn sanitize_from_shm(&mut self) {
+        self.inner.sanitize_from_shm();
+        let enc_raw = unsafe { *(&self.encoding as *const ImageEncoding as *const u8) };
+        self.encoding = ImageEncoding::from_raw(enc_raw);
+    }
+
     /// Create a new image descriptor from pre-built tensor + metadata.
     ///
     /// The `step` (bytes per row) is taken from `tensor.strides[0]`, which

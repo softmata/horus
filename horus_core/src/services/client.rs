@@ -100,7 +100,9 @@ where
             if let Some(resp) = self.res_topic.recv() {
                 if resp.request_id == request_id {
                     return if resp.ok {
-                        Ok(resp.payload.expect("ok response must have payload"))
+                        Ok(resp.payload.ok_or(ServiceError::ServiceFailed(
+                            "server returned ok=true but no payload".to_string(),
+                        ))?)
                     } else {
                         Err(ServiceError::ServiceFailed(
                             resp.error.unwrap_or_else(|| "unknown error".to_string()),
@@ -228,7 +230,9 @@ where
         if let Some(resp) = self.res_topic.recv() {
             if resp.request_id == self.request_id {
                 return if resp.ok {
-                    Ok(Some(resp.payload.expect("ok response must have payload")))
+                    Ok(Some(resp.payload.ok_or(ServiceError::ServiceFailed(
+                            "server returned ok=true but no payload".to_string(),
+                        ))?))
                 } else {
                     Err(ServiceError::ServiceFailed(
                         resp.error.unwrap_or_else(|| "unknown error".to_string()),

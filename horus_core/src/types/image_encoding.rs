@@ -47,6 +47,23 @@ unsafe impl Pod for ImageEncoding {}
 unsafe impl Zeroable for ImageEncoding {}
 
 impl ImageEncoding {
+    /// Maximum valid discriminant value for this enum.
+    pub const MAX_DISCRIMINANT: u8 = 10;
+
+    /// Construct from a raw u8, returning Rgb8 for invalid discriminants.
+    ///
+    /// Use this when reading from untrusted sources (SHM, network, files)
+    /// to avoid undefined behavior from invalid enum discriminants.
+    #[inline]
+    pub const fn from_raw(v: u8) -> Self {
+        if v <= Self::MAX_DISCRIMINANT {
+            // SAFETY: v is in the valid discriminant range 0..=10
+            unsafe { std::mem::transmute(v) }
+        } else {
+            Self::Rgb8
+        }
+    }
+
     /// Bytes per pixel for this encoding
     #[inline]
     pub const fn bytes_per_pixel(&self) -> u32 {

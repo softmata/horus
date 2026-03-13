@@ -445,17 +445,18 @@ fn pid_exists(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
         // SAFETY: OpenProcess is safe for existence check; handle closed immediately.
         unsafe {
-            let handle = winapi::um::processthreadsapi::OpenProcess(
-                winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                pid,
-            );
-            if handle.is_null() {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle == 0 {
                 false
             } else {
-                winapi::um::handleapi::CloseHandle(handle);
+                CloseHandle(handle);
                 true
             }
         }

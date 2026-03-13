@@ -451,12 +451,12 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
         cmd.args(["--exclude", exclude]);
     }
 
-    // SSH options with ConnectTimeout and properly quoted identity path
+    // SSH options with ConnectTimeout and shell-escaped identity path
     let ssh_cmd = if let Some(ref identity) = config.identity {
+        let escaped = identity.display().to_string().replace('\'', "'\\''");
         format!(
             "ssh -p {} -o ConnectTimeout=30 -i '{}'",
-            config.port,
-            identity.display()
+            config.port, escaped
         )
     } else {
         format!("ssh -p {} -o ConnectTimeout=30", config.port)
@@ -501,7 +501,8 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
         format!("./target/{}/{}/{}", target, mode, binary_name)
     };
 
-    let remote_cmd = format!("cd {} && {}", config.remote_dir, binary_path);
+    let escaped_dir = config.remote_dir.replace('\'', "'\\''");
+    let remote_cmd = format!("cd '{}' && {}", escaped_dir, binary_path);
 
     // Build SSH command with ConnectTimeout
     let mut cmd = Command::new("ssh");

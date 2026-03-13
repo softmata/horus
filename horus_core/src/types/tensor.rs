@@ -107,6 +107,18 @@ impl Default for Tensor {
 }
 
 impl Tensor {
+    /// Sanitize a Tensor read from untrusted bytes (SHM, network, file).
+    ///
+    /// Clamps `ndim` and `dtype` to valid ranges to prevent UB from invalid
+    /// enum discriminants or out-of-bounds array slicing.
+    #[inline]
+    pub fn sanitize_from_shm(&mut self) {
+        self.ndim = self.ndim.min(MAX_TENSOR_DIMS as u8);
+        // SAFETY: read the raw discriminant byte to avoid UB from matching an invalid enum
+        let dtype_raw = unsafe { *(&self.dtype as *const TensorDtype as *const u8) };
+        self.dtype = TensorDtype::from_raw(dtype_raw);
+    }
+
     /// Create a new tensor descriptor
     ///
     /// This is typically called by TensorPool, not directly.

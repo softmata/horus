@@ -154,15 +154,18 @@ impl TensorHandle {
     pub unsafe fn data_as<T: Copy>(&self) -> crate::error::HorusResult<&[T]> {
         let bytes = self.data_slice()?;
         let ptr = bytes.as_ptr() as *const T;
-        debug_assert!(
-            ptr.is_aligned(),
-            "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
-            std::any::type_name::<T>(),
-            std::mem::align_of::<T>(),
-            ptr
-        );
+        if !ptr.is_aligned() {
+            return Err(crate::error::HorusError::Memory(
+                crate::error::MemoryError::Other(format!(
+                    "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
+                    std::any::type_name::<T>(),
+                    std::mem::align_of::<T>(),
+                    ptr
+                )),
+            ));
+        }
         let len = bytes.len() / std::mem::size_of::<T>();
-        // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid for `len` elements.
+        // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid and aligned for `len` elements.
         Ok(std::slice::from_raw_parts(ptr, len))
     }
 
@@ -179,15 +182,18 @@ impl TensorHandle {
     pub unsafe fn data_as_mut<T: Copy>(&self) -> crate::error::HorusResult<&mut [T]> {
         let bytes = self.data_slice_mut()?;
         let ptr = bytes.as_mut_ptr() as *mut T;
-        debug_assert!(
-            ptr.is_aligned(),
-            "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
-            std::any::type_name::<T>(),
-            std::mem::align_of::<T>(),
-            ptr
-        );
+        if !ptr.is_aligned() {
+            return Err(crate::error::HorusError::Memory(
+                crate::error::MemoryError::Other(format!(
+                    "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
+                    std::any::type_name::<T>(),
+                    std::mem::align_of::<T>(),
+                    ptr
+                )),
+            ));
+        }
         let len = bytes.len() / std::mem::size_of::<T>();
-        // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid and writable for `len` elements.
+        // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid, aligned, and writable for `len` elements.
         Ok(std::slice::from_raw_parts_mut(ptr, len))
     }
 
