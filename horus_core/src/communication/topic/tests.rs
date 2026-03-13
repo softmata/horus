@@ -712,7 +712,7 @@ fn topic_cross_thread_1p_multi_c_spmc() {
                             if Instant::now() > deadline {
                                 break;
                             }
-                            std::thread::yield_now();
+                            std::thread::sleep(std::time::Duration::from_micros(100));
                         }
                     }
                 }
@@ -850,7 +850,8 @@ fn topic_cross_thread_multi_p_multi_c_mpmc() {
                             if tr.load(Ordering::Relaxed) >= t || Instant::now() > deadline {
                                 break;
                             }
-                            std::thread::yield_now();
+                            // Sleep briefly to avoid CPU starvation under parallel test load
+                            std::thread::sleep(std::time::Duration::from_micros(100));
                         }
                     }
                 }
@@ -2662,7 +2663,8 @@ fn topic_cross_thread_mpmc_pre_initialized_99_percent() {
                             if tr.load(Ordering::Relaxed) >= t || Instant::now() > deadline {
                                 break;
                             }
-                            std::thread::yield_now();
+                            // Sleep briefly to avoid CPU starvation under parallel test load
+                            std::thread::sleep(std::time::Duration::from_micros(100));
                         }
                     }
                 }
@@ -8151,29 +8153,37 @@ fn crash_concurrent_send_recv_no_corruption() {
     let pub_t: Topic<u64> = Topic::new(&name).unwrap();
     let sub_t: Topic<u64> = Topic::new(&name).unwrap();
 
+    let producer_done = Arc::new(AtomicBool::new(false));
+
     let barrier_p = barrier.clone();
+    let done_flag = producer_done.clone();
     let producer = thread::spawn(move || {
         barrier_p.wait();
         for i in 0..1000u64 {
             pub_t.send(i);
-            // Small yield to allow interleaving with consumer
+            // Brief sleep to allow consumer to keep up under CPU contention
             if i % 50 == 0 {
-                thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_micros(50));
             }
         }
+        done_flag.store(true, Ordering::Release);
     });
 
     let barrier_c = barrier.clone();
     let received = Arc::new(AtomicU64::new(0));
     let recv_count = received.clone();
+    let done_check = producer_done.clone();
     let consumer = thread::spawn(move || {
         barrier_c.wait();
-        let start = Instant::now();
-        while start.elapsed() < 3_u64.secs() {
-            if sub_t.try_recv().is_some() {
+        let deadline = Instant::now() + 5_u64.secs();
+        loop {
+            if let Some(_) = sub_t.recv() {
                 recv_count.fetch_add(1, Ordering::Relaxed);
+            } else if done_check.load(Ordering::Acquire) || Instant::now() > deadline {
+                break;
+            } else {
+                std::thread::sleep(std::time::Duration::from_micros(100));
             }
-            thread::yield_now();
         }
     });
 

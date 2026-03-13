@@ -26,7 +26,7 @@ fn registry_error(status: reqwest::StatusCode, body: &str, action: &str) -> anyh
             "A conflicting version already exists. Bump your version and try again.".to_string()
         }
         s if s.is_server_error() => {
-            "The registry server encountered an error. This is likely temporary.\n  Try again in a few minutes. If the problem persists, check https://status.horus.dev"
+            "The registry server encountered an error. This is likely temporary.\n  Try again in a few minutes. If the problem persists, check https://status.horus-robotics.dev"
                 .to_string()
         }
         _ => String::new(),

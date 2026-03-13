@@ -97,7 +97,7 @@ More examples:
   horus bb --anomalies            Show crash anomalies
   horus deploy robot@192.168.1.5  Deploy to a remote robot
 
-Docs: https://docs.horus-registry.dev")]
+Docs: https://docs.horus-robotics.dev")]
 struct Cli {
     /// Increase output verbosity (show debug messages)
     #[arg(short = 'v', long = "verbose", global = true)]

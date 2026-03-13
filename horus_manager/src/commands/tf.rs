@@ -2060,7 +2060,7 @@ pub fn hand_eye_calibration(
     // Convert rotation matrix to quaternion for output
     let trace = rx[0][0] + rx[1][1] + rx[2][2];
     let (qw, qx, qy, qz) = if trace > 0.0 {
-        let s = 0.5 / (trace + 1.0).sqrt();
+        let s = 0.5 / (trace + 1.0).max(0.0).sqrt().max(1e-12);
         (
             0.25 / s,
             (rx[2][1] - rx[1][2]) * s,
@@ -2068,7 +2068,7 @@ pub fn hand_eye_calibration(
             (rx[1][0] - rx[0][1]) * s,
         )
     } else if rx[0][0] > rx[1][1] && rx[0][0] > rx[2][2] {
-        let s = 2.0 * (1.0 + rx[0][0] - rx[1][1] - rx[2][2]).sqrt();
+        let s = 2.0 * (1.0 + rx[0][0] - rx[1][1] - rx[2][2]).max(0.0).sqrt().max(1e-12);
         (
             (rx[2][1] - rx[1][2]) / s,
             0.25 * s,
@@ -2076,7 +2076,7 @@ pub fn hand_eye_calibration(
             (rx[0][2] + rx[2][0]) / s,
         )
     } else if rx[1][1] > rx[2][2] {
-        let s = 2.0 * (1.0 + rx[1][1] - rx[0][0] - rx[2][2]).sqrt();
+        let s = 2.0 * (1.0 + rx[1][1] - rx[0][0] - rx[2][2]).max(0.0).sqrt().max(1e-12);
         (
             (rx[0][2] - rx[2][0]) / s,
             (rx[0][1] + rx[1][0]) / s,
@@ -2084,7 +2084,7 @@ pub fn hand_eye_calibration(
             (rx[1][2] + rx[2][1]) / s,
         )
     } else {
-        let s = 2.0 * (1.0 + rx[2][2] - rx[0][0] - rx[1][1]).sqrt();
+        let s = 2.0 * (1.0 + rx[2][2] - rx[0][0] - rx[1][1]).max(0.0).sqrt().max(1e-12);
         (
             (rx[1][0] - rx[0][1]) / s,
             (rx[0][2] + rx[2][0]) / s,

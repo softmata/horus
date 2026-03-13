@@ -83,7 +83,7 @@ horus deploy pi@192.168.1.50 --run --arch aarch64
 
 ## Configuration
 
-- `HORUS_REGISTRY_URL` - Registry endpoint (default: https://horus-marketplace-api.onrender.com)
+- `HORUS_REGISTRY_URL` - Registry endpoint (default: https://api.horus-robotics.dev)
 - `HORUS_API_KEY` - CLI authentication token
 
 `horus run` auto-detects Rust projects (Cargo.toml), Python files (.py), and glob patterns (`horus run "nodes/*.py"`).

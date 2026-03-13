@@ -36,7 +36,7 @@ keywords = ["robotics", "real-time", "distributed", "ipc", "horus", "shared-memo
 
 [project.urls]
 Homepage = "https://github.com/softmata/horus"
-Documentation = "https://docs.horus.rs"
+Documentation = "https://docs.horus-robotics.dev"
 Repository = "https://github.com/softmata/horus"
 Issues = "https://github.com/softmata/horus/issues"
 

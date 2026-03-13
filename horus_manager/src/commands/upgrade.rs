@@ -66,7 +66,7 @@ pub(crate) fn check_latest_version() -> Result<Option<String>> {
         .build()?;
 
     let resp = client
-        .get("https://horus-registry.dev/api/packages/horus/latest")
+        .get("https://horus-robotics.dev/api/packages/horus/latest")
         .send();
 
     match resp {
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn check_latest_version_returns_ok() {
-        // In test environment without network access to horus-registry.dev,
+        // In test environment without network access to horus-robotics.dev,
         // should return Ok(None) rather than Err
         let result = check_latest_version();
         assert!(result.is_ok());
