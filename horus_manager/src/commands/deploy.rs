@@ -502,7 +502,8 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
     };
 
     let escaped_dir = config.remote_dir.replace('\'', "'\\''");
-    let remote_cmd = format!("cd '{}' && {}", escaped_dir, binary_path);
+    let escaped_binary = binary_path.replace('\'', "'\\''");
+    let remote_cmd = format!("cd '{}' && '{}'", escaped_dir, escaped_binary);
 
     // Build SSH command with ConnectTimeout
     let mut cmd = Command::new("ssh");

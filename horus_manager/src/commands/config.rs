@@ -90,12 +90,28 @@ fn navigate_toml<'a>(doc: &'a toml_edit::DocumentMut, key: &str) -> Option<&'a t
     Some(current)
 }
 
+/// Parse a string value into the appropriate TOML type (bool, integer, float, or string).
+fn parse_toml_value(value: &str) -> toml_edit::Item {
+    if value == "true" {
+        toml_edit::value(true)
+    } else if value == "false" {
+        toml_edit::value(false)
+    } else if let Ok(i) = value.parse::<i64>() {
+        toml_edit::value(i)
+    } else if let Ok(f) = value.parse::<f64>() {
+        toml_edit::value(f)
+    } else {
+        toml_edit::value(value)
+    }
+}
+
 /// Set a value at a dotted key path.
 fn set_toml_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<()> {
     let parts: Vec<&str> = key.split('.').collect();
+    let item = parse_toml_value(value);
 
     if parts.len() == 1 {
-        doc[parts[0]] = toml_edit::value(value);
+        doc[parts[0]] = item;
         return Ok(());
     }
 
@@ -111,7 +127,7 @@ fn set_toml_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> R
     }
 
     let last = parts.last().unwrap();
-    table[last] = toml_edit::value(value);
+    table[last] = item;
     Ok(())
 }
 

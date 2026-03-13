@@ -259,6 +259,19 @@ pub async fn params_import_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ImportParamsRequest>,
 ) -> impl IntoResponse {
+    // Limit input size to prevent deserialization DoS (e.g., YAML billion-laughs)
+    const MAX_IMPORT_SIZE: usize = 1024 * 1024; // 1 MB
+    if req.data.len() > MAX_IMPORT_SIZE {
+        return (
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "success": false,
+                "error": format!("Import data too large ({} bytes, max {})", req.data.len(), MAX_IMPORT_SIZE)
+            })
+            .to_string(),
+        );
+    }
+
     let import_result: Result<
         std::collections::BTreeMap<String, serde_json::Value>,
         Box<dyn std::error::Error>,

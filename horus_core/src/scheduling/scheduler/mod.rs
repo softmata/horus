@@ -368,7 +368,7 @@ impl Scheduler {
     ///     .tick_rate(1000_u64.hz());
     /// ```
     pub fn max_deadline_misses(mut self, n: u64) -> Self {
-        self.pending_config.realtime.max_deadline_misses = n;
+        self.pending_config.realtime.max_deadline_misses = n.max(1);
         self
     }
 
@@ -1706,7 +1706,7 @@ impl Scheduler {
     ///
     /// Chains with the previous hook and adds:
     /// - Blackbox flush to disk (if configured)
-    /// - Crash report written to /tmp/horus_crash_<pid>.log
+    /// - Crash report written to `<temp_dir>/horus_crash_<pid>.log`
     fn install_panic_hook(&self) {
         let blackbox = self.monitor.blackbox.clone();
         let scheduler_name = self.scheduler_name.clone();
@@ -1755,7 +1755,7 @@ impl Scheduler {
             );
 
             // 3. Write crash report to /tmp (best-effort, no allocation beyond the format above)
-            let crash_path = format!("/tmp/horus_crash_{}.log", pid);
+            let crash_path = std::env::temp_dir().join(format!("horus_crash_{}.log", pid));
             let _ = std::fs::write(&crash_path, &report);
 
             // 4. Also print to stderr (visible in logs)

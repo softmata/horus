@@ -616,7 +616,7 @@ impl HorusManifest {
                 || c == '/'
         }) {
             errors.push(format!(
-                "Package name '{}' must contain only lowercase letters, digits, hyphens, and underscores",
+                "Package name '{}' must contain only lowercase letters, digits, hyphens, underscores, '@', and '/'",
                 self.package.name
             ));
         }
