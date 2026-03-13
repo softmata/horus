@@ -1880,9 +1880,18 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
         let ctx = crate::dispatch::detect_context(&std::env::current_dir()
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?);
         let resolver = PackageSourceResolver::new(&ctx.languages);
-        let resolved = resolver.resolve(&name);
+        let resolved = resolver.resolve_with_network(&name);
 
-        let version_string = ver.clone().unwrap_or_else(|| "*".to_string());
+        // If no version specified, try to fetch the latest from the source.
+        // Falls back to "*" if network is unavailable (3s timeout).
+        let (version_string, fetched) = if let Some(ref v) = ver {
+            (v.clone(), false)
+        } else {
+            match crate::source_resolver::fetch_latest_version(&name, &resolved.source) {
+                Some(v) => (v, true),
+                None => ("*".to_string(), false),
+            }
+        };
 
         let dep_value = match resolved.source {
             DepSource::CratesIo | DepSource::PyPI => {
@@ -1912,10 +1921,13 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         let action = if was_present { "Updated" } else { "Added" };
-        let version_str = ver
-            .as_deref()
-            .map(|v| format!("@{}", v))
-            .unwrap_or_default();
+        let version_display = if fetched {
+            format!("@{} (latest)", version_string)
+        } else if ver.is_some() {
+            format!("@{}", version_string)
+        } else {
+            String::new()
+        };
 
         // Show source info for transparency
         let source_hint = match resolved.source {
@@ -1935,7 +1947,7 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
             cli_output::ICON_SUCCESS.green(),
             action,
             name.green(),
-            version_str,
+            version_display,
             source_hint.dimmed(),
         );
     }
@@ -3911,7 +3923,7 @@ name = "minimal"
     }
 
     #[test]
-    fn test_run_add_no_version_uses_wildcard() {
+    fn test_run_add_no_version_fetches_latest() {
         let _lock = crate::CWD_LOCK.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
         let original_dir = std::env::current_dir().unwrap();
@@ -3930,7 +3942,12 @@ name = "minimal"
         let manifest =
             HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("rplidar"));
-        assert_eq!(manifest.dependencies["rplidar"].version(), Some("*"));
+        // Version auto-fetch queries PyPI/crates.io for latest version.
+        // Falls back to "*" only when network is unavailable.
+        let ver = manifest.dependencies["rplidar"].version();
+        assert!(ver.is_some(), "version should be set");
+        let v = ver.unwrap();
+        assert!(v == "*" || v.contains('.'), "expected semver or wildcard fallback, got: {}", v);
     }
 
     #[test]
@@ -4742,7 +4759,7 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let _result = run_install(
             "horus-nav".to_string(),
             Some("2.0".to_string()),
             false,
@@ -6241,13 +6258,15 @@ serde = { version = "1.0", source = "crates.io" }
             "tokio should be auto-detected as crates.io"
         );
 
-        // Step 4: `horus add my-custom-lib` — unknown package in Rust-only project,
-        // project context fallback guesses crates.io (Low confidence)
-        run_add("my-custom-lib".to_string(), Some("0.1.0".to_string()), false, false).unwrap();
+        // Step 4: `horus add xyzzy-robot-widget-99` — truly non-existent package.
+        // Not in well-known lists, not on crates.io/PyPI. In Rust-only project,
+        // static fallback guesses crates.io (Low confidence), network check finds
+        // nothing, so the static guess is kept.
+        run_add("xyzzy-robot-widget-99".to_string(), Some("0.1.0".to_string()), false, false).unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
-            manifest.dependencies["my-custom-lib"].is_crates_io(),
+            manifest.dependencies["xyzzy-robot-widget-99"].is_crates_io(),
             "unknown dep in Rust-only project should be guessed as crates.io"
         );
         assert_eq!(manifest.dependencies.len(), 3);

@@ -10,9 +10,19 @@
 //!
 //! let mut scheduler = Scheduler::new();
 //!
-//! scheduler.add(my_node)
+//! // Auto-derived budget (80%) and deadline (95%) from rate
+//! scheduler.add(sensor)
 //!     .order(0)
-//!     .rate(100_u64.hz())   // auto-derives budget & deadline
+//!     .rate(100_u64.hz())
+//!     .build()?;
+//!
+//! // Explicit overrides for tighter constraints
+//! scheduler.add(motor_ctrl)
+//!     .order(1)
+//!     .rate(1000_u64.hz())
+//!     .budget(300.us())
+//!     .deadline(900.us())
+//!     .on_miss(Miss::Skip)
 //!     .build()?;
 //! ```
 
@@ -171,6 +181,44 @@ impl NodeRegistration {
         self
     }
 
+    /// Set an explicit tick budget — the maximum time a single tick should take.
+    ///
+    /// Overrides the auto-derived budget (80% of period from `.rate()`).
+    /// If called without `.rate()`, this implicitly enables RT scheduling.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus::prelude::*;
+    ///
+    /// // Override default: motor loop must finish within 300μs
+    /// NodeRegistration::new(Box::new(motor_ctrl))
+    ///     .rate(1000_u64.hz())
+    ///     .budget(300.us())
+    /// ```
+    pub fn budget(mut self, budget: Duration) -> Self {
+        self.tick_budget = Some(budget);
+        self
+    }
+
+    /// Set an explicit deadline — the absolute latest a tick can finish.
+    ///
+    /// Overrides the auto-derived deadline (95% of period from `.rate()`).
+    /// If called without `.rate()`, this implicitly enables RT scheduling.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus::prelude::*;
+    ///
+    /// // Override default: must complete within 900μs of a 1ms period
+    /// NodeRegistration::new(Box::new(motor_ctrl))
+    ///     .rate(1000_u64.hz())
+    ///     .deadline(900.us())
+    /// ```
+    pub fn deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
     /// Set the deadline miss policy.
     ///
     /// # Example
@@ -208,11 +256,15 @@ impl NodeRegistration {
     /// the frequency. For non-RT execution classes, only the rate is kept
     /// for rate-limiting.
     pub(crate) fn finalize(&mut self) {
+        let has_explicit_budget = self.tick_budget.is_some();
+        let has_explicit_deadline = self.deadline.is_some();
+
         if let Some(freq) = self.source_freq {
             // Auto-derive budget/deadline if RT or will become RT
             let will_be_rt =
                 self.is_rt || matches!(self.execution_class, ExecutionClass::BestEffort);
             if will_be_rt {
+                // Only auto-derive if user didn't set explicitly
                 if self.tick_budget.is_none() {
                     self.tick_budget = Some(freq.budget_default());
                 }
@@ -225,6 +277,14 @@ impl NodeRegistration {
                 self.is_rt = true;
                 self.execution_class = ExecutionClass::Rt;
             }
+        }
+
+        // Explicit budget/deadline without .rate() implies RT
+        if (has_explicit_budget || has_explicit_deadline)
+            && matches!(self.execution_class, ExecutionClass::BestEffort)
+        {
+            self.is_rt = true;
+            self.execution_class = ExecutionClass::Rt;
         }
     }
 
@@ -301,15 +361,17 @@ impl NodeRegistration {
             .into());
         }
 
-        // Validate RT-specific constraints on non-RT nodes
+        // Validate budget/deadline on non-RT execution classes
+        // (finalize() auto-enables RT for BestEffort, but compute/event/async_io
+        //  nodes with explicit budget/deadline are contradictory)
         if !self.is_rt && (self.tick_budget.is_some() || self.deadline.is_some()) {
-            // This shouldn't happen since .rate() auto-derives budget/deadline with is_rt,
-            // but guard against manual NodeRegistration construction.
             return Err(ValidationError::Conflict {
-                field_a: "tick_budget / deadline".into(),
-                field_b: "is_rt = false".into(),
+                field_a: "budget / deadline".into(),
+                field_b: format!("execution class {:?}", self.execution_class),
                 reason: format!(
-                    "node '{}' has budget/deadline set but is not marked as RT",
+                    "node '{}' has budget/deadline set but uses a non-RT execution class. \
+                     Budget/deadline are only meaningful for RT nodes. Either remove \
+                     .compute()/.async_io()/.on() or remove .budget()/.deadline().",
                     node_name
                 ),
             }
@@ -364,8 +426,41 @@ impl<'a> NodeBuilder<'a> {
     /// Set the tick rate from a `Frequency` — primary way to configure RT nodes.
     ///
     /// Auto-derives budget (80% of period) and deadline (95% of period).
+    /// Use `.budget()` and `.deadline()` to override the defaults.
     pub fn rate(mut self, freq: Frequency) -> Self {
         self.config = self.config.rate(freq);
+        self
+    }
+
+    /// Set an explicit tick budget — the maximum time a single tick should take.
+    ///
+    /// Overrides the auto-derived budget (80% of period from `.rate()`).
+    /// If called without `.rate()`, this implicitly enables RT scheduling.
+    ///
+    /// ```rust,ignore
+    /// scheduler.add(motor_ctrl)
+    ///     .rate(1000_u64.hz())
+    ///     .budget(300.us())      // override default 800μs
+    ///     .build()?;
+    /// ```
+    pub fn budget(mut self, budget: Duration) -> Self {
+        self.config = self.config.budget(budget);
+        self
+    }
+
+    /// Set an explicit deadline — the absolute latest a tick can finish.
+    ///
+    /// Overrides the auto-derived deadline (95% of period from `.rate()`).
+    /// If called without `.rate()`, this implicitly enables RT scheduling.
+    ///
+    /// ```rust,ignore
+    /// scheduler.add(motor_ctrl)
+    ///     .rate(1000_u64.hz())
+    ///     .deadline(900.us())    // override default 950μs
+    ///     .build()?;
+    /// ```
+    pub fn deadline(mut self, deadline: Duration) -> Self {
+        self.config = self.config.deadline(deadline);
         self
     }
 
@@ -544,6 +639,84 @@ mod tests {
         assert!(reg.is_rt);
         assert!(reg.tick_budget.is_some(), "budget should be auto-derived from rate");
         assert!(reg.deadline.is_some(), "deadline should be auto-derived from rate");
+    }
+
+    // ── .budget() / .deadline() explicit override ──
+
+    #[test]
+    fn test_explicit_budget_overrides_auto_derived() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(1000_u64.hz())
+            .budget(300.us());
+        reg.finalize();
+        assert!(reg.is_rt);
+        assert_eq!(reg.tick_budget, Some(300.us()));
+        // deadline should still be auto-derived (95% of 1ms = 950μs)
+        assert!(reg.deadline.is_some());
+        assert_ne!(reg.deadline, Some(300.us()));
+    }
+
+    #[test]
+    fn test_explicit_deadline_overrides_auto_derived() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(1000_u64.hz())
+            .deadline(900.us());
+        reg.finalize();
+        assert!(reg.is_rt);
+        assert_eq!(reg.deadline, Some(900.us()));
+        // budget should still be auto-derived (80% of 1ms = 800μs)
+        assert!(reg.tick_budget.is_some());
+    }
+
+    #[test]
+    fn test_explicit_both_budget_and_deadline() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(1000_u64.hz())
+            .budget(300.us())
+            .deadline(900.us());
+        reg.finalize();
+        assert!(reg.is_rt);
+        assert_eq!(reg.tick_budget, Some(300.us()));
+        assert_eq!(reg.deadline, Some(900.us()));
+    }
+
+    #[test]
+    fn test_budget_without_rate_enables_rt() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .budget(500.us());
+        reg.finalize();
+        assert!(reg.is_rt);
+        assert_eq!(reg.execution_class, ExecutionClass::Rt);
+        assert_eq!(reg.tick_budget, Some(500.us()));
+    }
+
+    #[test]
+    fn test_deadline_without_rate_enables_rt() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .deadline(1.ms());
+        reg.finalize();
+        assert!(reg.is_rt);
+        assert_eq!(reg.execution_class, ExecutionClass::Rt);
+        assert_eq!(reg.deadline, Some(1.ms()));
+    }
+
+    #[test]
+    fn test_budget_on_compute_node_rejected() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .compute()
+            .budget(500.us());
+        let result = reg.validate();
+        assert!(result.is_err(), "budget on compute node should be rejected");
+    }
+
+    #[test]
+    fn test_order_independent_budget_rate() {
+        // .budget() before .rate() — budget should still override
+        let mut reg = NodeRegistration::new(stub("n"))
+            .budget(300.us())
+            .rate(1000_u64.hz());
+        reg.finalize();
+        assert_eq!(reg.tick_budget, Some(300.us()));
     }
 
     // ── .failure_policy() ──

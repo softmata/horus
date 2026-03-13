@@ -128,6 +128,42 @@ impl<'a> PackageSourceResolver<'a> {
             },
         }
     }
+
+    /// Like `resolve()`, but with an optional live API fallback for unknown packages.
+    ///
+    /// When the static resolver returns Low confidence, queries crates.io and PyPI
+    /// APIs to check if the package actually exists there. Uses 3-second timeouts
+    /// per request, so worst case adds ~6 seconds. Returns the static result
+    /// unchanged if network is unavailable or the package isn't found on either.
+    pub fn resolve_with_network(&self, name: &str) -> ResolvedSource {
+        let result = self.resolve(name);
+
+        // Only attempt network fallback for Low confidence results
+        if result.confidence != Confidence::Low {
+            return result;
+        }
+
+        // Try crates.io first (lighter API, faster response)
+        if fetch_crates_io_version(name).is_some() {
+            return ResolvedSource {
+                source: DepSource::CratesIo,
+                confidence: Confidence::High,
+                reason: format!("'{}' confirmed on crates.io via API", name),
+            };
+        }
+
+        // Try PyPI
+        if fetch_pypi_version(name).is_some() {
+            return ResolvedSource {
+                source: DepSource::PyPI,
+                confidence: Confidence::High,
+                reason: format!("'{}' confirmed on PyPI via API", name),
+            };
+        }
+
+        // Network didn't help — return original Low confidence result
+        result
+    }
 }
 
 // ── Pre-build dependency validation ─────────────────────────────────────────
@@ -808,6 +844,95 @@ static KNOWN_PYPI: &[&str] = &[
     "zipp",
 ];
 
+// ── Version auto-fetch ──────────────────────────────────────────────────────
+
+/// Query the latest version of a package from its source.
+///
+/// Returns `None` if the network is unreachable, the package doesn't exist,
+/// or the query times out (3 seconds). Never blocks `horus add` on failure.
+pub fn fetch_latest_version(name: &str, source: &DepSource) -> Option<String> {
+    match source {
+        DepSource::CratesIo => fetch_crates_io_version(name),
+        DepSource::PyPI => fetch_pypi_version(name),
+        DepSource::Registry => fetch_registry_version(name),
+        _ => None,
+    }
+}
+
+/// GET https://crates.io/api/v1/crates/{name} → crate.max_stable_version
+fn fetch_crates_io_version(name: &str) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .user_agent("horus-pkg-manager (https://github.com/softmata/horus)")
+        .build()
+        .ok()?;
+
+    let url = format!("https://crates.io/api/v1/crates/{}", name);
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = resp.json().ok()?;
+    // Prefer max_stable_version, fall back to max_version
+    json.get("crate")
+        .and_then(|c| {
+            c.get("max_stable_version")
+                .or_else(|| c.get("max_version"))
+        })
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
+/// GET https://pypi.org/pypi/{name}/json → info.version
+fn fetch_pypi_version(name: &str) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .user_agent("horus-pkg-manager")
+        .build()
+        .ok()?;
+
+    let url = format!("https://pypi.org/pypi/{}/json", name);
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = resp.json().ok()?;
+    json.get("info")
+        .and_then(|i| i.get("version"))
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
+/// Query the HORUS registry for latest version.
+fn fetch_registry_version(name: &str) -> Option<String> {
+    let base_url = crate::config::registry_url();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .user_agent("horus-pkg-manager")
+        .build()
+        .ok()?;
+
+    let encoded = name
+        .replace('@', "%40")
+        .replace('/', "%2F");
+    let url = format!("{}/api/packages/{}", base_url, encoded);
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = resp.json().ok()?;
+    json.get("version")
+        .or_else(|| json.get("latest_version"))
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1089,5 +1214,110 @@ mod tests {
                 name
             );
         }
+    }
+
+    // ── Version auto-fetch (network tests — ignored by default) ─────────
+
+    #[test]
+    fn fetch_version_unknown_source_returns_none() {
+        // Path/Git/System sources don't support version fetch
+        assert!(fetch_latest_version("anything", &DepSource::Path).is_none());
+        assert!(fetch_latest_version("anything", &DepSource::Git).is_none());
+        assert!(fetch_latest_version("anything", &DepSource::System).is_none());
+    }
+
+    #[test]
+    #[ignore] // requires network
+    fn fetch_crates_io_version_serde() {
+        let v = fetch_latest_version("serde", &DepSource::CratesIo);
+        assert!(v.is_some(), "should fetch serde version from crates.io");
+        let v = v.unwrap();
+        assert!(v.starts_with("1."), "serde should be 1.x, got {}", v);
+    }
+
+    #[test]
+    #[ignore] // requires network
+    fn fetch_pypi_version_numpy() {
+        let v = fetch_latest_version("numpy", &DepSource::PyPI);
+        assert!(v.is_some(), "should fetch numpy version from PyPI");
+        let v = v.unwrap();
+        assert!(!v.is_empty(), "version should not be empty");
+    }
+
+    #[test]
+    #[ignore] // requires network
+    fn fetch_crates_io_nonexistent_returns_none() {
+        let v = fetch_latest_version("this-crate-definitely-does-not-exist-xyz", &DepSource::CratesIo);
+        assert!(v.is_none(), "nonexistent crate should return None");
+    }
+
+    #[test]
+    #[ignore] // requires network
+    fn fetch_pypi_nonexistent_returns_none() {
+        let v = fetch_latest_version("this-package-definitely-does-not-exist-xyz", &DepSource::PyPI);
+        assert!(v.is_none(), "nonexistent PyPI package should return None");
+    }
+
+    // ── resolve_with_network ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_with_network_high_confidence_skips_network() {
+        // serde is in KNOWN_CRATES — should never hit network
+        let resolver = PackageSourceResolver::without_context();
+        let result = resolver.resolve_with_network("serde");
+        assert_eq!(result.source, DepSource::CratesIo);
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.reason.contains("well-known"));
+    }
+
+    #[test]
+    fn resolve_with_network_medium_confidence_skips_network() {
+        // libfoo-sys hits name heuristic (-sys suffix) → Medium
+        let resolver = PackageSourceResolver::without_context();
+        let result = resolver.resolve_with_network("libfoo-sys");
+        assert_eq!(result.source, DepSource::CratesIo);
+        assert_eq!(result.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    #[ignore] // requires network
+    fn resolve_with_network_confirms_obscure_crate() {
+        // fakeit is a real crate on crates.io but NOT in our well-known list
+        let resolver = PackageSourceResolver::without_context();
+        let static_result = resolver.resolve("fakeit");
+        // Without network: should be Low confidence (not in known lists, no context)
+        assert_eq!(static_result.confidence, Confidence::Low,
+            "fakeit should not be in known lists, got: {}", static_result.reason);
+
+        // With network: should confirm it on crates.io
+        let network_result = resolver.resolve_with_network("fakeit");
+        assert_eq!(network_result.source, DepSource::CratesIo);
+        assert_eq!(network_result.confidence, Confidence::High);
+        assert!(network_result.reason.contains("confirmed"));
+    }
+
+    #[test]
+    #[ignore] // requires network
+    fn resolve_with_network_confirms_obscure_pypi_package() {
+        // codetiming is a real PyPI package but NOT in our well-known list,
+        // and has no heuristic-triggering prefix/suffix
+        let resolver = PackageSourceResolver::without_context();
+        let static_result = resolver.resolve("codetiming");
+        assert_eq!(static_result.confidence, Confidence::Low,
+            "codetiming should not be in known lists, got: {}", static_result.reason);
+
+        let network_result = resolver.resolve_with_network("codetiming");
+        // Should find it on one of the registries
+        assert_eq!(network_result.confidence, Confidence::High);
+        assert!(network_result.reason.contains("confirmed"));
+    }
+
+    #[test]
+    #[ignore] // requires network
+    fn resolve_with_network_nonexistent_stays_low() {
+        let resolver = PackageSourceResolver::without_context();
+        let result = resolver.resolve_with_network("zzz-this-pkg-does-not-exist-anywhere-xyz");
+        // Not on crates.io, not on PyPI, no context → Low confidence Registry
+        assert_eq!(result.confidence, Confidence::Low);
     }
 }
