@@ -289,6 +289,7 @@ impl NodeMetrics {
         Self {
             name,
             order,
+            min_tick_duration_ms: f64::MAX,
             ..Default::default()
         }
     }
@@ -377,7 +378,7 @@ impl NodeMetrics {
     pub(crate) fn reset_timing(&mut self) {
         self.avg_tick_duration_ms = 0.0;
         self.max_tick_duration_ms = 0.0;
-        self.min_tick_duration_ms = 0.0;
+        self.min_tick_duration_ms = f64::MAX;
         self.last_tick_duration_ms = 0.0;
     }
 
@@ -443,7 +444,7 @@ impl NodeInfo {
             state: NodeState::Uninitialized,
             previous_state: NodeState::Uninitialized,
             state_change_time: now,
-            metrics: NodeMetrics::default(),
+            metrics: NodeMetrics::new(String::new(), 0),
             creation_time: now,
             last_tick_time: None,
             tick_start_time: None,
@@ -531,9 +532,7 @@ impl NodeInfo {
             self.metrics.last_tick_duration_ms = duration_ms;
 
             // Update min/max duration
-            if self.metrics.min_tick_duration_ms == 0.0
-                || duration_ms < self.metrics.min_tick_duration_ms
-            {
+            if duration_ms < self.metrics.min_tick_duration_ms {
                 self.metrics.min_tick_duration_ms = duration_ms;
             }
             if duration_ms > self.metrics.max_tick_duration_ms {

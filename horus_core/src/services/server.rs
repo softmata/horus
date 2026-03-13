@@ -52,6 +52,7 @@ pub type RequestHandler<Req, Res> = Box<dyn Fn(Req) -> Result<Res, String> + Sen
 /// Dropping this handle shuts down the background polling thread.
 pub struct ServiceServer<S: Service> {
     _shutdown: Arc<AtomicBool>,
+    _thread: Option<thread::JoinHandle<()>>,
     _phantom: std::marker::PhantomData<S>,
     /// Service name for display.
     pub name: &'static str,
@@ -67,6 +68,9 @@ impl<S: Service> ServiceServer<S> {
 impl<S: Service> Drop for ServiceServer<S> {
     fn drop(&mut self) {
         self._shutdown.store(true, Ordering::SeqCst);
+        if let Some(handle) = self._thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -129,7 +133,7 @@ where
         let mut req_topic: Topic<ServiceRequest<S::Request>> = Topic::new(&req_topic_name)?;
         let res_topic: Topic<ServiceResponse<S::Response>> = Topic::new(&res_topic_name)?;
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name(format!("horus_srv_{}", S::name()))
             .spawn(move || {
                 run_server_loop(
@@ -149,6 +153,7 @@ where
 
         Ok(ServiceServer {
             _shutdown: shutdown,
+            _thread: Some(handle),
             _phantom: std::marker::PhantomData,
             name: S::name(),
         })

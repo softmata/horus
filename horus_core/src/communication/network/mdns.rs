@@ -517,6 +517,9 @@ impl Drop for Mdns {
         if let Some(ref full_name) = *registered {
             let _ = self.daemon.unregister(full_name);
         }
+        drop(registered);
+        // Shutdown the daemon to stop background threads
+        let _ = self.daemon.shutdown();
     }
 }
 

@@ -195,14 +195,14 @@ impl FrameRegistry {
 
     /// Unregister a frame (only dynamic frames can be unregistered)
     pub fn unregister(&self, name: &str) -> HorusResult<()> {
-        let id = {
-            let name_map = Self::read_lock(&self.name_to_id);
-            *name_map.get(name).ok_or_else(|| {
-                HorusError::NotFound(NotFoundError::Frame {
-                    name: name.to_string(),
-                })
-            })?
-        };
+        // Hold write lock for the entire operation to avoid TOCTOU with rename()
+        let mut name_map = Self::write_lock(&self.name_to_id);
+
+        let id = *name_map.get(name).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: name.to_string(),
+            })
+        })?;
 
         // Check if static
         if self.core.is_static(id) {
@@ -216,14 +216,11 @@ impl FrameRegistry {
         self.core.reset_slot(id);
 
         // Remove from mappings
-        {
-            let mut name_map = Self::write_lock(&self.name_to_id);
-            let mut id_map = Self::write_lock(&self.id_to_name);
+        let mut id_map = Self::write_lock(&self.id_to_name);
 
-            name_map.remove(name);
-            if (id as usize) < id_map.len() {
-                id_map[id as usize] = None;
-            }
+        name_map.remove(name);
+        if (id as usize) < id_map.len() {
+            id_map[id as usize] = None;
         }
 
         Ok(())
@@ -274,44 +271,46 @@ impl FrameRegistry {
             return Ok(id);
         }
 
-        // Slow path: create
-        self.register(name, parent_name)
+        // Slow path: create (another thread may have registered between lookup and here)
+        match self.register(name, parent_name) {
+            Ok(id) => Ok(id),
+            Err(HorusError::Resource(ResourceError::AlreadyExists { .. })) => {
+                // Lost the race — the frame now exists, look it up
+                self.lookup(name).ok_or_else(|| {
+                    HorusError::NotFound(NotFoundError::Frame {
+                        name: name.to_string(),
+                    })
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Rename a frame
     pub fn rename(&self, old_name: &str, new_name: &str) -> HorusResult<()> {
-        // Check new name doesn't exist
-        {
-            let name_map = Self::read_lock(&self.name_to_id);
-            if name_map.contains_key(new_name) {
-                return Err(HorusError::Resource(ResourceError::AlreadyExists {
-                    resource_type: "frame".to_string(),
-                    name: new_name.to_string(),
-                }));
-            }
+        // Atomically check + rename under a single write lock to avoid TOCTOU
+        let mut name_map = Self::write_lock(&self.name_to_id);
+
+        if name_map.contains_key(new_name) {
+            return Err(HorusError::Resource(ResourceError::AlreadyExists {
+                resource_type: "frame".to_string(),
+                name: new_name.to_string(),
+            }));
         }
 
-        // Get ID for old name
-        let id = {
-            let name_map = Self::read_lock(&self.name_to_id);
-            *name_map.get(old_name).ok_or_else(|| {
-                HorusError::NotFound(NotFoundError::Frame {
-                    name: old_name.to_string(),
-                })
-            })?
-        };
+        let id = *name_map.get(old_name).ok_or_else(|| {
+            HorusError::NotFound(NotFoundError::Frame {
+                name: old_name.to_string(),
+            })
+        })?;
 
-        // Update mappings
-        {
-            let mut name_map = Self::write_lock(&self.name_to_id);
-            let mut id_map = Self::write_lock(&self.id_to_name);
+        let mut id_map = Self::write_lock(&self.id_to_name);
 
-            name_map.remove(old_name);
-            name_map.insert(new_name.to_string(), id);
+        name_map.remove(old_name);
+        name_map.insert(new_name.to_string(), id);
 
-            if (id as usize) < id_map.len() {
-                id_map[id as usize] = Some(new_name.to_string());
-            }
+        if (id as usize) < id_map.len() {
+            id_map[id as usize] = Some(new_name.to_string());
         }
 
         Ok(())

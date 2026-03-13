@@ -134,14 +134,25 @@ pub unsafe fn from_dlpack(
                     i, x
                 )));
             }
-            strides.push(x as u64 * elem_size);
+            strides.push((x as u64).checked_mul(elem_size).ok_or_else(|| {
+                DLPackImportError::InvalidTensor(format!(
+                    "stride[{}] byte conversion overflows u64", i
+                ))
+            })?);
         }
         strides
     };
 
-    // Compute total size
-    let num_elements: u64 = shape.iter().product();
-    let size_bytes = num_elements * dtype.size_bytes() as u64;
+    // Compute total size (checked to detect overflow from adversarial shapes)
+    let num_elements: u64 = shape
+        .iter()
+        .try_fold(1u64, |acc, &dim| acc.checked_mul(dim))
+        .ok_or_else(|| {
+            DLPackImportError::InvalidTensor("shape product overflows u64".into())
+        })?;
+    let size_bytes = num_elements.checked_mul(dtype.size_bytes() as u64).ok_or_else(|| {
+        DLPackImportError::InvalidTensor("size_bytes overflows u64".into())
+    })?;
 
     // Compute actual data pointer (accounting for byte_offset)
     let data_ptr = (tensor.data as usize + tensor.byte_offset as usize) as u64;

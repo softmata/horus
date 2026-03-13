@@ -73,8 +73,10 @@ impl PyDepthImage {
             )));
         }
 
-        let height = shape_tuple[0] as u32;
-        let width = shape_tuple[1] as u32;
+        let height = u32::try_from(shape_tuple[0])
+            .map_err(|_| PyValueError::new_err(format!("Height {} exceeds u32::MAX", shape_tuple[0])))?;
+        let width = u32::try_from(shape_tuple[1])
+            .map_err(|_| PyValueError::new_err(format!("Width {} exceeds u32::MAX", shape_tuple[1])))?;
         let np = py.import("numpy")?;
 
         // Handle float64 by converting to float32

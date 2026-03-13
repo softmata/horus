@@ -420,10 +420,10 @@ impl ShmRegion {
 impl Drop for ShmRegion {
     fn drop(&mut self) {
         // Unmap memory
-        // SAFETY: self.ptr is a valid mmap'd pointer and self.size matches the mapped region;
+        // SAFETY: self.ptr is a valid mmap'd pointer and self._size matches the mapped region;
         // self.fd is a valid open file descriptor
         unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.size);
+            libc::munmap(self.ptr as *mut libc::c_void, self._size);
             libc::close(self.fd);
         }
 

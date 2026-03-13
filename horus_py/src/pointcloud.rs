@@ -47,8 +47,10 @@ impl PyPointCloud {
             )));
         }
 
-        let num_points = shape_tuple[0] as u32;
-        let fields = shape_tuple[1] as u32;
+        let num_points = u32::try_from(shape_tuple[0])
+            .map_err(|_| PyValueError::new_err(format!("Point count {} exceeds u32::MAX", shape_tuple[0])))?;
+        let fields = u32::try_from(shape_tuple[1])
+            .map_err(|_| PyValueError::new_err(format!("Field count {} exceeds u32::MAX", shape_tuple[1])))?;
         let dt = dlpack_utils::parse_dtype(&dtype_name)?;
 
         let mut pc = PointCloud::new(num_points, fields, dt)

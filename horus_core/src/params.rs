@@ -343,59 +343,79 @@ impl RuntimeParams {
         for rule in rules {
             match rule {
                 ValidationRule::MinValue(min) => {
-                    if let Some(num) = value.as_f64() {
-                        if num < *min {
-                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
-                                "Parameter '{}' value {} is below minimum {}",
-                                key, num, min
-                            ))));
-                        }
+                    let num = value.as_f64().ok_or_else(|| {
+                        HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' requires a numeric value for MinValue rule",
+                            key
+                        )))
+                    })?;
+                    if num < *min {
+                        return Err(HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' value {} is below minimum {}",
+                            key, num, min
+                        ))));
                     }
                 }
                 ValidationRule::MaxValue(max) => {
-                    if let Some(num) = value.as_f64() {
-                        if num > *max {
-                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
-                                "Parameter '{}' value {} exceeds maximum {}",
-                                key, num, max
-                            ))));
-                        }
+                    let num = value.as_f64().ok_or_else(|| {
+                        HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' requires a numeric value for MaxValue rule",
+                            key
+                        )))
+                    })?;
+                    if num > *max {
+                        return Err(HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' value {} exceeds maximum {}",
+                            key, num, max
+                        ))));
                     }
                 }
                 ValidationRule::Range(min, max) => {
-                    if let Some(num) = value.as_f64() {
-                        if num < *min || num > *max {
-                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
-                                "Parameter '{}' value {} is outside range [{}, {}]",
-                                key, num, min, max
-                            ))));
-                        }
+                    let num = value.as_f64().ok_or_else(|| {
+                        HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' requires a numeric value for Range rule",
+                            key
+                        )))
+                    })?;
+                    if num < *min || num > *max {
+                        return Err(HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' value {} is outside range [{}, {}]",
+                            key, num, min, max
+                        ))));
                     }
                 }
                 ValidationRule::RegexPattern(pattern) => {
-                    if let Some(s) = value.as_str() {
-                        let re = regex::Regex::new(pattern).map_err(|e| {
-                            HorusError::InvalidInput(ValidationError::Other(format!(
-                                "Invalid regex: {}",
-                                e
-                            )))
-                        })?;
-                        if !re.is_match(s) {
-                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
-                                "Parameter '{}' value '{}' does not match pattern '{}'",
-                                key, s, pattern
-                            ))));
-                        }
+                    let s = value.as_str().ok_or_else(|| {
+                        HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' requires a string value for RegexPattern rule",
+                            key
+                        )))
+                    })?;
+                    let re = regex::Regex::new(pattern).map_err(|e| {
+                        HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Invalid regex: {}",
+                            e
+                        )))
+                    })?;
+                    if !re.is_match(s) {
+                        return Err(HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' value '{}' does not match pattern '{}'",
+                            key, s, pattern
+                        ))));
                     }
                 }
                 ValidationRule::Enum(allowed) => {
-                    if let Some(s) = value.as_str() {
-                        if !allowed.contains(&s.to_string()) {
-                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
-                                "Parameter '{}' value '{}' not in allowed values: {:?}",
-                                key, s, allowed
-                            ))));
-                        }
+                    let s = value.as_str().ok_or_else(|| {
+                        HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' requires a string value for Enum rule",
+                            key
+                        )))
+                    })?;
+                    if !allowed.contains(&s.to_string()) {
+                        return Err(HorusError::InvalidInput(ValidationError::Other(format!(
+                            "Parameter '{}' value '{}' not in allowed values: {:?}",
+                            key, s, allowed
+                        ))));
                     }
                 }
                 ValidationRule::MinLength(min_len) => {

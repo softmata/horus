@@ -284,6 +284,9 @@ pub async fn params_import_handler(
         Ok(params_map) => {
             let mut count = 0;
             for (key, value) in params_map {
+                if !is_safe_path_component(&key) {
+                    continue;
+                }
                 if state.params.set(&key, value).is_ok() {
                     count += 1;
                 }

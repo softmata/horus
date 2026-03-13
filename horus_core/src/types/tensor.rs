@@ -184,13 +184,13 @@ impl Tensor {
     /// Get the shape as a slice
     #[inline]
     pub fn shape(&self) -> &[u64] {
-        &self.shape[..self.ndim as usize]
+        &self.shape[..(self.ndim as usize).min(MAX_TENSOR_DIMS)]
     }
 
     /// Get the strides as a slice
     #[inline]
     pub fn strides(&self) -> &[u64] {
-        &self.strides[..self.ndim as usize]
+        &self.strides[..(self.ndim as usize).min(MAX_TENSOR_DIMS)]
     }
 
     /// Get total number of elements
@@ -206,7 +206,7 @@ impl Tensor {
         }
 
         let mut expected_stride = self.dtype.element_size() as u64;
-        for i in (0..self.ndim as usize).rev() {
+        for i in (0..(self.ndim as usize).min(MAX_TENSOR_DIMS)).rev() {
             if self.strides[i] != expected_stride {
                 return false;
             }
@@ -330,7 +330,10 @@ impl<'de> Deserialize<'de> for Tensor {
                         "offset" => tensor.offset = map.next_value()?,
                         "size" => tensor.size = map.next_value()?,
                         "dtype" => tensor.dtype = map.next_value()?,
-                        "ndim" => tensor.ndim = map.next_value()?,
+                        "ndim" => {
+                            let raw: u8 = map.next_value()?;
+                            tensor.ndim = raw.min(MAX_TENSOR_DIMS as u8);
+                        }
                         "device" => {
                             let device: Device = map.next_value()?;
                             tensor.device_type = device.device_type;
