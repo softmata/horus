@@ -16,7 +16,11 @@
 //! 4. **Shutdown** - `shutdown()` is called to clean up resources
 
 #[doc(hidden)]
+pub mod clock;
+#[doc(hidden)]
 pub mod discovery;
+#[doc(hidden)]
+pub mod tick_context;
 pub mod duration_ext;
 #[doc(hidden)]
 pub mod hlog;

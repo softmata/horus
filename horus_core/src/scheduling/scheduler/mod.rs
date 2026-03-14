@@ -1,4 +1,5 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
+use crate::core::tick_context::{clear_tick_context, set_tick_context};
 use crate::core::{announce_started, announce_stopped, DurationExt, Node, NodeInfo, NodePresence};
 use crate::error::{HorusContext, HorusResult};
 use crate::memory::platform::shm_control_dir;
@@ -125,6 +126,8 @@ pub(crate) struct TickState {
     pub period: Duration,
     pub current: u64,
     pub last_instant: Instant,
+    /// Clock-based last instant for timing measurements (uses scheduler clock).
+    pub last_clock_instant: crate::core::clock::ClockInstant,
 }
 
 /// Monitoring features: safety, blackbox flight recorder, telemetry, profiling.
@@ -139,6 +142,8 @@ pub(crate) struct MonitorState {
     pub telemetry: Option<super::telemetry::TelemetryManager>,
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub last_snapshot: Instant,
+    /// Clock-based snapshot timing (uses scheduler clock for deterministic mode).
+    pub last_snapshot_clock: crate::core::clock::ClockInstant,
     pub working_dir: PathBuf,
     /// Pre-allocated buffer for `check_watchdogs()`.
     ///
@@ -175,6 +180,10 @@ pub struct Scheduler {
     pub(super) monitor: MonitorState,
     pub(super) replay: Option<ReplayState>,
     pub(super) recording: Option<RecordingState>,
+
+    /// Framework clock — WallClock (default), SimClock (.deterministic), ReplayClock (.replay_from).
+    /// All internal timing operations use this clock. Users access it via horus::now() etc.
+    pub(super) clock: Arc<dyn crate::core::clock::Clock>,
 
     /// Deferred configuration applied once at `run()` time via `finalize_config()`.
     /// Builder methods mutate this; `finalize_config()` applies it before the tick loop.
@@ -238,7 +247,9 @@ impl Scheduler {
                 period,
                 current: 0,
                 last_instant: now,
+                last_clock_instant: crate::core::clock::ClockInstant::default(),
             },
+            clock: Arc::new(crate::core::clock::WallClock::new()),
             rt: RtState {
                 capabilities: Some(caps),
                 degradations: Vec::new(),
@@ -249,6 +260,7 @@ impl Scheduler {
                 telemetry: None,
                 profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
                 last_snapshot: now,
+                last_snapshot_clock: crate::core::clock::ClockInstant::default(),
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
                 watchdog_expired_buf: Vec::new(),
                 watchdog_graduated_buf: Vec::new(),
@@ -302,6 +314,9 @@ impl Scheduler {
     /// ```
     pub fn deterministic(mut self, enabled: bool) -> Self {
         self.pending_config.timing.deterministic_order = enabled;
+        if enabled {
+            self.clock = Arc::new(crate::core::clock::SimClock::new());
+        }
         self
     }
 
@@ -2844,9 +2859,27 @@ impl Scheduler {
                     let tick_number = context.metrics().total_ticks();
                     set_node_context(&registered.name, tick_number);
 
+                    // Set tick context for horus::now(), horus::dt(), horus::rng() etc.
+                    let clock_ref: &dyn crate::core::clock::Clock = &*self.clock;
+                    let node_dt = registered.rate_hz
+                        .map(|hz| Duration::from_secs_f64(1.0 / hz))
+                        .unwrap_or(self.tick.period);
+                    let sim_time = self.clock.elapsed();
+                    let tick_start_ci = self.clock.now();
+                    set_tick_context(
+                        &registered.name,
+                        tick_number,
+                        clock_ref,
+                        node_dt,
+                        sim_time,
+                        tick_start_ci,
+                        registered.tick_budget,
+                    );
+
                     // Execute node tick via NodeRunner (timing + panic isolation)
                     let tr = super::primitives::NodeRunner::run_tick(&mut registered.node);
 
+                    clear_tick_context();
                     clear_node_context();
                     (tr.tick_start, tr.duration, tr.result)
                 } else {

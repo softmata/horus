@@ -143,6 +143,11 @@
 //! | `PointCloud` | Pool-backed 3D points (zero-copy) |
 //! | `DepthImage` | Pool-backed depth map (zero-copy) |
 
+/// Framework time API — `horus::now()`, `horus::dt()`, `horus::rng()`, etc.
+///
+/// See [`time`] module documentation for details.
+pub mod time;
+
 // === Internal plumbing (hidden from docs, used by horus_py / macro-generated code / horus_manager) ===
 #[doc(hidden)]
 pub use horus_core;
@@ -231,6 +236,9 @@ pub mod prelude {
         MemoryError, NodeError, NotFoundError, ParseError, ResourceError, Result, RetryConfig,
         SerializationError, Severity, TimeoutError, TransformError, ValidationError,
     };
+
+    // === Time API ===
+    pub use crate::time::TimeStamp;
 
     // === Macros ===
     pub use horus_core::action;

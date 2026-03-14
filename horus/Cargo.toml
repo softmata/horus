@@ -16,6 +16,7 @@ horus_macros = { path = "../horus_macros", optional = true }
 horus_library = { path = "../horus_library" }
 # Re-export commonly used dependencies
 serde = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
 
 [features]
 # ============================================================================
