@@ -1760,8 +1760,40 @@ impl Scheduler {
                         Vec::new()
                     };
 
-                    rt_executor = Some(super::rt_executor::RtExecutor::start(
-                        groups.rt_nodes,
+                    // Split RT nodes into independent chains for parallel execution.
+                    // If a dependency graph is available, use it. Otherwise, single chain.
+                    let rt_chains = if let Some(ref graph) = self.dependency_graph {
+                        let rt_indices: Vec<usize> = (0..groups.rt_nodes.len()).collect();
+                        let chain_groups = graph.independent_chains(&rt_indices);
+                        if chain_groups.len() > 1 {
+                            print_line(&format!(
+                                "RT executor: {} independent chains → {} threads",
+                                chain_groups.len(),
+                                chain_groups.len()
+                            ));
+                            // Distribute nodes into chain groups
+                            let mut chains: Vec<Vec<super::types::RegisteredNode>> =
+                                chain_groups.iter().map(|_| Vec::new()).collect();
+                            let mut rt_nodes = groups.rt_nodes;
+                            // Reverse so we can pop from the end
+                            rt_nodes.reverse();
+                            for (chain_idx, group) in chain_groups.iter().enumerate() {
+                                for _ in group {
+                                    if let Some(node) = rt_nodes.pop() {
+                                        chains[chain_idx].push(node);
+                                    }
+                                }
+                            }
+                            chains
+                        } else {
+                            vec![groups.rt_nodes]
+                        }
+                    } else {
+                        vec![groups.rt_nodes]
+                    };
+
+                    rt_executor = Some(super::rt_executor::RtExecutor::start_pool(
+                        rt_chains,
                         self.running.clone(),
                         self.tick.period,
                         shared_monitors.clone(),

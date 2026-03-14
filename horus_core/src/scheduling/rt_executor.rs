@@ -33,10 +33,13 @@ use crate::core::DurationExt;
 
 /// Dedicated RT thread executor.
 ///
-/// Owns RT nodes and ticks them on an isolated OS thread at the rate of
+/// Owns RT nodes and ticks them on isolated OS thread(s) at the rate of
 /// the fastest node. Shutdown is coordinated via the shared `running` flag.
+///
+/// Supports multiple RT threads for independent node chains — each chain
+/// gets its own thread with optional CPU pinning and priority.
 pub(crate) struct RtExecutor {
-    handle: Option<std::thread::JoinHandle<Vec<RegisteredNode>>>,
+    handles: Vec<std::thread::JoinHandle<Vec<RegisteredNode>>>,
 }
 
 impl RtExecutor {
@@ -54,41 +57,86 @@ impl RtExecutor {
         monitors: SharedMonitors,
         rt_cpus: Vec<usize>,
     ) -> Self {
-        // Sort by priority before handing off to the thread
-        nodes.sort_by_key(|n| n.priority);
+        // Single chain — all nodes on one thread (original behavior)
+        Self::start_pool(vec![nodes], running, fallback_period, monitors, rt_cpus)
+    }
 
-        // Determine tick period from the fastest RT node rate
-        let max_rate_hz = nodes
-            .iter()
-            .filter_map(|n| n.rate_hz)
-            .fold(0.0_f64, f64::max);
+    /// Start the RT executor with multiple independent chains on separate threads.
+    ///
+    /// Each chain gets its own dedicated RT thread. Independent chains run in
+    /// parallel — a slow node in chain 1 cannot block chain 2.
+    ///
+    /// Falls back to single thread when given 1 chain.
+    pub fn start_pool(
+        chains: Vec<Vec<RegisteredNode>>,
+        running: Arc<AtomicBool>,
+        fallback_period: Duration,
+        monitors: SharedMonitors,
+        rt_cpus: Vec<usize>,
+    ) -> Self {
+        let num_chains = chains.len();
+        let mut handles = Vec::with_capacity(num_chains);
 
-        let tick_period = if max_rate_hz > 0.0 {
-            max_rate_hz.hz().period()
-        } else {
-            fallback_period
-        };
+        for (chain_idx, mut nodes) in chains.into_iter().enumerate() {
+            // Sort by priority before handing off to the thread
+            nodes.sort_by_key(|n| n.priority);
 
-        let handle = std::thread::Builder::new()
-            .name("horus-rt".to_string())
-            .spawn(move || Self::rt_thread_main(nodes, running, tick_period, monitors, rt_cpus))
-            .expect("Failed to spawn RT thread");
+            // Determine tick period from the fastest node in this chain
+            let max_rate_hz = nodes
+                .iter()
+                .filter_map(|n| n.rate_hz)
+                .fold(0.0_f64, f64::max);
 
-        Self {
-            handle: Some(handle),
+            let tick_period = if max_rate_hz > 0.0 {
+                max_rate_hz.hz().period()
+            } else {
+                fallback_period
+            };
+
+            // Assign CPU core: round-robin across available RT CPUs
+            let thread_cpus = if !rt_cpus.is_empty() {
+                vec![rt_cpus[chain_idx % rt_cpus.len()]]
+            } else {
+                vec![]
+            };
+
+            let thread_name = if num_chains == 1 {
+                "horus-rt".to_string()
+            } else {
+                format!("horus-rt-{}", chain_idx)
+            };
+
+            let running = running.clone();
+            let monitors = monitors.clone();
+
+            let handle = std::thread::Builder::new()
+                .name(thread_name)
+                .spawn(move || {
+                    Self::rt_thread_main(nodes, running, tick_period, monitors, thread_cpus)
+                })
+                .expect("Failed to spawn RT thread");
+
+            handles.push(handle);
         }
+
+        Self { handles }
     }
 
     /// Stop the RT executor and reclaim its nodes.
     ///
     /// The caller should have already set `running` to `false` before calling this.
-    /// This method blocks until the RT thread finishes and returns the nodes.
+    /// This method blocks until all RT threads finish and returns the collected nodes.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
-        self.handle
-            .take()
-            .expect("RT thread handle already consumed")
-            .join()
-            .expect("RT thread panicked")
+        let mut all_nodes = Vec::new();
+        for handle in std::mem::take(&mut self.handles) {
+            match handle.join() {
+                Ok(nodes) => all_nodes.extend(nodes),
+                Err(_) => {
+                    print_line("[RT-thread] Thread panicked during stop");
+                }
+            }
+        }
+        all_nodes
     }
 
     /// Process a single node tick with all infrastructure (stats, profiler, budget, deadline).
@@ -368,7 +416,7 @@ impl RtExecutor {
 
 impl Drop for RtExecutor {
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
+        for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
     }
