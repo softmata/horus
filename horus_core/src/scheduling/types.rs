@@ -119,6 +119,9 @@ mod execution_class_tests {
             miss_policy: Miss::Warn,
             execution_class: class,
             health_state: AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         }
     }
 
@@ -362,6 +365,12 @@ pub(crate) struct RegisteredNode {
     pub(crate) execution_class: ExecutionClass,
     /// Per-node health state — lock-free AtomicU8 for zero-contention reads.
     pub(crate) health_state: AtomicHealthState,
+    /// OS thread priority (SCHED_FIFO 1-99) for this node's RT thread.
+    pub(crate) os_priority: Option<i32>,
+    /// CPU core to pin this node's RT thread to.
+    pub(crate) pinned_core: Option<usize>,
+    /// Per-node watchdog timeout (overrides scheduler global).
+    pub(crate) node_watchdog: Option<Duration>,
 }
 
 /// Shared monitoring references passed to executor threads.

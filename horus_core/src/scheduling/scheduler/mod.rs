@@ -928,16 +928,23 @@ impl Scheduler {
         if watchdog_active || has_rt_nodes {
             let monitor = SafetyMonitor::new(rt.max_deadline_misses);
 
+            let global_watchdog_timeout = rt.watchdog_timeout_ms.ms();
+
             for registered in self.nodes.iter() {
+                // Per-node watchdog: use node-specific timeout if set, otherwise global
+                let node_timeout = registered.node_watchdog.unwrap_or(global_watchdog_timeout);
+
                 if registered.is_rt_node {
-                    if watchdog_active {
-                        let watchdog_timeout = rt.watchdog_timeout_ms.ms();
-                        monitor.add_critical_node(registered.name.to_string(), watchdog_timeout);
+                    if watchdog_active || registered.node_watchdog.is_some() {
+                        monitor.add_critical_node(registered.name.to_string(), node_timeout);
                     }
 
                     if let Some(budget) = registered.tick_budget {
                         monitor.set_tick_budget(registered.name.to_string(), budget);
                     }
+                } else if registered.node_watchdog.is_some() {
+                    // Non-RT node with explicit per-node watchdog
+                    monitor.add_critical_node(registered.name.to_string(), node_timeout);
                 }
             }
 
@@ -1341,6 +1348,9 @@ impl Scheduler {
             miss_policy,
             execution_class,
             health_state: crate::scheduling::types::AtomicHealthState::default(),
+            os_priority: config.os_priority,
+            pinned_core: config.pinned_core,
+            node_watchdog: config.node_watchdog,
         });
 
         if let Some(rate) = node_rate {

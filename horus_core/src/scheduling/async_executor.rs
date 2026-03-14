@@ -338,6 +338,9 @@ mod tests {
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::AsyncIo,
             health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         }
     }
 
@@ -365,6 +368,9 @@ mod tests {
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::AsyncIo,
             health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         }
     }
 

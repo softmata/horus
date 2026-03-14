@@ -353,6 +353,9 @@ mod tests {
             miss_policy: Miss::Warn,
             execution_class: ExecutionClass::BestEffort,
             health_state: AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         }
     }
 

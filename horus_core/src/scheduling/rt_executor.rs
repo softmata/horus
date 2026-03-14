@@ -289,8 +289,14 @@ impl RtExecutor {
         monitors: SharedMonitors,
         rt_cpus: Vec<usize>,
     ) -> Vec<RegisteredNode> {
+        // Use per-node priority if any node in this chain has one, otherwise default 80
+        let thread_priority = nodes.iter()
+            .filter_map(|n| n.os_priority)
+            .max()
+            .unwrap_or(80);
+
         // Try to elevate to SCHED_FIFO (best-effort — degrades gracefully)
-        match super::rt::set_realtime_priority(80) {
+        match super::rt::set_realtime_priority(thread_priority) {
             Ok(()) => {}
             Err(e) => {
                 if monitors.verbose {
@@ -302,7 +308,18 @@ impl RtExecutor {
             }
         }
 
+        // Per-node core override: if any node in this chain specifies .core(), use that
+        let effective_cpus = {
+            let node_core = nodes.iter().filter_map(|n| n.pinned_core).next();
+            if let Some(core) = node_core {
+                vec![core]
+            } else {
+                rt_cpus.clone()
+            }
+        };
+
         // Pin to recommended RT CPU(s) to avoid cache thrashing and timer interrupts
+        let rt_cpus = effective_cpus;
         if !rt_cpus.is_empty() {
             match super::rt::set_thread_affinity(&rt_cpus) {
                 Ok(()) => {
@@ -476,6 +493,9 @@ mod tests {
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
             health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         }
     }
 
@@ -587,6 +607,9 @@ mod tests {
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
             health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         };
 
         let running = Arc::new(AtomicBool::new(true));
@@ -838,6 +861,9 @@ mod tests {
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
             health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         };
 
         let normal_registered = make_rt_registered("survivor_node", normal_count.clone());
@@ -940,6 +966,9 @@ mod tests {
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
             health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         };
 
         let normal_registered = make_rt_registered("quiet_normal", normal_count.clone());
