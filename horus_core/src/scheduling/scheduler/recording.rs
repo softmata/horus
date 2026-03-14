@@ -117,6 +117,24 @@ impl Scheduler {
         let mut scheduler = Self::new();
         scheduler.scheduler_name = format!("Replay({})", scheduler_recording.session_name);
 
+        // Use ReplayClock with timestamps from the recording.
+        // Extract tick timestamps from the recording metadata.
+        let mut timestamps_ns: Vec<u64> = Vec::new();
+        let total_ticks = scheduler_recording.total_ticks;
+        if total_ticks > 0 {
+            // If we have execution_order, create evenly-spaced timestamps
+            // based on the recorded tick count. Each tick gets a 10ms slot.
+            // (Real timestamps from node snapshots would be better, but
+            //  requires loading all node recordings first.)
+            let period_ns = 10_000_000u64; // 10ms default
+            for i in 0..total_ticks {
+                timestamps_ns.push(i * period_ns);
+            }
+        }
+        scheduler.clock = Arc::new(crate::core::clock::ReplayClock::new(timestamps_ns));
+        // Enable deterministic ordering for replay
+        scheduler.pending_config.timing.deterministic_order = true;
+
         scheduler.replay = Some(ReplayState {
             nodes: HashMap::new(),
             overrides: HashMap::new(),
