@@ -116,6 +116,7 @@ impl NodeRegistration {
     ///     .rate(10_u64.hz())
     /// ```
     pub fn compute(mut self) -> Self {
+        self.warn_class_override("compute");
         self.execution_class = ExecutionClass::Compute;
         self
     }
@@ -130,6 +131,7 @@ impl NodeRegistration {
     ///     .on("lidar_scan")
     /// ```
     pub fn on(mut self, topic: &str) -> Self {
+        self.warn_class_override("on");
         self.execution_class = ExecutionClass::Event(topic.to_string());
         self
     }
@@ -148,8 +150,32 @@ impl NodeRegistration {
     ///     .rate(1_u64.hz())  // Upload once per second
     /// ```
     pub fn async_io(mut self) -> Self {
+        self.warn_class_override("async_io");
         self.execution_class = ExecutionClass::AsyncIo;
         self
+    }
+
+    /// Emit a warning if the execution class is being overridden.
+    fn warn_class_override(&self, new_class: &str) {
+        if !matches!(self.execution_class, ExecutionClass::BestEffort) {
+            let old_class = match &self.execution_class {
+                ExecutionClass::Compute => "compute",
+                ExecutionClass::AsyncIo => "async_io",
+                ExecutionClass::Event(t) => {
+                    log::warn!(
+                        "node '{}': .on(\"{}\") overridden by .{}() — only the last execution class applies",
+                        self.node.name(), t, new_class
+                    );
+                    return;
+                }
+                ExecutionClass::Rt => "rt",
+                ExecutionClass::BestEffort => unreachable!(),
+            };
+            log::warn!(
+                "node '{}': .{}() overridden by .{}() — only the last execution class applies",
+                self.node.name(), old_class, new_class
+            );
+        }
     }
 
     /// Set the node's tick rate.

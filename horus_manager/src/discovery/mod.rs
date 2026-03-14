@@ -31,7 +31,8 @@
 pub(crate) mod nodes;
 pub(crate) mod topics;
 
-use horus_core::core::{HealthStatus, NetworkStatus};
+use horus_core::core::HealthStatus;
+use horus_core::communication::NetworkStatus;
 use horus_core::error::HorusResult;
 use horus_core::memory::{shm_network_dir, shm_topics_dir};
 use horus_core::NodePresence;

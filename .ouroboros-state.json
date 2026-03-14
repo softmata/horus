@@ -1,5 +1,7 @@
 {
   "project": "horus",
+  "version": 3,
+  "total_planes": 38,
   "cycle": 6,
   "current_plane": 1,
   "plane_status": {
@@ -29,7 +31,18 @@
     "24": { "status": "clean", "cycle": 5 },
     "25": { "status": "clean", "cycle": 5 },
     "26": { "status": "clean", "cycle": 5 },
-    "27": { "status": "clean", "cycle": 5 }
+    "27": { "status": "clean", "cycle": 5 },
+    "28": { "status": "pending", "cycle": 0 },
+    "29": { "status": "pending", "cycle": 0 },
+    "30": { "status": "pending", "cycle": 0 },
+    "31": { "status": "pending", "cycle": 0 },
+    "32": { "status": "pending", "cycle": 0 },
+    "33": { "status": "pending", "cycle": 0 },
+    "34": { "status": "pending", "cycle": 0 },
+    "35": { "status": "pending", "cycle": 0 },
+    "36": { "status": "pending", "cycle": 0 },
+    "37": { "status": "pending", "cycle": 0 },
+    "38": { "status": "pending", "cycle": 0 }
   },
   "total_issues_fixed": 61,
   "false_positives_rejected": 205

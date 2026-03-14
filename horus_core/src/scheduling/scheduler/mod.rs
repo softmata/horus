@@ -264,6 +264,67 @@ impl Scheduler {
     // BUILDER METHODS — composable, chainable, explicit
     // ========================================================================
 
+    /// Set the scheduler name (used in status reports, crash logs, and SHM registry).
+    ///
+    /// Default: `"Scheduler"`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .name("motor_control")
+    ///     .tick_rate(1000_u64.hz());
+    /// ```
+    pub fn name(mut self, name: &str) -> Self {
+        self.scheduler_name = name.to_string();
+        self
+    }
+
+    /// Enable deterministic execution order.
+    ///
+    /// When enabled, **all** nodes run sequentially on the main thread —
+    /// no executor threads are spawned. This guarantees identical execution
+    /// order across runs, which is essential for simulation replay and
+    /// deterministic testing with `tick_once()`.
+    ///
+    /// Default: `false`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::new()
+    ///     .deterministic(true)
+    ///     .tick_rate(100_u64.hz());
+    ///
+    /// scheduler.add(Physics).order(0).rate(100_u64.hz()).build()?;
+    /// scheduler.add(Controller).order(1).rate(100_u64.hz()).build()?;
+    ///
+    /// // Every tick_once() executes Physics then Controller, always
+    /// scheduler.tick_once()?;
+    /// ```
+    pub fn deterministic(mut self, enabled: bool) -> Self {
+        self.pending_config.timing.deterministic_order = enabled;
+        self
+    }
+
+    /// Pin the scheduler to specific CPU cores.
+    ///
+    /// Restricts the scheduler's main thread and executor threads to the
+    /// specified cores. On NUMA systems, pinning to cores on the same node
+    /// reduces cross-node memory access latency.
+    ///
+    /// Default: all cores (no pinning).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .cores(&[2, 3])            // pin to cores 2 and 3
+    ///     .prefer_rt()
+    ///     .tick_rate(1000_u64.hz());
+    /// ```
+    pub fn cores(mut self, cpu_ids: &[usize]) -> Self {
+        self.pending_config.resources.cpu_cores = Some(cpu_ids.to_vec());
+        self
+    }
+
     /// Try to enable OS-level RT features (mlockall, SCHED_FIFO).
     ///
     /// If the system lacks RT capabilities, logs degradation warnings and
@@ -431,7 +492,24 @@ impl Scheduler {
         self
     }
 
-    // Telemetry: set HORUS_TELEMETRY_ENDPOINT env var.
+    /// Set the telemetry export endpoint.
+    ///
+    /// Telemetry data (node timing, deadline misses, budget violations) is
+    /// exported to the specified endpoint. Supports UDP and file URIs.
+    ///
+    /// Can also be set via `HORUS_TELEMETRY_ENDPOINT` env var (builder takes precedence).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .telemetry("udp://localhost:9999")
+    ///     .tick_rate(100_u64.hz());
+    /// ```
+    pub fn telemetry(mut self, endpoint: &str) -> Self {
+        self.pending_config.monitoring.telemetry_endpoint = Some(endpoint.to_string());
+        self
+    }
+
     // Profiling: always on (negligible overhead).
     // Budget enforcement + deadline monitoring: always on when nodes have .rate() set.
 
@@ -539,16 +617,7 @@ impl Scheduler {
 
     /// Get the scheduler name.
     ///
-    /// Returns the name assigned to this scheduler instance.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::builder()
-    ///     .name("MyScheduler")
-    ///     .build()?;
-    /// assert_eq!(scheduler.scheduler_name(), "MyScheduler");
-    /// ```
-    #[doc(hidden)]
+    /// Returns the name assigned via `.name()` (default: `"Scheduler"`).
     pub fn scheduler_name(&self) -> &str {
         &self.scheduler_name
     }

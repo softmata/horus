@@ -162,6 +162,22 @@ impl PyNodeInfo {
         Ok(info.get_custom_data(&key).cloned())
     }
 
+    fn remove_custom_data(&self, key: String) -> PyResult<Option<String>> {
+        let mut info = self
+            .inner
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+        Ok(info.remove_custom_data(&key))
+    }
+
+    fn custom_data_keys(&self) -> PyResult<Vec<String>> {
+        let info = self
+            .inner
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+        Ok(info.custom_data_keys().into_iter().map(|s| s.to_string()).collect())
+    }
+
     /// Get total tick count
     fn tick_count(&self) -> PyResult<u64> {
         let info = self

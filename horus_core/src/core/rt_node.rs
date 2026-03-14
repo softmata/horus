@@ -89,7 +89,7 @@ impl BudgetViolation {
 /// stats.record_execution(105_u64.us());
 /// stats.record_execution(100_u64.us());
 ///
-/// assert_eq!(stats.total_ticks(), 3);
+/// assert_eq!(stats.sampled_ticks(), 3);
 /// assert_eq!(stats.worst_execution(), 105_u64.us());
 /// println!("{}", stats.summary());
 /// ```
@@ -101,7 +101,7 @@ pub struct RtStats {
     last_execution: Duration,
     jitter_us: f64,
     avg_execution_us: f64,
-    total_ticks: u64,
+    sampled_ticks: u64,
 }
 
 impl RtStats {
@@ -135,9 +135,9 @@ impl RtStats {
         self.avg_execution_us
     }
 
-    /// Total ticks recorded.
-    pub fn total_ticks(&self) -> u64 {
-        self.total_ticks
+    /// Sampled ticks recorded (ticks where `record_execution()` was called).
+    pub fn sampled_ticks(&self) -> u64 {
+        self.sampled_ticks
     }
 
     /// Record a budget violation.
@@ -158,10 +158,10 @@ impl RtStats {
         self.last_execution = duration;
 
         // Increment tick count
-        self.total_ticks += 1;
+        self.sampled_ticks += 1;
 
         // Calculate moving average (EMA with alpha=0.1)
-        if self.total_ticks == 1 {
+        if self.sampled_ticks == 1 {
             self.avg_execution_us = duration_us;
             self.jitter_us = 0.0;
         } else {
@@ -184,7 +184,7 @@ impl RtStats {
     pub fn summary(&self) -> String {
         format!(
             "Ticks: {}, Worst: {:.1}μs, Avg: {:.1}μs, Jitter: {:.1}μs, Deadline misses: {}, Budget violations: {}",
-            self.total_ticks,
+            self.sampled_ticks,
             self.worst_execution.as_micros(),
             self.avg_execution_us,
             self.jitter_us,
@@ -234,7 +234,7 @@ mod tests {
         let mut stats = RtStats::default();
         stats.record_execution(100_u64.us());
 
-        assert_eq!(stats.total_ticks(), 1);
+        assert_eq!(stats.sampled_ticks(), 1);
         assert!((stats.avg_execution_us() - 100.0).abs() < 1e-6);
         assert!((stats.jitter_us() - 0.0).abs() < 1e-6);
         assert_eq!(stats.worst_execution(), 100_u64.us());
@@ -281,7 +281,7 @@ mod tests {
             stats.jitter_us(),
             expected_jitter
         );
-        assert_eq!(stats.total_ticks(), 10);
+        assert_eq!(stats.sampled_ticks(), 10);
     }
 
     /// Constant execution time → jitter converges to zero.

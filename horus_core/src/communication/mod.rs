@@ -43,10 +43,12 @@
 
 mod macros;
 pub mod network;
+pub mod network_status;
 pub mod pod;
 pub mod topic;
 
 // Re-export commonly used types for convenience
+pub use network_status::NetworkStatus;
 pub use pod::PodMessage;
 pub use topic::{SendBlockingError, Topic, TopicDescriptor, TopicMessage};
 

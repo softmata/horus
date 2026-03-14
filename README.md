@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">HORUS</h1>
-  <p align="center"><strong>The robotics framework for the AI era.</strong></p>
+  <p align="center"><strong>A deterministic real-time robotics framework in Rust.</strong></p>
 </p>
 
 <p align="center">
@@ -8,7 +8,6 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust" alt="Rust"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License"></a>
-  <a href="https://docs.horusrobotics.dev/getting-started/installation"><img src="https://img.shields.io/endpoint?url=https://telemetry.horusrobotics.dev/count/badge" alt="Installations"></a>
   <a href="https://discord.gg/hEZC3ev2Nf"><img src="https://img.shields.io/badge/Discord-Join-7289da?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
@@ -21,100 +20,17 @@
 
 ---
 
-HORUS is a robotics framework built in Rust. Sub-microsecond IPC, zero-copy tensor sharing, first-class Python bindings, and a deterministic scheduler that runs perception-to-action pipelines at 100kHz. Write your control loops in Rust, your ML in Python, and let them talk at nanosecond speed.
+HORUS is a robotics framework written in Rust. It replaces the DDS middleware layer with mmap-backed ring buffers and seqlock synchronization, achieving sub-microsecond cross-process IPC. Write control loops in Rust, ML inference in Python — they communicate over shared memory with zero serialization.
+
+> **Status:** HORUS is in active development (v0.1.9). The core API is stabilizing but may have breaking changes between minor versions.
 
 ```bash
 horus new my_robot && cd my_robot && horus run
 ```
 
-## 3ns IPC. Not a typo.
+## How It Works
 
-HORUS doesn't use a middleware layer. Nodes on the same thread share data in **3 nanoseconds**. Cross-process hits **50-167ns**. For comparison, ROS2 DDS starts at 50-500 *micro*seconds.
-
-| Scenario | HORUS | ROS2 |
-|----------|-------|------|
-| Same thread | ~3 ns | N/A |
-| Same process | 18-36 ns | ~50 us |
-| Cross process | 50-167 ns | 50-500 us |
-| Large data (images) | Zero-copy (168-byte descriptor) | Full serialization |
-
-The secret: mmap-backed ring buffers with seqlock synchronization. No serialization, no copies, no allocations on the hot path.
-
-## Built for AI Robotics
-
-Most robotics frameworks were designed before the deep learning era. HORUS was built knowing that modern robots run neural networks.
-
-**Zero-copy tensors** — Images, point clouds, and depth maps live in shared memory pools. Only a 168-byte descriptor crosses IPC. Your camera node and your ML inference node see the exact same memory.
-
-```rust
-// Camera node: write image to shared memory
-let mut img = Image::new(640, 480, ImageEncoding::Rgb8)?;
-topic.send(&img);  // sends 168 bytes, not 921,600
-
-// ML node: read it — zero copies
-if let Some(frame) = topic.recv() {
-    let pixels = frame.data();  // direct pointer to shared memory
-}
-```
-
-**DLPack protocol** — Hand tensors directly to PyTorch, JAX, or TensorFlow without copying. The standard used by the entire ML ecosystem.
-
-**GPU-aware scheduling** — The `AsyncIo` execution class runs inference on a separate thread pool. Your neural network never blocks your 1kHz control loop.
-
-```rust
-scheduler.add(camera).order(0).build();                      // capture
-scheduler.add(detector).order(1).async_io().build();         // GPU inference (non-blocking)
-scheduler.add(controller).order(2).budget(200.us()).build(); // real-time control
-```
-
-**ML message types** — `Detection`, `BoundingBox2D`, `SegmentationMask` are built-in. No custom serialization needed.
-
-**Python for ML, Rust for control** — Run PyTorch inference in a Python node, feed results to a Rust control node at 1kHz. Same shared memory, same topics.
-
-```python
-from horus import Node, Topic, Scheduler
-
-class Detector(Node):
-    def __init__(self):
-        super().__init__("detector")
-        self.camera = Topic("camera.rgb")
-        self.detections = Topic("detections")
-
-    def tick(self, info=None):
-        if frame := self.camera.recv():
-            result = model(frame)           # PyTorch inference
-            self.detections.send(result)
-
-scheduler = Scheduler()
-scheduler.node(Detector()).rate(30.hz()).build()
-scheduler.run()
-```
-
-## Deterministic by Default
-
-The scheduler guarantees execution order. Set `.order(0)` on your sensor, `.order(1)` on your controller — sensors always run first. No race conditions, no surprise reorderings.
-
-Five execution classes let you put each node where it belongs:
-
-| Class | What it does | Use case |
-|-------|-------------|----------|
-| **RT** | Spin-wait, auto-detected from budget/deadline | Motor control, safety |
-| **Compute** | Parallel via crossbeam | Path planning, SLAM |
-| **Event** | Triggers on topic data | Alert handlers |
-| **AsyncIo** | Separate thread pool | GPU inference, network |
-| **BestEffort** | Sequential, main thread | Logging, telemetry |
-
-RT is automatic — set a budget or deadline and the scheduler handles the rest:
-
-```rust
-scheduler.add(motor)
-    .order(0)
-    .budget(200.us())       // auto-RT
-    .on_miss(Miss::Skip)    // skip tick on overrun
-    .build();
-```
-
-## Complete Example
+Nodes communicate through lock-free ring buffers. The runtime auto-selects from 10 backends based on topology — same-process or cross-process — without changing your code.
 
 ```rust
 use horus::prelude::*;
@@ -134,7 +50,9 @@ node! {
 
         tick {
             self.position += 0.01;
-            self.reading.send(SensorReading { position: self.position, velocity: 0.5 }).ok();
+            self.reading.send(SensorReading {
+                position: self.position, velocity: 0.5
+            }).ok();
         }
     }
 }
@@ -156,8 +74,8 @@ node! {
 
 fn main() -> Result<()> {
     let mut scheduler = Scheduler::new()
-        .with_name("motor_control")
-        .tick_rate(1000.0.hz());
+        .name("motor_control")
+        .tick_rate(1000.hz());
 
     scheduler.add(SensorNode::new()?).order(0).build();
     scheduler.add(ControllerNode::new()?).order(1).build();
@@ -166,63 +84,193 @@ fn main() -> Result<()> {
 }
 ```
 
-## What's Included
+## Performance
 
-**Messages** — 30+ standard robotics types out of the box:
+Measured on Intel i7-10750H (6C/12T), 100K iterations, RDTSC timing with Tukey IQR outlier removal and bootstrap 95% CIs. Full methodology and reproduction steps in [`benchmarks/`](benchmarks/).
+
+**Intra-process** (heap ring buffers):
+
+| Topology | Backend | p50 | p99 |
+|----------|---------|-----|-----|
+| 1 pub, N sub | SpmcIntra | 3 ns | 10 ns |
+| 1 pub, 1 sub | SpscIntra | 10 ns | 19 ns |
+| N pub, N sub | MpmcIntra | 100 ns | 643 ns |
+
+**Cross-process** (shared memory, RDTSC-in-payload one-way):
+
+| Topology | Backend | p50 | p99 | Framework overhead |
+|----------|---------|-----|-----|-------------------|
+| 1 pub, 2 sub | SpmcShm | 198 ns | 298 ns | 31 ns |
+| 1 pub, 8 sub | SpmcShm | 276 ns | 510 ns | 31 ns |
+| 4 pub, 4 sub | PodShm | 304 ns | 1.5 µs | — |
+| Hardware floor | Raw atomic | 167 ns | 319 ns | 0 ns |
+
+For context, ROS2 DDS cross-process latency is typically 50–500 µs depending on the DDS vendor and message size.
+
+```bash
+# Reproduce
+cargo run --release -p horus_benchmarks --bin all_paths_latency
+```
+
+## Features
+
+### Deterministic Scheduling
+
+The scheduler guarantees execution order across five classes:
+
+| Class | Behavior | Use case |
+|-------|----------|----------|
+| **RT** | Dedicated thread, auto-detected from `.rate()` / `.budget()` / `.deadline()` | Motor control, safety |
+| **Compute** | Parallel thread pool | Path planning, SLAM |
+| **Event** | Triggers on topic data | Alert handlers |
+| **AsyncIo** | Tokio blocking pool | GPU inference, network I/O |
+| **BestEffort** | Sequential, main thread | Logging, telemetry |
+
+RT is automatic — set a rate, budget, or deadline and the scheduler derives the rest:
+
+```rust
+scheduler.add(motor).order(0).rate(1000.hz()).on_miss(Miss::Skip).build();
+scheduler.add(planner).order(1).compute().build();
+scheduler.add(detector).order(2).async_io().build();
+```
+
+### Zero-Copy Data
+
+Images, point clouds, and depth maps live in shared memory pools. Only a 168-byte tensor descriptor crosses IPC. DLPack enables direct handoff to PyTorch, JAX, or TensorFlow without copying.
+
+```rust
+let mut img = Image::new(640, 480, ImageEncoding::Rgb8)?;
+topic.send(&img);  // sends 168 bytes, not 921,600
+
+if let Some(frame) = topic.recv() {
+    let pixels = frame.data();  // pointer into shared memory
+}
+```
+
+### Python Bindings
+
+PyO3-based bindings share the same topics and memory as Rust nodes:
+
+```python
+from horus import Node, Topic, Scheduler
+
+class Detector(Node):
+    def __init__(self):
+        super().__init__("detector")
+        self.camera = Topic("camera.rgb")
+        self.detections = Topic("detections")
+
+    def tick(self):
+        if frame := self.camera.recv():
+            result = model(frame)           # PyTorch inference
+            self.detections.send(result)
+
+scheduler = Scheduler()
+scheduler.node(Detector()).rate(30.0).build()
+scheduler.run()
+```
+
+### Safety Monitoring
+
+Graduated watchdog with four severity levels (Ok → Warning → Expired → Critical), per-node health tracking (Healthy → Warning → Unhealthy → Isolated), budget/deadline enforcement, and a blackbox flight recorder for post-mortem analysis.
+
+### Coordinate Transforms
+
+Lock-free `TransformFrame` with f64 precision, time-travel queries via ring buffer history, and SLERP interpolation:
+
+```rust
+let tf = TransformFrame::new();
+tf.add_frame("laser").parent("base_link")
+    .static_transform(&Transform::translation(0.2, 0.0, 0.1))
+    .build()?;
+let transform = tf.query("base_link").to("laser").lookup()?;
+```
+
+### Services and Actions
+
+Request-reply for synchronous calls, actions for long-running tasks with progress feedback and cancellation:
+
+```rust
+service! {
+    AddTwoInts {
+        request  { a: i64, b: i64 }
+        response { sum: i64 }
+    }
+}
+
+action! {
+    Navigate {
+        goal     { target_x: f64, target_y: f64 }
+        feedback { distance_remaining: f64 }
+        result   { success: bool }
+    }
+}
+```
+
+### 40+ Built-In Message Types
 
 | Category | Types |
 |----------|-------|
 | Geometry | `Pose2D`, `Pose3D`, `Twist`, `Quaternion`, `TransformStamped` |
 | Sensors | `Imu`, `LaserScan`, `BatteryState`, `NavSatFix`, `Odometry` |
-| Vision | `Image`, `CameraInfo`, `Detection`, `BoundingBox2D` |
-| Navigation | `Path`, `OccupancyGrid`, `Goal` |
-| Control | `CmdVel`, `MotorCommand`, `JointState`, `ServoCommand` |
-| AI/ML | `Detection`, `BoundingBox2D`, `SegmentationMask` |
+| Vision | `Image`, `CameraInfo`, `Detection`, `BoundingBox2D`, `SegmentationMask` |
+| Navigation | `Path`, `OccupancyGrid`, `NavGoal`, `CostMap` |
+| Control | `CmdVel`, `MotorCommand`, `JointState`, `ServoCommand`, `TrajectoryPoint` |
+| Diagnostics | `Heartbeat`, `SafetyStatus`, `EmergencyStop`, `ResourceUsage` |
 
-**Transforms** — coordinate frame management via `TransformFrame`:
-```rust
-let tf = TransformFrame::new();
-hf.add_frame("laser").parent("base_link")
-    .static_transform(&Transform::translation(0.2, 0.0, 0.1))
-    .build()?;
-let tf = hf.query("base_link").to("laser").lookup()?;
-```
+### CLI
 
-**CLI** — project management, monitoring, deployment:
 ```bash
-horus new my_robot          # scaffold a project
-horus run                   # build and run
-horus monitor               # web UI + TUI system monitor
-horus topic list            # inspect live topics
-horus deploy <target>       # deploy to robot
+horus new my_robot                    # scaffold a project
+horus run                             # build and run
+horus topic list                      # inspect live topics
+horus topic echo camera.rgb           # watch messages
+horus node list                       # running nodes and rates
+horus monitor -t                      # TUI system dashboard
+horus blackbox -a                     # timing anomalies
+horus param set max_speed 0.5         # tune at runtime
+horus frame tree                      # coordinate frame hierarchy
+horus deploy pi@192.168.1.50          # deploy to robot
+horus discover                        # mDNS node discovery
 ```
+
+### Single Manifest
+
+`horus.toml` is the single source of truth — it replaces Cargo.toml, package.xml, and launch files. Native build files are generated into `.horus/` automatically.
+
+## Examples
+
+The [`examples/`](examples/) directory contains five working projects:
+
+| Example | What it demonstrates |
+|---------|---------------------|
+| [differential_drive](examples/differential_drive/) | Nodes, topics, messages, multi-rate scheduling |
+| [robot_arm](examples/robot_arm/) | Services, transform frames, 6-DOF trajectory control |
+| [sensor_navigation](examples/sensor_navigation/) | Multi-rate pipelines, LaserScan processing, reactive control |
+| [multi_robot](examples/multi_robot/) | Namespaced topics, launch files, fleet coordination |
+| [quadruped](examples/quadruped/) | RT scheduling at 200Hz, 12-DOF gait generation, IMU feedback |
 
 ## Installation
 
+Requires Linux and Rust 1.92+. Python 3.9+ optional for bindings.
+
 ```bash
-# Prerequisites (Ubuntu/Debian)
 sudo apt install build-essential pkg-config libudev-dev libssl-dev libasound2-dev
 
-# Install HORUS
 git clone https://github.com/softmata/horus.git
 cd horus
 ./install.sh
 horus --version
 ```
 
-**Python bindings** (optional): `pip install horus-robotics`
+Python bindings: `pip install horus-robotics`
 
-Requires **Linux**, **Rust 1.92+**, and optionally **Python 3.9+**.
+## When to Use Something Else
 
-## Examples
-
-The [`examples/`](examples/) directory contains full working projects:
-
-- **[differential_drive](examples/differential_drive/)** — 2-wheel robot with odometry
-- **[robot_arm](examples/robot_arm/)** — Joint control with inverse kinematics
-- **[quadruped](examples/quadruped/)** — 4-legged walking robot
-- **[sensor_navigation](examples/sensor_navigation/)** — LiDAR-based obstacle avoidance
-- **[multi_robot](examples/multi_robot/)** — Fleet coordination
+- **You need a large package ecosystem.** ROS2 has a decade of community packages for nearly every sensor and algorithm. HORUS has a growing but small ecosystem.
+- **You need Windows or macOS.** HORUS is Linux-only.
+- **Millisecond-level latency is fine.** If your application tolerates millisecond jitter, ROS2 and similar frameworks work well and have larger communities.
+- **You need formal safety certification.** HORUS has runtime safety features but no formal certification (ISO 26262, etc.).
 
 ## Contributing
 

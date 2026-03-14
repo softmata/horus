@@ -2868,3 +2868,86 @@ fn test_timing_report_does_not_crash() {
     scheduler.run_for(100_u64.ms()).unwrap();
     // If we got here, the timing report didn't crash
 }
+
+// ============================================================================
+// Builder API: .name(), .deterministic(), .cores()
+// ============================================================================
+
+#[test]
+fn test_name_builder() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().name("motor_control");
+    assert_eq!(scheduler.scheduler_name(), "motor_control");
+}
+
+#[test]
+fn test_name_appears_in_status() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().name("arm_controller");
+    let status = scheduler.status();
+    assert!(
+        status.contains("arm_controller"),
+        "status should contain the scheduler name"
+    );
+}
+
+#[test]
+fn test_deterministic_builder() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new()
+        .deterministic(true)
+        .tick_rate(100_u64.hz());
+
+    scheduler
+        .add(CounterNode::with_counter("det_node", counter.clone()))
+        .order(0)
+        .build()
+        .unwrap();
+
+    // In deterministic mode, tick_once runs all nodes on main thread
+    for _ in 0..5 {
+        scheduler.tick_once().unwrap();
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 5);
+}
+
+#[test]
+fn test_cores_builder() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().cores(&[0, 1]);
+    assert_eq!(
+        scheduler.pending_config.resources.cpu_cores,
+        Some(vec![0, 1])
+    );
+}
+
+#[test]
+fn test_builder_chaining_all_new_methods() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new()
+        .name("full_config")
+        .deterministic(true)
+        .cores(&[2, 3])
+        .tick_rate(500_u64.hz())
+        .watchdog(100_u64.ms())
+        .verbose(false);
+
+    assert_eq!(scheduler.scheduler_name(), "full_config");
+    assert!(scheduler.pending_config.timing.deterministic_order);
+    assert_eq!(
+        scheduler.pending_config.resources.cpu_cores,
+        Some(vec![2, 3])
+    );
+}
+
+#[test]
+fn test_telemetry_builder() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new().telemetry("udp://localhost:9999");
+    assert_eq!(
+        scheduler.pending_config.monitoring.telemetry_endpoint,
+        Some("udp://localhost:9999".to_string())
+    );
+}

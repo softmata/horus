@@ -217,7 +217,7 @@ fn prelude_exports_rt_types() {
 
     // Verify RtStats default has zeroed counters
     let stats = RtStats::default();
-    assert_eq!(stats.total_ticks(), 0);
+    assert_eq!(stats.sampled_ticks(), 0);
     assert_eq!(stats.deadline_misses(), 0);
     assert_eq!(stats.budget_violations(), 0);
     assert_eq!(stats.worst_execution(), std::time::Duration::ZERO);
