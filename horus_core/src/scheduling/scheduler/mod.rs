@@ -1553,6 +1553,22 @@ impl Scheduler {
             ));
         }
 
+        // Record execution order for replay fidelity
+        if let Some(ref mut recording_state) = self.recording {
+            let order: Vec<String> = if let Some(ref graph) = self.dependency_graph {
+                // Deterministic: record dependency step order
+                graph.steps().iter().flatten().map(|&idx| {
+                    self.nodes.get(idx)
+                        .map(|n| n.name.to_string())
+                        .unwrap_or_default()
+                }).collect()
+            } else {
+                // Normal: record priority-sorted order
+                self.nodes.iter().map(|n| n.name.to_string()).collect()
+            };
+            recording_state.scheduler_recording.execution_order.push(order);
+        }
+
         self.tick.current += 1;
         Ok(())
     }
@@ -2873,10 +2889,8 @@ impl Scheduler {
             // recorded (or overridden) outputs into the node's recorder so
             // that diff/export tools can compare replay results.
             //
-            // NOTE: This does NOT yet publish replay data to shared-memory
-            // topics for live subscriber nodes.  Full shm injection requires
-            // a `write_topic_slot_bytes` counterpart and will be added in a
-            // follow-up task.
+            // Replay: advance replayer, feed outputs into recorder AND inject
+            // into shared-memory topics so live subscriber nodes see replay data.
             {
                 let node_name = self.nodes[i].name.clone();
                 let replay_outputs: Option<Vec<(String, Vec<u8>)>> = self.replay.as_mut().and_then(|replay| {
@@ -2893,11 +2907,20 @@ impl Scheduler {
                     replayer.advance();
                     Some(outputs)
                 });
-                if let (Some(outputs), Some(ref mut recorder)) =
-                    (replay_outputs, self.nodes[i].recorder.as_mut())
-                {
-                    for (topic, data) in outputs {
-                        recorder.record_output(&topic, data);
+                if let Some(outputs) = replay_outputs {
+                    for (topic, data) in &outputs {
+                        // Inject into shared-memory topic so live subscriber nodes see it
+                        let shm_dir = crate::memory::platform::shm_control_dir();
+                        let topic_path = shm_dir.join(format!("topics/{}", topic));
+                        if topic_path.exists() {
+                            crate::communication::write_topic_slot_bytes(&topic_path, data);
+                        }
+                    }
+                    // Also feed into recorder for diff/export tools
+                    if let Some(ref mut recorder) = self.nodes[i].recorder {
+                        for (topic, data) in outputs {
+                            recorder.record_output(&topic, data);
+                        }
                     }
                 }
             }
