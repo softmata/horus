@@ -20,6 +20,7 @@
 //! ```
 
 pub(crate) mod config;
+pub(crate) mod dependency_graph;
 pub(crate) mod graph;
 pub(crate) mod safety_monitor;
 pub(crate) mod scheduler;
