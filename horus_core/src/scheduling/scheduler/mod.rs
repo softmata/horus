@@ -1525,10 +1525,14 @@ impl Scheduler {
         self.reinit_pending_nodes();
 
         if let Some(ref graph) = self.dependency_graph {
-            // Deterministic mode: execute by dependency steps
-            // Each step's nodes are independent and could run in parallel.
-            // For now, execute sequentially within each step (parallel dispatch
-            // to executors is Phase 5 — RT thread pool).
+            // Deterministic mode: execute by dependency steps.
+            // Each step contains independent nodes (no data dependencies between them).
+            // Steps execute sequentially (barrier between steps ensures producer-before-consumer).
+            //
+            // Within a step, nodes execute sequentially on the main thread in tick_once() mode.
+            // In run() mode, the RT executor pool dispatches independent nodes to separate
+            // threads for true parallelism. tick_once() prioritizes reproducibility over
+            // wall-time performance — simulation/testing don't need real-time speed.
             let steps: Vec<Vec<usize>> = graph.steps().to_vec();
             for step in &steps {
                 for &node_idx in step {
@@ -1538,7 +1542,7 @@ impl Scheduler {
                         ));
                     }
                 }
-                // Advance SimClock by dt after each step
+                // Advance SimClock by dt after each step (barrier point)
                 if self.pending_config.timing.deterministic_order {
                     let dt = self.tick.period;
                     self.clock.advance(dt);
