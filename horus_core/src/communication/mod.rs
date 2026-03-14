@@ -5,58 +5,47 @@
 //! ## Topic - The Unified Communication API
 //!
 //! `Topic<T>` provides a single, consistent interface for all communication patterns.
-//! It automatically selects the optimal backend based on topology and access patterns:
-//!
-//! | Backend | Latency | Detection Criteria |
-//! |---------|---------|-------------------|
-//! | DirectChannel | ~3ns | same_thread |
-//! | SpscIntra | ~18ns | same_process, pubs=1, subs=1 |
-//! | SpmcIntra | ~24ns | same_process, pubs=1, subs>1 |
-//! | MpscIntra | ~26ns | same_process, pubs>1, subs=1 |
-//! | MpmcIntra | ~36ns | same_process, pubs>1, subs>1 |
-//! | PodShm | ~50ns | cross_process, is_pod |
-//! | SpscShm | ~85ns | cross_process, pubs=1, subs=1, !is_pod |
-//! | MpmcShm | ~167ns | cross_process, pubs>1, subs>1 |
+//! It automatically selects the optimal backend based on topology and access patterns,
+//! achieving latencies from ~3ns (same-thread) to ~167ns (cross-process).
 //!
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use horus_core::communication::Topic;
+//! use horus::prelude::*;
 //!
-//! // Just this - backend auto-selected
-//! let topic: Topic<String> = Topic::new("sensor_data")?;
-//! topic.send("hello".to_string());
-//! let msg = topic.recv();
+//! let topic: Topic<CmdVel> = Topic::new("cmd_vel")?;
+//! topic.send(CmdVel::new(1.0, 0.5));
+//! if let Some(msg) = topic.recv() { /* ... */ }
 //! ```
 //!
-//! ## Automatic POD Detection
-//!
-//! HORUS automatically detects POD types - no registration needed!
-//!
-//! ```rust,ignore
-//! struct MotorCommand { velocity: f32, torque: f32 }
-//!
-//! // HORUS automatically uses zero-copy path (~50ns)!
-//! let topic: Topic<MotorCommand> = Topic::new("motor")?;
-//! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 });
-//! ```
+//! HORUS automatically optimizes message transfer — fixed-size types get
+//! zero-copy memcpy (~50ns cross-process), variable-size types use
+//! serialization (~167ns). No configuration needed.
 
 mod macros;
+#[doc(hidden)]
 pub mod network;
+#[doc(hidden)]
 pub mod network_status;
+#[doc(hidden)]
 pub mod pod;
 pub mod topic;
 
 // Re-export commonly used types for convenience
+#[doc(hidden)]
 pub use network_status::NetworkStatus;
+#[doc(hidden)]
 pub use pod::PodMessage;
-pub use topic::{SendBlockingError, Topic, TopicDescriptor, TopicMessage};
+pub use topic::{SendBlockingError, Topic, TopicDescriptor};
+#[doc(hidden)]
+pub use topic::TopicMessage;
 
 // Debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
 pub use topic::{set_topic_debug, TOPIC_DEBUG_LOG_OFFSET};
 
 // Ring-buffer inspector for CLI tools (`horus topic echo`)
+#[doc(hidden)]
 pub use topic::{read_latest_slot_bytes, read_topic_sequence, TopicSlotRead};
 
 /// Write raw bytes into the latest slot of a topic SHM file (used by replay).
@@ -64,6 +53,7 @@ pub use topic::{read_latest_slot_bytes, read_topic_sequence, TopicSlotRead};
 /// This is the write counterpart to `read_latest_slot_bytes`.  It writes
 /// `data` into the next slot of the ring buffer and bumps the sequence counter.
 /// Returns `true` on success.
+#[doc(hidden)]
 pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
     use memmap2::MmapOptions;
     use std::fs::OpenOptions;

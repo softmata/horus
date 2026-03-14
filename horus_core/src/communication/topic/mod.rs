@@ -2448,11 +2448,13 @@ impl Topic<DepthImage> {
 
 impl Topic<Tensor> {
     /// Get or create the auto-managed tensor pool for this topic.
+    #[doc(hidden)]
     pub fn pool(&self) -> Arc<TensorPool> {
         pool_registry::get_or_create_pool(self.ring.name())
     }
 
     /// Allocate a tensor from this topic's auto-managed pool.
+    #[doc(hidden)]
     pub fn alloc_tensor(
         &self,
         shape: &[u64],
@@ -2464,12 +2466,14 @@ impl Topic<Tensor> {
     }
 
     /// Send a tensor handle through this topic (zero-copy).
+    #[doc(hidden)]
     pub fn send_handle(&self, handle: &crate::memory::TensorHandle) {
         handle.pool().retain(handle.tensor());
         self.ring.send(*handle.tensor());
     }
 
     /// Receive a tensor and wrap it in a `TensorHandle`.
+    #[doc(hidden)]
     pub fn recv_handle(&self) -> Option<crate::memory::TensorHandle> {
         let tensor = self.ring.recv()?;
         let pool = self.pool();

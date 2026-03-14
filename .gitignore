@@ -47,6 +47,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# Fuzz
+**/fuzz/corpus/
+**/fuzz/artifacts/
+
 # HORUS Specific
 .horus/
 /dev/shm/horus/

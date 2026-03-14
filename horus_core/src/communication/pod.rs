@@ -111,6 +111,9 @@ pub(crate) fn is_pod<T: 'static>() -> bool {
 
 /// Marker trait for messages that can be transferred without serialization.
 ///
+/// Most users should use the `message!` macro or standard message types
+/// instead of implementing this trait directly.
+///
 /// # Safety
 ///
 /// Implementing this trait asserts that the type:
@@ -120,6 +123,7 @@ pub(crate) fn is_pod<T: 'static>() -> bool {
 /// 4. Has the same layout across all compilation targets you support
 ///
 /// The type must also implement `Pod + Zeroable` from bytemuck.
+#[doc(hidden)]
 pub unsafe trait PodMessage: Pod + Zeroable + Copy + Clone + Send + Sync + 'static {
     /// Size of this message in bytes (compile-time constant)
     const SIZE: usize = mem::size_of::<Self>();
