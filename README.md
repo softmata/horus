@@ -265,13 +265,6 @@ horus --version
 
 Python bindings: `pip install horus-robotics`
 
-## When to Use Something Else
-
-- **You need a large package ecosystem.** ROS2 has a decade of community packages for nearly every sensor and algorithm. HORUS has a growing but small ecosystem.
-- **You need Windows or macOS.** HORUS is Linux-only.
-- **Millisecond-level latency is fine.** If your application tolerates millisecond jitter, ROS2 and similar frameworks work well and have larger communities.
-- **You need formal safety certification.** HORUS has runtime safety features but no formal certification (ISO 26262, etc.).
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). PRs target the `dev` branch.
