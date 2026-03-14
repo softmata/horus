@@ -2825,8 +2825,10 @@ impl Scheduler {
             let name = registered.name.as_ref();
             let should_run = node_filter.is_none_or(|filter| filter.contains(&name));
 
-            // Check rate limiting
-            let should_tick = if let Some(rate_hz) = registered.rate_hz {
+            // Check rate limiting (skip in deterministic mode — tick_once controls timing)
+            let should_tick = if self.pending_config.timing.deterministic_order {
+                true // deterministic mode: always tick (SimClock handles timing)
+            } else if let Some(rate_hz) = registered.rate_hz {
                 let current_time = Instant::now();
                 if let Some(last_tick) = registered.last_tick {
                     let elapsed_secs = (current_time - last_tick).as_secs_f64();
