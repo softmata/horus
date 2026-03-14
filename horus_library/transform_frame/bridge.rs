@@ -65,9 +65,11 @@ use horus_core::core::DurationExt;
 use std::time::{Duration, Instant};
 
 /// Default multicast group for TF bridge
+#[doc(hidden)]
 pub const TF_BRIDGE_MULTICAST_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 72, 70); // "HF" in ASCII (legacy, retained for wire compatibility)
 
 /// Default port for TF bridge
+#[doc(hidden)]
 pub const TF_BRIDGE_DEFAULT_PORT: u16 = 17200;
 
 /// Protocol magic bytes

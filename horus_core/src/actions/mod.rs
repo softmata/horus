@@ -121,30 +121,37 @@
 //! - `manipulate_action.rs` - Manipulation action
 //! - `action_sequence.rs` - Chaining actions
 
+#[doc(hidden)]
 pub mod client;
+#[doc(hidden)]
 pub mod macros;
+#[doc(hidden)]
 pub mod server;
+#[doc(hidden)]
 pub mod types;
 
 // Re-export main types at module level
 pub use client::{
-    ActionClientBuilder, ActionClientMetrics, ActionClientNode, ClientGoalHandle, FeedbackCallback,
-    ResultCallback, StatusCallback, SyncActionClient,
+    ActionClientBuilder, ActionClientNode, ClientGoalHandle, SyncActionClient,
 };
+#[doc(hidden)]
+pub use client::{ActionClientMetrics, FeedbackCallback, ResultCallback, StatusCallback};
 
 /// Convenience alias — identical to [`SyncActionClient`].
 ///
 /// Named `ActionClient` for symmetry with [`crate::services::ServiceClient`].
 pub type ActionClient<A> = SyncActionClient<A>;
 pub use server::{
-    ActionServerBuilder, ActionServerMetrics, ActionServerNode, CancelCallback, ExecuteCallback,
-    GoalCallback, GoalOutcome, ServerGoalHandle,
+    ActionServerBuilder, ActionServerNode, GoalOutcome, ServerGoalHandle,
 };
+#[doc(hidden)]
+pub use server::{ActionServerMetrics, CancelCallback, ExecuteCallback, GoalCallback};
 pub use types::{
-    Action, ActionError, ActionFeedback, ActionResult, ActionServerConfig, CancelRequest,
-    CancelResponse, GoalId, GoalPriority, GoalRequest, GoalResponse, GoalStatus, GoalStatusUpdate,
-    PreemptionPolicy,
+    Action, ActionError, ActionResult, CancelResponse, GoalId, GoalPriority,
+    GoalResponse, GoalStatus, PreemptionPolicy,
 };
+#[doc(hidden)]
+pub use types::{ActionFeedback, ActionServerConfig, CancelRequest, GoalRequest, GoalStatusUpdate};
 
 // Re-export macros
 pub use crate::{action, standard_action};

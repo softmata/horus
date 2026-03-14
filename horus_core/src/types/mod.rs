@@ -1,13 +1,19 @@
 //! Core tensor types for HORUS - zero-copy descriptors and element types.
 
+#[doc(hidden)]
 pub mod device;
+#[doc(hidden)]
 pub mod dtype;
+#[doc(hidden)]
 pub mod tensor;
 
+#[doc(hidden)]
 pub mod depth_image_descriptor;
+#[doc(hidden)]
 pub mod image_descriptor;
 pub mod image_encoding;
 pub mod point;
+#[doc(hidden)]
 pub mod pointcloud_descriptor;
 
 /// Generate `frame_id()` and `set_frame_id()` inherent methods for types

@@ -59,17 +59,27 @@
 //! | `ServiceServer<Req, Res>` | [`ServiceServerBuilder<S>`] |
 //! | `ServiceClient<Req, Res>` | [`ServiceClient<S>`] / [`AsyncServiceClient<S>`] |
 
+#[doc(hidden)]
 pub mod client;
+#[doc(hidden)]
 pub mod macros;
+#[doc(hidden)]
 pub mod server;
+#[doc(hidden)]
 pub mod types;
 
 // Public re-exports
-pub use client::{AsyncServiceClient, PendingServiceCall, ServiceClient};
-pub use server::{RequestHandler, ServiceServer, ServiceServerBuilder};
+pub use client::{AsyncServiceClient, ServiceClient};
+#[doc(hidden)]
+pub use client::PendingServiceCall;
+pub use server::{ServiceServer, ServiceServerBuilder};
+#[doc(hidden)]
+pub use server::RequestHandler;
 pub use types::{
-    Service, ServiceError, ServiceInfo, ServiceRequest, ServiceResponse, ServiceResult,
+    Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
 };
+#[doc(hidden)]
+pub use types::ServiceInfo;
 
 /// Prelude for convenient imports.
 ///

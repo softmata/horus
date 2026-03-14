@@ -15,14 +15,21 @@
 //! 3. **Execution** - `tick()` is called repeatedly by the scheduler
 //! 4. **Shutdown** - `shutdown()` is called to clean up resources
 
+#[doc(hidden)]
 pub mod discovery;
 pub mod duration_ext;
+#[doc(hidden)]
 pub mod hlog;
+#[doc(hidden)]
 pub mod log_bridge;
+#[doc(hidden)]
 pub mod log_buffer;
 pub mod node;
+#[doc(hidden)]
 pub mod presence;
+#[doc(hidden)]
 pub mod rt_config;
+#[doc(hidden)]
 pub mod rt_node;
 pub mod timer;
 
@@ -30,13 +37,16 @@ pub mod timer;
 pub(crate) use discovery::{announce_started, announce_stopped};
 
 // LogType must be pub for hlog! macro expansion in downstream crates
+#[doc(hidden)]
 pub use log_buffer::LogType;
 
-pub use node::{
-    HealthStatus, LogSummary, Node, NodeInfo, NodeMetrics, NodeState, TopicMetadata,
-};
+pub use node::{HealthStatus, LogSummary, Node, NodeMetrics, NodeState, TopicMetadata};
+#[doc(hidden)]
+pub use node::NodeInfo;
+#[doc(hidden)]
 pub use presence::NodePresence;
 pub use timer::{Rate, Stopwatch};
-// rt_config types are pub(crate) — accessed directly by scheduling/ internals
 pub use duration_ext::{DurationExt, Frequency};
-pub use rt_node::{BudgetViolation, Miss, RtStats};
+pub use rt_node::{Miss, RtStats};
+#[doc(hidden)]
+pub use rt_node::BudgetViolation;

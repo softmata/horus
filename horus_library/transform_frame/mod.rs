@@ -143,6 +143,7 @@
 
 #[cfg(test)]
 mod bench;
+#[doc(hidden)]
 pub mod bridge;
 mod builder;
 mod config;
@@ -157,10 +158,14 @@ mod types;
 // Re-export public API
 pub use builder::FrameBuilder;
 pub use config::TransformFrameConfig;
+#[doc(hidden)]
 pub use core::TransformFrameCore;
 pub use query::{TransformQuery, TransformQueryFrom};
+#[doc(hidden)]
 pub use registry::FrameRegistry;
+#[doc(hidden)]
 pub use slot::{FrameSlot, TransformEntry};
+#[doc(hidden)]
 pub use types::{FrameId, NO_PARENT};
 
 // Re-export Transform and message types

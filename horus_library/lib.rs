@@ -17,4 +17,5 @@ pub use horus_core::core::LogSummary;
 pub use messages::*;
 
 // Re-export softmata-core for canonical type access
+#[doc(hidden)]
 pub use softmata_core;
