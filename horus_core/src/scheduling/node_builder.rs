@@ -58,6 +58,12 @@ pub struct NodeRegistration {
     pub(crate) execution_class: ExecutionClass,
     /// Source frequency for deferred auto-derivation at build time
     source_freq: Option<Frequency>,
+    /// OS-level thread priority (SCHED_FIFO 1-99). Only for RT nodes.
+    pub(crate) os_priority: Option<i32>,
+    /// CPU core to pin this node's RT thread to. Only for RT nodes.
+    pub(crate) pinned_core: Option<usize>,
+    /// Per-node watchdog timeout. Overrides scheduler global.
+    pub(crate) node_watchdog: Option<Duration>,
 }
 
 impl NodeRegistration {
@@ -81,6 +87,9 @@ impl NodeRegistration {
             miss_policy: Miss::default(),
             execution_class: ExecutionClass::BestEffort,
             source_freq: None,
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
         }
     }
 
@@ -271,6 +280,62 @@ impl NodeRegistration {
     /// ```
     pub fn failure_policy(mut self, policy: super::fault_tolerance::FailurePolicy) -> Self {
         self.failure_policy = Some(policy);
+        self
+    }
+
+    /// Set the OS-level thread priority for this node's RT thread.
+    ///
+    /// Only meaningful for RT nodes. Uses `SCHED_FIFO` (1-99, higher = more priority).
+    /// Requires `CAP_SYS_NICE` or root. Degrades gracefully if unavailable.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// scheduler.add(safety_monitor)
+    ///     .rate(1000_u64.hz())
+    ///     .priority(99)    // highest RT priority
+    ///     .build()?;
+    /// ```
+    pub fn priority(mut self, prio: i32) -> Self {
+        self.os_priority = Some(prio);
+        self
+    }
+
+    /// Pin this node's RT thread to a specific CPU core.
+    ///
+    /// Only meaningful for RT nodes. Uses `sched_setaffinity`.
+    /// Degrades gracefully if the core doesn't exist.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// scheduler.add(motor_ctrl)
+    ///     .rate(1000_u64.hz())
+    ///     .core(2)         // pin to core 2
+    ///     .build()?;
+    /// ```
+    pub fn core(mut self, cpu_id: usize) -> Self {
+        self.pinned_core = Some(cpu_id);
+        self
+    }
+
+    /// Set a per-node watchdog timeout.
+    ///
+    /// Overrides the scheduler's global `.watchdog()` timeout for this node.
+    /// Safety-critical nodes can have tighter timeouts than logging nodes.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// scheduler.add(emergency_stop)
+    ///     .rate(1000_u64.hz())
+    ///     .watchdog(2_u64.ms())    // 2ms watchdog
+    ///     .build()?;
+    ///
+    /// scheduler.add(logger)
+    ///     .async_io()
+    ///     .watchdog(5_u64.secs())  // 5s tolerance
+    ///     .build()?;
+    /// ```
+    pub fn watchdog(mut self, timeout: Duration) -> Self {
+        self.node_watchdog = Some(timeout);
         self
     }
 
@@ -519,6 +584,24 @@ impl<'a> NodeBuilder<'a> {
     /// Use this when you need different failure behavior than the default.
     pub fn failure_policy(mut self, policy: super::fault_tolerance::FailurePolicy) -> Self {
         self.config = self.config.failure_policy(policy);
+        self
+    }
+
+    /// Set the OS-level thread priority (SCHED_FIFO 1-99) for this node's RT thread.
+    pub fn priority(mut self, prio: i32) -> Self {
+        self.config = self.config.priority(prio);
+        self
+    }
+
+    /// Pin this node's RT thread to a specific CPU core.
+    pub fn core(mut self, cpu_id: usize) -> Self {
+        self.config = self.config.core(cpu_id);
+        self
+    }
+
+    /// Set a per-node watchdog timeout, overriding the scheduler global.
+    pub fn watchdog(mut self, timeout: Duration) -> Self {
+        self.config = self.config.watchdog(timeout);
         self
     }
 
@@ -1161,5 +1244,50 @@ mod tests {
             .unwrap();
 
         assert!(scheduler.node_list().contains(&"valid".to_string()));
+    }
+
+    // ── SLAM-generated: Property-based tests ──────────────────────
+
+    mod proptests {
+        use super::*;
+        use crate::scheduling::Scheduler;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Any valid order value produces a scheduler-accepted node.
+            #[test]
+            fn any_order_accepted_by_scheduler(order in 0u32..1000) {
+                let mut scheduler = Scheduler::new();
+                scheduler
+                    .add(StubNode(format!("order_{}", order)))
+                    .order(order)
+                    .build()
+                    .unwrap();
+            }
+
+            /// Any positive frequency via .rate() produces a buildable node.
+            #[test]
+            fn any_positive_rate_builds(hz in 1u64..10000) {
+                let mut scheduler = Scheduler::new();
+                scheduler
+                    .add(StubNode(format!("rate_{}", hz)))
+                    .order(0)
+                    .rate(hz.hz())
+                    .build()
+                    .unwrap();
+            }
+
+            /// Compute nodes always build successfully.
+            #[test]
+            fn compute_always_builds(order in 0u32..100) {
+                let mut scheduler = Scheduler::new();
+                scheduler
+                    .add(StubNode(format!("compute_{}", order)))
+                    .order(order)
+                    .compute()
+                    .build()
+                    .unwrap();
+            }
+        }
     }
 }
