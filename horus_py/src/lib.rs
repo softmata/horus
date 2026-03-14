@@ -68,6 +68,14 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(get_version, m)?)?;
 
+    // Time API — horus.now(), horus.dt(), etc.
+    m.add_function(wrap_pyfunction!(time_now, m)?)?;
+    m.add_function(wrap_pyfunction!(time_dt, m)?)?;
+    m.add_function(wrap_pyfunction!(time_elapsed, m)?)?;
+    m.add_function(wrap_pyfunction!(time_tick, m)?)?;
+    m.add_function(wrap_pyfunction!(time_budget_remaining, m)?)?;
+    m.add_function(wrap_pyfunction!(time_rng_float, m)?)?;
+
     Ok(())
 }
 
@@ -75,4 +83,59 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 fn get_version() -> String {
     format!("HORUS Python Bindings v{}", env!("CARGO_PKG_VERSION"))
+}
+
+// ── Time API ──────────────────────────────────────────────────────────────────
+
+/// Current framework time in seconds.
+///
+/// Normal mode: wall clock. Deterministic mode: virtual SimClock.
+#[pyfunction]
+fn time_now() -> f64 {
+    let ts = horus_core::core::tick_context::ctx_now();
+    ts.as_nanos() as f64 / 1_000_000_000.0
+}
+
+/// Timestep for this tick in seconds.
+///
+/// Normal mode: actual elapsed. Deterministic mode: fixed 1/rate.
+#[pyfunction]
+fn time_dt() -> f64 {
+    horus_core::core::tick_context::ctx_dt().as_secs_f64()
+}
+
+/// Time elapsed since scheduler start in seconds.
+#[pyfunction]
+fn time_elapsed() -> f64 {
+    horus_core::core::tick_context::ctx_elapsed().as_secs_f64()
+}
+
+/// Current tick number.
+#[pyfunction]
+fn time_tick() -> u64 {
+    horus_core::core::tick_context::ctx_tick()
+}
+
+/// Time remaining in this tick's budget in seconds.
+///
+/// Returns float('inf') if no budget configured.
+#[pyfunction]
+fn time_budget_remaining() -> f64 {
+    let remaining = horus_core::core::tick_context::ctx_budget_remaining();
+    if remaining == std::time::Duration::MAX {
+        f64::INFINITY
+    } else {
+        remaining.as_secs_f64()
+    }
+}
+
+/// Random float in [0.0, 1.0) from the deterministic RNG.
+///
+/// Normal mode: system entropy. Deterministic mode: tick-seeded.
+#[pyfunction]
+fn time_rng_float() -> f64 {
+    horus_core::core::tick_context::ctx_with_rng(|rng| {
+        use rand::Rng;
+        rng.gen::<f64>()
+    })
 }

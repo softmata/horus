@@ -27,6 +27,7 @@ parking_lot = { workspace = true }
 rmp-serde = "1.1"
 pythonize = "0.27"
 ctrlc = "3.4"
+rand = { workspace = true, features = ["small_rng"] }
 lazy_static = "1.4"
 
 [build-dependencies]
