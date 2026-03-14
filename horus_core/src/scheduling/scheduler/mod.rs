@@ -185,6 +185,11 @@ pub struct Scheduler {
     /// All internal timing operations use this clock. Users access it via horus::now() etc.
     pub(super) clock: Arc<dyn crate::core::clock::Clock>,
 
+    /// Dependency graph for deterministic execution ordering.
+    /// Built at finalize_and_init() from nodes' publisher/subscriber metadata.
+    /// None in normal mode — only used when .deterministic(true) is set.
+    pub(super) dependency_graph: Option<super::dependency_graph::DependencyGraph>,
+
     /// Deferred configuration applied once at `run()` time via `finalize_config()`.
     /// Builder methods mutate this; `finalize_config()` applies it before the tick loop.
     pub(super) pending_config: super::config::SchedulerConfig,
@@ -250,6 +255,7 @@ impl Scheduler {
                 last_clock_instant: crate::core::clock::ClockInstant::default(),
             },
             clock: Arc::new(crate::core::clock::WallClock::new()),
+            dependency_graph: None,
             rt: RtState {
                 capabilities: Some(caps),
                 degradations: Vec::new(),
@@ -1448,6 +1454,30 @@ impl Scheduler {
         }
         self.finalize_config();
         self.adjust_tick_period_for_node_rates();
+
+        // Build dependency graph for deterministic mode
+        if self.pending_config.timing.deterministic_order {
+            match super::dependency_graph::DependencyGraph::build(&self.nodes) {
+                Ok(graph) => {
+                    if graph.has_topic_metadata() {
+                        print_line(&format!(
+                            "Deterministic mode: {} execution steps from topic dependencies",
+                            graph.step_count()
+                        ));
+                    } else {
+                        print_line(&format!(
+                            "Deterministic mode: {} execution steps from .order() tiers (no pub/sub metadata)",
+                            graph.step_count()
+                        ));
+                    }
+                    self.dependency_graph = Some(graph);
+                }
+                Err(e) => {
+                    print_line(&format!("WARNING: Dependency graph error: {}. Falling back to sequential.", e));
+                }
+            }
+        }
+
         self.initialize_filtered_nodes(None);
         self.initialized = true;
     }
@@ -1484,14 +1514,36 @@ impl Scheduler {
         self.tick.last_instant = Instant::now();
         self.reinit_pending_nodes();
 
-        // Execute BestEffort nodes synchronously (same logic as execute_nodes but sync)
-        self.nodes.sort_by_key(|r| r.priority);
-        let num_nodes = self.nodes.len();
-        for i in 0..num_nodes {
-            if self.execute_single_node(i, node_filter) {
-                return Err(crate::horus_internal!(
-                    "Fatal node failure during tick_once"
-                ));
+        if let Some(ref graph) = self.dependency_graph {
+            // Deterministic mode: execute by dependency steps
+            // Each step's nodes are independent and could run in parallel.
+            // For now, execute sequentially within each step (parallel dispatch
+            // to executors is Phase 5 — RT thread pool).
+            let steps: Vec<Vec<usize>> = graph.steps().to_vec();
+            for step in &steps {
+                for &node_idx in step {
+                    if self.execute_single_node(node_idx, node_filter) {
+                        return Err(crate::horus_internal!(
+                            "Fatal node failure during deterministic tick"
+                        ));
+                    }
+                }
+                // Advance SimClock by dt after each step
+                if self.pending_config.timing.deterministic_order {
+                    let dt = self.tick.period;
+                    self.clock.advance(dt);
+                }
+            }
+        } else {
+            // Normal mode: sequential by priority (existing behavior)
+            self.nodes.sort_by_key(|r| r.priority);
+            let num_nodes = self.nodes.len();
+            for i in 0..num_nodes {
+                if self.execute_single_node(i, node_filter) {
+                    return Err(crate::horus_internal!(
+                        "Fatal node failure during tick_once"
+                    ));
+                }
             }
         }
 
