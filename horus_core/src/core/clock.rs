@@ -191,6 +191,74 @@ impl Clock for SimClock {
     }
 }
 
+// ─── ReplayClock ─────────────────────────────────────────────────────────────
+
+/// Replay clock. Steps through recorded timestamps from a session.
+///
+/// Each `advance()` steps to the next recorded timestamp. `now()` returns
+/// the current position's timestamp. Used during `Scheduler::replay_from()`.
+#[doc(hidden)]
+pub struct ReplayClock {
+    /// Recorded timestamps in nanoseconds, sorted.
+    timestamps: Vec<u64>,
+    /// Current position in the timestamps vector.
+    index: AtomicU64,
+}
+
+impl ReplayClock {
+    /// Create from a list of nanosecond timestamps.
+    #[doc(hidden)]
+    pub fn new(timestamps: Vec<u64>) -> Self {
+        Self {
+            timestamps,
+            index: AtomicU64::new(0),
+        }
+    }
+
+    /// Number of recorded timestamps.
+    pub fn len(&self) -> usize {
+        self.timestamps.len()
+    }
+
+    /// Whether the clock has no timestamps.
+    pub fn is_empty(&self) -> bool {
+        self.timestamps.is_empty()
+    }
+
+    /// Current index position.
+    pub fn current_index(&self) -> u64 {
+        self.index.load(Ordering::Acquire)
+    }
+}
+
+impl Clock for ReplayClock {
+    #[inline]
+    fn now(&self) -> ClockInstant {
+        let idx = self.index.load(Ordering::Acquire) as usize;
+        let nanos = self.timestamps.get(idx).copied()
+            .or_else(|| self.timestamps.last().copied())
+            .unwrap_or(0);
+        ClockInstant::from_nanos(nanos)
+    }
+
+    #[inline]
+    fn advance(&self, _dt: Duration) {
+        let current = self.index.load(Ordering::Acquire);
+        let max = self.timestamps.len().saturating_sub(1) as u64;
+        if current < max {
+            self.index.store(current + 1, Ordering::Release);
+        }
+    }
+
+    fn reset(&self) {
+        self.index.store(0, Ordering::Release);
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::from_nanos(self.now().nanos)
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -416,5 +484,78 @@ mod tests {
         clock.advance(250_u64.us());
         let elapsed = clock.now().elapsed_since(start);
         assert_eq!(elapsed, 250_u64.us());
+    }
+
+    // ── ReplayClock ──
+
+    #[test]
+    fn replay_clock_empty() {
+        let clock = ReplayClock::new(vec![]);
+        assert_eq!(clock.now().as_nanos(), 0);
+        assert!(clock.is_empty());
+        clock.advance(1_u64.ms()); // should not panic
+        assert_eq!(clock.now().as_nanos(), 0);
+    }
+
+    #[test]
+    fn replay_clock_single_timestamp() {
+        let clock = ReplayClock::new(vec![5_000_000]);
+        assert_eq!(clock.now().as_nanos(), 5_000_000);
+        clock.advance(1_u64.ms());
+        assert_eq!(clock.now().as_nanos(), 5_000_000); // stays at last
+    }
+
+    #[test]
+    fn replay_clock_steps_through_timestamps() {
+        let timestamps = vec![1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000];
+        let clock = ReplayClock::new(timestamps);
+
+        assert_eq!(clock.now().as_nanos(), 1_000_000);
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.now().as_nanos(), 2_000_000);
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.now().as_nanos(), 3_000_000);
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.now().as_nanos(), 4_000_000);
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.now().as_nanos(), 5_000_000);
+        // Beyond end: stays at last
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.now().as_nanos(), 5_000_000);
+    }
+
+    #[test]
+    fn replay_clock_reset() {
+        let timestamps = vec![1_000_000, 2_000_000, 3_000_000];
+        let clock = ReplayClock::new(timestamps);
+
+        clock.advance(Duration::ZERO);
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.now().as_nanos(), 3_000_000);
+
+        clock.reset();
+        assert_eq!(clock.now().as_nanos(), 1_000_000);
+    }
+
+    #[test]
+    fn replay_clock_elapsed() {
+        let timestamps = vec![0, 10_000_000, 20_000_000];
+        let clock = ReplayClock::new(timestamps);
+
+        assert_eq!(clock.elapsed(), Duration::ZERO);
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.elapsed(), 10_u64.ms());
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.elapsed(), 20_u64.ms());
+    }
+
+    #[test]
+    fn replay_clock_via_trait() {
+        let clock: Box<dyn Clock> = Box::new(ReplayClock::new(vec![
+            100_000, 200_000, 300_000,
+        ]));
+        assert_eq!(clock.now().as_nanos(), 100_000);
+        clock.advance(Duration::ZERO);
+        assert_eq!(clock.now().as_nanos(), 200_000);
     }
 }
