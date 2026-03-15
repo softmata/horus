@@ -1,6 +1,7 @@
 pub(crate) mod deps;
 pub(crate) mod features;
 pub(crate) mod install;
+pub(crate) mod run_cpp;
 pub(crate) mod run_python;
 pub(crate) mod run_rust;
 
@@ -67,6 +68,27 @@ pub fn execute_run(
         }
     }
 
+    // Launch file detection: .yaml/.yml with nodes: key
+    if files.len() == 1 {
+        let path = &files[0];
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if (ext == "yaml" || ext == "yml") && path.exists() {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    if content.contains("nodes:") {
+                        log::info!("Detected launch file: {:?}", path);
+                        return super::launch::run_launch(
+                            path,
+                            false,
+                            None,
+                            10,
+                        )
+                        .map_err(|e| anyhow!("{}", e));
+                    }
+                }
+            }
+        }
+    }
+
     // Handle clean build
     if clean {
         cli_output::info("Cleaning build cache...");
@@ -125,6 +147,29 @@ fn execute_single_file(
     clean: bool,
 ) -> Result<()> {
     let language = deps::detect_language(&file_path)?;
+
+    // ── Preflight validation ────────────────────────────────────────────
+    let preflight_issues = crate::error_wrapper::preflight_check(&language);
+    if !preflight_issues.is_empty() {
+        let critical_count = preflight_issues
+            .iter()
+            .filter(|d| d.severity == crate::error_wrapper::Severity::Error)
+            .count();
+        eprintln!(
+            "\n{} {} {}",
+            "horus".bold().cyan(),
+            "preflight".bold().yellow(),
+            format!("[{} issue(s) found]", preflight_issues.len()).dimmed()
+        );
+        crate::error_wrapper::emit_diagnostics(&preflight_issues);
+        if critical_count > 0 {
+            bail!(
+                "Preflight check failed — {} critical issue(s) must be fixed before building",
+                critical_count
+            );
+        }
+        eprintln!(); // blank line after warnings
+    }
 
     cli_output::info(&format!(
         "Detected: {} ({})",
@@ -321,15 +366,17 @@ fn execute_multiple_files(
         } else {
             format!("Building {} Rust files together...", rust_files.len())
         };
+        let build_start = std::time::Instant::now();
         let spinner = progress::build_spinner(&build_msg);
 
         let rust_executables = run_rust::build_rust_files_batch(rust_files, release, clean)?;
         executables.extend(rust_executables);
-        progress::finish_success(&spinner, "Rust files built");
+        progress::finish_success(&spinner, &format!("Rust files built ({:.1}s)", build_start.elapsed().as_secs_f64()));
     }
 
     // Build other languages individually
     for (file_path, language) in other_files {
+        let build_start = std::time::Instant::now();
         let spinner =
             progress::build_spinner(&format!("Building {}...", file_path.display()));
 
@@ -338,7 +385,7 @@ fn execute_multiple_files(
         )?;
 
         executables.push(exec_info);
-        progress::finish_success(&spinner, "Built");
+        progress::finish_success(&spinner, &format!("Built ({:.1}s)", build_start.elapsed().as_secs_f64()));
     }
 
     println!(
@@ -647,7 +694,7 @@ pub(crate) fn ensure_horus_directory() -> Result<()> {
     // Create .horus/ if it doesn't exist
     if !horus_dir.exists() {
         println!(
-            "{} Creating .horus/ environment...",
+            "{} Creating build environment...",
             cli_output::ICON_INFO.cyan()
         );
         fs::create_dir_all(&horus_dir)?;

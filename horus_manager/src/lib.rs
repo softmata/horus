@@ -5,6 +5,7 @@
 pub mod cargo_gen;
 pub mod cargo_utils;
 pub mod cli_output;
+pub mod cmake_gen;
 pub mod commands;
 pub mod dispatch;
 pub mod config;
@@ -29,6 +30,7 @@ pub mod run_with_prefix;
 pub mod security;
 pub mod source_resolver;
 pub mod system_deps;
+pub mod toolchain;
 pub mod version;
 pub mod workspace;
 

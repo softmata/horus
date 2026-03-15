@@ -89,28 +89,35 @@ pub fn run_tests(cfg: TestConfig) -> Result<()> {
 
     let has_rust = languages.contains(&Language::Rust);
     let has_python = languages.contains(&Language::Python);
+    let has_cpp = languages.contains(&Language::Cpp);
 
-    match (has_rust, has_python) {
-        (true, true) => {
-            // Mixed project: run both
-            println!("  {} Mixed Rust+Python project detected", "[*]".cyan());
+    let mut ran_any = false;
+
+    if has_rust {
+        run_rust_tests(&cfg)?;
+        ran_any = true;
+    }
+    if has_python {
+        if ran_any { println!(); }
+        run_python_tests(&cfg)?;
+        ran_any = true;
+    }
+    if has_cpp {
+        if ran_any { println!(); }
+        run_cpp_tests(&cfg)?;
+        ran_any = true;
+    }
+
+    if !ran_any {
+        // Fallback: check for .rs files (standalone, no Cargo.toml)
+        let has_rs = PathBuf::from("main.rs").exists()
+            || PathBuf::from("src/main.rs").exists();
+        if has_rs {
             run_rust_tests(&cfg)?;
-            println!();
-            run_python_tests(&cfg)?;
-        }
-        (true, false) => run_rust_tests(&cfg)?,
-        (false, true) => run_python_tests(&cfg)?,
-        (false, false) => {
-            // Fallback: check for .rs files (standalone, no Cargo.toml)
-            let has_rs = PathBuf::from("main.rs").exists()
-                || PathBuf::from("src/main.rs").exists();
-            if has_rs {
-                run_rust_tests(&cfg)?;
-            } else {
-                anyhow::bail!(
-                    "No test runner detected. Expected Cargo.toml (Rust) or pyproject.toml/requirements.txt (Python)."
-                );
-            }
+        } else {
+            anyhow::bail!(
+                "No test runner detected. Expected Cargo.toml (Rust), pyproject.toml (Python), or CMakeLists.txt (C++)."
+            );
         }
     }
 
@@ -151,7 +158,7 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     if !use_root_cargo {
         let cargo_toml = horus_dir.join(CARGO_TOML);
         if !cargo_toml.exists() {
-            println!("{} No .horus/Cargo.toml found.", "[!]".yellow());
+            println!("{} No build manifest found. Run horus build first.", "[!]".yellow());
             println!(
                 "    Run {} first to set up the build environment.",
                 "horus build".cyan()
@@ -212,7 +219,7 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     println!(
         "  {} Executing: cargo test{}",
         "->".blue(),
-        if use_root_cargo { "" } else { " in .horus/" }
+        if use_root_cargo { "" } else { " (generated workspace)" }
     );
 
     let status = cmd.status().context("Failed to execute cargo test")?;
@@ -292,6 +299,54 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
     Ok(())
 }
 
+/// Run C++ tests via `ctest`.
+fn run_cpp_tests(cfg: &TestConfig) -> Result<()> {
+    println!("{}\n", "Running C++ tests...".cyan().bold());
+
+    let build_dir = PathBuf::from(".horus/cpp-build");
+
+    // Build first if build dir doesn't exist
+    if !build_dir.exists() {
+        println!("  Building C++ project first...");
+        let build_status = std::process::Command::new("cmake")
+            .args(["--build", ".horus/cpp-build"])
+            .status();
+        match build_status {
+            Ok(s) if s.success() => {}
+            _ => anyhow::bail!("C++ build failed. Run `horus build` first."),
+        }
+    }
+
+    let mut cmd = std::process::Command::new("ctest");
+    cmd.args(["--test-dir", ".horus/cpp-build", "--output-on-failure"]);
+
+    if let Some(ref filter) = cfg.filter {
+        cmd.args(["-R", filter]); // ctest regex filter
+    }
+    if cfg.verbose {
+        cmd.arg("--verbose");
+    }
+    if cfg.parallel {
+        let cpus = num_cpus::get();
+        cmd.args(["-j", &cpus.to_string()]);
+    }
+    if cfg.integration {
+        cmd.args(["-L", "integration"]); // ctest label filter
+    }
+
+    let status = cmd.status()?;
+    if status.success() {
+        println!(
+            "\n  {} C++ tests passed",
+            "✓".green()
+        );
+    } else {
+        anyhow::bail!("C++ tests failed with exit code {}", status.code().unwrap_or(1));
+    }
+
+    Ok(())
+}
+
 /// Generate `.horus/Cargo.toml` via `cargo_gen` with `include_dev = true`.
 ///
 /// Loads the manifest from `horus.toml`, detects the main source file,
@@ -319,7 +374,7 @@ fn generate_test_cargo_toml(verbose: bool) -> Result<()> {
         &[main_file],
         true, // include_dev = true for testing
     )
-    .context("Failed to generate .horus/Cargo.toml for testing")?;
+    .context("Failed to generate build manifest for testing")?;
 
     Ok(())
 }

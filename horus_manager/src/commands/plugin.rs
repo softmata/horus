@@ -423,7 +423,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
 
     // Determine install target - plugins default to global
     let install_target = if global {
-        println!("  Scope: {}", "global (~/.horus/cache/)".dimmed());
+        println!("  Scope: {}", "global (user cache)".dimmed());
         workspace::InstallTarget::Global
     } else {
         let target = workspace::detect_or_select_workspace(true)
@@ -433,7 +433,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
                 println!("  Scope: {}", format!("local ({})", p.display()).dimmed());
             }
             workspace::InstallTarget::Global => {
-                println!("  Scope: {}", "global (~/.horus/cache/)".dimmed());
+                println!("  Scope: {}", "global (user cache)".dimmed());
             }
         }
         target

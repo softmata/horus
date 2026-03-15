@@ -11,7 +11,7 @@ use crate::dispatch;
 
 /// Health status for a check category.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Health {
+pub(crate) enum Health {
     Ok,
     Warn,
     Fail,
@@ -29,11 +29,11 @@ impl Health {
 }
 
 /// A single check result.
-struct CheckResult {
-    category: String,
-    health: Health,
-    summary: String,
-    details: Vec<String>,
+pub(crate) struct CheckResult {
+    pub(crate) category: String,
+    pub(crate) health: Health,
+    pub(crate) summary: String,
+    pub(crate) details: Vec<String>,
 }
 
 /// Run `horus doctor`.
@@ -87,7 +87,7 @@ pub fn run_doctor(verbose: bool, json: bool) -> Result<()> {
     }
 }
 
-fn print_summary(results: &[CheckResult], verbose: bool) {
+pub(crate) fn print_summary(results: &[CheckResult], verbose: bool) {
     println!("{}", "horus doctor".bold());
     println!();
 
@@ -308,7 +308,7 @@ fn check_disk() -> CheckResult {
     CheckResult {
         category: "Disk".to_string(),
         health,
-        summary: format!(".horus/ uses {}", formatted),
+        summary: format!("Build cache uses {}", formatted),
         details: vec![],
     }
 }
@@ -435,6 +435,8 @@ mod tests {
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -442,6 +444,8 @@ mod tests {
             scripts: BTreeMap::new(),
             ignore: Default::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         }
     }
 

@@ -379,7 +379,10 @@ pub async fn run(port: u16, no_auth: bool) -> anyhow::Result<()> {
             "/api/debug/sessions/:id/watches/values",
             get(debug_watches_values_handler),
         )
-        .route("/api/logout", post(logout_handler));
+        .route("/api/logout", post(logout_handler))
+        // Documentation extraction API endpoints
+        .route("/api/docs", get(docs_handler))
+        .route("/api/docs/export", get(docs_export_handler));
 
     // Only add authentication middleware if password is set
     if !auth_disabled {

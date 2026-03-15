@@ -4,6 +4,7 @@
 
 use crate::cli_output;
 use crate::config::CARGO_TOML;
+use crate::manifest::{detect_languages, Language};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::collections::HashMap;
@@ -331,8 +332,39 @@ fn detect_target_arch(target: &str) -> TargetArch {
     }
 }
 
+/// Detect the primary project language for deploy purposes.
+///
+/// Uses `detect_languages()` and returns the first detected language.
+/// Falls back to `Language::Rust` if nothing is detected.
+fn detect_deploy_language() -> Language {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let languages = detect_languages(&cwd);
+    languages.into_iter().next().unwrap_or(Language::Rust)
+}
+
 /// Build the project for target architecture
 fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
+    let language = detect_deploy_language();
+
+    match language {
+        Language::Rust => build_for_target_rust(config),
+        Language::Python => {
+            println!(
+                "  {} Python project — no build step needed",
+                cli_output::ICON_INFO.cyan()
+            );
+            Ok(())
+        }
+        Language::Cpp => build_for_target_cpp(config),
+        Language::Ros2 => {
+            // ROS2 projects use colcon; for deploy, treat like C++ with cmake
+            build_for_target_cpp(config)
+        }
+    }
+}
+
+/// Build a Rust project for the target architecture
+fn build_for_target_rust(config: &DeployConfig) -> HorusResult<()> {
     let target = config.arch.rust_target();
 
     // Check if cross-compilation target is installed
@@ -402,6 +434,66 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
     if !status.success() {
         return Err(HorusError::Config(ConfigError::Other(
             "Build failed".to_string(),
+        )));
+    }
+
+    println!("  {} Build complete", cli_output::ICON_SUCCESS.green());
+    Ok(())
+}
+
+/// Build a C++ project using cmake
+fn build_for_target_cpp(config: &DeployConfig) -> HorusResult<()> {
+    let build_dir = ".horus/cpp-build";
+    let build_type = if config.release { "Release" } else { "Debug" };
+
+    // Ensure the build directory exists (run cmake configure if needed)
+    if !Path::new(build_dir).join("CMakeCache.txt").exists() {
+        println!(
+            "  {} Configuring cmake build...",
+            cli_output::ICON_INFO.cyan()
+        );
+
+        let mut configure_cmd = Command::new("cmake");
+        configure_cmd.args([
+            "-S",
+            ".",
+            "-B",
+            build_dir,
+            &format!("-DCMAKE_BUILD_TYPE={}", build_type),
+        ]);
+        configure_cmd.stdout(Stdio::inherit());
+        configure_cmd.stderr(Stdio::inherit());
+
+        let status = configure_cmd.status().map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!("Failed to run cmake configure: {}", e)))
+        })?;
+
+        if !status.success() {
+            return Err(HorusError::Config(ConfigError::Other(
+                "cmake configure failed".to_string(),
+            )));
+        }
+    }
+
+    print!(
+        "  {} Building C++ project",
+        cli_output::ICON_INFO.cyan()
+    );
+    println!(" ({})...", build_type);
+
+    let mut cmd = Command::new("cmake");
+    cmd.args(["--build", build_dir, "--config", build_type]);
+
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+
+    let status = cmd.status().map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!("Failed to run cmake build: {}", e)))
+    })?;
+
+    if !status.success() {
+        return Err(HorusError::Config(ConfigError::Other(
+            "C++ build failed".to_string(),
         )));
     }
 
@@ -488,22 +580,36 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
 
 /// Run the project on the target
 fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
-    // Find the binary name from Cargo.toml
-    let binary_name = find_binary_name().unwrap_or_else(|| "horus_project".to_string());
+    let language = detect_deploy_language();
 
-    let target = config.arch.rust_target();
-    let mode = if config.release { "release" } else { "debug" };
+    let (run_command, display_name) = match language {
+        Language::Rust => {
+            let binary_name = find_binary_name().unwrap_or_else(|| "horus_project".to_string());
+            let target = config.arch.rust_target();
+            let mode = if config.release { "release" } else { "debug" };
 
-    // Build the path to the binary
-    let binary_path = if target.is_empty() {
-        format!("./target/{}/{}", mode, binary_name)
-    } else {
-        format!("./target/{}/{}/{}", target, mode, binary_name)
+            let binary_path = if target.is_empty() {
+                format!("./target/{}/{}", mode, binary_name)
+            } else {
+                format!("./target/{}/{}/{}", target, mode, binary_name)
+            };
+            (format!("'{}'", binary_path.replace('\'', "'\\''")), binary_path)
+        }
+        Language::Python => {
+            let entry = find_python_entry().unwrap_or_else(|| "main.py".to_string());
+            let display = format!("python3 {}", entry);
+            (format!("python3 '{}'", entry.replace('\'', "'\\''")), display)
+        }
+        Language::Cpp | Language::Ros2 => {
+            let binary_name = find_cpp_binary().unwrap_or_else(|| "horus_project".to_string());
+            let binary_path = format!(".horus/cpp-build/{}", binary_name);
+            let display = format!("build/{}", binary_name);
+            (format!("'{}'", binary_path.replace('\'', "'\\''")), display)
+        }
     };
 
     let escaped_dir = config.remote_dir.replace('\'', "'\\''");
-    let escaped_binary = binary_path.replace('\'', "'\\''");
-    let remote_cmd = format!("cd '{}' && '{}'", escaped_dir, escaped_binary);
+    let remote_cmd = format!("cd '{}' && {}", escaped_dir, run_command);
 
     // Build SSH command with ConnectTimeout
     let mut cmd = Command::new("ssh");
@@ -522,7 +628,7 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
     println!(
         "  {} Running: {}",
         cli_output::ICON_INFO.cyan(),
-        binary_path
+        display_name
     );
     println!("  {} Press Ctrl+C to stop", cli_output::ICON_HINT.dimmed());
     println!();
@@ -548,6 +654,100 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
     }
 
     Ok(())
+}
+
+/// Find the Python entry point for the project.
+///
+/// Checks horus.toml [scripts] for a "run" or "start" entry, then
+/// falls back to common entry point paths (src/main.py, main.py).
+fn find_python_entry() -> Option<String> {
+    use crate::manifest::{HorusManifest, HORUS_TOML};
+
+    // Try horus.toml [scripts] for a run/start entry
+    let manifest_path = Path::new(HORUS_TOML);
+    if manifest_path.exists() {
+        if let Ok(manifest) = HorusManifest::load_from(manifest_path) {
+            // Check scripts for python entry hints
+            for key in &["run", "start", "main"] {
+                if let Some(script) = manifest.scripts.get(*key) {
+                    // Extract the Python file from the script command
+                    // e.g., "python3 src/app.py" -> "src/app.py"
+                    if let Some(py_file) = extract_python_file(script) {
+                        return Some(py_file);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to common entry points
+    for candidate in &["src/main.py", "main.py"] {
+        if Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+/// Extract a Python file path from a script command string.
+///
+/// Handles patterns like `python3 src/app.py` or `python src/main.py --verbose`.
+fn extract_python_file(script: &str) -> Option<String> {
+    let parts: Vec<&str> = script.split_whitespace().collect();
+    for (i, part) in parts.iter().enumerate() {
+        if (*part == "python3" || *part == "python") && i + 1 < parts.len() {
+            let candidate = parts[i + 1];
+            if candidate.ends_with(".py") {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    // Maybe the script is just a .py file path
+    if let Some(first) = parts.first() {
+        if first.ends_with(".py") {
+            return Some(first.to_string());
+        }
+    }
+    None
+}
+
+/// Find the C++ binary name from CMakeLists.txt or cmake build artifacts.
+///
+/// Looks for `add_executable(name ...)` in CMakeLists.txt, then checks the
+/// cmake build directory for executables.
+fn find_cpp_binary() -> Option<String> {
+    // Try to extract from CMakeLists.txt
+    let cmake_path = Path::new("CMakeLists.txt");
+    if cmake_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(cmake_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("add_executable(") {
+                    // add_executable(my_app src/main.cpp)
+                    if let Some(name) = rest.split_whitespace().next() {
+                        let name = name.trim_end_matches(')');
+                        if !name.is_empty() {
+                            return Some(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to horus.toml package name
+    use crate::manifest::{HorusManifest, HORUS_TOML};
+    let manifest_path = Path::new(HORUS_TOML);
+    if manifest_path.exists() {
+        if let Ok(manifest) = HorusManifest::load_from(manifest_path) {
+            if !manifest.package.name.is_empty() {
+                return Some(manifest.package.name.replace('-', "_"));
+            }
+        }
+    }
+
+    None
 }
 
 /// Find the binary name from horus.toml, falling back to Cargo.toml

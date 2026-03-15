@@ -286,7 +286,7 @@ pub fn register_current_workspace(name: Option<String>) -> Result<()> {
     let horus_dir = current.join(".horus");
     if !horus_dir.exists() {
         fs::create_dir_all(&horus_dir)?;
-        println!("  {} Created .horus/ directory", "".green());
+        println!("  {} Created build environment", "".green());
     }
 
     // Create minimal horus.toml if it doesn't exist

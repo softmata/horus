@@ -189,7 +189,7 @@ fn run_with_prefix_output(cmd: &PrefixedCommand, colored_label: &str) -> Prefixe
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             match line {
-                Ok(line) => println!("{} {}", label_out, line),
+                Ok(line) => println!("{} {}", label_out, crate::error_wrapper::rewrite_horus_paths(&line)),
                 Err(_) => break,
             }
         }
@@ -199,7 +199,7 @@ fn run_with_prefix_output(cmd: &PrefixedCommand, colored_label: &str) -> Prefixe
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             match line {
-                Ok(line) => eprintln!("{} {}", label_err, line),
+                Ok(line) => eprintln!("{} {}", label_err, crate::error_wrapper::rewrite_horus_paths(&line)),
                 Err(_) => break,
             }
         }

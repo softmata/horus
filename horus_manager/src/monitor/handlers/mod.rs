@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod blackbox;
 pub mod debug;
+pub mod docs;
 pub mod logs;
 pub mod monitor;
 pub mod packages;
@@ -11,6 +12,7 @@ pub mod websocket;
 pub use auth::*;
 pub use blackbox::*;
 pub use debug::*;
+pub use docs::*;
 pub use logs::*;
 pub use monitor::*;
 pub use packages::*;

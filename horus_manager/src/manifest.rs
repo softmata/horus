@@ -185,6 +185,14 @@ pub struct HorusManifest {
     /// `enable = ["cuda", "editor"]` -- capabilities to enable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enable: Vec<String>,
+
+    /// `[cpp]` -- C++ build configuration (compiler override, cmake args, toolchain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpp: Option<CppConfig>,
+
+    /// `[hooks]` -- pre/post action hooks for run/build/test.
+    #[serde(default, skip_serializing_if = "HooksConfig::is_empty")]
+    pub hooks: HooksConfig,
 }
 
 #[cfg(test)]
@@ -289,6 +297,14 @@ pub struct PackageInfo {
     /// Registry categories (comma-separated or array).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
+
+    /// C++ language standard (e.g., `"c++17"`, `"c++20"`, `"c++23"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard: Option<String>,
+
+    /// Rust edition override (e.g., `"2021"`). Used by cargo_gen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust_edition: Option<String>,
 }
 
 fn default_edition() -> String {
@@ -325,6 +341,25 @@ impl fmt::Display for PackageType {
             Self::App => write!(f, "app"),
         }
     }
+}
+
+// ─── C++ configuration ──────────────────────────────────────────────────────
+
+/// C++ build configuration under `[cpp]` in horus.toml.
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CppConfig {
+    /// Override the C++ compiler (e.g., `"clang++"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<String>,
+
+    /// Additional CMake arguments injected into the generated CMakeLists.txt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cmake_args: Vec<String>,
+
+    /// Cross-compilation toolchain target (e.g., `"aarch64"`, `"armv7"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolchain: Option<String>,
 }
 
 // ─── Dependency types ────────────────────────────────────────────────────────
@@ -410,6 +445,18 @@ pub struct DetailedDependency {
     /// Git revision (for source = "git").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
+
+    /// Apt package name for system dependencies (e.g., `"libeigen3-dev"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apt: Option<String>,
+
+    /// CMake package name for `find_package()` (e.g., `"Eigen3"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmake_package: Option<String>,
+
+    /// Language this dependency belongs to (e.g., `"cpp"`, `"rust"`, `"python"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -511,6 +558,38 @@ pub enum DriverValue {
     Backend(String),
     /// Enable with default backend.
     Enabled(bool),
+}
+
+// ─── [hooks] ────────────────────────────────────────────────────────────────
+
+/// Pre/post action hooks that run automatically before/after commands.
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HooksConfig {
+    /// Hooks to run before `horus run` (e.g., `["fmt", "lint"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_run: Vec<String>,
+
+    /// Hooks to run before `horus build`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_build: Vec<String>,
+
+    /// Hooks to run before `horus test`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_test: Vec<String>,
+
+    /// Hooks to run after `horus test`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_test: Vec<String>,
+}
+
+impl HooksConfig {
+    pub fn is_empty(&self) -> bool {
+        self.pre_run.is_empty()
+            && self.pre_build.is_empty()
+            && self.pre_test.is_empty()
+            && self.post_test.is_empty()
+    }
 }
 
 // ─── [ignore] ───────────────────────────────────────────────────────────────
@@ -822,6 +901,8 @@ version = "not-semver"
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -833,6 +914,8 @@ version = "not-semver"
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
+            cpp: None,
+            hooks: Default::default(),
         };
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();
@@ -861,6 +944,8 @@ version = "not-semver"
                 repository: None,
                 package_type: Some(PackageType::Node),
                 categories: vec!["robotics".into()],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -873,6 +958,8 @@ version = "not-semver"
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
+            cpp: None,
+            hooks: Default::default(),
         };
         manifest.save_to(&path).unwrap();
         assert!(path.exists());
@@ -1077,6 +1164,9 @@ test-hw = "cargo test --features hardware"
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         });
         assert_eq!(dep.effective_source(), DepSource::Path);
 
@@ -1091,6 +1181,9 @@ test-hw = "cargo test --features hardware"
             branch: Some("main".to_string()),
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         });
         assert_eq!(dep.effective_source(), DepSource::Git);
 
@@ -1105,6 +1198,9 @@ test-hw = "cargo test --features hardware"
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         });
         assert_eq!(dep.effective_source(), DepSource::CratesIo);
 
@@ -1189,6 +1285,9 @@ version = "0.1.0"
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         });
         assert_eq!(dep.version(), Some("1.0"));
         assert_eq!(dep.features().len(), 2);
@@ -1211,6 +1310,9 @@ version = "0.1.0"
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         });
         assert!(dep.version().is_none());
         assert_eq!(dep.effective_source(), DepSource::System);
@@ -1285,6 +1387,8 @@ version = "0.1.0"
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -1292,6 +1396,8 @@ version = "0.1.0"
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         };
 
         manifest.save_to(&path).unwrap();
@@ -1845,6 +1951,8 @@ sys-dep = { source = "system" }
                 repository: Some("https://github.com/softmata/roundtrip".to_string()),
                 package_type: Some(PackageType::Algorithm),
                 categories: vec!["planning".to_string(), "ml".to_string()],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: {
                 let mut deps = BTreeMap::new();
@@ -1864,6 +1972,9 @@ sys-dep = { source = "system" }
                         branch: None,
                         tag: None,
                         rev: None,
+                        apt: None,
+                        cmake_package: None,
+                        lang: None,
                     }),
                 );
                 deps.insert(
@@ -1878,6 +1989,9 @@ sys-dep = { source = "system" }
                         branch: None,
                         tag: Some("v1.0.0".to_string()),
                         rev: None,
+                        apt: None,
+                        cmake_package: None,
+                        lang: None,
                     }),
                 );
                 deps.insert(
@@ -1892,6 +2006,9 @@ sys-dep = { source = "system" }
                         branch: None,
                         tag: None,
                         rev: None,
+                        apt: None,
+                        cmake_package: None,
+                        lang: None,
                     }),
                 );
                 deps
@@ -1910,6 +2027,9 @@ sys-dep = { source = "system" }
                         branch: None,
                         tag: None,
                         rev: None,
+                        apt: None,
+                        cmake_package: None,
+                        lang: None,
                     }),
                 );
                 dd
@@ -1932,6 +2052,8 @@ sys-dep = { source = "system" }
                 packages: vec!["ipython".to_string()],
             },
             enable: vec!["cuda".to_string(), "profiling".to_string()],
+            cpp: None,
+            hooks: Default::default(),
         };
 
         manifest.save_to(&path).unwrap();
@@ -2007,6 +2129,8 @@ sys-dep = { source = "system" }
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -2014,6 +2138,8 @@ sys-dep = { source = "system" }
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         };
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();

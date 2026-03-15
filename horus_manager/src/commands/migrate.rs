@@ -124,7 +124,7 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
         // Save updated manifest
         manifest.save_to(&cwd.join(HORUS_TOML))?;
         println!();
-        println!("{} Migration complete. Old files backed up to .horus/backup/", "✓".green());
+        println!("{} Migration complete. Old files backed up.", "✓".green());
         println!("  Run {} to verify the project builds.", "horus build".cyan());
     }
 
@@ -159,6 +159,9 @@ fn extract_cargo_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> 
                         branch: None,
                         tag: None,
                         rev: None,
+                        apt: None,
+                        cmake_package: None,
+                        lang: None,
                     })
                 }
                 toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
@@ -214,6 +217,9 @@ fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
         branch,
         tag: None,
         rev: None,
+        apt: None,
+        cmake_package: None,
+        lang: None,
     })
 }
 
@@ -257,6 +263,9 @@ fn parse_cargo_table_dep(t: &toml_edit::Table) -> DependencyValue {
         branch,
         tag: None,
         rev: None,
+        apt: None,
+        cmake_package: None,
+        lang: None,
     })
 }
 
@@ -291,6 +300,9 @@ fn extract_pyproject_deps(path: &Path) -> Result<BTreeMap<String, DependencyValu
                             branch: None,
                             tag: None,
                             rev: None,
+                            apt: None,
+                            cmake_package: None,
+                            lang: None,
                         }),
                     );
                 }

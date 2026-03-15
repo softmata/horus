@@ -10,10 +10,17 @@ pub mod deps;
 #[cfg(feature = "mdns")]
 pub mod discover;
 pub mod doc;
+pub mod doc_extract;
+pub mod doc_extract_cpp;
+pub mod doc_extract_diff;
+pub mod doc_extract_html;
+pub mod doc_extract_python;
+pub mod doc_extract_rust;
 pub mod doctor;
 pub mod env;
 pub mod fmt;
 pub mod github_auth;
+pub mod hooks;
 pub mod init;
 pub mod launch;
 pub mod lint;

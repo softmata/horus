@@ -49,7 +49,7 @@ Debugging:
   cache             Cache management (info, clean, purge)
 
 Packages:
-  install, i        Install a package or plugin (name@version supported)
+  install, i, add   Install a package or plugin (name@version supported)
   remove            Remove a package, driver, or plugin
   search, s         Search available packages from registry
   list              List installed packages and plugins
@@ -163,6 +163,14 @@ enum Commands {
         #[arg(short = 'e', long = "enable", value_delimiter = ',')]
         enable: Option<Vec<String>>,
 
+        /// Output run results as JSON (for CI/AI tooling)
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Output build diagnostics as JSON lines for AI agents
+        #[arg(long = "json-diagnostics")]
+        json_diagnostics: bool,
+
         /// Enable recording for this session
         /// Use 'horus record list' to see recordings
         #[arg(long = "record")]
@@ -171,6 +179,10 @@ enum Commands {
         /// Additional arguments to pass to the program (use -- to separate)
         #[arg(last = true)]
         args: Vec<String>,
+
+        /// Skip [hooks] execution
+        #[arg(long = "no-hooks")]
+        no_hooks: bool,
     },
 
     /// Build the HORUS project without running
@@ -195,6 +207,18 @@ enum Commands {
         /// Example: --enable cuda,editor,python
         #[arg(short = 'e', long = "enable", value_delimiter = ',')]
         enable: Option<Vec<String>>,
+
+        /// Output build results as JSON (for CI/AI tooling)
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Output build diagnostics as JSON lines for AI agents
+        #[arg(long = "json-diagnostics")]
+        json_diagnostics: bool,
+
+        /// Skip [hooks] execution
+        #[arg(long = "no-hooks")]
+        no_hooks: bool,
     },
 
     /// Run tests for the HORUS project
@@ -231,10 +255,6 @@ enum Commands {
         #[arg(long = "no-build")]
         no_build: bool,
 
-        /// Skip shared memory cleanup after tests
-        #[arg(long = "no-cleanup")]
-        no_cleanup: bool,
-
         /// Show test stdout/stderr (verbose output)
         #[arg(long = "verbose")]
         verbose: bool,
@@ -248,6 +268,14 @@ enum Commands {
         /// Example: --enable cuda,editor,python
         #[arg(short = 'e', long = "enable", value_delimiter = ',')]
         enable: Option<Vec<String>>,
+
+        /// Output test results as JSON (for CI/AI tooling)
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Skip [hooks] execution
+        #[arg(long = "no-hooks")]
+        no_hooks: bool,
     },
 
     /// Validate horus.toml, source files, or entire workspace
@@ -259,6 +287,14 @@ enum Commands {
         /// Output as JSON
         #[arg(long = "json")]
         json: bool,
+
+        /// Run full validation (manifest + doctor + fmt + lint + deps)
+        #[arg(long = "full")]
+        full: bool,
+
+        /// Run health check (alias for horus doctor)
+        #[arg(long = "health")]
+        health: bool,
     },
 
     /// Clean build artifacts and shared memory
@@ -486,7 +522,7 @@ enum Commands {
 
     // ── Packages ─────────────────────────────────────────────────────────
     /// Install a package or plugin (use name@version for specific version)
-    #[command(visible_alias = "i")]
+    #[command(visible_aliases = ["i", "add"])]
     Install {
         /// Package name (supports name@version syntax, e.g. rplidar@1.2.0)
         name: String,
@@ -514,6 +550,10 @@ enum Commands {
         /// Add as dev-dependency
         #[arg(long = "dev")]
         dev: bool,
+
+        /// Output install results as JSON (for CI/AI tooling)
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Remove a package, driver, or plugin
@@ -576,28 +616,11 @@ enum Commands {
     },
 
     // ── Plugins ──────────────────────────────────────────────────────────
-    /// Enable a disabled plugin
-    Enable {
-        /// Plugin command name to enable
-        command: String,
-    },
-
-    /// Disable a plugin (keep installed but don't execute)
-    Disable {
-        /// Plugin command name to disable
-        command: String,
-        /// Reason for disabling
-        #[arg(long = "reason")]
-        reason: Option<String>,
-    },
-
-    /// Verify integrity of installed plugins
-    Verify {
-        /// Specific plugin to verify (optional, verifies all if not specified)
-        plugin: Option<String>,
-        /// Output as JSON
-        #[arg(long = "json")]
-        json: bool,
+    /// Plugin management (enable, disable, verify)
+    #[command(visible_alias = "plugins")]
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
     },
 
     // ── Development ──────────────────────────────────────────────────────
@@ -632,6 +655,54 @@ enum Commands {
         /// Open documentation in browser after generating
         #[arg(long = "open")]
         open: bool,
+
+        /// Extract machine-readable API documentation
+        #[arg(long = "extract")]
+        extract: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Output as markdown (for LLM context)
+        #[arg(long = "md")]
+        md: bool,
+
+        /// Output as self-contained HTML report
+        #[arg(long = "html")]
+        html: bool,
+
+        /// Include doc comments in brief output
+        #[arg(long = "full")]
+        full: bool,
+
+        /// Include private/crate-only symbols
+        #[arg(long = "all")]
+        all: bool,
+
+        /// Filter by language (rust, cpp, python)
+        #[arg(long = "lang")]
+        lang: Option<String>,
+
+        /// Show documentation coverage report
+        #[arg(long = "coverage")]
+        coverage: bool,
+
+        /// Write output to file instead of stdout
+        #[arg(short = 'o', long = "output")]
+        output: Option<std::path::PathBuf>,
+
+        /// Compare against a baseline JSON file
+        #[arg(long = "diff", value_name = "BASELINE")]
+        diff: Option<std::path::PathBuf>,
+
+        /// Fail if doc coverage is below this percentage (for CI)
+        #[arg(long = "fail-under", value_name = "PERCENT")]
+        fail_under: Option<u32>,
+
+        /// Watch for file changes and regenerate
+        #[arg(long = "watch")]
+        watch: bool,
 
         /// Additional arguments passed to underlying tools
         #[arg(last = true)]
@@ -703,17 +774,6 @@ enum Commands {
         /// Arguments to pass to the script
         #[arg(last = true)]
         args: Vec<String>,
-    },
-
-    /// Freeze environment (shortcut for `horus env freeze`)
-    Freeze {
-        /// Output file path (default: horus-freeze.toml)
-        #[arg(short = 'o', long = "output")]
-        output: Option<PathBuf>,
-
-        /// Publish environment to registry
-        #[arg(short = 'p', long = "publish")]
-        publish: bool,
     },
 
     // ── Publishing & Deploy ──────────────────────────────────────────────
@@ -813,6 +873,31 @@ enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCommands {
+    /// Enable a disabled plugin
+    Enable {
+        /// Plugin command name to enable
+        command: String,
+    },
+    /// Disable a plugin (keep installed but don't execute)
+    Disable {
+        /// Plugin command name to disable
+        command: String,
+        /// Reason for disabling
+        #[arg(long = "reason")]
+        reason: Option<String>,
+    },
+    /// Verify integrity of installed plugins
+    Verify {
+        /// Specific plugin to verify (optional, verifies all if not specified)
+        plugin: Option<String>,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 }
 
@@ -1704,9 +1789,17 @@ fn run_command(command: Commands) -> HorusResult<()> {
             clean,
             drivers,
             enable,
+            json,
+            json_diagnostics,
             args,
             record,
+            no_hooks,
         } => {
+            // Enable JSON diagnostics mode globally (read by error_wrapper::emit_diagnostic)
+            if json_diagnostics {
+                horus_manager::error_wrapper::set_json_diagnostics(true);
+            }
+
             // SAFETY: These set_var calls run in single-threaded main() before
             // any child processes or threads are spawned. They configure env vars
             // that child processes inherit via process environment.
@@ -1725,8 +1818,24 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 );
             }
 
+            if !no_hooks {
+                if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml")) {
+                    if let Err(e) = commands::hooks::run_hooks("pre_run", &manifest) {
+                        eprintln!("Hook failed: {}", e);
+                        return Err(HorusError::from(e));
+                    }
+                }
+            }
+
             // Build and run
-            commands::run::execute_run(files, args, release, clean).map_err(HorusError::from)
+            let result = commands::run::execute_run(files, args, release, clean);
+            if json {
+                match &result {
+                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "run"})),
+                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "run", "errors": [{"message": e.to_string()}]})),
+                }
+            }
+            result.map_err(HorusError::from)
         }
 
         Commands::Build {
@@ -1735,7 +1844,15 @@ fn run_command(command: Commands) -> HorusResult<()> {
             clean,
             drivers,
             enable,
+            json,
+            json_diagnostics,
+            no_hooks,
         } => {
+            // Enable JSON diagnostics mode globally
+            if json_diagnostics {
+                horus_manager::error_wrapper::set_json_diagnostics(true);
+            }
+
             // SAFETY: Single-threaded main() context, before any child processes.
             if let Some(ref driver_list) = drivers {
                 std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
@@ -1744,12 +1861,56 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 std::env::set_var("HORUS_ENABLE", enable_list.join(","));
             }
 
+            if !no_hooks {
+                if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml")) {
+                    if let Err(e) = commands::hooks::run_hooks("pre_build", &manifest) {
+                        eprintln!("Hook failed: {}", e);
+                        return Err(HorusError::from(e));
+                    }
+                }
+            }
+
             // Build only - compile but don't execute
-            commands::run::execute_build_only(files, release, clean).map_err(HorusError::from)
+            let result = commands::run::execute_build_only(files, release, clean);
+            if json {
+                match &result {
+                    Ok(()) => {
+                        println!("{}", serde_json::json!({
+                            "success": true,
+                            "command": "build",
+                        }));
+                    }
+                    Err(e) => {
+                        println!("{}", serde_json::json!({
+                            "success": false,
+                            "command": "build",
+                            "errors": [{
+                                "message": e.to_string(),
+                            }]
+                        }));
+                    }
+                }
+                result.map_err(HorusError::from)
+            } else {
+                result.map_err(HorusError::from)
+            }
         }
 
-        Commands::Check { path, json } => {
-            commands::check::run_check(path, horus_manager::progress::is_quiet(), json)
+        Commands::Check { path, json, full, health } => {
+            if health {
+                return commands::doctor::run_doctor(false, json).map_err(HorusError::from);
+            }
+            let has_manifest = path.as_ref()
+                .map(|p| p.join("horus.toml").exists())
+                .unwrap_or_else(|| std::path::Path::new("horus.toml").exists());
+            if !has_manifest && path.is_none() {
+                return commands::doctor::run_doctor(false, json).map_err(HorusError::from);
+            }
+            if full {
+                commands::check::run_check_full(path, json)
+            } else {
+                commands::check::run_check(path, horus_manager::progress::is_quiet(), json)
+            }
         }
 
         Commands::Test {
@@ -1761,10 +1922,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
             simulation,
             integration,
             no_build,
-            no_cleanup: _,
             verbose,
             drivers,
             enable,
+            json,
+            no_hooks,
         } => {
             // SAFETY: Single-threaded main() context, before any child processes.
             if let Some(ref driver_list) = drivers {
@@ -1774,7 +1936,20 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 std::env::set_var("HORUS_ENABLE", enable_list.join(","));
             }
 
-            commands::test::run_tests(commands::test::TestConfig {
+            let hooks_manifest = if !no_hooks {
+                horus_manager::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml")).ok()
+            } else {
+                None
+            };
+
+            if let Some(ref manifest) = hooks_manifest {
+                if let Err(e) = commands::hooks::run_hooks("pre_test", manifest) {
+                    eprintln!("Hook failed: {}", e);
+                    return Err(HorusError::from(e));
+                }
+            }
+
+            let result = commands::test::run_tests(commands::test::TestConfig {
                 filter,
                 release,
                 nocapture,
@@ -1784,8 +1959,22 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 integration,
                 no_build,
                 verbose,
-            })
-            .map_err(HorusError::from)?;
+            });
+            if json {
+                match &result {
+                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "test"})),
+                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "test", "errors": [{"message": e.to_string()}]})),
+                }
+            }
+            result.map_err(HorusError::from)?;
+
+            if let Some(ref manifest) = hooks_manifest {
+                if let Err(e) = commands::hooks::run_hooks("post_test", manifest) {
+                    eprintln!("Hook failed: {}", e);
+                    return Err(HorusError::from(e));
+                }
+            }
+
             Ok(())
         }
 
@@ -2038,6 +2227,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             source,
             features,
             dev,
+            json,
         } => {
             // Parse name@version syntax (takes precedence over --ver)
             let (pkg_name, pkg_ver) = match name.find('@') {
@@ -2045,15 +2235,22 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 None => (name, ver),
             };
 
-            if plugin {
+            let result = if plugin {
                 // Plugins default to global scope; --global is a no-op, only explicit --target overrides
                 let local = target.is_some();
-                commands::plugin::run_install(pkg_name, pkg_ver, local)
+                commands::plugin::run_install(pkg_name.clone(), pkg_ver.clone(), local)
             } else if driver {
-                commands::pkg::run_add(pkg_name, pkg_ver, true, false)
+                commands::pkg::run_add(pkg_name.clone(), pkg_ver.clone(), true, false)
             } else {
-                commands::pkg::run_install(pkg_name, pkg_ver, global, target, source, features, dev)
+                commands::pkg::run_install(pkg_name.clone(), pkg_ver.clone(), global, target, source, features, dev)
+            };
+            if json {
+                match &result {
+                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "install", "package": pkg_name, "version": pkg_ver})),
+                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "install", "package": pkg_name, "errors": [{"message": e.to_string()}]})),
+                }
             }
+            result
         }
 
         Commands::List { global, all, json } => commands::pkg::run_list(None, global, all, json),
@@ -2095,16 +2292,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::Info { name, json } => commands::plugin::run_info_unified(name, json),
 
-        Commands::Enable { command } => {
-            commands::pkg::enable_plugin(&command).map_err(HorusError::from)
-        }
-
-        Commands::Disable { command, reason } => {
-            commands::pkg::disable_plugin(&command, reason.as_deref()).map_err(HorusError::from)
-        }
-
-        Commands::Verify { plugin, json } => {
-            commands::pkg::verify_plugins(plugin.as_deref(), json).map_err(HorusError::from)
+        Commands::Plugin { command } => match command {
+            PluginCommands::Enable { command } => {
+                commands::pkg::enable_plugin(&command).map_err(HorusError::from)
+            }
+            PluginCommands::Disable { command, reason } => {
+                commands::pkg::disable_plugin(&command, reason.as_deref()).map_err(HorusError::from)
+            }
+            PluginCommands::Verify { plugin, json } => {
+                commands::pkg::verify_plugins(plugin.as_deref(), json).map_err(HorusError::from)
+            }
         }
 
         Commands::Env { command } => match command {
@@ -2262,8 +2459,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
             commands::lint::run_lint(fix, types, extra_args).map_err(HorusError::from)
         }
 
-        Commands::Doc { open, extra_args } => {
-            commands::doc::run_doc(open, extra_args).map_err(HorusError::from)
+        Commands::Doc { open, extract, json, md, html, full, all, lang, coverage, output, diff, fail_under, watch, extra_args } => {
+            if extract || json || md || html || coverage || diff.is_some() {
+                let config = commands::doc_extract::ExtractConfig {
+                    json, md, html, brief: false, full, all, lang, coverage,
+                    output, watch, diff, fail_under,
+                };
+                commands::doc_extract::run_extract(config).map_err(HorusError::from)
+            } else {
+                commands::doc::run_doc(open, extra_args).map_err(HorusError::from)
+            }
         }
 
         Commands::Bench { filter, extra_args } => {
@@ -2322,8 +2527,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         Commands::Scripts { name, args } => commands::scripts::run_scripts(name, args),
-
-        Commands::Freeze { output, publish } => commands::env::run_freeze(output, publish),
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup

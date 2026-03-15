@@ -1341,6 +1341,7 @@ pub fn generate_html(port: u16) -> String {
                 <li><button class="nav-item active" onclick="switchTab('monitor')">Monitor</button></li>
                 <li><button class="nav-item" onclick="switchTab('params')">Parameters</button></li>
                 <li><button class="nav-item" onclick="switchTab('packages')">Packages</button></li>
+                <li><button class="nav-item" onclick="switchTab('docs')">API Docs</button></li>
             </ul>
         </nav>
 
@@ -1576,6 +1577,45 @@ pub fn generate_html(port: u16) -> String {
             </div>
         </div>
 
+        <!-- API Docs Tab -->
+        <div id="tab-docs" class="tab-content">
+            <div class="card" style="margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2 style="color: var(--text-primary);">API Documentation</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="docs-search" placeholder="Search symbols..."
+                            style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; width: 250px;"
+                            oninput="filterDocsSymbols(this.value)" />
+                        <a href="/api/docs/export" download="api-docs.html"
+                            style="padding: 8px 16px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-family: 'JetBrains Mono', monospace; text-decoration: none; display: flex; align-items: center;">
+                            Export HTML
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Bar -->
+            <div id="docs-stats" class="card" style="margin-bottom: 16px; display: flex; gap: 24px; flex-wrap: wrap;">
+                <div><span style="color: var(--text-secondary);">Symbols:</span> <span id="docs-symbol-count" style="color: var(--accent); font-weight: 600;">—</span></div>
+                <div><span style="color: var(--text-secondary);">Coverage:</span> <span id="docs-coverage" style="font-weight: 600;">—</span></div>
+                <div><span style="color: var(--text-secondary);">Nodes:</span> <span id="docs-nodes" style="color: var(--neon-green); font-weight: 600;">—</span></div>
+                <div><span style="color: var(--text-secondary);">Messages:</span> <span id="docs-messages" style="color: var(--neon-green); font-weight: 600;">—</span></div>
+                <div><span style="color: var(--text-secondary);">Topics:</span> <span id="docs-topics" style="color: var(--neon-green); font-weight: 600;">—</span></div>
+            </div>
+
+            <!-- Topic Graph -->
+            <div id="docs-graph-section" class="card" style="margin-bottom: 16px; display: none;">
+                <h3 style="color: var(--text-primary); margin-bottom: 12px;">Topic Flow</h3>
+                <div id="docs-topic-graph" style="font-size: 0.85em;"></div>
+            </div>
+
+            <!-- Modules -->
+            <div id="docs-modules">
+                <div class="card" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+                    Loading documentation...
+                </div>
+            </div>
+        </div>
 
         </div> <!-- end main-content -->
     </div> <!-- end container -->
@@ -1599,9 +1639,12 @@ pub fn generate_html(port: u16) -> String {
             // Add active class to clicked nav item
             event.target.classList.add('active');
 
-            // Initialize packages tab if switching to it
+            // Initialize tabs on switch
             if (tabName === 'packages') {{
                 onPackagesTabActivate();
+            }}
+            if (tabName === 'docs') {{
+                loadDocs();
             }}
         }}
 
@@ -3334,6 +3377,165 @@ pub fn generate_html(port: u16) -> String {
                 attributes: true,
                 attributeFilter: ['class']
             }});
+        }}
+        // ── API Docs Tab ────────────────────────────────────────────
+        let docsData = null;
+        let docsLoaded = false;
+
+        function loadDocs() {{
+            if (docsLoaded && docsData) return;
+            fetch('/api/docs')
+                .then(r => r.json())
+                .then(data => {{
+                    docsData = data;
+                    docsLoaded = true;
+                    renderDocs(data);
+                }})
+                .catch(err => {{
+                    document.getElementById('docs-modules').innerHTML =
+                        '<div class="card" style="color: var(--error); padding: 20px;">Failed to load docs: ' + err + '</div>';
+                }});
+        }}
+
+        function renderDocs(doc) {{
+            // Stats
+            const s = doc.stats || {{}};
+            document.getElementById('docs-symbol-count').textContent = s.total_symbols || 0;
+            const covPct = ((s.documentation_coverage || 0) * 100).toFixed(0);
+            const covEl = document.getElementById('docs-coverage');
+            covEl.textContent = covPct + '%';
+            covEl.style.color = covPct >= 80 ? 'var(--success)' : covPct >= 50 ? 'var(--warning)' : 'var(--error)';
+            document.getElementById('docs-nodes').textContent = s.horus_nodes || 0;
+            document.getElementById('docs-messages').textContent = s.horus_messages || 0;
+            document.getElementById('docs-topics').textContent = s.topics_discovered || 0;
+
+            // Topic graph
+            if (doc.message_graph && doc.message_graph.topics && doc.message_graph.topics.length > 0) {{
+                const graphSection = document.getElementById('docs-graph-section');
+                graphSection.style.display = 'block';
+                const graphEl = document.getElementById('docs-topic-graph');
+                let html = '<table style="width:100%; border-collapse:collapse;">';
+                html += '<tr style="border-bottom: 1px solid var(--border);"><th style="text-align:left; padding:6px; color:var(--text-secondary);">Topic</th><th style="text-align:left; padding:6px; color:var(--text-secondary);">Type</th><th style="text-align:left; padding:6px; color:var(--text-secondary);">Flow</th></tr>';
+                doc.message_graph.topics.forEach(t => {{
+                    const pubs = t.publishers.join(', ') || '?';
+                    const subs = t.subscribers.join(', ') || '?';
+                    const warn = (!t.publishers.length || !t.subscribers.length) ? ' <span style="color:var(--warning);">[!]</span>' : '';
+                    html += '<tr style="border-bottom: 1px solid var(--border);">';
+                    html += '<td style="padding:6px; color:var(--accent);">' + escHtml(t.name) + '</td>';
+                    html += '<td style="padding:6px; color:var(--text-secondary);">' + escHtml(t.message_type) + '</td>';
+                    html += '<td style="padding:6px;">' + escHtml(pubs) + ' -&gt; ' + escHtml(subs) + warn + '</td>';
+                    html += '</tr>';
+                }});
+                html += '</table>';
+                graphEl.innerHTML = html;
+            }}
+
+            // Modules
+            const modsEl = document.getElementById('docs-modules');
+            if (!doc.modules || doc.modules.length === 0) {{
+                modsEl.innerHTML = '<div class="card" style="text-align:center; padding:30px; color:var(--text-secondary);">No source files found. Run from a project directory.</div>';
+                return;
+            }}
+
+            let html = '';
+            doc.modules.forEach(mod => {{
+                const symCount = mod.symbols ? mod.symbols.length : 0;
+                const docCount = mod.symbols ? mod.symbols.filter(s => s.doc).length : 0;
+                const pct = symCount > 0 ? Math.round(docCount / symCount * 100) : 100;
+                const pctColor = pct >= 80 ? 'var(--success)' : pct >= 50 ? 'var(--warning)' : 'var(--error)';
+
+                html += '<div class="card" style="margin-bottom: 8px;">';
+                html += '<details>';
+                html += '<summary style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;">';
+                html += '<span style="color:var(--text-primary); font-weight:600;">' + escHtml(mod.path) + '</span>';
+                html += '<span style="font-size:0.85em;"><span style="color:' + pctColor + ';">' + pct + '%</span> <span style="color:var(--text-secondary);">' + symCount + ' symbols</span></span>';
+                html += '</summary>';
+
+                if (mod.module_doc) {{
+                    html += '<p style="color:var(--text-secondary); margin:8px 0; font-size:0.9em;">' + escHtml(mod.module_doc) + '</p>';
+                }}
+
+                if (mod.symbols && mod.symbols.length > 0) {{
+                    mod.symbols.forEach(sym => {{
+                        const name = sym.name || '';
+                        const kind = sym.kind || '';
+                        const deprecated = sym.deprecated;
+                        const depClass = deprecated ? ' opacity: 0.5;' : '';
+
+                        html += '<div class="docs-symbol" data-name="' + escHtml(name.toLowerCase()) + '" style="padding:6px 0; border-bottom:1px solid var(--border);' + depClass + '">';
+
+                        if (deprecated) {{
+                            html += '<span style="color:var(--warning);">[!] </span>';
+                        }}
+
+                        // Kind badge
+                        const kindColors = {{ function: 'var(--accent)', struct: 'var(--neon-green)', enum: '#c792ea', trait: '#ffcb6b', type_alias: 'var(--text-secondary)', constant: '#f78c6c', horus_message: '#ff5370', horus_service: '#82aaff', horus_action: '#c3e88d' }};
+                        const kColor = kindColors[kind] || 'var(--text-secondary)';
+                        html += '<span style="color:' + kColor + '; font-size:0.75em; text-transform:uppercase; margin-right:8px;">' + escHtml(kind.replace('_', ' ')) + '</span>';
+
+                        // Signature or name
+                        if (sym.signature) {{
+                            html += '<code style="color:var(--text-primary); font-size:0.85em;">' + escHtml(sym.signature) + '</code>';
+                        }} else {{
+                            html += '<span style="color:var(--text-primary); font-weight:600;">' + escHtml(name) + '</span>';
+                        }}
+
+                        // Doc
+                        if (sym.doc) {{
+                            html += '<div style="color:var(--text-secondary); font-size:0.8em; margin-top:2px; padding-left:16px;">' + escHtml(sym.doc).substring(0, 200) + '</div>';
+                        }}
+
+                        // Methods for structs
+                        if (sym.methods && sym.methods.length > 0) {{
+                            sym.methods.forEach(m => {{
+                                html += '<div style="padding-left:24px; font-size:0.8em; color:var(--text-secondary); margin-top:2px;">';
+                                html += '<code>' + escHtml(m.signature || m.name) + '</code>';
+                                html += '</div>';
+                            }});
+                        }}
+
+                        // Fields for messages
+                        if (sym.fields && sym.fields.length > 0 && (kind === 'horus_message' || kind === 'struct')) {{
+                            html += '<div style="padding-left:24px; font-size:0.8em; margin-top:4px;">';
+                            sym.fields.forEach(f => {{
+                                html += '<span style="color:var(--text-secondary);">' + escHtml(f.name) + ': ' + escHtml(f.type_str || '?') + '</span>  ';
+                            }});
+                            html += '</div>';
+                        }}
+
+                        if (deprecated) {{
+                            html += '<div style="color:var(--warning); font-size:0.8em; margin-top:2px;">[!] Deprecated: ' + escHtml(deprecated) + '</div>';
+                        }}
+
+                        html += '</div>';
+                    }});
+                }}
+
+                html += '</details></div>';
+            }});
+
+            modsEl.innerHTML = html;
+        }}
+
+        function filterDocsSymbols(query) {{
+            const q = query.toLowerCase();
+            document.querySelectorAll('.docs-symbol').forEach(el => {{
+                const name = el.getAttribute('data-name') || '';
+                const text = el.textContent.toLowerCase();
+                el.style.display = (name.includes(q) || text.includes(q)) ? '' : 'none';
+            }});
+            // Auto-expand details with visible children
+            document.querySelectorAll('#docs-modules details').forEach(det => {{
+                if (q) {{
+                    const hasVisible = det.querySelector('.docs-symbol:not([style*="display: none"])');
+                    if (hasVisible) det.open = true;
+                }}
+            }});
+        }}
+
+        function escHtml(s) {{
+            if (!s) return '';
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }}
     </script>
 
