@@ -63,6 +63,74 @@ impl PointCloud {
     /// assert_eq!(pc.point_count(), 10000);
     /// assert!(pc.is_xyz());
     /// ```
+    /// Create a point cloud from XYZ coordinate arrays.
+    ///
+    /// Each point is `[x, y, z]`. Data is copied into shared memory.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let points = vec![[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]];
+    /// let pc = PointCloud::from_xyz(&points)?;
+    /// assert_eq!(pc.point_count(), 2);
+    /// ```
+    pub fn from_xyz(points: &[[f32; 3]]) -> HorusResult<Self> {
+        let mut pc = Self::new(points.len() as u32, 3, TensorDtype::F32)?;
+        let data = pc.data_mut();
+        let floats: &mut [f32] = bytemuck::cast_slice_mut(data);
+        for (i, p) in points.iter().enumerate() {
+            let base = i * 3;
+            floats[base] = p[0];
+            floats[base + 1] = p[1];
+            floats[base + 2] = p[2];
+        }
+        Ok(pc)
+    }
+
+    /// Create a point cloud from XYZI (XYZ + intensity) arrays.
+    ///
+    /// Each point is `[x, y, z, intensity]`. Data is copied into shared memory.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let points = vec![[1.0f32, 2.0, 3.0, 0.8], [4.0, 5.0, 6.0, 0.5]];
+    /// let pc = PointCloud::from_xyzi(&points)?;
+    /// assert_eq!(pc.point_count(), 2);
+    /// assert!(pc.has_intensity());
+    /// ```
+    pub fn from_xyzi(points: &[[f32; 4]]) -> HorusResult<Self> {
+        let mut pc = Self::new(points.len() as u32, 4, TensorDtype::F32)?;
+        let data = pc.data_mut();
+        let floats: &mut [f32] = bytemuck::cast_slice_mut(data);
+        for (i, p) in points.iter().enumerate() {
+            let base = i * 4;
+            floats[base] = p[0];
+            floats[base + 1] = p[1];
+            floats[base + 2] = p[2];
+            floats[base + 3] = p[3];
+        }
+        Ok(pc)
+    }
+
+    /// Create a point cloud from XYZRGB arrays.
+    ///
+    /// Each point is `[x, y, z, r, g, b]`. Data is copied into shared memory.
+    pub fn from_xyzrgb(points: &[[f32; 6]]) -> HorusResult<Self> {
+        let mut pc = Self::new(points.len() as u32, 6, TensorDtype::F32)?;
+        let data = pc.data_mut();
+        let floats: &mut [f32] = bytemuck::cast_slice_mut(data);
+        for (i, p) in points.iter().enumerate() {
+            let base = i * 6;
+            for j in 0..6 {
+                floats[base + j] = p[j];
+            }
+        }
+        Ok(pc)
+    }
+
+    /// Create a point cloud with raw control over fields and dtype.
+    ///
+    /// Prefer `from_xyz()`, `from_xyzi()`, or `from_xyzrgb()` for common formats.
+    #[doc(hidden)]
     pub fn new(num_points: u32, fields_per_point: u32, dtype: TensorDtype) -> HorusResult<Self> {
         let pool = global_pool();
         let shape = [num_points as u64, fields_per_point as u64];

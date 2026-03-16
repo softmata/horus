@@ -257,8 +257,11 @@ pub mod prelude {
     // === Message types (all standard robotics messages) ===
     // Includes: CmdVel, Imu, Odometry, LaserScan, Image, GenericMessage, and 60+ more.
     pub use horus_core::types::{
-        Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype,
+        Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB,
     };
+    /// Internal tensor dtype — prefer `PointCloud::from_xyz()`, `DepthImage::meters()` etc.
+    #[doc(hidden)]
+    pub use horus_core::types::TensorDtype;
     pub use horus_library::messages::*;
 
     // === Actions ===

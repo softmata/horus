@@ -44,16 +44,30 @@ pub struct DepthImage {
 crate::impl_tensor_backed!(DepthImage, DepthImageDescriptor, "depth image");
 
 impl DepthImage {
-    /// Create a new depth image with the given dimensions.
-    ///
-    /// Use `TensorDtype::F32` for meters or `TensorDtype::U16` for millimeters.
+    /// Create a depth image storing distances in meters (f32).
     ///
     /// # Example
-    ///
     /// ```rust,ignore
-    /// let depth = DepthImage::new(640, 480, TensorDtype::F32)?;
-    /// assert!(depth.is_meters());
+    /// let depth = DepthImage::meters(640, 480)?;
     /// ```
+    pub fn meters(width: u32, height: u32) -> HorusResult<Self> {
+        Self::new(width, height, TensorDtype::F32)
+    }
+
+    /// Create a depth image storing distances in millimeters (u16).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let depth = DepthImage::millimeters(640, 480)?;
+    /// ```
+    pub fn millimeters(width: u32, height: u32) -> HorusResult<Self> {
+        Self::new(width, height, TensorDtype::U16)
+    }
+
+    /// Create a depth image with raw dtype control.
+    ///
+    /// Prefer `meters()` or `millimeters()` for common formats.
+    #[doc(hidden)]
     pub fn new(width: u32, height: u32, dtype: TensorDtype) -> HorusResult<Self> {
         let pool = global_pool();
         let shape = [height as u64, width as u64];
