@@ -3,8 +3,13 @@ name = "horus_manager"
 version = "0.1.9"
 edition = "2021"
 license = "Apache-2.0"
-description = "Unified manager for the HORUS robotics framework"
+description = "CLI tool for the HORUS robotics framework — project scaffolding, build/run/test, package management, monitoring, deployment, and 46+ commands for Rust, Python, and C++ robotics projects"
 authors = ["HORUS Team"]
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+documentation = "https://docs.horusrobotics.dev"
+keywords = ["robotics", "cli", "build-tool", "horus", "ros"]
+categories = ["science::robotics", "command-line-utilities", "development-tools"]
 
 [lints]
 workspace = true
@@ -25,6 +30,7 @@ path = "src/bin/ci_test_node.rs"
 [dependencies]
 horus_core = { path = "../horus_core" }
 horus_library = { path = "../horus_library" }
+horus_sys = { path = "../horus_sys" }
 clap = { version = "4.4", features = ["derive"] }
 clap_complete = "4.4"
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "time"] }
@@ -99,9 +105,6 @@ default = []
 # ============================================================================
 # OPTIONAL FEATURES
 # ============================================================================
-
-# mDNS discovery for local peer finding
-mdns = ["horus_core/mdns"]
 
 # Web + TUI monitor with security (adds ~15 deps)
 monitor = [

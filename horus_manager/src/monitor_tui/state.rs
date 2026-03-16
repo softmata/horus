@@ -98,7 +98,7 @@ impl TuiDashboard {
                     // Don't open panel for placeholder entries
                     if !topic.name.contains("No active topics") {
                         let topic_name = topic.name.clone();
-                        self.enable_topic_debug(&topic_name);
+                        self.enable_topic_verbose(&topic_name);
                         self.panel_target = Some(LogPanelTarget::Topic(topic_name));
                         self.show_log_panel = true;
                         self.panel_scroll_offset = 0;
@@ -131,8 +131,8 @@ impl TuiDashboard {
                     if let Some(LogPanelTarget::Topic(ref old_name)) = self.panel_target {
                         if *old_name != new_name {
                             let old = old_name.clone();
-                            self.disable_topic_debug(&old);
-                            self.enable_topic_debug(&new_name);
+                            self.disable_topic_verbose(&old);
+                            self.enable_topic_verbose(&new_name);
                         }
                     }
                     self.panel_target = Some(LogPanelTarget::Topic(new_name));
@@ -220,6 +220,9 @@ impl TuiDashboard {
             // Add the new parameter
             let _ = new_params.set(&self.param_input_key, value);
 
+            // Persist to disk immediately
+            let _ = new_params.save_to_disk();
+
             // Replace the Arc
             self.params = std::sync::Arc::new(new_params);
 
@@ -250,6 +253,9 @@ impl TuiDashboard {
             // Add the (possibly renamed) parameter with new value
             let _ = new_params.set(&self.param_input_key, value);
 
+            // Persist to disk immediately
+            let _ = new_params.save_to_disk();
+
             // Replace the Arc
             self.params = std::sync::Arc::new(new_params);
 
@@ -269,6 +275,9 @@ impl TuiDashboard {
                     let _ = new_params.set(k, v.clone());
                 }
             }
+
+            // Persist to disk immediately
+            let _ = new_params.save_to_disk();
 
             // Replace the Arc
             self.params = std::sync::Arc::new(new_params);
@@ -423,12 +432,12 @@ impl TuiDashboard {
     // =========================================================================
 
     /// Enable runtime debug logging for a topic by setting its SHM header flag.
-    pub(super) fn enable_topic_debug(&mut self, topic_name: &str) {
+    pub(super) fn enable_topic_verbose(&mut self, topic_name: &str) {
         use horus_core::memory::shm_topics_dir;
         use std::fs::OpenOptions;
 
         // Already mapped — nothing to do
-        if self.debug_mmaps.contains_key(topic_name) {
+        if self.verbose_mmaps.contains_key(topic_name) {
             return;
         }
 
@@ -439,34 +448,34 @@ impl TuiDashboard {
         };
 
         // SAFETY: the file is a topic SHM region (≥640 bytes), we only write to
-        // the debug_log byte at a known offset.
+        // the verbose byte at a known offset.
         let mut mmap = match unsafe { memmap2::MmapMut::map_mut(&file) } {
             Ok(m) => m,
             Err(_) => return,
         };
 
-        // Set the debug flag
-        if mmap.len() > horus_core::TOPIC_DEBUG_LOG_OFFSET {
-            // SAFETY: We verified the mmap length exceeds TOPIC_DEBUG_LOG_OFFSET,
+        // Set the verbose flag
+        if mmap.len() > horus_core::TOPIC_VERBOSE_OFFSET {
+            // SAFETY: We verified the mmap length exceeds TOPIC_VERBOSE_OFFSET,
             // so the write target is within bounds. The pointer is valid because
             // `mmap` is a live MmapMut mapping the SHM file opened above.
             unsafe {
-                horus_core::set_topic_debug(mmap.as_mut_ptr(), true);
+                horus_core::set_topic_verbose(mmap.as_mut_ptr(), true);
             }
         }
 
-        self.debug_mmaps.insert(topic_name.to_string(), mmap);
+        self.verbose_mmaps.insert(topic_name.to_string(), mmap);
     }
 
-    /// Disable runtime debug logging for a topic by clearing its SHM header flag.
-    pub(super) fn disable_topic_debug(&mut self, topic_name: &str) {
-        if let Some(mut mmap) = self.debug_mmaps.remove(topic_name) {
-            if mmap.len() > horus_core::TOPIC_DEBUG_LOG_OFFSET {
-                // SAFETY: We verified the mmap length exceeds TOPIC_DEBUG_LOG_OFFSET,
+    /// Disable verbose content logging for a topic by clearing its SHM header flag.
+    pub(super) fn disable_topic_verbose(&mut self, topic_name: &str) {
+        if let Some(mut mmap) = self.verbose_mmaps.remove(topic_name) {
+            if mmap.len() > horus_core::TOPIC_VERBOSE_OFFSET {
+                // SAFETY: We verified the mmap length exceeds TOPIC_VERBOSE_OFFSET,
                 // so the write target is within bounds. The pointer is valid because
                 // `mmap` is a live MmapMut (not yet dropped/unmapped).
                 unsafe {
-                    horus_core::set_topic_debug(mmap.as_mut_ptr(), false);
+                    horus_core::set_topic_verbose(mmap.as_mut_ptr(), false);
                 }
             }
             // MmapMut drop unmaps automatically
@@ -478,7 +487,7 @@ impl TuiDashboard {
         // Disable debug on the topic that was being watched
         if let Some(LogPanelTarget::Topic(ref name)) = self.panel_target {
             let name = name.clone();
-            self.disable_topic_debug(&name);
+            self.disable_topic_verbose(&name);
         }
         self.show_log_panel = false;
         self.panel_target = None;

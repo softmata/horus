@@ -87,6 +87,7 @@ impl Scheduler {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         });
 
         self.nodes.sort_by_key(|n| n.priority);

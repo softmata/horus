@@ -31,20 +31,36 @@ create_exception!(
     "Raised when a blocking operation times out."
 );
 
+/// Build the error message, appending actionable `.help()` text when available.
+///
+/// This ensures Python users see the same remediation hints that Rust callers get
+/// (e.g., "Run: horus topic list" or "Increase ring buffer capacity").
+fn format_with_help(err: &HorusError) -> String {
+    let msg = err.to_string();
+    match err.help() {
+        Some(hint) => format!("{}\n  hint: {}", msg, hint),
+        None => msg,
+    }
+}
+
 /// Convert a `HorusError` into the most specific Python exception.
+///
+/// The exception message includes the original error AND any actionable hint
+/// from [`HorusError::help()`], so Python users and AI agents can self-fix.
 pub fn to_py_err(err: HorusError) -> PyErr {
+    let msg = format_with_help(&err);
     match &err {
-        HorusError::NotFound(_) => HorusNotFoundError::new_err(err.to_string()),
-        HorusError::Transform(_) => HorusTransformError::new_err(err.to_string()),
-        HorusError::Timeout(_) => HorusTimeoutError::new_err(err.to_string()),
-        HorusError::Io(_) => PyIOError::new_err(err.to_string()),
-        HorusError::Memory(_) => PyMemoryError::new_err(err.to_string()),
-        HorusError::InvalidInput(_) => PyValueError::new_err(err.to_string()),
-        HorusError::InvalidDescriptor(_) => PyValueError::new_err(err.to_string()),
-        HorusError::Parse(_) => PyValueError::new_err(err.to_string()),
-        HorusError::Serialization(_) => PyTypeError::new_err(err.to_string()),
-        HorusError::Config(_) => PyValueError::new_err(err.to_string()),
-        _ => PyRuntimeError::new_err(err.to_string()),
+        HorusError::NotFound(_) => HorusNotFoundError::new_err(msg),
+        HorusError::Transform(_) => HorusTransformError::new_err(msg),
+        HorusError::Timeout(_) => HorusTimeoutError::new_err(msg),
+        HorusError::Io(_) => PyIOError::new_err(msg),
+        HorusError::Memory(_) => PyMemoryError::new_err(msg),
+        HorusError::InvalidInput(_) => PyValueError::new_err(msg),
+        HorusError::InvalidDescriptor(_) => PyValueError::new_err(msg),
+        HorusError::Parse(_) => PyValueError::new_err(msg),
+        HorusError::Serialization(_) => PyTypeError::new_err(msg),
+        HorusError::Config(_) => PyValueError::new_err(msg),
+        _ => PyRuntimeError::new_err(msg),
     }
 }
 
@@ -64,6 +80,14 @@ mod tests {
             name: "cmd_vel".into(),
         });
         assert!(err.to_string().contains("cmd_vel"));
+        // Verify help text is included in the formatted message
+        let formatted = format_with_help(&err);
+        assert!(formatted.contains("cmd_vel"), "should contain topic name");
+        assert!(formatted.contains("hint:"), "should contain hint prefix");
+        assert!(
+            formatted.contains("horus topic list"),
+            "should contain diagnostic command"
+        );
         let _py_err = to_py_err(err);
     }
 
@@ -103,6 +127,13 @@ mod tests {
             newest_ns: 300,
         });
         assert!(err.to_string().contains("lidar"));
+        // Verify help text includes tf_at() suggestion
+        let formatted = format_with_help(&err);
+        assert!(formatted.contains("hint:"), "should contain hint prefix");
+        assert!(
+            formatted.contains("tf_at()"),
+            "should suggest tf_at() for clamped lookup"
+        );
         let _py_err = to_py_err(err);
     }
 
@@ -154,5 +185,58 @@ mod tests {
         let err = HorusError::InvalidDescriptor("bad tensor".into());
         assert!(err.to_string().contains("bad tensor"));
         let _py_err = to_py_err(err);
+    }
+
+    #[test]
+    fn topic_full_includes_help() {
+        let err = HorusError::Communication(horus_core::error::CommunicationError::TopicFull {
+            topic: "cmd_vel".into(),
+        });
+        let formatted = format_with_help(&err);
+        assert!(formatted.contains("cmd_vel"), "should contain topic name");
+        assert!(formatted.contains("hint:"), "should contain hint prefix");
+        assert!(
+            formatted.contains("ring buffer capacity"),
+            "should suggest increasing ring buffer capacity"
+        );
+    }
+
+    #[test]
+    fn format_with_help_no_hint_returns_plain_message() {
+        // Io errors have no specific help() text
+        let err = HorusError::Io(std::io::Error::new(std::io::ErrorKind::Other, "generic io"));
+        let formatted = format_with_help(&err);
+        assert!(
+            !formatted.contains("hint:"),
+            "should NOT contain hint for Io errors"
+        );
+        assert!(
+            formatted.contains("generic io"),
+            "should contain original message"
+        );
+    }
+
+    #[test]
+    fn topic_not_found_includes_help() {
+        let err = HorusError::NotFound(NotFoundError::Topic {
+            name: "odom".into(),
+        });
+        let formatted = format_with_help(&err);
+        assert!(formatted.contains("odom"));
+        assert!(formatted.contains("hint:"));
+        assert!(formatted.contains("horus topic list"));
+    }
+
+    #[test]
+    fn stale_transform_includes_help() {
+        let err = HorusError::Transform(TransformError::Stale {
+            frame: "camera".into(),
+            age: 5_u64.secs(),
+            threshold: 1_u64.secs(),
+        });
+        let formatted = format_with_help(&err);
+        assert!(formatted.contains("camera"));
+        assert!(formatted.contains("hint:"));
+        assert!(formatted.contains("sensor driver"));
     }
 }

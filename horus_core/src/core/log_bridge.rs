@@ -3,8 +3,8 @@
 //!
 //! ## Why this exists
 //!
-//! Several internal HORUS subsystems (action client/server, mDNS discovery,
-//! scheduler, blackbox, telemetry) use the `log::` facade instead of `hlog!`.
+//! Several internal HORUS subsystems (action client/server, scheduler,
+//! blackbox, telemetry) use the `log::` facade instead of `hlog!`.
 //! Without this bridge those messages are only emitted to stderr and are
 //! completely invisible to `horus monitor --tui` and the web monitor.
 //!

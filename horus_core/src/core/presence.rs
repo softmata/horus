@@ -5,7 +5,7 @@
 //!
 //! ## Structure
 //!
-//! Presence files live at `/dev/shm/horus/nodes/{node_name}.json` with mode 0600.
+//! Presence files live at `shm_nodes_dir()/{node_name}.json` (platform-specific path via horus_sys).
 //! Writes use atomic rename (`{name}.json.tmp` → `{name}.json`) to prevent
 //! partial reads.
 //!
@@ -28,8 +28,6 @@ use crate::core::node::TopicMetadata;
 use crate::memory::platform::shm_nodes_dir;
 use serde::{Deserialize, Serialize};
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -158,10 +156,10 @@ pub fn validate_node_name(name: &str) -> Result<(), String> {
 impl NodePresence {
     /// Create a new presence record.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `name` is invalid (empty, too long, contains `/` or `..`).
-    /// Use [`validate_node_name`] to check before calling.
+    /// Returns [`ValidationError::InvalidFormat`] if `name` is empty, too long,
+    /// or contains characters other than `a-z A-Z 0-9 _ - .`.
     pub(crate) fn new(
         name: &str,
         scheduler: Option<&str>,
@@ -169,12 +167,17 @@ impl NodePresence {
         subscribers: Vec<TopicMetadata>,
         priority: u32,
         rate_hz: Option<f64>,
-    ) -> Self {
-        if let Err(e) = validate_node_name(name) {
-            panic!("invalid node name '{}': {}", name, e);
-        }
+    ) -> crate::error::HorusResult<Self> {
+        validate_node_name(name).map_err(|_| {
+            crate::error::HorusError::InvalidInput(crate::error::ValidationError::InvalidFormat {
+                field: "node_name".into(),
+                expected_format:
+                    "1-255 chars, alphanumeric + underscore/hyphen/dot (a-z A-Z 0-9 _ - .)".into(),
+                actual: name.into(),
+            })
+        })?;
         let pid = std::process::id();
-        Self {
+        Ok(Self {
             name: name.to_string(),
             pid,
             scheduler: scheduler.map(|s| s.to_string()),
@@ -192,7 +195,7 @@ impl NodePresence {
             error_count: 0,
             services: Vec::new(),
             actions: Vec::new(),
-        }
+        })
     }
 
     /// Get the path for this node's presence file
@@ -214,9 +217,7 @@ impl NodePresence {
         if path.exists() {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(existing) = serde_json::from_str::<NodePresence>(&content) {
-                    if existing.pid != self.pid
-                        && is_alive(existing.pid, existing.pid_start_time)
-                    {
+                    if existing.pid != self.pid && is_alive(existing.pid, existing.pid_start_time) {
                         eprintln!(
                             "[horus] WARNING: node '{}' already registered by PID {} \
                              (this is PID {}). Overwriting presence file — \
@@ -231,13 +232,8 @@ impl NodePresence {
         let dir = shm_nodes_dir();
 
         // Create directory hierarchy with owner-only access.
-        #[cfg(unix)]
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)?;
-        #[cfg(not(unix))]
-        fs::create_dir_all(&dir)?;
+        horus_sys::fs::create_dir_secure(&dir)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
         let dest = Self::presence_path(&self.name);
         let json = serde_json::to_string_pretty(self)
@@ -247,20 +243,13 @@ impl NodePresence {
         // never see a partially-written presence file.
         let tmp_path = dest.with_extension("json.tmp");
 
-        #[cfg(unix)]
         {
             use std::io::Write;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp_path)?;
+            let mut file = horus_sys::fs::open_private(&tmp_path)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             file.write_all(json.as_bytes())?;
             file.flush()?;
         }
-        #[cfg(not(unix))]
-        fs::write(&tmp_path, &json)?;
 
         fs::rename(&tmp_path, &dest)
     }
@@ -324,89 +313,9 @@ impl NodePresence {
 }
 
 /// Read the OS-level start time of a process to detect PID reuse.
-///
-/// Returns 0 when unavailable (non-Linux/macOS platforms or read failure).
+/// Delegates to [`horus_sys::process::pid_start_time`].
 fn read_pid_start_time(pid: u32) -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        read_pid_start_time_linux(pid)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        read_pid_start_time_macos(pid)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = pid;
-        0
-    }
-}
-
-/// Linux implementation: parse `/proc/{pid}/stat` and extract `starttime`
-/// (field 22 in the file, 1-indexed — 20th token after the closing `)` of
-/// the comm field).  Returned value is in jiffies since system boot.
-#[cfg(target_os = "linux")]
-fn read_pid_start_time_linux(pid: u32) -> u64 {
-    let content = match std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-
-    // The `comm` field may contain spaces and/or parentheses.  Find the last
-    // `)` to safely skip it and start parsing the remaining fields.
-    let after_comm = match content.rfind(')') {
-        Some(pos) => &content[pos + 1..],
-        None => return 0,
-    };
-
-    // Fields after comm (split_whitespace handles leading/trailing spaces):
-    //   [0]  state       [1]  ppid        [2]  pgrp
-    //   [3]  session     [4]  tty_nr      [5]  tpgid
-    //   [6]  flags       [7]  minflt      [8]  cminflt
-    //   [9]  majflt      [10] cmajflt     [11] utime
-    //   [12] stime       [13] cutime      [14] cstime
-    //   [15] priority    [16] nice        [17] num_threads
-    //   [18] itrealvalue [19] starttime   ← this is what we need
-    after_comm
-        .split_whitespace()
-        .nth(19)
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
-}
-
-/// macOS implementation: use `sysctl(KERN_PROC_PID)` to obtain
-/// `kinfo_proc.kp_proc.p_starttime` (a `timeval`).
-/// Returns microseconds (tv_sec * 1_000_000 + tv_usec).
-#[cfg(target_os = "macos")]
-fn read_pid_start_time_macos(pid: u32) -> u64 {
-    use libc::{c_int, kinfo_proc, CTL_KERN, KERN_PROC, KERN_PROC_PID};
-    // SAFETY: zeroed() is valid for a POD C struct; sysctl fills it in-place.
-    let mut info: kinfo_proc = unsafe { std::mem::zeroed() };
-    let mut size = std::mem::size_of::<kinfo_proc>();
-    let mut mib: [c_int; 4] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid as c_int];
-    // SAFETY: mib is valid, info/size are properly initialised, null pointers
-    // for newp/newlen are correct (read-only query).
-    let ret = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            &mut info as *mut _ as *mut libc::c_void,
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if ret != 0 || size == 0 {
-        return 0;
-    }
-    // SAFETY: `sysctl` succeeded (ret == 0) and wrote `size` bytes into `info`,
-    // so `kp_proc.p_starttime` is fully initialized.
-    let tv = unsafe { info.kp_proc.p_starttime };
-    (tv.tv_sec as u64)
-        .saturating_mul(1_000_000)
-        .saturating_add(tv.tv_usec as u64)
+    horus_sys::process::pid_start_time(pid)
 }
 
 /// Check whether `pid` is still alive **and** is the same process that wrote
@@ -435,38 +344,9 @@ fn is_alive(pid: u32, expected_start_time: u64) -> bool {
     true
 }
 
-/// Signal-0 liveness check: returns true iff the OS reports the PID exists.
+/// Liveness check: returns true iff the OS reports the PID exists.
 fn pid_exists(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill(pid, 0) sends no signal; only checks if process exists.
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-
-        // SAFETY: OpenProcess is safe for existence check; handle closed immediately.
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle == 0 {
-                false
-            } else {
-                CloseHandle(handle);
-                true
-            }
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = pid;
-        true
-    }
+    horus_sys::process::ProcessHandle::from_pid(pid).is_alive()
 }
 
 #[cfg(test)]
@@ -482,12 +362,33 @@ mod tests {
             vec![],
             10,
             Some(60.0),
-        );
+        )
+        .expect("valid node name should succeed");
 
         assert_eq!(presence.name, "test_node");
         assert_eq!(presence.scheduler, Some("test_scheduler".to_string()));
         assert_eq!(presence.priority, 10);
         assert!(presence.start_time > 0);
+    }
+
+    #[test]
+    fn test_invalid_node_name_returns_error() {
+        let result = NodePresence::new("invalid/name", None, vec![], vec![], 0, None);
+        assert!(result.is_err(), "node name with '/' should fail");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Invalid format"),
+            "should be InvalidFormat error: {}",
+            msg
+        );
+        assert!(err.help().is_some(), "InvalidFormat should have help text");
+    }
+
+    #[test]
+    fn test_empty_node_name_returns_error() {
+        let result = NodePresence::new("", None, vec![], vec![], 0, None);
+        assert!(result.is_err(), "empty node name should fail");
     }
 
     /// A presence record for the current process must show it as alive.
@@ -532,7 +433,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_new_captures_pid_start_time() {
-        let presence = NodePresence::new("start_time_test", None, vec![], vec![], 0, None);
+        let presence = NodePresence::new("start_time_test", None, vec![], vec![], 0, None)
+            .expect("valid name");
         assert!(
             presence.pid_start_time > 0,
             "pid_start_time must be populated on Linux; got 0"
@@ -557,7 +459,8 @@ mod tests {
                 .subsec_nanos()
         );
 
-        let presence = NodePresence::new(&node_name, None, vec![], vec![], 0, None);
+        let presence =
+            NodePresence::new(&node_name, None, vec![], vec![], 0, None).expect("valid name");
         presence
             .write()
             .expect("write() must succeed in test environment");
@@ -593,7 +496,8 @@ mod tests {
                 .unwrap_or_default()
                 .subsec_nanos()
         );
-        let presence = NodePresence::new(&node_name, None, vec![], vec![], 0, None);
+        let presence =
+            NodePresence::new(&node_name, None, vec![], vec![], 0, None).expect("valid name");
         presence.write().expect("write() must succeed");
 
         let dir = shm_nodes_dir();

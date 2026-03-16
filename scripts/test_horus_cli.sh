@@ -49,7 +49,7 @@ setup() {
 
     # Clean SHM
     $HORUS clean --all 2>/dev/null || true
-    rm -rf /dev/shm/horus/* 2>/dev/null || true
+    rm -rf /dev/shm/horus_* 2>/dev/null || true
 
     > "$RESULTS_FILE"
     echo "Test run started: $(date)" >> "$RESULTS_FILE"

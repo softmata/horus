@@ -24,6 +24,8 @@ jobs:
   ipc-integration:
     name: Cross-Process IPC Tests
     runs-on: ubuntu-latest
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,11 +52,10 @@ jobs:
       # Setup shared memory with proper permissions
       - name: Setup Shared Memory
         run: |
-          sudo mkdir -p /dev/shm/horus/topics
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo mkdir -p /dev/shm/horus/nodes
-          sudo mkdir -p /dev/shm/horus/control
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats /dev/shm/horus/nodes /dev/shm/horus/control
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
           # Increase shared memory limits
           sudo sysctl -w kernel.shmmax=2147483648
           sudo sysctl -w kernel.shmall=2147483648
@@ -75,7 +76,8 @@ jobs:
       - name: Verify SHM Cleanup
         run: |
           echo "Checking shared memory state after tests..."
-          ls -la /dev/shm/horus/ || echo "SHM directory clean"
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          ls -la "$SHM_DIR/" || echo "SHM directory clean"
 
   # ═══════════════════════════════════════════════════════════════
   # CLI Integration Tests — assert exact behavior like ROS2
@@ -83,6 +85,8 @@ jobs:
   cli-integration:
     name: CLI Integration Tests
     runs-on: ubuntu-latest
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -108,11 +112,10 @@ jobs:
 
       - name: Setup Shared Memory
         run: |
-          sudo mkdir -p /dev/shm/horus/topics
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo mkdir -p /dev/shm/horus/nodes
-          sudo mkdir -p /dev/shm/horus/control
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats /dev/shm/horus/nodes /dev/shm/horus/control
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
 
       - name: Build horus_manager
         run: cargo build -p horus_manager --release
@@ -343,8 +346,9 @@ jobs:
           }
 
           # Verify the topic file was created in shared memory
-          if [ -f /dev/shm/horus/topics/test_integration_topic ]; then
-            content=$(cat /dev/shm/horus/topics/test_integration_topic)
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          if [ -f "$SHM_DIR/topics/test_integration_topic" ]; then
+            content=$(cat "$SHM_DIR/topics/test_integration_topic")
             echo "Topic content: $content"
             [ "$content" = "hello_from_ci" ] || echo "WARN: content mismatch (may be binary)"
           else
@@ -457,8 +461,9 @@ jobs:
       - name: "Assert: horus clean --shm cleans shared memory"
         run: |
           # Create test SHM data
-          sudo mkdir -p /dev/shm/horus/topics/test_clean_topic
-          echo "test" | sudo tee /dev/shm/horus/topics/test_clean_topic/data > /dev/null
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR/topics/test_clean_topic"
+          echo "test" | sudo tee "$SHM_DIR/topics/test_clean_topic/data" > /dev/null
 
           output=$($HORUS clean --shm 2>&1) || true
           echo "$output"
@@ -470,8 +475,9 @@ jobs:
           echo "PASS: clean --shm runs successfully"
 
           # Recreate SHM dirs for subsequent tests
-          sudo mkdir -p /dev/shm/horus/topics /dev/shm/horus/heartbeats
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
 
       # ─────────────────────────────────────────────────
       # 10. horus record — recording management
@@ -695,6 +701,8 @@ jobs:
   runtime-integration:
     name: Runtime Integration Tests
     runs-on: ubuntu-latest
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -720,11 +728,10 @@ jobs:
 
       - name: Setup Shared Memory
         run: |
-          sudo mkdir -p /dev/shm/horus/topics
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo mkdir -p /dev/shm/horus/nodes
-          sudo mkdir -p /dev/shm/horus/control
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats /dev/shm/horus/nodes /dev/shm/horus/control
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
 
       - name: Build Workspace
         run: cargo build --workspace --release
@@ -886,7 +893,8 @@ jobs:
       - name: "Assert: Shared memory is cleaned up after tests"
         run: |
           # Count topic files remaining
-          count=$(find /dev/shm/horus/topics -type f 2>/dev/null | wc -l)
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          count=$(find "$SHM_DIR/topics" -type f 2>/dev/null | wc -l)
           echo "Remaining SHM topic files: $count"
           # Warn but don't fail — some tests may leave stale files
           [ "$count" -lt 50 ] || {

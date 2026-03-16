@@ -61,14 +61,19 @@ async fn handle_websocket(socket: WebSocket) {
                     .map(|n| {
                         serde_json::json!({
                             "name": n.name,
-                            // PID intentionally omitted — system PIDs must not
-                            // be disclosed to clients (security hardening).
                             "status": n.status,
                             "health": n.health.as_str(),
                             "health_color": n.health.color(),
                             "cpu": format!("{:.1}%", n.cpu_usage),
                             "memory": format!("{} MB", n.memory_usage / 1024 / 1024),
                             "scheduler_name": n.scheduler_name,
+                            "tick_count": n.live_tick_count.unwrap_or(n.tick_count),
+                            "error_count": n.error_count,
+                            "avg_tick_us": n.live_avg_tick_ns.map(|ns| ns / 1000).unwrap_or(0),
+                            "max_tick_us": n.live_max_tick_ns.map(|ns| ns / 1000).unwrap_or(0),
+                            "budget_misses": n.live_budget_misses.unwrap_or(0),
+                            "deadline_misses": n.live_deadline_misses.unwrap_or(0),
+                            "rate_hz": n.actual_rate_hz,
                         })
                     })
                     .collect::<Vec<_>>()
@@ -80,9 +85,12 @@ async fn handle_websocket(socket: WebSocket) {
                     .map(|t| {
                         serde_json::json!({
                             "name": t.topic_name,
+                            "type": t.message_type.as_deref().unwrap_or("unknown"),
                             "size": format!("{} KB", t.size_bytes / 1024),
                             "active": t.active,
                             "processes": t.accessing_processes.len(),
+                            "messages_total": t.messages_total,
+                            "rate_hz": t.message_rate_hz,
                         })
                     })
                     .collect::<Vec<_>>()

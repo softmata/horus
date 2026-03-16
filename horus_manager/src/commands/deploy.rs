@@ -98,6 +98,8 @@ pub struct DeployConfig {
     pub identity: Option<PathBuf>,
     /// Extra rsync excludes
     pub excludes: Vec<String>,
+    /// Skip interactive confirmation (for fleet deploy where confirmation is done upfront)
+    pub skip_confirm: bool,
 }
 
 impl Default for DeployConfig {
@@ -111,6 +113,7 @@ impl Default for DeployConfig {
             port: 22,
             identity: None,
             excludes: vec![],
+            skip_confirm: false,
         }
     }
 }
@@ -158,7 +161,7 @@ fn load_deploy_yaml() -> Option<DeployYaml> {
     serde_yaml::from_str(&content).ok()
 }
 
-/// CLI arguments for the `horus deploy` command.
+/// CLI arguments for single-target deploy (internal).
 pub struct DeployArgs {
     pub target: String,
     pub remote_dir: Option<String>,
@@ -170,7 +173,221 @@ pub struct DeployArgs {
     pub dry_run: bool,
 }
 
-/// Run the deploy command
+/// CLI arguments for multi-target deploy.
+pub struct DeployMultiArgs {
+    pub targets: Vec<String>,
+    pub all: bool,
+    pub parallel: bool,
+    pub remote_dir: Option<String>,
+    pub arch: Option<String>,
+    pub run_after: bool,
+    pub release: bool,
+    pub port: u16,
+    pub identity: Option<PathBuf>,
+    pub dry_run: bool,
+}
+
+/// Run deploy to one or more targets.
+pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
+    let DeployMultiArgs {
+        targets,
+        all,
+        parallel,
+        remote_dir,
+        arch,
+        run_after,
+        release,
+        port,
+        identity,
+        dry_run,
+    } = args;
+
+    // Resolve target list
+    let target_names: Vec<String> = if all {
+        // Load all targets from deploy.yaml
+        match load_deploy_yaml() {
+            Some(yaml) if !yaml.targets.is_empty() => {
+                let mut names: Vec<String> = yaml.targets.keys().cloned().collect();
+                names.sort();
+                println!(
+                    "{} Deploying to {} target(s): {}",
+                    cli_output::ICON_INFO.cyan(),
+                    names.len(),
+                    names.join(", ").green()
+                );
+                names
+            }
+            _ => {
+                return Err(HorusError::Config(ConfigError::Other(
+                    "No targets configured in deploy.yaml. Create one with target definitions.".to_string(),
+                )));
+            }
+        }
+    } else if targets.is_empty() {
+        return Err(HorusError::Config(ConfigError::Other(
+            "No target specified. Use a target name, user@host, --all, or --list.".to_string(),
+        )));
+    } else {
+        targets
+    };
+
+    if target_names.len() == 1 {
+        // Single target — use existing deploy path
+        return run_deploy(DeployArgs {
+            target: target_names.into_iter().next().unwrap(),
+            remote_dir,
+            arch,
+            run_after,
+            release,
+            port,
+            identity,
+            dry_run,
+        });
+    }
+
+    // ── Multi-target (fleet) deploy ─────────────────────────────────
+    let total = target_names.len();
+    println!(
+        "\n{} {}",
+        "HORUS Fleet Deploy".green().bold(),
+        format!("({} targets)", total).dimmed()
+    );
+    for (i, name) in target_names.iter().enumerate() {
+        let resolved = resolve_target(name);
+        println!(
+            "  {} {} → {}",
+            format!("{}.", i + 1).dimmed(),
+            name.cyan(),
+            resolved.host
+        );
+    }
+
+    // Step 1: Build once (all targets share the same binary if same arch)
+    // Use first target's arch for the build
+    let first_resolved = resolve_target(&target_names[0]);
+    let build_arch_str = arch.clone().or(first_resolved.arch);
+    let build_arch = build_arch_str
+        .as_ref()
+        .and_then(|a| TargetArch::from_str(a))
+        .unwrap_or_else(|| detect_target_arch(&first_resolved.host));
+
+    println!(
+        "\n{} Step 1: Building for {} (shared across {} targets)...",
+        cli_output::ICON_INFO.cyan(),
+        build_arch.display_name().yellow(),
+        total
+    );
+
+    if !dry_run {
+        let build_config = DeployConfig {
+            target: first_resolved.host.clone(),
+            remote_dir: "~/horus_deploy".to_string(),
+            arch: build_arch,
+            run_after: false,
+            release,
+            port,
+            identity: identity.clone(),
+            excludes: vec![],
+            skip_confirm: true,
+        };
+        build_for_target(&build_config)?;
+    }
+
+    // Step 2: Sync + run to each target
+    println!(
+        "\n{} Step 2: Syncing to {} targets{}...",
+        cli_output::ICON_INFO.cyan(),
+        total,
+        if parallel { " (parallel)" } else { "" }
+    );
+
+    // For fleet deploy, skip the interactive confirmation per-target.
+    // Ask once for the whole fleet.
+    if !dry_run {
+        println!(
+            "  {} This will sync to {} remote hosts (with --delete)",
+            cli_output::ICON_WARN.yellow(),
+            total
+        );
+        print!("  Continue? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("  Cancelled.");
+            return Ok(());
+        }
+    }
+
+    let mut failures = 0;
+
+    // Sequential deploy (parallel would need thread-safe output — future work)
+    for (i, name) in target_names.iter().enumerate() {
+        println!(
+            "\n{} [{}/{}] {}",
+            "---".cyan(),
+            i + 1,
+            total,
+            name.green().bold()
+        );
+
+        let result = run_deploy(DeployArgs {
+            target: name.clone(),
+            remote_dir: remote_dir.clone(),
+            arch: arch.clone(),
+            run_after,
+            release,
+            port,
+            identity: identity.clone(),
+            dry_run,
+        });
+
+        match result {
+            Ok(()) => println!(
+                "{} [{}/{}] {} done",
+                cli_output::ICON_SUCCESS.green(),
+                i + 1,
+                total,
+                name
+            ),
+            Err(e) => {
+                println!(
+                    "{} [{}/{}] {} failed: {}",
+                    cli_output::ICON_ERROR.red(),
+                    i + 1,
+                    total,
+                    name,
+                    e
+                );
+                failures += 1;
+                // Continue to next target — don't abort the fleet
+            }
+        }
+    }
+
+    // Summary
+    println!("\n{} Fleet Deploy Summary", "===".cyan());
+    println!(
+        "  {} {}/{} targets deployed successfully",
+        if failures == 0 {
+            cli_output::ICON_SUCCESS.green()
+        } else {
+            cli_output::ICON_WARN.yellow()
+        },
+        total - failures,
+        total
+    );
+
+    if failures > 0 {
+        return Err(HorusError::Config(ConfigError::Other(
+            format!("{} of {} deployments failed", failures, total),
+        )));
+    }
+
+    Ok(())
+}
+
+/// Run the deploy command for a single target.
 pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
     let DeployArgs {
         target,
@@ -220,6 +437,7 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
             "__pycache__".to_string(),
             "*.pyc".to_string(),
         ],
+        skip_confirm: false,
     };
 
     println!("{}", "HORUS Deploy".green().bold());
@@ -511,27 +729,29 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
     }
 
     // Safety check: show what directory will be synced and confirm
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| ".".to_string());
-    println!(
-        "  {} Will sync '{}' to {}:{}/ (with --delete)",
-        cli_output::ICON_WARN.yellow(),
-        cwd,
-        config.target,
-        config.remote_dir
-    );
-    println!(
-        "  {} Files on remote not present locally will be DELETED",
-        cli_output::ICON_WARN.yellow()
-    );
-    print!("  Continue? [y/N] ");
-    std::io::Write::flush(&mut std::io::stdout()).ok();
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok();
-    if !input.trim().eq_ignore_ascii_case("y") {
-        println!("  Cancelled.");
-        return Ok(());
+    if !config.skip_confirm {
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        println!(
+            "  {} Will sync '{}' to {}:{}/ (with --delete)",
+            cli_output::ICON_WARN.yellow(),
+            cwd,
+            config.target,
+            config.remote_dir
+        );
+        println!(
+            "  {} Files on remote not present locally will be DELETED",
+            cli_output::ICON_WARN.yellow()
+        );
+        print!("  Continue? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("  Cancelled.");
+            return Ok(());
+        }
     }
 
     // Build rsync command

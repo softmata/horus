@@ -187,7 +187,7 @@ fn scheduler_runs_node() {
 fn node_builder_uses_build() {
     let mut scheduler = Scheduler::new();
 
-    // .build() is the primary method (returns HorusResult)
+    // .build() is the primary method (returns Result)
     scheduler
         .add(CounterNode { count: 0 })
         .order(0)
@@ -248,22 +248,22 @@ fn depth_image_constructor_width_height_order() {
 
 #[test]
 fn structured_errors_pattern_match() {
-    let err = HorusError::Communication(CommunicationError::TopicFull {
+    let err = Error::Communication(CommunicationError::TopicFull {
         topic: "test".to_string(),
     });
 
     assert!(
-        matches!(&err, HorusError::Communication(CommunicationError::TopicFull { topic }) if topic == "test"),
+        matches!(&err, Error::Communication(CommunicationError::TopicFull { topic }) if topic == "test"),
         "Expected TopicFull, got {:?}",
         err
     );
 
-    let err2 = HorusError::Memory(MemoryError::PoolExhausted {
+    let err2 = Error::Memory(MemoryError::PoolExhausted {
         reason: "out of slots".to_string(),
     });
 
     assert!(
-        matches!(&err2, HorusError::Memory(MemoryError::PoolExhausted { reason }) if reason.contains("slots")),
+        matches!(&err2, Error::Memory(MemoryError::PoolExhausted { reason }) if reason.contains("slots")),
         "Expected PoolExhausted, got {:?}",
         err2
     );

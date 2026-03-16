@@ -5,8 +5,6 @@ use crate::config::CARGO_TOML;
 use crate::manifest::{detect_languages, HorusManifest, Language, HORUS_TOML};
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
-use horus_core::memory::has_native_shm;
-#[cfg(not(target_os = "linux"))]
 use horus_core::memory::shm_base_dir;
 use std::collections::HashSet;
 use std::fs;
@@ -50,19 +48,8 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
 
         // Run the validation, capturing stdout to suppress human-readable output
         let result = {
-            // Redirect stdout to /dev/null during check
-            let devnull = std::fs::File::create("/dev/null").ok();
-            let saved_stdout = devnull.as_ref().and_then(|f| {
-                use std::os::unix::io::AsRawFd;
-                let saved = unsafe { libc::dup(1) };
-                if saved >= 0 {
-                    unsafe { libc::dup2(f.as_raw_fd(), 1) };
-                    Some(saved)
-                } else {
-                    None
-                }
-            });
-            // Flush any pending stdout before redirecting back
+            // Redirect stdout to null device during check (cross-platform)
+            let _guard = horus_sys::fs::suppress_stdout().ok();
             let _ = std::io::stdout().flush();
 
             let r = if target_path.is_dir() {
@@ -71,14 +58,8 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
                 check_single_file(&target_path, true)
             };
 
-            // Restore stdout
             let _ = std::io::stdout().flush();
-            if let Some(saved) = saved_stdout {
-                unsafe {
-                    libc::dup2(saved, 1);
-                    libc::close(saved);
-                }
-            }
+            drop(_guard);
             r
         };
 
@@ -895,25 +876,11 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     print!("  {} Checking system requirements... ", "▸".cyan());
     let mut sys_issues = Vec::new();
 
-    if has_native_shm() {
-        #[cfg(target_os = "linux")]
-        {
-            let dev_shm = std::path::Path::new("/dev/shm");
-            if !dev_shm.exists() {
-                sys_issues.push("/dev/shm not available");
-            } else if let Ok(metadata) = std::fs::metadata(dev_shm) {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = metadata.permissions().mode();
-                if mode & 0o777 != 0o777 {
-                    sys_issues.push("/dev/shm permissions restrictive");
-                }
-            }
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
     {
-        let shm_path = shm_base_dir();
-        if std::fs::create_dir_all(&shm_path).is_err() {
+        let shm_parent = horus_sys::shm::shm_parent_dir();
+        if !shm_parent.exists() {
+            sys_issues.push("SHM parent directory not available");
+        } else if std::fs::create_dir_all(shm_base_dir()).is_err() {
             sys_issues.push("Cannot create shared memory directory");
         }
     }
@@ -929,70 +896,39 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         }
     }
 
-    // Disk Space Check
+    // Disk Space Check (cross-platform via horus_sys)
     print!("  {} Checking available disk space... ", "▸".cyan());
-    #[cfg(target_os = "linux")]
-    {
-        use std::process::Command;
-
-        if let Ok(output) = Command::new("df").arg("-BM").arg(base_dir).output() {
-            if output.status.success() {
-                let output_str = String::from_utf8_lossy(&output.stdout);
-                if let Some(line) = output_str.lines().nth(1) {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 4 {
-                        if let Some(available) = parts[3].strip_suffix('M') {
-                            if let Ok(available_mb) = available.parse::<u64>() {
-                                if available_mb < 500 {
-                                    println!(
-                                        "{} ({}MB free)",
-                                        cli_output::ICON_WARN.yellow(),
-                                        available_mb
-                                    );
-                                    if !quiet {
-                                        warn_msgs.push(format!(
-                                            "Low disk space: only {}MB available (recommended: 500MB+)",
-                                            available_mb
-                                        ));
-                                    }
-                                } else if available_mb < 100 {
-                                    println!(
-                                        "{} ({}MB free)",
-                                        cli_output::ICON_ERROR.red(),
-                                        available_mb
-                                    );
-                                    errors.push(format!(
-                                        "Critically low disk space: only {}MB available",
-                                        available_mb
-                                    ));
-                                } else {
-                                    println!(
-                                        "{} ({}MB free)",
-                                        cli_output::ICON_SUCCESS.green(),
-                                        available_mb
-                                    );
-                                }
-                            } else {
-                                println!("{}", "⊘".dimmed());
-                            }
-                        } else {
-                            println!("{}", "⊘".dimmed());
-                        }
-                    } else {
-                        println!("{}", "⊘".dimmed());
-                    }
-                } else {
-                    println!("{}", "⊘".dimmed());
-                }
-            } else {
-                println!("{}", "⊘".dimmed());
+    if let Some(available_mb) = horus_sys::platform::disk_available_mb(base_dir) {
+        if available_mb < 100 {
+            println!(
+                "{} ({}MB free)",
+                cli_output::ICON_ERROR.red(),
+                available_mb
+            );
+            errors.push(format!(
+                "Critically low disk space: only {}MB available",
+                available_mb
+            ));
+        } else if available_mb < 500 {
+            println!(
+                "{} ({}MB free)",
+                cli_output::ICON_WARN.yellow(),
+                available_mb
+            );
+            if !quiet {
+                warn_msgs.push(format!(
+                    "Low disk space: only {}MB available (recommended: 500MB+)",
+                    available_mb
+                ));
             }
         } else {
-            println!("{}", "⊘".dimmed());
+            println!(
+                "{} ({}MB free)",
+                cli_output::ICON_SUCCESS.green(),
+                available_mb
+            );
         }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
+    } else {
         println!("{}", "⊘".dimmed());
     }
 
@@ -1260,6 +1196,80 @@ pub enum MissingSystemChoice {
     InstallGlobal,
     InstallLocal,
     Skip,
+}
+
+/// Run full validation: manifest + fmt + lint.
+/// Combines multiple checks and reports results using the doctor summary format.
+pub fn run_check_full(path: Option<PathBuf>, json: bool) -> HorusResult<()> {
+    use super::doctor::{CheckResult, Health};
+    let mut results = Vec::new();
+
+    // 1. Manifest validation
+    let manifest_ok = run_check(path.clone(), true, false).is_ok();
+    results.push(CheckResult {
+        category: "Manifest".to_string(),
+        health: if manifest_ok { Health::Ok } else { Health::Fail },
+        summary: if manifest_ok {
+            "horus.toml valid".into()
+        } else {
+            "horus.toml has errors".into()
+        },
+        details: vec![],
+    });
+
+    // 2. Formatting check
+    let fmt_ok = super::fmt::run_fmt(true, vec![]).is_ok();
+    results.push(CheckResult {
+        category: "Formatting".to_string(),
+        health: if fmt_ok { Health::Ok } else { Health::Warn },
+        summary: if fmt_ok {
+            "Code formatted correctly".into()
+        } else {
+            "Unformatted code found (run horus fmt)".into()
+        },
+        details: vec![],
+    });
+
+    // 3. Lint check
+    let lint_ok = super::lint::run_lint(false, false, vec![]).is_ok();
+    results.push(CheckResult {
+        category: "Lint".to_string(),
+        health: if lint_ok { Health::Ok } else { Health::Warn },
+        summary: if lint_ok {
+            "No lint issues".into()
+        } else {
+            "Lint warnings found (run horus lint --fix)".into()
+        },
+        details: vec![],
+    });
+
+    if json {
+        let json_results: Vec<_> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "category": r.category,
+                    "health": format!("{:?}", r.health),
+                    "summary": r.summary,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_results).unwrap_or_default()
+        );
+    } else {
+        super::doctor::print_summary(&results, false);
+    }
+
+    let has_failures = results.iter().any(|r| r.health == Health::Fail);
+    if has_failures {
+        Err(HorusError::Config(ConfigError::Other(
+            "Full check found failures".to_string(),
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

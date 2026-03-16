@@ -42,6 +42,12 @@ pub fn run_fmt(check: bool, extra_args: Vec<String>) -> Result<()> {
                     "cargo" => args.push("--check".to_string()),
                     "ruff" => args.push("--check".to_string()),
                     "black" => args.push("--check".to_string()),
+                    "clang-format" => {
+                        // Replace -i (in-place) with --dry-run --Werror (check mode)
+                        args.retain(|a| a != "-i");
+                        args.push("--dry-run".to_string());
+                        args.push("--Werror".to_string());
+                    }
                     _ => {}
                 }
             }

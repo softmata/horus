@@ -375,7 +375,11 @@ impl PyTopic {
             s
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
-                "Topic() requires a message type (CmdVel, Pose2D) or topic string",
+                "Topic() requires a message type or topic string.\n\
+                 Common types: CmdVel, Pose2D, Pose3D, Twist, Imu, Odometry, LaserScan, \
+                 JointState, Image, PointCloud, DepthImage, NavGoal, Heartbeat, \
+                 MotorCommand, ServoCommand, Detection, WrenchStamped, BatteryState.\n\
+                 Usage: Topic(CmdVel) or Topic(CmdVel, capacity=2048) or Topic(\"my_topic\")",
             ));
         };
 
@@ -4601,8 +4605,14 @@ where
         endpoint
     };
 
-    Topic::with_capacity(topic_name, capacity as u32, None)
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Topic: {}", e)))
+    Topic::with_capacity(topic_name, capacity as u32, None).map_err(|e| {
+        PyRuntimeError::new_err(format!(
+            "Failed to create Topic '{}': {}. Common causes: invalid topic name \
+             (allowed: a-z, 0-9, _, -, ., /), SHM permission denied \
+             (check: ls -la /dev/shm/horus_*), or insufficient /dev/shm space",
+            topic_name, e
+        ))
+    })
 }
 
 fn create_topic<T>(endpoint: &str, capacity: usize) -> PyResult<Topic<T>>
@@ -4627,7 +4637,12 @@ where
     }
 
     Topic::with_capacity(endpoint, capacity as u32, None).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create Topic: {}", e))
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "Failed to create Topic '{}': {}. Common causes: invalid topic name \
+             (allowed: a-z, 0-9, _, -, ., /), SHM permission denied \
+             (check: ls -la /dev/shm/horus_*), or insufficient /dev/shm space",
+            endpoint, e
+        ))
     })
 }
 

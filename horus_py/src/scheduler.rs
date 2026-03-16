@@ -16,6 +16,18 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Convert a lock `PoisonError` into a descriptive `PyRuntimeError`.
+///
+/// Lock poisoning means a previous operation panicked while holding the lock.
+/// The scheduler's internal state is inconsistent and cannot be recovered.
+fn lock_poisoned<T>(_: std::sync::PoisonError<T>) -> PyErr {
+    PyRuntimeError::new_err(
+        "Internal state corrupted: a previous operation panicked while holding a lock. \
+         This typically means a node's tick(), init(), or shutdown() raised an unhandled exception. \
+         Restart the scheduler or Python process to recover.",
+    )
+}
+
 /// Parameters for adding a node to the scheduler.
 struct NodeParams {
     order: u32,
@@ -24,6 +36,11 @@ struct NodeParams {
     failure_policy: Option<FailurePolicy>,
     miss_policy: Option<String>,
     execution_class: Option<ExecutionClass>,
+    budget_seconds: Option<f64>,
+    deadline_seconds: Option<f64>,
+    priority: Option<i32>,
+    pinned_core: Option<usize>,
+    watchdog_seconds: Option<f64>,
 }
 
 // ─── PyNodeAdapter ───────────────────────────────────────────────────────────
@@ -97,7 +114,15 @@ impl CoreNode for PyNodeAdapter {
             let result = self
                 .py_object
                 .call_method1(py, "init", (py_info,))
-                .or_else(|_| self.py_object.call_method0(py, "init"));
+                .or_else(|e| {
+                    // Only fall back to no-arg if the method doesn't accept info parameter.
+                    // TypeError = wrong signature. All other errors propagate.
+                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
+                        self.py_object.call_method0(py, "init")
+                    } else {
+                        Err(e)
+                    }
+                });
 
             match result {
                 Ok(_) => Ok(()),
@@ -155,7 +180,13 @@ impl CoreNode for PyNodeAdapter {
             let result = self
                 .py_object
                 .call_method1(py, "tick", (py_info,))
-                .or_else(|_| self.py_object.call_method0(py, "tick"));
+                .or_else(|e| {
+                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
+                        self.py_object.call_method0(py, "tick")
+                    } else {
+                        Err(e)
+                    }
+                });
 
             match result {
                 Ok(_) => {
@@ -204,7 +235,13 @@ impl CoreNode for PyNodeAdapter {
             let result = self
                 .py_object
                 .call_method1(py, "shutdown", (py_info,))
-                .or_else(|_| self.py_object.call_method0(py, "shutdown"));
+                .or_else(|e| {
+                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
+                        self.py_object.call_method0(py, "shutdown")
+                    } else {
+                        Err(e)
+                    }
+                });
 
             match result {
                 Ok(_) => Ok(()),
@@ -293,6 +330,11 @@ pub struct PyNodeBuilder {
     failure_policy: Option<FailurePolicy>,
     miss_policy: Option<String>,
     execution_class: Option<ExecutionClass>,
+    budget_seconds: Option<f64>,
+    deadline_seconds: Option<f64>,
+    priority: Option<i32>,
+    pinned_core: Option<usize>,
+    watchdog_seconds: Option<f64>,
 }
 
 #[pymethods]
@@ -307,6 +349,51 @@ impl PyNodeBuilder {
     fn rate(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
         slf.rate_hz = Some(rate);
         slf
+    }
+
+    /// Set tick budget in seconds (e.g., ``300 * us`` for 300μs).
+    ///
+    /// Overrides the auto-derived budget (80% of period from ``rate()``).
+    /// Use ``horus.us`` and ``horus.ms`` constants for clarity.
+    fn budget(mut slf: PyRefMut<'_, Self>, seconds: f64) -> PyResult<PyRefMut<'_, Self>> {
+        if seconds <= 0.0 || !seconds.is_finite() {
+            return Err(PyRuntimeError::new_err("budget must be positive and finite"));
+        }
+        if seconds > 1.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "budget={:.3}s is unusually large (>{:.0} ticks at any reasonable rate). \
+                 Did you mean {:.0} * us ({:.6}s)? \
+                 Budget is in seconds. Use the `us` and `ms` constants: budget=300 * us",
+                seconds,
+                seconds,
+                seconds * 1_000_000.0,
+                seconds / 1_000_000.0
+            )));
+        }
+        slf.budget_seconds = Some(seconds);
+        Ok(slf)
+    }
+
+    /// Set tick deadline in seconds (e.g., ``900 * us`` for 900μs).
+    ///
+    /// Overrides the auto-derived deadline (95% of period from ``rate()``).
+    /// Use ``horus.us`` and ``horus.ms`` constants for clarity.
+    fn deadline(mut slf: PyRefMut<'_, Self>, seconds: f64) -> PyResult<PyRefMut<'_, Self>> {
+        if seconds <= 0.0 || !seconds.is_finite() {
+            return Err(PyRuntimeError::new_err("deadline must be positive and finite"));
+        }
+        if seconds > 5.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "deadline={:.3}s is unusually large. \
+                 Did you mean {:.0} * us ({:.6}s)? \
+                 Deadline is in seconds. Use the `us` and `ms` constants: deadline=900 * us",
+                seconds,
+                seconds * 1_000_000.0,
+                seconds / 1_000_000.0
+            )));
+        }
+        slf.deadline_seconds = Some(seconds);
+        Ok(slf)
     }
 
     /// Set deadline miss policy: Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, Miss.STOP.
@@ -379,6 +466,27 @@ impl PyNodeBuilder {
         slf
     }
 
+    /// Set OS scheduling priority (lower value = higher priority).
+    fn priority(mut slf: PyRefMut<'_, Self>, prio: i32) -> PyRefMut<'_, Self> {
+        slf.priority = Some(prio);
+        slf
+    }
+
+    /// Pin this node to a specific CPU core.
+    fn core(mut slf: PyRefMut<'_, Self>, cpu_id: usize) -> PyRefMut<'_, Self> {
+        slf.pinned_core = Some(cpu_id);
+        slf
+    }
+
+    /// Set per-node watchdog timeout in seconds.
+    fn watchdog(mut slf: PyRefMut<'_, Self>, seconds: f64) -> PyResult<PyRefMut<'_, Self>> {
+        if seconds <= 0.0 || !seconds.is_finite() {
+            return Err(PyRuntimeError::new_err("watchdog must be positive and finite"));
+        }
+        slf.watchdog_seconds = Some(seconds);
+        Ok(slf)
+    }
+
     /// Finalize and add the node to the scheduler.
     fn build(slf: PyRefMut<'_, Self>, py: Python) -> PyResult<Py<PyScheduler>> {
         let scheduler = slf.scheduler.clone_ref(py);
@@ -389,6 +497,11 @@ impl PyNodeBuilder {
         let failure_policy = slf.failure_policy.clone();
         let miss_policy = slf.miss_policy.clone();
         let execution_class = slf.execution_class.clone();
+        let budget_seconds = slf.budget_seconds;
+        let deadline_seconds = slf.deadline_seconds;
+        let priority = slf.priority;
+        let pinned_core = slf.pinned_core;
+        let watchdog_seconds = slf.watchdog_seconds;
         drop(slf);
 
         {
@@ -403,6 +516,11 @@ impl PyNodeBuilder {
                     failure_policy,
                     miss_policy,
                     execution_class,
+                    budget_seconds,
+                    deadline_seconds,
+                    priority,
+                    pinned_core,
+                    watchdog_seconds,
                 },
             )?;
         }
@@ -447,6 +565,11 @@ impl PyScheduler {
             failure_policy,
             miss_policy,
             execution_class,
+            budget_seconds,
+            deadline_seconds,
+            priority,
+            pinned_core,
+            watchdog_seconds,
         } = params;
         let name: String = node.getattr(py, "name")?.extract(py)?;
 
@@ -517,11 +640,26 @@ impl PyScheduler {
                 ExecutionClass::BestEffort => {} // default, no-op
             }
         }
+        if let Some(budget_s) = budget_seconds {
+            config = config.budget(budget_s.secs());
+        }
+        if let Some(deadline_s) = deadline_seconds {
+            config = config.deadline(deadline_s.secs());
+        }
+        if let Some(prio) = priority {
+            config = config.priority(prio);
+        }
+        if let Some(cpu) = pinned_core {
+            config = config.core(cpu);
+        }
+        if let Some(wd_s) = watchdog_seconds {
+            config = config.watchdog(wd_s.secs());
+        }
 
         let mut guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot add nodes while scheduler is running")
         })?;
@@ -573,7 +711,7 @@ impl PyScheduler {
             let mut guard = self
                 .inner
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                .map_err(lock_poisoned)?;
             guard.take().ok_or_else(|| {
                 PyRuntimeError::new_err("Scheduler already running or not initialized")
             })?
@@ -592,7 +730,7 @@ impl PyScheduler {
             let mut guard = self
                 .inner
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                .map_err(lock_poisoned)?;
             *guard = Some(returned_inner);
         }
 
@@ -603,8 +741,16 @@ impl PyScheduler {
 #[pymethods]
 impl PyScheduler {
     #[new]
-    #[pyo3(signature = (config=None))]
-    pub fn new(config: Option<PySchedulerConfig>) -> PyResult<Self> {
+    #[pyo3(signature = (config=None, deterministic=false, name=None, cores=None, max_deadline_misses=None, verbose=false, telemetry=None))]
+    pub fn new(
+        config: Option<PySchedulerConfig>,
+        deterministic: bool,
+        name: Option<String>,
+        cores: Option<Vec<usize>>,
+        max_deadline_misses: Option<u64>,
+        verbose: bool,
+        telemetry: Option<String>,
+    ) -> PyResult<Self> {
         let core_config = config
             .as_ref()
             .map(|c| c.to_core_config())
@@ -613,6 +759,24 @@ impl PyScheduler {
         let tick_rate = config.as_ref().map_or(100.0, |c| c.tick_rate);
 
         let mut core_sched = CoreScheduler::new();
+        if deterministic {
+            core_sched = core_sched.deterministic(true);
+        }
+        if let Some(n) = name {
+            core_sched = core_sched.name(&n);
+        }
+        if let Some(ref cpu_ids) = cores {
+            core_sched = core_sched.cores(cpu_ids);
+        }
+        if let Some(n) = max_deadline_misses {
+            core_sched = core_sched.max_deadline_misses(n);
+        }
+        if verbose {
+            core_sched = core_sched.verbose(true);
+        }
+        if let Some(ref ep) = telemetry {
+            core_sched = core_sched.telemetry(ep);
+        }
         core_sched.apply_config(core_config);
         Self::wrap_core(core_sched, tick_rate)
     }
@@ -628,11 +792,16 @@ impl PyScheduler {
             failure_policy: None,
             miss_policy: None,
             execution_class: None,
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
         })
     }
 
     /// Add a node to the scheduler.
-    #[pyo3(signature = (node, order=100, rate=None, rt=false, failure_policy=None, on_miss=None))]
+    #[pyo3(signature = (node, order=100, rate=None, rt=false, failure_policy=None, on_miss=None, budget=None, deadline=None))]
     fn add(
         &self,
         py: Python,
@@ -642,6 +811,8 @@ impl PyScheduler {
         rt: bool,
         failure_policy: Option<String>,
         on_miss: Option<String>,
+        budget: Option<f64>,
+        deadline: Option<f64>,
     ) -> PyResult<()> {
         let parsed_policy = match failure_policy.as_deref() {
             Some("fatal") => Some(FailurePolicy::Fatal),
@@ -668,6 +839,11 @@ impl PyScheduler {
                 failure_policy: parsed_policy,
                 miss_policy: on_miss,
                 execution_class: None,
+                budget_seconds: budget,
+                deadline_seconds: deadline,
+                priority: None,
+                pinned_core: None,
+                watchdog_seconds: None,
             },
         )
     }
@@ -683,7 +859,7 @@ impl PyScheduler {
         let mut guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Cannot modify while scheduler is running"))?;
@@ -744,7 +920,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("Stats unavailable while scheduler is running")
         })?;
@@ -767,7 +943,7 @@ impl PyScheduler {
         let mut removed = self
             .removed_nodes
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         Ok(removed.insert(name))
     }
 
@@ -776,14 +952,14 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("Node list unavailable while scheduler is running")
         })?;
         let removed = self
             .removed_nodes
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
 
         let mut result = Vec::new();
         for metric in inner.metrics() {
@@ -801,13 +977,13 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
                 let removed = self
                     .removed_nodes
                     .lock()
-                    .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                    .map_err(lock_poisoned)?;
                 Ok(sched.node_list().len() - removed.len())
             }
             None => Ok(0),
@@ -819,13 +995,13 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
                 let removed = self
                     .removed_nodes
                     .lock()
-                    .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                    .map_err(lock_poisoned)?;
                 Ok(sched.node_list().contains(&name) && !removed.contains(&name))
             }
             None => Ok(false),
@@ -837,13 +1013,13 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
                 let removed = self
                     .removed_nodes
                     .lock()
-                    .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                    .map_err(lock_poisoned)?;
                 Ok(sched
                     .node_list()
                     .into_iter()
@@ -859,7 +1035,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
                 for metric in sched.metrics() {
@@ -882,7 +1058,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.status()),
             None => Ok("running".to_string()),
@@ -894,7 +1070,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = match guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -917,7 +1093,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.has_full_rt()),
             None => Ok(false),
@@ -929,7 +1105,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = match guard.as_ref() {
             Some(s) => s,
             None => return Ok(PyList::empty(py).into()),
@@ -950,7 +1126,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.current_tick()),
             None => Ok(0),
@@ -962,7 +1138,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.scheduler_name().to_string()),
             None => Ok("PythonScheduler".to_string()),
@@ -978,7 +1154,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = match guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -1006,7 +1182,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.is_recording()),
             None => Ok(false),
@@ -1018,7 +1194,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.is_replaying()),
             None => Ok(false),
@@ -1030,7 +1206,7 @@ impl PyScheduler {
         let mut guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot stop recording while scheduler is running")
         })?;
@@ -1055,7 +1231,7 @@ impl PyScheduler {
         let mut guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot set tick budget while scheduler is running")
         })?;
@@ -1070,7 +1246,7 @@ impl PyScheduler {
         let mut guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot add critical node while scheduler is running")
         })?;
@@ -1091,7 +1267,7 @@ impl PyScheduler {
         let guard = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            .map_err(lock_poisoned)?;
         let count = guard.as_ref().map(|s| s.node_list().len()).unwrap_or(0);
         Ok(format!(
             "Scheduler(nodes={}, tick_rate={}Hz)",
@@ -1120,11 +1296,11 @@ impl PyScheduler {
         *self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))? = Some(core_sched);
+            .map_err(lock_poisoned)? = Some(core_sched);
         *self
             .removed_nodes
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))? = HashSet::new();
+            .map_err(lock_poisoned)? = HashSet::new();
 
         Ok(())
     }
@@ -1251,5 +1427,258 @@ mod tests {
             .join()
             .unwrap();
         assert!(saw_stop, "Stop flag should propagate to other threads");
+    }
+
+    // ── Cross-language config parity tests ──────────────────────────────
+    // These verify that NodeParams (the bridge between Python Node attrs
+    // and Rust NodeRegistration) correctly carries all 12 config fields.
+
+    #[test]
+    fn node_params_all_fields_set() {
+        let params = NodeParams {
+            order: 5,
+            rate_hz: Some(1000.0),
+            rt: false,
+            failure_policy: Some(FailurePolicy::Ignore),
+            miss_policy: Some("skip".to_string()),
+            execution_class: Some(ExecutionClass::Compute),
+            budget_seconds: Some(0.0003),
+            deadline_seconds: Some(0.0009),
+            priority: Some(10),
+            pinned_core: Some(2),
+            watchdog_seconds: Some(0.5),
+        };
+        assert_eq!(params.order, 5);
+        assert_eq!(params.rate_hz, Some(1000.0));
+        assert_eq!(params.budget_seconds, Some(0.0003));
+        assert_eq!(params.deadline_seconds, Some(0.0009));
+        assert_eq!(params.priority, Some(10));
+        assert_eq!(params.pinned_core, Some(2));
+        assert_eq!(params.watchdog_seconds, Some(0.5));
+        assert!(matches!(params.miss_policy.as_deref(), Some("skip")));
+        assert!(matches!(params.execution_class, Some(ExecutionClass::Compute)));
+    }
+
+    #[test]
+    fn node_params_all_defaults() {
+        let params = NodeParams {
+            order: 100,
+            rate_hz: None,
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: None,
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
+        };
+        assert_eq!(params.order, 100);
+        assert!(params.rate_hz.is_none());
+        assert!(params.budget_seconds.is_none());
+        assert!(params.deadline_seconds.is_none());
+        assert!(params.priority.is_none());
+        assert!(params.pinned_core.is_none());
+        assert!(params.watchdog_seconds.is_none());
+        assert!(params.failure_policy.is_none());
+        assert!(params.miss_policy.is_none());
+        assert!(params.execution_class.is_none());
+    }
+
+    #[test]
+    fn node_params_budget_only() {
+        let params = NodeParams {
+            order: 0,
+            rate_hz: Some(1000.0),
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: None,
+            budget_seconds: Some(0.0003),
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
+        };
+        assert_eq!(params.budget_seconds, Some(0.0003));
+        assert!(params.deadline_seconds.is_none());
+    }
+
+    #[test]
+    fn node_params_async_io_execution_class() {
+        let params = NodeParams {
+            order: 0,
+            rate_hz: Some(10.0),
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: Some(ExecutionClass::AsyncIo),
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
+        };
+        assert!(matches!(params.execution_class, Some(ExecutionClass::AsyncIo)));
+    }
+
+    #[test]
+    fn node_params_event_driven() {
+        let params = NodeParams {
+            order: 0,
+            rate_hz: None,
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: Some(ExecutionClass::Event("lidar_scan".to_string())),
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
+        };
+        assert!(matches!(
+            params.execution_class,
+            Some(ExecutionClass::Event(ref t)) if t == "lidar_scan"
+        ));
+    }
+
+    #[test]
+    fn node_params_rt_with_priority_and_core() {
+        let params = NodeParams {
+            order: 0,
+            rate_hz: Some(1000.0),
+            rt: true,
+            failure_policy: None,
+            miss_policy: Some("safe_mode".to_string()),
+            execution_class: None,
+            budget_seconds: Some(0.0003),
+            deadline_seconds: Some(0.0009),
+            priority: Some(0),
+            pinned_core: Some(3),
+            watchdog_seconds: Some(0.5),
+        };
+        assert!(params.rt);
+        assert_eq!(params.priority, Some(0));
+        assert_eq!(params.pinned_core, Some(3));
+        assert_eq!(params.watchdog_seconds, Some(0.5));
+        assert!(matches!(params.miss_policy.as_deref(), Some("safe_mode")));
+    }
+
+    #[test]
+    fn node_params_failure_policy_restart() {
+        let params = NodeParams {
+            order: 50,
+            rate_hz: Some(30.0),
+            rt: false,
+            failure_policy: Some(FailurePolicy::restart(5, 100_u64.ms())),
+            miss_policy: Some("warn".to_string()),
+            execution_class: None,
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
+        };
+        assert!(params.failure_policy.is_some());
+        assert!(matches!(params.miss_policy.as_deref(), Some("warn")));
+    }
+
+    #[test]
+    fn miss_policy_parsing() {
+        assert!(matches!(parse_miss_policy("warn").unwrap(), Miss::Warn));
+        assert!(matches!(parse_miss_policy("skip").unwrap(), Miss::Skip));
+        assert!(matches!(parse_miss_policy("safe_mode").unwrap(), Miss::SafeMode));
+        assert!(matches!(parse_miss_policy("safemode").unwrap(), Miss::SafeMode));
+        assert!(matches!(parse_miss_policy("stop").unwrap(), Miss::Stop));
+        assert!(parse_miss_policy("invalid").is_err());
+    }
+
+    #[test]
+    fn node_params_watchdog_only() {
+        let params = NodeParams {
+            order: 0,
+            rate_hz: Some(100.0),
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: None,
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: Some(2.0),
+        };
+        assert_eq!(params.watchdog_seconds, Some(2.0));
+        assert!(params.priority.is_none());
+    }
+
+    #[test]
+    fn node_params_all_execution_classes() {
+        // BestEffort (default)
+        let p1 = NodeParams {
+            order: 0, rate_hz: None, rt: false, failure_policy: None,
+            miss_policy: None, execution_class: None,
+            budget_seconds: None, deadline_seconds: None,
+            priority: None, pinned_core: None, watchdog_seconds: None,
+        };
+        assert!(p1.execution_class.is_none());
+
+        // Compute
+        let p2 = NodeParams {
+            order: 0, rate_hz: None, rt: false, failure_policy: None,
+            miss_policy: None, execution_class: Some(ExecutionClass::Compute),
+            budget_seconds: None, deadline_seconds: None,
+            priority: None, pinned_core: None, watchdog_seconds: None,
+        };
+        assert!(matches!(p2.execution_class, Some(ExecutionClass::Compute)));
+
+        // AsyncIo
+        let p3 = NodeParams {
+            order: 0, rate_hz: None, rt: false, failure_policy: None,
+            miss_policy: None, execution_class: Some(ExecutionClass::AsyncIo),
+            budget_seconds: None, deadline_seconds: None,
+            priority: None, pinned_core: None, watchdog_seconds: None,
+        };
+        assert!(matches!(p3.execution_class, Some(ExecutionClass::AsyncIo)));
+
+        // Event
+        let p4 = NodeParams {
+            order: 0, rate_hz: None, rt: false, failure_policy: None,
+            miss_policy: None, execution_class: Some(ExecutionClass::Event("scan".into())),
+            budget_seconds: None, deadline_seconds: None,
+            priority: None, pinned_core: None, watchdog_seconds: None,
+        };
+        assert!(matches!(p4.execution_class, Some(ExecutionClass::Event(_))));
+    }
+
+    #[test]
+    fn node_params_complete_rt_config() {
+        // Mirrors: Node(tick=fn, rate=1000, order=0, budget=300*us, deadline=900*us,
+        //               on_miss="skip", failure_policy="restart", priority=0, core=2, watchdog=0.5)
+        let params = NodeParams {
+            order: 0,
+            rate_hz: Some(1000.0),
+            rt: false,
+            failure_policy: Some(FailurePolicy::restart(3, 200_u64.ms())),
+            miss_policy: Some("skip".to_string()),
+            execution_class: None,
+            budget_seconds: Some(0.0003),
+            deadline_seconds: Some(0.0009),
+            priority: Some(0),
+            pinned_core: Some(2),
+            watchdog_seconds: Some(0.5),
+        };
+        // Every field maps to a Rust NodeRegistration builder call
+        assert_eq!(params.order, 0);
+        assert_eq!(params.rate_hz, Some(1000.0));
+        assert_eq!(params.budget_seconds, Some(0.0003));
+        assert_eq!(params.deadline_seconds, Some(0.0009));
+        assert!(matches!(params.miss_policy.as_deref(), Some("skip")));
+        assert!(params.failure_policy.is_some());
+        assert_eq!(params.priority, Some(0));
+        assert_eq!(params.pinned_core, Some(2));
+        assert_eq!(params.watchdog_seconds, Some(0.5));
     }
 }

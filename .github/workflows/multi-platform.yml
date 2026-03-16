@@ -177,6 +177,8 @@ jobs:
   msrv:
     name: MSRV (${{ matrix.rust }})
     runs-on: ubuntu-latest
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
     strategy:
       matrix:
         rust: ["1.92.0"]  # MSRV
@@ -198,9 +200,10 @@ jobs:
 
       - name: Setup Shared Memory
         run: |
-          sudo mkdir -p /dev/shm/horus/topics
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
 
       - name: Check MSRV Compatibility
         run: cargo check --workspace

@@ -154,39 +154,39 @@ detect_os() {
 # SHARED MEMORY PATH FUNCTIONS
 # ============================================================================
 # Returns the appropriate shared memory base directory for the current OS
-get_shm_base_dir() {
+# Returns the SHM parent directory where horus_* namespace dirs live.
+# SHM layout: {parent}/horus_{namespace}/topics/, nodes/, logs, scheduler/
+get_shm_parent_dir() {
     case "$(uname -s)" in
         Linux*)
-            echo "/dev/shm/horus"
+            echo "/dev/shm"
             ;;
         Darwin*|FreeBSD*|OpenBSD*|NetBSD*|DragonFly*)
-            echo "/tmp/horus"
+            echo "/tmp"
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            echo "${TEMP:-/tmp}/horus"
+            echo "${TEMP:-/tmp}"
             ;;
         *)
-            echo "/tmp/horus"
+            echo "/tmp"
             ;;
     esac
 }
 
-# Returns the appropriate shared memory logs path for the current OS
+# Returns the SHM parent dir (backward compat alias)
+get_shm_base_dir() {
+    get_shm_parent_dir
+}
+
+# Returns the glob pattern for all horus namespace directories
+get_shm_glob() {
+    echo "$(get_shm_parent_dir)/horus_*"
+}
+
+# Returns the logs path for a given namespace (or glob for all)
+# Logs are now namespaced: {parent}/horus_{ns}/logs
 get_shm_logs_path() {
-    case "$(uname -s)" in
-        Linux*)
-            echo "/dev/shm/horus_logs"
-            ;;
-        Darwin*|FreeBSD*|OpenBSD*|NetBSD*|DragonFly*)
-            echo "/tmp/horus_logs"
-            ;;
-        MINGW*|MSYS*|CYGWIN*)
-            echo "${TEMP:-/tmp}/horus_logs"
-            ;;
-        *)
-            echo "/tmp/horus_logs"
-            ;;
-    esac
+    echo "$(get_shm_parent_dir)/horus_*/logs"
 }
 
 # ============================================================================

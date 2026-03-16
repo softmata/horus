@@ -130,6 +130,18 @@
 //!     .build()?;
 //! ```
 //!
+//! ### Execution Classes Quick Reference
+//!
+//! | Method | Class | When to Use |
+//! |--------|-------|-------------|
+//! | `.rate(100.hz())` | **Rt** | Motor control, sensor sampling (auto-derives budget/deadline) |
+//! | `.compute()` | **Compute** | Path planning, CV, ML inference (parallel thread pool) |
+//! | `.on("topic")` | **Event** | Data processors, filters (ticks only on new data) |
+//! | `.async_io()` | **AsyncIo** | Network calls, file I/O, logging (tokio pool, no RT impact) |
+//! | *(default)* | **BestEffort** | Diagnostics, telemetry (main thread, sequential) |
+//!
+//! See [`scheduling::node_builder`] for the full decision guide.
+//!
 //! ### Key Message Types
 //!
 //! | Type | Description |
@@ -142,6 +154,26 @@
 //! | `Image` | Pool-backed image (zero-copy) |
 //! | `PointCloud` | Pool-backed 3D points (zero-copy) |
 //! | `DepthImage` | Pool-backed depth map (zero-copy) |
+//!
+//! ## Common Mistakes
+//!
+//! **1. Execution class override** — Calling `.compute()` then `.on("topic")` on the same
+//! node: only the LAST execution class applies. The first is silently overridden with a
+//! log warning. Pick ONE: `.compute()`, `.on()`, `.async_io()`, or `.rate()`.
+//!
+//! **2. Budget/deadline units** — `.budget()` and `.deadline()` take `Duration`, not
+//! microseconds. Use `200_u64.us()` not `200`. If using `.rate()`, budget (80%) and
+//! deadline (95%) are auto-derived — you usually don't need to set them manually.
+//!
+//! **3. Forgetting `.build()`** — `scheduler.add(node).order(0).rate(100.hz())` without
+//! `.build()?` at the end silently drops the node registration. Always end with `.build()?`.
+//!
+//! **4. `read_latest()` on non-Copy types** — `Topic::read_latest()` requires `T: Copy`
+//! for multi-consumer backends. Use `recv()` for non-Copy types like `String` or `Vec`.
+//!
+//! **5. `.rate()` order doesn't matter** — `.rate(100.hz()).compute()` produces Compute,
+//! not Rt. Execution class is determined by the explicit class call, not by `.rate()`.
+//! `.rate()` only auto-derives Rt when no explicit class is set.
 
 /// Framework time API — `horus::now()`, `horus::dt()`, `horus::rng()`, etc.
 ///
@@ -155,10 +187,27 @@ pub use horus_core;
 pub use horus_core::communication;
 #[doc(hidden)]
 pub use horus_core::core;
+/// Driver configuration and hardware connection support.
+///
+/// Load pre-configured hardware connections from `horus.toml` `[drivers]`:
+///
+/// ```rust,ignore
+/// use horus::drivers;
+///
+/// let mut hw = drivers::load()?;
+/// let bus = hw.dynamixel("arm")?;
+/// ```
+pub use horus_core::drivers;
 #[doc(hidden)]
 pub use horus_core::hlog;
 #[doc(hidden)]
 pub use horus_core::memory;
+/// Register a local driver factory for `[drivers]` config instantiation.
+///
+/// ```rust,ignore
+/// register_driver!(MyDriver, MyDriver::from_params);
+/// ```
+pub use horus_core::register_driver;
 #[doc(hidden)]
 pub use horus_core::scheduling;
 #[doc(hidden)]

@@ -56,12 +56,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         ctrlc::set_handler(move || {
             println!("{}", "\nCtrl+C received, stopping Python process...".red());
             r.store(false, Ordering::SeqCst);
-            // Send SIGINT to child process on Unix systems
-            #[cfg(unix)]
-            // SAFETY: child_id is a valid PID of a child process we spawned. SIGINT requests interruption.
-            unsafe {
-                libc::kill(child_id as i32, libc::SIGINT);
-            }
+            // Send SIGINT to child process (cross-platform via horus_sys)
+            let _ = horus_sys::process::ProcessHandle::from_pid(child_id)
+                .signal(horus_sys::process::Signal::Interrupt);
         })
         .ok();
 
@@ -73,10 +70,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
 
         // Propagate the child's exit code as an error
         if !status.success() {
-            bail!(
-                "Python node exited with code {}",
-                status.code().unwrap_or(1)
-            );
+            let code = status.code().unwrap_or(1);
+            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("python", code));
+            bail!("Python node exited with code {}", code);
         }
     } else {
         // Direct execution for plain Python scripts
@@ -100,12 +96,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         ctrlc::set_handler(move || {
             println!("{}", "\nCtrl+C received, stopping Python process...".red());
             r.store(false, Ordering::SeqCst);
-            // Send SIGINT to child process on Unix systems
-            #[cfg(unix)]
-            // SAFETY: child_id is a valid PID of a child process we spawned. SIGINT requests interruption.
-            unsafe {
-                libc::kill(child_id as i32, libc::SIGINT);
-            }
+            // Send SIGINT to child process (cross-platform via horus_sys)
+            let _ = horus_sys::process::ProcessHandle::from_pid(child_id)
+                .signal(horus_sys::process::Signal::Interrupt);
         })
         .ok();
 
@@ -114,10 +107,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
 
         // Propagate the child's exit code as an error
         if !status.success() {
-            bail!(
-                "Python script exited with code {}",
-                status.code().unwrap_or(1)
-            );
+            let code = status.code().unwrap_or(1);
+            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("python", code));
+            bail!("Python script exited with code {}", code);
         }
     }
 
@@ -131,6 +123,18 @@ pub(crate) fn detect_python_interpreter() -> Result<String> {
             return Ok(cmd.to_string());
         }
     }
+    crate::error_wrapper::emit_diagnostics(&[crate::error_wrapper::Diagnostic::new(
+        "python",
+        "H052",
+        "No Python interpreter found",
+        format!(
+            "No Python interpreter found. Install with:\n  {}",
+            crate::error_wrapper::suggest_install("python3").green()
+        ),
+    )
+    .with_fix(crate::error_wrapper::Fix::Command {
+        command: crate::error_wrapper::suggest_install("python3"),
+    })]);
     bail!("No Python interpreter found. Install Python 3.7+ and ensure it's in PATH.");
 }
 
@@ -168,7 +172,7 @@ pub(crate) fn build_python_path() -> Result<String> {
         python_paths.push(current_path);
     }
 
-    Ok(python_paths.join(":"))
+    Ok(python_paths.join(if cfg!(windows) { ";" } else { ":" }))
 }
 
 fn detect_horus_usage_python(file: &Path) -> Result<bool> {
@@ -204,11 +208,9 @@ fn validate_node_path(file: &Path) -> Result<PathBuf> {
 
     // Reject paths whose OS string contains any null byte (defensive: Rust's
     // OsStr should already prevent this, but be explicit).
-    {
-        use std::os::unix::ffi::OsStrExt;
-        if canonical.as_os_str().as_bytes().contains(&0u8) {
-            bail!("Node path contains a null byte and cannot be used safely.");
-        }
+    // Reject paths that aren't valid UTF-8 (defensive check, also catches null bytes)
+    if canonical.to_str().is_none() {
+        bail!("Node path contains invalid characters and cannot be used safely.");
     }
 
     Ok(canonical)

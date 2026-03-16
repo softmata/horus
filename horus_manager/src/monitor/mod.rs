@@ -297,7 +297,6 @@ pub async fn run(port: u16, no_auth: bool) -> anyhow::Result<()> {
         .route("/api/nodes", get(nodes_handler))
         .route("/api/topics", get(topics_handler))
         .route("/api/graph", get(graph_handler))
-        .route("/api/network", get(network_handler))
         .route("/api/logs/all", get(logs_all_handler))
         .route("/api/logs/node/:name", get(logs_node_handler))
         .route("/api/logs/topic/:name", get(logs_topic_handler))

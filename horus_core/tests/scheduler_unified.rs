@@ -3,7 +3,7 @@
 //! These tests verify that RT nodes are fully isolated from compute nodes:
 //! RT nodes tick at their declared rate regardless of how slow compute nodes are.
 
-use horus_core::error::HorusResult as Result;
+use horus_core::error::Result;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

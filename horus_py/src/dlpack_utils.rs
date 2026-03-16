@@ -27,7 +27,12 @@ pub fn parse_dtype(s: &str) -> PyResult<TensorDtype> {
         "uint32" | "u32" => Ok(TensorDtype::U32),
         "uint64" | "u64" => Ok(TensorDtype::U64),
         "bool" => Ok(TensorDtype::Bool),
-        _ => Err(PyValueError::new_err(format!("Unknown dtype: {}", s))),
+        _ => Err(PyValueError::new_err(format!(
+            "Unknown dtype: '{}'. Valid dtypes: float32, float64, float16, bfloat16, \
+             int8, int16, int32, int64, uint8, uint16, uint32, uint64, bool \
+             (aliases: f32, f64, f16, bf16, i8, i16, i32, i64, u8, u16, u32, u64, float, double, half, int, long, byte)",
+            s
+        ))),
     }
 }
 
@@ -52,7 +57,12 @@ pub fn dtype_to_str(dtype: TensorDtype) -> &'static str {
 
 /// Parse a device string ("cpu", "cuda:0") into `Device`.
 pub fn parse_device(s: &str) -> PyResult<Device> {
-    Device::parse(s).ok_or_else(|| PyValueError::new_err(format!("Unknown device: {}", s)))
+    Device::parse(s).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "Unknown device: '{}'. Valid devices: cpu, cuda, cuda:0, cuda:1, ..., metal, vulkan",
+            s
+        ))
+    })
 }
 
 /// Format a `Device` as a string.

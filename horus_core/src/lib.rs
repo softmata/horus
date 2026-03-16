@@ -26,6 +26,8 @@ pub mod core;
 #[doc(hidden)]
 pub mod dlpack;
 #[doc(hidden)]
+pub mod drivers;
+#[doc(hidden)]
 pub mod error;
 #[doc(hidden)]
 pub mod memory;
@@ -55,8 +57,10 @@ pub use actions::{
 };
 #[doc(hidden)]
 pub use communication::{
-    set_topic_debug, PodMessage, SendBlockingError, Topic, TOPIC_DEBUG_LOG_OFFSET,
+    set_topic_verbose, PodMessage, SendBlockingError, Topic, TopicKind,
+    TOPIC_VERBOSE_OFFSET,
 };
+pub use scheduling::control::ControlCommand;
 #[doc(hidden)]
 pub use core::{
     HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate,

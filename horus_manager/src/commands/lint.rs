@@ -52,6 +52,7 @@ pub fn run_lint(fix: bool, types: bool, extra_args: Vec<String>) -> Result<()> {
                         ];
                     }
                     "ruff" => args.push("--fix".to_string()),
+                    "clang-tidy" => args.push("--fix".to_string()),
                     _ => {}
                 }
             }

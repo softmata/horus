@@ -3,6 +3,13 @@ name = "horus_py"
 version = "0.1.9"
 edition = "2021"
 license = "Apache-2.0"
+authors = ["HORUS Team"]
+description = "Python bindings for the HORUS robotics framework — nodes, topics, scheduler, and message types accessible from Python with sub-microsecond IPC performance"
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+documentation = "https://docs.horusrobotics.dev/python/api"
+keywords = ["robotics", "python", "bindings", "horus", "pyo3"]
+categories = ["science::robotics", "api-bindings"]
 
 [lints]
 workspace = true

@@ -6,11 +6,11 @@
 //!
 //! Discovery uses two complementary data sources:
 //!
-//! 1. **Presence files** (`/dev/shm/horus/nodes/{name}.json`) — written by each
+//! 1. **Presence files** (`shm_nodes_dir()/{name}.json`) — written by each
 //!    node at startup, removed at shutdown.  Contains PID, scheduler, topics,
 //!    priority, rate, health, and PID start time (for reuse detection).
 //!
-//! 2. **SHM topic files** (`/dev/shm/horus/topics/`) — memory-mapped files
+//! 2. **SHM topic files** (`shm_topics_dir()/`) — memory-mapped files
 //!    created by the Topic API.  Contains message data, sequence counters,
 //!    and participant tables.
 //!
@@ -32,9 +32,8 @@ pub(crate) mod nodes;
 pub(crate) mod topics;
 
 use horus_core::core::HealthStatus;
-use horus_core::communication::NetworkStatus;
 use horus_core::error::HorusResult;
-use horus_core::memory::{shm_network_dir, shm_topics_dir};
+use horus_core::memory::shm_topics_dir;
 use horus_core::NodePresence;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -61,6 +60,18 @@ pub struct NodeStatus {
     pub actual_rate_hz: u32,
     pub publishers: Vec<TopicInfo>,
     pub subscribers: Vec<TopicInfo>,
+    /// Live tick count from SHM SchedulerRegistry (None if registry unavailable).
+    pub live_tick_count: Option<u64>,
+    /// Live health from SHM SchedulerRegistry (None if registry unavailable).
+    pub live_health: Option<u8>,
+    /// Live average tick duration (ns) from registry.
+    pub live_avg_tick_ns: Option<u64>,
+    /// Live max tick duration (ns) from registry.
+    pub live_max_tick_ns: Option<u64>,
+    /// Live budget misses from registry.
+    pub live_budget_misses: Option<u32>,
+    /// Live deadline misses from registry.
+    pub live_deadline_misses: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,8 +107,12 @@ pub struct SharedMemoryInfo {
     pub status: TopicStatus,
     /// Human-readable age string (e.g., "2s ago", "5m ago", "1h ago")
     pub age_string: String,
-    /// Whether this is an internal system topic (e.g., horus.discovery)
+    /// Whether this is an internal system topic (e.g., horus.ctl.*)
     pub is_system: bool,
+    /// Total messages ever sent on this topic (from TopicHeader, always-on).
+    pub messages_total: u64,
+    /// Topic kind classification (from TopicHeader).
+    pub topic_kind: u8,
 }
 
 // Enhanced node status with pub/sub info
@@ -168,14 +183,9 @@ lazy_static::lazy_static! {
     static ref DISCOVERY_CACHE: Arc<RwLock<DiscoveryCache>> = Arc::new(RwLock::new(DiscoveryCache::new()));
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct ProcessInfo {
-    pub(crate) cmdline: String,
-    pub(crate) working_dir: String,
-    pub(crate) cpu_percent: f32,
-    pub(crate) memory_kb: u64,
-    pub(crate) start_time: String,
-}
+/// Process information — delegated to [`horus_sys::discover::ProcessInfo`].
+#[cfg(test)]
+pub(crate) type ProcessInfo = horus_sys::discover::ProcessInfo;
 
 /// Get cached presence data, refreshing if stale.
 ///
@@ -243,89 +253,6 @@ pub fn cleanup_stale_topics() {
     if topics_path.exists() {
         topics::cleanup_stale_topics_in_dir(&topics_path);
     }
-}
-
-// ============================================================================
-// Network Status Discovery
-// ============================================================================
-
-/// Discover network transport status for all nodes
-///
-/// Reads network status files from /dev/shm/horus/network/ directory.
-/// These files are written by nodes when they use network transports.
-pub fn discover_network_status() -> HorusResult<Vec<NetworkStatus>> {
-    let network_dir = shm_network_dir();
-    if !network_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut statuses = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&network_dir) {
-        for entry in entries.flatten() {
-            if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                if let Ok(status) = serde_json::from_str::<NetworkStatus>(&content) {
-                    // Only include fresh statuses (within last 30 seconds)
-                    if status.is_fresh(30) {
-                        statuses.push(status);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(statuses)
-}
-
-/// Get aggregated network statistics across all nodes
-pub fn get_network_summary() -> NetworkSummary {
-    let statuses = discover_network_status().unwrap_or_default();
-
-    let mut summary = NetworkSummary::default();
-    let mut transport_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
-
-    for status in &statuses {
-        summary.total_nodes += 1;
-        summary.total_bytes_sent += status.bytes_sent();
-        summary.total_bytes_received += status.bytes_received();
-        summary.total_packets_sent += status.packets_sent();
-        summary.total_packets_received += status.packets_received();
-
-        *transport_counts
-            .entry(status.transport_type().to_string())
-            .or_insert(0) += 1;
-
-        for endpoint in status.remote_endpoints() {
-            if !summary.unique_endpoints.contains(endpoint) {
-                summary.unique_endpoints.push(endpoint.clone());
-            }
-        }
-    }
-
-    summary.transport_breakdown = transport_counts;
-    summary.node_statuses = statuses;
-    summary
-}
-
-/// Summary of network activity across all HORUS nodes
-#[derive(Debug, Clone, Default)]
-pub struct NetworkSummary {
-    /// Total nodes with network status
-    pub total_nodes: u32,
-    /// Total bytes sent across all nodes
-    pub total_bytes_sent: u64,
-    /// Total bytes received across all nodes
-    pub total_bytes_received: u64,
-    /// Total packets sent
-    pub total_packets_sent: u64,
-    /// Total packets received
-    pub total_packets_received: u64,
-    /// Breakdown by transport type (e.g., "Udp": 3, "SharedMemory": 5)
-    pub transport_breakdown: std::collections::HashMap<String, u32>,
-    /// Unique remote endpoints discovered
-    pub unique_endpoints: Vec<String>,
-    /// Individual node statuses
-    pub node_statuses: Vec<NetworkStatus>,
 }
 
 #[cfg(test)]

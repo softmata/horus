@@ -69,6 +69,11 @@ impl ProjectContext {
         self.languages.contains(&Language::Python)
     }
 
+    /// Does the project contain C++ code?
+    pub fn has_cpp(&self) -> bool {
+        self.languages.contains(&Language::Cpp)
+    }
+
     /// Is this a mixed-language project?
     pub fn is_mixed(&self) -> bool {
         self.languages.len() > 1
@@ -213,7 +218,9 @@ pub fn detect_toolchain(ctx: &ProjectContext) -> ToolChain {
             Language::Rust => detect_rust_tools(&mut tools),
             Language::Python => detect_python_tools(&mut tools),
             Language::Cpp => detect_cpp_tools(&mut tools),
-            Language::Ros2 => {} // ROS2 uses colcon, handled separately
+            Language::Ros2 => {
+                log::info!("ROS2 package detected (package.xml). Use `colcon build/test` for ROS2-specific operations.");
+            }
         }
     }
 
@@ -415,6 +422,63 @@ fn detect_cpp_tools(tools: &mut BTreeMap<(String, String), ResolvedTool>) {
             ResolvedTool {
                 bin: "cmake".to_string(),
                 default_args: vec!["--build".to_string(), ".".to_string()],
+                language: lang,
+                label: label.clone(),
+            },
+        );
+
+        // cmake check (compile without linking — same as build)
+        tools.insert(
+            (lang.to_string(), Operation::Check.to_string()),
+            ResolvedTool {
+                bin: "cmake".to_string(),
+                default_args: vec!["--build".to_string(), ".horus/cpp-build".to_string()],
+                language: lang,
+                label: label.clone(),
+            },
+        );
+    }
+
+    // ctest for testing
+    if tool_exists("ctest") {
+        tools.insert(
+            (lang.to_string(), Operation::Test.to_string()),
+            ResolvedTool {
+                bin: "ctest".to_string(),
+                default_args: vec![
+                    "--test-dir".to_string(),
+                    ".horus/cpp-build".to_string(),
+                    "--output-on-failure".to_string(),
+                ],
+                language: lang,
+                label: label.clone(),
+            },
+        );
+
+        // ctest with benchmark label for bench
+        tools.insert(
+            (lang.to_string(), Operation::Bench.to_string()),
+            ResolvedTool {
+                bin: "ctest".to_string(),
+                default_args: vec![
+                    "--test-dir".to_string(),
+                    ".horus/cpp-build".to_string(),
+                    "-L".to_string(),
+                    "benchmark".to_string(),
+                ],
+                language: lang,
+                label: label.clone(),
+            },
+        );
+    }
+
+    // doxygen for documentation
+    if tool_exists("doxygen") {
+        tools.insert(
+            (lang.to_string(), Operation::Doc.to_string()),
+            ResolvedTool {
+                bin: "doxygen".to_string(),
+                default_args: vec![],
                 language: lang,
                 label: label.clone(),
             },

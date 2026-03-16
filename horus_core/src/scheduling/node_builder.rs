@@ -3,6 +3,39 @@
 //! The `NodeBuilder` provides a chainable interface for configuring nodes
 //! when adding them to the scheduler.
 //!
+//! # Execution Class Decision Guide
+//!
+//! Every node runs in exactly one execution class. Choose based on workload:
+//!
+//! ```text
+//! Is your node triggered by incoming data?
+//!   YES → .on("topic_name")     (Event — ticks only when topic has new data)
+//!   NO  ↓
+//! Does your node need guaranteed timing (motor control, sensor sampling)?
+//!   YES → .rate(100.hz())       (Rt — dedicated thread, budget enforcement)
+//!   NO  ↓
+//! Is your node CPU-heavy (path planning, image processing, ML inference)?
+//!   YES → .compute()            (Compute — parallel thread pool)
+//!   NO  ↓
+//! Does your node do blocking I/O (network, file, database)?
+//!   YES → .async_io()           (AsyncIo — tokio blocking pool)
+//!   NO  → (default)             (BestEffort — main thread, sequential)
+//! ```
+//!
+//! | Class | Thread | Timing | Use Case |
+//! |-------|--------|--------|----------|
+//! | **Rt** | Dedicated | Budget + deadline enforced | Motor control, sensor sampling |
+//! | **Compute** | Thread pool | No RT guarantees | Path planning, CV, ML |
+//! | **Event** | Watcher thread | Triggered by topic | Data processors, filters |
+//! | **AsyncIo** | Tokio pool | No impact on RT | HTTP calls, logging to disk |
+//! | **BestEffort** | Main thread | Sequential | Diagnostics, telemetry |
+//!
+//! **Rules:**
+//! - Only ONE execution class per node. Last call wins (with a warning).
+//! - `.rate()` on a BestEffort node auto-promotes to Rt.
+//! - `.compute().rate()` stays Compute (rate is informational, not enforced).
+//! - Always end with `.build()?` — without it the node is silently dropped.
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -30,6 +63,35 @@ use super::types::{ExecutionClass, NodeKind};
 use crate::core::duration_ext::Frequency;
 use crate::core::{Miss, Node};
 use crate::error::{HorusResult, ValidationError};
+
+/// Trait for types that can be converted into a boxed `Node`.
+///
+/// Implemented for all concrete `Node` types and for `Box<dyn Node>`.
+/// This allows `Scheduler::add()` to accept both:
+///
+/// ```rust,ignore
+/// // Concrete type — most common
+/// scheduler.add(MyNode::new()).build()?;
+///
+/// // Box<dyn Node> — from driver factories
+/// scheduler.add(hw.local("conveyor")?).build()?;
+/// ```
+pub trait IntoNode {
+    /// Convert into a boxed node.
+    fn into_node(self) -> Box<dyn Node>;
+}
+
+impl<N: Node + 'static> IntoNode for N {
+    fn into_node(self) -> Box<dyn Node> {
+        Box::new(self)
+    }
+}
+
+impl IntoNode for Box<dyn Node> {
+    fn into_node(self) -> Box<dyn Node> {
+        self // already boxed, no double-boxing
+    }
+}
 use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
@@ -115,14 +177,17 @@ impl NodeRegistration {
 
     /// Mark this as a compute node for parallel execution.
     ///
+    /// **When to use:** CPU-bound workloads that don't need real-time guarantees.
+    /// Examples: path planning, image processing, ML inference, SLAM, IK solvers.
+    ///
+    /// **Don't use for:** I/O-bound work (use `.async_io()`), real-time control
+    /// (use `.rate()`), or data-triggered processing (use `.on()`).
+    ///
     /// Compute nodes run in a parallel thread pool, isolated from RT nodes.
-    /// Use for CPU-bound work like planning, SLAM, or image processing.
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeRegistration::new(path_planner)
-    ///     .compute()
-    ///     .rate(10_u64.hz())
+    /// scheduler.add(path_planner).order(5).compute().rate(10.hz()).build()?;
     /// ```
     pub fn compute(mut self) -> Self {
         self.warn_class_override("compute");
@@ -132,12 +197,18 @@ impl NodeRegistration {
 
     /// Mark this as an event-triggered node.
     ///
+    /// **When to use:** Nodes that process incoming data and should only tick
+    /// when there's something to process. Examples: image detector triggered by
+    /// camera frames, command processor that acts on new commands, data filters.
+    ///
+    /// **Don't use for:** Periodic nodes that must tick at a fixed rate regardless
+    /// of data availability (use `.rate()`).
+    ///
     /// The node will be triggered when data arrives on the specified topic.
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeRegistration::new(obstacle_detector)
-    ///     .on("lidar_scan")
+    /// scheduler.add(detector).order(3).on("camera.rgb").build()?;
     /// ```
     pub fn on(mut self, topic: &str) -> Self {
         self.warn_class_override("on");
@@ -147,16 +218,18 @@ impl NodeRegistration {
 
     /// Mark this as an async I/O node.
     ///
-    /// Async I/O nodes run their `tick()` via `tokio::task::spawn_blocking()` on
-    /// a separate tokio runtime. Use for I/O-bound work like file operations,
-    /// network requests, or database queries. Blocking I/O in these nodes never
-    /// affects RT jitter or compute throughput.
+    /// **When to use:** I/O-bound workloads like network calls, file reads,
+    /// database queries, HTTP API calls, logging to disk. Blocking I/O in
+    /// these nodes never affects RT jitter or compute throughput.
+    ///
+    /// **Don't use for:** CPU-bound work (use `.compute()`), or real-time
+    /// control (use `.rate()`).
+    ///
+    /// Runs `tick()` via `tokio::task::spawn_blocking()` on a separate runtime.
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeRegistration::new(telemetry_uploader)
-    ///     .async_io()
-    ///     .rate(1_u64.hz())  // Upload once per second
+    /// scheduler.add(telemetry).order(10).async_io().rate(1.hz()).build()?;
     /// ```
     pub fn async_io(mut self) -> Self {
         self.warn_class_override("async_io");
@@ -285,7 +358,9 @@ impl NodeRegistration {
 
     /// Set the OS-level thread priority for this node's RT thread.
     ///
-    /// Only meaningful for RT nodes. Uses `SCHED_FIFO` (1-99, higher = more priority).
+    /// Only meaningful for RT nodes. A warning is logged at `.build()` time
+    /// if used on a non-RT node (the value is accepted but ignored at runtime).
+    /// Uses `SCHED_FIFO` (1-99, higher = more priority).
     /// Requires `CAP_SYS_NICE` or root. Degrades gracefully if unavailable.
     ///
     /// # Example
@@ -302,7 +377,9 @@ impl NodeRegistration {
 
     /// Pin this node's RT thread to a specific CPU core.
     ///
-    /// Only meaningful for RT nodes. Uses `sched_setaffinity`.
+    /// Only meaningful for RT nodes. A warning is logged at `.build()` time
+    /// if used on a non-RT node (the value is accepted but ignored at runtime).
+    /// Uses `sched_setaffinity`.
     /// Degrades gracefully if the core doesn't exist.
     ///
     /// # Example
@@ -401,6 +478,22 @@ impl NodeRegistration {
             }
         }
 
+        // Validate event topic name: must not be empty
+        if let ExecutionClass::Event(ref topic) = self.execution_class {
+            if topic.is_empty() {
+                return Err(ValidationError::InvalidValue {
+                    field: "on(topic)".into(),
+                    value: "\"\"".into(),
+                    reason: format!(
+                        "node '{}': event topic name must not be empty — \
+                         .on(\"\") creates a node that can never trigger.",
+                        node_name
+                    ),
+                }
+                .into());
+            }
+        }
+
         // Validate deadline: must be > 0
         if let Some(deadline) = self.deadline {
             if deadline.is_zero() {
@@ -467,6 +560,34 @@ impl NodeRegistration {
                 ),
             }
             .into());
+        }
+
+        // Warn about RT-only settings on non-RT nodes
+        if !self.is_rt {
+            if let Some(prio) = self.os_priority {
+                log::warn!(
+                    "node '{}': .priority({}) has no effect — only RT nodes get SCHED_FIFO threads. \
+                     Add .rate() or .budget() to make this node RT, or remove .priority().",
+                    node_name, prio
+                );
+            }
+            if let Some(cpu) = self.pinned_core {
+                log::warn!(
+                    "node '{}': .core({}) has no effect — only RT nodes get pinned threads. \
+                     Add .rate() or .budget() to make this node RT, or remove .core().",
+                    node_name, cpu
+                );
+            }
+        }
+
+        // Warn about miss policy without a deadline
+        if self.miss_policy != Miss::Warn && self.deadline.is_none() {
+            log::warn!(
+                "node '{}': .on_miss({:?}) has no effect without a deadline — \
+                 add .rate() or .deadline() to enable deadline enforcement, \
+                 or remove .on_miss().",
+                node_name, self.miss_policy
+            );
         }
 
         Ok(())
@@ -588,12 +709,14 @@ impl<'a> NodeBuilder<'a> {
     }
 
     /// Set the OS-level thread priority (SCHED_FIFO 1-99) for this node's RT thread.
+    /// Warned at `.build()` if used on a non-RT node.
     pub fn priority(mut self, prio: i32) -> Self {
         self.config = self.config.priority(prio);
         self
     }
 
     /// Pin this node's RT thread to a specific CPU core.
+    /// Warned at `.build()` if used on a non-RT node.
     pub fn core(mut self, cpu_id: usize) -> Self {
         self.config = self.config.core(cpu_id);
         self
@@ -607,9 +730,26 @@ impl<'a> NodeBuilder<'a> {
 
     /// Finish configuration and add the node to the scheduler.
     ///
-    /// Validates the configuration before registering. Returns an error if
-    /// the configuration is contradictory (e.g. `.rate(N.hz()).compute()`) or contains
-    /// invalid values.
+    /// Validates the configuration before registering. Returns an error if:
+    /// - `.budget()` or `.deadline()` is used with `.compute()`, `.on()`, or `.async_io()`
+    ///   (budget/deadline are only meaningful for RT nodes)
+    /// - `.budget(Duration::ZERO)` or `.deadline(Duration::ZERO)` (must be > 0)
+    /// - `.on("")` with an empty topic name
+    /// - Rate is not finite or positive
+    ///
+    /// **Valid combinations that may look surprising:**
+    /// - `.rate(N.hz()).compute()` — rate-limited Compute node (NOT RT)
+    /// - `.rate(N.hz()).async_io()` — rate-limited AsyncIo node (NOT RT)
+    /// - `.rate(N.hz()).on("topic")` — Event node with rate as poll interval hint
+    ///
+    /// If multiple execution classes are chained (e.g. `.compute().async_io()`),
+    /// only the **last** one applies (a warning is logged).
+    ///
+    /// # Errors
+    ///
+    /// - [`ValidationError::Conflict`] — conflicting execution class (e.g., `.compute()` + `.on()`)
+    /// - [`ValidationError::InvalidValue`] — rate is zero, negative, NaN, or infinite
+    /// - [`ConfigError::ValidationFailed`] — budget exceeds deadline, or other constraint violations
     ///
     /// # Example
     /// ```rust,ignore
@@ -718,10 +858,10 @@ mod tests {
     }
 
     #[test]
-    fn test_on_empty_topic() {
-        // Documents current behavior: empty topic names accepted
-        let reg = NodeRegistration::new(stub("n")).on("");
-        assert_eq!(reg.execution_class, ExecutionClass::Event("".to_string()));
+    fn test_on_empty_topic_rejected() {
+        let mut reg = NodeRegistration::new(stub("n")).on("");
+        let result = reg.validate();
+        assert!(result.is_err(), "empty topic name should be rejected");
     }
 
     #[test]
@@ -1244,6 +1384,107 @@ mod tests {
             .unwrap();
 
         assert!(scheduler.node_list().contains(&"valid".to_string()));
+    }
+
+    // ============================================================================
+    // Validation warnings and new rejections
+    // ============================================================================
+
+    // -- .priority() on non-RT nodes (warning only, not error) --
+
+    #[test]
+    fn priority_on_compute_builds_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).compute().priority(99);
+        reg.validate().unwrap(); // Should succeed with warning
+    }
+
+    #[test]
+    fn priority_on_async_io_builds_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).async_io().priority(50);
+        reg.validate().unwrap();
+    }
+
+    #[test]
+    fn priority_on_best_effort_builds_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).priority(80);
+        reg.validate().unwrap();
+    }
+
+    #[test]
+    fn priority_on_rt_builds_ok_no_warning() {
+        let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz()).priority(90);
+        reg.validate().unwrap(); // RT node — no warning expected
+    }
+
+    // -- .core() on non-RT nodes (warning only, not error) --
+
+    #[test]
+    fn core_on_compute_builds_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).compute().core(2);
+        reg.validate().unwrap();
+    }
+
+    #[test]
+    fn core_on_event_builds_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).on("topic").core(0);
+        reg.validate().unwrap();
+    }
+
+    #[test]
+    fn core_on_rt_builds_ok_no_warning() {
+        let mut reg = NodeRegistration::new(stub("n")).rate(500_u64.hz()).core(3);
+        reg.validate().unwrap(); // RT node — no warning expected
+    }
+
+    // -- .on_miss() without deadline (warning only, not error) --
+
+    #[test]
+    fn on_miss_stop_without_deadline_builds_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).compute().on_miss(Miss::Stop);
+        reg.validate().unwrap(); // Warning only
+    }
+
+    #[test]
+    fn on_miss_safe_mode_without_deadline_builds_ok() {
+        let mut reg = NodeRegistration::new(stub("n")).on_miss(Miss::SafeMode);
+        reg.validate().unwrap();
+    }
+
+    #[test]
+    fn on_miss_warn_without_deadline_no_warning() {
+        // Miss::Warn is default — should not warn even without deadline
+        let mut reg = NodeRegistration::new(stub("n")).on_miss(Miss::Warn);
+        reg.validate().unwrap();
+    }
+
+    #[test]
+    fn on_miss_skip_with_rate_no_warning() {
+        // .rate() auto-derives deadline — on_miss is valid
+        let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz()).on_miss(Miss::Skip);
+        reg.validate().unwrap();
+    }
+
+    #[test]
+    fn on_miss_with_explicit_deadline_no_warning() {
+        let mut reg = NodeRegistration::new(stub("n")).deadline(1.ms()).on_miss(Miss::SafeMode);
+        reg.validate().unwrap();
+    }
+
+    // -- .on("") rejection --
+
+    #[test]
+    fn on_empty_topic_rejected_with_message() {
+        let mut reg = NodeRegistration::new(stub("n")).on("");
+        let err = reg.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("must not be empty"), "error should mention empty topic: {}", msg);
+    }
+
+    #[test]
+    fn on_whitespace_topic_accepted() {
+        // Non-empty whitespace topics are technically valid
+        let mut reg = NodeRegistration::new(stub("n")).on(" ");
+        reg.validate().unwrap();
     }
 
     // ── SLAM-generated: Property-based tests ──────────────────────

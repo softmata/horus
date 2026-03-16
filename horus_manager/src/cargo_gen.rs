@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::manifest::{DepSource, DependencyValue, HorusManifest};
+use horus_core::drivers::terra_map;
 
 /// The `.horus` build directory name.
 const HORUS_DIR: &str = ".horus";
@@ -92,6 +93,9 @@ pub fn generate(
     // Add user deps from horus.toml
     write_deps_section(&mut cargo, &manifest.dependencies, project_dir, &horus_dir)?;
 
+    // Add driver dependencies from [drivers] config tables
+    write_driver_deps(&mut cargo, &manifest.drivers);
+
     // ── Dev dependencies ─────────────────────────────────────────────────
     if include_dev && !manifest.dev_dependencies.is_empty() {
         writeln!(cargo).unwrap();
@@ -105,6 +109,71 @@ pub fn generate(
         .with_context(|| format!("Failed to write {}", cargo_toml_path.display()))?;
 
     Ok(cargo_toml_path)
+}
+
+/// Write driver dependencies from `[drivers]` config tables.
+///
+/// For each `[drivers.NAME]` entry:
+/// - `terra = "dynamixel"` → adds `terra-serial = { version = "0.2", features = ["dynamixel"] }`
+/// - `package = "horus-driver-x"` → adds `horus-driver-x = "*"`
+/// - `node = "MyDriver"` → no dependency (local code)
+/// - `camera = "opencv"` / `gps = true` → no dependency (legacy, handled by feature flags)
+fn write_driver_deps(
+    cargo: &mut String,
+    drivers: &std::collections::BTreeMap<String, crate::manifest::DriverValue>,
+) {
+    use crate::manifest::DriverValue;
+
+    // Track crates already added to avoid duplicates (e.g., two drivers using terra-serial)
+    let mut added_crates: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+    for (_name, value) in drivers {
+        match value {
+            DriverValue::Config(cfg) => {
+                if let Some(terra_name) = &cfg.terra {
+                    if let Some(info) = terra_map::resolve(terra_name) {
+                        let features = added_crates
+                            .entry(info.crate_name.to_string())
+                            .or_default();
+                        if let Some(feat) = info.feature {
+                            if !features.contains(&feat.to_string()) {
+                                features.push(feat.to_string());
+                            }
+                        }
+                    }
+                } else if let Some(package) = &cfg.package {
+                    if !added_crates.contains_key(package) {
+                        added_crates.insert(package.clone(), Vec::new());
+                    }
+                }
+                // node = "..." → no dep needed (local code)
+            }
+            DriverValue::Backend(_) | DriverValue::Enabled(_) => {
+                // Legacy — handled by feature flags in get_cargo_features_from_drivers()
+            }
+        }
+    }
+
+    if !added_crates.is_empty() {
+        writeln!(cargo, "\n# Driver dependencies (from [drivers])").unwrap();
+        for (crate_name, features) in &added_crates {
+            if features.is_empty() {
+                writeln!(cargo, "{} = \"*\"", crate_name).unwrap();
+            } else {
+                let features_str = features
+                    .iter()
+                    .map(|f| format!("\"{}\"", f))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(
+                    cargo,
+                    "{} = {{ version = \"*\", features = [{}] }}",
+                    crate_name, features_str
+                )
+                .unwrap();
+            }
+        }
+    }
 }
 
 /// Write a `[[bin]]` entry.
@@ -365,6 +434,8 @@ mod tests {
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
@@ -372,6 +443,8 @@ mod tests {
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         }
     }
 
@@ -412,6 +485,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
         deps.insert(
@@ -426,6 +502,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -455,6 +534,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
         deps.insert(
@@ -469,6 +551,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -500,6 +585,9 @@ mod tests {
                 branch: Some("main".to_string()),
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -546,6 +634,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -598,6 +689,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         })
     }
 
@@ -612,6 +706,9 @@ mod tests {
             branch: branch.map(|s| s.to_string()),
             tag: tag.map(|s| s.to_string()),
             rev: rev.map(|s| s.to_string()),
+            apt: None,
+            cmake_package: None,
+            lang: None,
         })
     }
 
@@ -626,6 +723,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         })
     }
 

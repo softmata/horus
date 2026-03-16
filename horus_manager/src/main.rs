@@ -39,7 +39,7 @@ Introspection:
   param, p          Parameter management (get, set, list, delete)
   frame, frames     Coordinate frame operations (list, echo, tree)
   msg, m            Message type introspection
-  discover          Discover HORUS nodes on the local network
+
 
 Debugging:
   log               View and filter logs
@@ -71,7 +71,6 @@ Development:
 Maintenance:
   doctor            Comprehensive ecosystem health check
   upgrade           Upgrade horus CLI to latest version
-  shell             Open shell with horus environment
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
 
@@ -129,13 +128,16 @@ enum Commands {
         #[arg(short = 'o', long = "output")]
         path: Option<PathBuf>,
         /// Use Python
-        #[arg(short = 'p', long = "python", conflicts_with = "rust")]
+        #[arg(short = 'p', long = "python", conflicts_with_all = ["rust", "cpp"])]
         python: bool,
         /// Use Rust
-        #[arg(short = 'r', long = "rust", conflicts_with = "python")]
+        #[arg(short = 'r', long = "rust", conflicts_with_all = ["python", "cpp"])]
         rust: bool,
+        /// Use C++
+        #[arg(short = 'c', long = "cpp", conflicts_with_all = ["python", "rust"])]
+        cpp: bool,
         /// Use Rust with macros
-        #[arg(short = 'm', long = "macro", conflicts_with = "python")]
+        #[arg(short = 'm', long = "macro", conflicts_with_all = ["python", "cpp"])]
         use_macro: bool,
     },
 
@@ -492,33 +494,10 @@ enum Commands {
         no_auth: bool,
     },
 
-    /// Discover HORUS nodes on the local network via mDNS
-    #[cfg(feature = "mdns")]
-    Discover {
-        /// Scan duration in seconds (default: 2)
-        #[arg(short = 't', long = "timeout", default_value = "2")]
-        timeout: u64,
-
-        /// Filter by topic name
-        #[arg(long = "topic")]
-        topic: Option<String>,
-
-        /// Filter by node name (partial match)
-        #[arg(long = "name")]
-        name: Option<String>,
-
-        /// Watch for nodes joining/leaving (continuous mode)
-        #[arg(short = 'w', long = "watch")]
-        watch: bool,
-
-        /// Output format: table, json, or simple
-        #[arg(short = 'f', long = "format", default_value = "table")]
-        format: String,
-    },
-
-    /// Discover HORUS nodes on the local network (requires 'mdns' feature)
-    #[cfg(not(feature = "mdns"))]
-    Discover,
+    /// Monitor running HORUS nodes, topics, and system health (requires 'monitor' feature)
+    #[cfg(not(feature = "monitor"))]
+    #[command(visible_alias = "mon")]
+    Monitor,
 
     // ── Packages ─────────────────────────────────────────────────────────
     /// Install a package or plugin (use name@version for specific version)
@@ -594,9 +573,9 @@ enum Commands {
         json: bool,
     },
 
-    /// Update installed packages to latest versions
+    /// Update dependencies, CLI tool, and plugins
     Update {
-        /// Specific package to update (updates all if omitted)
+        /// Specific package to update (updates all deps if omitted)
         package: Option<String>,
         /// Update global scope packages
         #[arg(short = 'g', long = "global")]
@@ -604,6 +583,12 @@ enum Commands {
         /// Show what would be updated without making changes
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Update the horus CLI tool itself
+        #[arg(long = "self")]
+        update_self: bool,
+        /// Update installed plugins to latest versions
+        #[arg(long = "plugins")]
+        update_plugins: bool,
     },
 
     /// Show detailed info about a package or plugin
@@ -738,15 +723,19 @@ enum Commands {
         json: bool,
     },
 
-    /// Upgrade horus CLI to latest version
+    /// Upgrade the entire horus system (CLI + plugins + project deps)
     Upgrade {
         /// Check for updates without installing
         #[arg(long = "check")]
         check_only: bool,
     },
 
-    /// Open shell with horus environment variables
-    Shell,
+    /// Synchronize development environment (toolchains, system dependencies)
+    Sync {
+        /// Check only — don't install anything
+        #[arg(long = "check")]
+        check: bool,
+    },
 
     /// View/edit horus.toml settings
     Config {
@@ -803,11 +792,18 @@ enum Commands {
     #[command(name = "keygen")]
     KeyGen,
 
-    /// Deploy project to a remote robot
+    /// Deploy project to remote robot(s)
     Deploy {
-        /// Target host (user@host or configured target name)
-        #[arg(required_unless_present = "list")]
-        target: Option<String>,
+        /// Target(s) — named targets from deploy.yaml or direct user@host
+        targets: Vec<String>,
+
+        /// Deploy to ALL targets in deploy.yaml
+        #[arg(long = "all")]
+        all: bool,
+
+        /// Deploy to multiple targets in parallel
+        #[arg(long = "parallel")]
+        parallel: bool,
 
         /// Remote directory to deploy to (default: ~/horus_deploy)
         #[arg(short = 'd', long = "dir")]
@@ -838,7 +834,7 @@ enum Commands {
         dry_run: bool,
 
         /// List configured deployment targets
-        #[arg(long = "list", conflicts_with_all = ["run_after", "arch", "remote_dir", "dry_run"])]
+        #[arg(long = "list")]
         list: bool,
     },
 
@@ -1696,7 +1692,7 @@ fn main() {
     // Initialize the HORUS log bridge.
     //
     // This replaces env_logger and forwards all `log::` calls (from internal
-    // subsystems like actions, mDNS, scheduler, blackbox) to GLOBAL_LOG_BUFFER
+    // subsystems like actions, scheduler, blackbox) to GLOBAL_LOG_BUFFER
     // so they appear in `horus monitor --tui` and the web monitor, in addition
     // to being mirrored to stderr for console visibility.
     let log_level = if cli.verbose {
@@ -1769,10 +1765,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
             path,
             python,
             rust,
+            cpp,
             use_macro,
         } => {
             let language = if python {
                 "python"
+            } else if cpp {
+                "cpp"
             } else if rust || use_macro {
                 "rust"
             } else {
@@ -2028,6 +2027,25 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
+        #[cfg(not(feature = "monitor"))]
+        Commands::Monitor => {
+            eprintln!(
+                "{} The 'monitor' command requires the 'monitor' feature (web dashboard + TUI).",
+                "Note:".yellow().bold()
+            );
+            eprintln!(
+                "  Reinstall with: {}",
+                "cargo install horus_manager --features monitor".cyan()
+            );
+            eprintln!(
+                "  Or build from source: {}",
+                "cargo build --features monitor".cyan()
+            );
+            Err(HorusError::Config(ConfigError::Other(
+                "Feature 'monitor' not enabled. Reinstall with: cargo install horus_manager --features monitor".into(),
+            )))
+        }
+
         Commands::Topic { command } => match command {
             TopicCommands::List { verbose, json } => commands::topic::list_topics(verbose, json),
             TopicCommands::Echo { name, count, rate } => {
@@ -2138,30 +2156,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 .map_err(|e| horus_core::error::HorusError::Config(e)),
         },
 
-        #[cfg(feature = "mdns")]
-        Commands::Discover {
-            timeout,
-            topic,
-            name,
-            watch,
-            format,
-        } => commands::discover::run_discover(timeout, topic, name, watch, &format),
-
-        #[cfg(not(feature = "mdns"))]
-        Commands::Discover => {
-            eprintln!(
-                "{} The 'discover' command requires the 'mdns' feature.",
-                "Note:".yellow().bold()
-            );
-            eprintln!(
-                "  Reinstall with: {}",
-                "cargo install horus_manager --features mdns".cyan()
-            );
-            Err(HorusError::Config(horus_core::error::ConfigError::Other(
-                "The 'discover' command requires the 'mdns' feature".to_string(),
-            )))
-        }
-
         Commands::Clean {
             shm,
             all,
@@ -2265,7 +2259,35 @@ fn run_command(command: Commands) -> HorusResult<()> {
             package,
             global,
             dry_run,
-        } => commands::pkg::run_update(package, global, dry_run),
+            update_self,
+            update_plugins,
+        } => {
+            // Smart update: handle --self and --plugins flags
+            if update_self {
+                commands::upgrade::run_upgrade(false).map_err(HorusError::from)?;
+            }
+            if update_plugins {
+                // Run upgrade with plugin-only focus
+                commands::upgrade::run_upgrade(false).map_err(HorusError::from)?;
+            }
+            if !update_self && !update_plugins {
+                // Default: update project dependencies
+                commands::pkg::run_update(package, global, dry_run)?;
+                // Also check for CLI updates (non-blocking)
+                if let Ok(Some(latest)) = commands::upgrade::check_latest_version() {
+                    let current = env!("CARGO_PKG_VERSION");
+                    if latest != current {
+                        println!(
+                            "\n  {} horus {} available (current: {}). Run `horus update --self` to upgrade.",
+                            "hint:".yellow(),
+                            latest.green(),
+                            current.dimmed()
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
 
         Commands::Publish { freeze, dry_run } => commands::pkg::run_publish(freeze, dry_run),
 
@@ -2325,7 +2347,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
         },
 
         Commands::Deploy {
-            target,
+            targets,
+            all,
+            parallel,
             remote_dir,
             arch,
             run_after,
@@ -2337,9 +2361,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
         } => {
             if list {
                 commands::deploy::list_targets()
-            } else if let Some(target) = target {
-                commands::deploy::run_deploy(commands::deploy::DeployArgs {
-                    target,
+            } else {
+                commands::deploy::run_deploy_multi(commands::deploy::DeployMultiArgs {
+                    targets,
+                    all,
+                    parallel,
                     remote_dir,
                     arch,
                     run_after,
@@ -2348,10 +2374,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     identity,
                     dry_run,
                 })
-            } else {
-                Err(HorusError::Config(ConfigError::Other(
-                    "Target is required for deploy".to_string(),
-                )))
             }
         }
 
@@ -2500,12 +2522,29 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         Commands::Upgrade { check_only } => {
-            commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)
+            // Full system upgrade: CLI + plugins + project deps
+            println!("{}", "horus upgrade — full system upgrade".bold());
+            println!();
+
+            // 1. Upgrade the CLI tool itself + plugins
+            commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
+
+            // 2. If in a project directory, also upgrade project dependencies
+            if std::path::Path::new("horus.toml").exists() && !check_only {
+                println!();
+                println!("{}", "Updating project dependencies...".cyan().bold());
+                if let Err(e) = commands::pkg::run_update(None, false, false) {
+                    println!("  {} Dependency update failed: {}", "!".yellow(), e);
+                }
+            }
+
+            Ok(())
         }
 
-        Commands::Shell => {
-            commands::shell::run_shell().map_err(HorusError::from)
+        Commands::Sync { check } => {
+            commands::sync::run_sync(check).map_err(HorusError::from)
         }
+
 
         Commands::Config { command } => match command {
             ConfigCommands::Get { key } => {

@@ -1,0 +1,260 @@
+# HORUS Cross-Platform Behavioral Parity
+#
+# Verifies that platform-abstracted code (horus_sys) produces identical
+# observable behavior on Linux, macOS, and Windows. These tests catch
+# behavioral divergences between platform backends (tmpfs vs shm_open vs
+# CreateFileMapping, flock vs PID liveness, /proc vs sysctl vs Win32 API).
+#
+# Unlike multi-platform.yml (which runs generic tests), this workflow
+# specifically targets the 87 parity integration tests that verify
+# cross-platform contracts.
+
+name: Cross-Platform Parity
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+  schedule:
+    # Daily at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─── Platform Parity Tests ─────────────────────────────────────────────
+
+  parity-linux:
+    name: Parity (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: parity-linux-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: parity-linux-
+
+      - name: Setup SHM directories
+        run: |
+          sudo mkdir -p /dev/shm/horus_ci
+          sudo chmod 777 /dev/shm/horus_ci
+
+      - name: Run parity tests (horus_sys)
+        run: |
+          cargo test --no-default-features -p horus_sys \
+            --test parity_shm \
+            --test parity_process \
+            --test parity_discover \
+            --test parity_fs \
+            --test parity_platform \
+            -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_linux_${{ github.run_id }}
+          RUST_BACKTRACE: 1
+
+      - name: Run horus_sys unit tests
+        run: cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_linux_unit_${{ github.run_id }}
+
+  parity-macos:
+    name: Parity (macOS ARM64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: parity-macos-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: parity-macos-
+
+      - name: Run parity tests (horus_sys)
+        run: |
+          cargo test --no-default-features -p horus_sys \
+            --test parity_shm \
+            --test parity_process \
+            --test parity_discover \
+            --test parity_fs \
+            --test parity_platform \
+            -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_macos_${{ github.run_id }}
+          RUST_BACKTRACE: 1
+
+      - name: Run horus_sys unit tests
+        run: cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_macos_unit_${{ github.run_id }}
+
+  parity-windows:
+    name: Parity (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: parity-windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: parity-windows-
+
+      - name: Run parity tests (horus_sys)
+        run: |
+          cargo test --no-default-features -p horus_sys `
+            --test parity_shm `
+            --test parity_process `
+            --test parity_discover `
+            --test parity_fs `
+            --test parity_platform `
+            -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_windows_${{ github.run_id }}
+          RUST_BACKTRACE: 1
+
+      - name: Run horus_sys unit tests
+        run: cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_windows_unit_${{ github.run_id }}
+
+  # ─── Cross-Compile Verification ────────────────────────────────────────
+
+  cross-compile:
+    name: Cross-Compile Check (all targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust with cross-compile targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cross-compile-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cross-compile-
+
+      - name: Check horus_sys (Windows target)
+        run: cargo check --no-default-features --target x86_64-pc-windows-msvc -p horus_sys
+
+      - name: Check horus_sys (macOS target)
+        run: cargo check --no-default-features --target x86_64-apple-darwin -p horus_sys
+
+      - name: Check horus_core (Windows target)
+        run: cargo check --no-default-features --target x86_64-pc-windows-msvc -p horus_core
+
+      - name: Check horus_core (macOS target)
+        run: cargo check --no-default-features --target x86_64-apple-darwin -p horus_core
+
+      - name: Check horus_manager (Windows target)
+        run: cargo check --no-default-features --target x86_64-pc-windows-msvc -p horus_manager
+
+      - name: Check horus_manager (macOS target)
+        run: cargo check --no-default-features --target x86_64-apple-darwin -p horus_manager
+
+  # ─── CLI Workflow Parity ────────────────────────────────────────────────
+
+  cli-parity:
+    name: CLI Parity (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cli-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cli-${{ matrix.os }}-
+
+      - name: Build horus CLI
+        run: cargo build --no-default-features -p horus_manager
+
+      - name: Test horus doctor
+        run: cargo run --no-default-features -p horus_manager -- doctor
+        continue-on-error: true
+
+      - name: Test horus check (current dir)
+        run: cargo run --no-default-features -p horus_manager -- check .
+        continue-on-error: true
+
+  # ─── Gate ──────────────────────────────────────────────────────────────
+
+  parity-success:
+    name: Parity CI Success
+    needs: [parity-linux, parity-macos, parity-windows, cross-compile, cli-parity]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs
+        run: |
+          if [[ "${{ needs.parity-linux.result }}" != "success" ]] || \
+             [[ "${{ needs.parity-macos.result }}" != "success" ]] || \
+             [[ "${{ needs.parity-windows.result }}" != "success" ]] || \
+             [[ "${{ needs.cross-compile.result }}" != "success" ]]; then
+            echo "❌ Parity CI failed"
+            exit 1
+          fi
+          echo "✅ All parity checks passed"

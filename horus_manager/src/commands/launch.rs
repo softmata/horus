@@ -296,16 +296,9 @@ pub fn run_launch(
     println!("{}", "Shutting down nodes...".yellow().bold());
     for (name, mut proc) in processes {
         print!("  {} Stopping {}...", "".yellow(), name);
-        // First try SIGTERM
-        #[cfg(unix)]
-        // SAFETY: proc.id() is a valid PID of a child process we spawned. SIGTERM requests graceful shutdown.
-        unsafe {
-            libc::kill(proc.id() as i32, libc::SIGTERM);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = proc.kill();
-        }
+        // First try SIGTERM (cross-platform via horus_sys)
+        let _ = horus_sys::process::ProcessHandle::from_child(&proc)
+            .signal(horus_sys::process::Signal::Terminate);
 
         // Wait for graceful shutdown
         std::thread::sleep(shutdown_timeout_secs.secs());

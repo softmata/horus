@@ -26,5 +26,5 @@ def unique_test_prefix():
     yield test_prefix
 
     # Cleanup is automatic when process terminates - shared memory
-    # files in /dev/shm/horus/topics/ persist until manually cleaned
+    # files in shm_topics_dir() persist until manually cleaned
     # or the next `horus run` clears stale topics

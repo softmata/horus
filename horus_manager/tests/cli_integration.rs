@@ -1449,14 +1449,6 @@ fn test_verify_json_flag_accepted() {
         .success();
 }
 
-// -- Discover stub when mdns is off --
-
-#[test]
-fn test_discover_command_exists() {
-    // discover should work (either mdns or stub)
-    horus_cmd().args(["discover", "--help"]).assert().success();
-}
-
 // ============================================================================
 // Node command integration tests
 // ============================================================================

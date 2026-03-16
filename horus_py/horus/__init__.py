@@ -20,31 +20,53 @@ Quick start::
 
 Domain types: ``Image``, ``PointCloud``, ``DepthImage``
 Communication: ``Topic``, ``Node``, ``Scheduler``
+
+Common Mistakes:
+
+1. **Budget/deadline units** - budget and deadline are in SECONDS, not microseconds.
+   Wrong: ``scheduler.add(node, budget=300)``  (300 seconds!)
+   Right: ``scheduler.add(node, budget=300 * us)``  (300 microseconds)
+   The ``us`` and ``ms`` constants are available: ``from horus import us, ms``
+
+2. **Topic type** - ``Topic(int)`` or ``Topic(42)`` raises TypeError.
+   Wrong: ``topic = Topic(42)``
+   Right: ``topic = Topic(CmdVel)`` or ``Topic("my_topic")``
+
+3. **Rate must be positive** - ``Node(rate=0)`` or ``Node(rate=-1)`` raises ValueError.
+
+4. **Logging outside scheduler** - ``node.log_info("msg")`` called outside
+   tick/init/shutdown drops the message silently. Only log inside callbacks.
+
+5. **Undeclared topics** - ``node.send("topic", data)`` auto-creates topics,
+   but undeclared topics won't appear in monitoring. Declare in pubs/subs.
 """
 
 # Extend namespace package path to include horus.library
 __path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
 from typing import Optional, Any, Dict, List, Callable, Union
-from collections import defaultdict
+import asyncio
 import enum
 import time
 
-# Maximum size for logged data representation (to prevent buffer overflows)
-MAX_LOG_DATA_SIZE = 200
 
 # Import the Rust extension module
 try:
     from horus._horus import (
-        Node as _PyNode,
         Topic,  # Unified communication API
         Scheduler as _PyScheduler,
         SchedulerConfig as _SchedulerConfig,
         Miss,
         get_version,
-        # GPU utility functions
-        cuda_is_available,
-        cuda_device_count,
+        # Framework clock — time_now/dt/elapsed/tick/budget/rng
+        time_now as _time_now,
+        time_dt as _time_dt,
+        time_elapsed as _time_elapsed,
+        time_tick as _time_tick,
+        time_budget_remaining as _time_budget_remaining,
+        time_rng_float as _time_rng_float,
+        # Nanosecond timestamp for TF queries
+        get_timestamp_ns,
         # Domain types — clean API hiding DLPack/TensorPool internals
         Image,
         PointCloud,
@@ -146,7 +168,13 @@ try:
         TransformFrame,
         Transform,
         TransformFrameConfig,
+        # Runtime parameters
+        Params,
+        # Rate limiter
+        Rate,
     )
+    # Drivers submodule — import as horus.drivers
+    from horus._horus import drivers
 except ImportError:
     # Fallback for testing without Rust bindings
     import warnings
@@ -156,7 +184,6 @@ except ImportError:
         RuntimeWarning,
         stacklevel=2,
     )
-    _PyNode = None
     Topic = None  # Unified communication API
     _PyScheduler = None
 
@@ -176,9 +203,6 @@ except ImportError:
         def minimal(): return _SchedulerConfig()
 
     def get_version(): return "0.1.0-mock"
-
-    cuda_is_available = lambda: False
-    cuda_device_count = lambda: 0
 
     class Image:
         pass
@@ -272,115 +296,191 @@ try:
 except Exception:
     __version__ = "0.1.9"
 
+# GPU utility stubs — no Rust binding exists for these yet.
+# Defined here so `from horus import cuda_is_available` always works.
+def cuda_is_available() -> bool:
+    """Check if CUDA is available (stub — always returns False)."""
+    return False
 
-def _truncate_for_logging(data: Any, max_size: int = MAX_LOG_DATA_SIZE) -> str:
+def cuda_device_count() -> int:
+    """Get number of CUDA devices (stub — always returns 0)."""
+    return 0
+
+# Time unit constants for readable budget/deadline values.
+# Usage: sched.add(motor, budget=300 * us, deadline=900 * us)
+us = 1e-6   # microseconds → seconds
+ms = 1e-3   # milliseconds → seconds
+
+
+# ── Framework clock API ──────────────────────────────────────────────────────
+# Wraps Rust time functions with Pythonic names.
+# Normal mode: wall clock. Deterministic mode: SimClock (fixed dt, seeded RNG).
+
+def now() -> float:
+    """Current framework time in seconds.
+
+    Normal mode: wall clock. Deterministic mode: virtual SimClock.
     """
-    Safely convert data to string for logging with size limit.
+    return _time_now()
 
-    Args:
-        data: Data to convert to string
-        max_size: Maximum string length
+def dt() -> float:
+    """Timestep for this tick in seconds.
 
-    Returns:
-        Truncated string representation
+    Normal mode: actual elapsed. Deterministic mode: fixed 1/rate.
     """
-    if isinstance(data, (dict, list)):
-        data_str = str(data)
-    else:
-        data_str = repr(data)
+    return _time_dt()
 
-    if len(data_str) > max_size:
-        # Truncate and add indicator
-        return data_str[:max_size-3] + "..."
+def elapsed() -> float:
+    """Time elapsed since scheduler start in seconds."""
+    return _time_elapsed()
 
-    return data_str
+def tick() -> int:
+    """Current tick number."""
+    return _time_tick()
+
+def budget_remaining() -> float:
+    """Time remaining in this tick's budget in seconds.
+
+    Returns ``float('inf')`` if no budget configured.
+    """
+    return _time_budget_remaining()
+
+def rng_float() -> float:
+    """Random float in [0.0, 1.0) from the deterministic RNG.
+
+    Normal mode: system entropy. Deterministic mode: tick-seeded.
+    """
+    return _time_rng_float()
+
+def timestamp_ns() -> int:
+    """Current timestamp in nanoseconds (for TF queries)."""
+    return get_timestamp_ns()
+
+
+# ── Perception types (from _horus.perception submodule) ──────────────────────
+try:
+    from horus._horus.perception import (
+        DetectionList,
+        PointXYZ,
+        PointXYZRGB,
+        PointCloudBuffer,
+        COCOPose,
+    )
+except ImportError:
+    pass
+
 
 
 class Node:
     """
-    Simple node for HORUS - no inheritance required!
+    HORUS node — all config in one place, one way to use it.
 
-    Example (basic):
-        def process(node: Node) -> None:
-            if node.has_msg("input"):
-                data = node.get("input")
-                node.send("output", data * 2)
+    Example::
 
-        node = Node(
-            name="processor",
-            subs=["input"],
-            pubs=["output"],
-            tick=process,
-            rate=30
-        )
+        from horus import Node, run, us
 
-        run(node)
-
-    Example (typed hubs for proper logging):
-        from horus import Node, Pose2D, CmdVel
-
-        def controller(node: Node) -> None:
-            if node.has_msg("localization.pose"):
-                pose = node.get("localization.pose")
-                # Logs will show: Pose2D { x: 2.31, y: 1.31, ... }
-                node.send("control.cmd", {"linear": 1.0, "angular": 0.5})
+        def navigate(node):
+            if node.has_msg("scan"):
+                scan = node.recv("scan")
+                node.send("cmd", CmdVel(1.0, scan.ranges[0]))
 
         node = Node(
-            name="controller",
-            subs={"localization.pose": {"type": Pose2D}},
-            pubs={"control.cmd": {"type": CmdVel}},
-            tick=controller,
-            rate=30
+            name="navigator",
+            tick=navigate,
+            rate=30,
+            order=1,
+            subs=["scan"],
+            pubs=["cmd"],
         )
-
         run(node)
+
+    Async example::
+
+        async def fetch(node):
+            data = await http_get("http://sensor/data")
+            node.send("data", data)
+
+        run(Node(tick=fetch, pubs=["data"], rate=10))
+
+    RT example::
+
+        from horus import us
+        node = Node(
+            tick=motor_ctrl,
+            rate=1000,
+            order=0,
+            budget=300 * us,
+            deadline=900 * us,
+            on_miss="skip",
+            core=2,
+        )
+        run(node, rt=True, watchdog_ms=500)
     """
 
     def __init__(self,
                  name: Optional[str] = None,
-                 pubs: Optional[Union[List[str], str, Dict[str, Dict]]] = None,
-                 subs: Optional[Union[List[str], str, Dict[str, Dict]]] = None,
                  tick: Optional[Callable[['Node'], None]] = None,
                  rate: float = 30,
+                 # Topics
+                 pubs: Optional[Union[List[str], str, Dict[str, Dict]]] = None,
+                 subs: Optional[Union[List[str], str, Dict[str, Dict]]] = None,
+                 # Lifecycle callbacks
                  init: Optional[Callable[['Node'], None]] = None,
                  shutdown: Optional[Callable[['Node'], None]] = None,
                  on_error: Optional[Callable[['Node', Exception], None]] = None,
+                 # Scheduling config (maps 1:1 to Rust NodeBuilder)
+                 order: int = 100,
+                 budget: Optional[float] = None,
+                 deadline: Optional[float] = None,
+                 on_miss: Optional[str] = None,
+                 failure_policy: Optional[str] = None,
+                 compute: bool = False,
+                 on: Optional[str] = None,
+                 priority: Optional[int] = None,
+                 core: Optional[int] = None,
+                 watchdog: Optional[float] = None,
+                 # Internal
                  default_capacity: int = 1024):
         """
-        Create a simple HORUS node.
+        Create a HORUS node. All config in one place.
 
         Args:
             name: Node name (auto-generated if None)
-            pubs: Topics to publish to. Can be:
-                  - str: single topic (generic)
-                  - list: ["topic1", "topic2"] (generic topics)
-                  - dict: {"topic1": {"type": CmdVel, "capacity": 2048}, "topic2": {}}
-                    Use 'type' to create typed topics for proper message logging
-            subs: Topics to subscribe to (same format as pubs)
-            tick: Function to call on each tick - signature: tick(node)
+            tick: Function called each tick — ``tick(node)``.
+                  Can be ``async def`` — auto-detected, runs on async I/O thread pool.
             rate: Tick rate in Hz (default 30)
-            init: Optional init function - signature: init(node)
-            shutdown: Optional shutdown function - signature: shutdown(node)
-            on_error: Optional error handler - signature: on_error(node, exception)
-            default_capacity: Default topic capacity (default: 1024)
+            pubs: Topics to publish — str, list, or dict with type/capacity config
+            subs: Topics to subscribe — same format as pubs
+            init: Called once before first tick — ``init(node)``. Can be async.
+            shutdown: Called on scheduler stop — ``shutdown(node)``. Can be async.
+            on_error: Error handler — ``on_error(node, exception)``
+            order: Execution order (lower = earlier, default: 100)
+            budget: Tick budget in seconds (e.g., ``300 * us``). None = auto (80% of period).
+            deadline: Tick deadline in seconds (e.g., ``900 * us``). None = auto (95% of period).
+            on_miss: Deadline miss policy — ``"warn"``, ``"skip"``, ``"safe_mode"``, ``"stop"``
+            failure_policy: Error policy — ``"fatal"``, ``"restart"``, ``"skip"``, ``"ignore"``
+            compute: CPU-bound execution (thread pool). Mutually exclusive with ``on`` and async.
+            on: Event-driven — tick when this topic receives data. Mutually exclusive with ``compute``.
+            priority: OS scheduling priority (lower = higher priority)
+            core: Pin to CPU core index
+            watchdog: Per-node watchdog timeout in seconds
+            default_capacity: Topic ring buffer capacity (default: 1024)
 
-        Example with typed topics (recommended for proper logging):
-            from horus import Node, Pose2D, CmdVel
+        Example:
+            from horus import Node, run, us
 
             node = Node(
-                name="controller",
-                subs={"localization.pose": {"type": Pose2D}},
-                pubs={"control.cmd": {"type": CmdVel, "capacity": 2048}},
-                tick=lambda n: None
+                name="motor",
+                tick=motor_control,
+                rate=1000,
+                order=0,
+                budget=300 * us,
+                deadline=900 * us,
+                on_miss="skip",
+                subs=["cmd"],
+                pubs=["status"],
             )
-
-        Example with generic topics (shows <bytes> in logs):
-            node = Node(
-                name="controller",
-                subs=["localization.pose"],  # Generic topic
-                pubs=["control.cmd"],
-                tick=lambda n: None
-            )
+            run(node, rt=True)
         """
         # Auto-generate name if not provided
         if name is None:
@@ -388,17 +488,39 @@ class Node:
             name = f"node_{uuid.uuid4().hex[:8]}"
 
         self.name = name
-        self.tick_fn = tick
-        self.init_fn = init
-        self.shutdown_fn = shutdown
         self.on_error_fn = on_error
+        if rate <= 0:
+            raise ValueError(f"Node rate must be positive (got {rate})")
         self.rate = rate
-        self.error_count = 0
         self.default_capacity = default_capacity
 
-        # Per-node rate control
-        self._last_tick_time = 0.0
-        self._tick_period = 1.0 / rate if rate > 0 else 0.0
+        # Scheduling config (read by Scheduler._add_node → Rust NodeBuilder)
+        self.order = order
+        self.budget = budget
+        self.deadline = deadline
+        self.on_miss = on_miss
+        self.failure_policy = failure_policy
+        self._horus_compute = compute
+        self._horus_on = on
+        self.priority = priority
+        self.core = core
+        self.watchdog = watchdog
+
+        # Detect async callbacks and wrap with sync bridge.
+        # If any callback is async, mark node for async_io execution class.
+        self._horus_async = False
+        self._async_loop: Optional[asyncio.AbstractEventLoop] = None
+        self.tick_fn = self._wrap_async(tick) if tick else None
+        self.init_fn = self._wrap_async(init) if init else None
+        self.shutdown_fn = self._wrap_async(shutdown) if shutdown else None
+
+        # Validate mutually exclusive execution classes
+        exec_modes = sum([self._horus_async, self._horus_compute, self._horus_on is not None])
+        if exec_modes > 1:
+            raise ValueError(
+                "Execution class is mutually exclusive: only one of "
+                "async tick, compute=True, or on='topic' can be set"
+            )
 
         # Normalize pub/sub to lists and extract configs
         self.pub_topics = []
@@ -425,17 +547,11 @@ class Node:
         elif isinstance(subs, list):
             self.sub_topics = subs
 
-        # Message queues for subscriptions
-        self._msg_queues = defaultdict(list)
-
-        # Phase 2: Message timestamps (topic -> [(msg, timestamp), ...])
-        self._msg_timestamps = defaultdict(list)
-
         # NodeInfo context (set by scheduler)
         self.info = None
 
         # Create underlying HORUS components if available
-        if _PyNode:
+        if Topic is not None:
             self._rust_available = True
             self._setup_topics()
         else:
@@ -443,57 +559,53 @@ class Node:
             self._rust_available = False
             self._topics = {}
 
+    def _wrap_async(self, fn: Callable) -> Callable:
+        """If fn is a coroutine function, wrap it in a sync bridge and mark node as async."""
+        if fn is None:
+            return None
+        if not asyncio.iscoroutinefunction(fn):
+            return fn
+        # Mark this node for async_io execution class
+        self._horus_async = True
+        def sync_bridge(node):
+            loop = self._get_async_loop()
+            loop.run_until_complete(fn(node))
+        return sync_bridge
+
+    def _get_async_loop(self) -> asyncio.AbstractEventLoop:
+        """Get or create event loop for async callbacks."""
+        if self._async_loop is None:
+            try:
+                self._async_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._async_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._async_loop)
+        return self._async_loop
+
     def _setup_topics(self):
-        """Setup publish/subscribe hubs with configured capacities and types."""
+        """Setup publish/subscribe topics with configured capacities."""
         self._topics = {}
 
-        # Create publisher hubs
-        for topic in self.pub_topics:
+        all_topics = set(self.pub_topics + self.sub_topics)
+        for topic in all_topics:
             config = self._topic_configs.get(topic, {})
             capacity = config.get('capacity', self.default_capacity)
-            msg_type = config.get('type', None)
+            # Always create topic by name — no __topic_name__ monkeypatching
+            self._topics[topic] = Topic(topic, capacity)
 
-            # If type specified, create typed topic; otherwise generic topic
-            if msg_type is not None:
-                # Temporarily set __topic_name__ so Rust Topic uses correct name
-                original_topic = getattr(msg_type, '__topic_name__', None)
-                msg_type.__topic_name__ = topic
-                try:
-                    self._topics[topic] = Topic(msg_type, capacity)
-                finally:
-                    # Restore original or delete
-                    if original_topic is not None:
-                        msg_type.__topic_name__ = original_topic
-                    elif hasattr(msg_type, '__topic_name__'):
-                        delattr(msg_type, '__topic_name__')
-            else:
-                self._topics[topic] = Topic(topic, capacity)
-
-        # Create subscriber hubs
-        for topic in self.sub_topics:
+    def _ensure_topic(self, topic: str) -> None:
+        """Ensure a Topic object exists for the given name (auto-create if needed)."""
+        if topic not in self._topics and self._rust_available:
             config = self._topic_configs.get(topic, {})
             capacity = config.get('capacity', self.default_capacity)
-            msg_type = config.get('type', None)
-
-            # If type specified, create typed topic; otherwise generic topic
-            if msg_type is not None:
-                # Temporarily set __topic_name__ so Rust Topic uses correct name
-                original_topic = getattr(msg_type, '__topic_name__', None)
-                msg_type.__topic_name__ = topic
-                try:
-                    self._topics[topic] = Topic(msg_type, capacity)
-                finally:
-                    # Restore original or delete
-                    if original_topic is not None:
-                        msg_type.__topic_name__ = original_topic
-                    elif hasattr(msg_type, '__topic_name__'):
-                        delattr(msg_type, '__topic_name__')
-            else:
-                self._topics[topic] = Topic(topic, capacity)
+            self._topics[topic] = Topic(topic, capacity)
 
     def has_msg(self, topic: str) -> bool:
         """
         Check if messages are available on a topic.
+
+        Peeks by attempting a recv — if a message exists, it's buffered
+        internally and returned by the next ``recv()`` call.
 
         Args:
             topic: Topic to check
@@ -501,32 +613,49 @@ class Node:
         Returns:
             True if messages available
         """
-        # First try to receive new messages
-        self._receive_messages(topic)
-        return len(self._msg_queues[topic]) > 0
+        # Check peek buffer first
+        if hasattr(self, '_peek_buffer') and topic in self._peek_buffer:
+            return True
+        self._ensure_topic(topic)
+        if self._rust_available and topic in self._topics:
+            msg = self._topics[topic].recv(self)
+            if msg is not None:
+                if not hasattr(self, '_peek_buffer'):
+                    self._peek_buffer = {}
+                self._peek_buffer[topic] = msg
+                return True
+        return False
 
-    def get(self, topic: str) -> Optional[Any]:
+    def recv(self, topic: str) -> Optional[Any]:
         """
-        Get next message from topic.
+        Receive next message from topic.
+
+        Calls Rust ``Topic.recv()`` directly — no Python-side buffering.
 
         Args:
             topic: Topic to read from
 
         Returns:
             Message data or None if no messages
-        """
-        self._receive_messages(topic)
 
-        if self._msg_queues[topic]:
-            # Phase 2: Pop timestamp along with message
-            if self._msg_timestamps[topic]:
-                self._msg_timestamps[topic].pop(0)
-            return self._msg_queues[topic].pop(0)
+        Note:
+            Topics used here but not declared in ``subs`` will be auto-created
+            for IPC, but won't appear in scheduler monitoring or diagnostics.
+            Declare all topics in ``subs`` for full visibility.
+        """
+        # Return peeked message first (from has_msg)
+        if hasattr(self, '_peek_buffer') and topic in self._peek_buffer:
+            return self._peek_buffer.pop(topic)
+        if topic not in self.sub_topics:
+            self.sub_topics.append(topic)
+        self._ensure_topic(topic)
+        if self._rust_available and topic in self._topics:
+            return self._topics[topic].recv(self)
         return None
 
-    def get_all(self, topic: str) -> List[Any]:
+    def recv_all(self, topic: str) -> List[Any]:
         """
-        Get all available messages from topic.
+        Receive all available messages from topic.
 
         Args:
             topic: Topic to read from
@@ -534,83 +663,20 @@ class Node:
         Returns:
             List of messages (empty if none)
         """
-        self._receive_messages(topic)
-
-        msgs = self._msg_queues[topic][:]
-        self._msg_queues[topic].clear()
-        # Phase 2: Clear timestamps too
-        self._msg_timestamps[topic].clear()
+        msgs = []
+        while True:
+            msg = self.recv(topic)
+            if msg is None:
+                break
+            msgs.append(msg)
         return msgs
 
-    def get_timestamp(self, topic: str) -> Optional[float]:
-        """
-        Get timestamp of the next message without consuming it (Phase 2).
-
-        Args:
-            topic: Topic to check
-
-        Returns:
-            Unix timestamp in seconds (with microsecond precision) or None
-        """
-        self._receive_messages(topic)
-
-        if self._msg_timestamps[topic]:
-            return self._msg_timestamps[topic][0]
-        return None
-
-    def get_message_age(self, topic: str) -> Optional[float]:
-        """
-        Get age of the next message in seconds (Phase 2).
-
-        Args:
-            topic: Topic to check
-
-        Returns:
-            Message age in seconds or None if no messages
-        """
-        timestamp = self.get_timestamp(topic)
-        if timestamp is not None and timestamp > 0:
-            import time
-            return time.time() - timestamp
-        return None
-
-    def is_stale(self, topic: str, max_age: float) -> bool:
-        """
-        Check if the next message is stale (Phase 2).
-
-        Args:
-            topic: Topic to check
-            max_age: Maximum acceptable age in seconds
-
-        Returns:
-            True if message is older than max_age, False otherwise
-        """
-        age = self.get_message_age(topic)
-        if age is None:
-            return False  # No message = not stale
-        return age > max_age
-
-    def get_with_timestamp(self, topic: str) -> Optional[tuple]:
-        """
-        Get next message with its timestamp (Phase 2).
-
-        Args:
-            topic: Topic to read from
-
-        Returns:
-            Tuple of (message, timestamp) or None if no messages
-        """
-        self._receive_messages(topic)
-
-        if self._msg_queues[topic]:
-            msg = self._msg_queues[topic].pop(0)
-            timestamp = self._msg_timestamps[topic].pop(0) if self._msg_timestamps[topic] else 0.0
-            return (msg, timestamp)
-        return None
 
     def send(self, topic: str, data: Any) -> bool:
         """
         Send data to a topic.
+
+        Calls Rust ``Topic.send()`` directly.
 
         Args:
             topic: Topic to send to
@@ -618,144 +684,43 @@ class Node:
 
         Returns:
             True if sent successfully
+
+        Note:
+            Topics used here but not declared in ``pubs`` will be auto-created
+            for IPC, but won't appear in scheduler monitoring or diagnostics.
+            Declare all topics in ``pubs`` for full visibility.
         """
-        # Auto-detect topics: add topic if not already declared
         if topic not in self.pub_topics:
             self.pub_topics.append(topic)
-            if self._rust_available:
-                config = self._topic_configs.get(topic, {})
-                capacity = config.get('capacity', self.default_capacity)
-                msg_type = config.get('type', None)
-
-                # If type specified, create typed topic; otherwise generic topic
-                if msg_type is not None:
-                    # Temporarily set __topic_name__ so Rust Topic uses correct name
-                    original_topic = getattr(msg_type, '__topic_name__', None)
-                    msg_type.__topic_name__ = topic
-                    try:
-                        self._topics[topic] = Topic(msg_type, capacity)
-                    finally:
-                        # Restore original or delete
-                        if original_topic is not None:
-                            msg_type.__topic_name__ = original_topic
-                        elif hasattr(msg_type, '__topic_name__'):
-                            delattr(msg_type, '__topic_name__')
-                else:
-                    self._topics[topic] = Topic(topic, capacity)
-
+        self._ensure_topic(topic)
         if self._rust_available and topic in self._topics:
-            t = self._topics[topic]
-
-            # Measure IPC timing
-            import time
-            start_ns = time.perf_counter_ns()
-
-            # PyTopic.send() handles all serialization internally in Rust
-            result = t.send(data, self)
-
-            end_ns = time.perf_counter_ns()
-            ipc_ns = end_ns - start_ns
-
-            # Log the publish operation if NodeInfo available
-            if self.info:
-                data_repr = _truncate_for_logging(data)
-                self.info.log_pub(topic, data_repr, ipc_ns)
-
-            return result
-
-        # Mock mode
+            return self._topics[topic].send(data, self)
         return True
 
-    def _receive_messages(self, topic: str):
-        """Pull messages from topic into queue."""
-        # Auto-detect topics: add topic if not already declared
-        if topic not in self.sub_topics:
-            self.sub_topics.append(topic)
-            if self._rust_available:
-                config = self._topic_configs.get(topic, {})
-                capacity = config.get('capacity', self.default_capacity)
-                msg_type = config.get('type', None)
-
-                # If type specified, create typed topic; otherwise generic topic
-                if msg_type is not None:
-                    # Temporarily set __topic_name__ so Rust Topic uses correct name
-                    original_topic = getattr(msg_type, '__topic_name__', None)
-                    msg_type.__topic_name__ = topic
-                    try:
-                        self._topics[topic] = Topic(msg_type, capacity)
-                    finally:
-                        # Restore original or delete
-                        if original_topic is not None:
-                            msg_type.__topic_name__ = original_topic
-                        elif hasattr(msg_type, '__topic_name__'):
-                            delattr(msg_type, '__topic_name__')
-                else:
-                    self._topics[topic] = Topic(topic, capacity)
-
-        if self._rust_available and topic in self._topics:
-            t = self._topics[topic]
-            import time
-
-            # Receive all available messages
-            while True:
-                # Measure IPC timing
-                start_ns = time.perf_counter_ns()
-
-                # PyTopic.recv() handles all deserialization internally in Rust
-                msg = t.recv(self)
-                end_ns = time.perf_counter_ns()
-
-                if msg is None:
-                    break
-
-                ipc_ns = end_ns - start_ns
-                timestamp = time.time()
-
-                # Log the subscribe operation if NodeInfo available
-                if self.info:
-                    data_repr = _truncate_for_logging(msg)
-                    self.info.log_sub(topic, data_repr, ipc_ns)
-
-                # Store message with timestamp
-                self._msg_queues[topic].append(msg)
-                self._msg_timestamps[topic].append(timestamp)
-
     def _run_tick_with_error_handling(self, info: Optional[Any] = None) -> None:
-        """Run tick_fn with error handling and info context management."""
+        """Run tick_fn with error handling and info context management.
+
+        Error escalation is handled by Rust FailurePolicy (fatal/restart/skip/ignore).
+        Python only handles user's on_error callback if provided.
+        """
         old_info = self.info
         self.info = info
         try:
             if self.tick_fn:
                 self.tick_fn(self)
         except Exception as e:
-            self.error_count += 1
-            if self.info:
-                self.info.log_error(f"Tick failed: {e}")
-                if self.error_count > 10:
-                    self.info.transition_to_error(f"Too many errors ({self.error_count})")
             if self.on_error_fn:
                 try:
                     self.on_error_fn(self, e)
-                except Exception as handler_error:
-                    if self.info:
-                        self.info.log_error(f"Error handler failed: {handler_error}")
+                except Exception:
+                    raise e  # on_error failed too — propagate original
             else:
-                raise
+                raise  # Rust FailurePolicy handles escalation
         finally:
             self.info = old_info
 
     def _internal_tick(self, info: Optional[Any] = None) -> None:
-        """Internal tick called by scheduler with per-node rate control."""
-        import time
-
-        # Check if enough time has elapsed for this node's rate
-        current_time = time.time()
-        if self._tick_period > 0:
-            time_since_last_tick = current_time - self._last_tick_time
-            if time_since_last_tick < self._tick_period:
-                return
-
-        self._last_tick_time = current_time
+        """Internal tick called by mock-mode scheduler."""
         self._run_tick_with_error_handling(info)
 
     def _internal_init(self, info: Optional[Any] = None) -> None:
@@ -787,24 +752,52 @@ class Node:
 
     # NodeInfo convenience methods (delegate to info if available)
     def log_info(self, message: str) -> None:
-        """Log an info message (if logging enabled)."""
+        """Log an info message. Only works during init/tick/shutdown."""
         if self.info:
             self.info.log_info(message)
+        else:
+            import warnings
+            warnings.warn(
+                f"Node '{self.name}': log_info() called outside scheduler — message dropped. "
+                "Logging is only available during init/tick/shutdown.",
+                RuntimeWarning, stacklevel=2,
+            )
 
     def log_warning(self, message: str) -> None:
-        """Log a warning message (if logging enabled)."""
+        """Log a warning message. Only works during init/tick/shutdown."""
         if self.info:
             self.info.log_warning(message)
+        else:
+            import warnings
+            warnings.warn(
+                f"Node '{self.name}': log_warning() called outside scheduler — message dropped. "
+                "Logging is only available during init/tick/shutdown.",
+                RuntimeWarning, stacklevel=2,
+            )
 
     def log_error(self, message: str) -> None:
-        """Log an error message (if logging enabled)."""
+        """Log an error message. Only works during init/tick/shutdown."""
         if self.info:
             self.info.log_error(message)
+        else:
+            import warnings
+            warnings.warn(
+                f"Node '{self.name}': log_error() called outside scheduler — message dropped. "
+                "Logging is only available during init/tick/shutdown.",
+                RuntimeWarning, stacklevel=2,
+            )
 
     def log_debug(self, message: str) -> None:
-        """Log a debug message (if logging enabled)."""
+        """Log a debug message. Only works during init/tick/shutdown."""
         if self.info:
             self.info.log_debug(message)
+        else:
+            import warnings
+            warnings.warn(
+                f"Node '{self.name}': log_debug() called outside scheduler — message dropped. "
+                "Logging is only available during init/tick/shutdown.",
+                RuntimeWarning, stacklevel=2,
+            )
 
     def request_stop(self) -> None:
         """
@@ -853,39 +846,53 @@ class Scheduler:
     """
     Scheduler for running HORUS nodes.
 
-    Example (kwargs):
-        scheduler = Scheduler(tick_rate=500.0, fault_tolerance=True, rt=True)
+    Most users should use ``horus.run()`` instead. Use Scheduler directly
+    only for dynamic node management or advanced control.
 
-    Example (adding nodes):
-        scheduler = Scheduler()
-        scheduler.add(sensor_node, order=0, rate=100.0)
-        scheduler.add(motor_node, order=1, rate=500.0, on_miss=Miss.SAFE_MODE)
-        scheduler.run()
+    Example::
 
-    Example (context manager — auto-stop on exit):
-        with Scheduler(tick_rate=100.0) as sched:
-            sched.add(sensor_node, order=0, rate=100.0)
-            sched.run_for(10.0)
+        from horus import Node, Scheduler
+
+        sched = Scheduler(tick_rate=1000, rt=True)
+        sched.add(Node(tick=sensor_fn, rate=100, order=0))
+        sched.add(Node(tick=motor_fn, rate=1000, order=1, budget=300 * us))
+        sched.run()
+
+    Context manager::
+
+        with Scheduler(tick_rate=100) as sched:
+            sched.add(Node(tick=fn, rate=100))
+            sched.run(duration=10.0)
     """
 
     def __init__(self, *,
                  tick_rate: float = 1000.0,
-                 parallel: bool = False,
                  rt: bool = False,
+                 deterministic: bool = False,
                  blackbox_mb: int = 0,
                  watchdog_ms: int = 0,
                  recording: bool = False,
+                 name: Optional[str] = None,
+                 cores: Optional[List[int]] = None,
+                 max_deadline_misses: Optional[int] = None,
+                 verbose: bool = False,
+                 telemetry: Optional[str] = None,
                  _inner=None):
         """
         Create a scheduler.
 
         Args:
             tick_rate: Global tick rate in Hz (default: 1000.0)
-            parallel: Use parallel execution mode (default: False)
             rt: Enable real-time features (memory locking + RT scheduling class)
+            deterministic: Enable deterministic mode (SimClock, fixed dt, seeded RNG)
             blackbox_mb: Black box buffer size in MB (0 = disabled)
             watchdog_ms: Watchdog timeout in ms (0 = disabled)
             recording: Enable recording (default: False)
+            name: Scheduler name (for logging/diagnostics)
+            cores: CPU affinity — pin scheduler to these cores
+            max_deadline_misses: Escalation threshold for deadline misses
+            verbose: Enable verbose debug logging
+            telemetry: Telemetry export endpoint (e.g., "http://localhost:9090")
             _inner: Internal — used by preset constructors
         """
         if _inner is not None:
@@ -901,61 +908,76 @@ class Scheduler:
             if watchdog_ms > 0:
                 cfg.watchdog_timeout_ms = watchdog_ms
             cfg.recording_enabled = recording
-            self._scheduler = _PyScheduler(cfg)
+            self._scheduler = _PyScheduler(
+                cfg,
+                deterministic=deterministic,
+                name=name,
+                cores=cores,
+                max_deadline_misses=max_deadline_misses,
+                verbose=verbose,
+                telemetry=telemetry,
+            )
         else:
             self._scheduler = None
         self._nodes = []
+        self._tick_rate = tick_rate
 
     # Presets deploy(), hard_rt(), safety_critical() removed.
     # Use Scheduler(watchdog_ms=500) or
     # Scheduler(config=SchedulerConfig.with_watchdog()) instead.
 
-    def add(self, node: 'Node', order: int = 100, rate: Optional[float] = None,
-            rt: bool = False,
-            failure_policy: Optional[str] = None,
-            on_miss: Optional[str] = None) -> 'Scheduler':
+    def add(self, node: 'Node') -> 'Scheduler':
         """
-        Add a node to the scheduler.
+        Add a node to the scheduler. All config is read from the Node.
 
         Args:
-            node: Node instance to add
-            order: Execution order (lower = earlier, default: 100)
-            rate: Node-specific tick rate in Hz (default: uses node.rate).
-                  Setting rate auto-derives budget (80%) and deadline (95%).
-            rt: Mark as real-time node (default: False)
-            failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
-            on_miss: Deadline miss policy - Miss.WARN, Miss.SKIP, Miss.SAFE_MODE, Miss.STOP
-                  (default: None = warn)
+            node: ``horus.Node`` instance (with scheduling config set via kwargs)
 
         Returns:
             self (for method chaining)
 
         Example:
-            scheduler.add(sensor_node, order=0, rate=1000.0)
-            scheduler.add(motor_node, order=1, rate=500.0, on_miss=Miss.SAFE_MODE)
-            scheduler.add(logger_node, order=100, failure_policy="skip")
+            sched.add(Node(tick=sensor_fn, rate=100, order=0))
+            sched.add(Node(tick=motor_fn, rate=1000, order=1, budget=300 * us))
         """
+        if not isinstance(node, Node):
+            raise TypeError(
+                f"Expected horus.Node instance, got {type(node).__name__}. "
+                "Use horus.Node(tick=fn, rate=30, ...) to create nodes."
+            )
         self._nodes.append(node)
-
         if self._scheduler:
-            # Use node.rate if rate not specified
-            actual_rate = rate if rate is not None else node.rate
-            self._scheduler.add(node, order, actual_rate, rt,
-                                failure_policy, on_miss)
-
+            self._add_node(node)
         return self
 
-    def node(self, node: 'Node') -> 'NodeBuilder':
-        """Start building a node configuration (fluent API).
-
-        Example:
-            scheduler.node(detector).on("lidar_scan").order(0).build()
-            scheduler.node(motor).rate(500).failure_policy("restart", max_retries=10).build()
-        """
-        self._nodes.append(node)
-        if self._scheduler:
-            return self._scheduler.node(node)
-        raise RuntimeError("Fluent node builder requires Rust scheduler (not available in mock mode)")
+    def _add_node(self, node: 'Node') -> None:
+        """Wire Node attrs to Rust PyNodeBuilder. Single path for all config."""
+        builder = self._scheduler.node(node)
+        builder = builder.order(node.order)
+        if node.rate is not None:
+            builder = builder.rate(node.rate)
+        if node.budget is not None:
+            builder = builder.budget(node.budget)
+        if node.deadline is not None:
+            builder = builder.deadline(node.deadline)
+        if node.on_miss is not None:
+            builder = builder.on_miss(node.on_miss)
+        if node.failure_policy is not None:
+            builder = builder.failure_policy(node.failure_policy)
+        # Execution class (mutually exclusive, validated in Node.__init__)
+        if node._horus_async:
+            builder = builder.async_io()
+        elif node._horus_compute:
+            builder = builder.compute()
+        elif node._horus_on:
+            builder = builder.on(node._horus_on)
+        if node.priority is not None:
+            builder = builder.priority(node.priority)
+        if node.core is not None:
+            builder = builder.core(node.core)
+        if node.watchdog is not None:
+            builder = builder.watchdog(node.watchdog)
+        builder.build()
 
     def run(self, duration: Optional[float] = None) -> None:
         """
@@ -986,7 +1008,7 @@ class Scheduler:
                 while duration is None or (time.time() - start) < duration:
                     for node in self._nodes:
                         node._internal_tick()
-                    time.sleep(0.03)  # ~30Hz
+                    time.sleep(1.0 / self._tick_rate)
             except KeyboardInterrupt:
                 print("\nCtrl+C received, shutting down gracefully...")
             finally:
@@ -999,12 +1021,13 @@ class Scheduler:
             self._scheduler.stop()
 
     def __enter__(self) -> 'Scheduler':
-        """Context manager entry — returns self for `with` usage.
+        """Context manager entry — returns self for ``with`` usage.
 
-        Example:
-            with Scheduler(tick_rate=100.0) as sched:
-                sched.add(sensor_node, order=0)
-                sched.run()
+        Example::
+
+            with Scheduler(tick_rate=100) as sched:
+                sched.add(Node(tick=sensor_fn, rate=100, order=0))
+                sched.run(duration=10.0)
             # stop() called automatically on exit
         """
         return self
@@ -1051,10 +1074,9 @@ class Scheduler:
         for node in self._nodes:
             if node.name == node_name:
                 node.rate = rate
-                node._tick_period = 1.0 / rate if rate > 0 else 0.0
                 break
 
-        # Update Rust scheduler if available
+        # Update Rust scheduler (handles actual rate control)
         if self._scheduler:
             self._scheduler.set_node_rate(node_name, rate)
 
@@ -1312,51 +1334,66 @@ class Scheduler:
 
 # Convenience functions
 
-def run(*nodes: Node, duration: Optional[float] = None) -> None:
+def run(*nodes: Node,
+        duration: Optional[float] = None,
+        tick_rate: float = 1000.0,
+        rt: bool = False,
+        deterministic: bool = False,
+        watchdog_ms: int = 0,
+        blackbox_mb: int = 0,
+        recording: bool = False,
+        name: Optional[str] = None,
+        cores: Optional[List[int]] = None,
+        max_deadline_misses: Optional[int] = None,
+        verbose: bool = False,
+        telemetry: Optional[str] = None) -> None:
     """
-    Quick run helper - create scheduler and run nodes.
+    Run nodes. The ONE way to use horus.
+
+    Each node carries its own config (rate, order, budget, etc.).
+    This function handles scheduler creation and execution.
 
     Args:
-        *nodes: Node instances to run
-        duration: Optional duration in seconds
+        *nodes: ``horus.Node`` instances (in execution order if order not set)
+        duration: Run for this many seconds (None = forever until Ctrl+C)
+        tick_rate: Global scheduler tick rate in Hz (default: 1000.0)
+        rt: Enable real-time features (memory locking + RT scheduling)
+        deterministic: Enable deterministic mode (SimClock, fixed dt, seeded RNG)
+        watchdog_ms: Global watchdog timeout in ms (0 = disabled)
+        blackbox_mb: Flight recorder buffer in MB (0 = disabled)
+        recording: Enable session recording (default: False)
+        name: Scheduler name (for logging/diagnostics)
+        cores: CPU affinity — pin scheduler to these cores
+        max_deadline_misses: Escalation threshold for deadline misses
+        verbose: Enable verbose debug logging
+        telemetry: Telemetry export endpoint (e.g., "http://localhost:9090")
 
-    Example:
-        node = Node(subs="in", pubs="out", tick=lambda n: n.send("out", n.get("in")))
-        run(node, duration=5)
+    Example::
+
+        from horus import Node, run, us
+
+        sensor = Node(tick=read_lidar, rate=10, order=0, pubs=["scan"])
+        ctrl = Node(tick=navigate, rate=30, order=1, subs=["scan"], pubs=["cmd"])
+        motor = Node(tick=drive, rate=1000, order=2, budget=300*us, subs=["cmd"])
+
+        run(sensor, ctrl, motor, rt=True)
     """
-    scheduler = Scheduler()
-
-    # Smart priority assignment: subscribers first, then publishers
-    # This ensures subscriber hubs are created before first messages are sent
-    subscribers = []
-    publishers = []
-    both = []
+    scheduler = Scheduler(
+        tick_rate=tick_rate,
+        deterministic=deterministic,
+        rt=rt,
+        watchdog_ms=watchdog_ms,
+        blackbox_mb=blackbox_mb,
+        recording=recording,
+        name=name,
+        cores=cores,
+        max_deadline_misses=max_deadline_misses,
+        verbose=verbose,
+        telemetry=telemetry,
+    )
 
     for node in nodes:
-        has_subs = len(node.sub_topics) > 0
-        has_pubs = len(node.pub_topics) > 0
-
-        if has_subs and has_pubs:
-            both.append(node)
-        elif has_subs:
-            subscribers.append(node)
-        elif has_pubs:
-            publishers.append(node)
-        else:
-            # No declared topics - add to both category (will auto-detect)
-            both.append(node)
-
-    # Assign order: subscribers (0..N), both (N+1..M), publishers (M+1..P)
-    order = 0
-    for node in subscribers:
-        scheduler.add(node, order=order)
-        order += 1
-    for node in both:
-        scheduler.add(node, order=order)
-        order += 1
-    for node in publishers:
-        scheduler.add(node, order=order)
-        order += 1
+        scheduler.add(node)
 
     scheduler.run(duration)
 
@@ -1383,9 +1420,7 @@ try:
         BatteryState,
         NavSatFix,
         Odometry,
-        Range,
         # Diagnostics messages
-        Status,
         EmergencyStop,
         Heartbeat,
         ResourceUsage,
@@ -1481,42 +1516,59 @@ except ImportError:
         pass
 
 __all__ = [
-    # Core API
+    # Core API — the ONE way
     "Node",
-    "Scheduler",
-    "NodeState",
-    "Priority",
-    "Topic",
-    "Miss",
     "run",
-    # Submodules
-    "msggen",
-    "ai",
-    "perception",
+    "Scheduler",
+    # Time API
+    "now",
+    "dt",
+    "elapsed",
+    "tick",
+    "budget_remaining",
+    "rng_float",
+    "timestamp_ns",
+    # Unit constants
+    "us",
+    "ms",
+    # Configuration
+    "Params",
+    "Rate",
+    "drivers",
+    # Communication
+    "Topic",
     # Domain types
     "Image",
     "PointCloud",
     "DepthImage",
-    # GPU utility functions
-    "cuda_is_available",
-    "cuda_device_count",
-    # Simple async API
-    "AsyncNode",
-    "AsyncTopic",
     # Coordinate transforms
     "TransformFrame",
     "Transform",
     "TransformFrameConfig",
-    # Structured error types
+    # Enums & constants
+    "NodeState",
+    "Priority",
+    "Miss",
+    # Perception
+    "DetectionList",
+    "PointXYZ",
+    "PointXYZRGB",
+    "PointCloudBuffer",
+    "COCOPose",
+    # Error types
     "HorusNotFoundError",
     "HorusTransformError",
     "HorusTimeoutError",
+    # GPU utilities
+    "cuda_is_available",
+    "cuda_device_count",
+    # Submodules
+    "msggen",
+    "ai",
+    "perception",
     # Utility
     "get_version",
 ]
-
-# Import simple async API
-from .async_node import AsyncNode, AsyncTopic
 
 # Import custom message generator module
 from . import msggen
@@ -1524,73 +1576,8 @@ from . import msggen
 # Import AI/ML submodule (horus.ai)
 from . import ai
 
-# Always expose Rust-native types that have no horus.library Python equivalent.
-# These are available whether or not horus.library is installed.
-try:
-    Pose3D = _RustPose3D
-    JointState = _RustJointState
-    Clock = _RustClock
-    TimeReference = _RustTimeReference
-    TransformStamped = _RustTransformStamped
-    PoseStamped = _RustPoseStamped
-    PoseWithCovariance = _RustPoseWithCovariance
-    TwistWithCovariance = _RustTwistWithCovariance
-    Accel = _RustAccel
-    AccelStamped = _RustAccelStamped
-    TrajectoryPoint = _RustTrajectoryPoint
-    JointCommand = _RustJointCommand
-    # Sensor types only in Rust
-    MagneticField = _RustMagneticField
-    Temperature = _RustTemperature
-    FluidPressure = _RustFluidPressure
-    Illuminance = _RustIlluminance
-    RangeSensor = _RustRangeSensor
-    # Diagnostics types only in Rust
-    DiagnosticStatus = _RustDiagnosticStatus
-    # Force/Nav/Input types only in Rust
-    WrenchStamped = _RustWrenchStamped
-    ForceCommand = _RustForceCommand
-    ContactInfo = _RustContactInfo
-    NavGoal = _RustNavGoal
-    GoalResult = _RustGoalResult
-    PathPlan = _RustPathPlan
-    # Detection/Perception types only in Rust
-    BoundingBox2D = _RustBoundingBox2D
-    BoundingBox3D = _RustBoundingBox3D
-    Detection = _RustDetection
-    Detection3D = _RustDetection3D
-    SegmentationMask = _RustSegmentationMask
-    TrackedObject = _RustTrackedObject
-    TrackingHeader = _RustTrackingHeader
-    Landmark = _RustLandmark
-    Landmark3D = _RustLandmark3D
-    LandmarkArray = _RustLandmarkArray
-    # Perception helper types only in Rust
-    PointField = _RustPointField
-    PlaneDetection = _RustPlaneDetection
-    PlaneArray = _RustPlaneArray
-    # Vision types only in Rust
-    CompressedImage = _RustCompressedImage
-    CameraInfo = _RustCameraInfo
-    RegionOfInterest = _RustRegionOfInterest
-    StereoInfo = _RustStereoInfo
-    # Force types (additional) only in Rust
-    ImpedanceParameters = _RustImpedanceParameters
-    HapticFeedback = _RustHapticFeedback
-    # Diagnostics types (additional) only in Rust
-    DiagnosticValue = _RustDiagnosticValue
-    DiagnosticReport = _RustDiagnosticReport
-    NodeHeartbeat = _RustNodeHeartbeat
-    SafetyStatus = _RustSafetyStatus
-    # Navigation types (additional) only in Rust
-    Waypoint = _RustWaypoint
-    NavPath = _RustNavPath
-    VelocityObstacle = _RustVelocityObstacle
-    VelocityObstacles = _RustVelocityObstacles
-    OccupancyGrid = _RustOccupancyGrid
-    CostMap = _RustCostMap
-except NameError:
-    pass
+    # Rust-native types are already assigned in the fallback block above (lines 1380-1454).
+    # No second assignment needed.
 
 # Add message types to __all__ if available
 if _has_messages:

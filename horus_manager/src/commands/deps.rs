@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use colored::*;
+use std::path::Path;
 use std::process::Command;
 
 use crate::dispatch::{self, tool_version};
@@ -59,10 +60,75 @@ fn run_tree(ctx: &dispatch::ProjectContext, extra_args: &[String]) -> Result<()>
         }
     }
 
+    if ctx.has_cpp() {
+        if ran {
+            println!();
+        }
+        println!("{}", "[cpp] system dependencies".bold());
+        print_cpp_deps_tree(&ctx.root)?;
+        ran = true;
+    }
+
     if !ran {
         anyhow::bail!("No dependency tree tools available for this project.");
     }
     Ok(())
+}
+
+/// Print C++ system dependencies from horus.toml with installed versions.
+fn print_cpp_deps_tree(root: &Path) -> Result<()> {
+    let manifest_path = root.join(crate::manifest::HORUS_TOML);
+    if !manifest_path.exists() {
+        println!("  (no horus.toml found)");
+        return Ok(());
+    }
+    let manifest = crate::manifest::HorusManifest::load_from(&manifest_path)?;
+
+    let mut found = false;
+    for (name, dep) in &manifest.dependencies {
+        // Filter for system deps (C++ deps use source = "system")
+        let is_system = match dep {
+            crate::manifest::DependencyValue::Detailed(d) => {
+                d.source.as_ref() == Some(&crate::manifest::DepSource::System)
+            }
+            _ => false,
+        };
+        if !is_system {
+            continue;
+        }
+
+        // Use dep name as apt package name (convention for system deps)
+        let apt_name = name.as_str();
+        let version = query_dpkg_version(apt_name)
+            .unwrap_or_else(|| "not installed".red().to_string());
+        println!("  {} {}", name.cyan(), version);
+        found = true;
+    }
+
+    if !found {
+        println!("  (no system dependencies in horus.toml)");
+    }
+    Ok(())
+}
+
+/// Query installed version of an apt package via dpkg.
+fn query_dpkg_version(package: &str) -> Option<String> {
+    let output = Command::new("dpkg")
+        .args(["-s", package])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(ver) = line.strip_prefix("Version:") {
+            return Some(ver.trim().to_string());
+        }
+    }
+    None
 }
 
 fn run_why(ctx: &dispatch::ProjectContext, pkg: &str, extra_args: &[String]) -> Result<()> {
@@ -133,10 +199,114 @@ fn run_outdated(ctx: &dispatch::ProjectContext, extra_args: &[String]) -> Result
         ran = true;
     }
 
+    if ctx.has_cpp() {
+        if ran {
+            println!();
+        }
+        println!("{}", "[cpp] system package updates".bold());
+        print_cpp_deps_outdated(&ctx.root)?;
+        ran = true;
+    }
+
     if !ran {
         anyhow::bail!("No outdated-check tools available.");
     }
     Ok(())
+}
+
+/// Print outdated C++ system deps by comparing dpkg installed vs apt-cache candidate.
+fn print_cpp_deps_outdated(root: &Path) -> Result<()> {
+    let manifest_path = root.join(crate::manifest::HORUS_TOML);
+    if !manifest_path.exists() {
+        println!("  (no horus.toml found)");
+        return Ok(());
+    }
+    let manifest = crate::manifest::HorusManifest::load_from(&manifest_path)?;
+
+    let mut found = false;
+    let mut any_outdated = false;
+    for (name, dep) in &manifest.dependencies {
+        // Filter for system deps
+        let is_system = match dep {
+            crate::manifest::DependencyValue::Detailed(d) => {
+                d.source.as_ref() == Some(&crate::manifest::DepSource::System)
+            }
+            _ => false,
+        };
+        if !is_system {
+            continue;
+        }
+
+        let apt = name.as_str();
+        found = true;
+
+        let installed = query_dpkg_version(apt);
+        let candidate = query_apt_cache_version(apt);
+
+        match (&installed, &candidate) {
+            (Some(inst), Some(cand)) if inst != cand => {
+                println!(
+                    "  {} ({})  {} {} {}",
+                    name.cyan(),
+                    apt,
+                    inst.yellow(),
+                    "→".dimmed(),
+                    cand.green()
+                );
+                any_outdated = true;
+            }
+            (Some(inst), _) => {
+                println!(
+                    "  {} ({})  {} {}",
+                    name.cyan(),
+                    apt,
+                    inst,
+                    "(up to date)".green()
+                );
+            }
+            (None, _) => {
+                println!(
+                    "  {} ({})  {}",
+                    name.cyan(),
+                    apt,
+                    "not installed".red()
+                );
+                any_outdated = true;
+            }
+        }
+    }
+
+    if found && !any_outdated {
+        println!("  {}", "All C++ system dependencies are up to date.".green());
+    }
+    if !found {
+        println!("  (no C++ system dependencies in horus.toml)");
+    }
+    Ok(())
+}
+
+/// Query available version from apt-cache policy.
+fn query_apt_cache_version(package: &str) -> Option<String> {
+    let output = Command::new("apt-cache")
+        .args(["policy", package])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(ver) = trimmed.strip_prefix("Candidate:") {
+            let ver = ver.trim();
+            if ver != "(none)" {
+                return Some(ver.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn run_audit(ctx: &dispatch::ProjectContext, extra_args: &[String]) -> Result<()> {
@@ -426,6 +596,26 @@ mod tests {
     }
 
     #[test]
+    fn deps_cpp_project_context() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\n").unwrap();
+
+        let ctx = dispatch::detect_context(tmp.path());
+        assert!(ctx.has_cpp(), "Should detect C++ from CMakeLists.txt");
+        assert!(!ctx.has_rust());
+        assert!(!ctx.has_python());
+    }
+
+    #[test]
+    fn deps_rust_only_no_cpp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let ctx = dispatch::detect_context(tmp.path());
+        assert!(!ctx.has_cpp(), "Should not detect C++ in Rust-only project");
+    }
+
+    #[test]
     fn deps_mixed_project_context() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
@@ -434,6 +624,49 @@ mod tests {
         let ctx = dispatch::detect_context(tmp.path());
         assert!(ctx.has_rust());
         assert!(ctx.has_python());
+    }
+
+    #[test]
+    fn query_dpkg_version_nonexistent() {
+        assert!(query_dpkg_version("horus-nonexistent-xyz-999").is_none());
+    }
+
+    #[test]
+    fn query_dpkg_version_coreutils() {
+        if cfg!(target_os = "linux") {
+            let ver = query_dpkg_version("coreutils");
+            assert!(ver.is_some(), "coreutils should be installed");
+            assert!(!ver.unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn query_apt_cache_nonexistent() {
+        assert!(query_apt_cache_version("horus-nonexistent-xyz-999").is_none());
+    }
+
+    #[test]
+    fn query_apt_cache_coreutils() {
+        if cfg!(target_os = "linux") {
+            let ver = query_apt_cache_version("coreutils");
+            assert!(ver.is_some(), "coreutils should have a candidate");
+            assert!(!ver.unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn print_cpp_deps_tree_no_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Should succeed without panic (prints message about no horus.toml)
+        let result = print_cpp_deps_tree(tmp.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_cpp_deps_outdated_no_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = print_cpp_deps_outdated(tmp.path());
+        assert!(result.is_ok());
     }
 
     #[test]

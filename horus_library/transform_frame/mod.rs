@@ -961,6 +961,88 @@ impl TransformFrame {
     }
 
     // ========================================================================
+    // Feature stubs — methods return Unsupported error when feature is disabled
+    // ========================================================================
+
+    /// Blocking wait for a transform — **requires the `wait` feature flag**.
+    ///
+    /// Enable it in your Cargo.toml:
+    /// ```toml
+    /// [dependencies]
+    /// horus_library = { version = "0.1", features = ["wait"] }
+    /// ```
+    #[cfg(not(feature = "wait"))]
+    pub fn wait_for_transform(
+        &self,
+        _source: &str,
+        _target: &str,
+        _timeout: std::time::Duration,
+    ) -> HorusResult<Transform> {
+        Err(HorusError::Resource(
+            horus_core::error::ResourceError::Unsupported {
+                feature: "wait_for_transform".into(),
+                reason: "Requires the 'wait' feature. Add `features = [\"wait\"]` to your horus_library dependency in Cargo.toml".into(),
+            },
+        ))
+    }
+
+    /// Blocking wait for a transform at a specific timestamp — **requires the `wait` feature flag**.
+    #[cfg(not(feature = "wait"))]
+    pub fn wait_for_transform_at(
+        &self,
+        _source: &str,
+        _target: &str,
+        _timestamp_ns: u64,
+        _timeout: std::time::Duration,
+    ) -> HorusResult<Transform> {
+        Err(HorusError::Resource(
+            horus_core::error::ResourceError::Unsupported {
+                feature: "wait_for_transform_at".into(),
+                reason: "Requires the 'wait' feature. Add `features = [\"wait\"]` to your horus_library dependency in Cargo.toml".into(),
+            },
+        ))
+    }
+
+    /// Async wait for a transform — **requires the `async-wait` feature flag**.
+    ///
+    /// Enable it in your Cargo.toml:
+    /// ```toml
+    /// [dependencies]
+    /// horus_library = { version = "0.1", features = ["async-wait"] }
+    /// ```
+    #[cfg(not(feature = "async-wait"))]
+    pub async fn wait_for_transform_async(
+        &self,
+        _source: &str,
+        _target: &str,
+        _timeout: std::time::Duration,
+    ) -> HorusResult<Transform> {
+        Err(HorusError::Resource(
+            horus_core::error::ResourceError::Unsupported {
+                feature: "wait_for_transform_async".into(),
+                reason: "Requires the 'async-wait' feature. Add `features = [\"async-wait\"]` to your horus_library dependency in Cargo.toml".into(),
+            },
+        ))
+    }
+
+    /// Async wait for a transform at a specific timestamp — **requires the `async-wait` feature flag**.
+    #[cfg(not(feature = "async-wait"))]
+    pub async fn wait_for_transform_at_async(
+        &self,
+        _source: &str,
+        _target: &str,
+        _timestamp_ns: u64,
+        _timeout: std::time::Duration,
+    ) -> HorusResult<Transform> {
+        Err(HorusError::Resource(
+            horus_core::error::ResourceError::Unsupported {
+                feature: "wait_for_transform_at_async".into(),
+                reason: "Requires the 'async-wait' feature. Add `features = [\"async-wait\"]` to your horus_library dependency in Cargo.toml".into(),
+            },
+        ))
+    }
+
+    // ========================================================================
     // Staleness Detection
     // ========================================================================
 

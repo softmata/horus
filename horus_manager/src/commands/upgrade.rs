@@ -51,7 +51,9 @@ pub fn run_upgrade(check_only: bool) -> Result<()> {
             println!("    {} {}", "•".dimmed(), plugin);
         }
         if !check_only {
-            println!("  Plugin updates not yet implemented.");
+            upgrade_plugins();
+        } else {
+            check_plugin_updates();
         }
     }
 
@@ -59,7 +61,7 @@ pub fn run_upgrade(check_only: bool) -> Result<()> {
 }
 
 /// Check the latest horus version from the registry API.
-pub(crate) fn check_latest_version() -> Result<Option<String>> {
+pub fn check_latest_version() -> Result<Option<String>> {
     // Try to fetch from registry
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -97,6 +99,206 @@ pub(crate) fn upgrade_horus(version: &str) -> Result<()> {
                 "!".yellow(),
                 "cargo install --path .".dimmed()
             );
+        }
+    }
+
+    Ok(())
+}
+
+/// Check the latest version of a plugin package from the registry API.
+fn check_plugin_version(name: &str) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let encoded = name.replace('@', "%40").replace('/', "%2F");
+    let url = format!(
+        "https://horusrobotics.dev/api/packages/{}/latest",
+        encoded
+    );
+
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().ok()?;
+    body.get("version")
+        .or_else(|| body.get("latest_version"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Load the plugin registry and collect installed plugin entries with their versions.
+///
+/// Returns a vec of (plugin_name, package_name, installed_version, is_global).
+fn collect_plugin_entries() -> Vec<(String, String, String, bool)> {
+    use crate::plugins::PluginRegistry;
+
+    let mut entries = Vec::new();
+
+    // Collect from global registry
+    if let Ok(registry) = PluginRegistry::load_global() {
+        for (cmd_name, entry) in &registry.plugins {
+            entries.push((
+                cmd_name.clone(),
+                entry.package.clone(),
+                entry.version.clone(),
+                true,
+            ));
+        }
+    }
+
+    // Collect from local/project registry
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Some(registry) = PluginRegistry::load_project(&cwd) {
+        for (cmd_name, entry) in &registry.plugins {
+            // Skip if already found in global (global takes precedence for upgrade)
+            if !entries.iter().any(|(name, _, _, _)| name == cmd_name) {
+                entries.push((
+                    cmd_name.clone(),
+                    entry.package.clone(),
+                    entry.version.clone(),
+                    false,
+                ));
+            }
+        }
+    }
+
+    entries
+}
+
+/// Check for plugin updates (display only, no install).
+fn check_plugin_updates() {
+    let entries = collect_plugin_entries();
+    if entries.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("  {}", "Checking plugin versions:".bold());
+    for (cmd_name, package_name, installed_version, _is_global) in &entries {
+        match check_plugin_version(package_name) {
+            Some(latest) if latest != *installed_version => {
+                println!(
+                    "    {} {} ({}) {} -> {}",
+                    "!".yellow(),
+                    cmd_name,
+                    package_name,
+                    installed_version.dimmed(),
+                    latest.green()
+                );
+            }
+            Some(_) => {
+                println!(
+                    "    {} {} ({}) up to date",
+                    "✓".green(),
+                    cmd_name,
+                    installed_version.dimmed()
+                );
+            }
+            None => {
+                println!(
+                    "    {} {} could not check version",
+                    "?".dimmed(),
+                    cmd_name
+                );
+            }
+        }
+    }
+}
+
+/// Upgrade all installed plugins to their latest versions.
+fn upgrade_plugins() {
+    let entries = collect_plugin_entries();
+    if entries.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("  {}", "Upgrading plugins:".bold());
+    for (cmd_name, package_name, installed_version, is_global) in &entries {
+        match check_plugin_version(package_name) {
+            Some(latest) if latest != *installed_version => {
+                println!(
+                    "    {} Upgrading {} {} -> {}...",
+                    "!".yellow(),
+                    cmd_name,
+                    installed_version.dimmed(),
+                    latest.green()
+                );
+
+                match reinstall_plugin(package_name, &latest, *is_global) {
+                    Ok(()) => {
+                        println!(
+                            "    {} {} upgraded to {}",
+                            "✓".green(),
+                            cmd_name,
+                            latest.green()
+                        );
+                    }
+                    Err(e) => {
+                        println!(
+                            "    {} Failed to upgrade {}: {}",
+                            "!".yellow(),
+                            cmd_name,
+                            e
+                        );
+                    }
+                }
+            }
+            Some(_) => {
+                println!(
+                    "    {} {} already up to date ({})",
+                    "✓".green(),
+                    cmd_name,
+                    installed_version.dimmed()
+                );
+            }
+            None => {
+                println!(
+                    "    {} {} could not determine latest version — skipping",
+                    "?".dimmed(),
+                    cmd_name
+                );
+            }
+        }
+    }
+}
+
+/// Reinstall a plugin at a specific version using the registry client.
+fn reinstall_plugin(package_name: &str, version: &str, global: bool) -> Result<()> {
+    use crate::{registry, workspace};
+    use crate::plugins::PluginSource;
+
+    let install_target = if global {
+        workspace::InstallTarget::Global
+    } else {
+        workspace::InstallTarget::Local(
+            std::env::current_dir()?,
+        )
+    };
+
+    let client = registry::RegistryClient::new();
+    let installed_version = client.install_to_target(package_name, Some(version), install_target)?;
+
+    // Re-register the plugin after reinstall
+    if let Some(pkg_dir) =
+        super::pkg::resolve_installed_package_dir(package_name, &installed_version, global)
+    {
+        let project_root = if global {
+            None
+        } else {
+            Some(std::env::current_dir()?)
+        };
+        if let Err(e) = super::pkg::register_plugin_after_install(
+            &pkg_dir,
+            PluginSource::Registry,
+            global,
+            project_root.as_deref(),
+        ) {
+            log::warn!("Plugin re-registration failed: {}", e);
         }
     }
 

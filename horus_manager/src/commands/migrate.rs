@@ -69,6 +69,24 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
         }
     }
 
+    // ── Parse CMakeLists.txt ─────────────────────────────────────────────
+    let cmake_path = cwd.join("CMakeLists.txt");
+    if cmake_path.exists() {
+        let cmake_deps = extract_cmake_deps(&cmake_path)?;
+        if !cmake_deps.is_empty() {
+            changes.push(format!(
+                "Import {} dependencies from CMakeLists.txt",
+                cmake_deps.len()
+            ));
+            for (name, _dep) in &cmake_deps {
+                changes.push(format!("  + {} (system)", name));
+            }
+            if !dry_run {
+                manifest.dependencies.extend(cmake_deps);
+            }
+        }
+    }
+
     // ── Move source files ────────────────────────────────────────────────
     let src_main = cwd.join("src/main.rs");
     let root_main = cwd.join("main.rs");
@@ -101,6 +119,13 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
         if !dry_run {
             fs::create_dir_all(&backup_dir)?;
             fs::rename(&pyproject_path, backup_dir.join("pyproject.toml"))?;
+        }
+    }
+    if cmake_path.exists() {
+        changes.push("Backup CMakeLists.txt → .horus/backup/CMakeLists.txt".to_string());
+        if !dry_run {
+            fs::create_dir_all(&backup_dir)?;
+            fs::rename(&cmake_path, backup_dir.join("CMakeLists.txt"))?;
         }
     }
 
@@ -329,6 +354,61 @@ fn parse_pep_dep(spec: &str) -> (String, Option<String>) {
     };
 
     (name, version)
+}
+
+/// Extract dependencies from a CMakeLists.txt file.
+///
+/// Parses `find_package(PackageName ...)` calls and adds them as system deps.
+fn extract_cmake_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> {
+    let content = fs::read_to_string(path).context("Failed to read CMakeLists.txt")?;
+    let mut deps = BTreeMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Skip comments
+        if trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Match find_package(PackageName ...) — package name is the first token
+        if let Some(rest) = trimmed.strip_prefix("find_package(") {
+            let rest = rest.trim();
+            // Extract the package name (first token before whitespace or ')')
+            let pkg_end = rest
+                .find(|c: char| c.is_whitespace() || c == ')')
+                .unwrap_or(rest.len());
+            let pkg_name = &rest[..pkg_end];
+
+            if pkg_name.is_empty() {
+                continue;
+            }
+
+            // Skip CMake built-in pseudo-packages
+            if pkg_name.starts_with("horus") {
+                continue;
+            }
+
+            deps.insert(
+                pkg_name.to_string(),
+                DependencyValue::Detailed(DetailedDependency {
+                    version: None,
+                    source: Some(DepSource::System),
+                    features: vec![],
+                    optional: false,
+                    path: None,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                    apt: None,
+                    cmake_package: Some(pkg_name.to_string()),
+                    lang: None,
+                }),
+            );
+        }
+    }
+
+    Ok(deps)
 }
 
 #[cfg(test)]

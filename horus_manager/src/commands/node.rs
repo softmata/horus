@@ -3,13 +3,12 @@
 //! Provides commands for listing, inspecting, and managing running nodes.
 
 use crate::cli_output;
-use crate::discovery::{discover_nodes, ProcessCategory};
+use crate::discovery::{discover_nodes, NodeStatus, ProcessCategory};
 use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
-use horus_core::memory::shm_control_dir;
-use std::fs;
-use std::process::Command;
+use horus_core::ControlCommand;
+use horus_sys::process::{ProcessHandle, Signal};
 
 /// List all running nodes
 pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusResult<()> {
@@ -259,20 +258,50 @@ pub fn node_info(name: &str) -> HorusResult<()> {
     Ok(())
 }
 
-/// Kill a running node (via IPC control file - only stops the specific node)
+/// Find a node by name (exact or suffix match).
+fn find_node<'a>(nodes: &'a [NodeStatus], name: &str) -> HorusResult<&'a NodeStatus> {
+    nodes
+        .iter()
+        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)))
+        .ok_or_else(|| {
+            HorusError::Config(ConfigError::Other(format!(
+                "Node '{}' not found. Use 'horus node list' to see running nodes.",
+                name
+            )))
+        })
+}
+
+/// Send a ControlCommand to the scheduler that owns a node.
+///
+/// Discovers the node, reads its scheduler name from presence data,
+/// publishes the command to `horus.ctl.{scheduler_name}` via the Topic API.
+fn send_control_command(node: &NodeStatus, cmd: ControlCommand) -> HorusResult<()> {
+    let scheduler_name = if node.scheduler_name.is_empty() {
+        "Scheduler"
+    } else {
+        &node.scheduler_name
+    };
+
+    let ctl_topic_name = format!("horus.ctl.{}", scheduler_name);
+    let topic = horus_core::Topic::<ControlCommand>::new_with_kind(
+        &ctl_topic_name,
+        horus_core::TopicKind::System as u8,
+    )
+    .map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to open control topic '{}': {}",
+            ctl_topic_name, e
+        )))
+    })?;
+
+    topic.send(cmd);
+    Ok(())
+}
+
+/// Kill a running node (sends GracefulShutdown or PauseNode via control topic)
 pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
     let nodes = discover_nodes()?;
-
-    let node = nodes
-        .iter()
-        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
-
-    let Some(node) = node else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Node '{}' not found. Use 'horus node list' to see running nodes.",
-            name
-        ))));
-    };
+    let node = find_node(&nodes, name)?;
 
     println!(
         "{} Stopping node: {}",
@@ -280,29 +309,20 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
         node.name.white().bold()
     );
 
-    // Write control file to stop the specific node
-    let control_dir = shm_control_dir();
-    fs::create_dir_all(&control_dir).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to create control directory: {}",
-            e
-        )))
-    })?;
-
-    let control_file = control_dir.join(format!("{}.cmd", node.name));
-    fs::write(&control_file, "stop").map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to write control file: {}",
-            e
-        )))
-    })?;
+    send_control_command(
+        node,
+        ControlCommand::PauseNode {
+            name: node.name.clone(),
+        },
+    )?;
 
     println!(
-        "{} Node stop command sent",
-        cli_output::ICON_SUCCESS.green()
+        "{} Stop command sent to scheduler '{}'",
+        cli_output::ICON_SUCCESS.green(),
+        node.scheduler_name
     );
     println!(
-        "  {} The scheduler will stop this node on next tick",
+        "  {} The scheduler will pause this node on next tick",
         "Note:".dimmed()
     );
 
@@ -315,27 +335,17 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
                 cli_output::ICON_WARN.yellow(),
                 pid
             );
-            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+            let _ = ProcessHandle::from_pid(pid).signal(Signal::Kill);
         }
     }
 
     Ok(())
 }
 
-/// Restart a node (via IPC control file - re-initializes the specific node)
+/// Restart a node (pause + resume via control topic to trigger re-init)
 pub fn restart_node(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
-
-    let node = nodes
-        .iter()
-        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
-
-    let Some(node) = node else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Node '{}' not found. Use 'horus node list' to see running nodes.",
-            name
-        ))));
-    };
+    let node = find_node(&nodes, name)?;
 
     println!(
         "{} Restarting node: {}",
@@ -343,26 +353,24 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
         node.name.white().bold()
     );
 
-    // Write control file to restart the specific node
-    let control_dir = shm_control_dir();
-    fs::create_dir_all(&control_dir).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to create control directory: {}",
-            e
-        )))
-    })?;
-
-    let control_file = control_dir.join(format!("{}.cmd", node.name));
-    fs::write(&control_file, "restart").map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to write control file: {}",
-            e
-        )))
-    })?;
+    // Pause then resume triggers re-init in the scheduler
+    send_control_command(
+        node,
+        ControlCommand::PauseNode {
+            name: node.name.clone(),
+        },
+    )?;
+    send_control_command(
+        node,
+        ControlCommand::ResumeNode {
+            name: node.name.clone(),
+        },
+    )?;
 
     println!(
-        "{} Node restart command sent",
-        cli_output::ICON_SUCCESS.green()
+        "{} Restart command sent to scheduler '{}'",
+        cli_output::ICON_SUCCESS.green(),
+        node.scheduler_name
     );
     println!(
         "  {} The scheduler will re-initialize this node on next tick",
@@ -372,20 +380,10 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
     Ok(())
 }
 
-/// Pause a running node (via IPC control file)
+/// Pause a running node (via control topic)
 pub fn pause_node(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
-
-    let node = nodes
-        .iter()
-        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
-
-    let Some(node) = node else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Node '{}' not found. Use 'horus node list' to see running nodes.",
-            name
-        ))));
-    };
+    let node = find_node(&nodes, name)?;
 
     println!(
         "{} Pausing node: {}",
@@ -393,24 +391,14 @@ pub fn pause_node(name: &str) -> HorusResult<()> {
         node.name.white().bold()
     );
 
-    // Write control file to pause the specific node
-    let control_dir = shm_control_dir();
-    fs::create_dir_all(&control_dir).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to create control directory: {}",
-            e
-        )))
-    })?;
+    send_control_command(
+        node,
+        ControlCommand::PauseNode {
+            name: node.name.clone(),
+        },
+    )?;
 
-    let control_file = control_dir.join(format!("{}.cmd", node.name));
-    fs::write(&control_file, "pause").map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to write control file: {}",
-            e
-        )))
-    })?;
-
-    println!("{} Node paused", cli_output::ICON_SUCCESS.green());
+    println!("{} Pause command sent", cli_output::ICON_SUCCESS.green());
     println!(
         "  {} Use 'horus node resume {}' to resume execution",
         "Tip:".dimmed(),
@@ -420,20 +408,10 @@ pub fn pause_node(name: &str) -> HorusResult<()> {
     Ok(())
 }
 
-/// Resume a paused node (via IPC control file)
+/// Resume a paused node (via control topic)
 pub fn resume_node(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
-
-    let node = nodes
-        .iter()
-        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
-
-    let Some(node) = node else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Node '{}' not found. Use 'horus node list' to see running nodes.",
-            name
-        ))));
-    };
+    let node = find_node(&nodes, name)?;
 
     println!(
         "{} Resuming node: {}",
@@ -441,24 +419,14 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
         node.name.white().bold()
     );
 
-    // Write control file to resume the specific node
-    let control_dir = shm_control_dir();
-    fs::create_dir_all(&control_dir).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to create control directory: {}",
-            e
-        )))
-    })?;
+    send_control_command(
+        node,
+        ControlCommand::ResumeNode {
+            name: node.name.clone(),
+        },
+    )?;
 
-    let control_file = control_dir.join(format!("{}.cmd", node.name));
-    fs::write(&control_file, "resume").map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!(
-            "Failed to write control file: {}",
-            e
-        )))
-    })?;
-
-    println!("{} Node resumed", cli_output::ICON_SUCCESS.green());
+    println!("{} Resume command sent", cli_output::ICON_SUCCESS.green());
 
     Ok(())
 }

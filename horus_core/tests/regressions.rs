@@ -120,7 +120,7 @@ fn regression_cross_thread_topic_handles_must_be_created_before_spawn() {
 #[test]
 fn regression_zero_capacity_topic_returns_error() {
     let name = common::unique("reg_zero_cap");
-    let result: horus_core::error::HorusResult<Topic<u64>> = Topic::with_capacity(&name, 0, None);
+    let result: horus_core::error::Result<Topic<u64>> = Topic::with_capacity(&name, 0, None);
     assert!(
         result.is_err(),
         "Zero capacity must return error, not create invalid ring"

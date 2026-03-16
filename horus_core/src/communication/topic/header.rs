@@ -115,6 +115,52 @@ impl ParticipantEntry {
 /// - Cache line 3: CONSUMER ONLY - tail (written by receiver)
 /// - Cache line 4: Counters and timestamps
 /// - Cache lines 5-10: Participant tracking
+
+/// Topic classification for discovery and introspection.
+///
+/// Stored in the `topic_kind` field of `TopicHeader`. External tools use this
+/// to distinguish data topics from service/action transport topics without
+/// relying on naming conventions (`.request`/`.response` suffixes).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopicKind {
+    /// Normal data topic (default)
+    Data = 0,
+    /// Service request channel (`{name}.request`)
+    ServiceRequest = 1,
+    /// Service response channel (`{name}.response`)
+    ServiceResponse = 2,
+    /// Action goal channel (`{name}/goal`)
+    ActionGoal = 3,
+    /// Action feedback channel (`{name}/feedback`)
+    ActionFeedback = 4,
+    /// Action result channel (`{name}/result`)
+    ActionResult = 5,
+    /// Action status channel (`{name}/status`)
+    ActionStatus = 6,
+    /// Action cancel channel (`{name}/cancel`)
+    ActionCancel = 7,
+    /// Internal system topic (e.g. `horus.ctl.*`)
+    System = 8,
+}
+
+impl TopicKind {
+    /// Convert from raw u8 value, defaulting to Data for unknown values.
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::ServiceRequest,
+            2 => Self::ServiceResponse,
+            3 => Self::ActionGoal,
+            4 => Self::ActionFeedback,
+            5 => Self::ActionResult,
+            6 => Self::ActionStatus,
+            7 => Self::ActionCancel,
+            8 => Self::System,
+            _ => Self::Data,
+        }
+    }
+}
+
 #[repr(C, align(64))]
 pub(crate) struct TopicHeader {
     // === Cache line 1 (bytes 0-63): Core metadata (read-mostly) ===
@@ -132,17 +178,24 @@ pub(crate) struct TopicHeader {
     pub(crate) backend_mode: AtomicU8,
     /// Migration lock: 0=unlocked, 1=locked
     pub(crate) migration_lock: AtomicU8,
-    /// Debug logging flag — toggled at runtime by TUI monitor.
-    /// 0 = disabled (default), non-zero = log send/recv to GLOBAL_LOG_BUFFER.
-    pub(crate) debug_log: AtomicU8,
+    /// Verbose content logging flag — toggled at runtime by TUI monitor.
+    /// 0 = disabled (default), non-zero = log send/recv content to GLOBAL_LOG_BUFFER.
+    /// Note: metrics (messages_total) are always collected regardless of this flag.
+    pub(crate) verbose: AtomicU8,
     /// Creator process ID
     pub(crate) creator_pid: u32,
     /// Creator thread ID hash (for same-thread detection)
     pub(crate) creator_thread_id_hash: u64,
     /// Migration epoch (incremented on each backend switch)
     pub(crate) migration_epoch: AtomicU64,
-    /// Padding to 64 bytes
-    pub(crate) _pad1: [u8; 16],
+    /// Topic kind: Data=0, ServiceRequest=1, ServiceResponse=2, etc.
+    /// Set once at topic creation. Used by discovery to classify topics.
+    pub(crate) topic_kind: u8,
+    /// Alignment padding for messages_total
+    pub(crate) _pad1a: [u8; 7],
+    /// Total messages ever sent on this topic (always-on atomic counter).
+    /// Incremented on every send() regardless of verbose flag.
+    pub(crate) messages_total: AtomicU64,
 
     // === Cache line 2 (bytes 64-127): PRODUCER WRITE LINE ===
     // This cache line is ONLY written by producers (senders)
@@ -177,8 +230,12 @@ pub(crate) struct TopicHeader {
     pub(crate) lease_timeout_ms: u32,
     /// Last topology change timestamp (ms)
     pub(crate) last_topology_change_ms: AtomicU64,
-    /// Padding to 64 bytes (4+4+4+4+8 = 24, need 40 more)
-    pub(crate) _pad_counters: [u8; 40],
+    /// Message type name (null-terminated, e.g. "CmdVel", "Imu").
+    /// Set once at topic creation via `std::any::type_name::<T>()`.
+    /// External tools read this directly from the mmap'd header.
+    pub(crate) type_name: [u8; 32],
+    /// Reserved for future use
+    pub(crate) _pad_counters: [u8; 8],
 
     // === Cache lines 5-10 (bytes 256-639): Participant tracking (384 bytes = 16 * 24) ===
     /// Participant entries for lease management
@@ -199,11 +256,13 @@ impl TopicHeader {
             is_pod: AtomicU8::new(0),
             backend_mode: AtomicU8::new(0),
             migration_lock: AtomicU8::new(0),
-            debug_log: AtomicU8::new(0),
+            verbose: AtomicU8::new(0),
             creator_pid: 0,
             creator_thread_id_hash: 0,
             migration_epoch: AtomicU64::new(0),
-            _pad1: [0; 16],
+            topic_kind: 0,
+            _pad1a: [0; 7],
+            messages_total: AtomicU64::new(0),
             // Cache line 2: Producer write line
             sequence_or_head: AtomicU64::new(0),
             capacity: 0,
@@ -219,7 +278,8 @@ impl TopicHeader {
             total_participants: AtomicU32::new(0),
             lease_timeout_ms: 0,
             last_topology_change_ms: AtomicU64::new(0),
-            _pad_counters: [0; 40],
+            type_name: [0; 32],
+            _pad_counters: [0; 8],
             participants: std::array::from_fn(|_| ParticipantEntry {
                 pid: AtomicU32::new(0),
                 thread_id_hash: AtomicU32::new(0),
@@ -239,6 +299,8 @@ impl TopicHeader {
         is_pod: bool,
         capacity: u32,
         slot_size: u32,
+        type_name_str: &str,
+        topic_kind: u8,
     ) {
         // Ensure capacity is power of 2 for fast modulo
         let capacity = capacity.next_power_of_two();
@@ -254,10 +316,12 @@ impl TopicHeader {
             .store(BackendMode::Unknown as u8, Ordering::Release);
         self.migration_lock
             .store(MIGRATION_UNLOCKED, Ordering::Release);
-        self.debug_log.store(0, Ordering::Relaxed);
+        self.verbose.store(0, Ordering::Relaxed);
         self.creator_pid = std::process::id();
         self.creator_thread_id_hash = hash_thread_id(std::thread::current().id());
         self.migration_epoch.store(0, Ordering::Release);
+        self.topic_kind = topic_kind;
+        self.messages_total.store(0, Ordering::Release);
 
         // Cache line 2: Producer write line
         self.sequence_or_head.store(0, Ordering::Release);
@@ -276,6 +340,12 @@ impl TopicHeader {
         self.last_topology_change_ms
             .store(current_time_ms(), Ordering::Release);
 
+        // Cache line 4 (cont): type_name — null-terminated, truncated if needed
+        self.type_name = [0u8; 32];
+        let name_bytes = type_name_str.as_bytes();
+        let copy_len = name_bytes.len().min(31); // leave room for null terminator
+        self.type_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
         // Clear all participant entries
         for p in &self.participants {
             p.clear();
@@ -293,10 +363,37 @@ impl TopicHeader {
         BackendMode::from(self.backend_mode.load(Ordering::Acquire))
     }
 
-    /// Check if runtime debug logging is enabled (toggled by TUI monitor).
+    /// Check if verbose content logging is enabled (toggled by TUI monitor).
+    /// This only controls content logging (log_summary text), not metrics.
     #[inline(always)]
-    pub fn is_debug_enabled(&self) -> bool {
-        self.debug_log.load(Ordering::Relaxed) != 0
+    pub fn is_verbose(&self) -> bool {
+        self.verbose.load(Ordering::Relaxed) != 0
+    }
+
+    /// Read the type name stored in the header as a string.
+    ///
+    /// Returns the null-terminated string from the `type_name` field, or an
+    /// empty string if the field is all zeros (header from before this field
+    /// was added).
+    pub fn type_name_str(&self) -> &str {
+        let end = self
+            .type_name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.type_name.len());
+        std::str::from_utf8(&self.type_name[..end]).unwrap_or("")
+    }
+
+    /// Read the total messages sent counter.
+    #[inline]
+    pub fn messages_total(&self) -> u64 {
+        self.messages_total.load(Ordering::Relaxed)
+    }
+
+    /// Read the topic kind classification.
+    #[inline]
+    pub fn topic_kind(&self) -> TopicKind {
+        TopicKind::from_u8(self.topic_kind)
     }
 
     /// Check if all active participants (and caller) are in the same process
@@ -553,18 +650,18 @@ impl TopicHeader {
 // Public debug flag API (for external tools like the TUI monitor)
 // ============================================================================
 
-/// Byte offset of the `debug_log` flag within the topic shared memory header.
+/// Byte offset of the `verbose` flag within the topic shared memory header.
 /// External tools can write 1/0 to this offset in the mmap'd file to
-/// enable/disable runtime debug logging for a topic.
-pub const TOPIC_DEBUG_LOG_OFFSET: usize = 23;
+/// enable/disable verbose content logging for a topic.
+pub const TOPIC_VERBOSE_OFFSET: usize = 23;
 
-/// Set the runtime debug flag on a topic's shared memory region.
+/// Set the verbose content logging flag on a topic's shared memory region.
 ///
 /// # Safety
 /// `shm_ptr` must point to the start of a valid, initialized topic shared
 /// memory region (at least 640 bytes). The caller must have write access.
-pub unsafe fn set_topic_debug(shm_ptr: *mut u8, enabled: bool) {
-    let flag = shm_ptr.add(TOPIC_DEBUG_LOG_OFFSET);
+pub unsafe fn set_topic_verbose(shm_ptr: *mut u8, enabled: bool) {
+    let flag = shm_ptr.add(TOPIC_VERBOSE_OFFSET);
     flag.write_volatile(if enabled { 1 } else { 0 });
 }
 
@@ -588,6 +685,13 @@ pub struct TopicSlotRead {
     /// `true` when the message type is a POD (plain-old-data) type, meaning
     /// `payload` contains raw struct bytes rather than a `bincode` stream.
     pub is_pod: bool,
+    /// Message type name read from the header (e.g. "CmdVel", "Imu").
+    /// Empty string if the header predates the type_name field.
+    pub type_name: String,
+    /// Total messages ever sent on this topic.
+    pub messages_total: u64,
+    /// Topic kind classification (Data, ServiceRequest, etc.).
+    pub topic_kind: u8,
 }
 
 /// Read the latest message payload from a topic's shared-memory backing file.
@@ -703,10 +807,37 @@ pub fn read_latest_slot_bytes(
         mmap[data_offset..data_offset + data_len].to_vec()
     };
 
+    // Read type_name from header (bytes 216-247, 32 bytes in cache line 4).
+    // Offset: cache_line_4(192) + publisher_count(4) + subscriber_count(4) +
+    //         total_participants(4) + lease_timeout_ms(4) + last_topology_change_ms(8) = 216
+    const TYPE_NAME_OFFSET: usize = 216;
+    const TYPE_NAME_LEN: usize = 32;
+    let type_name = if mmap.len() >= TYPE_NAME_OFFSET + TYPE_NAME_LEN {
+        let name_bytes = &mmap[TYPE_NAME_OFFSET..TYPE_NAME_OFFSET + TYPE_NAME_LEN];
+        let end = name_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(TYPE_NAME_LEN);
+        std::str::from_utf8(&name_bytes[..end])
+            .unwrap_or("")
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    // Read topic_kind (byte 48 in cache line 1) and messages_total (offset 56).
+    // SAFETY: mmap is validated to be at least TOPIC_HEADER_SIZE (640) bytes.
+    let topic_kind = unsafe { std::ptr::read_unaligned(base.add(48)) };
+    let messages_total =
+        unsafe { std::ptr::read_unaligned(base.add(56) as *const u64) };
+
     Some(TopicSlotRead {
         payload,
         write_idx,
         is_pod,
+        type_name,
+        messages_total,
+        topic_kind,
     })
 }
 
@@ -736,6 +867,78 @@ pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
     // SAFETY: offset 64 is within the validated header (sequence_or_head field).
     let seq = unsafe { std::ptr::read_unaligned(base.add(64) as *const u64) };
     Some(seq)
+}
+
+/// Lightweight header-only metadata (no payload read).
+pub struct TopicHeaderInfo {
+    /// Message type name from the header (e.g. "CmdVel").
+    pub type_name: String,
+    /// Total messages ever sent.
+    pub messages_total: u64,
+    /// Topic kind classification.
+    pub topic_kind: u8,
+    /// Whether the message type is POD.
+    pub is_pod: bool,
+    /// Message type size in bytes.
+    pub type_size: u32,
+    /// Number of active publishers.
+    pub publisher_count: u32,
+    /// Number of active subscribers.
+    pub subscriber_count: u32,
+}
+
+/// Read header metadata from a topic SHM file without reading any message payload.
+///
+/// This is cheaper than `read_latest_slot_bytes()` — it only reads the 640-byte
+/// header, not the data region. Used by discovery to extract type_name,
+/// messages_total, and topic_kind.
+pub fn read_topic_header_info(path: &std::path::Path) -> Option<TopicHeaderInfo> {
+    use memmap2::MmapOptions;
+    use std::fs::File;
+
+    let file = File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if meta.len() < TOPIC_HEADER_SIZE as u64 {
+        return None;
+    }
+    // SAFETY: read-only mmap.
+    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let base = mmap.as_ptr();
+
+    // SAFETY: mmap >= TOPIC_HEADER_SIZE (640) bytes.
+    let magic = unsafe { std::ptr::read_unaligned(base as *const u64) };
+    if magic != TOPIC_MAGIC {
+        return None;
+    }
+
+    // SAFETY: all offsets are within the validated 640-byte header.
+    unsafe {
+        let type_size = std::ptr::read_unaligned(base.add(12) as *const u32);
+        let is_pod_raw = std::ptr::read_unaligned(base.add(20));
+        let topic_kind = std::ptr::read_unaligned(base.add(48));
+        let messages_total = std::ptr::read_unaligned(base.add(56) as *const u64);
+        let publisher_count =
+            (*(base.add(192) as *const AtomicU32)).load(Ordering::Relaxed);
+        let subscriber_count =
+            (*(base.add(196) as *const AtomicU32)).load(Ordering::Relaxed);
+
+        // type_name at offset 216, 32 bytes
+        let name_bytes = std::slice::from_raw_parts(base.add(216), 32);
+        let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        let type_name = std::str::from_utf8(&name_bytes[..end])
+            .unwrap_or("")
+            .to_string();
+
+        Some(TopicHeaderInfo {
+            type_name,
+            messages_total,
+            topic_kind,
+            is_pod: is_pod_raw == POD_YES,
+            type_size,
+            publisher_count,
+            subscriber_count,
+        })
+    }
 }
 
 // ============================================================================
@@ -772,7 +975,7 @@ mod tests {
 
     fn make_header(type_size: u32, type_align: u32, is_pod: bool, capacity: u32) -> TopicHeader {
         let mut h = TopicHeader::zeroed();
-        h.init(type_size, type_align, is_pod, capacity, type_size.max(16));
+        h.init(type_size, type_align, is_pod, capacity, type_size.max(16), "TestType", TopicKind::Data as u8);
         h
     }
 
@@ -796,14 +999,14 @@ mod tests {
     }
 
     #[test]
-    fn debug_log_offset_matches_struct_layout() {
+    fn verbose_offset_matches_struct_layout() {
         let h = TopicHeader::zeroed();
         let base = &h as *const TopicHeader as *const u8;
-        let debug_ptr = &h.debug_log as *const AtomicU8 as *const u8;
+        let debug_ptr = &h.verbose as *const AtomicU8 as *const u8;
         // SAFETY: both pointers derive from the same TopicHeader allocation,
         // so offset_from is well-defined and within the object bounds.
         let offset = unsafe { debug_ptr.offset_from(base) } as usize;
-        assert_eq!(offset, TOPIC_DEBUG_LOG_OFFSET);
+        assert_eq!(offset, TOPIC_VERBOSE_OFFSET);
     }
 
     // ── TopicHeader::init ───────────────────────────────────────────────
@@ -895,9 +1098,9 @@ mod tests {
     }
 
     #[test]
-    fn init_debug_log_disabled() {
+    fn init_verbose_disabled() {
         let h = make_header(8, 8, true, 16);
-        assert!(!h.is_debug_enabled());
+        assert!(!h.is_verbose());
     }
 
     #[test]
@@ -1210,13 +1413,13 @@ mod tests {
     // ── Debug flag ──────────────────────────────────────────────────────
 
     #[test]
-    fn debug_log_toggle() {
+    fn verbose_toggle() {
         let h = make_header(8, 8, true, 16);
-        assert!(!h.is_debug_enabled());
-        h.debug_log.store(1, Ordering::Relaxed);
-        assert!(h.is_debug_enabled());
-        h.debug_log.store(0, Ordering::Relaxed);
-        assert!(!h.is_debug_enabled());
+        assert!(!h.is_verbose());
+        h.verbose.store(1, Ordering::Relaxed);
+        assert!(h.is_verbose());
+        h.verbose.store(0, Ordering::Relaxed);
+        assert!(!h.is_verbose());
     }
 
     // ── Backend detection ───────────────────────────────────────────────
@@ -1444,21 +1647,21 @@ mod tests {
         assert!(later >= now);
     }
 
-    // ── set_topic_debug (unsafe) ────────────────────────────────────────
+    // ── set_topic_verbose (unsafe) ──────────────────────────────────────
 
     #[test]
-    fn set_topic_debug_via_raw_pointer() {
+    fn set_topic_verbose_via_raw_pointer() {
         let mut h = make_header(8, 8, true, 16);
-        assert!(!h.is_debug_enabled());
+        assert!(!h.is_verbose());
 
         let ptr = &mut h as *mut TopicHeader as *mut u8;
         // SAFETY: ptr points to a valid, initialized TopicHeader on the stack (640 bytes).
-        unsafe { set_topic_debug(ptr, true) };
-        assert!(h.is_debug_enabled());
+        unsafe { set_topic_verbose(ptr, true) };
+        assert!(h.is_verbose());
 
         // SAFETY: ptr points to a valid, initialized TopicHeader on the stack (640 bytes).
-        unsafe { set_topic_debug(ptr, false) };
-        assert!(!h.is_debug_enabled());
+        unsafe { set_topic_verbose(ptr, false) };
+        assert!(!h.is_verbose());
     }
 
     // ── Lease expiration eviction ───────────────────────────────────────
@@ -1527,5 +1730,229 @@ mod tests {
             p.lease_expires_ms.load(Ordering::Relaxed),
             far_future_ms + timeout_ms
         );
+    }
+
+    // ── type_name field ────────────────────────────────────────────────
+
+    #[test]
+    fn init_sets_type_name() {
+        let mut h = TopicHeader::zeroed();
+        h.init(8, 8, true, 16, 16, "CmdVel", TopicKind::Data as u8);
+        assert_eq!(h.type_name_str(), "CmdVel");
+    }
+
+    #[test]
+    fn init_type_name_truncation_at_31_chars() {
+        let long_name = "A".repeat(40);
+        let mut h = TopicHeader::zeroed();
+        h.init(8, 8, true, 16, 16, &long_name, TopicKind::Data as u8);
+        assert_eq!(
+            h.type_name_str().len(),
+            31,
+            "type_name should be truncated to 31 chars, got {}",
+            h.type_name_str().len()
+        );
+        assert_eq!(h.type_name_str(), "A".repeat(31));
+    }
+
+    #[test]
+    fn init_type_name_empty() {
+        let mut h = TopicHeader::zeroed();
+        h.init(8, 8, true, 16, 16, "", TopicKind::Data as u8);
+        assert_eq!(h.type_name_str(), "");
+    }
+
+    #[test]
+    fn init_type_name_exact_31_chars() {
+        let name = "B".repeat(31);
+        let mut h = TopicHeader::zeroed();
+        h.init(8, 8, true, 16, 16, &name, TopicKind::Data as u8);
+        assert_eq!(h.type_name_str(), name);
+    }
+
+    #[test]
+    fn type_name_zeroed_returns_empty() {
+        let h = TopicHeader::zeroed();
+        assert_eq!(h.type_name_str(), "");
+    }
+
+    #[test]
+    fn init_type_name_with_colons() {
+        // Simulates a full Rust path like "horus_library::messages::Imu"
+        let mut h = TopicHeader::zeroed();
+        h.init(8, 8, true, 16, 16, "horus_library::messages::Imu", TopicKind::Data as u8);
+        assert_eq!(h.type_name_str(), "horus_library::messages::Imu");
+    }
+
+    // ── type_name offset ───────────────────────────────────────────────
+
+    #[test]
+    fn type_name_offset_is_216() {
+        let h = TopicHeader::zeroed();
+        let base = &h as *const TopicHeader as *const u8;
+        let field_ptr = h.type_name.as_ptr();
+        // SAFETY: both pointers derive from the same TopicHeader allocation.
+        let offset = unsafe { field_ptr.offset_from(base) } as usize;
+        assert_eq!(offset, 216, "type_name should be at byte offset 216");
+    }
+
+    // ── messages_total field ───────────────────────────────────────────
+
+    #[test]
+    fn init_messages_total_is_zero() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.messages_total(), 0);
+    }
+
+    #[test]
+    fn messages_total_increment_readable() {
+        let h = make_header(8, 8, true, 16);
+        h.messages_total.fetch_add(42, Ordering::Relaxed);
+        assert_eq!(h.messages_total(), 42);
+    }
+
+    #[test]
+    fn messages_total_multiple_increments() {
+        let h = make_header(8, 8, true, 16);
+        for _ in 0..100 {
+            h.messages_total.fetch_add(1, Ordering::Relaxed);
+        }
+        assert_eq!(h.messages_total(), 100);
+    }
+
+    // ── messages_total offset ──────────────────────────────────────────
+
+    #[test]
+    fn messages_total_offset_is_56() {
+        let h = TopicHeader::zeroed();
+        let base = &h as *const TopicHeader as *const u8;
+        let field_ptr = &h.messages_total as *const AtomicU64 as *const u8;
+        // SAFETY: both pointers derive from the same TopicHeader allocation.
+        let offset = unsafe { field_ptr.offset_from(base) } as usize;
+        assert_eq!(offset, 56, "messages_total should be at byte offset 56");
+    }
+
+    // ── topic_kind field ───────────────────────────────────────────────
+
+    #[test]
+    fn init_topic_kind_is_data() {
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.topic_kind(), TopicKind::Data);
+    }
+
+    #[test]
+    fn topic_kind_from_u8_all_variants() {
+        assert_eq!(TopicKind::from_u8(0), TopicKind::Data);
+        assert_eq!(TopicKind::from_u8(1), TopicKind::ServiceRequest);
+        assert_eq!(TopicKind::from_u8(2), TopicKind::ServiceResponse);
+        assert_eq!(TopicKind::from_u8(3), TopicKind::ActionGoal);
+        assert_eq!(TopicKind::from_u8(4), TopicKind::ActionFeedback);
+        assert_eq!(TopicKind::from_u8(5), TopicKind::ActionResult);
+        assert_eq!(TopicKind::from_u8(6), TopicKind::ActionStatus);
+        assert_eq!(TopicKind::from_u8(7), TopicKind::ActionCancel);
+        assert_eq!(TopicKind::from_u8(8), TopicKind::System);
+    }
+
+    #[test]
+    fn topic_kind_from_u8_unknown_defaults_to_data() {
+        assert_eq!(TopicKind::from_u8(9), TopicKind::Data);
+        assert_eq!(TopicKind::from_u8(99), TopicKind::Data);
+        assert_eq!(TopicKind::from_u8(255), TopicKind::Data);
+    }
+
+    // ── topic_kind offset ──────────────────────────────────────────────
+
+    #[test]
+    fn topic_kind_offset_is_48() {
+        let h = TopicHeader::zeroed();
+        let base = &h as *const TopicHeader as *const u8;
+        let field_ptr = &h.topic_kind as *const u8;
+        // SAFETY: both pointers derive from the same TopicHeader allocation.
+        let offset = unsafe { field_ptr.offset_from(base) } as usize;
+        assert_eq!(offset, 48, "topic_kind should be at byte offset 48");
+    }
+
+    // ── read_topic_header_info ─────────────────────────────────────────
+
+    #[test]
+    fn read_topic_header_info_roundtrip() {
+        use memmap2::MmapMut;
+
+        let path = std::env::temp_dir().join(format!(
+            "horus_hdr_info_test_{}.bin",
+            std::process::id()
+        ));
+
+        // Write a valid header to temp file
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .expect("create temp file");
+            file.set_len(TOPIC_HEADER_SIZE as u64)
+                .expect("set file size");
+            let mut mmap =
+                unsafe { MmapMut::map_mut(&file).expect("mmap") };
+            let header =
+                unsafe { &mut *(mmap.as_mut_ptr() as *mut TopicHeader) };
+            *header = TopicHeader::zeroed();
+            header.init(4, 4, true, 16, 16, "LaserScan", TopicKind::Data as u8);
+            header
+                .messages_total
+                .store(12345, Ordering::Relaxed);
+            mmap.flush().expect("flush");
+        }
+
+        // Read back via read_topic_header_info
+        let info =
+            read_topic_header_info(&path).expect("should read valid header");
+        assert_eq!(info.type_name, "LaserScan");
+        assert_eq!(info.messages_total, 12345);
+        assert_eq!(info.topic_kind, TopicKind::Data as u8);
+        assert!(info.is_pod);
+        assert_eq!(info.type_size, 4);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_topic_header_info_invalid_magic() {
+        let path = std::env::temp_dir().join(format!(
+            "horus_hdr_bad_magic_{}.bin",
+            std::process::id()
+        ));
+
+        // Write garbage
+        std::fs::write(&path, &[0u8; 640]).expect("write garbage file");
+        assert!(
+            read_topic_header_info(&path).is_none(),
+            "should return None for invalid magic"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_topic_header_info_file_too_small() {
+        let path = std::env::temp_dir().join(format!(
+            "horus_hdr_small_{}.bin",
+            std::process::id()
+        ));
+
+        std::fs::write(&path, &[0u8; 100]).expect("write small file");
+        assert!(
+            read_topic_header_info(&path).is_none(),
+            "should return None for file smaller than header"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_topic_header_info_nonexistent() {
+        assert!(read_topic_header_info(std::path::Path::new("/tmp/horus_nonexistent_42")).is_none());
     }
 }

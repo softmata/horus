@@ -5,7 +5,7 @@
 //! nodes, skip policy, restart failure, panic downcasting.
 
 use horus_core::core::Node;
-use horus_core::error::HorusResult;
+use horus_core::error::Result;
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -110,8 +110,8 @@ impl Node for FailInitNode {
     fn name(&self) -> &'static str {
         Box::leak(self.name.clone().into_boxed_str())
     }
-    fn init(&mut self) -> HorusResult<()> {
-        Err(horus_core::error::HorusError::Config(
+    fn init(&mut self) -> Result<()> {
+        Err(horus_core::error::Error::Config(
             horus_core::error::ConfigError::Other("init failure".to_string()),
         ))
     }

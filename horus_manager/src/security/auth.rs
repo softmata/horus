@@ -266,24 +266,12 @@ pub fn save_password_hash(hash: &str) -> Result<()> {
     let path = get_password_file_path()?;
 
     // Create file with restricted permissions from the start to avoid TOCTOU race
-    #[cfg(unix)]
     {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
+        let mut file = horus_sys::fs::open_private(&path)
             .context("Failed to create password hash file")?;
         file.write_all(hash.as_bytes())
             .context("Failed to write password hash file")?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&path, hash).context("Failed to write password hash file")?;
     }
 
     Ok(())

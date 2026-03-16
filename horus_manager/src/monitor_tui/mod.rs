@@ -79,10 +79,10 @@ pub struct TuiDashboard {
     // Time-travel debugger state
     debugger_state: DebuggerViewState,
 
-    // Runtime debug mmaps — keyed by topic name.
-    // While an entry exists, the debug_log flag is set in the topic's SHM header,
-    // causing send/recv to emit log entries. Dropping the entry clears the flag.
-    debug_mmaps: std::collections::HashMap<String, memmap2::MmapMut>,
+    // Runtime verbose mmaps — keyed by topic name.
+    // While an entry exists, the verbose flag is set in the topic's SHM header,
+    // causing send/recv to emit content log entries. Dropping the entry clears the flag.
+    verbose_mmaps: std::collections::HashMap<String, memmap2::MmapMut>,
 }
 
 /// State for the time-travel debugger view
@@ -202,7 +202,6 @@ enum Tab {
     Overview,
     Nodes,
     Topics,
-    Network,
     TransformFrame,
     Packages,
     Parameters,
@@ -221,7 +220,6 @@ impl Tab {
             Tab::Overview => "Overview",
             Tab::Nodes => "Nodes",
             Tab::Topics => "Topics",
-            Tab::Network => "Network",
             Tab::TransformFrame => "TransformFrame",
             Tab::Packages => "Packages",
             Tab::Parameters => "Params",
@@ -234,7 +232,6 @@ impl Tab {
             Tab::Overview,
             Tab::Nodes,
             Tab::Topics,
-            Tab::Network,
             Tab::TransformFrame,
             Tab::Packages,
             Tab::Parameters,
@@ -308,7 +305,7 @@ impl TuiDashboard {
                 cache_time: Instant::now() - 10_u64.secs(),
             },
 
-            debug_mmaps: std::collections::HashMap::new(),
+            verbose_mmaps: std::collections::HashMap::new(),
         }
     }
 

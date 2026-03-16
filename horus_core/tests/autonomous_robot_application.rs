@@ -9,7 +9,7 @@
 /// - Path planning and navigation
 /// - Obstacle avoidance
 /// - Battery monitoring with fault tolerance
-use horus_core::{HorusResult as Result, Node, Scheduler, Topic, TopicMetadata};
+use horus_core::{error::Result, Node, Scheduler, Topic, TopicMetadata};
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

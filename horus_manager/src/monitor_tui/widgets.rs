@@ -46,7 +46,6 @@ impl TuiDashboard {
                     Tab::Overview => self.draw_overview(f, horizontal_chunks[0]),
                     Tab::Nodes => self.draw_nodes_simple(f, horizontal_chunks[0]),
                     Tab::Topics => self.draw_topics_simple(f, horizontal_chunks[0]),
-                    Tab::Network => self.draw_network(f, horizontal_chunks[0]),
                     Tab::TransformFrame => self.draw_transform_frame(f, horizontal_chunks[0]),
                     Tab::Packages => self.draw_packages(f, horizontal_chunks[0]),
                     Tab::Parameters => self.draw_parameters(f, horizontal_chunks[0]),
@@ -65,7 +64,6 @@ impl TuiDashboard {
                     Tab::Overview => self.draw_overview(f, content_area),
                     Tab::Nodes => self.draw_nodes(f, content_area),
                     Tab::Topics => self.draw_topics(f, content_area),
-                    Tab::Network => self.draw_network(f, content_area),
                     Tab::TransformFrame => self.draw_transform_frame(f, content_area),
                     Tab::Packages => self.draw_packages(f, content_area),
                     Tab::Parameters => self.draw_parameters(f, content_area),
@@ -441,168 +439,6 @@ impl TuiDashboard {
         }
 
         f.render_stateful_widget(table, area, &mut table_state);
-    }
-
-    fn draw_network(&self, f: &mut Frame, area: Rect) {
-        let summary = crate::discovery::get_network_summary();
-
-        // Split area into summary panel and details table
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(8), Constraint::Min(5)])
-            .split(area);
-
-        // Draw summary panel
-        let transport_info: String = if summary.transport_breakdown.is_empty() {
-            "No active transports".to_string()
-        } else {
-            summary
-                .transport_breakdown
-                .iter()
-                .map(|(t, c)| format!("{}: {}", t, c))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        };
-
-        let summary_text = vec![
-            Line::from(vec![
-                Span::styled("Active Nodes: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format!("{}", summary.total_nodes),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Transports: ", Style::default().fg(Color::Cyan)),
-                Span::raw(transport_info),
-            ]),
-            Line::from(vec![
-                Span::styled("Bytes Sent: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format_bytes(summary.total_bytes_sent),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(" | "),
-                Span::styled("Received: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format_bytes(summary.total_bytes_received),
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Packets Sent: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format!("{}", summary.total_packets_sent),
-                    Style::default().fg(Color::Magenta),
-                ),
-                Span::raw(" | "),
-                Span::styled("Received: ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format!("{}", summary.total_packets_received),
-                    Style::default().fg(Color::Magenta),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Endpoints: ", Style::default().fg(Color::Cyan)),
-                Span::raw(if summary.unique_endpoints.is_empty() {
-                    "None discovered".to_string()
-                } else {
-                    summary.unique_endpoints.join(", ")
-                }),
-            ]),
-        ];
-
-        let summary_paragraph = Paragraph::new(summary_text).block(
-            Block::default()
-                .title("Network Summary")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Blue)),
-        );
-
-        f.render_widget(summary_paragraph, chunks[0]);
-
-        // Draw node network status table
-        let rows: Vec<Row> = summary
-            .node_statuses
-            .iter()
-            .map(|status| {
-                let transport_color = match status.transport_type() {
-                    "SharedMemory" => Color::Green,
-                    "BatchUdp" | "Udp" => Color::Cyan,
-                    "Quic" => Color::Magenta,
-                    "UnixSocket" => Color::Yellow,
-                    "IoUring" => Color::LightGreen,
-                    _ => Color::White,
-                };
-
-                let endpoints = if status.remote_endpoints().is_empty() {
-                    "-".to_string()
-                } else {
-                    status.remote_endpoints().join(", ")
-                };
-
-                let topics_pub = if status.network_topics_pub().is_empty() {
-                    "-".to_string()
-                } else {
-                    status.network_topics_pub().join(", ")
-                };
-
-                Row::new(vec![
-                    Cell::from(status.node_name().to_string()),
-                    Cell::from(status.transport_type().to_string())
-                        .style(Style::default().fg(transport_color)),
-                    Cell::from(
-                        status
-                            .local_endpoint()
-                            .unwrap_or("-")
-                            .to_string(),
-                    ),
-                    Cell::from(endpoints),
-                    Cell::from(topics_pub),
-                    Cell::from(format_bytes(status.bytes_sent())),
-                    Cell::from(format_bytes(status.bytes_received())),
-                ])
-            })
-            .collect();
-
-        let widths = [
-            Constraint::Percentage(15),
-            Constraint::Length(12),
-            Constraint::Percentage(15),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Length(10),
-            Constraint::Length(10),
-        ];
-
-        let table = Table::new(rows, widths)
-            .header(
-                Row::new(vec![
-                    "Node",
-                    "Transport",
-                    "Local",
-                    "Remote",
-                    "Topics",
-                    "Sent",
-                    "Recv",
-                ])
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-            )
-            .block(
-                Block::default()
-                    .title("Node Network Status")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Blue)),
-            )
-            .row_highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            );
-
-        f.render_widget(table, chunks[1]);
     }
 
     /// Draw the TransformFrame (coordinate transform) visualization
@@ -1292,33 +1128,36 @@ impl TuiDashboard {
         let data_content = vec![
             Line::from(vec![
                 Span::styled(
-                    "Node States at Tick ",
+                    "Tick ",
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("{}", self.debugger_state.current_tick),
                     Style::default().fg(Color::Green),
                 ),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  sensor_imu: ", Style::default().fg(Color::Cyan)),
-                Span::raw("{ accel: [0.1, 9.8, 0.0], gyro: [0.0, 0.0, 0.0] }"),
-            ]),
-            Line::from(vec![
-                Span::styled("  sensor_camera: ", Style::default().fg(Color::Cyan)),
-                Span::raw("{ frame_id: 1234, timestamp: 1234567890 }"),
-            ]),
-            Line::from(vec![
-                Span::styled("  controller: ", Style::default().fg(Color::Cyan)),
-                Span::raw("{ mode: 'AUTO', target: [10.0, 5.0] }"),
+                Span::styled(
+                    format!(" / {}", self.debugger_state.total_ticks),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                "Topics Published:",
-                Style::default().add_modifier(Modifier::BOLD),
+                "  Tick data not available in TUI.",
+                Style::default().fg(Color::DarkGray),
             )]),
-            Line::from("  /sensor/imu  /sensor/camera  /control/cmd"),
+            Line::from(vec![Span::styled(
+                "  Use the web debugger for full replay:",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(vec![Span::styled(
+                "  POST /api/debug/sessions + GET /api/debug/sessions/:id/snapshot",
+                Style::default().fg(Color::Cyan),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "  Or: horus record replay <session>",
+                Style::default().fg(Color::Cyan),
+            )]),
         ];
 
         let data_panel = Paragraph::new(data_content).block(
@@ -1372,7 +1211,10 @@ impl TuiDashboard {
                         Span::styled("  ", Style::default()),
                         Span::styled(w, Style::default().fg(Color::Cyan)),
                         Span::raw(": "),
-                        Span::styled("<value>", Style::default().fg(Color::Green)),
+                        Span::styled(
+                            "(use web API for evaluation)",
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ])
                 })
                 .collect()
@@ -1806,7 +1648,7 @@ impl TuiDashboard {
                 Style::default().fg(Color::Cyan),
             )]),
             Line::from(
-                "  Tab        - Next tab (Overview  Nodes  Topics  Network  Packages  Params)",
+                "  Tab        - Next tab (Overview  Nodes  Topics  TF  Packages  Params)",
             ),
             Line::from("  Shift+Tab  - Previous tab"),
             Line::from("  ↑/↓        - Navigate lists"),
@@ -1853,7 +1695,6 @@ impl TuiDashboard {
             Line::from("  Overview   - Summary of nodes and topics (top 10)"),
             Line::from("  Nodes      - Full list of detected HORUS nodes with details"),
             Line::from("  Topics     - Full list of shared memory topics"),
-            Line::from("  Network    - Network statistics and connections"),
             Line::from("  Packages   - Local workspaces and global packages (hierarchical)"),
             Line::from("  Params     - Runtime configuration parameters (editable)"),
             Line::from(""),

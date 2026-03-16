@@ -474,17 +474,7 @@ pub fn register_plugin_after_install(
     }
 
     // Create new symlink; roll back registry entry on failure
-    let symlink_result = {
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&metadata.binary, &symlink_path)
-        }
-        #[cfg(windows)]
-        {
-            std::os::windows::fs::symlink_file(&metadata.binary, &symlink_path)
-        }
-    };
-    if let Err(e) = symlink_result {
+    if let Err(e) = horus_sys::fs::symlink(&metadata.binary, &symlink_path) {
         // Roll back registry entry
         log::warn!(
             "Symlink creation failed, rolling back plugin registration: {}",
@@ -898,6 +888,9 @@ pub fn run_install(
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             });
         }
         DepSource::Git => {
@@ -918,6 +911,9 @@ pub fn run_install(
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             });
         }
         DepSource::CratesIo | DepSource::PyPI | DepSource::System => {
@@ -935,6 +931,9 @@ pub fn run_install(
                     branch: None,
                     tag: None,
                     rev: None,
+                    apt: None,
+                    cmake_package: None,
+                    lang: None,
                 });
             } else {
                 dep_value = DependencyValue::Detailed(DetailedDependency {
@@ -947,6 +946,9 @@ pub fn run_install(
                     branch: None,
                     tag: None,
                     rev: None,
+                    apt: None,
+                    cmake_package: None,
+                    lang: None,
                 });
             }
         }
@@ -967,6 +969,9 @@ pub fn run_install(
                     path: None,
                     git: None,
                     branch: None,
+                    apt: None,
+                    cmake_package: None,
+                    lang: None,
                     tag: None,
                     rev: None,
                 });
@@ -1069,6 +1074,40 @@ pub fn run_install(
             "  {} pip will install this package on next build",
             cli_output::ICON_HINT.dimmed()
         );
+    } else if dep_source == DepSource::System {
+        // Attempt to install via apt (Debian/Ubuntu)
+        println!(
+            "  {} Installing system package via apt...",
+            cli_output::ICON_HINT.dimmed()
+        );
+        let status = std::process::Command::new("sudo")
+            .args(["apt", "install", "-y", &package])
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                println!(
+                    "  {} Installed system package: {}",
+                    cli_output::ICON_SUCCESS.green(),
+                    package.green()
+                );
+            }
+            Ok(s) => {
+                eprintln!(
+                    "  {} apt install failed (exit {}). Install manually: sudo apt install {}",
+                    cli_output::ICON_WARN.yellow(),
+                    s.code().unwrap_or(-1),
+                    package
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "  {} Could not run apt: {}. Install manually: sudo apt install {}",
+                    cli_output::ICON_WARN.yellow(),
+                    e,
+                    package
+                );
+            }
+        }
     }
 
     Ok(())
@@ -1906,6 +1945,9 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
                     branch: None,
                     tag: None,
                     rev: None,
+                    apt: None,
+                    cmake_package: None,
+                    lang: None,
                 })
             }
             _ => {
@@ -4311,6 +4353,9 @@ name = "minimal"
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
         deps.insert(
@@ -4325,6 +4370,9 @@ name = "minimal"
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -4339,6 +4387,8 @@ name = "minimal"
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
@@ -4346,6 +4396,8 @@ name = "minimal"
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         };
 
         // Save to horus.toml then generate Cargo.toml from it
@@ -4382,6 +4434,9 @@ name = "minimal"
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
         deps.insert(
@@ -4396,6 +4451,9 @@ name = "minimal"
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -4410,6 +4468,8 @@ name = "minimal"
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
@@ -4417,6 +4477,8 @@ name = "minimal"
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         };
 
         let horus_path = dir.path().join(HORUS_TOML);
@@ -4510,6 +4572,8 @@ lidar = "rplidar-a2"
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -4517,6 +4581,8 @@ lidar = "rplidar-a2"
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         };
 
         // Save and verify drivers section is preserved
@@ -6444,64 +6510,60 @@ serde = { version = "1.0", source = "crates.io" }
 
         // ── Cargo: missing crate ─────────────────────────────────────────
         let stderr = "error: no matching package named `nonexistent-robot-crate` found\nlocation searched: crates.io";
-        let hint = cargo_error_hint(stderr);
-        assert!(hint.is_some(), "should detect missing crate pattern");
-        let hint = hint.unwrap();
-        assert!(hint.contains("nonexistent-robot-crate"), "hint names the crate");
-        assert!(hint.contains("horus add"), "hint suggests horus add");
+        let diags = cargo_error_hint(stderr);
+        assert!(!diags.is_empty(), "should detect missing crate pattern");
+        assert!(diags[0].message.contains("nonexistent-robot-crate"), "hint names the crate");
+        assert!(diags[0].hint.contains("horus add"), "hint suggests horus add");
 
-        let formatted = format_diagnostic("cargo", &hint);
+        let formatted = format_diagnostic(&diags[0]);
         assert!(formatted.contains("horus"), "diagnostic has horus prefix");
         assert!(formatted.contains("hint"), "diagnostic has hint label");
         assert!(formatted.contains("cargo"), "diagnostic names the tool");
 
         // ── Cargo: linker library missing ────────────────────────────────
         let stderr = "error: could not compile\nnote: ld: cannot find -lssl";
-        let hint = cargo_error_hint(stderr);
-        assert!(hint.is_some(), "should detect linker error");
-        let hint = hint.unwrap();
-        assert!(hint.contains("ssl"), "hint names the missing library");
-        assert!(hint.contains("apt install"), "hint suggests apt install");
+        let diags = cargo_error_hint(stderr);
+        assert!(!diags.is_empty(), "should detect linker error");
+        assert!(diags[0].hint.contains("ssl"), "hint names the missing library");
+        assert!(diags[0].hint.contains("apt install"), "hint suggests apt install");
 
         // ── Cargo: OpenSSL missing ───────────────────────────────────────
         let stderr = "Could not find directory of OpenSSL installation\nopenssl headers missing";
-        let hint = cargo_error_hint(stderr);
-        assert!(hint.is_some(), "should detect openssl error");
-        assert!(hint.unwrap().contains("libssl-dev"), "suggests libssl-dev");
+        let diags = cargo_error_hint(stderr);
+        assert!(!diags.is_empty(), "should detect openssl error");
+        assert!(diags[0].hint.contains("libssl-dev"), "suggests libssl-dev");
 
         // ── Cargo: no hint for unknown error ─────────────────────────────
         let stderr = "error[E0308]: mismatched types";
-        assert!(cargo_error_hint(stderr).is_none(), "no hint for type errors");
+        assert!(cargo_error_hint(stderr).is_empty(), "no hint for type errors");
 
         // ── Pip: package not found ───────────────────────────────────────
         let stderr = "ERROR: No matching distribution found for nonexistent-robot-lib";
-        let hint = pip_error_hint(stderr);
-        assert!(hint.is_some(), "should detect pip not-found pattern");
-        let hint = hint.unwrap();
-        assert!(hint.contains("nonexistent-robot-lib"), "hint names the package");
+        let diags = pip_error_hint(stderr);
+        assert!(!diags.is_empty(), "should detect pip not-found pattern");
+        assert!(diags[0].message.contains("nonexistent-robot-lib"), "hint names the package");
 
         // ── Pip: externally managed environment ──────────────────────────
         let stderr = "error: externally-managed-environment\nThis environment is externally managed";
-        let hint = pip_error_hint(stderr);
-        assert!(hint.is_some(), "should detect externally-managed");
-        assert!(hint.unwrap().contains("venv"), "suggests venv");
+        let diags = pip_error_hint(stderr);
+        assert!(!diags.is_empty(), "should detect externally-managed");
+        assert!(diags[0].hint.contains("venv"), "suggests venv");
 
         // ── Pip: build wheel failure ─────────────────────────────────────
         let stderr = "ERROR: Failed building wheel for opencv-python-headless";
-        let hint = pip_error_hint(stderr);
-        assert!(hint.is_some(), "should detect build wheel failure");
-        let hint = hint.unwrap();
-        assert!(hint.contains("opencv-python-headless"), "names the failing package");
-        assert!(hint.contains("build-essential"), "suggests build tools");
+        let diags = pip_error_hint(stderr);
+        assert!(!diags.is_empty(), "should detect build wheel failure");
+        assert!(diags[0].message.contains("opencv-python-headless"), "names the failing package");
+        assert!(diags[0].hint.contains("build-essential"), "suggests build tools");
 
         // ── Pip: version conflict ────────────────────────────────────────
         let stderr = "ERROR: ResolutionImpossible: cannot satisfy requirements";
-        let hint = pip_error_hint(stderr);
-        assert!(hint.is_some(), "should detect version conflict");
-        assert!(hint.unwrap().contains("conflict"), "mentions conflict");
+        let diags = pip_error_hint(stderr);
+        assert!(!diags.is_empty(), "should detect version conflict");
+        assert!(diags[0].hint.contains("conflict"), "mentions conflict");
 
         // ── Pip: no hint for unknown error ───────────────────────────────
         let stderr = "SyntaxError: invalid syntax";
-        assert!(pip_error_hint(stderr).is_none(), "no hint for syntax errors");
+        assert!(pip_error_hint(stderr).is_empty(), "no hint for syntax errors");
     }
 }

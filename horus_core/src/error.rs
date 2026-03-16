@@ -10,7 +10,7 @@
 //! | Variant | Sub-error type | Domain |
 //! |---------|---------------|--------|
 //! | `Config(…)` | [`ConfigError`] | Configuration parsing/validation |
-//! | `Communication(…)` | [`CommunicationError`] | IPC, topics, mDNS |
+//! | `Communication(…)` | [`CommunicationError`] | IPC, topics |
 //! | `Node(…)` | [`NodeError`] | Node lifecycle (init, tick, shutdown) |
 //! | `Memory(…)` | [`MemoryError`] | SHM, mmap, tensor pools |
 //! | `Serialization(…)` | [`SerializationError`] | JSON, YAML, TOML, binary |
@@ -63,10 +63,9 @@
 //! Every error has a [`Severity`] classification used by the scheduler for
 //! automatic recovery: `Transient` (retry), `Permanent` (skip), `Fatal` (stop).
 
+use crate::core::DurationExt;
 use std::time::Duration;
 use thiserror::Error;
-use crate::core::DurationExt;
-
 
 /// Structured communication layer errors.
 ///
@@ -96,10 +95,6 @@ pub enum CommunicationError {
     /// Topic creation failed (e.g., SHM or ring buffer setup).
     #[error("Failed to create topic '{topic}': {reason}")]
     TopicCreationFailed { topic: String, reason: String },
-
-    /// mDNS service discovery operation failed.
-    #[error("mDNS {operation} failed: {reason}")]
-    MdnsFailed { operation: String, reason: String },
 
     /// Network fault (peer unreachable, DNS failure, corrupt response).
     #[error("Network fault for '{peer}': {reason}")]
@@ -168,6 +163,67 @@ pub enum NotFoundError {
     /// A generic resource was not found (for resources not covered above).
     #[error("{kind} '{name}' not found")]
     Other { kind: String, name: String },
+
+    /// A resource was not found, with a "did you mean?" suggestion.
+    #[error("{kind} '{name}' not found. Did you mean '{suggestion}'?")]
+    WithSuggestion {
+        kind: String,
+        name: String,
+        suggestion: String,
+    },
+}
+
+impl NotFoundError {
+    /// Create a Topic not-found error with an optional "did you mean?" suggestion.
+    ///
+    /// If `candidates` contains a name within edit distance 3 of `name`,
+    /// the suggestion is included in the error message.
+    pub fn topic_with_suggestion<'a>(
+        name: impl Into<String>,
+        candidates: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        let name_str = name.into();
+        match crate::utils::suggest_similar(&name_str, candidates, 3) {
+            Some(s) => NotFoundError::WithSuggestion {
+                kind: "Topic".into(),
+                name: name_str,
+                suggestion: s,
+            },
+            None => NotFoundError::Topic { name: name_str },
+        }
+    }
+
+    /// Create a Frame not-found error with an optional "did you mean?" suggestion.
+    pub fn frame_with_suggestion<'a>(
+        name: impl Into<String>,
+        candidates: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        let name_str = name.into();
+        match crate::utils::suggest_similar(&name_str, candidates, 3) {
+            Some(s) => NotFoundError::WithSuggestion {
+                kind: "Frame".into(),
+                name: name_str,
+                suggestion: s,
+            },
+            None => NotFoundError::Frame { name: name_str },
+        }
+    }
+
+    /// Create a Node not-found error with an optional "did you mean?" suggestion.
+    pub fn node_with_suggestion<'a>(
+        name: impl Into<String>,
+        candidates: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        let name_str = name.into();
+        match crate::utils::suggest_similar(&name_str, candidates, 3) {
+            Some(s) => NotFoundError::WithSuggestion {
+                kind: "Node".into(),
+                name: name_str,
+                suggestion: s,
+            },
+            None => NotFoundError::Node { name: name_str },
+        }
+    }
 }
 
 /// Structured node lifecycle errors.
@@ -704,13 +760,32 @@ macro_rules! horus_internal {
     };
 }
 
-/// Convenience type alias for Results using HorusError
+/// Convenience type alias for Results using HorusError.
+///
+/// **Prefer the short aliases [`Result`] and [`Error`] in all new code.**
+/// `HorusResult` and `HorusError` are the canonical names but verbose —
+/// the aliases exist specifically so you can write `Result<()>` and `Error`
+/// without the `Horus` prefix everywhere.
+///
+/// ```rust
+/// // PREFERRED — use the short aliases:
+/// use horus_core::error::{Result, Error};
+/// fn my_function() -> Result<()> { Ok(()) }
+///
+/// // AVOID — verbose, no benefit:
+/// use horus_core::error::HorusResult;
+/// fn my_function() -> HorusResult<()> { Ok(()) }
+/// ```
 pub type HorusResult<T> = std::result::Result<T, HorusError>;
 
-/// Short alias — `use horus::prelude::*` brings this into scope
+/// Short alias for `HorusResult<T>` — **use this in all new code**.
+///
+/// Import via `use horus_core::error::Result;` or `use horus::prelude::*;`.
 pub type Result<T> = HorusResult<T>;
 
-/// Short alias for HorusError — `use horus::prelude::*` brings this into scope
+/// Short alias for `HorusError` — **use this in all new code**.
+///
+/// Import via `use horus_core::error::Error;` or `use horus::prelude::*;`.
 pub type Error = HorusError;
 
 // ============================================
@@ -933,13 +1008,6 @@ impl HorusError {
         })
     }
 
-    /// Create an mDNS communication error.
-    pub fn mdns_failed<S: Into<String>, T: Into<String>>(operation: S, reason: T) -> Self {
-        HorusError::Communication(CommunicationError::MdnsFailed {
-            operation: operation.into(),
-            reason: reason.into(),
-        })
-    }
 
     /// Returns an actionable remediation hint for this error, if available.
     ///
@@ -963,9 +1031,7 @@ impl HorusError {
             Self::Communication(CommunicationError::TopicNotFound { .. }) =>
                 Some("Create the topic before subscribing, or check for typos in the topic name. Run: horus topic list"),
             Self::Communication(CommunicationError::TopicCreationFailed { .. }) =>
-                Some("Check shared memory permissions and available space. Run: ls -la /dev/shm/horus_*"),
-            Self::Communication(CommunicationError::MdnsFailed { .. }) =>
-                Some("Ensure mDNS/Avahi is running. Check firewall rules for UDP port 5353. Run: horus discover"),
+                Some("Check shared memory permissions and available space. Run: horus doctor"),
             Self::Communication(CommunicationError::NetworkFault { .. }) =>
                 Some("Check network connectivity to the peer. Verify the peer node is running. Run: horus node list"),
             Self::Communication(CommunicationError::ActionFailed { .. }) =>
@@ -975,9 +1041,9 @@ impl HorusError {
             Self::Memory(MemoryError::PoolExhausted { .. }) =>
                 Some("All tensor pool slots are in use. Ensure consumers drop() tensors promptly, or increase pool capacity in config."),
             Self::Memory(MemoryError::ShmCreateFailed { .. }) =>
-                Some("Check permissions on /dev/shm and available disk space. Run: ls -la /dev/shm/ && df -h /dev/shm"),
+                Some("Check permissions on shared memory directory and available disk space. Run: horus doctor"),
             Self::Memory(MemoryError::MmapFailed { .. }) =>
-                Some("Memory mapping failed. Check available system memory and /dev/shm space. On macOS, check with: vm_stat"),
+                Some("Memory mapping failed. Check available system memory. Run: horus doctor"),
             Self::Memory(MemoryError::AllocationFailed { .. }) =>
                 Some("Memory allocation failed. The system may be low on memory, or the requested size exceeds limits."),
             Self::Memory(MemoryError::OffsetOverflow) =>
@@ -1006,6 +1072,8 @@ impl HorusError {
                 Some("Node not found. Ensure it is registered with the scheduler. Run: horus node list"),
             Self::NotFound(NotFoundError::Service { .. }) =>
                 Some("Service not found. Ensure the server is running. Run: horus service list"),
+            Self::NotFound(NotFoundError::WithSuggestion { .. }) =>
+                Some("Resource not found. A similar name was found — check the suggestion in the error message."),
 
             // === Transform ===
             Self::Transform(TransformError::Stale { .. }) =>
@@ -1028,6 +1096,32 @@ impl HorusError {
             // === Validation ===
             Self::InvalidInput(ValidationError::OutOfRange { .. }) =>
                 Some("A value is outside the allowed range. Check the parameter constraints in the documentation."),
+            Self::InvalidInput(ValidationError::InvalidFormat { .. }) =>
+                Some("Check the value format. Node names: 1-255 chars, alphanumeric + _ - . only. Examples: 'motor_ctrl', 'sensor.imu', 'arm-left'"),
+            Self::InvalidInput(ValidationError::InvalidEnum { .. }) =>
+                Some("The value is not one of the allowed options. Check the error message for the list of valid values."),
+            Self::InvalidInput(ValidationError::Conflict { .. }) =>
+                Some("Two configuration options conflict. Remove one or check the documentation for valid combinations."),
+            Self::InvalidInput(ValidationError::InvalidValue { .. }) =>
+                Some("The value is invalid (wrong type, NaN, negative, etc.). Check the error message for the specific constraint."),
+            Self::InvalidInput(ValidationError::MissingRequired { .. }) =>
+                Some("A required field is missing. Check the struct or config documentation for required fields."),
+            Self::InvalidInput(ValidationError::ConstraintViolation { .. }) =>
+                Some("A constraint was violated. Check the error message for the specific constraint that was broken."),
+
+            // === Serialization ===
+            Self::Serialization(SerializationError::Json { .. }) =>
+                Some("JSON serialization failed. Check that all values are JSON-compatible (no NaN, Infinity, or circular references)."),
+            Self::Serialization(SerializationError::Yaml { .. }) =>
+                Some("YAML serialization failed. Check indentation and that all values are YAML-compatible."),
+            Self::Serialization(SerializationError::Toml { .. }) =>
+                Some("TOML serialization failed. Check that all values are TOML-compatible (no nested arrays of tables in inline format)."),
+            Self::Serialization(SerializationError::Other { .. }) =>
+                Some("Serialization failed. Check that the data type implements Serialize/Deserialize correctly."),
+
+            // === Node (additional) ===
+            Self::Node(NodeError::Other { .. }) =>
+                Some("A node encountered an error. Check node logs for details. Run: horus log -n <node_name>"),
 
             // === Resource ===
             Self::Resource(ResourceError::AlreadyExists { .. }) =>
@@ -1041,7 +1135,7 @@ impl HorusError {
             Self::Timeout(_) =>
                 Some("Operation timed out. The resource may be contended or the system under heavy load. Consider increasing the timeout or checking system load."),
 
-            // No specific hint for generic variants
+            // No specific hint for Internal, Contextual, Io, and catch-all Other variants
             _ => None,
         }
     }
@@ -1055,7 +1149,6 @@ impl HorusError {
             // === Transient: retry may succeed ===
             Self::Communication(CommunicationError::TopicFull { .. }) => Severity::Transient,
             Self::Communication(CommunicationError::NetworkFault { .. }) => Severity::Transient,
-            Self::Communication(CommunicationError::MdnsFailed { .. }) => Severity::Transient,
             Self::Memory(MemoryError::PoolExhausted { .. }) => Severity::Transient,
             Self::Timeout(_) => Severity::Transient,
             Self::Transform(TransformError::Stale { .. }) => Severity::Transient,
@@ -1982,15 +2075,7 @@ mod tests {
         }
     }
 
-    /// HorusError::mdns_failed() helper.
-    #[test]
-    fn helper_mdns_failed() {
-        let err = HorusError::mdns_failed("browse", "daemon not running");
-        assert!(matches!(
-            err,
-            HorusError::Communication(CommunicationError::MdnsFailed { .. })
-        ));
-    }
+
 
     // =========================================================================
     // Section 5: HorusResult and ? operator
@@ -2090,11 +2175,125 @@ mod tests {
     /// Generic errors return None for help.
     #[test]
     fn help_none_for_generic() {
-        let err = HorusError::Config(ConfigError::Other("bad config".into()));
-        assert!(err.help().is_none(), "Config should not have help text");
-
         let err = HorusError::Io(std::io::Error::other("io"));
         assert!(err.help().is_none(), "Io should not have help text");
+
+        let err = HorusError::Internal {
+            message: "bug".into(),
+            file: file!(),
+            line: line!(),
+        };
+        assert!(err.help().is_none(), "Internal should not have help text");
+    }
+
+    /// InvalidEnum validation returns help text.
+    #[test]
+    fn help_invalid_enum() {
+        let err = HorusError::InvalidInput(ValidationError::InvalidEnum {
+            field: "mode".into(),
+            valid_options: "auto, manual".into(),
+            actual: "turbo".into(),
+        });
+        assert!(err.help().is_some(), "InvalidEnum should have help text");
+    }
+
+    /// Conflict validation returns help text.
+    #[test]
+    fn help_conflict() {
+        let err = HorusError::InvalidInput(ValidationError::Conflict {
+            field_a: "compute".into(),
+            field_b: "on".into(),
+            reason: "cannot combine".into(),
+        });
+        assert!(err.help().is_some(), "Conflict should have help text");
+    }
+
+    /// InvalidValue validation returns help text.
+    #[test]
+    fn help_invalid_value() {
+        let err = HorusError::InvalidInput(ValidationError::InvalidValue {
+            field: "rate".into(),
+            value: "NaN".into(),
+            reason: "must be finite".into(),
+        });
+        assert!(err.help().is_some(), "InvalidValue should have help text");
+    }
+
+    /// MissingRequired validation returns help text.
+    #[test]
+    fn help_missing_required() {
+        let err = HorusError::InvalidInput(ValidationError::MissingRequired {
+            field: "tick".into(),
+        });
+        assert!(err.help().is_some(), "MissingRequired should have help text");
+    }
+
+    /// JSON serialization error returns help text.
+    #[test]
+    fn help_json_serialization() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err = HorusError::Serialization(SerializationError::Json { source: json_err });
+        assert!(err.help().is_some(), "Json serialization should have help text");
+        assert!(err.help().unwrap().contains("JSON"), "Help: {}", err.help().unwrap());
+    }
+
+    /// NodeError::Other returns help text.
+    #[test]
+    fn help_node_other() {
+        let err = HorusError::Node(NodeError::Other {
+            node: "planner".into(),
+            message: "something failed".into(),
+        });
+        assert!(err.help().is_some(), "NodeError::Other should have help text");
+        assert!(err.help().unwrap().contains("horus log"), "Help: {}", err.help().unwrap());
+    }
+
+    // =========================================================================
+    // Section 6b: "did you mean?" suggestion constructors
+    // =========================================================================
+
+    #[test]
+    fn topic_with_suggestion_finds_match() {
+        let err = NotFoundError::topic_with_suggestion("cmd_vl", ["cmd_vel", "odom", "imu"]);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Did you mean"),
+            "should suggest cmd_vel: {}",
+            msg
+        );
+        assert!(msg.contains("cmd_vel"), "should contain suggestion: {}", msg);
+    }
+
+    #[test]
+    fn topic_with_suggestion_no_match() {
+        let err =
+            NotFoundError::topic_with_suggestion("totally_different", ["cmd_vel", "odom", "imu"]);
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("Did you mean"),
+            "should NOT suggest when too far: {}",
+            msg
+        );
+        // Falls back to plain Topic variant
+        assert!(msg.contains("totally_different"), "should contain name: {}", msg);
+    }
+
+    #[test]
+    fn frame_with_suggestion_finds_match() {
+        let err =
+            NotFoundError::frame_with_suggestion("base_lnk", ["base_link", "odom", "world"]);
+        let msg = err.to_string();
+        assert!(msg.contains("Did you mean"), "should suggest: {}", msg);
+        assert!(msg.contains("base_link"), "should contain suggestion: {}", msg);
+    }
+
+    #[test]
+    fn node_with_suggestion_finds_match() {
+        let err =
+            NotFoundError::node_with_suggestion("motor_ctr", ["motor_ctrl", "planner", "sensor"]);
+        let msg = err.to_string();
+        assert!(msg.contains("Did you mean"), "should suggest: {}", msg);
+        assert!(msg.contains("motor_ctrl"), "should contain suggestion: {}", msg);
     }
 
     // =========================================================================

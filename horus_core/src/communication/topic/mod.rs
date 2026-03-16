@@ -161,7 +161,7 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
-pub use header::{read_latest_slot_bytes, read_topic_sequence, set_topic_debug, TopicSlotRead, TOPIC_DEBUG_LOG_OFFSET};
+pub use header::{read_latest_slot_bytes, read_topic_header_info, read_topic_sequence, set_topic_verbose, TopicHeaderInfo, TopicSlotRead, TopicKind, TOPIC_VERBOSE_OFFSET};
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
 pub use metrics::TopicMetrics;
@@ -380,9 +380,6 @@ pub(crate) struct RingTopic<T> {
     /// check which must work regardless of backend/migration state.
     header_ptr: *const TopicHeader,
 
-    /// Optional logging function (set via `with_logging()`)
-    log_fn: Option<fn(&T) -> String>,
-
     /// Connection state (for network backend compatibility)
     state: AtomicU8,
 
@@ -401,13 +398,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     const HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
 
     /// Create a new topic with auto-sized ring buffer capacity.
+    ///
+    /// # Errors
+    ///
+    /// - [`ValidationError`] — topic name is empty, too long, or contains invalid characters
+    /// - [`MemoryError::ShmCreateFailed`] — shared memory region could not be created
+    /// - [`CommunicationError::TopicCreationFailed`] — ring buffer setup failed
     pub fn new(name: impl Into<String>) -> HorusResult<Self> {
         let name = name.into();
-        Self::with_capacity(&name, auto_capacity::<T>(), None)
+        Self::with_capacity_and_kind(&name, auto_capacity::<T>(), None, TopicKind::Data as u8)
     }
 
-    /// Create a new topic with custom capacity and optional slot size
+    /// Create a new topic with a specific kind (Data, ServiceRequest, etc.).
+    pub fn new_with_kind(name: impl Into<String>, topic_kind: u8) -> HorusResult<Self> {
+        let name = name.into();
+        Self::with_capacity_and_kind(&name, auto_capacity::<T>(), None, topic_kind)
+    }
+
+    /// Create a new topic with custom capacity and optional slot size.
+    ///
+    /// # Errors
+    ///
+    /// - [`ValidationError`] — name empty/too long, capacity not power-of-two, slot > 1MB
+    /// - [`MemoryError::ShmCreateFailed`] — shared memory region could not be created
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
+        Self::with_capacity_and_kind(name, capacity, slot_size, TopicKind::Data as u8)
+    }
+
+    /// Create a new topic with custom capacity, slot size, and topic kind.
+    pub fn with_capacity_and_kind(name: &str, capacity: u32, slot_size: Option<usize>, topic_kind: u8) -> HorusResult<Self> {
         // Validate topic name
         if name.is_empty() {
             return Err(crate::HorusError::InvalidInput(
@@ -486,6 +505,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let total_size = Self::HEADER_SIZE + seq_array_size + data_size;
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
+        // Extract a short type name for the header (e.g. "CmdVel" from "horus_library::messages::CmdVel")
+        let full_type_name = std::any::type_name::<T>();
+        let short_type_name = full_type_name
+            .rsplit("::")
+            .next()
+            .unwrap_or(full_type_name);
         let final_slot_size = Self::negotiate_shm_header(
             name,
             &storage,
@@ -494,6 +519,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             is_pod,
             capacity,
             actual_slot_size,
+            short_type_name,
+            topic_kind,
         )?;
 
         let header_ptr = storage.as_ptr() as *const TopicHeader;
@@ -512,7 +539,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }),
             header_ptr,
             metrics: Arc::new(MigrationMetrics::default()),
-            log_fn: None,
             state: AtomicU8::new(ConnectionState::Connected.into_u8()),
             _marker: PhantomData,
         })
@@ -529,6 +555,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         is_pod: bool,
         capacity: u32,
         actual_slot_size: usize,
+        type_name_str: &str,
+        topic_kind: u8,
     ) -> HorusResult<usize> {
         // SAFETY: storage is properly sized (>= HEADER_SIZE) and aligned for TopicHeader
         let header = unsafe { &mut *(storage.as_ptr() as *mut TopicHeader) };
@@ -545,6 +573,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     is_pod,
                     capacity,
                     actual_slot_size as u32,
+                    type_name_str,
+                    topic_kind,
                 );
                 return Ok(actual_slot_size);
             }
@@ -600,14 +630,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         unsafe { &*(self.storage.as_ptr() as *const TopicHeader) }
     }
 
-    /// Check if runtime debug logging is enabled via the SHM header flag.
+    /// Check if verbose content logging is enabled via the SHM header flag.
     /// Uses the stable `header_ptr` (not `LocalState::cached_header_ptr` which
     /// is repurposed in DirectChannel mode).
     #[inline(always)]
-    fn is_debug_enabled(&self) -> bool {
+    fn is_verbose(&self) -> bool {
         // SAFETY: header_ptr points into the Arc<ShmRegion> storage which outlives self;
         // the header is initialized before construction completes.
-        unsafe { (*self.header_ptr).is_debug_enabled() }
+        unsafe { (*self.header_ptr).is_verbose() }
     }
 
     /// Compute the byte offset from storage start to the data region.
@@ -1572,8 +1602,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// includes epoch check, ring operation, and housekeeping.
     #[inline(always)]
     pub fn send(&self, msg: T) {
-        if unlikely(self.is_debug_enabled()) {
-            self.send_with_logging(msg);
+        // Always-on metric: ~1ns Relaxed atomic increment
+        self.header().messages_total.fetch_add(1, Ordering::Relaxed);
+        if unlikely(self.is_verbose()) {
+            self.send_with_content_logging(msg);
             return;
         }
         // Fast path: DirectChannel-local (role=Both, same-thread pub+sub).
@@ -1602,14 +1634,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.send_lossy(msg);
     }
 
-    /// Logging path for send() — outlined to keep send() hot path tight.
+    /// Content logging path for send() — outlined to keep send() hot path tight.
+    /// Only reached when the verbose flag is set on the topic header.
     #[cold]
     #[inline(never)]
-    fn send_with_logging(&self, msg: T) {
-        let summary = match self.log_fn {
-            Some(f) => f(&msg),
-            None => format!("→ {}", self.name),
-        };
+    fn send_with_content_logging(&self, msg: T) {
+        let summary = format!("→ {}", self.name);
         let start = std::time::Instant::now();
         self.send_lossy(msg);
         let ipc_ns = start.elapsed().as_nanos() as u64;
@@ -1677,6 +1707,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     ///
     /// Strategy: spin briefly (256 iters), yield briefly (8 iters), then sleep in
     /// 100μs increments until the deadline.
+    ///
+    /// # Errors
+    ///
+    /// - [`SendBlockingError::Timeout`] — ring buffer stayed full for the entire `timeout`
+    /// - [`SendBlockingError::Serialization`] — non-POD message failed to serialize
     pub fn send_blocking(
         &self,
         msg: T,
@@ -1728,8 +1763,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// no function pointer indirection. Same optimization as send().
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
-        if unlikely(self.is_debug_enabled()) {
-            return self.recv_with_logging();
+        if unlikely(self.is_verbose()) {
+            return self.recv_with_content_logging();
         }
         // Fast path: DirectChannel-local (role=Both, same-thread pub+sub)
         let local = self.local();
@@ -1760,25 +1795,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.try_recv()
     }
 
-    /// Logging path for recv() — outlined to keep recv() hot path tight.
+    /// Content logging path for recv() — outlined to keep recv() hot path tight.
+    /// Only reached when the verbose flag is set on the topic header.
     #[cold]
     #[inline(never)]
-    fn recv_with_logging(&self) -> Option<T> {
+    fn recv_with_content_logging(&self) -> Option<T> {
         let start = std::time::Instant::now();
         let result = self.try_recv();
         let ipc_ns = start.elapsed().as_nanos() as u64;
 
-        if let Some(ref msg) = result {
+        if let Some(ref _msg) = result {
             self.metrics
                 .messages_received
                 .fetch_add(1, Ordering::Relaxed);
             use crate::core::hlog::{current_node_name, current_tick_number};
             use crate::core::log_buffer::{publish_log, LogEntry, LogType};
             let now = chrono::Local::now();
-            let summary = match self.log_fn {
-                Some(f) => f(msg),
-                None => format!("← {}", self.name),
-            };
+            let summary = format!("← {}", self.name);
             publish_log(LogEntry {
                 timestamp: now.format("%H:%M:%S%.3f").to_string(),
                 tick_number: current_tick_number(),
@@ -2000,7 +2033,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for 
             local: std::cell::UnsafeCell::new(LocalState::default()),
             header_ptr: self.header_ptr,
             metrics: Arc::clone(&self.metrics),
-            log_fn: self.log_fn,
             state: AtomicU8::new(self.state.load(Ordering::Relaxed)),
             _marker: PhantomData,
         }
@@ -2019,21 +2051,6 @@ impl<T> Drop for RingTopic<T> {
 // ============================================================================
 // Logging Support (requires LogSummary bound)
 // ============================================================================
-
-impl<T> RingTopic<T>
-where
-    T: Clone + Send + Sync + Serialize + DeserializeOwned + crate::core::LogSummary + 'static,
-{
-    /// Enable automatic logging on send/recv.
-    ///
-    /// Prefer runtime debug logging via the TUI monitor instead of calling this
-    /// at compile time. This method is retained for backward compatibility.
-    #[doc(hidden)]
-    pub fn with_logging(mut self) -> Self {
-        self.log_fn = Some(|msg: &T| msg.log_summary());
-        self
-    }
-}
 
 // ============================================================================
 // Topic<T: TopicMessage> — Public Unified API
@@ -2240,6 +2257,17 @@ where
         Ok(Self { ring, pool })
     }
 
+    /// Create a new topic with a specific kind (ServiceRequest, ActionGoal, etc.).
+    pub fn new_with_kind(name: impl Into<String>, topic_kind: u8) -> HorusResult<Self> {
+        let ring = RingTopic::new_with_kind(name, topic_kind)?;
+        let pool = if T::needs_pool() {
+            Some(pool_registry::global_pool())
+        } else {
+            None
+        };
+        Ok(Self { ring, pool })
+    }
+
     /// Create a topic, panicking on failure.
     ///
     /// Use this in examples, tests, and simple applications where topic
@@ -2317,29 +2345,6 @@ where
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
         self.ring.try_recv()
-    }
-}
-
-// Direct types with LogSummary support
-impl<T> Topic<T>
-where
-    T: TopicMessage<Wire = T>
-        + Clone
-        + Send
-        + Sync
-        + Serialize
-        + DeserializeOwned
-        + crate::core::LogSummary
-        + 'static,
-{
-    /// Enable automatic logging on send/recv.
-    ///
-    /// Prefer runtime debug logging via the TUI monitor instead of calling this
-    /// at compile time. This method is retained for backward compatibility.
-    #[doc(hidden)]
-    pub fn with_logging(mut self) -> Self {
-        self.ring = self.ring.with_logging();
-        self
     }
 }
 

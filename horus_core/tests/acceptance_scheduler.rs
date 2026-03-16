@@ -4,8 +4,8 @@
 //! so we test Node behavior directly
 
 use horus_core::core::Node;
-use horus_core::error::HorusResult as Result;
-use horus_core::error::{ConfigError, HorusError};
+use horus_core::error::Result;
+use horus_core::error::{ConfigError, Error};
 use horus_core::hlog;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -92,7 +92,7 @@ impl Node for FailingInitNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        Err(HorusError::Config(ConfigError::Other(
+        Err(Error::Config(ConfigError::Other(
             "Initialization failed".to_string(),
         )))
     }

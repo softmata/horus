@@ -97,6 +97,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -117,9 +119,10 @@ jobs:
       # Setup shared memory for HORUS tests
       - name: Setup Shared Memory
         run: |
-          sudo mkdir -p /dev/shm/horus/topics
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
 
       # Build and test in separate steps to avoid crate-type collision
       # Exclude horus_py from workspace build/test — it requires Python dev headers

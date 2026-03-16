@@ -1166,18 +1166,9 @@ impl TensorPool {
         reclaimed
     }
 
-    /// Check if a process is still alive via kill(pid, 0).
-    #[cfg(unix)]
+    /// Check if a process is still alive.
     fn is_process_alive(pid: u32) -> bool {
-        // SAFETY: kill(pid, 0) with signal 0 only checks for process existence;
-        // it does not send any signal. pid is a valid u32 cast to i32.
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-
-    #[cfg(not(unix))]
-    fn is_process_alive(_pid: u32) -> bool {
-        // On non-Unix, conservatively assume the process is alive
-        true
+        horus_sys::process::ProcessHandle::from_pid(pid).is_alive()
     }
 
     /// Inner find_free_slot without the reclaim fallback (used for retry after reclaim).

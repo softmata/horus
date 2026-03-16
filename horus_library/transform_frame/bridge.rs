@@ -39,8 +39,8 @@
 //! - **Namespace prefixing**: Multi-robot support via automatic frame name prefixing
 //!   (e.g., `robot1/base_link`). Applied at the bridge layer, transparent to local TF.
 //! - **Source dedup**: `source_id` prevents echoing own messages back.
-//! - **mDNS discovery** (future): Can integrate with `horus_core::communication::network::mdns`
-//!   for zero-config peer discovery.
+//! - **HERMES discovery** (future): Will integrate with HERMES Membrane for
+//!   zero-config peer discovery. See `blueprints/HERMES_NETWORK_TRANSPORT.md`.
 //!
 //! # Comparison with ROS2 DDS
 //!
@@ -48,7 +48,7 @@
 //! |---------------------|-----------------------|-----------------------|
 //! | Transport           | UDP multicast         | DDS (RTPS/UDP)        |
 //! | Overhead            | 24-byte header        | ~100+ byte RTPS       |
-//! | Discovery           | mDNS (planned)        | SPDP/SEDP             |
+//! | Discovery           | HERMES (planned)      | SPDP/SEDP             |
 //! | QoS                 | Best-effort           | Full DDS QoS          |
 //! | Latency (LAN)       | < 1ms                 | 1-5ms                 |
 //! | Dependencies        | std::net only          | CycloneDDS/FastDDS    |

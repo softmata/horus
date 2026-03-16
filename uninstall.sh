@@ -42,23 +42,18 @@ else
         tput cnorm 2>/dev/null || true
         printf "\r\033[K"
     }
-    # Fallback shared memory paths
-    get_shm_base_dir() {
+    # Fallback shared memory paths (namespaced layout)
+    get_shm_parent_dir() {
         case "$(uname -s)" in
-            Linux*) echo "/dev/shm/horus" ;;
-            Darwin*|FreeBSD*|OpenBSD*|NetBSD*) echo "/tmp/horus" ;;
-            MINGW*|MSYS*|CYGWIN*) echo "${TEMP:-/tmp}/horus" ;;
-            *) echo "/tmp/horus" ;;
+            Linux*) echo "/dev/shm" ;;
+            Darwin*|FreeBSD*|OpenBSD*|NetBSD*) echo "/tmp" ;;
+            MINGW*|MSYS*|CYGWIN*) echo "${TEMP:-/tmp}" ;;
+            *) echo "/tmp" ;;
         esac
     }
-    get_shm_logs_path() {
-        case "$(uname -s)" in
-            Linux*) echo "/dev/shm/horus_logs" ;;
-            Darwin*|FreeBSD*|OpenBSD*|NetBSD*) echo "/tmp/horus_logs" ;;
-            MINGW*|MSYS*|CYGWIN*) echo "${TEMP:-/tmp}/horus_logs" ;;
-            *) echo "/tmp/horus_logs" ;;
-        esac
-    }
+    get_shm_base_dir() { get_shm_parent_dir; }
+    get_shm_glob() { echo "$(get_shm_parent_dir)/horus_*"; }
+    get_shm_logs_path() { echo "$(get_shm_parent_dir)/horus_*/logs"; }
 fi
 
 # ============================================================================
@@ -121,8 +116,8 @@ INSTALL_DIR="$HOME/.cargo/bin"
 HORUS_DIR="$HOME/.horus"
 CACHE_DIR="$HORUS_DIR/cache"
 TARGET_DIR="$HORUS_DIR/target"
-SHM_DIR="$(get_shm_base_dir)"
-SHM_LOGS="$(get_shm_logs_path)"
+SHM_PARENT="$(get_shm_parent_dir)"
+SHM_GLOB="$(get_shm_glob)"
 
 # ============================================================================
 # PROFILE DETECTION
@@ -217,11 +212,13 @@ calculate_sizes() {
         total_size=$((total_size + size))
     fi
 
-    # Shared memory
-    if [ -d "$SHM_DIR" ]; then
-        size=$(du -sk "$SHM_DIR" 2>/dev/null | cut -f1)
-        total_size=$((total_size + size))
-    fi
+    # Shared memory (all horus_* namespace dirs)
+    for ns_dir in $SHM_GLOB; do
+        if [ -d "$ns_dir" ]; then
+            size=$(du -sk "$ns_dir" 2>/dev/null | cut -f1)
+            total_size=$((total_size + ${size:-0}))
+        fi
+    done
 
     echo $total_size
 }
@@ -270,17 +267,16 @@ fi
 # Shared memory
 echo ""
 echo -e "  ${CYAN}Shared Memory:${NC}"
-if [ -d "$SHM_DIR" ]; then
-    shm_size=$(du -sh "$SHM_DIR" 2>/dev/null | cut -f1)
-    session_count=$(ls -d "$SHM_DIR"/* 2>/dev/null | wc -l)
-    echo -e "    [x] $SHM_DIR/ ($shm_size) - $session_count session(s)"
-else
-    echo -e "    ${YELLOW}(no shared memory data)${NC}"
-fi
-if [ -f "$SHM_LOGS" ]; then
-    logs_size=$(du -h "$SHM_LOGS" 2>/dev/null | cut -f1)
-    echo -e "    [x] $SHM_LOGS ($logs_size)"
-fi
+SHM_NS_COUNT=0
+for ns_dir in $SHM_GLOB; do
+    if [ -d "$ns_dir" ]; then
+        ns_size=$(du -sh "$ns_dir" 2>/dev/null | cut -f1)
+        ns_name=$(basename "$ns_dir")
+        echo -e "    [x] $ns_dir/ ($ns_size)"
+        SHM_NS_COUNT=$((SHM_NS_COUNT + 1))
+    fi
+done
+[ $SHM_NS_COUNT -eq 0 ] && echo -e "    ${YELLOW}(no shared memory data)${NC}"
 
 # Shell completions
 echo ""
@@ -367,25 +363,14 @@ fi
 update_uninstall_progress "Cleaning shared memory"
 echo ""
 
-if [ -d "$SHM_DIR" ]; then
-    # Count active sessions
-    if [ -d "$SHM_DIR" ]; then
-        active=$(ls -d "$SHM_DIR"/* 2>/dev/null | wc -l)
-        if [ "$active" -gt 0 ]; then
-            echo -e "  ${YELLOW}[!]${NC} Warning: $active active session(s) will be terminated"
-        fi
+for ns_dir in $SHM_GLOB; do
+    if [ -d "$ns_dir" ]; then
+        ns_name=$(basename "$ns_dir")
+        rm -rf "$ns_dir" 2>/dev/null || true
+        echo -e "  ${GREEN}[+]${NC} Removed $ns_name"
+        REMOVED=$((REMOVED + 1))
     fi
-
-    rm -rf "$SHM_DIR" 2>/dev/null || true
-    echo -e "  ${GREEN}[+]${NC} Removed $SHM_DIR/"
-    REMOVED=$((REMOVED + 1))
-fi
-
-if [ -f "$SHM_LOGS" ]; then
-    rm -f "$SHM_LOGS" 2>/dev/null || true
-    echo -e "  ${GREEN}[+]${NC} Removed log buffer"
-    REMOVED=$((REMOVED + 1))
-fi
+done
 
 #=====================================
 # 4. Remove HORUS directory

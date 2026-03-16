@@ -2009,7 +2009,9 @@ fn cross_process_sigkill_mid_write_recovery() {
         // ── Parent: let child write briefly, then SIGKILL it.
         // The short sleep increases the chance of killing mid-write.
         std::thread::sleep(std::time::Duration::from_millis(2));
-        unsafe { libc::kill(pid, libc::SIGKILL) };
+        horus_sys::process::ProcessHandle::from_pid(pid as u32)
+            .signal(horus_sys::process::Signal::Kill)
+            .expect("SIGKILL failed");
 
         let mut status: libc::c_int = 0;
         unsafe { libc::waitpid(pid, &mut status, 0) };

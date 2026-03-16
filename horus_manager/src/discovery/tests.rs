@@ -164,6 +164,12 @@ fn test_node_status_creation() {
         actual_rate_hz: 50,
         publishers: vec![],
         subscribers: vec![],
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     };
 
     assert_eq!(node.name, "test_node");
@@ -225,6 +231,8 @@ fn test_node_status_with_publishers_subscribers() {
         actual_rate_hz: 0,
         publishers: vec![pub_topic],
         subscribers: vec![sub_topic],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
     };
 
     assert_eq!(node.publishers.len(), 1);
@@ -263,6 +271,8 @@ fn test_shared_memory_info_creation() {
         status: TopicStatus::Active,
         age_string: "0s ago".to_string(),
         is_system: false,
+        messages_total: 0,
+        topic_kind: 0,
     };
 
     assert_eq!(shm.topic_name, "robot.pose");
@@ -313,6 +323,8 @@ fn test_shared_memory_info_inactive() {
         status: TopicStatus::Stale,
         age_string: "unknown".to_string(),
         is_system: false,
+        messages_total: 0,
+        topic_kind: 0,
     };
 
     assert!(!shm.active);
@@ -680,6 +692,8 @@ fn test_discovery_cache_update_nodes() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
     }];
 
     cache.update_nodes(nodes);
@@ -705,6 +719,8 @@ fn test_discovery_cache_update_shared_memory() {
         status: TopicStatus::Stale,
         age_string: "unknown".to_string(),
         is_system: false,
+        messages_total: 0,
+        topic_kind: 0,
     }];
 
     cache.update_shared_memory(shm);
@@ -756,6 +772,8 @@ fn test_node_status_clone() {
             type_name: "Msg".to_string(),
         }],
         subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
     };
 
     let cloned = node.clone();
@@ -795,6 +813,8 @@ fn test_shared_memory_info_clone() {
         status: TopicStatus::Active,
         age_string: "0s ago".to_string(),
         is_system: false,
+        messages_total: 0,
+        topic_kind: 0,
     };
 
     let cloned = shm.clone();
@@ -854,6 +874,8 @@ fn test_health_status_variants() {
             actual_rate_hz: 0,
             publishers: vec![],
             subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
         };
         let debug = format!("{:?}", node.health);
         assert!(!debug.is_empty(), "Health debug should not be empty");
@@ -955,6 +977,8 @@ fn test_cache_update_replaces_data() {
             actual_rate_hz: 0,
             publishers: vec![],
             subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
         },
         NodeStatus {
             name: "node_b".to_string(),
@@ -974,6 +998,8 @@ fn test_cache_update_replaces_data() {
             actual_rate_hz: 0,
             publishers: vec![],
             subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
         },
     ];
     cache.update_nodes(nodes1);
@@ -998,6 +1024,8 @@ fn test_cache_update_replaces_data() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
     }];
     cache.update_nodes(nodes2);
     assert_eq!(cache.nodes.len(), 1, "update should replace, not append");
@@ -1051,6 +1079,8 @@ fn test_cache_concurrent_read_write_safety() {
                     actual_rate_hz: 0,
                     publishers: vec![],
                     subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
                 }]);
                 drop(c);
                 std::thread::yield_now();
@@ -1093,6 +1123,8 @@ fn test_cache_miss_refresh_hit_cycle() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
     }]);
 
     // Step 3: Cache hit (fresh)
@@ -1127,6 +1159,8 @@ fn test_stale_data_dead_node_replaced_on_refresh() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
     }]);
     assert_eq!(cache.nodes.len(), 1);
     assert_eq!(cache.nodes[0].name, "dead_node");
@@ -1150,6 +1184,8 @@ fn test_stale_data_dead_node_replaced_on_refresh() {
         actual_rate_hz: 50,
         publishers: vec![],
         subscribers: vec![],
+        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
+        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
     }]);
     assert_eq!(cache.nodes.len(), 1);
     assert_eq!(cache.nodes[0].name, "live_node");
@@ -1411,7 +1447,7 @@ fn test_presence_cache_shared_between_node_and_topic_discovery() {
 #[test]
 fn test_system_topic_detection() {
     let system_shm = SharedMemoryInfo {
-        topic_name: "horus.discovery".to_string(),
+        topic_name: "horus.ctl.main".to_string(),
         size_bytes: 256,
         active: true,
         accessing_processes: vec![],
@@ -1423,6 +1459,8 @@ fn test_system_topic_detection() {
         status: TopicStatus::Active,
         age_string: "0s ago".to_string(),
         is_system: true,
+        messages_total: 0,
+        topic_kind: 0,
     };
     assert!(system_shm.is_system);
 
@@ -1439,6 +1477,8 @@ fn test_system_topic_detection() {
         status: TopicStatus::Active,
         age_string: "0s ago".to_string(),
         is_system: false,
+        messages_total: 0,
+        topic_kind: 0,
     };
     assert!(!user_shm.is_system);
 

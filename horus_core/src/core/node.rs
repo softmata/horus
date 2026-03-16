@@ -4,7 +4,7 @@ use std::time::Instant;
 
 /// Compact logging summary for message types.
 ///
-/// Used by `Topic::with_logging()` and `hlog!` to produce one-line summaries
+/// Used by verbose content logging and `hlog!` to produce one-line summaries
 /// without cloning large data structures.
 ///
 /// # Three ways to get `LogSummary`

@@ -548,16 +548,67 @@ impl DependencyValue {
 
 /// Driver configuration value.
 ///
-/// - Simple: `camera = "opencv"` (backend name)
-/// - Or just: `camera = true` (enable with default backend)
+/// Three forms:
+/// - Config table: `[drivers.arm]` with `terra`/`package`/`node` key + params
+/// - Simple string: `camera = "opencv"` (backend name → feature flags)
+/// - Enable bool: `camera = true` (enable with default backend)
+///
+/// The `Config` variant must be first — `#[serde(untagged)]` tries variants
+/// in order, and TOML tables must match before scalar strings/bools.
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DriverValue {
+    /// Config table: `[drivers.arm]` with terra/package/node key + params.
+    Config(DriverTableConfig),
     /// Backend name string, e.g., `"opencv"`.
     Backend(String),
     /// Enable with default backend.
     Enabled(bool),
+}
+
+/// Structured driver configuration from a `[drivers.NAME]` TOML table.
+///
+/// Exactly one of `terra`, `package`, or `node` should be present to identify
+/// the driver source. All other keys are captured in `params` and passed to
+/// the driver factory at runtime.
+///
+/// # Examples
+///
+/// ```toml
+/// # Terra driver (pre-built hardware support)
+/// [drivers.arm]
+/// terra = "dynamixel"
+/// port = "/dev/ttyUSB0"
+/// baudrate = 1000000
+/// servo_ids = [1, 2, 3, 4, 5, 6]
+///
+/// # Registry package (community/vendor driver)
+/// [drivers.force_sensor]
+/// package = "horus-driver-ati-netft"
+/// address = "192.168.1.100"
+///
+/// # Local code (user's own driver registered via register_driver!)
+/// [drivers.conveyor]
+/// node = "ConveyorDriver"
+/// port = "/dev/ttyACM0"
+/// baudrate = 57600
+/// ```
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverTableConfig {
+    /// Terra driver shortname (e.g., `"dynamixel"`, `"rplidar"`, `"realsense"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terra: Option<String>,
+    /// Registry package name (e.g., `"horus-driver-ati-netft"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// Local node struct name registered via `register_driver!` (e.g., `"ConveyorDriver"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// All remaining keys — passed to the driver factory as `DriverParams`.
+    #[serde(flatten)]
+    pub params: std::collections::HashMap<String, toml::Value>,
 }
 
 // ─── [hooks] ────────────────────────────────────────────────────────────────
@@ -2288,6 +2339,160 @@ motor-controller = true
             reloaded.drivers["gps"],
             DriverValue::Enabled(true)
         ));
+    }
+
+    // ── Driver table config (DriverTableConfig) ──────────────────────
+
+    /// Parse [drivers.arm] table with terra key + params.
+    #[test]
+    fn parse_driver_table_config_terra() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[drivers.arm]
+terra = "dynamixel"
+port = "/dev/ttyUSB0"
+baudrate = 1000000
+servo_ids = [1, 2, 3, 4, 5, 6]
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.drivers.len(), 1);
+        match &manifest.drivers["arm"] {
+            DriverValue::Config(cfg) => {
+                assert_eq!(cfg.terra.as_deref(), Some("dynamixel"));
+                assert!(cfg.package.is_none());
+                assert!(cfg.node.is_none());
+                assert_eq!(
+                    cfg.params.get("port").and_then(|v| v.as_str()),
+                    Some("/dev/ttyUSB0")
+                );
+                assert_eq!(
+                    cfg.params.get("baudrate").and_then(|v| v.as_integer()),
+                    Some(1000000)
+                );
+                let ids = cfg.params.get("servo_ids").unwrap().as_array().unwrap();
+                assert_eq!(ids.len(), 6);
+            }
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    /// Parse [drivers.sensor] table with package key.
+    #[test]
+    fn parse_driver_table_config_package() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[drivers.force_sensor]
+package = "horus-driver-ati-netft"
+address = "192.168.1.100"
+filter_hz = 500
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        match &manifest.drivers["force_sensor"] {
+            DriverValue::Config(cfg) => {
+                assert!(cfg.terra.is_none());
+                assert_eq!(cfg.package.as_deref(), Some("horus-driver-ati-netft"));
+                assert!(cfg.node.is_none());
+                assert_eq!(
+                    cfg.params.get("address").and_then(|v| v.as_str()),
+                    Some("192.168.1.100")
+                );
+                assert_eq!(
+                    cfg.params.get("filter_hz").and_then(|v| v.as_integer()),
+                    Some(500)
+                );
+            }
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    /// Parse [drivers.conveyor] table with node key (local driver).
+    #[test]
+    fn parse_driver_table_config_node() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[drivers.conveyor]
+node = "ConveyorDriver"
+port = "/dev/ttyACM0"
+baudrate = 57600
+belt_length_mm = 2400
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        match &manifest.drivers["conveyor"] {
+            DriverValue::Config(cfg) => {
+                assert!(cfg.terra.is_none());
+                assert!(cfg.package.is_none());
+                assert_eq!(cfg.node.as_deref(), Some("ConveyorDriver"));
+                assert_eq!(
+                    cfg.params.get("baudrate").and_then(|v| v.as_integer()),
+                    Some(57600)
+                );
+            }
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    /// Mix simple string/bool drivers with table config drivers.
+    #[test]
+    fn parse_driver_mixed_simple_and_table() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[drivers]
+camera = "opencv"
+gps = true
+
+[drivers.arm]
+terra = "dynamixel"
+port = "/dev/ttyUSB0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.drivers.len(), 3);
+        assert!(matches!(manifest.drivers["camera"], DriverValue::Backend(ref s) if s == "opencv"));
+        assert!(matches!(manifest.drivers["gps"], DriverValue::Enabled(true)));
+        assert!(matches!(manifest.drivers["arm"], DriverValue::Config(_)));
+    }
+
+    /// Round-trip: DriverTableConfig survives serialize → deserialize.
+    #[test]
+    fn driver_table_config_round_trip() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[drivers.lidar]
+terra = "rplidar"
+port = "/dev/ttyUSB1"
+scan_mode = "sensitivity"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+        let reloaded: HorusManifest = toml::from_str(&serialized).unwrap();
+        match &reloaded.drivers["lidar"] {
+            DriverValue::Config(cfg) => {
+                assert_eq!(cfg.terra.as_deref(), Some("rplidar"));
+                assert_eq!(
+                    cfg.params.get("port").and_then(|v| v.as_str()),
+                    Some("/dev/ttyUSB1")
+                );
+                assert_eq!(
+                    cfg.params.get("scan_mode").and_then(|v| v.as_str()),
+                    Some("sensitivity")
+                );
+            }
+            other => panic!("expected Config after round-trip, got {:?}", other),
+        }
     }
 
     // ── Additional robustness edge cases ─────────────────────────────

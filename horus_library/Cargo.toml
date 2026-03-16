@@ -3,11 +3,13 @@ name = "horus_library"
 version = "0.1.9"
 edition = "2021"
 authors = ["HORUS Contributors"]
-description = "Standard library of messages and transforms for HORUS"
+description = "Standard library of messages and transforms for HORUS — IMU, LiDAR, camera, odometry, control, navigation, and perception message types with TransformFrame coordinate tracking"
 license = "Apache-2.0"
 repository = "https://github.com/softmata/horus"
-keywords = ["robotics", "messages", "horus"]
-categories = ["science::robotics"]
+homepage = "https://horusrobotics.dev"
+documentation = "https://docs.horusrobotics.dev"
+keywords = ["robotics", "messages", "sensors", "transforms", "horus"]
+categories = ["science::robotics", "data-structures"]
 
 [lints]
 workspace = true

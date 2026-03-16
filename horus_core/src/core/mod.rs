@@ -18,8 +18,6 @@
 #[doc(hidden)]
 pub mod clock;
 #[doc(hidden)]
-pub mod discovery;
-#[doc(hidden)]
 pub mod tick_context;
 pub mod duration_ext;
 #[doc(hidden)]
@@ -36,9 +34,6 @@ pub mod rt_config;
 #[doc(hidden)]
 pub mod rt_node;
 pub mod timer;
-
-// Discovery internals (used by scheduler, not user-facing)
-pub(crate) use discovery::{announce_started, announce_stopped};
 
 // LogType must be pub for hlog! macro expansion in downstream crates
 #[doc(hidden)]

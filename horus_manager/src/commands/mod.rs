@@ -7,8 +7,6 @@ pub mod clean;
 pub mod config;
 pub mod deploy;
 pub mod deps;
-#[cfg(feature = "mdns")]
-pub mod discover;
 pub mod doc;
 pub mod doc_extract;
 pub mod doc_extract_cpp;
@@ -36,7 +34,7 @@ pub mod record;
 pub mod run;
 pub mod scripts;
 pub mod service;
-pub mod shell;
+pub mod sync;
 pub mod test;
 pub mod tf;
 pub mod topic;

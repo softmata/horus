@@ -1,7 +1,10 @@
 //! Common path utilities for HORUS directory structure.
 //!
-//! Centralizes all `.horus` directory path construction to avoid
-//! duplicating `dirs::home_dir().ok_or_else(...)?.join(".horus/...")` everywhere.
+//! Delegates to [`horus_sys::platform`] for cross-platform directory resolution.
+//! All paths are platform-appropriate:
+//! - Linux: `~/.config/horus/`, `~/.cache/horus/`, `~/.local/share/horus/`
+//! - macOS: `~/Library/Application Support/horus/`, `~/Library/Caches/horus/`
+//! - Windows: `%APPDATA%\horus\`, `%LOCALAPPDATA%\horus\`
 
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
@@ -11,40 +14,40 @@ pub fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| anyhow!("could not find home directory"))
 }
 
-/// Get `~/.horus` — the global HORUS config directory.
+/// Get the global HORUS config directory (platform-appropriate).
 pub fn horus_dir() -> Result<PathBuf> {
-    let dir = home_dir()?.join(".horus");
+    let dir = horus_sys::platform::config_dir();
     log::debug!("horus dir: {:?}", dir);
     Ok(dir)
 }
 
-/// Get `~/.horus/cache` — the global package cache directory.
+/// Get the global package cache directory (platform-appropriate).
 pub fn cache_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".horus/cache"))
+    Ok(horus_sys::platform::cache_dir())
 }
 
-/// Get `~/.horus/recordings` — the recordings directory.
+/// Get the recordings directory.
 pub fn recordings_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".horus/recordings"))
+    Ok(horus_sys::platform::data_dir().join("recordings"))
 }
 
-/// Get the blackbox directory — tries `.horus/blackbox/` in CWD first, falls back to home dir.
+/// Get the blackbox directory — tries `.horus/blackbox/` in CWD first, falls back to data dir.
 pub fn blackbox_dir() -> Result<PathBuf> {
     let local = std::path::Path::new(".horus/blackbox");
     if local.is_dir() {
         return Ok(local.to_path_buf());
     }
-    Ok(home_dir()?.join(".horus/blackbox"))
+    Ok(horus_sys::platform::data_dir().join("blackbox"))
 }
 
-/// Get `~/.horus/keys` — the signing keys directory.
+/// Get the signing keys directory.
 pub fn keys_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".horus/keys"))
+    Ok(horus_sys::platform::data_dir().join("keys"))
 }
 
-/// Get `~/.horus/auth.json` — the authentication config file.
+/// Get the authentication config file path.
 pub fn auth_config_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".horus/auth.json"))
+    Ok(horus_sys::platform::config_dir().join("auth.json"))
 }
 
 #[cfg(test)]

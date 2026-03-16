@@ -54,7 +54,10 @@ impl PyDepthImage {
     fn new(height: u32, width: u32, dtype: &str) -> PyResult<Self> {
         let dt = parse_depth_dtype(dtype)?;
         let depth = DepthImage::new(width, height, dt)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create depth image: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!(
+                "Failed to create DepthImage: {}. Common causes: dimensions must be > 0, \
+                 unsupported dtype (valid: float32, float64, uint16), \
+                 or insufficient shared memory (check: df -h /dev/shm)", e)))?;
         Ok(Self { inner: depth })
     }
 
@@ -90,7 +93,10 @@ impl PyDepthImage {
         };
 
         let depth = DepthImage::new(width, height, dt)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create depth image: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!(
+                "Failed to create DepthImage: {}. Common causes: dimensions must be > 0, \
+                 unsupported dtype (valid: float32, float64, uint16), \
+                 or insufficient shared memory (check: df -h /dev/shm)", e)))?;
 
         let contiguous = np.call_method1("ascontiguousarray", (&array_to_use,))?;
         let bytes_obj = contiguous.call_method0("tobytes")?;

@@ -9,8 +9,10 @@ use colored::*;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
+/// Cross-platform symlink creation (delegates to horus_sys::fs).
+fn symlink(src: &Path, dst: &Path) -> Result<()> {
+    horus_sys::fs::symlink(src, dst)
+}
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -118,9 +120,7 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                if let Some(hint) = crate::error_wrapper::pip_error_hint(&stderr) {
-                    eprintln!("{}", crate::error_wrapper::format_diagnostic("pip", &hint));
-                }
+                crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::pip_error_hint(&stderr));
                 bail!("pip install failed for {}: {}", pkg.name, stderr);
             }
 
@@ -238,6 +238,7 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::cargo_error_hint(&stderr));
                 bail!("cargo install failed for {}: {}", pkg.name, stderr);
             }
 

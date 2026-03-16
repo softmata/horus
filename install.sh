@@ -1551,25 +1551,30 @@ for binary in "${BINARIES_TO_CLEAN[@]}"; do
     fi
 done
 
-# Clean stale shared memory sessions
-if [ -d "/dev/shm/horus" ]; then
-    echo -e "${CYAN}  ${NC} Removing stale shared memory sessions..."
-    rm -rf /dev/shm/horus/ 2>/dev/null || true
-    if [ ! -d "/dev/shm/horus" ]; then
-        echo -e "${GREEN}  ${NC} Removed /dev/shm/horus/"
-    else
-        echo -e "${YELLOW}  ${NC} Could not fully remove /dev/shm/horus/"
+# Clean stale shared memory sessions (namespaced layout: horus_* dirs)
+SHM_PARENT_DIR=""
+case "$(uname -s)" in
+    Linux*) SHM_PARENT_DIR="/dev/shm" ;;
+    Darwin*) SHM_PARENT_DIR="/tmp" ;;
+    MINGW*|MSYS*|CYGWIN*) SHM_PARENT_DIR="${TEMP:-/tmp}" ;;
+    *) SHM_PARENT_DIR="/tmp" ;;
+esac
+
+SHM_CLEANED=0
+for ns_dir in "$SHM_PARENT_DIR"/horus_*; do
+    if [ -d "$ns_dir" ]; then
+        ns_name=$(basename "$ns_dir")
+        echo -e "${CYAN}  ${NC} Removing stale SHM namespace: $ns_name"
+        rm -rf "$ns_dir" 2>/dev/null || true
+        if [ ! -d "$ns_dir" ]; then
+            echo -e "${GREEN}  ${NC} Removed $ns_name"
+            SHM_CLEANED=$((SHM_CLEANED + 1))
+        else
+            echo -e "${YELLOW}  ${NC} Could not fully remove $ns_name"
+        fi
     fi
-elif [ -d "/tmp/horus" ]; then
-    # macOS
-    echo -e "${CYAN}  ${NC} Removing stale shared memory sessions..."
-    rm -rf /tmp/horus/ 2>/dev/null || true
-    if [ ! -d "/tmp/horus" ]; then
-        echo -e "${GREEN}  ${NC} Removed /tmp/horus/"
-    else
-        echo -e "${YELLOW}  ${NC} Could not fully remove /tmp/horus/"
-    fi
-fi
+done
+[ $SHM_CLEANED -eq 0 ] && echo -e "${CYAN}  ${NC} No stale SHM sessions found"
 
 # Clean Cargo incremental build cache (can cause issues)
 if [ -d "$HOME/.cargo/registry/cache" ]; then

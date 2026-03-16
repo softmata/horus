@@ -33,6 +33,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  HORUS_NAMESPACE: ci_${{ github.run_id }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
@@ -66,10 +67,10 @@ jobs:
 
       - name: Setup SHM directories
         run: |
-          sudo mkdir -p /dev/shm/horus/nodes
-          sudo mkdir -p /dev/shm/horus/topics/horus_topic
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod -R 777 /dev/shm/horus
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics/horus_topic,nodes,control,network,scheduler}
+          sudo chmod -R 777 "$SHM_DIR"
 
       - name: Run unit tests (lib)
         run: cargo test -p horus_manager --lib -- --test-threads=1
@@ -109,10 +110,10 @@ jobs:
 
       - name: Setup SHM directories
         run: |
-          sudo mkdir -p /dev/shm/horus/nodes
-          sudo mkdir -p /dev/shm/horus/topics/horus_topic
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod -R 777 /dev/shm/horus
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics/horus_topic,nodes,control,network,scheduler}
+          sudo chmod -R 777 "$SHM_DIR"
 
       - name: UAT — Node Discovery
         run: cargo test -p horus_manager --test uat_node_discovery -- --test-threads=1
@@ -156,10 +157,10 @@ jobs:
 
       - name: Setup SHM directories
         run: |
-          sudo mkdir -p /dev/shm/horus/nodes
-          sudo mkdir -p /dev/shm/horus/topics/horus_topic
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod -R 777 /dev/shm/horus
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics/horus_topic,nodes,control,network,scheduler}
+          sudo chmod -R 777 "$SHM_DIR"
 
       - name: Stress — Scale (1000 nodes)
         run: cargo test -p horus_manager --test stress_scale -- --test-threads=1
@@ -189,10 +190,10 @@ jobs:
 
       - name: Setup SHM directories
         run: |
-          sudo mkdir -p /dev/shm/horus/nodes
-          sudo mkdir -p /dev/shm/horus/topics/horus_topic
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod -R 777 /dev/shm/horus
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics/horus_topic,nodes,control,network,scheduler}
+          sudo chmod -R 777 "$SHM_DIR"
 
       - name: Chaos — Failure injection
         run: cargo test -p horus_manager --test chaos_failure -- --test-threads=1

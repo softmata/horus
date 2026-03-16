@@ -80,9 +80,8 @@ impl FailurePolicy {
 /// Created from a [`FailurePolicy`] and maintained by the scheduler
 /// during execution. This is the mutable counterpart to the immutable policy.
 ///
-/// Currently not wired into the scheduler's tick loop — `handle_tick_failure()`
-/// needs to consult this handler instead of unconditionally continuing.
-/// Tracked as a follow-up to re-integrate into `RegisteredNode`.
+/// Stored in `RegisteredNode::failure_handler` and consulted by
+/// `handle_tick_failure()` and `process_tick_result()` during the tick loop.
 pub struct FailureHandler {
     /// The policy that governs behavior
     policy: FailurePolicy,

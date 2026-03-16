@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::fault_tolerance::FailureHandler;
 use super::profiler::RuntimeProfiler;
 use super::record_replay::NodeRecorder;
 use crate::core::{Miss, Node, NodeInfo, RtStats};
@@ -122,6 +123,7 @@ mod execution_class_tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         }
     }
 
@@ -371,6 +373,8 @@ pub(crate) struct RegisteredNode {
     pub(crate) pinned_core: Option<usize>,
     /// Per-node watchdog timeout (overrides scheduler global).
     pub(crate) node_watchdog: Option<Duration>,
+    /// Failure policy handler — tracks restart count, backoff, cooldown state.
+    pub(crate) failure_handler: Option<FailureHandler>,
 }
 
 /// Shared monitoring references passed to executor threads.

@@ -106,42 +106,23 @@ pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<()> {
 // Memory Locking
 // ============================================================================
 
-/// Lock all current and future memory pages (prevents swapping)
-/// Requires CAP_IPC_LOCK capability or root on Linux
+/// Lock all current and future memory pages (prevents swapping).
+///
+/// Delegates to [`horus_sys::rt::lock_memory()`] which handles per-platform implementation.
 #[doc(hidden)]
-#[cfg(target_os = "linux")]
 pub fn lock_all_memory() -> RuntimeResult<()> {
-    // SAFETY: MCL_CURRENT | MCL_FUTURE are valid POSIX flag constants for mlockall.
-    unsafe {
-        // MCL_CURRENT | MCL_FUTURE
-        let flags = libc::MCL_CURRENT | libc::MCL_FUTURE;
-        let result = libc::mlockall(flags);
-
-        if result == 0 {
-            println!("[RT] All memory locked (mlockall)");
-            Ok(())
+    horus_sys::rt::lock_memory().map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("CAP_IPC_LOCK") || msg.contains("root") || msg.contains("EPERM") {
+            RuntimeError::PermissionDenied(msg)
+        } else if msg.contains("not supported") {
+            RuntimeError::NotSupported(msg)
         } else {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EPERM) {
-                Err(RuntimeError::PermissionDenied(
-                    "mlockall requires CAP_IPC_LOCK or root".to_string(),
-                ))
-            } else {
-                Err(RuntimeError::MemoryLockError(format!(
-                    "mlockall failed: {}",
-                    err
-                )))
-            }
+            RuntimeError::MemoryLockError(msg)
         }
-    }
-}
-
-#[doc(hidden)]
-#[cfg(not(target_os = "linux"))]
-pub fn lock_all_memory() -> RuntimeResult<()> {
-    Err(RuntimeError::NotSupported(
-        "Memory locking only supported on Linux".to_string(),
-    ))
+    })?;
+    println!("[RT] All memory locked");
+    Ok(())
 }
 
 /// Pre-fault stack memory to avoid page faults during execution.
@@ -159,45 +140,23 @@ pub fn prefault_stack(stack_size: usize) -> RuntimeResult<()> {
 // Real-Time Scheduling
 // ============================================================================
 
-/// Set real-time scheduling policy for current thread
-/// Requires CAP_SYS_NICE capability or root on Linux
+/// Set real-time scheduling policy for current thread.
+///
+/// Delegates to [`horus_sys::rt::set_realtime_priority()`] which handles per-platform implementation.
 #[doc(hidden)]
-#[cfg(target_os = "linux")]
 pub fn set_realtime_priority(priority: i32) -> RuntimeResult<()> {
-    // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
-    unsafe {
-        let param = libc::sched_param {
-            sched_priority: priority,
-        };
-
-        // SCHED_FIFO for real-time scheduling
-        let result = libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
-
-        if result == 0 {
-            println!("[RT] Set SCHED_FIFO with priority {}", priority);
-            Ok(())
+    horus_sys::rt::set_realtime_priority(priority).map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("CAP_SYS_NICE") || msg.contains("root") || msg.contains("EPERM") {
+            RuntimeError::PermissionDenied(msg)
+        } else if msg.contains("not supported") {
+            RuntimeError::NotSupported(msg)
         } else {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EPERM) {
-                Err(RuntimeError::PermissionDenied(
-                    "SCHED_FIFO requires CAP_SYS_NICE or root".to_string(),
-                ))
-            } else {
-                Err(RuntimeError::SchedulingError(format!(
-                    "sched_setscheduler failed: {}",
-                    err
-                )))
-            }
+            RuntimeError::SchedulingError(msg)
         }
-    }
-}
-
-#[doc(hidden)]
-#[cfg(not(target_os = "linux"))]
-pub fn set_realtime_priority(_priority: i32) -> RuntimeResult<()> {
-    Err(RuntimeError::NotSupported(
-        "SCHED_FIFO only supported on Linux".to_string(),
-    ))
+    })?;
+    println!("[RT] Set RT priority {}", priority);
+    Ok(())
 }
 
 // ============================================================================
@@ -513,123 +472,55 @@ impl RuntimeCapabilities {
     // =========================================================================
 
     /// Detect NUMA topology (node count and CPU mapping).
+    /// On Linux, reads from /sys/devices/system/node/. Non-Linux: single node.
     fn detect_numa_topology() -> (usize, HashMap<usize, Vec<usize>>) {
-        #[cfg(target_os = "linux")]
-        {
-            let mut topology = HashMap::new();
-            let mut max_node = 0;
-
-            // Try to read NUMA node information
-            let node_base = std::path::Path::new("/sys/devices/system/node");
-            if node_base.exists() {
-                if let Ok(entries) = std::fs::read_dir(node_base) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name();
-                        let name = name.to_string_lossy();
-                        if let Some(node_str) = name.strip_prefix("node") {
-                            if let Ok(node_id) = node_str.parse::<usize>() {
-                                max_node = max_node.max(node_id + 1);
-
-                                // Read CPUs for this node
-                                let cpulist_path = entry.path().join("cpulist");
-                                if let Ok(cpulist) = std::fs::read_to_string(&cpulist_path) {
-                                    let cpus = Self::parse_cpu_list(cpulist.trim());
-                                    if !cpus.is_empty() {
-                                        topology.insert(node_id, cpus);
-                                    }
+        // NUMA detection: read /sys/devices/system/node/ (Linux).
+        // Falls through to single-node on non-Linux or when /sys is unavailable.
+        let mut topology = HashMap::new();
+        let mut max_node = 0;
+        let node_base = std::path::Path::new("/sys/devices/system/node");
+        if node_base.exists() {
+            if let Ok(entries) = std::fs::read_dir(node_base) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if let Some(node_str) = name.strip_prefix("node") {
+                        if let Ok(node_id) = node_str.parse::<usize>() {
+                            max_node = max_node.max(node_id + 1);
+                            let cpulist_path = entry.path().join("cpulist");
+                            if let Ok(cpulist) = std::fs::read_to_string(&cpulist_path) {
+                                let cpus = horus_sys::rt::parse_cpu_list(cpulist.trim());
+                                if !cpus.is_empty() {
+                                    topology.insert(node_id, cpus);
                                 }
                             }
                         }
                     }
                 }
             }
-
-            // If we found NUMA info, use it
-            if max_node > 0 {
-                return (max_node, topology);
-            }
-
-            // Otherwise, assume single NUMA node with all CPUs
-            let cpu_count = std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(1);
-            topology.insert(0, (0..cpu_count).collect());
-            (1, topology)
         }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            let cpu_count = std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(1);
-            let mut topology = HashMap::new();
-            topology.insert(0, (0..cpu_count).collect());
-            (1, topology)
+        if max_node > 0 {
+            return (max_node, topology);
         }
+        // Fallback: single NUMA node with all CPUs
+        let cpu_count = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
+        topology.insert(0, (0..cpu_count).collect());
+        (1, topology)
     }
 
     /// Parse a CPU list string like "0-3,7,9-11" into individual CPU indices.
     fn parse_cpu_list(s: &str) -> Vec<usize> {
-        parse_cpu_list(s)
+        horus_sys::rt::parse_cpu_list(s)
     }
 
-    /// Get the current RLIMIT_MEMLOCK soft limit.
+    /// Get the current RLIMIT_MEMLOCK soft limit (delegates to horus_sys::rt).
     fn get_memlock_limit() -> u64 {
-        #[cfg(target_os = "linux")]
-        {
-            // SAFETY: getrlimit is a safe libc call
-            unsafe {
-                let mut rlim = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                if libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut rlim) == 0 {
-                    if rlim.rlim_cur == libc::RLIM_INFINITY {
-                        u64::MAX
-                    } else {
-                        rlim.rlim_cur
-                    }
-                } else {
-                    0
-                }
-            }
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            0
-        }
+        horus_sys::rt::memlock_limit_bytes()
     }
 
-    /// Check if we can actually set RT priority (not just that kernel supports it).
+    /// Check if we can actually set RT priority (delegates to horus_sys::rt).
     fn can_set_rt_priority_impl() -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            // SAFETY: getrlimit/geteuid are always safe to call with valid constants
-            unsafe {
-                // Check RLIMIT_RTPRIO
-                let mut rlim = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                if libc::getrlimit(libc::RLIMIT_RTPRIO, &mut rlim) == 0 && rlim.rlim_cur > 0 {
-                    return true;
-                }
-
-                // Check if running as root
-                let euid = libc::geteuid();
-                if euid == 0 {
-                    return true;
-                }
-
-                false
-            }
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        horus_sys::rt::can_set_rt_priority()
     }
 }
 

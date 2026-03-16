@@ -759,7 +759,7 @@ impl RegistryClient {
 
                 // Create symlink
                 #[cfg(unix)]
-                std::os::unix::fs::symlink(&package_dir, &local_link)?;
+                horus_sys::fs::symlink(&package_dir, &local_link)?;
                 #[cfg(windows)]
                 std::os::windows::fs::symlink_dir(&package_dir, &local_link)?;
 
@@ -1162,7 +1162,7 @@ impl RegistryClient {
 
                 // Create symlink
                 #[cfg(unix)]
-                std::os::unix::fs::symlink(&pkg_dir, &local_link)?;
+                horus_sys::fs::symlink(&pkg_dir, &local_link)?;
                 #[cfg(windows)]
                 std::os::windows::fs::symlink_dir(&pkg_dir, &local_link)?;
 
@@ -1438,7 +1438,7 @@ impl RegistryClient {
 
                 // Create symlink
                 #[cfg(unix)]
-                std::os::unix::fs::symlink(&pkg_dir, &local_link)?;
+                horus_sys::fs::symlink(&pkg_dir, &local_link)?;
                 #[cfg(windows)]
                 std::os::windows::fs::symlink_dir(&pkg_dir, &local_link)?;
 
@@ -1590,7 +1590,7 @@ impl RegistryClient {
 
                         // Create symlink
                         #[cfg(unix)]
-                        std::os::unix::fs::symlink(&global_package_dir, &local_link)?;
+                        horus_sys::fs::symlink(&global_package_dir, &local_link)?;
                         #[cfg(windows)]
                         std::os::windows::fs::symlink_dir(&global_package_dir, &local_link)?;
 
@@ -1704,7 +1704,7 @@ impl RegistryClient {
 
         // Create symlink to source path
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&source_path, &link_path)?;
+        horus_sys::fs::symlink(&source_path, &link_path)?;
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(&source_path, &link_path)?;
 
@@ -1976,7 +1976,7 @@ impl RegistryClient {
             fs::remove_file(&bin_link)?;
         }
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&cargo_bin, &bin_link)?;
+        horus_sys::fs::symlink(&cargo_bin, &bin_link)?;
         #[cfg(windows)]
         {
             // On Windows, create a .cmd wrapper for executables

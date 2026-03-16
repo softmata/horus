@@ -149,7 +149,7 @@ mod tests {
 
     fn make_header(is_pod: bool) -> TopicHeader {
         let mut h = TopicHeader::zeroed();
-        h.init(8, 8, is_pod, 16, 16);
+        h.init(8, 8, is_pod, 16, 16, "TestType", 0);
         h
     }
 

@@ -203,11 +203,9 @@ pub(super) fn execute_cpp_binary(binary: &Path, args: &[String]) -> Result<()> {
     ctrlc::set_handler(move || {
         eprintln!("{}", "\nCtrl+C received, stopping C++ process...".red());
         r.store(false, Ordering::SeqCst);
-        #[cfg(unix)]
-        // SAFETY: child_id is a valid PID of a child process we spawned.
-        unsafe {
-            libc::kill(child_id as i32, libc::SIGINT);
-        }
+        // Send SIGINT to child process (cross-platform via horus_sys)
+        let _ = horus_sys::process::ProcessHandle::from_pid(child_id)
+            .signal(horus_sys::process::Signal::Interrupt);
     })
     .ok();
 
@@ -306,17 +304,8 @@ fn symlink_compile_commands(build_dir: &Path, project_dir: &Path) {
         // Remove existing symlink/file
         let _ = fs::remove_file(&target);
 
-        #[cfg(unix)]
-        {
-            if std::os::unix::fs::symlink(&source, &target).is_ok() {
-                log::debug!("Symlinked compile_commands.json to project root");
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
-            // On non-Unix, copy instead
-            let _ = fs::copy(&source, &target);
+        if horus_sys::fs::symlink(&source, &target).is_ok() {
+            log::debug!("Symlinked compile_commands.json to project root");
         }
     }
 }
@@ -413,25 +402,9 @@ fn check_dpkg_installed(package: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if a file is executable (Unix).
+/// Check if a file is executable.
 fn is_executable(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = fs::metadata(path) {
-            return metadata.permissions().mode() & 0o111 != 0;
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        // On Windows, check common executable extensions
-        if let Some(ext) = path.extension() {
-            return ext == "exe";
-        }
-    }
-
-    false
+    horus_sys::fs::is_executable(path)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

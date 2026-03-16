@@ -72,6 +72,9 @@ pub fn create_new_project(
         "python" => {
             create_main_py(&project_path)?;
         }
+        "cpp" => {
+            create_cpp_project(&project_path, &name)?;
+        }
         other => anyhow::bail!("Unsupported language: {}", other),
     }
 
@@ -101,8 +104,9 @@ fn prompt_language() -> Result<String> {
     println!("\n{} Select language:", "?".yellow().bold());
     println!("  {} Python", "1.".cyan());
     println!("  {} Rust", "2.".cyan());
+    println!("  {} C++", "3.".cyan());
 
-    print!("{} [1-2] (default: 2): ", ">".cyan().bold());
+    print!("{} [1-3] (default: 2): ", ">".cyan().bold());
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -114,6 +118,7 @@ fn prompt_language() -> Result<String> {
     let language = match choice {
         "1" => "python",
         "2" => "rust",
+        "3" => "cpp",
         _ => {
             println!("Invalid choice, defaulting to Rust");
             "rust"
@@ -210,7 +215,19 @@ build/
 "#,
             );
         }
-        "cpp" => {}
+        "cpp" => {
+            gitignore_content.push_str(
+                r#"
+# C++
+build/
+.horus/cpp-build/
+compile_commands.json
+*.o
+*.so
+*.a
+"#,
+            );
+        }
         _ => {}
     }
 
@@ -236,6 +253,8 @@ fn create_horus_toml(
             repository: None,
             package_type: None,
             categories: Vec::new(),
+            standard: None,
+            rust_edition: None,
         },
         dependencies: Default::default(),
         dev_dependencies: Default::default(),
@@ -243,6 +262,8 @@ fn create_horus_toml(
         scripts: Default::default(),
         ignore: Default::default(),
         enable: Vec::new(),
+        cpp: None,
+        hooks: Default::default(),
     };
 
     manifest.save_to(&project_path.join(HORUS_TOML))?;
@@ -420,6 +441,56 @@ if __name__ == "__main__":
     horus.run(node)
 "#;
     fs::write(project_path.join("main.py"), content)?;
+    Ok(())
+}
+
+fn create_cpp_project(project_path: &Path, name: &str) -> Result<()> {
+    // Create CMakeLists.txt
+    let cmake_content = format!(
+        r#"cmake_minimum_required(VERSION 3.16)
+project({name} LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+find_package(horus QUIET)
+
+add_executable(${{PROJECT_NAME}} src/main.cpp)
+
+if(horus_FOUND)
+    target_link_libraries(${{PROJECT_NAME}} PRIVATE horus::horus)
+endif()
+"#
+    );
+    fs::write(project_path.join("CMakeLists.txt"), cmake_content)?;
+
+    // Create src/main.cpp
+    let cpp_content = format!(
+        r#"// Mobile robot controller
+
+#include <cstdio>
+
+// TODO: #include <horus/horus.h> when C++ bindings are available
+
+int main() {{
+    std::printf("[{name}] HORUS C++ node starting\\n");
+
+    // Your control logic here
+    // Once C++ bindings are available:
+    //   auto node = horus::Node("{name}");
+    //   node.subscribe("sensors.data");
+    //   node.advertise("motors.cmd_vel");
+    //   node.spin();
+
+    return 0;
+}}
+"#
+    );
+    let src_dir = project_path.join("src");
+    fs::create_dir_all(&src_dir)?;
+    fs::write(src_dir.join("main.cpp"), cpp_content)?;
+
     Ok(())
 }
 

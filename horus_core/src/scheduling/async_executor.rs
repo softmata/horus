@@ -341,6 +341,7 @@ mod tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         }
     }
 
@@ -371,6 +372,7 @@ mod tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         }
     }
 

@@ -56,7 +56,7 @@ When using HORUS in production:
 - Keep HORUS updated to the latest version
 - Review and validate all packages before installation
 - Use authentication for registry operations
-- Limit access to shared memory regions (`/dev/shm/horus/`)
+- Limit access to shared memory regions (`/dev/shm/horus_*/`)
 - Monitor system logs for unusual activity
 - Follow principle of least privilege for node permissions
 

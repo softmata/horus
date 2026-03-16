@@ -28,7 +28,10 @@ impl PyPointCloud {
     fn new(num_points: u32, fields: u32, dtype: &str) -> PyResult<Self> {
         let dt = dlpack_utils::parse_dtype(dtype)?;
         let pc = PointCloud::new(num_points, fields, dt)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create point cloud: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!(
+                "Failed to create PointCloud: {}. Common causes: num_points must be > 0, \
+                 fields typically 3 (xyz) or 4 (xyzrgb/xyzi), \
+                 or insufficient shared memory (check: df -h /dev/shm)", e)))?;
         Ok(Self { inner: pc })
     }
 
@@ -54,7 +57,10 @@ impl PyPointCloud {
         let dt = dlpack_utils::parse_dtype(&dtype_name)?;
 
         let mut pc = PointCloud::new(num_points, fields, dt)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create point cloud: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!(
+                "Failed to create PointCloud: {}. Common causes: num_points must be > 0, \
+                 fields typically 3 (xyz) or 4 (xyzrgb/xyzi), \
+                 or insufficient shared memory (check: df -h /dev/shm)", e)))?;
 
         let np = py.import("numpy")?;
         let contiguous = np.call_method1("ascontiguousarray", (array,))?;

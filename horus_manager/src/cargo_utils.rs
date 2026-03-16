@@ -36,21 +36,10 @@ pub fn detect_system_cargo_binary(package_name: &str) -> Result<Option<String>> 
 }
 
 /// Check if a path is executable.
-#[cfg(unix)]
+///
+/// Delegates to [`horus_sys::fs::is_executable`] for cross-platform support.
 pub fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(metadata) = path.metadata() {
-        metadata.permissions().mode() & 0o111 != 0
-    } else {
-        false
-    }
-}
-
-/// Check if a path is executable (non-unix: just checks existence).
-#[cfg(not(unix))]
-pub fn is_executable(path: &Path) -> bool {
-    path.exists()
+    horus_sys::fs::is_executable(path)
 }
 
 #[cfg(test)]

@@ -3,7 +3,11 @@ use pyo3::prelude::*;
 mod config;
 mod depth_image;
 mod dlpack_utils;
+mod driver_params;
+mod drivers;
 pub mod errors;
+mod params;
+mod rate;
 mod transform_frame;
 mod image;
 mod messages;
@@ -17,7 +21,7 @@ mod types;
 
 use config::PySchedulerConfig;
 use transform_frame::{PyTransformFrame, PyTransformFrameConfig, PyTransform};
-use node::{PyNode, PyNodeInfo, PyNodeState};
+use node::{PyNodeInfo, PyNodeState};
 use scheduler::{PyMiss, PyScheduler};
 use topic::PyTopic;
 use types::Priority;
@@ -26,7 +30,6 @@ use types::Priority;
 #[pymodule]
 fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core classes
-    m.add_class::<PyNode>()?;
     m.add_class::<PyNodeInfo>()?;
     m.add_class::<PyTopic>()?;
     m.add_class::<PyScheduler>()?;
@@ -46,8 +49,17 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pointcloud::PyPointCloud>()?;
     m.add_class::<depth_image::PyDepthImage>()?;
 
+    // Runtime parameters
+    m.add_class::<params::PyParams>()?;
+
+    // Rate limiter
+    m.add_class::<rate::PyRate>()?;
+
     // Perception types
     perception::register_perception_module(m)?;
+
+    // Drivers module
+    drivers::register_drivers_module(m)?;
 
     // Message types
     messages::register_message_classes(m)?;

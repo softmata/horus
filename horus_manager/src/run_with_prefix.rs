@@ -269,8 +269,16 @@ pub fn from_resolved_tool(
 
 /// Create a fake failed ExitStatus for error cases.
 fn fake_exit_status() -> ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    ExitStatus::from_raw(256) // exit code 1
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(256) // exit code 1
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(1) // exit code 1
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

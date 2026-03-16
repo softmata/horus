@@ -244,6 +244,8 @@ mod tests {
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
@@ -251,6 +253,8 @@ mod tests {
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         }
     }
 
@@ -286,6 +290,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
         deps.insert(
@@ -300,6 +307,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -328,6 +338,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
         deps.insert(
@@ -342,6 +355,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -370,6 +386,9 @@ mod tests {
                 branch: Some("main".to_string()),
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -397,6 +416,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -432,6 +454,9 @@ mod tests {
                 branch: None,
                 tag: None,
                 rev: None,
+                apt: None,
+                cmake_package: None,
+                lang: None,
             }),
         );
 
@@ -472,6 +497,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         })
     }
 
@@ -486,6 +514,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         })
     }
 
@@ -500,6 +531,9 @@ mod tests {
             branch: branch.map(|s| s.to_string()),
             tag: tag.map(|s| s.to_string()),
             rev: rev.map(|s| s.to_string()),
+            apt: None,
+            cmake_package: None,
+            lang: None,
         })
     }
 
@@ -514,6 +548,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         })
     }
 
@@ -617,6 +654,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         }));
         deps.insert("numpy".into(), pypi_dep(Some(">=1.24"), &[]));
         deps.insert("my-py-lib".into(), py_git_dep("https://github.com/org/my-py-lib", Some("main"), None, None));
@@ -784,6 +824,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         });
         // Should produce just the name with no version specifier
         assert_eq!(format_pypi_dep("my-pkg", &dep), "my-pkg");
@@ -802,6 +845,9 @@ mod tests {
             branch: None,
             tag: None,
             rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
         });
         let result = format_pypi_dep("httpx", &dep);
         assert_eq!(result, "httpx>=2.0[async,http2]");

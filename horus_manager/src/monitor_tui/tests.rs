@@ -9,7 +9,6 @@ fn test_tab_as_str() {
     assert_eq!(Tab::Overview.as_str(), "Overview");
     assert_eq!(Tab::Nodes.as_str(), "Nodes");
     assert_eq!(Tab::Topics.as_str(), "Topics");
-    assert_eq!(Tab::Network.as_str(), "Network");
     assert_eq!(Tab::TransformFrame.as_str(), "TransformFrame");
     assert_eq!(Tab::Packages.as_str(), "Packages");
     assert_eq!(Tab::Parameters.as_str(), "Params");
@@ -18,11 +17,10 @@ fn test_tab_as_str() {
 #[test]
 fn test_tab_all_returns_all_tabs() {
     let tabs = Tab::all();
-    assert_eq!(tabs.len(), 8);
+    assert_eq!(tabs.len(), 7);
     assert!(tabs.contains(&Tab::Overview));
     assert!(tabs.contains(&Tab::Nodes));
     assert!(tabs.contains(&Tab::Topics));
-    assert!(tabs.contains(&Tab::Network));
     assert!(tabs.contains(&Tab::TransformFrame));
     assert!(tabs.contains(&Tab::Packages));
     assert!(tabs.contains(&Tab::Parameters));
@@ -81,9 +79,6 @@ fn test_next_tab_cycles_through_all() {
     assert_eq!(dashboard.active_tab, Tab::Topics);
 
     dashboard.next_tab();
-    assert_eq!(dashboard.active_tab, Tab::Network);
-
-    dashboard.next_tab();
     assert_eq!(dashboard.active_tab, Tab::TransformFrame);
 
     dashboard.next_tab();
@@ -117,9 +112,6 @@ fn test_prev_tab_cycles_backwards() {
 
     dashboard.prev_tab();
     assert_eq!(dashboard.active_tab, Tab::TransformFrame);
-
-    dashboard.prev_tab();
-    assert_eq!(dashboard.active_tab, Tab::Network);
 
     dashboard.prev_tab();
     assert_eq!(dashboard.active_tab, Tab::Topics);
@@ -1700,7 +1692,7 @@ fn test_zero_nodes_renders_same_across_tabs() {
     dashboard.topics.clear();
 
     // Each tab that shows node/topic data should handle empty state
-    let tabs_with_node_data = [Tab::Overview, Tab::Nodes, Tab::Topics, Tab::Network];
+    let tabs_with_node_data = [Tab::Overview, Tab::Nodes, Tab::Topics];
     for tab in &tabs_with_node_data {
         dashboard.active_tab = *tab;
         let buffer = render_dashboard(&mut dashboard, 120, 40);
@@ -1736,7 +1728,7 @@ fn test_many_nodes_renders_same_across_tabs() {
         })
         .collect();
 
-    let tabs_with_node_data = [Tab::Overview, Tab::Nodes, Tab::Topics, Tab::Network];
+    let tabs_with_node_data = [Tab::Overview, Tab::Nodes, Tab::Topics];
     for tab in &tabs_with_node_data {
         dashboard.active_tab = *tab;
         let buffer = render_dashboard(&mut dashboard, 120, 40);

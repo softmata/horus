@@ -28,8 +28,6 @@ pub(crate) struct DependencyGraph {
     /// Execution steps: each step is a set of node indices that can run in parallel.
     /// Steps must be executed in order (barrier between each step).
     steps: Vec<Vec<usize>>,
-    /// Number of nodes in the graph.
-    node_count: usize,
     /// Whether the graph was built from actual pub/sub metadata (true)
     /// or fell back to .order() tiers (false).
     has_topic_metadata: bool,
@@ -46,7 +44,6 @@ impl DependencyGraph {
         if n == 0 {
             return Ok(Self {
                 steps: Vec::new(),
-                node_count: 0,
                 has_topic_metadata: false,
             });
         }
@@ -99,7 +96,6 @@ impl DependencyGraph {
 
         Ok(Self {
             steps,
-            node_count: n,
             has_topic_metadata: true,
         })
     }
@@ -127,7 +123,6 @@ impl DependencyGraph {
 
         Self {
             steps,
-            node_count: n,
             has_topic_metadata: false,
         }
     }
@@ -169,20 +164,6 @@ impl DependencyGraph {
         let mut chain_id: HashMap<usize, usize> = HashMap::new();
         for (chain, &node) in rt_node_indices.iter().enumerate() {
             chain_id.insert(node, chain);
-        }
-
-        // Merge chains for nodes that appear in consecutive steps with dependencies
-        for step in &self.steps {
-            let rt_in_step: Vec<usize> = step
-                .iter()
-                .filter(|idx| chain_id.contains_key(idx))
-                .copied()
-                .collect();
-
-            // RT nodes in the same step are INDEPENDENT — different chains (no merge)
-            // RT nodes connected across steps are DEPENDENT — same chain (merge)
-            // The step structure already handles this: nodes in the same step
-            // have no dependency between them.
         }
 
         // Collect chains
@@ -356,6 +337,7 @@ mod tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         }
     }
 

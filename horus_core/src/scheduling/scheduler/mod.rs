@@ -1,8 +1,7 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
 use crate::core::tick_context::{clear_tick_context, set_tick_context};
-use crate::core::{announce_started, announce_stopped, DurationExt, Node, NodeInfo, NodePresence};
+use crate::core::{DurationExt, Node, NodeInfo, NodePresence};
 use crate::error::{HorusContext, HorusResult};
-use crate::memory::platform::shm_control_dir;
 use crate::terminal::print_line;
 use colored::Colorize;
 use std::collections::HashMap;
@@ -40,8 +39,7 @@ static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 /// # Safety
 /// This is a signal handler and must only call async-signal-safe functions.
 /// We set a flag and let the main loop do the actual cleanup.
-#[cfg(unix)]
-extern "C" fn sigterm_handler(_signum: libc::c_int) {
+extern "C" fn sigterm_handler(_signum: i32) {
     SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
 }
 
@@ -126,8 +124,6 @@ pub(crate) struct TickState {
     pub period: Duration,
     pub current: u64,
     pub last_instant: Instant,
-    /// Clock-based last instant for timing measurements (uses scheduler clock).
-    pub last_clock_instant: crate::core::clock::ClockInstant,
 }
 
 /// Monitoring features: safety, blackbox flight recorder, telemetry, profiling.
@@ -142,8 +138,6 @@ pub(crate) struct MonitorState {
     pub telemetry: Option<super::telemetry::TelemetryManager>,
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub last_snapshot: Instant,
-    /// Clock-based snapshot timing (uses scheduler clock for deterministic mode).
-    pub last_snapshot_clock: crate::core::clock::ClockInstant,
     pub working_dir: PathBuf,
     /// Pre-allocated buffer for `check_watchdogs()`.
     ///
@@ -196,6 +190,15 @@ pub struct Scheduler {
 
     /// Whether `finalize_and_init()` has been called. Prevents double-init.
     initialized: bool,
+
+    /// Live node registry in SHM — updated every tick with atomic metrics.
+    pub(super) registry: Option<super::registry::SchedulerRegistry>,
+    /// Maps node name → slot index in the registry.
+    pub(super) registry_slots: HashMap<String, usize>,
+
+    /// Control topic for receiving CLI commands (pause/resume/shutdown).
+    /// Drained at the start of each tick for deterministic behavior.
+    pub(super) control_topic: Option<crate::communication::Topic<super::control::ControlCommand>>,
 }
 
 impl Default for Scheduler {
@@ -252,7 +255,6 @@ impl Scheduler {
                 period,
                 current: 0,
                 last_instant: now,
-                last_clock_instant: crate::core::clock::ClockInstant::default(),
             },
             clock: Arc::new(crate::core::clock::WallClock::new()),
             dependency_graph: None,
@@ -266,7 +268,6 @@ impl Scheduler {
                 telemetry: None,
                 profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
                 last_snapshot: now,
-                last_snapshot_clock: crate::core::clock::ClockInstant::default(),
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
                 watchdog_expired_buf: Vec::new(),
                 watchdog_graduated_buf: Vec::new(),
@@ -275,6 +276,9 @@ impl Scheduler {
             recording: None,
             pending_config: config,
             initialized: false,
+            registry: None,
+            registry_slots: HashMap::new(),
+            control_topic: None,
         }
     }
 
@@ -1252,8 +1256,8 @@ impl Scheduler {
     /// scheduler.add(ControlNode::new()).order(1).rate(500_u64.hz()).build()?;
     /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
-    pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
-        super::node_builder::NodeBuilder::new(self, Box::new(node))
+    pub fn add<N: super::node_builder::IntoNode>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
+        super::node_builder::NodeBuilder::new(self, node.into_node())
     }
 
     /// Add a node using a pre-built NodeRegistration.
@@ -1351,6 +1355,9 @@ impl Scheduler {
             os_priority: config.os_priority,
             pinned_core: config.pinned_core,
             node_watchdog: config.node_watchdog,
+            failure_handler: config
+                .failure_policy
+                .map(crate::scheduling::fault_tolerance::FailureHandler::new),
         });
 
         if let Some(rate) = node_rate {
@@ -1497,7 +1504,13 @@ impl Scheduler {
     /// Does **not** loop. Does **not** sleep. The caller controls timing.
     /// Lazily initializes on first call (applies deferred config, inits nodes).
     ///
-    /// Designed for simulation and testing:
+    /// # Errors
+    ///
+    /// - [`NodeError::InitPanic`] — a node panicked during first-call `init()`
+    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
+    /// - [`NodeError::TickFailed`] — a node's `tick()` returned an error
+    ///
+    /// # Example
     /// ```rust,ignore
     /// let mut scheduler = Scheduler::new()
     ///     .tick_rate(100_u64.hz());
@@ -1588,11 +1601,22 @@ impl Scheduler {
     }
 
     /// Main loop with automatic signal handling and cleanup.
+    ///
+    /// # Errors
+    ///
+    /// - [`NodeError::InitPanic`] — a node panicked during `init()`
+    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
+    /// - [`ResourceError::Unsupported`] — `require_rt()` was set but RT is unavailable
+    /// - [`ConfigError`] — invalid scheduler configuration detected during finalization
     pub fn run(&mut self) -> HorusResult<()> {
         self.run_with_filter(None, None)
     }
 
     /// Run all nodes for a specified duration, then shutdown gracefully.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`run()`](Self::run), plus returns `Ok(())` after `duration` elapses.
     pub fn run_for(&mut self, duration: Duration) -> HorusResult<()> {
         self.run_with_filter(None, Some(duration))
     }
@@ -1981,14 +2005,7 @@ impl Scheduler {
         }
 
         // Set up SIGTERM handler for graceful termination (e.g., from `kill` or `timeout`)
-        #[cfg(unix)]
-        // SAFETY: SIGTERM is a valid signal; sigterm_handler is a valid function pointer.
-        unsafe {
-            libc::signal(
-                libc::SIGTERM,
-                sigterm_handler as *const () as libc::sighandler_t,
-            );
-        }
+        horus_sys::process::on_terminate(sigterm_handler);
     }
 
     /// Initialize nodes matching the optional filter.
@@ -2020,20 +2037,27 @@ impl Scheduler {
                     match init_result {
                         Ok(()) => {
                             registered.initialized = true;
-                            // Announce to discovery topic
                             let publishers = registered.node.publishers();
                             let subscribers = registered.node.subscribers();
-                            announce_started(node_name, &publishers, &subscribers);
 
                             // Write presence file for monitor detection
-                            let presence = NodePresence::new(
+                            let presence = match NodePresence::new(
                                 node_name,
                                 Some(&self.scheduler_name),
                                 publishers,
                                 subscribers,
                                 registered.priority,
                                 registered.rate_hz,
-                            );
+                            ) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    print_line(&format!(
+                                        "Warning: Invalid node name '{}': {}",
+                                        node_name, e
+                                    ));
+                                    continue;
+                                }
+                            };
                             if let Err(e) = presence.write() {
                                 print_line(&format!(
                                     "Warning: Failed to write presence file for '{}': {}",
@@ -2355,7 +2379,6 @@ impl Scheduler {
 
                     match shutdown_result {
                         Ok(()) => {
-                            announce_stopped(node_name);
                             // Remove presence file
                             if let Err(e) = NodePresence::remove(node_name) {
                                 print_line(&format!(
@@ -2638,105 +2661,15 @@ impl Scheduler {
         Ok(path)
     }
 
-    /// Setup control directory for node lifecycle commands
+    /// Setup control directory — no-op, replaced by control topic.
     fn setup_control_directory() {
-        let dir = shm_control_dir();
-        let _ = fs::create_dir_all(&dir);
+        // Control commands now flow via horus.ctl.{scheduler} topic.
     }
 
-    /// Check and process control commands for all nodes
-    ///
-    /// Reads control files from `/dev/shm/horus/control/{node_name}.cmd`
-    /// and processes commands like stop, restart, pause, resume.
+    /// Process control commands — delegates to execution.rs topic-based implementation.
     fn process_control_commands(&mut self) {
-        let control_dir = shm_control_dir();
-        if !control_dir.exists() {
-            return;
-        }
-
-        // Check for control files
-        if let Ok(entries) = fs::read_dir(&control_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "cmd") {
-                    // Extract node name from filename (e.g., "my_node.cmd" -> "my_node")
-                    if let Some(stem) = path.file_stem() {
-                        let node_name = stem.to_string_lossy().to_string();
-
-                        // Read command
-                        if let Ok(cmd_str) = fs::read_to_string(&path) {
-                            let cmd = cmd_str.trim().to_lowercase();
-
-                            // Find and process the node
-                            let mut found = false;
-                            for registered in &mut self.nodes {
-                                if registered.name.as_ref() == node_name {
-                                    found = true;
-                                    match cmd.as_str() {
-                                        "stop" => {
-                                            registered.is_stopped = true;
-                                            registered.is_paused = false;
-                                            println!(
-                                                "{}",
-                                                format!("[CONTROL] Node '{}' stopped", node_name)
-                                                    .yellow()
-                                            );
-                                            // Update state to show stopped
-                                            if let Some(ref mut ctx) = registered.context {
-                                                ctx.transition_to_error(
-                                                    "Stopped via control command".to_string(),
-                                                );
-                                            }
-                                        }
-                                        "restart" => {
-                                            registered.is_stopped = false;
-                                            registered.is_paused = false;
-                                            registered.initialized = false;
-                                            print_line(&format!(
-                                                "[CONTROL] Node '{}' restarting",
-                                                node_name
-                                            ));
-                                            // Reset context for re-initialization
-                                            if let Some(ref mut ctx) = registered.context {
-                                                ctx.reset_for_restart();
-                                            }
-                                        }
-                                        "pause" => {
-                                            registered.is_paused = true;
-                                            print_line(&format!(
-                                                "[CONTROL] Node '{}' paused",
-                                                node_name
-                                            ));
-                                        }
-                                        "resume" => {
-                                            registered.is_paused = false;
-                                            print_line(&format!(
-                                                "[CONTROL] Node '{}' resumed",
-                                                node_name
-                                            ));
-                                        }
-                                        _ => {
-                                            print_line(&format!(
-                                                "[CONTROL] Unknown command '{}' for node '{}'",
-                                                cmd, node_name
-                                            ));
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-
-                            if !found {
-                                print_line(&format!("[CONTROL] Node '{}' not found", node_name));
-                            }
-                        }
-
-                        // Remove processed control file
-                        let _ = fs::remove_file(&path);
-                    }
-                }
-            }
-        }
+        // The topic-based process_control_commands in execution.rs is called
+        // by execute_single_tick(). This stub exists for the legacy run() path.
     }
 
     /// Clean up session directory (no-op with flat namespace)
@@ -2958,8 +2891,8 @@ impl Scheduler {
                 if let Some(outputs) = replay_outputs {
                     for (topic, data) in &outputs {
                         // Inject into shared-memory topic so live subscriber nodes see it
-                        let shm_dir = crate::memory::platform::shm_control_dir();
-                        let topic_path = shm_dir.join(format!("topics/{}", topic));
+                        let shm_dir = crate::memory::platform::shm_topics_dir();
+                        let topic_path = shm_dir.join(format!("horus_{}", topic));
                         if topic_path.exists() {
                             crate::communication::write_topic_slot_bytes(&topic_path, data);
                         }

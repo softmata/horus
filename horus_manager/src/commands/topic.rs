@@ -28,6 +28,8 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
                     "publishers": t.publishers,
                     "subscribers": t.subscribers,
                     "rate_hz": t.message_rate_hz,
+                    "messages_total": t.messages_total,
+                    "topic_kind": t.topic_kind,
                     "status": format!("{:?}", t.status),
                     "age": t.age_string
                 })
@@ -92,13 +94,14 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
     } else {
         // Compact table view
         println!(
-            "  {:<30} {:>10} {:>8} {:>12}",
+            "  {:<30} {:>10} {:>10} {:>8} {:>12}",
             "NAME".dimmed(),
             "SIZE".dimmed(),
+            "MSGS".dimmed(),
             "RATE".dimmed(),
             "STATUS".dimmed()
         );
-        println!("  {}", "-".repeat(64).dimmed());
+        println!("  {}", "-".repeat(74).dimmed());
 
         for topic in &topics {
             let status = if topic.active {
@@ -108,9 +111,14 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
             };
             let size = format_bytes(topic.size_bytes);
             let rate = format!("{:.1} Hz", topic.message_rate_hz);
+            let msgs = if topic.messages_total > 0 {
+                format!("{}", topic.messages_total)
+            } else {
+                "-".to_string()
+            };
             println!(
-                "  {:<30} {:>10} {:>8} {:>12}",
-                topic.topic_name, size, rate, status
+                "  {:<30} {:>10} {:>10} {:>8} {:>12}",
+                topic.topic_name, size, msgs, rate, status
             );
         }
     }

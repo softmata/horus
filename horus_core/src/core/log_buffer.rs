@@ -202,7 +202,9 @@ impl SharedLogBuffer {
     /// concurrent callers — within the same process and across processes — each
     /// claim a distinct slot before writing.
     pub fn push(&self, entry: LogEntry) {
-        let mut guard = self.mmap.lock().unwrap();
+        // Recover from poisoned mutex (a thread panicked while logging).
+        // Logging must never crash the scheduler — degraded logs are better than no process.
+        let mut guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
 
         // Truncate all variable-length fields BEFORE serialization so the
         // envelope is always valid bincode.  Message gets the tightest limit;
@@ -292,7 +294,7 @@ impl SharedLogBuffer {
     /// normal writes that complete within microseconds and crash-orphaned
     /// slots where the writer died mid-write.
     pub fn get_all(&self) -> Vec<LogEntry> {
-        let guard = self.mmap.lock().unwrap();
+        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
 
         // SAFETY: same alignment guarantees as push().
         let base: *const u8 = (*guard).as_ptr();
@@ -399,7 +401,7 @@ impl SharedLogBuffer {
     /// by 1.  External tools (e.g. `horus log --follow`) can poll this value to
     /// detect when new entries have been written without fetching all entries.
     pub fn write_idx(&self) -> u64 {
-        let guard = self.mmap.lock().unwrap();
+        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base: *const u8 = (*guard).as_ptr();
         // SAFETY: mmap is at least HEADER_SIZE bytes; pointer is page-aligned.
         unsafe { load_write_idx(base) }
@@ -422,7 +424,7 @@ impl SharedLogBuffer {
     pub fn corrupt_slot_seqlock(&self, slot_idx: usize, odd_value: u64) {
         assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
         assert!(odd_value & 1 == 1, "value must be odd to simulate crash");
-        let guard = self.mmap.lock().unwrap();
+        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base: *const u8 = (*guard).as_ptr();
         unsafe { store_slot_seq(base, slot_idx, odd_value) };
     }
@@ -433,7 +435,7 @@ impl SharedLogBuffer {
     #[doc(hidden)]
     pub fn read_slot_seqlock(&self, slot_idx: usize) -> u64 {
         assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
-        let guard = self.mmap.lock().unwrap();
+        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base: *const u8 = (*guard).as_ptr();
         unsafe { load_slot_seq(base, slot_idx) }
     }
@@ -448,7 +450,7 @@ impl SharedLogBuffer {
     pub fn write_slot_raw(&self, slot_idx: usize, data: &[u8], seq_even: u64) {
         assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
         assert!(seq_even != 0 && seq_even & 1 == 0, "seq must be even nonzero");
-        let mut guard = self.mmap.lock().unwrap();
+        let mut guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base: *mut u8 = {
             let s: &mut [u8] = &mut guard;
             s.as_mut_ptr()
@@ -911,5 +913,42 @@ mod tests {
         assert!(names.contains(&"node_4"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    // ── Namespace verification ─────────────────────────────────────────
+
+    #[test]
+    fn log_buffer_path_is_namespaced() {
+        let logs = crate::memory::platform::shm_logs_path();
+        let base = crate::memory::platform::shm_base_dir();
+        assert!(
+            logs.starts_with(&base),
+            "log path '{}' should be inside namespace base '{}'",
+            logs.display(),
+            base.display()
+        );
+    }
+
+    #[test]
+    fn log_buffer_path_ends_with_logs() {
+        let logs = crate::memory::platform::shm_logs_path();
+        assert!(
+            logs.ends_with("logs"),
+            "log path should end with 'logs', got: {}",
+            logs.display()
+        );
+    }
+
+    // ── Discovery module removal verification ──────────────────────────
+
+    #[test]
+    fn discovery_module_file_deleted() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let discovery_path =
+            std::path::Path::new(manifest_dir).join("src/core/discovery.rs");
+        assert!(
+            !discovery_path.exists(),
+            "core/discovery.rs should be deleted (dead discovery topic code)"
+        );
     }
 }

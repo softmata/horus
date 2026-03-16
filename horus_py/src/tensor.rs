@@ -82,7 +82,9 @@ fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResul
         ..TensorPoolConfig::default()
     });
     let pool = TensorPool::new(pool_id, config)
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create pool: {}", e)))?;
+        .map_err(|e| PyRuntimeError::new_err(format!(
+        "Failed to create tensor pool: {}. Common causes: pool size too large, \
+         insufficient system memory, or invalid tensor dimensions", e)))?;
     let pool = Arc::new(pool);
 
     // Register pool

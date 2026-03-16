@@ -14,53 +14,11 @@
 //! print_line("This will display correctly in raw mode");
 //! ```
 
-/// Check if terminal raw mode is currently enabled by probing the terminal state.
+/// Check if terminal raw mode is currently enabled.
 ///
-/// On Unix, checks if OPOST or ICANON flags are disabled, which indicates raw mode.
+/// Delegates to [`horus_sys::terminal::is_raw_mode()`].
 pub fn is_raw_mode() -> bool {
-    is_terminal_in_raw_mode()
-}
-
-/// Directly probe the terminal to check if it's in raw mode.
-///
-/// On Unix, this checks if ICRNL (map CR to NL) and OPOST (output processing)
-/// are disabled, which indicates raw mode.
-#[cfg(unix)]
-fn is_terminal_in_raw_mode() -> bool {
-    use std::os::unix::io::AsRawFd;
-
-    // Only check if stdout is a tty
-    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        return false;
-    }
-
-    // Use libc to get terminal attributes
-    // SAFETY: stdout fd is valid; termios is zeroed C struct; tcgetattr reads into it
-    unsafe {
-        let fd = std::io::stdout().as_raw_fd();
-        let mut termios: libc::termios = std::mem::zeroed();
-
-        if libc::tcgetattr(fd, &mut termios) != 0 {
-            return false; // Can't get attributes, assume not raw
-        }
-
-        // Raw mode typically has these flags disabled:
-        // - ICANON: canonical mode (line editing)
-        // - ECHO: echo input characters
-        // - OPOST: output post-processing (converts \n to \r\n)
-        // If OPOST is disabled, we need to use \r\n explicitly
-        let opost_disabled = (termios.c_oflag & libc::OPOST) == 0;
-        let icanon_disabled = (termios.c_lflag & libc::ICANON) == 0;
-
-        // If either output processing or canonical mode is disabled, treat as raw
-        opost_disabled || icanon_disabled
-    }
-}
-
-/// On non-Unix platforms, fall back to the flag only.
-#[cfg(not(unix))]
-fn is_terminal_in_raw_mode() -> bool {
-    false
+    horus_sys::terminal::is_raw_mode()
 }
 
 /// Print a line to stdout, using `\r\n` if in raw terminal mode.
@@ -74,7 +32,6 @@ pub fn print_line(msg: &str) {
     } else {
         println!("{}", msg);
     }
-    // Flush to ensure immediate output
     use std::io::Write;
     let _ = std::io::stdout().flush();
 }
@@ -85,15 +42,12 @@ mod tests {
 
     #[test]
     fn test_raw_mode_detection() {
-        // In a test environment (no tty), raw mode should always be false
         assert!(!is_raw_mode());
-        // Calling twice should be consistent (no state mutation)
         assert_eq!(is_raw_mode(), is_raw_mode());
     }
 
     #[test]
     fn test_print_line_does_not_panic() {
-        // print_line should handle both empty and non-empty strings without panic
         print_line("");
         print_line("hello from test");
         print_line("line with special chars: \t\x1b[0m");

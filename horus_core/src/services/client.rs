@@ -69,8 +69,14 @@ where
 
     /// Create a client with a custom polling interval.
     pub fn with_poll_interval(poll_interval: Duration) -> HorusResult<Self> {
-        let req_topic = Topic::new(&S::request_topic())?;
-        let res_topic = Topic::new(&S::response_topic())?;
+        let req_topic = Topic::new_with_kind(
+            &S::request_topic(),
+            crate::communication::TopicKind::ServiceRequest as u8,
+        )?;
+        let res_topic = Topic::new_with_kind(
+            &S::response_topic(),
+            crate::communication::TopicKind::ServiceResponse as u8,
+        )?;
         Ok(Self {
             req_topic,
             res_topic,

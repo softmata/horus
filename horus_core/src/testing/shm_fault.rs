@@ -191,7 +191,7 @@ impl ShmFaultInjector {
     }
 }
 
-/// Simulated network fault modes for testing mDNS and peer discovery.
+/// Simulated network fault modes for testing peer discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkFault {
     /// Simulate a timeout (no response received within deadline).
@@ -207,7 +207,7 @@ pub enum NetworkFault {
 /// Mock network endpoint for testing discovery and connection error paths.
 ///
 /// Simulates network failures without requiring real network access.
-/// Use this to test that HORUS handles mDNS timeouts, unreachable peers,
+/// Use this to test that HORUS handles timeouts, unreachable peers,
 /// and DNS failures gracefully.
 pub struct MockNetworkEndpoint {
     hostname: String,
@@ -247,7 +247,7 @@ impl MockNetworkEndpoint {
         match &self.fault {
             None => Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
             Some(NetworkFault::Timeout) => Err(HorusError::Timeout(crate::error::TimeoutError {
-                resource: format!("mDNS resolution for {}", self.hostname),
+                resource: format!("resolution for {}", self.hostname),
                 elapsed: 0_u64.secs(),
                 deadline: None,
             })),
@@ -261,7 +261,7 @@ impl MockNetworkEndpoint {
             )),
             Some(NetworkFault::CorruptResponse) => Err(HorusError::network_fault(
                 &self.hostname,
-                "corrupt mDNS response",
+                "corrupt network response",
             )),
         }
     }

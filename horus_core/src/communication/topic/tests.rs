@@ -155,7 +155,7 @@ fn current_time_ms_advances() {
 #[test]
 fn migrator_creation() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 100, 8);
+    header.init(8, 4, true, 100, 8, "TestType", 0);
     let migrator = BackendMigrator::new(&header);
     assert_eq!(header.migration_epoch.load(Ordering::Acquire), 0);
     assert!(!migrator.is_migration_in_progress());
@@ -164,7 +164,7 @@ fn migrator_creation() {
 #[test]
 fn migration_not_needed_when_already_at_target() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 100, 8);
+    header.init(8, 4, true, 100, 8, "TestType", 0);
     header
         .backend_mode
         .store(BackendMode::MpmcShm as u8, Ordering::Release);
@@ -178,7 +178,7 @@ fn migration_not_needed_when_already_at_target() {
 #[test]
 fn migration_success_increments_epoch() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 100, 8);
+    header.init(8, 4, true, 100, 8, "TestType", 0);
     header
         .backend_mode
         .store(BackendMode::Unknown as u8, Ordering::Release);
@@ -196,7 +196,7 @@ fn migration_success_increments_epoch() {
 #[test]
 fn migration_concurrent_lock_returns_already_in_progress() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 100, 8);
+    header.init(8, 4, true, 100, 8, "TestType", 0);
     assert!(header.try_lock_migration());
 
     let migrator = BackendMigrator::new(&header);
@@ -212,7 +212,7 @@ fn migration_concurrent_lock_returns_already_in_progress() {
 #[test]
 fn epoch_increments_on_successive_migrations() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 100, 8);
+    header.init(8, 4, true, 100, 8, "TestType", 0);
     header
         .backend_mode
         .store(BackendMode::Unknown as u8, Ordering::Release);
@@ -237,7 +237,7 @@ fn epoch_increments_on_successive_migrations() {
 #[test]
 fn migrate_to_optimal_works() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 100, 8);
+    header.init(8, 4, true, 100, 8, "TestType", 0);
     header
         .backend_mode
         .store(BackendMode::Unknown as u8, Ordering::Release);
@@ -4157,7 +4157,7 @@ fn header_with_topology(
     use super::header::{current_time_ms, hash_thread_id};
 
     let mut h = TopicHeader::zeroed();
-    h.init(8, 4, is_pod, 64, 8);
+    h.init(8, 4, is_pod, 64, 8, "TestType", 0);
 
     let current_pid = std::process::id();
     let current_thread_hash = hash_thread_id(std::thread::current().id()) as u32;
@@ -4364,7 +4364,7 @@ fn detect_backend_cross_process_multi_p_0c_mpsc_shm() {
 #[test]
 fn register_producer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
-    h.init(8, 4, true, 64, 8);
+    h.init(8, 4, true, 64, 8, "TestType", 0);
     let slot = h.register_producer().expect("should succeed");
     assert!(slot < 16, "Slot index must be < MAX_PARTICIPANTS");
     assert_eq!(h.pub_count(), 1);
@@ -4374,7 +4374,7 @@ fn register_producer_returns_slot_index() {
 #[test]
 fn register_consumer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
-    h.init(8, 4, true, 64, 8);
+    h.init(8, 4, true, 64, 8, "TestType", 0);
     let slot = h.register_consumer().expect("should succeed");
     assert!(slot < 16);
     assert_eq!(h.sub_count(), 1);
@@ -4384,7 +4384,7 @@ fn register_consumer_returns_slot_index() {
 #[test]
 fn register_both_roles_same_thread_reuses_slot() {
     let mut h = TopicHeader::zeroed();
-    h.init(8, 4, true, 64, 8);
+    h.init(8, 4, true, 64, 8, "TestType", 0);
     let slot_pub = h.register_producer().expect("producer");
     let slot_sub = h.register_consumer().expect("consumer");
     // Same thread should reuse the same participant entry
@@ -4399,7 +4399,7 @@ fn register_both_roles_same_thread_reuses_slot() {
 #[test]
 fn register_16_producers_fills_all_slots() {
     let mut h = TopicHeader::zeroed();
-    h.init(8, 4, true, 64, 8);
+    h.init(8, 4, true, 64, 8, "TestType", 0);
 
     // Register from 16 different "threads" by manually claiming slots
     // Since we're on one thread, use register_producer which will keep
@@ -4493,7 +4493,7 @@ fn participant_entry_refresh_extends_lease() {
 #[test]
 fn expired_slot_reclaimed_by_new_registration() {
     let mut h = TopicHeader::zeroed();
-    h.init(8, 4, true, 64, 8);
+    h.init(8, 4, true, 64, 8, "TestType", 0);
 
     // Manually set up an expired participant in slot 0
     let p = &h.participants[0];
@@ -4523,7 +4523,7 @@ fn concurrent_reclaim_exactly_one_winner() {
     // Simulate the robotics scenario: two nodes restart simultaneously,
     // both try to reclaim the same expired slot.
     let mut h = TopicHeader::zeroed();
-    h.init(8, 4, true, 64, 8);
+    h.init(8, 4, true, 64, 8, "TestType", 0);
 
     // Set up an expired participant
     let p = &h.participants[0];
@@ -6195,7 +6195,7 @@ fn wrapping_sub_queue_depth_across_wrap() {
 #[test]
 fn migration_lock_acquire_release_roundtrip() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 256, 8);
+    header.init(8, 4, true, 256, 8, "TestType", 0);
 
     // Initially unlocked
     assert!(
@@ -6346,7 +6346,7 @@ fn migration_lock_sequential_different_threads() {
 #[test]
 fn migration_lock_rapid_acquire_release_no_deadlock() {
     let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 256, 8);
+    header.init(8, 4, true, 256, 8, "TestType", 0);
 
     for i in 0..100u32 {
         assert!(header.try_lock_migration(), "Acquire {} should succeed", i);
@@ -10528,4 +10528,339 @@ fn bincode_enum_variant_stable() {
 
     let rotate_bytes = bincode::serialize(&Command::Rotate(0.0)).unwrap();
     assert_eq!(rotate_bytes[..4], [2, 0, 0, 0]); // Variant 2
+}
+
+// ============================================================================
+// messages_total always-on metric tests
+// ============================================================================
+
+#[test]
+fn messages_total_zero_after_creation() {
+    let name = unique("mt_zero");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    assert_eq!(
+        t.header().messages_total(),
+        0,
+        "messages_total should be 0 before any sends"
+    );
+}
+
+#[test]
+fn messages_total_increments_on_every_send() {
+    let name = unique("mt_inc");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    for i in 0..100 {
+        t.send(i);
+    }
+    assert_eq!(
+        t.header().messages_total(),
+        100,
+        "messages_total should be 100 after 100 sends"
+    );
+}
+
+#[test]
+fn messages_total_increments_with_verbose_off() {
+    let name = unique("mt_voff");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    // Verbose is OFF by default
+    assert!(
+        !t.header().is_verbose(),
+        "verbose should be off by default"
+    );
+    for i in 0..50 {
+        t.send(i);
+    }
+    assert_eq!(
+        t.header().messages_total(),
+        50,
+        "messages_total should increment even with verbose OFF"
+    );
+}
+
+#[test]
+fn messages_total_single_send() {
+    let name = unique("mt_one");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    t.send(42);
+    assert_eq!(t.header().messages_total(), 1);
+}
+
+#[test]
+fn messages_total_large_count() {
+    let name = unique("mt_large");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    for i in 0..1000 {
+        t.send(i);
+    }
+    assert_eq!(t.header().messages_total(), 1000);
+}
+
+// ============================================================================
+// verbose flag tests
+// ============================================================================
+
+#[test]
+fn verbose_default_is_off() {
+    let name = unique("vb_default");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    assert!(!t.header().is_verbose());
+}
+
+#[test]
+fn verbose_offset_constant_correct() {
+    assert_eq!(
+        super::header::TOPIC_VERBOSE_OFFSET,
+        23,
+        "TOPIC_VERBOSE_OFFSET should be 23"
+    );
+    assert_eq!(
+        super::header::TOPIC_VERBOSE_OFFSET,
+        23,
+        "TOPIC_VERBOSE_OFFSET should be byte 23"
+    );
+}
+
+#[test]
+fn messages_total_not_affected_by_recv() {
+    // messages_total counts sends, not receives
+    let name = unique("mt_recv");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    t.send(1);
+    t.send(2);
+    t.send(3);
+    let _ = t.recv(); // consume one
+    let _ = t.recv(); // consume another
+    assert_eq!(
+        t.header().messages_total(),
+        3,
+        "messages_total should count sends only, not be reduced by recv"
+    );
+}
+
+// ============================================================================
+// End-to-end integration tests: Topic → SHM → external reader
+// ============================================================================
+
+#[test]
+fn e2e_type_name_readable_from_header_info() {
+    use crate::communication::read_topic_header_info;
+    use crate::memory::shm_topics_dir;
+
+    let name = unique("e2e_tname");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    t.send(42); // ensure header is fully initialized
+
+    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let info = read_topic_header_info(&path).expect("read header info");
+    assert!(
+        info.type_name.contains("i32"),
+        "type_name should contain 'i32', got: '{}'",
+        info.type_name
+    );
+    assert!(info.is_pod, "i32 should be detected as POD");
+    assert_eq!(info.topic_kind, 0, "default topic kind should be Data (0)");
+}
+
+#[test]
+fn e2e_messages_total_matches_send_count_via_header_info() {
+    use crate::communication::read_topic_header_info;
+    use crate::memory::shm_topics_dir;
+
+    let name = unique("e2e_mt_info");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    for i in 0..200 {
+        t.send(i);
+    }
+
+    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let info = read_topic_header_info(&path).expect("read header info");
+    assert_eq!(
+        info.messages_total, 200,
+        "messages_total via header info should be 200 after 200 sends"
+    );
+}
+
+#[test]
+fn e2e_messages_total_matches_send_count_via_slot_read() {
+    use crate::communication::read_latest_slot_bytes;
+    use crate::memory::shm_topics_dir;
+
+    let name = unique("e2e_mt_slot");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    for i in 0..50 {
+        t.send(i);
+    }
+
+    let path = shm_topics_dir().join(format!("horus_{}", name));
+    // Note: read_latest_slot_bytes may return None for DirectChannel (same-thread)
+    // backends because sequence_or_head in SHM is not updated on the fast path.
+    // When it IS available (SHM backend), verify consistency.
+    if let Some(slot) = read_latest_slot_bytes(&path, 0) {
+        assert_eq!(
+            slot.messages_total, 50,
+            "messages_total via slot read should be 50"
+        );
+        assert!(
+            slot.type_name.contains("i32"),
+            "type_name in slot should contain 'i32', got: '{}'",
+            slot.type_name
+        );
+        assert_eq!(slot.topic_kind, 0, "topic_kind should be Data");
+    }
+    // messages_total is always readable via header info regardless of backend
+    let info = crate::communication::read_topic_header_info(&path)
+        .expect("header info should always work");
+    assert_eq!(info.messages_total, 50);
+}
+
+#[test]
+fn e2e_header_info_and_slot_read_consistent() {
+    use crate::communication::{read_latest_slot_bytes, read_topic_header_info};
+    use crate::memory::shm_topics_dir;
+
+    let name = unique("e2e_consist");
+    let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    for i in 0..100 {
+        t.send(i);
+    }
+
+    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let info = read_topic_header_info(&path).expect("header info");
+
+    // Slot read may return None for DirectChannel backends (same-thread).
+    // When available, verify consistency between both readers.
+    if let Some(slot) = read_latest_slot_bytes(&path, 0) {
+        assert_eq!(
+            info.messages_total, slot.messages_total,
+            "header info and slot read should report same messages_total"
+        );
+        assert_eq!(
+            info.type_name, slot.type_name,
+            "header info and slot read should report same type_name"
+        );
+        assert_eq!(
+            info.topic_kind, slot.topic_kind,
+            "header info and slot read should report same topic_kind"
+        );
+    }
+
+    // Header info is always verifiable
+    assert_eq!(info.messages_total, 100);
+    assert!(info.type_name.contains("i32"));
+}
+
+#[test]
+fn e2e_non_pod_type_detected() {
+    use crate::communication::read_topic_header_info;
+    use crate::memory::shm_topics_dir;
+
+    let name = unique("e2e_nonpod");
+    let t: RingTopic<String> = RingTopic::new(&name).expect("create topic");
+    t.send("hello".to_string());
+
+    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let info = read_topic_header_info(&path).expect("header info");
+    assert!(
+        !info.is_pod,
+        "String should not be POD"
+    );
+    assert!(
+        info.type_name.contains("String"),
+        "type_name should contain 'String', got: '{}'",
+        info.type_name
+    );
+}
+
+#[test]
+fn e2e_multiple_topics_distinct_type_names() {
+    use crate::communication::read_topic_header_info;
+    use crate::memory::shm_topics_dir;
+
+    let name_i32 = unique("e2e_multi_i32");
+    let name_f64 = unique("e2e_multi_f64");
+
+    let t1: RingTopic<i32> = RingTopic::new(&name_i32).expect("create i32 topic");
+    let t2: RingTopic<f64> = RingTopic::new(&name_f64).expect("create f64 topic");
+    t1.send(1);
+    t2.send(1.0);
+
+    let path1 = shm_topics_dir().join(format!("horus_{}", name_i32));
+    let path2 = shm_topics_dir().join(format!("horus_{}", name_f64));
+    let info1 = read_topic_header_info(&path1).expect("read i32 header");
+    let info2 = read_topic_header_info(&path2).expect("read f64 header");
+
+    assert_ne!(
+        info1.type_name, info2.type_name,
+        "different types should have different type_names"
+    );
+    assert!(info1.type_name.contains("i32"));
+    assert!(info2.type_name.contains("f64"));
+}
+
+#[test]
+fn e2e_registry_write_read_roundtrip() {
+    use crate::scheduling::registry::SchedulerRegistry;
+
+    let reg_name = format!("e2e_reg_{}_{}", std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    );
+    let reg = SchedulerRegistry::open(&reg_name).expect("open registry");
+
+    // Register 3 nodes
+    let idx0 = reg.register_node("motor", 0, 100.0, 0);
+    let idx1 = reg.register_node("sensor", 1, 200.0, 1);
+    let idx2 = reg.register_node("planner", 5, 10.0, 2);
+
+    // Update with different metrics
+    reg.update_node(idx0, 0, 10000, 0, 0, 0, 800_000, 750_000, 1_500_000);
+    reg.update_node(idx1, 1, 20000, 5, 3, 1, 400_000, 380_000, 900_000);
+    // idx2 left at defaults (no update)
+
+    // Read back via external reader path
+    let slots = SchedulerRegistry::read_all_slots(&reg_name)
+        .expect("read slots");
+
+    assert_eq!(slots.len(), 3);
+
+    // motor
+    assert_eq!(slots[0].name, "motor");
+    assert_eq!(slots[0].tick_count, 10000);
+    assert_eq!(slots[0].health, 0); // Healthy
+    assert_eq!(slots[0].avg_tick_ns, 750_000);
+    assert_eq!(slots[0].max_tick_ns, 1_500_000);
+
+    // sensor
+    assert_eq!(slots[1].name, "sensor");
+    assert_eq!(slots[1].tick_count, 20000);
+    assert_eq!(slots[1].health, 1); // Warning
+    assert_eq!(slots[1].error_count, 5);
+    assert_eq!(slots[1].budget_misses, 3);
+    assert_eq!(slots[1].deadline_misses, 1);
+
+    // planner (not updated — defaults)
+    assert_eq!(slots[2].name, "planner");
+    assert_eq!(slots[2].tick_count, 0);
+    assert_eq!(slots[2].health, 0);
+    assert_eq!(slots[2].order, 5);
+    assert_eq!(slots[2].rate_hz, 10.0);
+
+    reg.remove().expect("cleanup");
+}
+
+#[test]
+fn e2e_zero_sends_zero_messages_total() {
+    use crate::communication::read_topic_header_info;
+    use crate::memory::shm_topics_dir;
+
+    let name = unique("e2e_zero");
+    let _t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
+    // No sends
+
+    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let info = read_topic_header_info(&path).expect("header info");
+    assert_eq!(info.messages_total, 0, "no sends should mean 0 messages_total");
 }

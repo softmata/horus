@@ -123,17 +123,42 @@ impl DriverConfig {
     pub fn from_manifest(manifest: &HorusManifest) -> Self {
         let mut config = Self::default();
         for (name, value) in &manifest.drivers {
-            // Resolve aliases
-            if let Some(expanded) = resolve_driver_alias(name) {
-                for d in expanded {
-                    config.drivers.push(d.to_string());
+            match value {
+                DriverValue::Config(cfg) => {
+                    // Config table — extract driver name from terra/package/node key
+                    config.drivers.push(name.clone());
+                    if let Some(terra) = &cfg.terra {
+                        config.backends.insert(name.clone(), terra.clone());
+                    } else if let Some(package) = &cfg.package {
+                        config.backends.insert(name.clone(), package.clone());
+                    } else if let Some(node) = &cfg.node {
+                        config.backends.insert(name.clone(), node.clone());
+                    }
                 }
-            } else {
-                config.drivers.push(name.clone());
-            }
-            // Store backend override if specified
-            if let DriverValue::Backend(backend) = value {
-                config.backends.insert(name.clone(), backend.clone());
+                DriverValue::Backend(backend) => {
+                    // Simple string — resolve aliases, store backend
+                    if let Some(expanded) = resolve_driver_alias(name) {
+                        for d in expanded {
+                            config.drivers.push(d.to_string());
+                        }
+                    } else {
+                        config.drivers.push(name.clone());
+                    }
+                    config.backends.insert(name.clone(), backend.clone());
+                }
+                DriverValue::Enabled(true) => {
+                    // Bool enable — resolve aliases
+                    if let Some(expanded) = resolve_driver_alias(name) {
+                        for d in expanded {
+                            config.drivers.push(d.to_string());
+                        }
+                    } else {
+                        config.drivers.push(name.clone());
+                    }
+                }
+                DriverValue::Enabled(false) => {
+                    // Explicitly disabled — skip
+                }
             }
         }
         config
@@ -346,6 +371,8 @@ mod tests {
                 repository: None,
                 package_type: None,
                 categories: vec![],
+                standard: None,
+                rust_edition: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -353,6 +380,8 @@ mod tests {
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
         }
     }
 

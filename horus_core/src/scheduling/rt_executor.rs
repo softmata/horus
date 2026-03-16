@@ -50,17 +50,6 @@ impl RtExecutor {
     ///
     /// The tick period is derived from the fastest RT node's rate. If no node
     /// has a declared rate, falls back to `fallback_period`.
-    pub fn start(
-        mut nodes: Vec<RegisteredNode>,
-        running: Arc<AtomicBool>,
-        fallback_period: Duration,
-        monitors: SharedMonitors,
-        rt_cpus: Vec<usize>,
-    ) -> Self {
-        // Single chain — all nodes on one thread (original behavior)
-        Self::start_pool(vec![nodes], running, fallback_period, monitors, rt_cpus)
-    }
-
     /// Start the RT executor with multiple independent chains on separate threads.
     ///
     /// Each chain gets its own dedicated RT thread. Independent chains run in
@@ -496,6 +485,7 @@ mod tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         }
     }
 
@@ -505,8 +495,8 @@ mod tests {
         let nodes = vec![make_rt_registered("test_rt", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start(
-            nodes,
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
             running.clone(),
             1_u64.ms(),
             test_monitors(),
@@ -530,8 +520,8 @@ mod tests {
         let nodes = vec![make_rt_registered("test_rt", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start(
-            nodes,
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
             running.clone(),
             1_u64.ms(),
             test_monitors(),
@@ -556,8 +546,8 @@ mod tests {
         ];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start(
-            nodes,
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
             running.clone(),
             1_u64.ms(),
             test_monitors(),
@@ -610,11 +600,12 @@ mod tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         };
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start(
-            vec![registered],
+        let executor = RtExecutor::start_pool(
+            vec![vec![registered]],
             running.clone(),
             1_u64.ms(),
             test_monitors(),
@@ -668,8 +659,8 @@ mod tests {
         ];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start(
-            nodes,
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
             running.clone(),
             10_u64.ms(),
             test_monitors(),
@@ -721,8 +712,8 @@ mod tests {
         ];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start(
-            nodes,
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
             running.clone(),
             10_u64.ms(),
             test_monitors(),
@@ -779,8 +770,8 @@ mod tests {
         let nodes = vec![make_rt_registered("stress_profiler", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start(
-            nodes,
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
             running.clone(),
             1_u64.ms(),
             monitors,
@@ -864,13 +855,14 @@ mod tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         };
 
         let normal_registered = make_rt_registered("survivor_node", normal_count.clone());
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start(
-            vec![panic_registered, normal_registered],
+        let executor = RtExecutor::start_pool(
+            vec![vec![panic_registered, normal_registered]],
             running.clone(),
             1_u64.ms(),
             test_monitors(),
@@ -914,8 +906,8 @@ mod tests {
         let nodes = vec![make_rt_registered("quiet_node", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start(
-            nodes,
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
             running.clone(),
             1_u64.ms(),
             monitors,
@@ -969,6 +961,7 @@ mod tests {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            failure_handler: None,
         };
 
         let normal_registered = make_rt_registered("quiet_normal", normal_count.clone());
@@ -980,8 +973,8 @@ mod tests {
         };
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start(
-            vec![panic_registered, normal_registered],
+        let executor = RtExecutor::start_pool(
+            vec![vec![panic_registered, normal_registered]],
             running.clone(),
             1_u64.ms(),
             monitors,

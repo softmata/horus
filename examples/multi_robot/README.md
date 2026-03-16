@@ -78,9 +78,6 @@ horus topic echo fleet/poses
 # Watch a single scout's commands
 horus topic echo scout_1/cmd_vel
 
-# Node discovery
-horus discover -w
-
 # Web dashboard
 horus monitor
 # Open browser to http://localhost:3000

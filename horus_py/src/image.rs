@@ -94,7 +94,10 @@ impl PyImage {
     fn new(height: u32, width: u32, encoding: &str) -> PyResult<Self> {
         let enc = parse_encoding(encoding)?;
         let img = Image::new(width, height, enc)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create image: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!(
+                "Failed to create Image: {}. Common causes: dimensions must be > 0, \
+                 unsupported encoding (valid: rgb8, rgba8, bgr8, bgra8, mono8, mono16, \
+                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)", e)))?;
         Ok(Self { inner: img })
     }
 
@@ -130,7 +133,10 @@ impl PyImage {
         };
 
         let mut img = Image::new(width, height, enc)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create image: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!(
+                "Failed to create Image: {}. Common causes: dimensions must be > 0, \
+                 unsupported encoding (valid: rgb8, rgba8, bgr8, bgra8, mono8, mono16, \
+                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)", e)))?;
 
         let np = py.import("numpy")?;
         let contiguous = np.call_method1("ascontiguousarray", (array,))?;
@@ -172,7 +178,10 @@ impl PyImage {
     fn from_bytes(data: &[u8], height: u32, width: u32, encoding: &str) -> PyResult<Self> {
         let enc = parse_encoding(encoding)?;
         let mut img = Image::new(width, height, enc)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create image: {}", e)))?;
+            .map_err(|e| PyRuntimeError::new_err(format!(
+                "Failed to create Image: {}. Common causes: dimensions must be > 0, \
+                 unsupported encoding (valid: rgb8, rgba8, bgr8, bgra8, mono8, mono16, \
+                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)", e)))?;
 
         let expected = img.nbytes() as usize;
         if data.len() != expected {

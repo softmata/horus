@@ -24,6 +24,15 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
                     "exists": true,
                 }));
             }
+            let cpp_build_dir = std::path::Path::new(".horus/cpp-build");
+            if cpp_build_dir.exists() {
+                items.push(serde_json::json!({
+                    "type": "cpp_build_cache",
+                    "path": ".horus/cpp-build/",
+                    "size": get_dir_size(cpp_build_dir),
+                    "exists": true,
+                }));
+            }
         }
         if shm || all {
             let namespaces = list_all_horus_namespaces();
@@ -68,6 +77,8 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
             let result = (|| -> HorusResult<()> {
                 if !shm || all {
                     clean_build_cache(false)?;
+                    clean_cpp_build(false)?;
+                    clean_pycache(false)?;
                 }
                 if shm || all {
                     clean_shared_memory(false, force)?;
@@ -93,6 +104,16 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
     // Clean build cache (target directory)
     if !shm || all {
         cleaned_anything |= clean_build_cache(dry_run)?;
+    }
+
+    // Clean C++ build artifacts
+    if !shm || all {
+        cleaned_anything |= clean_cpp_build(dry_run)?;
+    }
+
+    // Clean Python bytecode caches
+    if !shm || all {
+        cleaned_anything |= clean_pycache(dry_run)?;
     }
 
     // Clean shared memory
@@ -344,6 +365,88 @@ fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
     }
 
     Ok(false)
+}
+
+/// Clean C++ cmake build artifacts (.horus/cpp-build/)
+fn clean_cpp_build(dry_run: bool) -> HorusResult<bool> {
+    let cpp_build_dir = Path::new(".horus/cpp-build");
+
+    if cpp_build_dir.exists() {
+        let size = get_dir_size(cpp_build_dir);
+
+        if dry_run {
+            cli_output::info(&format!(
+                "Would remove {} ({})",
+                ".horus/cpp-build/".white(),
+                format_size(size)
+            ));
+        } else {
+            cli_output::info(&format!(
+                "Removing {} ({})",
+                ".horus/cpp-build/".white(),
+                format_size(size)
+            ));
+            std::fs::remove_dir_all(cpp_build_dir).map_err(HorusError::Io)?;
+        }
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Clean Python __pycache__/ directories recursively from the project
+fn clean_pycache(dry_run: bool) -> HorusResult<bool> {
+    let current = Path::new(".");
+    let pycache_dirs = find_pycache_dirs(current);
+
+    if pycache_dirs.is_empty() {
+        return Ok(false);
+    }
+
+    let total_size: u64 = pycache_dirs.iter().map(|d| get_dir_size(d)).sum();
+
+    if dry_run {
+        cli_output::info(&format!(
+            "Would remove {} __pycache__/ directories ({})",
+            pycache_dirs.len(),
+            format_size(total_size)
+        ));
+    } else {
+        for dir in &pycache_dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        cli_output::info(&format!(
+            "Removed {} __pycache__/ directories ({})",
+            pycache_dirs.len(),
+            format_size(total_size)
+        ));
+    }
+
+    Ok(true)
+}
+
+/// Recursively find all __pycache__/ directories, skipping .horus/ and target/
+fn find_pycache_dirs(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut result = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                // Skip build artifact directories to avoid deep traversals
+                if name_str == "target" || name_str == ".horus" || name_str == ".git" {
+                    continue;
+                }
+                if name_str == "__pycache__" {
+                    result.push(path);
+                } else {
+                    result.extend(find_pycache_dirs(&path));
+                }
+            }
+        }
+    }
+    result
 }
 
 /// Get total size of directory recursively

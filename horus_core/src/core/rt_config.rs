@@ -83,88 +83,17 @@ pub(crate) struct RtKernelInfo {
 }
 
 impl RtKernelInfo {
-    /// Detect kernel RT capabilities.
-    #[cfg(target_os = "linux")]
+    /// Detect kernel RT capabilities (delegates to horus_sys::rt).
     pub fn detect() -> Self {
-        let kernel_version = Self::get_kernel_version();
-        let preempt_rt = Self::detect_preempt_rt(&kernel_version);
-        let (min_rt_priority, max_rt_priority) = Self::get_priority_range();
-        let mlockall_permitted = Self::check_mlockall_permitted();
-        let cpu_count = Self::get_cpu_count();
-
+        let caps = horus_sys::rt::detect_capabilities();
         Self {
-            preempt_rt,
-            kernel_version,
-            max_rt_priority,
-            min_rt_priority,
-            mlockall_permitted,
-            cpu_count,
+            preempt_rt: caps.preempt_rt,
+            kernel_version: caps.kernel_version,
+            max_rt_priority: caps.max_priority,
+            min_rt_priority: caps.min_priority,
+            mlockall_permitted: caps.memory_locking,
+            cpu_count: caps.cpu_count,
         }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub fn detect() -> Self {
-        Self {
-            preempt_rt: false,
-            kernel_version: "non-linux".to_string(),
-            max_rt_priority: 0,
-            min_rt_priority: 0,
-            mlockall_permitted: false,
-            cpu_count: 1,
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_kernel_version() -> String {
-        std::fs::read_to_string("/proc/version")
-            .unwrap_or_default()
-            .lines()
-            .next()
-            .unwrap_or("unknown")
-            .to_string()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn detect_preempt_rt(kernel_version: &str) -> bool {
-        // Check for PREEMPT_RT indicators in kernel version string
-        kernel_version.contains("PREEMPT_RT")
-            || kernel_version.contains("PREEMPT RT")
-            || std::path::Path::new("/sys/kernel/realtime").exists()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_priority_range() -> (i32, i32) {
-        // SAFETY: These are safe libc calls that query system limits
-        unsafe {
-            let min = libc::sched_get_priority_min(libc::SCHED_FIFO);
-            let max = libc::sched_get_priority_max(libc::SCHED_FIFO);
-            (min.max(1), max.max(1))
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn check_mlockall_permitted() -> bool {
-        // Check RLIMIT_MEMLOCK - if unlimited or large, mlockall is likely permitted
-        // SAFETY: getrlimit is a safe libc call
-        unsafe {
-            let mut rlim = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            if libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut rlim) == 0 {
-                // If limit is unlimited or > 1GB, mlockall is likely permitted
-                rlim.rlim_cur == libc::RLIM_INFINITY || rlim.rlim_cur > 1024 * 1024 * 1024
-            } else {
-                false
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_cpu_count() -> usize {
-        std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(1)
     }
 }
 
@@ -267,9 +196,7 @@ impl RtConfig {
 
     /// Apply this configuration to the current thread.
     ///
-    /// Returns the result of applying the configuration, including
-    /// any degradations that occurred.
-    #[cfg(target_os = "linux")]
+    /// Delegates platform-specific operations to horus_sys::rt.
     pub fn apply(&self) -> Result<RtApplyResult, io::Error> {
         let mut degradations = Vec::new();
         let kernel_info = RtKernelInfo::detect();
@@ -287,7 +214,7 @@ impl RtConfig {
             || self.memory_locked
             || self.cpu_affinity.is_some();
         if has_rt_features {
-            if let Some(gov) = detect_cpu_governor() {
+            if let Some(gov) = horus_sys::rt::cpu_governor() {
                 if gov != "performance" && self.warn_on_degradation {
                     eprintln!(
                         "Warning: CPU governor is '{}' (want 'performance'). \
@@ -298,53 +225,48 @@ impl RtConfig {
             }
         }
 
-        // Apply memory locking
+        // Apply memory locking via horus_sys
         if self.memory_locked {
-            match self.apply_memory_lock() {
-                Ok(()) => {}
-                Err(e) => {
-                    let msg = format!("mlockall failed: {}", e);
-                    degradations.push(RtDegradation::MemoryLockUnavailable(msg.clone()));
-                    if self.warn_on_degradation {
-                        eprintln!("Warning: {}", msg);
-                    }
+            if let Err(e) = horus_sys::rt::lock_memory() {
+                let msg = format!("memory lock failed: {}", e);
+                degradations.push(RtDegradation::MemoryLockUnavailable(msg.clone()));
+                if self.warn_on_degradation {
+                    eprintln!("Warning: {}", msg);
                 }
             }
         }
 
-        // Apply scheduler and priority
+        // Apply scheduler and priority via horus_sys
         if let Some(priority) = self.priority {
-            match self.apply_scheduler_priority(&kernel_info, priority) {
-                Ok(actual) if actual != priority => {
-                    degradations.push(RtDegradation::PriorityClamped {
-                        requested: priority,
-                        actual,
-                    });
-                    if self.warn_on_degradation {
-                        eprintln!("Warning: Priority clamped from {} to {}", priority, actual);
+            if self.scheduler != RtScheduler::Normal {
+                let actual = priority.clamp(kernel_info.min_rt_priority, kernel_info.max_rt_priority);
+                match horus_sys::rt::set_realtime_priority(actual) {
+                    Ok(()) => {
+                        if actual != priority {
+                            degradations.push(RtDegradation::PriorityClamped {
+                                requested: priority,
+                                actual,
+                            });
+                        }
                     }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    let msg = format!("Scheduler setup failed: {}", e);
-                    degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
-                    if self.warn_on_degradation {
-                        eprintln!("Warning: {}", msg);
+                    Err(e) => {
+                        let msg = format!("Scheduler setup failed: {}", e);
+                        degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
+                        if self.warn_on_degradation {
+                            eprintln!("Warning: {}", msg);
+                        }
                     }
                 }
             }
         }
 
-        // Apply CPU affinity
+        // Apply CPU affinity via horus_sys
         if let Some(ref cpus) = self.cpu_affinity {
-            match self.apply_cpu_affinity(cpus, kernel_info.cpu_count) {
-                Ok(()) => {}
-                Err(e) => {
-                    let msg = format!("CPU affinity failed: {}", e);
-                    degradations.push(RtDegradation::AffinityUnavailable(msg.clone()));
-                    if self.warn_on_degradation {
-                        eprintln!("Warning: {}", msg);
-                    }
+            if let Err(e) = horus_sys::rt::pin_to_cores(cpus) {
+                let msg = format!("CPU affinity failed: {}", e);
+                degradations.push(RtDegradation::AffinityUnavailable(msg.clone()));
+                if self.warn_on_degradation {
+                    eprintln!("Warning: {}", msg);
                 }
             }
         }
@@ -353,123 +275,6 @@ impl RtConfig {
             Ok(RtApplyResult::FullSuccess)
         } else {
             Ok(RtApplyResult::Degraded(degradations))
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub fn apply(&self) -> Result<RtApplyResult, io::Error> {
-        // On non-Linux platforms, RT features are not available
-        let mut degradations = Vec::new();
-
-        if self.memory_locked {
-            degradations.push(RtDegradation::MemoryLockUnavailable(
-                "Not supported on this platform".to_string(),
-            ));
-        }
-
-        if self.scheduler != RtScheduler::Normal {
-            degradations.push(RtDegradation::SchedulerDegraded(
-                "RT schedulers not supported on this platform".to_string(),
-            ));
-        }
-
-        if self.cpu_affinity.is_some() {
-            degradations.push(RtDegradation::AffinityUnavailable(
-                "CPU affinity not supported on this platform".to_string(),
-            ));
-        }
-
-        if degradations.is_empty() {
-            Ok(RtApplyResult::FullSuccess)
-        } else {
-            Ok(RtApplyResult::Degraded(degradations))
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn apply_memory_lock(&self) -> Result<(), io::Error> {
-        // SAFETY: mlockall is a safe libc call
-        // MCL_CURRENT: Lock all current pages
-        // MCL_FUTURE: Lock all future pages as they are allocated
-        let result = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
-
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn apply_scheduler_priority(
-        &self,
-        kernel_info: &RtKernelInfo,
-        requested_priority: i32,
-    ) -> Result<i32, io::Error> {
-        let policy = match self.scheduler {
-            RtScheduler::Normal => libc::SCHED_OTHER,
-            RtScheduler::Fifo => libc::SCHED_FIFO,
-        };
-
-        // Clamp priority to valid range
-        let actual_priority = if policy == libc::SCHED_OTHER {
-            0 // SCHED_OTHER always uses priority 0
-        } else {
-            requested_priority.clamp(kernel_info.min_rt_priority, kernel_info.max_rt_priority)
-        };
-
-        let param = libc::sched_param {
-            sched_priority: actual_priority,
-        };
-
-        // SAFETY: sched_setscheduler is a safe libc call
-        // 0 = current thread
-        let result = unsafe { libc::sched_setscheduler(0, policy, &param) };
-
-        if result == 0 {
-            Ok(actual_priority)
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn apply_cpu_affinity(&self, cpus: &[usize], cpu_count: usize) -> Result<(), io::Error> {
-        if cpus.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "CPU affinity list cannot be empty",
-            ));
-        }
-
-        // Validate CPU indices
-        for &cpu in cpus {
-            if cpu >= cpu_count {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("CPU {} does not exist (max: {})", cpu, cpu_count - 1),
-                ));
-            }
-        }
-
-        // SAFETY: CPU_SET manipulation and sched_setaffinity are safe libc calls
-        unsafe {
-            let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
-            libc::CPU_ZERO(&mut cpuset);
-
-            for &cpu in cpus {
-                libc::CPU_SET(cpu, &mut cpuset);
-            }
-
-            // 0 = current thread
-            let result =
-                libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &cpuset);
-
-            if result == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
         }
     }
 }
@@ -478,23 +283,7 @@ impl RtConfig {
 // CPU Governor Detection
 // ============================================================================
 
-/// Detect the current CPU governor (Linux only).
-///
-/// Returns `Some("performance")`, `Some("powersave")`, etc. on Linux,
-/// or `None` on non-Linux platforms or if cpufreq is not available.
-/// This is read-only — it never writes to sysfs. System tuning should
-/// be done via `sudo ./scripts/setup-realtime.sh` at install time.
-#[cfg(target_os = "linux")]
-fn detect_cpu_governor() -> Option<String> {
-    std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
-        .ok()
-        .map(|s| s.trim().to_string())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn detect_cpu_governor() -> Option<String> {
-    None
-}
+// CPU governor detection delegated to horus_sys::rt::cpu_governor()
 
 #[cfg(test)]
 impl RtConfig {
@@ -642,43 +431,14 @@ fn prefault_stack_recursive(remaining_pages: usize, depth: usize) {
 // STANDALONE HELPER FUNCTIONS FOR CPU ISOLATION DETECTION
 // ============================================================================
 
-/// Detect CPUs isolated via the `isolcpus` kernel boot parameter.
-///
-/// Isolated CPUs are excluded from the general scheduler and are ideal for
-/// real-time tasks because they won't be interrupted by other processes.
-/// Used internally by `get_rt_recommended_cpus()`.
-#[cfg(target_os = "linux")]
+/// Detect CPUs isolated via `isolcpus` kernel parameter (delegates to horus_sys::rt).
 pub(crate) fn detect_isolated_cpus() -> Vec<usize> {
-    // Read from /sys/devices/system/cpu/isolated
-    match std::fs::read_to_string("/sys/devices/system/cpu/isolated") {
-        Ok(content) => parse_cpu_list(content.trim()),
-        Err(_) => Vec::new(), // File doesn't exist or not readable
-    }
+    horus_sys::rt::isolated_cores()
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn detect_isolated_cpus() -> Vec<usize> {
-    Vec::new() // No isolcpus on non-Linux platforms
-}
-
-/// Detect CPUs configured with `nohz_full` (tickless kernel).
-///
-/// These CPUs have timer interrupts disabled when running a single task,
-/// providing even better latency characteristics than just isolcpus.
-///
-/// # Returns
-/// * `Vec<usize>` - List of nohz_full CPU core indices (empty if none)
-#[cfg(target_os = "linux")]
+/// Detect CPUs with `nohz_full` tickless kernel (delegates to horus_sys::rt).
 pub(crate) fn detect_nohz_full_cpus() -> Vec<usize> {
-    match std::fs::read_to_string("/sys/devices/system/cpu/nohz_full") {
-        Ok(content) => parse_cpu_list(content.trim()),
-        Err(_) => Vec::new(),
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn detect_nohz_full_cpus() -> Vec<usize> {
-    Vec::new()
+    horus_sys::rt::nohz_full_cores()
 }
 
 /// Get recommended CPUs for real-time HORUS tasks.

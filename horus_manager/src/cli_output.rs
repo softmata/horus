@@ -43,6 +43,16 @@ pub fn hint(msg: &str) {
     }
 }
 
+/// Print a structured diagnostic hint (respects quiet mode).
+///
+/// Delegates to `error_wrapper::emit_diagnostic` which handles JSON vs colored
+/// output automatically. Suppressed in quiet mode.
+pub fn diagnostic(diag: &crate::error_wrapper::Diagnostic) {
+    if !crate::progress::is_quiet() {
+        crate::error_wrapper::emit_diagnostic(diag);
+    }
+}
+
 /// Print a bold cyan header (suppressed in quiet mode)
 pub fn header(msg: &str) {
     if !crate::progress::is_quiet() {

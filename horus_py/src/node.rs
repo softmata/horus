@@ -4,6 +4,15 @@ use pyo3::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Convert a lock `PoisonError` into a descriptive `PyRuntimeError`.
+fn lock_poisoned<T>(_: std::sync::PoisonError<T>) -> PyErr {
+    PyRuntimeError::new_err(
+        "Internal state corrupted: a previous operation panicked while holding a lock. \
+         This typically means a node's tick(), init(), or shutdown() raised an unhandled exception. \
+         Restart the scheduler or Python process to recover.",
+    )
+}
+
 /// Python wrapper for NodeState
 #[pyclass(name = "NodeState", module = "horus._horus")]
 #[derive(Clone, PartialEq, Eq)]
@@ -98,7 +107,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.name().to_string())
     }
 
@@ -107,7 +116,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(PyNodeState::from(info.state()))
     }
 
@@ -123,7 +132,7 @@ impl PyNodeInfo {
         let mut info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         info.track_warning(&message);
         Ok(())
     }
@@ -134,7 +143,7 @@ impl PyNodeInfo {
         let mut info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         info.track_error(&message);
         Ok(())
     }
@@ -149,7 +158,7 @@ impl PyNodeInfo {
         let mut info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         info.set_custom_data(key, value);
         Ok(())
     }
@@ -158,7 +167,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.get_custom_data(&key).cloned())
     }
 
@@ -166,7 +175,7 @@ impl PyNodeInfo {
         let mut info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.remove_custom_data(&key))
     }
 
@@ -174,7 +183,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.custom_data_keys().into_iter().map(|s| s.to_string()).collect())
     }
 
@@ -183,7 +192,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.metrics().total_ticks())
     }
 
@@ -192,7 +201,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.metrics().errors_count())
     }
 
@@ -201,7 +210,7 @@ impl PyNodeInfo {
         let mut info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         info.transition_to_error(error_msg);
         Ok(())
     }
@@ -212,7 +221,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         let node_name = info.name().to_string();
@@ -242,7 +251,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         let node_name = info.name().to_string();
@@ -271,7 +280,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
 
         let metrics = info.metrics();
         let mut result = std::collections::HashMap::new();
@@ -308,7 +317,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.uptime().as_secs_f64())
     }
 
@@ -317,7 +326,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.metrics().avg_tick_duration_ms())
     }
 
@@ -326,7 +335,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.metrics().failed_ticks())
     }
 
@@ -335,7 +344,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok(info.metrics().successful_ticks())
     }
 
@@ -366,7 +375,7 @@ impl PyNodeInfo {
         let info = self
             .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
+            .map_err(lock_poisoned)?;
         Ok((info.name().to_string(),))
     }
 }

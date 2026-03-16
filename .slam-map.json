@@ -1,0 +1,29 @@
+{
+  "project": "horus",
+  "version": 1,
+  "cycle": 6,
+  "regions_mapped": 8,
+  "regions_total": 8,
+  "current_region": "complete",
+  "features": {
+    "scheduling": { "verdict": "STRONG" },
+    "topics": { "verdict": "STRONG" },
+    "services": { "verdict": "STRONG", "notes": "+4 scheduler integration tests" },
+    "actions": { "verdict": "PARTIAL" },
+    "transform_frame": { "verdict": "PRODUCTION" },
+    "memory": { "verdict": "GOOD" },
+    "safety_monitor": { "verdict": "GOOD" },
+    "duration_ext": { "verdict": "STRONG" },
+    "presence": { "verdict": "GOOD" },
+    "manifest": { "verdict": "GOOD" },
+    "cli_commands": { "verdict": "GOOD" },
+    "messages": { "verdict": "GOOD" },
+    "params": { "verdict": "STRONG" },
+    "dep_resolver": { "verdict": "GOOD" },
+    "pipeline": { "verdict": "GOOD" },
+    "migration": { "verdict": "STRONG" }
+  },
+  "tests_generated": 94,
+  "bugs_found_by_tests": 0,
+  "false_test_failures": 18
+}

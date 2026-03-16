@@ -1,4 +1,4 @@
-use horus_core::{HorusResult as Result, Node, Scheduler, TopicMetadata};
+use horus_core::{error::Result, Node, Scheduler, TopicMetadata};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;

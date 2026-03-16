@@ -26,27 +26,23 @@ mod macros;
 #[doc(hidden)]
 pub mod network;
 #[doc(hidden)]
-pub mod network_status;
-#[doc(hidden)]
 pub mod pod;
 pub mod topic;
 
 // Re-export commonly used types for convenience
 #[doc(hidden)]
-pub use network_status::NetworkStatus;
-#[doc(hidden)]
 pub use pod::PodMessage;
-pub use topic::{SendBlockingError, Topic, TopicDescriptor};
+pub use topic::{SendBlockingError, Topic, TopicDescriptor, TopicKind};
 #[doc(hidden)]
 pub use topic::TopicMessage;
 
-// Debug flag API for external tools (TUI monitor)
+// Verbose flag API for external tools (TUI monitor)
 #[doc(hidden)]
-pub use topic::{set_topic_debug, TOPIC_DEBUG_LOG_OFFSET};
+pub use topic::{set_topic_verbose, TOPIC_VERBOSE_OFFSET};
 
 // Ring-buffer inspector for CLI tools (`horus topic echo`)
 #[doc(hidden)]
-pub use topic::{read_latest_slot_bytes, read_topic_sequence, TopicSlotRead};
+pub use topic::{read_latest_slot_bytes, read_topic_header_info, read_topic_sequence, TopicHeaderInfo, TopicSlotRead};
 
 /// Write raw bytes into the latest slot of a topic SHM file (used by replay).
 ///

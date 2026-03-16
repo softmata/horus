@@ -4,6 +4,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/softmata/horus/actions/workflows/ci.yml"><img src="https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/softmata/horus/releases"><img src="https://img.shields.io/badge/v0.1.9-blue.svg" alt="Version"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust" alt="Rust"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white" alt="Python"></a>
@@ -20,7 +21,9 @@
 
 ---
 
-HORUS is a robotics framework written in Rust. It replaces the DDS middleware layer with mmap-backed ring buffers and seqlock synchronization, achieving sub-microsecond cross-process IPC. Write control loops in Rust, ML inference in Python — they communicate over shared memory with zero serialization.
+HORUS is a robotics framework written in Rust — **575x faster than ROS2** for same-machine IPC. It replaces the DDS middleware layer with mmap-backed ring buffers and seqlock synchronization, achieving sub-microsecond cross-process messaging. Write control loops in Rust, run AI/ML inference in Python — they communicate over shared memory with zero serialization and zero copying.
+
+Built for the era of AI-powered robots: run PyTorch, TensorFlow, or LLM inference nodes alongside hard real-time motor control at 1kHz, all in one process with deterministic scheduling.
 
 > **Status:** HORUS is in active development (v0.1.9). The core API is stabilizing but may have breaking changes between minor versions.
 
@@ -147,9 +150,9 @@ if let Some(frame) = topic.recv() {
 }
 ```
 
-### Python Bindings
+### Python Bindings & AI Integration
 
-PyO3-based bindings share the same topics and memory as Rust nodes:
+PyO3-based bindings share the same topics and memory as Rust nodes. Run AI/ML models (PyTorch, TensorFlow, JAX) alongside real-time control without IPC overhead:
 
 ```python
 from horus import Node, Topic, Scheduler
@@ -231,7 +234,6 @@ horus blackbox -a                     # timing anomalies
 horus param set max_speed 0.5         # tune at runtime
 horus frame tree                      # coordinate frame hierarchy
 horus deploy pi@192.168.1.50          # deploy to robot
-horus discover                        # mDNS node discovery
 ```
 
 ### Single Manifest

@@ -155,6 +155,9 @@ fn check_toolchains() -> CheckResult {
         ("python3", "Python interpreter"),
         ("ruff", "Python linter/formatter"),
         ("pytest", "Python test runner"),
+        ("cmake", "C++ build system"),
+        ("clang-format", "C++ formatter"),
+        ("clang-tidy", "C++ linter"),
     ];
 
     for (tool, desc) in &tools {
@@ -234,18 +237,18 @@ fn check_manifest(ctx: &dispatch::ProjectContext) -> CheckResult {
 }
 
 fn check_shm() -> CheckResult {
-    let shm_path = Path::new("/dev/shm");
-    if !shm_path.exists() {
+    let shm_parent = horus_sys::shm::shm_parent_dir();
+    if !shm_parent.exists() {
         return CheckResult {
             category: "Shared Memory".to_string(),
             health: Health::Warn,
-            summary: "/dev/shm not available".to_string(),
+            summary: format!("{} not available", shm_parent.display()),
             details: vec!["SHM IPC may not work on this platform".to_string()],
         };
     }
 
     // Count horus namespaces
-    let count = std::fs::read_dir(shm_path)
+    let count = std::fs::read_dir(&shm_parent)
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
@@ -261,7 +264,7 @@ fn check_shm() -> CheckResult {
     CheckResult {
         category: "Shared Memory".to_string(),
         health: Health::Ok,
-        summary: format!("/dev/shm available, {} horus namespaces", count),
+        summary: format!("{} available, {} horus namespaces", shm_parent.display(), count),
         details: vec![],
     }
 }
@@ -704,9 +707,10 @@ mod tests {
     fn check_shm_returns_result() {
         let result = check_shm();
         assert_eq!(result.category, "Shared Memory");
-        if Path::new("/dev/shm").exists() {
+        let shm_parent = horus_sys::shm::shm_parent_dir();
+        if shm_parent.exists() {
             assert_eq!(result.health, Health::Ok);
-            assert!(result.summary.contains("/dev/shm available"));
+            assert!(result.summary.contains("available"));
         } else {
             assert_eq!(result.health, Health::Warn);
         }

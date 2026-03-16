@@ -3,6 +3,13 @@ name = "horus_core"
 version = "0.1.9"
 edition = "2021"
 license = "Apache-2.0"
+authors = ["HORUS Team"]
+description = "Core runtime for the HORUS robotics framework — deterministic scheduler, zero-copy IPC topics, real-time node lifecycle, safety monitoring, and shared memory transport"
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+documentation = "https://docs.horusrobotics.dev"
+keywords = ["robotics", "scheduler", "ipc", "real-time", "deterministic"]
+categories = ["science::robotics", "concurrency", "embedded"]
 
 [lib]
 name = "horus_core"
@@ -37,11 +44,11 @@ rand = { workspace = true, features = ["small_rng"] }
 thiserror = "1.0"
 anyhow = "1.0"
 
+# Platform abstraction layer
+horus_sys = { path = "../horus_sys" }
+
 # Macros (optional)
 horus_macros = { path = "../horus_macros", optional = true }
-
-# mDNS service discovery (optional)
-mdns-sd = { version = "0.11", optional = true }
 
 # Compression for recordings (optional)
 zstd = { version = "0.13", optional = true }
@@ -69,9 +76,6 @@ telemetry = []
 
 # Black box flight recorder for post-mortem crash analysis
 blackbox = []
-
-# mDNS/DNS-SD for automatic peer discovery on local networks
-mdns = ["mdns-sd"]
 
 # Zstd compression for recording files
 recording-compression = ["zstd"]

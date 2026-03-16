@@ -289,35 +289,17 @@ fn save_auth_config(api_key: &str, registry_url: &str, username: Option<&str>) -
     })?;
 
     // Create file with restricted permissions from the start (contains API token)
-    #[cfg(unix)]
     {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&config_path)
-            .map_err(|e| {
-                HorusError::Config(ConfigError::Other(format!(
-                    "Failed to create auth config: {}",
-                    e
-                )))
-            })?;
-        file.write_all(config_json.as_bytes()).map_err(|e| {
+        let mut file = horus_sys::fs::open_private(&config_path).map_err(|e| {
             HorusError::Config(ConfigError::Other(format!(
-                "Failed to write auth config: {}",
+                "Failed to create auth config: {}",
                 e
             )))
         })?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::write(&config_path, config_json).map_err(|e| {
+        file.write_all(config_json.as_bytes()).map_err(|e| {
             HorusError::Config(ConfigError::Other(format!(
-                "Failed to save auth config: {}",
+                "Failed to write auth config: {}",
                 e
             )))
         })?;
