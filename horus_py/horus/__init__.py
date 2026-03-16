@@ -245,66 +245,11 @@ class NodeState(str, enum.Enum):
     CRASHED = "crashed"
 
 
-class Priority(enum.IntEnum):
-    """Node priority levels (IntEnum — lower value = higher priority).
-
-    Example:
-        if node_priority < Priority.NORMAL:
-            print("high priority node")
-
-        # Compare directly with ints
-        assert Priority.CRITICAL == 0
-        assert Priority.HIGH < Priority.NORMAL
-    """
-    CRITICAL = 0
-    HIGH = 10
-    NORMAL = 50
-    LOW = 80
-    BACKGROUND = 100
-
-    @classmethod
-    def from_string(cls, s: str) -> 'Priority':
-        """Parse a priority from string name or numeric string.
-
-        Args:
-            s: Priority name ("critical", "high", "normal", "low", "background")
-               or numeric string ("42").
-
-        Raises:
-            ValueError: If the string is not a valid priority name or number.
-        """
-        try:
-            return cls[s.upper()]
-        except KeyError:
-            pass
-        try:
-            return cls(int(s))
-        except (ValueError, KeyError):
-            raise ValueError(
-                f"Invalid priority: {s!r}. "
-                f"Valid names: {', '.join(m.name.lower() for m in cls)}"
-            )
-
-    def to_string(self) -> str:
-        """Convert priority to lowercase string name."""
-        return self.name.lower()
-
-
 # Single source of truth: Cargo.toml via env!("CARGO_PKG_VERSION")
 try:
     __version__ = get_version().split("v", 1)[-1]
 except Exception:
     __version__ = "0.1.9"
-
-# GPU utility stubs — no Rust binding exists for these yet.
-# Defined here so `from horus import cuda_is_available` always works.
-def cuda_is_available() -> bool:
-    """Check if CUDA is available (stub — always returns False)."""
-    return False
-
-def cuda_device_count() -> int:
-    """Get number of CUDA devices (stub — always returns 0)."""
-    return 0
 
 # Time unit constants for readable budget/deadline values.
 # Usage: sched.add(motor, budget=300 * us, deadline=900 * us)
@@ -1059,277 +1004,17 @@ class Scheduler:
             return self._scheduler.get_node_stats(node_name)
         return {}
 
-    def set_node_rate(self, node_name: str, rate: float) -> None:
-        """
-        Set the execution rate for a specific node.
-
-        Args:
-            node_name: Name of the node
-            rate: New rate in Hz (ticks per second)
-
-        Example:
-            scheduler.set_node_rate("sensor", 100.0)  # Change to 100Hz
-        """
-        # Update the node's rate attribute
-        for node in self._nodes:
-            if node.name == node_name:
-                node.rate = rate
-                break
-
-        # Update Rust scheduler (handles actual rate control)
-        if self._scheduler:
-            self._scheduler.set_node_rate(node_name, rate)
-
-    def get_all_nodes(self) -> List[Dict[str, Any]]:
-        """
-        Get information about all registered nodes.
-
-        Returns:
-            List of dictionaries containing node information:
-            - name: Node name
-            - order: Execution order
-            - rate: Node execution rate
-            - total_ticks: Total number of ticks executed
-            - successful_ticks: Number of successful ticks
-            - failed_ticks: Number of failed ticks
-            - errors_count: Number of errors encountered
-            - avg_tick_duration_ms: Average tick duration
-            - min_tick_duration_ms: Minimum tick duration
-            - max_tick_duration_ms: Maximum tick duration
-            - last_tick_duration_ms: Last tick duration
-            - uptime_seconds: Node uptime
-
-        Example:
-            nodes = scheduler.get_all_nodes()
-            for node in nodes:
-                print(f"{node['name']}: {node['total_ticks']} ticks, {node['errors_count']} errors")
-        """
-        if self._scheduler:
-            return self._scheduler.get_all_nodes()
-        return []
-
-    def get_node_count(self) -> int:
-        """
-        Get the number of registered nodes.
-
-        Returns:
-            Number of nodes in the scheduler
-
-        Example:
-            count = scheduler.get_node_count()
-            print(f"Running {count} nodes")
-        """
-        if self._scheduler:
-            return self._scheduler.get_node_count()
-        return len(self._nodes)
-
-    def has_node(self, name: str) -> bool:
-        """
-        Check if a node with the given name exists.
-
-        Args:
-            name: Node name to check
-
-        Returns:
-            True if node exists, False otherwise
-
-        Example:
-            if scheduler.has_node("sensor"):
-                stats = scheduler.get_node_stats("sensor")
-        """
-        if self._scheduler:
-            return self._scheduler.has_node(name)
-        return any(node.name == name for node in self._nodes)
-
-    def get_node_names(self) -> List[str]:
-        """
-        Get list of all node names.
-
-        Returns:
-            List of node names
-
-        Example:
-            names = scheduler.get_node_names()
-            print(f"Nodes: {', '.join(names)}")
-        """
-        if self._scheduler:
-            return self._scheduler.get_node_names()
-        return [node.name for node in self._nodes]
-
-    # ========================================================================
-    # Status & Diagnostics
-    # ========================================================================
-
     def status(self) -> str:
-        """
-        Get scheduler status string.
-
-        Returns:
-            Status string (e.g. "idle", "running", "stopped")
-        """
+        """Get scheduler status string (e.g. "idle", "running", "stopped")."""
         if self._scheduler:
             return self._scheduler.status()
         return "mock"
 
-    def capabilities(self) -> Optional[Dict[str, Any]]:
-        """
-        Get runtime RT capabilities as a dict.
-
-        Returns:
-            Dict with keys: preempt_rt, rt_priority_available,
-            max_rt_priority, min_rt_priority. None if not available.
-        """
-        if self._scheduler:
-            return self._scheduler.capabilities()
-        return None
-
-    def has_full_rt(self) -> bool:
-        """
-        Check if full real-time capabilities are available.
-
-        Returns:
-            True if RT scheduling, memory locking, etc. are all available
-        """
-        if self._scheduler:
-            return self._scheduler.has_full_rt()
-        return False
-
-    def degradations(self) -> List[Dict[str, Any]]:
-        """
-        Get list of RT degradations (features that couldn't be enabled).
-
-        Returns:
-            List of dicts with keys: feature, reason, severity
-        """
-        if self._scheduler:
-            return self._scheduler.degradations()
-        return []
-
     def current_tick(self) -> int:
-        """
-        Get the current tick count.
-
-        Returns:
-            Number of ticks executed so far
-        """
+        """Get the current tick count."""
         if self._scheduler:
             return self._scheduler.current_tick()
         return 0
-
-    def scheduler_name(self) -> str:
-        """
-        Get the scheduler name.
-
-        Returns:
-            Scheduler name string
-        """
-        if self._scheduler:
-            return self._scheduler.scheduler_name()
-        return "MockScheduler"
-
-    # ========================================================================
-    # Safety Stats
-    # ========================================================================
-
-    def safety_stats(self) -> Optional[Dict[str, Any]]:
-        """
-        Get safety monitor statistics.
-
-        Returns:
-            Dict with keys: state, budget_overruns, deadline_misses,
-            watchdog_expirations. None if safety monitor is not enabled.
-        """
-        if self._scheduler:
-            return self._scheduler.safety_stats()
-        return None
-
-    # ========================================================================
-    # Recording
-    # ========================================================================
-
-    def is_recording(self) -> bool:
-        """
-        Check if the scheduler is currently recording.
-
-        Returns:
-            True if recording is active
-        """
-        if self._scheduler:
-            return self._scheduler.is_recording()
-        return False
-
-    def is_replaying(self) -> bool:
-        """
-        Check if the scheduler is currently replaying a recording.
-
-        Returns:
-            True if replay mode is active
-        """
-        if self._scheduler:
-            return self._scheduler.is_replaying()
-        return False
-
-    def stop_recording(self) -> List[str]:
-        """
-        Stop recording and return paths to saved recording files.
-
-        Returns:
-            List of file paths where recordings were saved
-        """
-        if self._scheduler:
-            return self._scheduler.stop_recording()
-        return []
-
-    @staticmethod
-    def list_recordings() -> List[str]:
-        """
-        List available recording files.
-
-        Returns:
-            List of recording file paths
-        """
-        if _PyScheduler:
-            return _PyScheduler.list_recordings()
-        return []
-
-    # ========================================================================
-    # Node Control
-    # ========================================================================
-
-    def set_tick_budget(self, node_name: str, us: int) -> None:
-        """
-        Set tick budget (Worst-Case Execution Time) for a node.
-
-        Args:
-            node_name: Name of the node
-            us: Budget in microseconds
-        """
-        if not self._scheduler:
-            raise RuntimeError("Cannot set tick budget before scheduler is created")
-        self._scheduler.set_tick_budget(node_name, us)
-
-    def add_critical_node(self, node_name: str, timeout_ms: int) -> None:
-        """
-        Mark a node as critical with a watchdog timeout.
-
-        Args:
-            node_name: Name of the node
-            timeout_ms: Watchdog timeout in milliseconds
-        """
-        if not self._scheduler:
-            raise RuntimeError("Cannot add critical node before scheduler is created")
-        self._scheduler.add_critical_node(node_name, timeout_ms)
-
-    @staticmethod
-    def delete_recording(session_name: str) -> None:
-        """
-        Delete a recording by session name.
-
-        Args:
-            session_name: Name of the recording session to delete
-        """
-        if _PyScheduler:
-            _PyScheduler.delete_recording(session_name)
 
 
 # Convenience functions
@@ -1545,10 +1230,8 @@ __all__ = [
     "TransformFrame",
     "Transform",
     "TransformFrameConfig",
-    # Enums & constants
+    # Enums
     "NodeState",
-    "Priority",
-    "Miss",
     # Perception
     "DetectionList",
     "PointXYZ",
@@ -1559,12 +1242,8 @@ __all__ = [
     "HorusNotFoundError",
     "HorusTransformError",
     "HorusTimeoutError",
-    # GPU utilities
-    "cuda_is_available",
-    "cuda_device_count",
     # Submodules
     "msggen",
-    "ai",
     "perception",
     # Utility
     "get_version",
@@ -1573,8 +1252,6 @@ __all__ = [
 # Import custom message generator module
 from . import msggen
 
-# Import AI/ML submodule (horus.ai)
-from . import ai
 
     # Rust-native types are already assigned in the fallback block above (lines 1380-1454).
     # No second assignment needed.
@@ -1670,6 +1347,8 @@ if _has_messages:
         "VelocityObstacles",
         "OccupancyGrid",
         "CostMap",
+        # Audio
+        "AudioFrame",
         # I/O messages
         "DigitalIO",
         "AnalogIO",

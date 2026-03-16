@@ -43,6 +43,7 @@ use horus_library::messages::geometry::{
 };
 use horus_library::messages::joystick_msg::JoystickInput;
 use horus_library::messages::keyboard_input_msg::KeyboardInput;
+use horus_library::messages::audio::AudioFrame;
 use horus_library::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
 use horus_library::messages::navigation::{
     CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
@@ -65,7 +66,7 @@ use std::sync::{Arc, RwLock};
 use crate::depth_image::PyDepthImage;
 use crate::image::PyImage;
 use crate::messages::{
-    PyAccel, PyAccelStamped, PyBatteryState, PyBoundingBox2DMsg, PyBoundingBox3D, PyCameraInfo,
+    PyAccel, PyAccelStamped, PyAudioFrame, PyBatteryState, PyBoundingBox2DMsg, PyBoundingBox3D, PyCameraInfo,
     PyClock, PyCmdVel, PyCompressedImage, PyContactInfo,
     PyCostMap, PyDetection3D, PyDetectionMsg, PyDiagnosticReport,
     PyDiagnosticStatus, PyDiagnosticValue, PyDifferentialDriveCommand, PyEmergencyStop,
@@ -220,6 +221,8 @@ enum TopicType {
     VelocityObstacles(Arc<RwLock<Topic<VelocityObstacles>>>),
     OccupancyGrid(Arc<RwLock<Topic<OccupancyGrid>>>),
     CostMap(Arc<RwLock<Topic<CostMap>>>),
+    // Audio
+    AudioFrame(Arc<RwLock<Topic<AudioFrame>>>),
     Generic(Arc<RwLock<Topic<GenericMessage>>>),
 }
 
@@ -305,6 +308,7 @@ macro_rules! topic_dispatch {
             TopicType::VelocityObstacles($t) => $body,
             TopicType::OccupancyGrid($t) => $body,
             TopicType::CostMap($t) => $body,
+            TopicType::AudioFrame($t) => $body,
             TopicType::Generic($t) => $body,
         }
     };
@@ -714,6 +718,10 @@ impl PyTopic {
             "CostMap" => {
                 let topic = create_topic::<CostMap>(&effective_endpoint, cap)?;
                 TopicType::CostMap(Arc::new(RwLock::new(topic)))
+            }
+            "AudioFrame" => {
+                let topic = create_topic::<AudioFrame>(&effective_endpoint, cap)?;
+                TopicType::AudioFrame(Arc::new(RwLock::new(topic)))
             }
             _ => {
                 let topic = create_topic::<GenericMessage>(&effective_endpoint, cap)?;
@@ -2314,6 +2322,29 @@ impl PyTopic {
             }
             TopicType::CostMap(topic) => {
                 let msg = message.extract::<PyRef<PyCostMap>>(py)?.inner.clone();
+                let topic_ref = topic.clone();
+                let log_msg = {
+                    use horus::core::LogSummary;
+                    msg.log_summary()
+                };
+                let success = py.detach(|| {
+                    topic_ref.write().expect("topic lock poisoned").send(msg);
+                    true
+                });
+                if node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                success
+            }
+            TopicType::AudioFrame(topic) => {
+                let msg = message.extract::<PyRef<PyAudioFrame>>(py)?.inner;
                 let topic_ref = topic.clone();
                 let log_msg = {
                     use horus::core::LogSummary;
@@ -3983,6 +4014,26 @@ impl PyTopic {
                     Ok(None)
                 }
             }
+            TopicType::AudioFrame(topic) => {
+                let topic_ref = topic.clone();
+                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
+                if let Some(msg) = msg_opt {
+                    if node.is_some() {
+                        use horus::core::LogSummary;
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
+                            msg.log_summary(),
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
+                    }
+                    Ok(Some(Py::new(py, PyAudioFrame { inner: msg })?.into_any()))
+                } else {
+                    Ok(None)
+                }
+            }
             TopicType::Generic(topic) => {
                 let topic_ref = topic.clone();
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
@@ -4558,6 +4609,8 @@ impl PyTopic {
             TopicType::CameraInfo(t) => rl!(t, py, PyCameraInfo),
             TopicType::RegionOfInterest(t) => rl!(t, py, PyRegionOfInterest),
             TopicType::StereoInfo(t) => rl!(t, py, PyStereoInfo),
+            // Audio types (Copy)
+            TopicType::AudioFrame(t) => rl!(t, py, PyAudioFrame),
             // Non-Copy types: pool-backed, dynamic
             TopicType::Image(_) | TopicType::PointCloud(_) | TopicType::DepthImage(_)
             | TopicType::OccupancyGrid(_) | TopicType::CostMap(_)

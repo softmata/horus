@@ -63,6 +63,9 @@ pub mod tracking;
 pub mod joystick_msg;
 pub mod keyboard_input_msg;
 
+// Audio
+pub mod audio;
+
 // Application-specific messages
 pub mod cmd_vel;
 
@@ -114,6 +117,9 @@ pub use tracking::{TrackedObject, TrackingHeader};
 // Input (existing)
 pub use joystick_msg::JoystickInput;
 pub use keyboard_input_msg::KeyboardInput;
+
+// Audio
+pub use audio::{AudioEncoding, AudioFrame, MAX_AUDIO_SAMPLES};
 
 // Application (existing)
 pub use cmd_vel::CmdVel;

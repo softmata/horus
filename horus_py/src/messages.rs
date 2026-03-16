@@ -7328,5 +7328,133 @@ pub fn register_message_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVelocityObstacles>()?;
     m.add_class::<PyOccupancyGrid>()?;
     m.add_class::<PyCostMap>()?;
+    // Audio
+    m.add_class::<PyAudioFrame>()?;
     Ok(())
+}
+
+// ============================================================================
+// Audio Types
+// ============================================================================
+
+use horus_library::messages::AudioFrame;
+
+/// AudioFrame — audio data from a microphone or audio source.
+///
+/// Args:
+///     sample_rate: Sample rate in Hz (default: 16000)
+///     channels: Number of channels, 1=mono, 2=stereo (default: 1)
+///     samples: List of float samples (default: empty)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
+///     frame_id: Sensor identifier string (default: "")
+///
+/// Examples:
+///     # Mono microphone at 16kHz
+///     frame = AudioFrame(sample_rate=16000, samples=[0.1, 0.2, 0.3])
+///
+///     # Stereo at 48kHz
+///     frame = AudioFrame(sample_rate=48000, channels=2, samples=interleaved_data)
+///
+///     # Access data
+///     samples = frame.samples    # list of valid samples
+///     duration = frame.duration_ms
+#[pyclass(name = "AudioFrame")]
+#[derive(Clone)]
+pub struct PyAudioFrame {
+    pub(crate) inner: AudioFrame,
+}
+
+#[pymethods]
+impl PyAudioFrame {
+    #[new]
+    #[pyo3(signature = (sample_rate=16000, channels=1, samples=None, timestamp_ns=0, frame_id=""))]
+    fn new(
+        sample_rate: u32,
+        channels: u8,
+        samples: Option<Vec<f32>>,
+        timestamp_ns: u64,
+        frame_id: &str,
+    ) -> Self {
+        let mut frame = if let Some(ref s) = samples {
+            match channels {
+                1 => AudioFrame::mono(sample_rate, s),
+                2 => AudioFrame::stereo(sample_rate, s),
+                n => AudioFrame::multi_channel(sample_rate, n, s),
+            }
+        } else {
+            AudioFrame {
+                sample_rate,
+                channels,
+                ..AudioFrame::default()
+            }
+        };
+        frame.timestamp_ns = timestamp_ns;
+        if !frame_id.is_empty() {
+            frame = frame.with_frame_id(frame_id);
+        }
+        Self { inner: frame }
+    }
+
+    /// Valid samples as a Python list.
+    #[getter]
+    fn samples(&self) -> Vec<f32> {
+        self.inner.valid_samples().to_vec()
+    }
+
+    /// Number of valid samples.
+    #[getter]
+    fn num_samples(&self) -> u32 {
+        self.inner.num_samples
+    }
+
+    /// Sample rate in Hz.
+    #[getter]
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate
+    }
+
+    /// Number of audio channels.
+    #[getter]
+    fn channels(&self) -> u8 {
+        self.inner.channels
+    }
+
+    /// Duration of this frame in milliseconds.
+    #[getter]
+    fn duration_ms(&self) -> f64 {
+        self.inner.duration_ms()
+    }
+
+    /// Number of audio frames (samples per channel).
+    #[getter]
+    fn frame_count(&self) -> u32 {
+        self.inner.frame_count()
+    }
+
+    /// Timestamp in nanoseconds.
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+
+    #[setter]
+    fn set_timestamp_ns(&mut self, value: u64) {
+        self.inner.timestamp_ns = value;
+    }
+
+    /// Frame/sensor identifier.
+    #[getter]
+    fn frame_id(&self) -> String {
+        self.inner.frame_id_str().to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AudioFrame({}ch, {}Hz, {} samples, {:.1}ms)",
+            self.inner.channels,
+            self.inner.sample_rate,
+            self.inner.num_samples,
+            self.inner.duration_ms()
+        )
+    }
 }
