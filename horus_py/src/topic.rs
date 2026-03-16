@@ -4331,6 +4331,9 @@ impl PyTopic {
             TopicType::CostMap(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
+            TopicType::AudioFrame(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             TopicType::Generic(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
@@ -4437,6 +4440,7 @@ impl PyTopic {
                 TopicType::VelocityObstacles(t) => read_lock(t)?.metrics(),
                 TopicType::OccupancyGrid(t) => read_lock(t)?.metrics(),
                 TopicType::CostMap(t) => read_lock(t)?.metrics(),
+                TopicType::AudioFrame(t) => read_lock(t)?.metrics(),
                 TopicType::Generic(t) => read_lock(t)?.metrics(),
             };
 
