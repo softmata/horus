@@ -17,9 +17,7 @@
 //! }
 //! ```
 
-use std::io;
-
-use crate::core::rt_config::{parse_cpu_list, RtCpuInfo, RtKernelInfo};
+use crate::core::rt_config::{RtCpuInfo, RtKernelInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -509,6 +507,7 @@ impl RuntimeCapabilities {
     }
 
     /// Parse a CPU list string like "0-3,7,9-11" into individual CPU indices.
+    #[allow(dead_code)]
     fn parse_cpu_list(s: &str) -> Vec<usize> {
         horus_sys::rt::parse_cpu_list(s)
     }

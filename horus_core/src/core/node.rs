@@ -250,6 +250,7 @@ impl NodeMetrics {
 
 impl NodeMetrics {
     /// Reset timing-related metrics for restart (preserves counts)
+    #[allow(dead_code)]
     pub(crate) fn reset_timing(&mut self) {
         self.avg_tick_duration_ms = 0.0;
         self.max_tick_duration_ms = 0.0;
@@ -294,6 +295,7 @@ pub struct NodeInfo {
     tick_start_time: Option<Instant>,
 
     // Lifecycle management
+    #[allow(dead_code)]
     restart_count: u32,
     error_history: Vec<(Instant, String)>,
     warning_history: Vec<(Instant, String)>,
@@ -371,6 +373,7 @@ impl NodeInfo {
     }
 
     /// Reset node context for restart (preserves identity, clears runtime state)
+    #[allow(dead_code)]
     pub(crate) fn reset_for_restart(&mut self) {
         self.restart_count += 1;
         self.state = NodeState::Uninitialized;

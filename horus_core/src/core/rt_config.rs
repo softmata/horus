@@ -78,7 +78,8 @@ pub(crate) struct RtKernelInfo {
     pub min_rt_priority: i32,
     /// Whether memory locking is permitted
     pub mlockall_permitted: bool,
-    /// Available CPU count
+    /// Available CPU count (used in tests and for diagnostics)
+    #[allow(dead_code)]
     pub cpu_count: usize,
 }
 
@@ -554,42 +555,6 @@ impl RtCpuInfo {
     }
 }
 
-/// Parse a CPU list string like "2-5,7,9-11" into individual CPU indices.
-pub(crate) fn parse_cpu_list(s: &str) -> Vec<usize> {
-    let mut cpus = Vec::new();
-
-    if s.is_empty() {
-        return cpus;
-    }
-
-    for part in s.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-
-        if let Some(dash_pos) = part.find('-') {
-            // Range like "2-5"
-            let start_str = &part[..dash_pos];
-            let end_str = &part[dash_pos + 1..];
-
-            if let (Ok(start), Ok(end)) = (start_str.parse::<usize>(), end_str.parse::<usize>()) {
-                for cpu in start..=end {
-                    cpus.push(cpu);
-                }
-            }
-        } else {
-            // Single CPU like "7"
-            if let Ok(cpu) = part.parse::<usize>() {
-                cpus.push(cpu);
-            }
-        }
-    }
-
-    cpus.sort();
-    cpus.dedup();
-    cpus
-}
 
 #[cfg(test)]
 mod tests {

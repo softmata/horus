@@ -98,29 +98,6 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     Ok(nodes)
 }
 
-/// Discover all scheduler registry files in home directory (cross-platform)
-pub(crate) fn discover_registry_files() -> Vec<std::path::PathBuf> {
-    let mut registry_files = Vec::new();
-
-    let home_path = match dirs::home_dir() {
-        Some(path) => path,
-        None => return registry_files,
-    };
-
-    // Look for all .horus_registry*.json files
-    if let Ok(entries) = std::fs::read_dir(&home_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                if filename.starts_with(".horus_registry") && filename.ends_with(".json") {
-                    registry_files.push(path);
-                }
-            }
-        }
-    }
-
-    registry_files
-}
 
 fn discover_horus_processes() -> anyhow::Result<Vec<NodeStatus>> {
     let mut nodes = Vec::new();
@@ -266,6 +243,7 @@ pub(crate) fn extract_process_name(cmdline: &str) -> String {
     "Unknown".to_string()
 }
 
+#[allow(dead_code)] // used by tests
 pub(crate) fn process_exists(pid: u32) -> bool {
     horus_sys::process::ProcessHandle::from_pid(pid).is_alive()
 }

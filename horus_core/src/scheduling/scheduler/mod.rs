@@ -1,9 +1,8 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
 use crate::core::tick_context::{clear_tick_context, set_tick_context};
-use crate::core::{DurationExt, Node, NodeInfo, NodePresence};
+use crate::core::{DurationExt, NodeInfo, NodePresence};
 use crate::error::{HorusContext, HorusResult};
 use crate::terminal::print_line;
-use colored::Colorize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -192,12 +191,16 @@ pub struct Scheduler {
     initialized: bool,
 
     /// Live node registry in SHM — updated every tick with atomic metrics.
+    /// Read via self.registry in execution.rs and node_ops.rs.
+    #[allow(dead_code)] // false positive: read in execution.rs and node_ops.rs
     pub(super) registry: Option<super::registry::SchedulerRegistry>,
     /// Maps node name → slot index in the registry.
+    #[allow(dead_code)] // false positive: read in node_ops.rs
     pub(super) registry_slots: HashMap<String, usize>,
 
     /// Control topic for receiving CLI commands (pause/resume/shutdown).
     /// Drained at the start of each tick for deterministic behavior.
+    #[allow(dead_code)] // false positive: read in execution.rs process_control_commands
     pub(super) control_topic: Option<crate::communication::Topic<super::control::ControlCommand>>,
 }
 

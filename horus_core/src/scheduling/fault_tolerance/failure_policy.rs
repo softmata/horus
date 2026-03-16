@@ -136,6 +136,7 @@ pub enum FailureAction {
 
 /// Summary of a node's failure handler state for monitoring
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FailureHandlerStats {
     policy: String,
     state: String,

@@ -29,18 +29,21 @@ impl ShmRegion {
 
     /// View the mapped memory as a byte slice.
     #[inline]
+    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[u8] {
         self.0.as_slice()
     }
 
     /// View the mapped memory as a mutable byte slice.
     #[inline]
+    #[allow(dead_code)]
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         self.0.as_slice_mut()
     }
 
     /// Size of the mapped region in bytes.
     #[inline]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.0.len()
     }

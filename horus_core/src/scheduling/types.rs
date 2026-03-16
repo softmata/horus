@@ -374,6 +374,7 @@ pub(crate) struct RegisteredNode {
     /// Per-node watchdog timeout (overrides scheduler global).
     pub(crate) node_watchdog: Option<Duration>,
     /// Failure policy handler — tracks restart count, backoff, cooldown state.
+    #[allow(dead_code)] // false positive: read via self.nodes[i].failure_handler in node_ops.rs
     pub(crate) failure_handler: Option<FailureHandler>,
 }
 

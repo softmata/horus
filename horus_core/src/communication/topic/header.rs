@@ -375,6 +375,7 @@ impl TopicHeader {
     /// Returns the null-terminated string from the `type_name` field, or an
     /// empty string if the field is all zeros (header from before this field
     /// was added).
+    #[allow(dead_code)] // public API: called by external tools via read_topic_header_info
     pub fn type_name_str(&self) -> &str {
         let end = self
             .type_name
@@ -386,12 +387,14 @@ impl TopicHeader {
 
     /// Read the total messages sent counter.
     #[inline]
+    #[allow(dead_code)] // public API: called by external tools and tests
     pub fn messages_total(&self) -> u64 {
         self.messages_total.load(Ordering::Relaxed)
     }
 
     /// Read the topic kind classification.
     #[inline]
+    #[allow(dead_code)] // public API: called by external tools and tests
     pub fn topic_kind(&self) -> TopicKind {
         TopicKind::from_u8(self.topic_kind)
     }

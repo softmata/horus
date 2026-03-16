@@ -137,6 +137,7 @@ pub(super) fn format_age(secs: u64) -> String {
 ///
 /// Uses targeted patterns to avoid false positives from unrelated programs
 /// that happen to contain generic words like "sim" or "ros".
+#[allow(dead_code)] // used by tests
 pub(super) fn is_horus_process(cmdline: &str) -> bool {
     // Primary: horus binaries and libraries
     if cmdline.contains("horus") {

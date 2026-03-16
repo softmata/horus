@@ -86,3 +86,9 @@ Thumbs.db
 
 CLAUDE.md
 API.md
+
+# Compiler crash dumps
+rustc-ice-*
+
+# SLAM skill state
+.slam-map.json
