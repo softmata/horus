@@ -346,24 +346,46 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
         }
     }
 
-    // Source 2: Merge pub/sub from node presence files
+    // Source 2: Merge pub/sub from node presence files.
+    // Topics that appear in presence but have no .meta file are added as
+    // presence-only topics (e.g., network topics, topics on other hosts).
     let nodes = find_nodes();
     for node in &nodes {
         for pub_topic in &node.publishers {
-            if let Some(ti) = topics.get_mut(&pub_topic.topic) {
-                if !ti.publishers.contains(&node.name) {
-                    ti.publishers.push(node.name.clone());
+            let ti = topics.entry(pub_topic.topic.clone()).or_insert_with(|| {
+                DiscoveredTopic {
+                    name: pub_topic.topic.clone(),
+                    size: 0,
+                    creator_pid: 0,
+                    is_alive: true, // presence exists = node is alive
+                    publishers: Vec::new(),
+                    subscribers: Vec::new(),
+                    message_type: None,
+                    created_at: 0,
                 }
-                if ti.message_type.is_none() && !pub_topic.type_name.is_empty() {
-                    ti.message_type = Some(pub_topic.type_name.clone());
-                }
+            });
+            if !ti.publishers.contains(&node.name) {
+                ti.publishers.push(node.name.clone());
+            }
+            if ti.message_type.is_none() && !pub_topic.type_name.is_empty() {
+                ti.message_type = Some(pub_topic.type_name.clone());
             }
         }
         for sub_topic in &node.subscribers {
-            if let Some(ti) = topics.get_mut(&sub_topic.topic) {
-                if !ti.subscribers.contains(&node.name) {
-                    ti.subscribers.push(node.name.clone());
+            let ti = topics.entry(sub_topic.topic.clone()).or_insert_with(|| {
+                DiscoveredTopic {
+                    name: sub_topic.topic.clone(),
+                    size: 0,
+                    creator_pid: 0,
+                    is_alive: true,
+                    publishers: Vec::new(),
+                    subscribers: Vec::new(),
+                    message_type: None,
+                    created_at: 0,
                 }
+            });
+            if !ti.subscribers.contains(&node.name) {
+                ti.subscribers.push(node.name.clone());
             }
         }
     }

@@ -280,71 +280,38 @@ impl PluginDiscovery {
             .unwrap_or_default()
     }
 
-    /// Discover plugins from SOFTMATA registry
+    /// Discover plugins from SOFTMATA registry.
+    ///
+    /// Queries the registry API for packages of type "plugin". Falls back to
+    /// an empty list if the registry is unreachable (offline development).
     pub fn discover_registry(&self) -> Result<Vec<AvailablePlugin>> {
-        // In a real implementation, this would query the registry API
-        // For now, return a curated list of known plugins
-        Ok(self.get_known_plugins())
-    }
+        let client = crate::registry::RegistryClient::new();
 
-    /// Get list of known/official HORUS plugins
-    fn get_known_plugins(&self) -> Vec<AvailablePlugin> {
-        vec![
-            AvailablePlugin {
-                name: "horus-realsense".to_string(),
-                version: "0.1.0".to_string(),
-                description: "Intel RealSense depth camera support (D435, D455, L515)".to_string(),
-                category: PluginCategory::Camera,
-                source: PluginSourceType::Registry,
-                platforms: vec!["linux-x86_64".to_string(), "linux-aarch64".to_string()],
-                horus_compat: ">=0.1.0".to_string(),
-                has_prebuilt: true,
-                system_deps: vec!["librealsense2-dev".to_string()],
-                features: vec!["depth".to_string(), "rgb".to_string(), "pointcloud".to_string(), "camera".to_string()],
-            },
-            AvailablePlugin {
-                name: "horus-rplidar".to_string(),
-                version: "0.1.0".to_string(),
-                description: "Slamtec RPLiDAR support (A1, A2, A3, S1, S2)".to_string(),
-                category: PluginCategory::Lidar,
-                source: PluginSourceType::Registry,
-                platforms: vec!["linux-x86_64".to_string(), "linux-aarch64".to_string()],
-                horus_compat: ">=0.1.0".to_string(),
-                has_prebuilt: true,
-                system_deps: vec![],
-                features: vec!["2d-scan".to_string(), "motor-control".to_string()],
-            },
-            AvailablePlugin {
-                name: "horus-velodyne".to_string(),
-                version: "0.1.0".to_string(),
-                description: "Velodyne 3D LiDAR support (VLP-16, VLP-32, HDL-32E, HDL-64E)"
-                    .to_string(),
-                category: PluginCategory::Lidar,
-                source: PluginSourceType::Registry,
-                platforms: vec!["linux-x86_64".to_string()],
-                horus_compat: ">=0.1.0".to_string(),
-                has_prebuilt: true,
-                system_deps: vec![],
-                features: vec!["3d-pointcloud".to_string(), "dual-return".to_string()],
-            },
-            AvailablePlugin {
-                name: "horus-odrive".to_string(),
-                version: "0.1.0".to_string(),
-                description: "ODrive motor controller support (v3.x, S1, Pro)".to_string(),
-                category: PluginCategory::Motor,
-                source: PluginSourceType::Registry,
-                platforms: vec!["linux-x86_64".to_string(), "linux-aarch64".to_string()],
-                horus_compat: ">=0.1.0".to_string(),
-                has_prebuilt: true,
-                system_deps: vec![],
-                features: vec![
-                    "usb".to_string(),
-                    "can".to_string(),
-                    "uart".to_string(),
-                    "foc".to_string(),
-                ],
-            },
-        ]
+        let packages = match client.search("", Some("plugin"), None) {
+            Ok(pkgs) => pkgs,
+            Err(_) => return Ok(Vec::new()), // Network error — skip
+        };
+
+        let plugins = packages
+            .into_iter()
+            .map(|pkg| {
+                let category = self.detect_category(&pkg.name, &toml::Value::Table(toml::Table::new()));
+                AvailablePlugin {
+                    name: pkg.name.clone(),
+                    version: pkg.version,
+                    description: pkg.description.unwrap_or_default(),
+                    category,
+                    source: PluginSourceType::Registry,
+                    platforms: vec!["linux-x86_64".into()],
+                    horus_compat: ">=0.1.0".into(),
+                    has_prebuilt: false,
+                    system_deps: vec![],
+                    features: vec![],
+                }
+            })
+            .collect();
+
+        Ok(plugins)
     }
 
     /// Search for plugins matching a query
@@ -477,21 +444,20 @@ hardware = []
     }
 
     #[test]
-    #[ignore] // Flaky on CI - depends on local plugin directory
     fn test_search() {
         let mut discovery = PluginDiscovery::new();
-        let results = discovery.search("camera").unwrap();
+        let results = discovery.search("camera");
 
-        // Should find plugins matching "camera" in description
-        assert!(!results.is_empty());
+        // search() should succeed without panic — results depend on local/registry state
+        assert!(results.is_ok(), "search should not error: {:?}", results.err());
+        // Results may be empty if no camera plugins are installed/registered
     }
 
     #[test]
-    fn test_known_plugins() {
+    fn test_discover_registry_returns_empty_when_offline() {
+        // With no registry running, discover_registry should return Ok(empty), not error
         let discovery = PluginDiscovery::new();
-        let known = discovery.get_known_plugins();
-
-        assert!(!known.is_empty());
-        assert!(known.iter().any(|p| p.name == "horus-rplidar"));
+        let result = discovery.discover_registry();
+        assert!(result.is_ok(), "should gracefully handle offline registry");
     }
 }

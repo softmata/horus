@@ -1,7 +1,7 @@
 //! Shared memory fixture management for integration-level monitor tests.
 //!
-//! These functions create and clean up real files in `/dev/shm/horus_<ns>/`
-//! (or the platform-appropriate equivalent) so that the discovery functions
+//! These functions create and clean up real files in the platform-appropriate
+//! shared memory directory (from `horus_sys::shm`) so that the discovery functions
 //! (`discover_nodes`, `discover_shared_memory`) return predictable data.
 //!
 //! # Safety
@@ -37,7 +37,7 @@ const TEST_PREFIX: &str = "__test_";
 
 // ─── Standalone functions ───────────────────────────────────────────────────
 
-/// Create a test node presence file in `/dev/shm/horus_<ns>/nodes/`.
+/// Create a test node presence file in the SHM nodes directory.
 ///
 /// The presence file is a JSON document matching the `NodePresence` schema
 /// that `discover_nodes()` reads.
@@ -134,7 +134,7 @@ pub fn create_test_presence_with_topics(
     path
 }
 
-/// Create a test shared memory topic file in `/dev/shm/horus_<ns>/topics/`.
+/// Create a test shared memory topic file in the SHM topics directory.
 ///
 /// This creates a real file of the given size.  The discovery function reads
 /// file metadata (size, modification time) and the file name to populate

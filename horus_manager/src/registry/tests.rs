@@ -676,27 +676,6 @@ fn test_package_metadata_serde() {
 }
 
 // ============================================================================
-// SystemInfo serde tests
-// ============================================================================
-
-#[test]
-fn test_system_info_serde() {
-    let info = SystemInfo {
-        os: "linux".to_string(),
-        arch: "x86_64".to_string(),
-        python_version: Some("3.12.0".to_string()),
-        rust_version: Some("1.75.0".to_string()),
-        gcc_version: None,
-        cuda_version: None,
-    };
-    let json = serde_json::to_string(&info).unwrap();
-    let roundtripped: SystemInfo = serde_json::from_str(&json).unwrap();
-    assert_eq!(roundtripped.os, "linux");
-    assert_eq!(roundtripped.python_version, Some("3.12.0".to_string()));
-    assert!(roundtripped.gcc_version.is_none());
-}
-
-// ============================================================================
 // RegistryClient basic tests
 // ============================================================================
 
@@ -959,80 +938,6 @@ fn test_platform_filter_mixed_deps() {
     assert_eq!(filtered.len(), 2);
     assert_eq!(filtered[0].name, "universal-pkg");
     assert_eq!(filtered[1].name, "current-platform-pkg");
-}
-
-// ============================================================================
-// EnvironmentManifest serde tests
-// ============================================================================
-
-#[test]
-fn test_environment_manifest_serde_roundtrip() {
-    let manifest = EnvironmentManifest {
-        horus_id: "abc123".to_string(),
-        name: Some("my-robot-env".to_string()),
-        description: Some("Robot navigation environment".to_string()),
-        packages: vec![
-            LockedPackage {
-                name: "horus_core".to_string(),
-                version: "0.2.0".to_string(),
-                checksum: "deadbeef".to_string(),
-                source: PackageSource::Registry,
-            },
-            LockedPackage {
-                name: "numpy".to_string(),
-                version: "1.24.0".to_string(),
-                checksum: "cafebabe".to_string(),
-                source: PackageSource::PyPI,
-            },
-        ],
-        system: SystemInfo {
-            os: "linux".to_string(),
-            arch: "x86_64".to_string(),
-            python_version: Some("3.12.0".to_string()),
-            rust_version: Some("1.75.0".to_string()),
-            gcc_version: None,
-            cuda_version: Some("12.3".to_string()),
-        },
-        created_at: chrono::Utc::now(),
-        horus_version: "0.3.0".to_string(),
-    };
-
-    let json = serde_json::to_string(&manifest).unwrap();
-    let roundtripped: EnvironmentManifest = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(roundtripped.horus_id, "abc123");
-    assert_eq!(roundtripped.name, Some("my-robot-env".to_string()));
-    assert_eq!(roundtripped.packages.len(), 2);
-    assert_eq!(roundtripped.packages[0].name, "horus_core");
-    assert_eq!(roundtripped.packages[1].source, PackageSource::PyPI);
-    assert_eq!(roundtripped.system.os, "linux");
-    assert_eq!(roundtripped.system.cuda_version, Some("12.3".to_string()));
-    assert_eq!(roundtripped.horus_version, "0.3.0");
-}
-
-#[test]
-fn test_environment_manifest_empty_packages() {
-    let manifest = EnvironmentManifest {
-        horus_id: "empty-env".to_string(),
-        name: None,
-        description: None,
-        packages: vec![],
-        system: SystemInfo {
-            os: "macos".to_string(),
-            arch: "aarch64".to_string(),
-            python_version: None,
-            rust_version: None,
-            gcc_version: None,
-            cuda_version: None,
-        },
-        created_at: chrono::Utc::now(),
-        horus_version: "0.1.0".to_string(),
-    };
-
-    let json = serde_json::to_string(&manifest).unwrap();
-    let roundtripped: EnvironmentManifest = serde_json::from_str(&json).unwrap();
-    assert!(roundtripped.packages.is_empty());
-    assert!(roundtripped.name.is_none());
 }
 
 // ============================================================================

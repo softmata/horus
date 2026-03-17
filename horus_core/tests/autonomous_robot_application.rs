@@ -974,7 +974,7 @@ impl Node for IMUSensorNode {
 
 /// Clean up stale shared memory topics from previous test runs
 fn cleanup_test_topics() {
-    let topics_dir = std::path::PathBuf::from("/dev/shm/horus/topics");
+    let topics_dir = horus_sys::shm::shm_topics_dir();
     let test_topics = [
         "cmd_vel",
         "odometry",

@@ -198,6 +198,11 @@ pub fn write_topic_meta(name: &str, size: usize) -> anyhow::Result<()> {
     };
     let path = dir.join(format!("{}.meta", sanitize_namespace(name)));
     std::fs::write(&path, serde_json::to_string(&meta)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 

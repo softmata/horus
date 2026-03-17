@@ -139,8 +139,8 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = f();
         std::env::set_current_dir(original).unwrap();

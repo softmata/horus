@@ -42,6 +42,9 @@ pub fn execute_run(
     release: bool,
     clean: bool,
 ) -> Result<()> {
+    // Verify lockfile system deps and toolchain before running
+    crate::system_deps::verify_lockfile_before_build();
+
     log::debug!("executing run with files: {:?}", files);
 
     // Check if the argument is a script name from [scripts] in horus.toml
@@ -880,8 +883,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -896,8 +899,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join("main.py"), "print('hello')").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -913,8 +916,8 @@ mod tests {
         fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
         fs::write(tmp.path().join("main.py"), "print('hello')").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -930,8 +933,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join("src")).unwrap();
         fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -946,8 +949,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join("robot.rs"), "fn main() {}").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -960,8 +963,8 @@ mod tests {
     fn auto_detect_empty_dir_fails() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -974,8 +977,8 @@ mod tests {
     fn ensure_horus_directory_creates_all_dirs() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = ensure_horus_directory();
         std::env::set_current_dir(original).unwrap();
@@ -993,8 +996,8 @@ mod tests {
     fn ensure_horus_directory_idempotent() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         ensure_horus_directory().unwrap();
         fs::write(tmp.path().join(".horus/bin/test"), "keep").unwrap();
@@ -1012,8 +1015,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join(".horus/lib")).unwrap();
         fs::create_dir_all(tmp.path().join(".horus/packages")).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = build_child_env();
         std::env::set_current_dir(original).unwrap();
@@ -1032,8 +1035,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
         fs::create_dir_all(tmp.path().join(".horus/lib")).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = build_child_env();
         std::env::set_current_dir(original).unwrap();
@@ -1068,8 +1071,8 @@ mod tests {
     fn load_params_no_files_returns_ok() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1087,8 +1090,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1107,8 +1110,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1127,8 +1130,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1148,8 +1151,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1167,8 +1170,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1182,8 +1185,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join("params.yaml"), "").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1203,8 +1206,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1236,8 +1239,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = load_params_from_project();
         std::env::set_current_dir(original).unwrap();
@@ -1255,8 +1258,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join("src")).unwrap();
         fs::write(tmp.path().join("src/main.rs"), "fn main() { /* src */ }").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -1276,8 +1279,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join("src")).unwrap();
         fs::write(tmp.path().join("src/main.py"), "print('hello')").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -1293,8 +1296,8 @@ mod tests {
         fs::write(tmp.path().join("robot.rs"), "fn main() {}").unwrap();
         fs::write(tmp.path().join("sensor.rs"), "fn main() {}").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -1311,8 +1314,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join("robot.py"), "print('hello')").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -1329,8 +1332,8 @@ mod tests {
         fs::write(tmp.path().join("config.yaml"), "key: value").unwrap();
         fs::write(tmp.path().join("data.json"), "{}").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = auto_detect_main_file();
         std::env::set_current_dir(original).unwrap();
@@ -1403,8 +1406,8 @@ mod tests {
         fs::write(tmp.path().join(".horus/cache/old_binary"), b"old").unwrap();
         fs::write(tmp.path().join(".horus/bin/old_tool"), b"old").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_rust::clean_build_cache();
         std::env::set_current_dir(original).unwrap();
@@ -1430,8 +1433,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         // No .horus, no target, no __pycache__
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_rust::clean_build_cache();
         std::env::set_current_dir(original).unwrap();
@@ -1474,8 +1477,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join(".horus/lib")).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = build_child_env();
         std::env::set_current_dir(original).unwrap();
@@ -1495,8 +1498,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join(".horus/packages")).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = build_child_env();
         std::env::set_current_dir(original).unwrap();
@@ -1522,8 +1525,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let patterns = load_ignore_patterns();
         std::env::set_current_dir(original).unwrap();
@@ -1538,8 +1541,8 @@ mod tests {
     fn load_ignore_patterns_without_horus_toml_returns_default() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let patterns = load_ignore_patterns();
         std::env::set_current_dir(original).unwrap();
@@ -1556,8 +1559,8 @@ mod tests {
     fn ensure_horus_directory_creates_all_required_subdirs() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = ensure_horus_directory();
         std::env::set_current_dir(original).unwrap();
@@ -1580,8 +1583,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join(".horus/cache")).unwrap();
         fs::write(tmp.path().join(".horus/cache/important"), "keep me").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         ensure_horus_directory().unwrap();
         std::env::set_current_dir(original).unwrap();

@@ -58,3 +58,82 @@ impl ShmRegion {
 // Thread safety — delegates to horus_sys::shm::ShmRegion which is Send + Sync
 unsafe impl Send for ShmRegion {}
 unsafe impl Sync for ShmRegion {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shm_create_succeeds() {
+        let name = format!("core_shm_test_{}", std::process::id());
+        let region = ShmRegion::new(&name, 4096);
+        assert!(region.is_ok(), "ShmRegion::new should succeed: {:?}", region.err());
+        drop(region);
+    }
+
+    #[test]
+    fn test_shm_owner_is_first_creator() {
+        let name = format!("core_shm_owner_{}", std::process::id());
+        let region = ShmRegion::new(&name, 1024).unwrap();
+        assert!(region.is_owner(), "first creator should be owner");
+        drop(region);
+    }
+
+    #[test]
+    fn test_shm_len_matches_requested() {
+        let name = format!("core_shm_len_{}", std::process::id());
+        let region = ShmRegion::new(&name, 8192).unwrap();
+        assert_eq!(region.len(), 8192);
+        drop(region);
+    }
+
+    #[test]
+    fn test_shm_write_then_read() {
+        let name = format!("core_shm_rw_{}", std::process::id());
+        let mut region = ShmRegion::new(&name, 4096).unwrap();
+        region.as_slice_mut()[0..4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(&region.as_slice()[0..4], &[0xDE, 0xAD, 0xBE, 0xEF]);
+        drop(region);
+    }
+
+    #[test]
+    fn test_shm_as_ptr_not_null() {
+        let name = format!("core_shm_ptr_{}", std::process::id());
+        let region = ShmRegion::new(&name, 1024).unwrap();
+        assert!(!region.as_ptr().is_null());
+        drop(region);
+    }
+
+    #[test]
+    fn test_shm_zero_size_returns_error() {
+        let result = ShmRegion::new("core_zero_size", 0);
+        assert!(result.is_err(), "size=0 should return HorusError");
+    }
+
+    #[test]
+    fn test_shm_empty_name_returns_error() {
+        let result = ShmRegion::new("", 1024);
+        assert!(result.is_err(), "empty name should return HorusError");
+    }
+
+    #[test]
+    fn test_shm_error_is_memory_variant() {
+        let result = ShmRegion::new("", 1024);
+        match result {
+            Err(crate::error::HorusError::Memory(_)) => {} // correct
+            Err(other) => panic!("expected HorusError::Memory, got: {:?}", other),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    #[test]
+    fn test_shm_zero_initialized() {
+        let name = format!("core_shm_zero_{}", std::process::id());
+        let region = ShmRegion::new(&name, 512).unwrap();
+        assert!(
+            region.as_slice().iter().all(|&b| b == 0),
+            "newly created region should be zero-initialized"
+        );
+        drop(region);
+    }
+}

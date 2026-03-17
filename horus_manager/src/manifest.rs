@@ -606,6 +606,15 @@ pub struct DriverTableConfig {
     /// Local node struct name registered via `register_driver!` (e.g., `"ConveyorDriver"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// HORUS topic for sensor data output (e.g., `"sensors/imu"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// HORUS topic for joint/state output (e.g., `"arm/joint_states"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_state: Option<String>,
+    /// HORUS topic for command input (e.g., `"arm/joint_commands"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_command: Option<String>,
     /// All remaining keys — passed to the driver factory as `DriverParams`.
     #[serde(flatten)]
     pub params: std::collections::HashMap<String, toml::Value>,

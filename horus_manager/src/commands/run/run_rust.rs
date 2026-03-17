@@ -92,6 +92,9 @@ fn default_manifest() -> HorusManifest {
 }
 
 pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Result<()> {
+    // Verify lockfile system deps and toolchain before building
+    crate::system_deps::verify_lockfile_before_build();
+
     // Handle clean build
     if clean {
         println!("{} Cleaning build cache...", cli_output::ICON_INFO.cyan());
@@ -908,8 +911,8 @@ mod tests {
     fn load_or_default_manifest_no_toml_returns_default() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = load_or_default_manifest(&[]);
         env::set_current_dir(original).unwrap();
@@ -936,8 +939,8 @@ camera = true
 "#;
         fs::write(tmp.path().join(HORUS_TOML), toml_content).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = load_or_default_manifest(&[]);
         env::set_current_dir(original).unwrap();
@@ -953,8 +956,8 @@ camera = true
     fn load_or_default_manifest_merges_extra_drivers() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = load_or_default_manifest(&[
             "lidar".to_string(),
@@ -986,8 +989,8 @@ camera = "opencv"
 "#;
         fs::write(tmp.path().join(HORUS_TOML), toml_content).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = load_or_default_manifest(&["camera".to_string()]);
         env::set_current_dir(original).unwrap();
@@ -1007,8 +1010,8 @@ camera = "opencv"
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join(HORUS_TOML), "{{{{not valid toml").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = load_or_default_manifest(&[]);
         env::set_current_dir(original).unwrap();
@@ -1029,8 +1032,8 @@ version = "0.1.0"
 "#;
         fs::write(tmp.path().join(CARGO_TOML), cargo).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = get_project_name();
         env::set_current_dir(original).unwrap();
@@ -1046,8 +1049,8 @@ version = "0.1.0"
         let cargo = "name = 'single-quoted'\nversion = \"0.1.0\"\n";
         fs::write(tmp.path().join(CARGO_TOML), cargo).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = get_project_name();
         env::set_current_dir(original).unwrap();
@@ -1061,8 +1064,8 @@ version = "0.1.0"
         let tmp = tempfile::TempDir::new().unwrap();
         // No Cargo.toml at all
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = get_project_name();
         env::set_current_dir(original).unwrap();
@@ -1079,8 +1082,8 @@ version = "0.1.0"
         let cargo = "[package]\nversion = \"0.1.0\"\n";
         fs::write(tmp.path().join(CARGO_TOML), cargo).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = get_project_name();
         env::set_current_dir(original).unwrap();
@@ -1110,8 +1113,8 @@ version = "0.1.0"
         fs::create_dir_all(tmp.path().join("__pycache__")).unwrap();
         fs::write(tmp.path().join("__pycache__/mod.pyc"), b"data").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = clean_build_cache();
         env::set_current_dir(original).unwrap();
@@ -1136,8 +1139,8 @@ version = "0.1.0"
         let tmp = tempfile::TempDir::new().unwrap();
         // Empty dir — nothing to clean
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = clean_build_cache();
         env::set_current_dir(original).unwrap();
@@ -1154,8 +1157,8 @@ version = "0.1.0"
         fs::create_dir_all(tmp.path().join("__pycache__")).unwrap();
         fs::write(tmp.path().join("__pycache__/a.pyc"), b"x").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = clean_build_cache();
         env::set_current_dir(original).unwrap();
@@ -1172,8 +1175,8 @@ version = "0.1.0"
         fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
         // Directories exist but are empty
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
         let result = clean_build_cache();
         env::set_current_dir(original).unwrap();
@@ -1199,7 +1202,7 @@ version = "0.1.0"
         .unwrap();
 
         // Use a lock since we temporarily set an env var (env vars are process-global)
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old_val = env::var("HORUS_SOURCE").ok();
         env::set_var("HORUS_SOURCE", tmp.path().to_str().unwrap());
         let result = find_horus_source_dir();
@@ -1219,7 +1222,7 @@ version = "0.1.0"
         let tmp = tempfile::TempDir::new().unwrap();
         // Dir exists but no horus/Cargo.toml inside — env var should be skipped
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old_val = env::var("HORUS_SOURCE").ok();
         env::set_var("HORUS_SOURCE", tmp.path().to_str().unwrap());
         let result = find_horus_source_dir();
@@ -1246,7 +1249,7 @@ version = "0.1.0"
         // Without HORUS_SOURCE and with no candidate paths matching, we should
         // get an error (unless run inside the real softmata workspace, where
         // ~/softmata/horus will be found — which is also valid behavior).
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old_val = env::var("HORUS_SOURCE").ok();
         env::remove_var("HORUS_SOURCE");
         let result = find_horus_source_dir();

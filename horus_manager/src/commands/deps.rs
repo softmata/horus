@@ -396,8 +396,8 @@ mod tests {
     #[test]
     fn run_deps_tree_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Tree, vec![]);
@@ -409,8 +409,8 @@ mod tests {
     #[test]
     fn run_deps_why_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Why("serde".to_string()), vec![]);
@@ -422,8 +422,8 @@ mod tests {
     #[test]
     fn run_deps_outdated_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Outdated, vec![]);
@@ -435,8 +435,8 @@ mod tests {
     #[test]
     fn run_deps_audit_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Audit, vec![]);
@@ -450,8 +450,8 @@ mod tests {
     #[test]
     fn deps_tree_error_message_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Tree, vec![]);
@@ -468,8 +468,8 @@ mod tests {
     #[test]
     fn deps_why_error_message_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Why("anyhow".to_string()), vec![]);
@@ -486,8 +486,8 @@ mod tests {
     #[test]
     fn deps_outdated_error_message_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Outdated, vec![]);
@@ -504,8 +504,8 @@ mod tests {
     #[test]
     fn deps_audit_error_message_no_project() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Audit, vec![]);
@@ -522,8 +522,8 @@ mod tests {
     #[test]
     fn deps_tree_with_extra_args_still_fails_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_deps(DepsAction::Tree, vec!["--depth=1".to_string()]);
@@ -535,8 +535,8 @@ mod tests {
     #[test]
     fn deps_why_empty_package_name() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // Empty package name — still fails because no project detected
@@ -733,8 +733,8 @@ mod tests {
     #[test]
     fn deps_all_actions_fail_consistently_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let results: Vec<_> = vec![

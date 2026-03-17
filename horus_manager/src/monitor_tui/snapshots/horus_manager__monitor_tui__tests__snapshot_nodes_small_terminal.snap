@@ -1,0 +1,27 @@
+---
+source: horus_manager/src/monitor_tui/tests.rs
+expression: render_to_string(&buffer)
+---
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                HORUS TUI v0.1.9 | LIVE | Nodes: 5 | Topics: 4                │
+│ Overview  |  Nodes  |  Topics  |  TransformFrame  |  Packages  |  Params  |  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌Node Details - Use  to select, Enter to view logs─────────────────────────────┐
+│ Name     PID      CPU      Memory     Status     Publishes      Subscribes   │
+│ lidar_dr 1001     12.5%    48 MB      Stopped    scan           -            │
+│ planner  1002     45.2%    128 MB     Stopped    cmd_vel        scan, odom   │
+│ motor_co 1003     5.1%     16 MB      Stopped    odom           cmd_vel      │
+│ camera_n 1004     0.0%     256 MB     Stopped    image          -            │
+│ safety_m 1005     2.3%     8 MB       Stopped    -              scan, odom, c│
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+[ENTER] View Logs | [↑↓] Navigate | [TAB] Switch Tab | [P] Pause | [?] Help | [Q

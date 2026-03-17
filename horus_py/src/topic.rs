@@ -4665,8 +4665,8 @@ where
     Topic::with_capacity(topic_name, capacity as u32, None).map_err(|e| {
         PyRuntimeError::new_err(format!(
             "Failed to create Topic '{}': {}. Common causes: invalid topic name \
-             (allowed: a-z, 0-9, _, -, ., /), SHM permission denied \
-             (check: ls -la /dev/shm/horus_*), or insufficient /dev/shm space",
+             (allowed: a-z, 0-9, _, -, ., /), SHM permission denied, \
+             or insufficient shared memory space. Run: horus clean --shm",
             topic_name, e
         ))
     })
@@ -4696,8 +4696,8 @@ where
     Topic::with_capacity(endpoint, capacity as u32, None).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!(
             "Failed to create Topic '{}': {}. Common causes: invalid topic name \
-             (allowed: a-z, 0-9, _, -, ., /), SHM permission denied \
-             (check: ls -la /dev/shm/horus_*), or insufficient /dev/shm space",
+             (allowed: a-z, 0-9, _, -, ., /), SHM permission denied, \
+             or insufficient shared memory space. Run: horus clean --shm",
             endpoint, e
         ))
     })

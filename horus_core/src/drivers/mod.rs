@@ -26,7 +26,7 @@ pub mod params;
 pub mod registry;
 pub mod terra_map;
 
-pub use hardware_set::{DriverHandle, DriverType, HardwareSet};
+pub use hardware_set::{DriverHandle, DriverType, HardwareSet, TopicMapping};
 pub use params::{DriverParams, FromToml};
 pub use registry::{register, DriverFactory};
 pub use terra_map::TerraCrateInfo;

@@ -37,7 +37,7 @@ class TestPose2D:
                 node.request_stop()
 
         def subscriber(node):
-            msg = node.get("Pose2D")
+            msg = node.recv("Pose2D")
             if msg:
                 received_values.append((msg.x, msg.y, msg.theta))
             if len(received_values) >= 5:
@@ -93,7 +93,7 @@ class TestTwist:
                 node.request_stop()
 
         def sub_node(node):
-            msg = node.get("Twist")
+            msg = node.recv("Twist")
             if msg:
                 received.append((msg.linear_x, msg.angular_z))
                 node.request_stop()
@@ -139,7 +139,7 @@ class TestCmdVel:
                 node.request_stop()
 
         def sub_node(node):
-            msg = node.get("CmdVel")
+            msg = node.recv("CmdVel")
             if msg:
                 received_data.append((msg.linear, msg.angular))
             if len(received_data) >= len(test_data):
@@ -195,7 +195,7 @@ class TestLaserScan:
 
         def sub_node(node):
             nonlocal received_ranges
-            msg = node.get("LaserScan")
+            msg = node.recv("LaserScan")
             if msg:
                 received_ranges = list(msg.ranges)
                 node.request_stop()
@@ -230,7 +230,7 @@ class TestGeometricTypes:
                 node.request_stop()
 
         def sub_node(node):
-            msg = node.get("Point3")
+            msg = node.recv("Point3")
             if msg:
                 received.append((msg.x, msg.y, msg.z))
                 node.request_stop()
@@ -281,7 +281,7 @@ class TestHighFrequency:
                 node.request_stop()
 
         def fast_sub(node):
-            msg = node.get("Pose2D")
+            msg = node.recv("Pose2D")
             if msg:
                 received_count[0] += 1
 

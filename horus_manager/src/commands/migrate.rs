@@ -773,8 +773,8 @@ requires = ["setuptools"]
     #[test]
     fn migrate_fails_without_horus_toml() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(false, false);
         std::env::set_current_dir(original).unwrap();
@@ -800,8 +800,8 @@ requires = ["setuptools"]
         .unwrap();
         fs::create_dir_all(tmp.path().join(".horus")).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(false, false);
         std::env::set_current_dir(original).unwrap();
@@ -829,8 +829,8 @@ serde = "1.0"
 "#;
         fs::write(tmp.path().join("Cargo.toml"), cargo_content).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(true, false);
         std::env::set_current_dir(original).unwrap();
@@ -869,8 +869,8 @@ tokio = "1.35"
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(false, false);
         std::env::set_current_dir(original).unwrap();
@@ -905,8 +905,8 @@ dependencies = ["numpy>=1.24", "requests"]
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(false, false);
         std::env::set_current_dir(original).unwrap();
@@ -932,8 +932,8 @@ dependencies = ["numpy>=1.24", "requests"]
         fs::create_dir_all(tmp.path().join("src")).unwrap();
         fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(false, false);
         std::env::set_current_dir(original).unwrap();
@@ -963,8 +963,8 @@ dependencies = ["numpy>=1.24", "requests"]
         fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
         fs::write(tmp.path().join("src/lib.rs"), "pub mod foo;").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(false, false);
         std::env::set_current_dir(original).unwrap();
@@ -989,8 +989,8 @@ dependencies = ["numpy>=1.24", "requests"]
         fs::write(tmp.path().join("src/main.rs"), "fn main() { old }").unwrap();
         fs::write(tmp.path().join("main.rs"), "fn main() { new }").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_migrate(false, false);
         std::env::set_current_dir(original).unwrap();

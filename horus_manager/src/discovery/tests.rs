@@ -540,7 +540,6 @@ fn cleanup_test_file(path: Option<std::path::PathBuf>) {
 }
 
 #[test]
-#[ignore] // Requires /dev/shm filesystem; run with: cargo test -- --ignored
 fn test_discover_shared_memory_with_real_topic() {
     // Use simple topic name to avoid underscore-to-slash conversion confusion
     let test_topic = "testshm"; // Simple name without underscores
@@ -594,7 +593,7 @@ fn test_discover_nodes_returns_vec() {
             }
         }
         Err(e) => {
-            // No /dev/shm/horus data is acceptable in CI
+            // No SHM data is acceptable in CI
             let msg = format!("{}", e);
             assert!(
                 msg.contains("not found") || msg.contains("No such") || msg.contains("shm"),
@@ -607,7 +606,7 @@ fn test_discover_nodes_returns_vec() {
 
 #[test]
 fn test_discover_shared_memory_handles_missing_dirs() {
-    // When /dev/shm/horus dirs don't exist, should return Ok(empty) or Err
+    // When SHM dirs don't exist, should return Ok(empty) or Err
     let result = discover_shared_memory();
     match result {
         Ok(shm_info) => {
@@ -632,9 +631,8 @@ fn test_discover_shared_memory_handles_missing_dirs() {
 }
 
 #[test]
-#[ignore] // Requires /dev/shm filesystem; run with: cargo test -- --ignored
 fn test_topic_inactive_detection() {
-    // Create a topic file and verify active detection works
+    // Create a topic with .meta file (current PID = alive) and verify active detection
     let topics_dir = shm_topics_dir();
     if std::fs::create_dir_all(&topics_dir).is_err() {
         return;
@@ -642,6 +640,9 @@ fn test_topic_inactive_detection() {
 
     let test_file = topics_dir.join("test_active_topic");
     if std::fs::write(&test_file, vec![0u8; 512]).is_ok() {
+        // Write .meta so find_topics() can determine liveness
+        let _ = horus_sys::shm::write_topic_meta("test_active_topic", 512);
+
         // Force cache refresh
         if let Ok(mut cache) = DISCOVERY_CACHE.write() {
             cache.shared_memory_last_updated =
@@ -651,11 +652,11 @@ fn test_topic_inactive_detection() {
         let result = discover_shared_memory();
         if let Ok(topics) = result {
             if let Some(topic) = topics.iter().find(|t| t.topic_name.contains("test_active")) {
-                // Just-created file should be considered active (recently modified)
-                assert!(topic.active, "Recently created topic should be active");
+                assert!(topic.active, "Topic with live creator PID should be active");
             }
         }
 
+        horus_sys::shm::remove_topic_meta("test_active_topic");
         let _ = std::fs::remove_file(&test_file);
     }
 }
@@ -883,7 +884,6 @@ fn test_health_status_variants() {
 }
 
 #[test]
-#[ignore] // Run with: cargo test test_live_discovery -- --ignored --nocapture
 fn test_live_discovery() {
     println!("\n=== LIVE DISCOVERY TEST ===");
 
@@ -1429,13 +1429,9 @@ fn test_format_age_days() {
 
 #[test]
 fn test_presence_cache_shared_between_node_and_topic_discovery() {
-    // Verify the presence cache exists and has independent staleness
-    let mut cache = DiscoveryCache::new();
-    assert!(cache.is_presence_stale(), "new presence cache should be stale");
-
-    cache.update_presence(vec![]);
-    assert!(!cache.is_presence_stale(), "presence should be fresh after update");
-    // Other caches should still be stale
+    // Verify the discovery cache exists and caches are independent
+    let cache = DiscoveryCache::new();
+    // Node and shared memory caches should be stale initially
     assert!(cache.is_nodes_stale());
     assert!(cache.is_shared_memory_stale());
 }
@@ -1507,7 +1503,6 @@ fn test_system_topic_detection() {
 // =====================
 
 #[test]
-#[ignore] // Requires /dev/shm filesystem; run with: cargo test -- --ignored
 fn test_e2e_multi_node_discovery() {
     let nodes_dir = horus_core::memory::shm_base_dir().join("nodes");
     let _ = std::fs::create_dir_all(&nodes_dir);
@@ -1587,7 +1582,6 @@ fn test_e2e_multi_node_discovery() {
 // =====================
 
 #[test]
-#[ignore]
 fn test_stress_100_nodes_discovery() {
     let mut w = TestPresenceWriter::new("stress100");
     let mut expected_names = Vec::new();
@@ -1614,7 +1608,6 @@ fn test_stress_100_nodes_discovery() {
 }
 
 #[test]
-#[ignore]
 fn test_stress_rapid_creation_teardown() {
     for iteration in 0..20 {
         let mut w = TestPresenceWriter::new(&format!("rapid{}", iteration));
@@ -1637,7 +1630,6 @@ fn test_stress_rapid_creation_teardown() {
 }
 
 #[test]
-#[ignore]
 fn test_stress_cache_thrashing() {
     use std::sync::Arc;
     use std::thread;
@@ -1664,7 +1656,6 @@ fn test_stress_cache_thrashing() {
 }
 
 #[test]
-#[ignore]
 fn test_stress_concurrent_write_and_discover() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -1699,7 +1690,6 @@ fn test_stress_concurrent_write_and_discover() {
         let mut ok_count = 0u32;
         while !stop_r.load(Ordering::Relaxed) {
             if let Ok(mut cache) = DISCOVERY_CACHE.write() {
-                cache.presence_last_updated = std::time::Instant::now() - 10_u64.secs();
                 cache.nodes_last_updated = std::time::Instant::now() - 10_u64.secs();
             }
             if discover_nodes().is_ok() {
@@ -1722,7 +1712,6 @@ fn test_stress_concurrent_write_and_discover() {
 }
 
 #[test]
-#[ignore]
 fn test_stress_large_presence_payload() {
     let mut w = TestPresenceWriter::new("bigpayload");
 
@@ -1750,7 +1739,6 @@ fn test_stress_large_presence_payload() {
 // =====================
 
 #[test]
-#[ignore]
 fn test_scenario_perception_pipeline() {
     let mut w = TestPresenceWriter::new("perception");
 
@@ -1812,7 +1800,6 @@ fn test_scenario_perception_pipeline() {
 }
 
 #[test]
-#[ignore]
 fn test_scenario_arm_control_with_rates() {
     let mut w = TestPresenceWriter::new("arm");
 
@@ -1849,7 +1836,6 @@ fn test_scenario_arm_control_with_rates() {
 }
 
 #[test]
-#[ignore]
 fn test_scenario_multi_publisher_sensor_fusion() {
     let mut w = TestPresenceWriter::new("fusion");
 
@@ -1880,7 +1866,6 @@ fn test_scenario_multi_publisher_sensor_fusion() {
 }
 
 #[test]
-#[ignore]
 fn test_scenario_hierarchical_schedulers() {
     let mut w = TestPresenceWriter::new("multi_sched");
 
@@ -1910,7 +1895,6 @@ fn test_scenario_hierarchical_schedulers() {
 }
 
 #[test]
-#[ignore]
 fn test_scenario_health_degradation_matrix() {
     let mut w = TestPresenceWriter::new("health");
 
@@ -1948,7 +1932,6 @@ fn test_scenario_health_degradation_matrix() {
 // =====================
 
 #[test]
-#[ignore]
 fn test_crash_orphan_dead_pid() {
     let mut w = TestPresenceWriter::new("orphan");
     let _name = w.write_dead_node("dead_node");
@@ -1968,7 +1951,6 @@ fn test_crash_orphan_dead_pid() {
 }
 
 #[test]
-#[ignore]
 fn test_crash_orphan_pid_reuse_detection() {
     let mut w = TestPresenceWriter::new("pidreuse");
 
@@ -1995,7 +1977,6 @@ fn test_crash_orphan_pid_reuse_detection() {
 }
 
 #[test]
-#[ignore]
 fn test_crash_corrupt_json_variants() {
     let mut w = TestPresenceWriter::new("corrupt");
 
@@ -2038,7 +2019,6 @@ fn test_crash_corrupt_json_variants() {
 }
 
 #[test]
-#[ignore]
 fn test_crash_tmp_file_ignored() {
     let mut w = TestPresenceWriter::new("tmpfile");
 
@@ -2061,7 +2041,6 @@ fn test_crash_tmp_file_ignored() {
 }
 
 #[test]
-#[ignore]
 fn test_crash_bulk_dead_nodes() {
     let mut w = TestPresenceWriter::new("bulkdead");
     let mut dead_names = Vec::new();
@@ -2087,7 +2066,6 @@ fn test_crash_bulk_dead_nodes() {
 // =====================
 
 #[test]
-#[ignore]
 fn test_race_concurrent_node_startup() {
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -2146,7 +2124,6 @@ fn test_race_concurrent_node_startup() {
 // =====================
 
 #[test]
-#[ignore]
 fn test_lifecycle_start_discover_shutdown() {
     let mut w = TestPresenceWriter::new("lifecycle");
 
@@ -2164,7 +2141,6 @@ fn test_lifecycle_start_discover_shutdown() {
 }
 
 #[test]
-#[ignore]
 fn test_lifecycle_topic_change_mid_run() {
     let mut w = TestPresenceWriter::new("topicchange");
 
@@ -2194,7 +2170,6 @@ fn test_lifecycle_topic_change_mid_run() {
 }
 
 #[test]
-#[ignore]
 fn test_lifecycle_staggered_startup_shutdown() {
     let mut w = TestPresenceWriter::new("staggered");
 
@@ -2218,7 +2193,6 @@ fn test_lifecycle_staggered_startup_shutdown() {
 }
 
 #[test]
-#[ignore]
 fn test_lifecycle_health_progression() {
     let mut w = TestPresenceWriter::new("healthprog");
 
@@ -2258,7 +2232,6 @@ fn test_lifecycle_health_progression() {
 // =====================
 
 #[test]
-#[ignore]
 fn test_presence_forward_compatibility_unknown_fields() {
     let mut w = TestPresenceWriter::new("fwdcompat");
 
@@ -2281,7 +2254,6 @@ fn test_presence_forward_compatibility_unknown_fields() {
 }
 
 #[test]
-#[ignore]
 fn test_presence_minimal_fields() {
     let mut w = TestPresenceWriter::new("minimal");
 
@@ -2302,7 +2274,6 @@ fn test_presence_minimal_fields() {
 }
 
 #[test]
-#[ignore]
 fn test_presence_empty_arrays() {
     let mut w = TestPresenceWriter::new("emptyarr");
 
@@ -2315,7 +2286,6 @@ fn test_presence_empty_arrays() {
 }
 
 #[test]
-#[ignore]
 fn test_fs_non_json_files_ignored() {
     let mut w = TestPresenceWriter::new("nonjson");
 

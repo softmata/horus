@@ -575,8 +575,8 @@ mod tests {
     #[test]
     fn battle_clean_dry_run_no_artifacts() {
         let tmp = tempfile::tempdir().unwrap();
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // No target/, no shm — dry run should succeed
@@ -592,8 +592,8 @@ mod tests {
         fs::create_dir(&target).unwrap();
         fs::write(target.join("dummy"), "build artifact").unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // Dry run should not delete
@@ -610,8 +610,8 @@ mod tests {
         fs::create_dir(&target).unwrap();
         fs::write(target.join("dummy.o"), vec![0u8; 50]).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_clean(false, false, false, false, false);
@@ -623,8 +623,8 @@ mod tests {
     #[test]
     fn battle_clean_json_output() {
         let tmp = tempfile::tempdir().unwrap();
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // JSON mode with dry_run — should succeed and output valid JSON
@@ -640,8 +640,8 @@ mod tests {
         fs::create_dir(&target).unwrap();
         fs::write(target.join("dummy"), "keep me").unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // shm=true means only clean shared memory, not target/
@@ -658,8 +658,8 @@ mod tests {
         fs::create_dir(&target).unwrap();
         // Empty target dir
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = clean_build_cache(false);
@@ -672,8 +672,8 @@ mod tests {
     #[test]
     fn battle_clean_build_cache_no_target() {
         let tmp = tempfile::tempdir().unwrap();
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = clean_build_cache(false);

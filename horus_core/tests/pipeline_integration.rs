@@ -15,6 +15,17 @@ use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+fn unique(prefix: &str) -> String {
+    use std::sync::atomic::AtomicU64;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 // ============================================================================
 // Pipeline nodes
 // ============================================================================
@@ -24,6 +35,7 @@ struct SensorNode {
     name: &'static str,
     counter: Arc<AtomicU64>,
     topic: Option<Topic<u64>>,
+    topic_name: String,
 }
 
 impl Node for SensorNode {
@@ -31,7 +43,7 @@ impl Node for SensorNode {
         self.name
     }
     fn init(&mut self) -> horus_core::error::Result<()> {
-        self.topic = Some(Topic::new("pipeline_sensor_data")?);
+        self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
     }
     fn tick(&mut self) {
@@ -48,6 +60,8 @@ struct ProcessorNode {
     processed: Arc<AtomicU64>,
     input: Option<Topic<u64>>,
     output: Option<Topic<u64>>,
+    input_name: String,
+    output_name: String,
 }
 
 impl Node for ProcessorNode {
@@ -55,8 +69,8 @@ impl Node for ProcessorNode {
         self.name
     }
     fn init(&mut self) -> horus_core::error::Result<()> {
-        self.input = Some(Topic::new("pipeline_sensor_data")?);
-        self.output = Some(Topic::new("pipeline_processed")?);
+        self.input = Some(Topic::new(&self.input_name)?);
+        self.output = Some(Topic::new(&self.output_name)?);
         Ok(())
     }
     fn tick(&mut self) {
@@ -78,6 +92,7 @@ struct ControllerNode {
     latest_value: Arc<AtomicU64>,
     received_count: Arc<AtomicU64>,
     input: Option<Topic<u64>>,
+    input_name: String,
 }
 
 impl Node for ControllerNode {
@@ -85,7 +100,7 @@ impl Node for ControllerNode {
         self.name
     }
     fn init(&mut self) -> horus_core::error::Result<()> {
-        self.input = Some(Topic::new("pipeline_processed")?);
+        self.input = Some(Topic::new(&self.input_name)?);
         Ok(())
     }
     fn tick(&mut self) {
@@ -106,6 +121,9 @@ impl Node for ControllerNode {
 fn three_node_pipeline_data_flows_end_to_end() {
     cleanup_stale_shm();
 
+    let sensor_topic = unique("pipeline_sensor");
+    let processed_topic = unique("pipeline_processed");
+
     let sensor_count = Arc::new(AtomicU64::new(0));
     let processor_count = Arc::new(AtomicU64::new(0));
     let controller_latest = Arc::new(AtomicU64::new(0));
@@ -118,6 +136,7 @@ fn three_node_pipeline_data_flows_end_to_end() {
             name: "sensor",
             counter: sensor_count.clone(),
             topic: None,
+            topic_name: sensor_topic.clone(),
         })
         .order(0)
         .build();
@@ -128,6 +147,8 @@ fn three_node_pipeline_data_flows_end_to_end() {
             processed: processor_count.clone(),
             input: None,
             output: None,
+            input_name: sensor_topic.clone(),
+            output_name: processed_topic.clone(),
         })
         .order(1)
         .build();
@@ -138,6 +159,7 @@ fn three_node_pipeline_data_flows_end_to_end() {
             latest_value: controller_latest.clone(),
             received_count: controller_received.clone(),
             input: None,
+            input_name: processed_topic.clone(),
         })
         .order(2)
         .build();
@@ -161,6 +183,9 @@ fn three_node_pipeline_data_flows_end_to_end() {
 fn pipeline_ordering_ensures_sensor_before_processor() {
     cleanup_stale_shm();
 
+    let sensor_topic = unique("pipeline_sensor");
+    let processed_topic = unique("pipeline_processed");
+
     let sensor_count = Arc::new(AtomicU64::new(0));
     let processor_count = Arc::new(AtomicU64::new(0));
 
@@ -172,6 +197,7 @@ fn pipeline_ordering_ensures_sensor_before_processor() {
             name: "ordered_sensor",
             counter: sensor_count.clone(),
             topic: None,
+            topic_name: sensor_topic.clone(),
         })
         .order(0)
         .build();
@@ -182,6 +208,8 @@ fn pipeline_ordering_ensures_sensor_before_processor() {
             processed: processor_count.clone(),
             input: None,
             output: None,
+            input_name: sensor_topic.clone(),
+            output_name: processed_topic.clone(),
         })
         .order(1)
         .build();
@@ -200,6 +228,9 @@ fn pipeline_ordering_ensures_sensor_before_processor() {
 fn tick_once_processes_pipeline_synchronously() {
     cleanup_stale_shm();
 
+    let sensor_topic = unique("pipeline_sensor");
+    let processed_topic = unique("pipeline_processed");
+
     let sensor_count = Arc::new(AtomicU64::new(0));
     let processor_count = Arc::new(AtomicU64::new(0));
     let controller_received = Arc::new(AtomicU64::new(0));
@@ -211,6 +242,7 @@ fn tick_once_processes_pipeline_synchronously() {
             name: "sync_sensor",
             counter: sensor_count.clone(),
             topic: None,
+            topic_name: sensor_topic.clone(),
         })
         .order(0)
         .build();
@@ -221,6 +253,8 @@ fn tick_once_processes_pipeline_synchronously() {
             processed: processor_count.clone(),
             input: None,
             output: None,
+            input_name: sensor_topic.clone(),
+            output_name: processed_topic.clone(),
         })
         .order(1)
         .build();
@@ -231,6 +265,7 @@ fn tick_once_processes_pipeline_synchronously() {
             latest_value: Arc::new(AtomicU64::new(0)),
             received_count: controller_received.clone(),
             input: None,
+            input_name: processed_topic.clone(),
         })
         .order(2)
         .build();
@@ -251,6 +286,8 @@ fn tick_once_processes_pipeline_synchronously() {
 fn pipeline_with_watchdog_completes() {
     cleanup_stale_shm();
 
+    let sensor_topic = unique("pipeline_sensor");
+
     let sensor_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new()
@@ -262,6 +299,7 @@ fn pipeline_with_watchdog_completes() {
             name: "wd_sensor",
             counter: sensor_count.clone(),
             topic: None,
+            topic_name: sensor_topic,
         })
         .order(0)
         .build();

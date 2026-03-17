@@ -46,8 +46,8 @@ mod tests {
     fn init_creates_horus_dir_and_toml() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("test_workspace".to_string()));
@@ -88,8 +88,8 @@ mod tests {
     fn init_with_explicit_name_uses_provided_name() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("my_custom_robot".to_string()));
@@ -109,8 +109,8 @@ mod tests {
     fn init_with_none_name_uses_directory_name() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(None);
@@ -142,8 +142,8 @@ mod tests {
     fn init_is_idempotent() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // First init
@@ -174,8 +174,8 @@ mod tests {
         let custom_content = "[package]\nname = \"pre_existing\"\nversion = \"1.0.0\"\n";
         fs::write(tmp.path().join("horus.toml"), custom_content).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("new_name".to_string()));
@@ -201,8 +201,8 @@ mod tests {
         let marker = horus_dir.join("marker.txt");
         fs::write(&marker, "existing content").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("ws_existing_dir".to_string()));
@@ -231,8 +231,8 @@ mod tests {
         let unique_name = format!("reg_test_{}", std::process::id());
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some(unique_name.clone()));
@@ -257,8 +257,8 @@ mod tests {
     fn init_with_hyphenated_name() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("my-robot-arm".to_string()));
@@ -274,8 +274,8 @@ mod tests {
     fn init_with_underscored_name() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("diff_drive_robot".to_string()));
@@ -291,8 +291,8 @@ mod tests {
     fn init_with_single_char_name() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("x".to_string()));
@@ -308,8 +308,8 @@ mod tests {
     fn init_with_empty_string_name() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // Empty string is provided as Some(""), which will be used as-is
@@ -325,8 +325,8 @@ mod tests {
     fn init_with_name_containing_spaces() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("my robot workspace".to_string()));
@@ -346,17 +346,16 @@ mod tests {
     fn init_returns_ok_result() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("ok_result_ws".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
-        // The Ok value is () — verify by unwrapping
-        let unit = result.unwrap();
-        assert_eq!(unit, ());
+        // run_init may fail if workspace registry format changed — not a test issue
+        assert!(result.is_ok(), "run_init failed: {:?}", result.err());
+        let _ = result; // use the result
     }
 
     // ========================================================================
@@ -367,8 +366,8 @@ mod tests {
     fn init_creates_expected_directory_structure() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         run_init(Some("structure_test".to_string())).unwrap();
@@ -397,8 +396,8 @@ mod tests {
     fn init_horus_toml_is_valid_toml() {
         let tmp = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         run_init(Some("toml_valid_ws".to_string())).unwrap();
@@ -432,8 +431,8 @@ mod tests {
         let tmp1 = TempDir::new().unwrap();
         let tmp2 = TempDir::new().unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         // Init first workspace
         std::env::set_current_dir(tmp1.path()).unwrap();
@@ -475,8 +474,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join("src")).unwrap();
         fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_init(Some("existing_files_ws".to_string()));

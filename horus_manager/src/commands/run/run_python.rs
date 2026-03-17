@@ -381,8 +381,8 @@ mod tests {
     #[test]
     fn battle_build_python_path_includes_horus_packages() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = build_python_path();
@@ -402,8 +402,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join(".horus/packages")).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = build_python_path();
@@ -546,8 +546,8 @@ mod tests {
     #[test]
     fn battle_generate_pyproject_no_manifest() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // No horus.toml — should succeed (no-op)
@@ -568,8 +568,8 @@ serde = "1.0"
 "#;
         fs::write(tmp.path().join("horus.toml"), toml).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = generate_pyproject_if_needed();

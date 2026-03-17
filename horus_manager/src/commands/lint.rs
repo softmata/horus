@@ -123,8 +123,8 @@ mod tests {
     #[test]
     fn lint_no_source_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_lint(false, false, vec![]);
@@ -137,8 +137,8 @@ mod tests {
     #[test]
     fn lint_fix_mode_no_source_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_lint(true, false, vec![]);
@@ -150,8 +150,8 @@ mod tests {
     #[test]
     fn lint_types_mode_no_source_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_lint(false, true, vec![]);
@@ -201,8 +201,8 @@ mod tests {
     #[test]
     fn lint_error_message_is_descriptive() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_lint(false, false, vec![]);
@@ -224,8 +224,8 @@ mod tests {
     #[test]
     fn lint_all_modes_fail_same_way_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let r1 = run_lint(false, false, vec![]).unwrap_err().to_string();
@@ -243,8 +243,8 @@ mod tests {
     #[test]
     fn lint_with_extra_args_still_fails_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_lint(false, false, vec!["--verbose".to_string()]);
@@ -488,8 +488,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_lint(false, false, vec![]);

@@ -1,9 +1,10 @@
 //! Live node registry in shared memory.
 //!
-//! Each scheduler creates a `SchedulerRegistry` file at
-//! `/dev/shm/horus_{ns}/scheduler/{name}` containing atomic `NodeSlot`
-//! entries. The scheduler updates these on every tick (~5ns per node).
-//! External tools mmap the file and read live metrics directly.
+//! Each scheduler creates a `SchedulerRegistry` file in the shared memory
+//! scheduler directory (path from `horus_sys::shm::shm_scheduler_dir()`)
+//! containing atomic `NodeSlot` entries. The scheduler updates these on
+//! every tick (~5ns per node). External tools mmap the file and read live
+//! metrics directly.
 
 use crate::memory::platform::shm_scheduler_dir;
 use memmap2::MmapMut;

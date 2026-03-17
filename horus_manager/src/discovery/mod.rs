@@ -32,6 +32,7 @@ pub(crate) mod nodes;
 pub(crate) mod topics;
 
 use horus_core::core::HealthStatus;
+use horus_core::core::NodePresence;
 use horus_core::error::HorusResult;
 use horus_core::memory::shm_topics_dir;
 use std::path::Path;

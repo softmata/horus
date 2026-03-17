@@ -781,11 +781,8 @@ pub(crate) fn prompt_system_package_choice_run(
 fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     let lock_path = Path::new(HORUS_LOCK);
 
-    let lockfile = HorusLockfile {
-        version: 3,
-        config_hash: config_hash.clone(),
-        packages: Vec::new(),
-    };
+    let mut lockfile = HorusLockfile::new();
+    lockfile.config_hash = config_hash.clone();
 
     lockfile
         .save_to(lock_path)

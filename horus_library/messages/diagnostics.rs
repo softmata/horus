@@ -515,7 +515,7 @@ impl NodeStateMsg {
 /// Node status heartbeat written to the filesystem for external monitoring.
 ///
 /// Written to the shared memory heartbeats directory as a file
-/// (Linux: `/dev/shm/horus/heartbeats/`, macOS: `/tmp/horus/heartbeats/`).
+/// (path managed by `horus_sys::shm`, varies by platform).
 /// Uses epoch-second timestamps for file-based staleness checks.
 ///
 /// **Not to be confused with [`Heartbeat`]**, which is sent over Topic IPC

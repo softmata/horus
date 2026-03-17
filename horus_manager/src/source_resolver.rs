@@ -1227,7 +1227,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires network
     fn fetch_crates_io_version_serde() {
         let v = fetch_latest_version("serde", &DepSource::CratesIo);
         assert!(v.is_some(), "should fetch serde version from crates.io");
@@ -1236,7 +1235,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires network
     fn fetch_pypi_version_numpy() {
         let v = fetch_latest_version("numpy", &DepSource::PyPI);
         assert!(v.is_some(), "should fetch numpy version from PyPI");
@@ -1245,14 +1243,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires network
     fn fetch_crates_io_nonexistent_returns_none() {
         let v = fetch_latest_version("this-crate-definitely-does-not-exist-xyz", &DepSource::CratesIo);
         assert!(v.is_none(), "nonexistent crate should return None");
     }
 
     #[test]
-    #[ignore] // requires network
     fn fetch_pypi_nonexistent_returns_none() {
         let v = fetch_latest_version("this-package-definitely-does-not-exist-xyz", &DepSource::PyPI);
         assert!(v.is_none(), "nonexistent PyPI package should return None");
@@ -1280,7 +1276,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires network
     fn resolve_with_network_confirms_obscure_crate() {
         // fakeit is a real crate on crates.io but NOT in our well-known list
         let resolver = PackageSourceResolver::without_context();
@@ -1297,7 +1292,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires network
     fn resolve_with_network_confirms_obscure_pypi_package() {
         // codetiming is a real PyPI package but NOT in our well-known list,
         // and has no heuristic-triggering prefix/suffix
@@ -1313,7 +1307,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires network
     fn resolve_with_network_nonexistent_stays_low() {
         let resolver = PackageSourceResolver::without_context();
         let result = resolver.resolve_with_network("zzz-this-pkg-does-not-exist-anywhere-xyz");

@@ -579,19 +579,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 return Ok(actual_slot_size);
             }
             // Joiner: wait for owner to initialize the header.
-            for _ in 0..100 {
-                std::thread::sleep(1_u64.ms());
+            // Use exponential backoff (1ms→50ms) with a 2s deadline.
+            // The generous deadline prevents spurious timeouts under heavy
+            // thread contention (e.g., 100+ topics starting simultaneously).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut backoff_ms = 1u64;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                 std::sync::atomic::fence(Ordering::Acquire);
                 if header.magic == TOPIC_MAGIC {
                     break;
                 }
-            }
-            if header.magic != TOPIC_MAGIC {
-                return Err(HorusError::Communication(
-                    "Timeout waiting for topic header initialization"
-                        .to_string()
-                        .into(),
-                ));
+                if std::time::Instant::now() >= deadline {
+                    return Err(HorusError::Communication(
+                        "Timeout waiting for topic header initialization"
+                            .to_string()
+                            .into(),
+                    ));
+                }
+                backoff_ms = (backoff_ms * 2).min(50);
             }
             return Ok(header.slot_size as usize);
         }

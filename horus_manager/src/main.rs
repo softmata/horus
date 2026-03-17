@@ -26,6 +26,7 @@ Project:
   new               Create a new HORUS project
   run               Run a HORUS project or file(s)
   build             Build the HORUS project without running
+  lock              Generate or verify horus.lock (pin dependency versions)
   test              Run tests for the HORUS project
   check             Validate horus.toml, source files, or workspace
   clean             Clean build artifacts and shared memory
@@ -48,12 +49,16 @@ Debugging:
   record, rec       Record/replay management
   cache             Cache management (info, clean, purge)
 
+Dependencies:
+  add               Add a dependency to horus.toml (crates.io, PyPI, system, registry)
+  remove            Remove a dependency from horus.toml
+
 Packages:
-  install, i, add   Install a package or plugin (name@version supported)
-  remove            Remove a package, driver, or plugin
+  install, i        Install a standalone package or plugin from registry
+  uninstall         Uninstall a standalone package or plugin
   search, s         Search available packages from registry
   list              List installed packages and plugins
-  update            Update installed packages to latest versions
+  update            Update project dependencies to latest versions
   info              Show detailed info about a package or plugin
 
 Plugins:
@@ -70,17 +75,15 @@ Development:
 
 Maintenance:
   doctor            Comprehensive ecosystem health check
-  upgrade           Upgrade horus CLI to latest version
+  self update       Update the horus CLI to latest version
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
 
 Publishing & Deploy:
   publish           Publish package to registry
   unpublish         Unpublish a package (name@version syntax)
-  keygen            Generate signing key pair for package signing
   deploy            Deploy project to a remote robot
-  env               Environment management (freeze/restore)
-  auth              Authentication commands
+  auth              Authentication (login, api-key, signing-key)
 
 {options}
 {after-help}")]
@@ -92,7 +95,8 @@ Quick Start:
 
 More examples:
   horus init                      Initialize workspace in current directory
-  horus install rplidar@1.2.0     Install a specific package version
+  horus add serde --source crates-io  Add a Rust dependency
+  horus install rplidar@1.2.0    Install a standalone package
   horus bb --anomalies            Show crash anomalies
   horus deploy robot@192.168.1.5  Deploy to a remote robot
 
@@ -221,6 +225,13 @@ enum Commands {
         /// Skip [hooks] execution
         #[arg(long = "no-hooks")]
         no_hooks: bool,
+    },
+
+    /// Generate or verify horus.lock (pins all dependency versions)
+    Lock {
+        /// Only check if lockfile is up-to-date, don't regenerate
+        #[arg(long = "check")]
+        check: bool,
     },
 
     /// Run tests for the HORUS project
@@ -368,7 +379,7 @@ enum Commands {
     },
 
     /// Coordinate frame operations (list, echo, tree)
-    #[command(name = "frame", visible_alias = "frames", alias = "tf")]
+    #[command(name = "frame", visible_alias = "tf")]
     Frame {
         #[command(subcommand)]
         command: TfCommands,
@@ -499,50 +510,65 @@ enum Commands {
     #[command(visible_alias = "mon")]
     Monitor,
 
-    // ── Packages ─────────────────────────────────────────────────────────
-    /// Install a package or plugin (use name@version for specific version)
-    #[command(visible_aliases = ["i", "add"])]
-    Install {
-        /// Package name (supports name@version syntax, e.g. rplidar@1.2.0)
+    // ── Dependencies ────────────────────────────────────────────────────
+    /// Add a dependency to horus.toml (crates.io, PyPI, system, registry, git, path)
+    Add {
+        /// Dependency name (supports name@version syntax, e.g. serde@1.0)
         name: String,
-        /// Specific version (prefer name@version syntax instead)
+        /// Version requirement (alternative to name@version syntax)
         #[arg(long = "ver", hide = true)]
         ver: Option<String>,
-        /// Install to global scope (~/.horus/cache/)
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Target workspace/project name
-        #[arg(short = 't', long = "target")]
-        target: Option<String>,
-        /// Install as driver (adds to horus.toml drivers section)
-        #[arg(long = "driver", conflicts_with = "plugin")]
-        driver: bool,
-        /// Install as CLI plugin (defaults to global scope)
-        #[arg(long = "plugin", conflicts_with = "driver")]
-        plugin: bool,
-        /// Dependency source: crates.io, pypi, path, git, system, registry
+        /// Dependency source: crates-io, pypi, system, registry, git, path
         #[arg(short = 's', long = "source")]
         source: Option<String>,
-        /// Cargo/Python features to enable (e.g. --features derive,serde)
+        /// Features to enable (e.g. --features derive,serde)
         #[arg(short = 'F', long = "features", value_delimiter = ',')]
         features: Option<Vec<String>>,
-        /// Add as dev-dependency
+        /// Add to [dev-dependencies] instead of [dependencies]
         #[arg(long = "dev")]
         dev: bool,
-
-        /// Output install results as JSON (for CI/AI tooling)
+        /// Add as driver to [drivers] section
+        #[arg(long = "driver")]
+        driver: bool,
+        /// Output as JSON
         #[arg(long = "json")]
         json: bool,
     },
 
-    /// Remove a package, driver, or plugin
+    /// Remove a dependency from horus.toml
     Remove {
-        /// Package/driver/plugin name to remove
+        /// Dependency name
         name: String,
-        /// Remove from global scope (~/.horus/cache/)
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Also clean unused packages from cache after removal
+        /// Also clean unused packages from cache
+        #[arg(long = "purge")]
+        purge: bool,
+    },
+
+    // ── Packages ─────────────────────────────────────────────────────────
+    /// Install a standalone package or plugin from the registry
+    #[command(visible_alias = "i")]
+    Install {
+        /// Package name (supports name@version syntax, e.g. rplidar@1.2.0)
+        name: String,
+        /// Specific version (alternative to name@version syntax)
+        #[arg(long = "ver", hide = true)]
+        ver: Option<String>,
+        /// Install as CLI plugin
+        #[arg(long = "plugin")]
+        plugin: bool,
+        /// Target workspace/project name
+        #[arg(short = 't', long = "target")]
+        target: Option<String>,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Uninstall a standalone package or plugin
+    Uninstall {
+        /// Package or plugin name
+        name: String,
+        /// Also purge cached files
         #[arg(long = "purge")]
         purge: bool,
     },
@@ -573,7 +599,7 @@ enum Commands {
         json: bool,
     },
 
-    /// Update dependencies, CLI tool, and plugins
+    /// Update project dependencies to latest versions
     Update {
         /// Specific package to update (updates all deps if omitted)
         package: Option<String>,
@@ -583,12 +609,6 @@ enum Commands {
         /// Show what would be updated without making changes
         #[arg(long = "dry-run")]
         dry_run: bool,
-        /// Update the horus CLI tool itself
-        #[arg(long = "self")]
-        update_self: bool,
-        /// Update installed plugins to latest versions
-        #[arg(long = "plugins")]
-        update_plugins: bool,
     },
 
     /// Show detailed info about a package or plugin
@@ -723,8 +743,16 @@ enum Commands {
         json: bool,
     },
 
-    /// Upgrade the entire horus system (CLI + plugins + project deps)
-    Upgrade {
+    /// Manage the horus CLI itself
+    #[command(name = "self")]
+    Self_ {
+        #[command(subcommand)]
+        command: SelfCommands,
+    },
+
+    /// DEPRECATED: Use `horus self update` instead
+    #[command(name = "upgrade", hide = true)]
+    DeprecatedUpgrade {
         /// Check for updates without installing
         #[arg(long = "check")]
         check_only: bool,
@@ -768,9 +796,6 @@ enum Commands {
     // ── Publishing & Deploy ──────────────────────────────────────────────
     /// Publish package to registry
     Publish {
-        /// Also generate freeze file
-        #[arg(long)]
-        freeze: bool,
         /// Validate package without actually publishing
         #[arg(long = "dry-run")]
         dry_run: bool,
@@ -788,9 +813,9 @@ enum Commands {
         yes: bool,
     },
 
-    /// Generate signing key pair for package signing
-    #[command(name = "keygen")]
-    KeyGen,
+    /// DEPRECATED: Use `horus auth signing-key` instead
+    #[command(name = "keygen", hide = true)]
+    DeprecatedKeyGen,
 
     /// Deploy project to remote robot(s)
     Deploy {
@@ -836,12 +861,6 @@ enum Commands {
         /// List configured deployment targets
         #[arg(long = "list")]
         list: bool,
-    },
-
-    /// Environment management (freeze/restore)
-    Env {
-        #[command(subcommand)]
-        command: EnvCommands,
     },
 
     /// Authentication commands
@@ -929,47 +948,12 @@ enum CacheCommands {
 }
 
 #[derive(Subcommand)]
-enum EnvCommands {
-    /// List all published environments
-    List {
-        /// Output as JSON
-        #[arg(long = "json")]
-        json: bool,
-    },
-
-    /// Show details of an environment
-    Info {
-        /// Environment ID (e.g., horus-env-abc123)
-        id: String,
-        /// Output as JSON
-        #[arg(long = "json")]
-        json: bool,
-    },
-
-    /// Freeze current environment to a manifest file
-    Freeze {
-        /// Output file path (default: horus-freeze.yaml)
-        #[arg(short = 'o', long = "output")]
-        output: Option<PathBuf>,
-
-        /// Publish environment to registry for sharing by ID
-        #[arg(short = 'p', long = "publish")]
-        publish: bool,
-    },
-
-    /// Restore environment from freeze file or registry ID
-    Restore {
-        /// Path to freeze file or environment ID
-        source: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum AuthCommands {
     /// Login to HORUS registry (requires GitHub)
     Login,
-    /// Generate API key after GitHub login
-    GenerateKey {
+    /// Generate API key for registry authentication
+    #[command(name = "api-key")]
+    ApiKey {
         /// Name for the API key
         #[arg(long)]
         name: Option<String>,
@@ -977,6 +961,9 @@ enum AuthCommands {
         #[arg(long)]
         environment: Option<String>,
     },
+    /// Generate ed25519 signing key pair for package signing
+    #[command(name = "signing-key")]
+    SigningKey,
     /// Logout from HORUS registry
     Logout,
     /// Show current authenticated user
@@ -996,6 +983,16 @@ enum AuthKeysCommands {
     Revoke {
         /// Key ID to revoke (e.g., horus_key_abc123...)
         key_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SelfCommands {
+    /// Update the horus CLI to the latest version
+    Update {
+        /// Only check for updates, don't install
+        #[arg(long = "check")]
+        check_only: bool,
     },
 }
 
@@ -1895,6 +1892,63 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
+        Commands::Lock { check } => {
+            use horus_manager::lockfile::{HorusLockfile, HORUS_LOCK};
+            let lock_path = std::path::Path::new(HORUS_LOCK);
+
+            if check {
+                // Verify lockfile exists and is parseable
+                if !lock_path.exists() {
+                    println!("{} No horus.lock found. Run `horus lock` to generate one.", "[!]".yellow());
+                    return Err(HorusError::Config(ConfigError::Other("No lockfile found".to_string())));
+                }
+                match HorusLockfile::load_from(lock_path) {
+                    Ok(lf) => {
+                        println!("{} horus.lock v{} is valid ({} packages, {} system deps)",
+                            "[✓]".green(),
+                            lf.version,
+                            lf.packages.len(),
+                            lf.system_deps.len(),
+                        );
+                        // Run verification
+                        let result = horus_manager::system_deps::verify_lockfile(&lf);
+                        let report = horus_manager::system_deps::format_lockfile_report(&result);
+                        if !report.is_empty() {
+                            print!("{}", report);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        println!("{} Failed to parse horus.lock: {}", "[✗]".red(), e);
+                        Err(HorusError::Config(ConfigError::Other(e.to_string())))
+                    }
+                }
+            } else {
+                // Generate/regenerate lockfile
+                let mut lockfile = if lock_path.exists() {
+                    HorusLockfile::load_from(lock_path).unwrap_or_else(|_| HorusLockfile::new())
+                } else {
+                    HorusLockfile::new()
+                };
+
+                // Pin current toolchain versions
+                lockfile.toolchain = Some(horus_manager::lockfile::ToolchainPins {
+                    rust: horus_manager::registry::helpers::get_rust_version(),
+                    python: horus_manager::registry::helpers::get_python_version(),
+                    cmake: None,
+                });
+
+                lockfile.save_to(lock_path)
+                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+                println!("{} Generated horus.lock v{} ({} packages)",
+                    "[✓]".green(),
+                    lockfile.version,
+                    lockfile.packages.len(),
+                );
+                Ok(())
+            }
+        }
+
         Commands::Check { path, json, full, health } => {
             if health {
                 return commands::doctor::run_doctor(false, json).map_err(HorusError::from);
@@ -2210,33 +2264,53 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
-        // ── New top-level commands (replace horus pkg / horus plugin) ──
-        Commands::Install {
+        // ── Dependencies ──────────────────────────────────────────────────
+        Commands::Add {
             name,
             ver,
-            global,
-            target,
-            driver,
-            plugin,
             source,
             features,
             dev,
+            driver,
             json,
         } => {
-            // Parse name@version syntax (takes precedence over --ver)
+            let (pkg_name, pkg_ver) = match name.find('@') {
+                Some(idx) => (name[..idx].to_string(), Some(name[idx + 1..].to_string())),
+                None => (name, ver),
+            };
+
+            let result = if driver {
+                commands::pkg::run_add(pkg_name.clone(), pkg_ver.clone(), true, false)
+            } else {
+                commands::pkg::run_install(pkg_name.clone(), pkg_ver.clone(), false, None, source, features, dev)
+            };
+            if json {
+                match &result {
+                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "add", "package": pkg_name, "version": pkg_ver})),
+                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "add", "package": pkg_name, "errors": [{"message": e.to_string()}]})),
+                }
+            }
+            result
+        }
+
+        // ── Packages ────────────────────────────────────────────────────────
+        Commands::Install {
+            name,
+            ver,
+            plugin,
+            target,
+            json,
+        } => {
             let (pkg_name, pkg_ver) = match name.find('@') {
                 Some(idx) => (name[..idx].to_string(), Some(name[idx + 1..].to_string())),
                 None => (name, ver),
             };
 
             let result = if plugin {
-                // Plugins default to global scope; --global is a no-op, only explicit --target overrides
                 let local = target.is_some();
                 commands::plugin::run_install(pkg_name.clone(), pkg_ver.clone(), local)
-            } else if driver {
-                commands::pkg::run_add(pkg_name.clone(), pkg_ver.clone(), true, false)
             } else {
-                commands::pkg::run_install(pkg_name.clone(), pkg_ver.clone(), global, target, source, features, dev)
+                commands::pkg::run_install(pkg_name.clone(), pkg_ver.clone(), true, target, None, None, false)
             };
             if json {
                 match &result {
@@ -2259,37 +2333,24 @@ fn run_command(command: Commands) -> HorusResult<()> {
             package,
             global,
             dry_run,
-            update_self,
-            update_plugins,
         } => {
-            // Smart update: handle --self and --plugins flags
-            if update_self {
-                commands::upgrade::run_upgrade(false).map_err(HorusError::from)?;
-            }
-            if update_plugins {
-                // Run upgrade with plugin-only focus
-                commands::upgrade::run_upgrade(false).map_err(HorusError::from)?;
-            }
-            if !update_self && !update_plugins {
-                // Default: update project dependencies
-                commands::pkg::run_update(package, global, dry_run)?;
-                // Also check for CLI updates (non-blocking)
-                if let Ok(Some(latest)) = commands::upgrade::check_latest_version() {
-                    let current = env!("CARGO_PKG_VERSION");
-                    if latest != current {
-                        println!(
-                            "\n  {} horus {} available (current: {}). Run `horus update --self` to upgrade.",
-                            "hint:".yellow(),
-                            latest.green(),
-                            current.dimmed()
-                        );
-                    }
+            commands::pkg::run_update(package, global, dry_run)?;
+            // Check for CLI updates (non-blocking hint)
+            if let Ok(Some(latest)) = commands::upgrade::check_latest_version() {
+                let current = env!("CARGO_PKG_VERSION");
+                if latest != current {
+                    println!(
+                        "\n  {} horus {} available (current: {}). Run `horus self update` to upgrade.",
+                        "hint:".yellow(),
+                        latest.green(),
+                        current.dimmed()
+                    );
                 }
             }
             Ok(())
         }
 
-        Commands::Publish { freeze, dry_run } => commands::pkg::run_publish(freeze, dry_run),
+        Commands::Publish { dry_run } => commands::pkg::run_publish(dry_run),
 
         Commands::Unpublish { package, ver, yes } => {
             // Parse name@version syntax (takes precedence over positional version)
@@ -2310,7 +2371,10 @@ fn run_command(command: Commands) -> HorusResult<()> {
             commands::pkg::run_unpublish(pkg_name, pkg_ver, yes)
         }
 
-        Commands::KeyGen => commands::pkg::run_keygen(),
+        Commands::DeprecatedKeyGen => {
+            eprintln!("{} `horus keygen` is deprecated. Use `horus auth signing-key` instead.", "WARNING:".yellow().bold());
+            commands::pkg::run_keygen()
+        }
 
         Commands::Info { name, json } => commands::plugin::run_info_unified(name, json),
 
@@ -2326,18 +2390,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
-        Commands::Env { command } => match command {
-            EnvCommands::Freeze { output, publish } => commands::env::run_freeze(output, publish),
-            EnvCommands::Restore { source } => commands::env::run_restore(source),
-            EnvCommands::List { json } => commands::env::run_list(json),
-            EnvCommands::Info { id, json } => commands::env::run_show(id, json),
-        },
-
         Commands::Auth { command } => match command {
             AuthCommands::Login => commands::github_auth::login(),
-            AuthCommands::GenerateKey { name, environment } => {
+            AuthCommands::ApiKey { name, environment } => {
                 commands::github_auth::generate_key(name, environment)
             }
+            AuthCommands::SigningKey => commands::pkg::run_keygen(),
             AuthCommands::Logout => commands::github_auth::logout(),
             AuthCommands::Whoami => commands::github_auth::whoami(),
             AuthCommands::Keys { command: keys_cmd } => match keys_cmd {
@@ -2377,20 +2435,21 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
+        Commands::Uninstall { name, purge } => {
+            // Remove standalone package/plugin from global scope
+            commands::plugin::run_remove(name.clone(), true)?;
+            if purge {
+                commands::cache::run_clean(false)?;
+            }
+            Ok(())
+        }
+
         Commands::Remove {
             name,
-            global,
             purge,
         } => {
-            if global {
-                // Remove from global scope (files + plugin unregistration)
-                commands::plugin::run_remove(name.clone(), true)?;
-                if purge {
-                    commands::cache::run_clean(false)?;
-                }
-                Ok(())
-            } else {
-                // Remove from local horus.toml + optionally clean cache
+            {
+                // Remove from local horus.toml
                 commands::pkg::run_remove_dep(name)?;
                 if purge {
                     commands::cache::run_clean(false)?;
@@ -2521,22 +2580,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
             commands::doctor::run_doctor(verbose, json).map_err(HorusError::from)
         }
 
-        Commands::Upgrade { check_only } => {
-            // Full system upgrade: CLI + plugins + project deps
-            println!("{}", "horus upgrade — full system upgrade".bold());
-            println!();
-
-            // 1. Upgrade the CLI tool itself + plugins
-            commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
-
-            // 2. If in a project directory, also upgrade project dependencies
-            if std::path::Path::new("horus.toml").exists() && !check_only {
-                println!();
-                println!("{}", "Updating project dependencies...".cyan().bold());
-                if let Err(e) = commands::pkg::run_update(None, false, false) {
-                    println!("  {} Dependency update failed: {}", "!".yellow(), e);
-                }
+        Commands::Self_ { command } => match command {
+            SelfCommands::Update { check_only } => {
+                commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
+                Ok(())
             }
+        },
+
+        Commands::DeprecatedUpgrade { check_only } => {
+            eprintln!("{} `horus upgrade` is deprecated. Use `horus self update` instead.", "WARNING:".yellow().bold());
+            commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
 
             Ok(())
         }

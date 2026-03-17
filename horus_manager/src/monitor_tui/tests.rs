@@ -1739,3 +1739,502 @@ fn test_many_nodes_renders_same_across_tabs() {
         );
     }
 }
+
+// ========================================================================
+// Phase 7: Snapshot Tests (insta)
+// ========================================================================
+
+/// Convert a ratatui Buffer to a multiline string for snapshot comparison.
+fn render_to_string(buffer: &ratatui::buffer::Buffer) -> String {
+    let area = buffer.area;
+    let mut lines = Vec::new();
+    for y in area.top()..area.bottom() {
+        let mut line = String::new();
+        for x in area.left()..area.right() {
+            line.push_str(buffer[(x, y)].symbol());
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    // Trim trailing empty lines
+    while lines.last().map_or(false, |l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+/// Like render_to_string but normalizes multi-space runs to single spaces.
+/// Use for tables with Percentage constraints where column widths may vary
+/// by ±1 character due to ratatui rounding.
+fn render_to_string_normalized(buffer: &ratatui::buffer::Buffer) -> String {
+    let raw = render_to_string(buffer);
+    raw.lines()
+        .map(|line| {
+            // Collapse runs of 2+ spaces to exactly 2 (preserves visual separation)
+            let mut result = String::new();
+            let mut space_count = 0;
+            for ch in line.chars() {
+                if ch == ' ' {
+                    space_count += 1;
+                } else {
+                    if space_count > 0 {
+                        result.push_str(if space_count >= 2 { "  " } else { " " });
+                        space_count = 0;
+                    }
+                    result.push(ch);
+                }
+            }
+            result
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Create a dashboard populated with deterministic test data.
+fn make_populated_dashboard() -> TuiDashboard {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.nodes = vec![
+        NodeStatus {
+            name: "lidar_driver".to_string(),
+            status: "running".to_string(),
+            priority: 0,
+            process_id: 1001,
+            cpu_usage: 12.5,
+            memory_usage: 48 * 1024 * 1024,
+            publishers: vec!["scan".to_string()],
+            subscribers: vec![],
+        },
+        NodeStatus {
+            name: "planner".to_string(),
+            status: "running".to_string(),
+            priority: 1,
+            process_id: 1002,
+            cpu_usage: 45.2,
+            memory_usage: 128 * 1024 * 1024,
+            publishers: vec!["cmd_vel".to_string()],
+            subscribers: vec!["scan".to_string(), "odom".to_string()],
+        },
+        NodeStatus {
+            name: "motor_controller".to_string(),
+            status: "running".to_string(),
+            priority: 0,
+            process_id: 1003,
+            cpu_usage: 5.1,
+            memory_usage: 16 * 1024 * 1024,
+            publishers: vec!["odom".to_string()],
+            subscribers: vec!["cmd_vel".to_string()],
+        },
+        NodeStatus {
+            name: "camera_node".to_string(),
+            status: "inactive".to_string(),
+            priority: 2,
+            process_id: 1004,
+            cpu_usage: 0.0,
+            memory_usage: 256 * 1024 * 1024,
+            publishers: vec!["image".to_string()],
+            subscribers: vec![],
+        },
+        NodeStatus {
+            name: "safety_monitor".to_string(),
+            status: "running".to_string(),
+            priority: 0,
+            process_id: 1005,
+            cpu_usage: 2.3,
+            memory_usage: 8 * 1024 * 1024,
+            publishers: vec![],
+            subscribers: vec!["scan".to_string(), "odom".to_string(), "cmd_vel".to_string()],
+        },
+    ];
+    dashboard.topics = vec![
+        TopicInfo {
+            name: "scan".to_string(),
+            msg_type: "LaserScan".to_string(),
+            publishers: 1,
+            subscribers: 2,
+            rate: 40.0,
+            publisher_nodes: vec!["lidar_driver".to_string()],
+            subscriber_nodes: vec!["planner".to_string(), "safety_monitor".to_string()],
+            status: crate::discovery::TopicStatus::Active,
+        },
+        TopicInfo {
+            name: "cmd_vel".to_string(),
+            msg_type: "CmdVel".to_string(),
+            publishers: 1,
+            subscribers: 2,
+            rate: 100.0,
+            publisher_nodes: vec!["planner".to_string()],
+            subscriber_nodes: vec!["motor_controller".to_string(), "safety_monitor".to_string()],
+            status: crate::discovery::TopicStatus::Active,
+        },
+        TopicInfo {
+            name: "odom".to_string(),
+            msg_type: "Odometry".to_string(),
+            publishers: 1,
+            subscribers: 2,
+            rate: 50.0,
+            publisher_nodes: vec!["motor_controller".to_string()],
+            subscriber_nodes: vec!["planner".to_string(), "safety_monitor".to_string()],
+            status: crate::discovery::TopicStatus::Active,
+        },
+        TopicInfo {
+            name: "image".to_string(),
+            msg_type: "Image".to_string(),
+            publishers: 1,
+            subscribers: 0,
+            rate: 0.0,
+            publisher_nodes: vec!["camera_node".to_string()],
+            subscriber_nodes: vec![],
+            status: crate::discovery::TopicStatus::Idle,
+        },
+    ];
+    dashboard
+}
+
+// -- Empty state snapshots --
+
+#[test]
+fn snapshot_overview_empty() {
+    let mut dashboard = TuiDashboard::new();
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_empty() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Nodes;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_topics_empty() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Topics;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    assert!(buffer_contains(&buffer, "Topics"));
+}
+
+#[test]
+fn snapshot_transform_frame_empty() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::TransformFrame;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_packages_empty() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Packages;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    // Packages tab has Percentage constraint rounding non-determinism
+    assert!(buffer_contains(&buffer, "Packages") || buffer_contains(&buffer, "Local"));
+}
+
+#[test]
+fn snapshot_params_empty() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Parameters;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_recordings_empty() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Recordings;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+// -- Populated state snapshots --
+
+#[test]
+fn snapshot_overview_populated() {
+    let mut dashboard = make_populated_dashboard();
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_populated() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Nodes;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_topics_populated() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Topics;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    // Topics tab has ratatui Percentage constraint rounding non-determinism,
+    // so we verify content presence instead of exact layout snapshot
+    assert!(buffer_contains(&buffer, "scan"));
+    assert!(buffer_contains(&buffer, "cmd_vel"));
+    assert!(buffer_contains(&buffer, "odom"));
+    assert!(buffer_contains(&buffer, "image"));
+    assert!(buffer_contains(&buffer, "LaserScan"));
+    assert!(buffer_contains(&buffer, "CmdVel"));
+    assert!(buffer_contains(&buffer, "40.0"));
+    assert!(buffer_contains(&buffer, "100.0"));
+    assert!(buffer_contains(&buffer, "Topics"));
+}
+
+// -- Size variant snapshots --
+
+#[test]
+fn snapshot_overview_small_terminal() {
+    let mut dashboard = make_populated_dashboard();
+    let buffer = render_dashboard(&mut dashboard, 80, 24);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_overview_wide_terminal() {
+    let mut dashboard = make_populated_dashboard();
+    let buffer = render_dashboard(&mut dashboard, 200, 50);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_small_terminal() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Nodes;
+    let buffer = render_dashboard(&mut dashboard, 80, 24);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+// -- Interaction state snapshots --
+
+#[test]
+fn snapshot_overview_paused() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.paused = true;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_with_selection() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Nodes;
+    dashboard.selected_index = 2;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_help_overlay() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.show_help = true;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+// -- Size variants for remaining tabs --
+
+#[test]
+fn snapshot_topics_small_terminal() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Topics;
+    let buffer = render_dashboard(&mut dashboard, 80, 24);
+    assert!(buffer_contains(&buffer, "Topics"));
+    assert!(buffer_contains(&buffer, "scan"));
+}
+
+#[test]
+fn snapshot_topics_wide_terminal() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Topics;
+    let buffer = render_dashboard(&mut dashboard, 200, 50);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_wide_terminal() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Nodes;
+    let buffer = render_dashboard(&mut dashboard, 200, 50);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_params_small_terminal() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Parameters;
+    let buffer = render_dashboard(&mut dashboard, 80, 24);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_recordings_small_terminal() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Recordings;
+    let buffer = render_dashboard(&mut dashboard, 80, 24);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_packages_small_terminal() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Packages;
+    let buffer = render_dashboard(&mut dashboard, 80, 24);
+    assert!(buffer_contains(&buffer, "Packages") || buffer_contains(&buffer, "Local"));
+}
+
+#[test]
+fn snapshot_transform_frame_small_terminal() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::TransformFrame;
+    let buffer = render_dashboard(&mut dashboard, 80, 24);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+// -- Edge case snapshots --
+
+#[test]
+fn snapshot_nodes_100_items() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Nodes;
+    dashboard.nodes = (0..100)
+        .map(|i| NodeStatus {
+            name: format!("node_{:03}", i),
+            status: if i % 5 == 0 { "inactive" } else { "running" }.to_string(),
+            priority: (i % 3) as u32,
+            process_id: 2000 + i as u32,
+            cpu_usage: (i as f32) * 0.8,
+            memory_usage: (i as u64) * 512 * 1024,
+            publishers: vec![format!("topic_{}", i)],
+            subscribers: if i > 0 { vec![format!("topic_{}", i - 1)] } else { vec![] },
+        })
+        .collect();
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_long_names() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Nodes;
+    dashboard.nodes = vec![
+        NodeStatus {
+            name: "very_long_robot_sensor_driver_node_name_that_should_truncate".to_string(),
+            status: "running".to_string(),
+            priority: 0,
+            process_id: 9999,
+            cpu_usage: 99.9,
+            memory_usage: 4 * 1024 * 1024 * 1024,
+            publishers: vec!["extremely_long_topic_name_for_sensor_data_output".to_string()],
+            subscribers: vec!["another_very_long_topic_name_for_command_input".to_string()],
+        },
+    ];
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_all_health_states() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Nodes;
+    let statuses = ["running", "inactive", "stopped", "error", "starting"];
+    dashboard.nodes = statuses
+        .iter()
+        .enumerate()
+        .map(|(i, status)| NodeStatus {
+            name: format!("{}_node", status),
+            status: status.to_string(),
+            priority: i as u32,
+            process_id: 3000 + i as u32,
+            cpu_usage: (i as f32) * 20.0,
+            memory_usage: (i as u64 + 1) * 32 * 1024 * 1024,
+            publishers: vec![],
+            subscribers: vec![],
+        })
+        .collect();
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_topics_mixed_active_idle() {
+    let mut dashboard = TuiDashboard::new();
+    dashboard.active_tab = Tab::Topics;
+    dashboard.topics = vec![
+        TopicInfo {
+            name: "active_fast".to_string(),
+            msg_type: "LaserScan".to_string(),
+            publishers: 3,
+            subscribers: 5,
+            rate: 1000.0,
+            publisher_nodes: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            subscriber_nodes: vec!["d".to_string(), "e".to_string(), "f".to_string(), "g".to_string(), "h".to_string()],
+            status: crate::discovery::TopicStatus::Active,
+        },
+        TopicInfo {
+            name: "idle_zero".to_string(),
+            msg_type: "Empty".to_string(),
+            publishers: 0,
+            subscribers: 0,
+            rate: 0.0,
+            publisher_nodes: vec![],
+            subscriber_nodes: vec![],
+            status: crate::discovery::TopicStatus::Idle,
+        },
+    ];
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    assert!(buffer_contains(&buffer, "active_fast"));
+    assert!(buffer_contains(&buffer, "idle_zero"));
+    assert!(buffer_contains(&buffer, "LaserScan"));
+    assert!(buffer_contains(&buffer, "1000.0"));
+    assert!(buffer_contains(&buffer, "Topics"));
+}
+
+// -- More interaction states --
+
+#[test]
+fn snapshot_topics_with_selection() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Topics;
+    dashboard.selected_index = 1;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    assert!(buffer_contains(&buffer, "scan"));
+    assert!(buffer_contains(&buffer, "cmd_vel"));
+    assert!(buffer_contains(&buffer, "Topics"));
+}
+
+#[test]
+fn snapshot_log_panel_open() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Nodes;
+    dashboard.show_log_panel = true;
+    dashboard.panel_target = Some(LogPanelTarget::Node("lidar_driver".to_string()));
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_overview_topics_focus() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.overview_panel_focus = OverviewPanelFocus::Topics;
+    let buffer = render_dashboard(&mut dashboard, 120, 40);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+// -- Extreme terminal sizes --
+
+#[test]
+fn snapshot_overview_tiny_terminal() {
+    let mut dashboard = make_populated_dashboard();
+    let buffer = render_dashboard(&mut dashboard, 40, 12);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}
+
+#[test]
+fn snapshot_nodes_ultra_wide() {
+    let mut dashboard = make_populated_dashboard();
+    dashboard.active_tab = Tab::Nodes;
+    let buffer = render_dashboard(&mut dashboard, 250, 30);
+    insta::assert_snapshot!(render_to_string(&buffer));
+}

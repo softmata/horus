@@ -34,10 +34,21 @@ impl WorkspaceRegistry {
 
         let content =
             fs::read_to_string(&registry_path).context("failed to read workspace registry")?;
-        let registry: Self =
-            serde_json::from_str(&content).context("failed to parse workspace registry")?;
-
-        Ok(registry)
+        match serde_json::from_str::<Self>(&content) {
+            Ok(registry) => Ok(registry),
+            Err(e) => {
+                // Corrupted registry (e.g., concurrent writes) — reset to empty
+                log::warn!(
+                    "Workspace registry corrupted ({}), resetting: {}",
+                    registry_path.display(),
+                    e
+                );
+                let empty = Self { workspaces: Vec::new() };
+                // Try to fix the file for next time
+                let _ = fs::write(&registry_path, serde_json::to_string_pretty(&empty).unwrap_or_default());
+                Ok(empty)
+            }
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -564,8 +575,8 @@ mod tests {
         let horus_dir = tmp.path().join(".horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = find_workspace_root();
@@ -584,8 +595,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = find_workspace_root();
@@ -604,8 +615,8 @@ mod tests {
         let sub_dir = tmp.path().join("src/nodes");
         fs::create_dir_all(&sub_dir).unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(&sub_dir).unwrap();
 
         let result = find_workspace_root();

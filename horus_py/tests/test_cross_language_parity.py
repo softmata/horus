@@ -32,7 +32,7 @@ def roundtrip(msg_type, msg, field_checks, duration=1.0):
             node.request_stop()
 
     def subscriber(node):
-        m = node.get(topic_name)
+        m = node.recv(topic_name)
         if m is not None:
             received.append(m)
             node.request_stop()
@@ -151,7 +151,7 @@ class TestVisionTypes:
                 node.request_stop()
 
         def sub_fn(node):
-            m = node.get("CompressedImage")
+            m = node.recv("CompressedImage")
             if m is not None:
                 received.append(m)
                 node.request_stop()
@@ -342,7 +342,7 @@ class TestNavigationTypes:
                 node.request_stop()
 
         def sub_fn(node):
-            m = node.get("OccupancyGrid")
+            m = node.recv("OccupancyGrid")
             if m is not None:
                 received.append(m)
                 node.request_stop()
@@ -638,7 +638,7 @@ class TestCrossLanguageRustSendsPythonReceives:
                 node.request_stop()
 
         def sub_fn(node):
-            m = node.get("JointState")
+            m = node.recv("JointState")
             if m is not None:
                 received.append(m)
                 node.request_stop()
@@ -694,7 +694,7 @@ class TestCrossLanguageRustSendsPythonReceives:
                 node.request_stop()
 
         def sub_fn(node):
-            m = node.get(topic_name)
+            m = node.recv(topic_name)
             if m is not None:
                 received.append(m)
                 node.request_stop()

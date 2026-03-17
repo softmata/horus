@@ -1426,11 +1426,17 @@ mod tests {
     // REAL CMAKE INTEGRATION TESTS
     //
     // These tests run actual cmake and g++ to verify the generated
-    // CMakeLists.txt is accepted by real tools. They are #[ignore] by
-    // default since they require cmake + g++ installed.
-    //
-    // Run with: cargo test --no-default-features -p horus_manager --lib cmake_gen -- --ignored
+    // CMakeLists.txt is accepted by real tools. They skip automatically
+    // if cmake is not installed.
     // ═══════════════════════════════════════════════════════════════════
+
+    fn cmake_available() -> bool {
+        std::process::Command::new("cmake")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 
     /// Helper: run cmake configure on a generated CMakeLists.txt
     fn cmake_configure(project_dir: &std::path::Path) -> std::process::Output {
@@ -1480,7 +1486,6 @@ mod tests {
     // ── Risk 1: Does cmake actually accept our generated CMakeLists.txt? ──
 
     #[test]
-    #[ignore] // requires cmake
     fn real_cmake_configure_minimal_project() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "minimal-test", None, BTreeMap::new());
@@ -1495,7 +1500,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_build_minimal_project() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "build-test", None, BTreeMap::new());
@@ -1520,7 +1524,6 @@ mod tests {
     // ── Risk 2: C++ standard compatibility ──
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_cpp17_standard() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "std17-test", Some("c++17"), BTreeMap::new());
@@ -1530,7 +1533,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_cpp20_standard() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1576,7 +1578,6 @@ int main() {
     }
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_cpp23_standard() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "std23-test", Some("c++23"), BTreeMap::new());
@@ -1590,7 +1591,6 @@ int main() {
     // ── Risk 3: find_package actually finds installed libs ──
 
     #[test]
-    #[ignore] // requires cmake + libeigen3-dev
     fn real_cmake_find_package_eigen() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1645,7 +1645,6 @@ int main() {
     }
 
     #[test]
-    #[ignore] // requires cmake + libfmt-dev
     fn real_cmake_find_package_fmt() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1677,7 +1676,6 @@ int main() {
     // ── Risk 4: Multiple deps together ──
 
     #[test]
-    #[ignore] // requires cmake + libeigen3-dev + libfmt-dev
     fn real_cmake_multiple_deps_together() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1714,7 +1712,6 @@ int main() {
     // ── Risk 5: GTest integration ──
 
     #[test]
-    #[ignore] // requires cmake + libgtest-dev
     fn real_cmake_gtest_with_tests_dir() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1772,7 +1769,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 6: compile_commands.json generation ──
 
     #[test]
-    #[ignore] // requires cmake
     fn real_cmake_generates_compile_commands() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "compdb-test", None, BTreeMap::new());
@@ -1794,7 +1790,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 7: Project name sanitization in cmake ──
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_hyphenated_project_name() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "my-cool-robot", None, BTreeMap::new());
@@ -1813,7 +1808,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 8: CppConfig compiler override ──
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_compiler_override_gpp() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1841,7 +1835,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 9: cmake_args passthrough ──
 
     #[test]
-    #[ignore] // requires cmake
     fn real_cmake_custom_args_passthrough() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "args-test", None, BTreeMap::new());
@@ -1867,7 +1860,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 10: Release vs Debug build type ──
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_release_build() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1905,7 +1897,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 11: Empty source directory ──
 
     #[test]
-    #[ignore] // requires cmake
     fn real_cmake_empty_src_dir_configures_with_warning() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1934,7 +1925,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 12: Cross-compilation toolchain file validity ──
 
     #[test]
-    #[ignore] // requires cmake (but NOT cross-compiler — just validates syntax)
     fn real_cmake_toolchain_file_accepted() {
         // We can't test actual cross-compilation without the cross-compiler,
         // but we CAN test that cmake accepts the toolchain file syntax
@@ -1972,7 +1962,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 13: Incremental builds work ──
 
     #[test]
-    #[ignore] // requires cmake + g++
     fn real_cmake_incremental_build() {
         let dir = tempfile::tempdir().unwrap();
         create_cpp_project(dir.path(), "incr-test", None, BTreeMap::new());
@@ -1995,7 +1984,6 @@ TEST(BasicTest, OnePlusOne) {
     // ── Risk 14: Mixed C++ deps don't contaminate non-C++ deps ──
 
     #[test]
-    #[ignore] // requires cmake
     fn real_cmake_non_cpp_deps_excluded() {
         let dir = tempfile::tempdir().unwrap();
 

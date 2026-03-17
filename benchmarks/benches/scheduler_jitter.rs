@@ -132,8 +132,8 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
 
     group.bench_function("new_api_rt_500hz_with_compute_load", |b| {
         b.iter(|| {
-            let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
-            let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+            let _ = std::fs::remove_dir_all(horus_sys::shm::shm_topics_dir());
+            let _ = std::fs::remove_dir_all(horus_sys::shm::shm_nodes_dir());
 
             let (rt_node, _count, timestamps) = JitterMeasureNode::new("bench_rt");
             let compute_a = HeavyComputeNode::new("bench_compute_a", 5000); // 5ms work
@@ -162,8 +162,8 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
 
     group.bench_function("new_api_rt_500hz_no_load", |b| {
         b.iter(|| {
-            let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
-            let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+            let _ = std::fs::remove_dir_all(horus_sys::shm::shm_topics_dir());
+            let _ = std::fs::remove_dir_all(horus_sys::shm::shm_nodes_dir());
 
             let (rt_node, _count, timestamps) = JitterMeasureNode::new("bench_rt_solo");
 
@@ -195,8 +195,8 @@ fn bench_jitter_report(c: &mut Criterion) {
 
     group.bench_function("rt_isolation_proof", |b| {
         b.iter(|| {
-            let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
-            let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+            let _ = std::fs::remove_dir_all(horus_sys::shm::shm_topics_dir());
+            let _ = std::fs::remove_dir_all(horus_sys::shm::shm_nodes_dir());
 
             let (rt_node, rt_count, rt_timestamps) = JitterMeasureNode::new("proof_rt");
             let slow = HeavyComputeNode::new("proof_slow", 50_000); // 50ms blocking work

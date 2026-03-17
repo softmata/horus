@@ -1,4 +1,4 @@
-mod helpers;
+pub mod helpers;
 mod install;
 mod publish;
 
@@ -13,7 +13,6 @@ use crate::dependency_resolver::{DependencySpec, PackageProvider};
 use crate::manifest::HORUS_TOML;
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
-use chrono::{DateTime, Utc};
 use colored::*;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -67,43 +66,6 @@ pub enum SystemPackageChoice {
     UseSystem,    // Use existing system package
     InstallHORUS, // Install fresh copy to HORUS
     Cancel,       // Cancel installation
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SystemInfo {
-    pub os: String,
-    pub arch: String,
-    pub python_version: Option<String>,
-    pub rust_version: Option<String>,
-    pub gcc_version: Option<String>,
-    pub cuda_version: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EnvironmentManifest {
-    pub horus_id: String,
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub packages: Vec<LockedPackage>,
-    pub system: SystemInfo,
-    pub created_at: DateTime<Utc>,
-    pub horus_version: String,
-}
-
-/// Environment list item from registry API (includes full manifest)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EnvironmentListItem {
-    pub horus_id: String,
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub manifest: EnvironmentManifest,
-    pub created_at: String,
-}
-
-/// Response wrapper for environment list
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EnvironmentListResponse {
-    pub environments: Vec<EnvironmentListItem>,
 }
 
 /// Driver metadata from the registry API

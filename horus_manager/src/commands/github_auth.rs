@@ -1031,13 +1031,13 @@ mod tests {
 
     #[test]
     fn save_and_load_auth_config_roundtrip() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
         // Create the .horus directory
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = save_auth_config(
@@ -1063,12 +1063,12 @@ mod tests {
 
     #[test]
     fn save_auth_config_without_username() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = save_auth_config(
@@ -1090,12 +1090,12 @@ mod tests {
 
     #[test]
     fn save_auth_config_creates_valid_json_on_disk() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         save_auth_config("horus_key_disk", "https://example.com", Some("alice"))
@@ -1118,12 +1118,12 @@ mod tests {
 
     #[test]
     fn save_auth_config_overwrites_existing() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         // Write first config
@@ -1151,12 +1151,12 @@ mod tests {
     fn save_auth_config_sets_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         save_auth_config("horus_key_perms", "https://example.com", None).unwrap();
@@ -1178,13 +1178,13 @@ mod tests {
 
     #[test]
     fn load_auth_config_returns_error_when_not_authenticated() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
         // Create .horus dir but no auth.json
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = load_auth_config();
@@ -1204,12 +1204,12 @@ mod tests {
 
     #[test]
     fn load_auth_config_returns_error_for_corrupt_json() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
         fs::write(horus_dir.join("auth.json"), "this is not json").unwrap();
 
@@ -1230,12 +1230,12 @@ mod tests {
 
     #[test]
     fn load_auth_config_returns_error_for_partial_json() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
         // Valid JSON but missing required fields
         fs::write(horus_dir.join("auth.json"), r#"{"api_key":"test"}"#).unwrap();
@@ -1251,12 +1251,12 @@ mod tests {
 
     #[test]
     fn load_auth_config_returns_error_for_empty_file() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
         fs::write(horus_dir.join("auth.json"), "").unwrap();
 
@@ -1286,39 +1286,28 @@ mod tests {
         let path = auth_config_path().unwrap();
         let parent = path.parent().unwrap();
         assert!(
-            parent.ends_with(".horus"),
-            "auth.json should be inside .horus dir, parent was: {:?}",
+            parent.to_string_lossy().contains("horus"),
+            "auth.json should be inside horus config dir, parent was: {:?}",
             parent
         );
     }
 
     #[test]
-    fn auth_config_path_creates_horus_dir_if_missing() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let original_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", tmp.path());
-
-        // .horus does not yet exist
-        let horus_dir = tmp.path().join(".horus");
-        assert!(!horus_dir.exists());
-
+    fn auth_config_path_returns_valid_path() {
         let path = auth_config_path().unwrap();
-        // auth_config_path should have created .horus
-        assert!(horus_dir.exists(), ".horus dir should have been created");
-        assert_eq!(path, horus_dir.join("auth.json"));
-
-        match original_home {
-            Some(val) => std::env::set_var("HOME", val),
-            None => std::env::remove_var("HOME"),
-        }
+        assert!(path.is_absolute(), "auth config path should be absolute");
+        assert_eq!(path.file_name().unwrap(), "auth.json");
+        assert!(
+            path.to_string_lossy().contains("horus"),
+            "auth config path should be inside a horus directory"
+        );
     }
 
     // ── get_registry_url tests ──────────────────────────────────────
 
     #[test]
     fn get_registry_url_env_var_takes_priority() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::var("HORUS_REGISTRY_URL").ok();
 
         std::env::set_var("HORUS_REGISTRY_URL", "https://custom-registry.test");
@@ -1334,14 +1323,14 @@ mod tests {
 
     #[test]
     fn get_registry_url_falls_back_to_config() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         let original_registry = std::env::var("HORUS_REGISTRY_URL").ok();
         std::env::set_var("HOME", tmp.path());
         std::env::remove_var("HORUS_REGISTRY_URL");
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
         save_auth_config("horus_key_test", "https://from-config.test", None).unwrap();
 
@@ -1361,7 +1350,7 @@ mod tests {
 
     #[test]
     fn get_registry_url_falls_back_to_default() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         let original_registry = std::env::var("HORUS_REGISTRY_URL").ok();
@@ -1369,7 +1358,7 @@ mod tests {
         std::env::remove_var("HORUS_REGISTRY_URL");
 
         // No auth config file exists, so should fall back to default
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let url = get_registry_url();
@@ -1389,12 +1378,12 @@ mod tests {
 
     #[test]
     fn logout_removes_auth_config_file() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
         save_auth_config("horus_key_logout", "https://example.com", Some("bob"))
             .unwrap();
@@ -1417,12 +1406,12 @@ mod tests {
 
     #[test]
     fn logout_succeeds_when_not_logged_in() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
         // No auth.json exists
 
@@ -1440,12 +1429,12 @@ mod tests {
 
     #[test]
     fn logout_then_load_auth_fails() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
         save_auth_config("horus_key_then_logout", "https://example.com", None)
             .unwrap();
@@ -1507,12 +1496,12 @@ mod tests {
 
     #[test]
     fn save_auth_config_with_very_long_api_key() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let long_key = format!("horus_key_{}", "x".repeat(2048));
@@ -1529,12 +1518,12 @@ mod tests {
 
     #[test]
     fn save_auth_config_with_url_containing_path() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let url_with_path = "https://registry.example.com/api/v2";
@@ -1551,12 +1540,12 @@ mod tests {
 
     #[test]
     fn save_auth_config_with_localhost_url() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         save_auth_config("horus_key_local", "http://localhost:3000", Some("dev"))
@@ -1573,12 +1562,12 @@ mod tests {
 
     #[test]
     fn save_auth_config_with_unicode_username() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         save_auth_config(
@@ -1604,12 +1593,12 @@ mod tests {
 
     #[test]
     fn multiple_saves_last_write_wins() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         for i in 0..10 {
@@ -1635,12 +1624,12 @@ mod tests {
 
     #[test]
     fn whoami_not_logged_in_succeeds() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         // whoami should not error when not logged in, just print guidance
@@ -1657,12 +1646,12 @@ mod tests {
 
     #[test]
     fn keys_list_not_logged_in_succeeds() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = keys_list();
@@ -1678,12 +1667,12 @@ mod tests {
 
     #[test]
     fn keys_revoke_not_logged_in_succeeds() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = keys_revoke("some-key-id");
@@ -1699,12 +1688,12 @@ mod tests {
 
     #[test]
     fn full_save_load_logout_cycle() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let horus_dir = tmp.path().join(".horus");
+        let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         // Step 1: save

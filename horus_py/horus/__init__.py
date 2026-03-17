@@ -394,8 +394,11 @@ class Node:
             tick: Function called each tick — ``tick(node)``.
                   Can be ``async def`` — auto-detected, runs on async I/O thread pool.
             rate: Tick rate in Hz (default 30)
-            pubs: Topics to publish — str, list, or dict with type/capacity config
-            subs: Topics to subscribe — same format as pubs
+            pubs: Topics to publish. Accepts:
+                  - ``[CmdVel, LaserScan]`` — typed (fast Pod, ~1.5μs)
+                  - ``{"cmd": CmdVel}`` — typed with custom name
+                  - ``["data"]`` — string (GenericMessage, ~5-50μs)
+            subs: Topics to subscribe — same formats as pubs
             init: Called once before first tick — ``init(node)``. Can be async.
             shutdown: Called on scheduler stop — ``shutdown(node)``. Can be async.
             on_error: Error handler — ``on_error(node, exception)``
@@ -472,25 +475,9 @@ class Node:
         self.sub_topics = []
         self._topic_configs = {}  # topic -> config dict
 
-        # Process pubs
-        if isinstance(pubs, str):
-            self.pub_topics = [pubs]
-        elif isinstance(pubs, dict):
-            for topic, config in pubs.items():
-                self.pub_topics.append(topic)
-                self._topic_configs[topic] = config or {}
-        elif isinstance(pubs, list):
-            self.pub_topics = pubs
-
-        # Process subs
-        if isinstance(subs, str):
-            self.sub_topics = [subs]
-        elif isinstance(subs, dict):
-            for topic, config in subs.items():
-                self.sub_topics.append(topic)
-                self._topic_configs[topic] = config or {}
-        elif isinstance(subs, list):
-            self.sub_topics = subs
+        # Process pubs/subs — normalize to topic names + type configs
+        self.pub_topics = self._parse_topics(pubs)
+        self.sub_topics = self._parse_topics(subs)
 
         # NodeInfo context (set by scheduler)
         self.info = None
@@ -503,6 +490,56 @@ class Node:
             # Mock mode for testing
             self._rust_available = False
             self._topics = {}
+
+    def _parse_topics(self, spec) -> List[str]:
+        """Parse pubs/subs spec into topic names, storing type configs.
+
+        Accepts:
+            None                          → []
+            "topic"                       → ["topic"] (GenericMessage)
+            ["topic1", "topic2"]          → ["topic1", "topic2"] (GenericMessage)
+            [CmdVel, LaserScan]           → ["cmdvel", "laserscan"] (typed, fast Pod)
+            {"cmd": CmdVel}               → ["cmd"] (typed, fast Pod)
+            {"cmd": {"type": CmdVel}}     → ["cmd"] (typed, legacy format)
+        """
+        if spec is None:
+            return []
+
+        if isinstance(spec, str):
+            return [spec]
+
+        if isinstance(spec, dict):
+            names = []
+            for key, value in spec.items():
+                names.append(key)
+                if isinstance(value, type):
+                    # {"cmd": CmdVel} — type directly
+                    self._topic_configs[key] = {"type": value}
+                elif isinstance(value, dict):
+                    # {"cmd": {"type": CmdVel, "capacity": 2048}} — legacy dict
+                    self._topic_configs[key] = value or {}
+                elif value is None:
+                    pass
+            return names
+
+        if isinstance(spec, list):
+            names = []
+            for item in spec:
+                if isinstance(item, str):
+                    # "topic" — string name, GenericMessage
+                    names.append(item)
+                elif isinstance(item, type):
+                    # CmdVel — type, auto-derive name
+                    name = getattr(item, '__topic_name__', None) or item.__name__.lower()
+                    names.append(name)
+                    self._topic_configs[name] = {"type": item}
+                else:
+                    raise TypeError(
+                        f"pubs/subs list items must be str or message type, got {type(item).__name__}"
+                    )
+            return names
+
+        raise TypeError(f"pubs/subs must be str, list, or dict, got {type(spec).__name__}")
 
     def _wrap_async(self, fn: Callable) -> Callable:
         """If fn is a coroutine function, wrap it in a sync bridge and mark node as async."""
@@ -528,22 +565,37 @@ class Node:
         return self._async_loop
 
     def _setup_topics(self):
-        """Setup publish/subscribe topics with configured capacities."""
+        """Setup publish/subscribe topics with configured capacities.
+
+        If the user declared a type via pubs/subs dict config, create a typed
+        Topic (Pod zero-copy path, ~1.5μs). Otherwise fall back to string-named
+        Topic (GenericMessage path, ~5-50μs).
+        """
         self._topics = {}
 
         all_topics = set(self.pub_topics + self.sub_topics)
         for topic in all_topics:
             config = self._topic_configs.get(topic, {})
             capacity = config.get('capacity', self.default_capacity)
-            # Always create topic by name — no __topic_name__ monkeypatching
-            self._topics[topic] = Topic(topic, capacity)
+            msg_type = config.get('type', None)
+
+            if msg_type is not None:
+                # Typed topic — Pod zero-copy path (~1.5μs)
+                self._topics[topic] = Topic(msg_type, capacity)
+            else:
+                # String topic — GenericMessage path (~5-50μs)
+                self._topics[topic] = Topic(topic, capacity)
 
     def _ensure_topic(self, topic: str) -> None:
         """Ensure a Topic object exists for the given name (auto-create if needed)."""
         if topic not in self._topics and self._rust_available:
             config = self._topic_configs.get(topic, {})
             capacity = config.get('capacity', self.default_capacity)
-            self._topics[topic] = Topic(topic, capacity)
+            msg_type = config.get('type', None)
+            if msg_type is not None:
+                self._topics[topic] = Topic(msg_type, capacity)
+            else:
+                self._topics[topic] = Topic(topic, capacity)
 
     def has_msg(self, topic: str) -> bool:
         """

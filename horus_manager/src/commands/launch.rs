@@ -1076,7 +1076,7 @@ another: "hello"
 
     #[test]
     fn run_launch_dry_run_with_nodes() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.yaml");
         let yaml = r#"
@@ -1098,7 +1098,7 @@ nodes:
 
     #[test]
     fn run_launch_dry_run_with_namespace_override() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ns.yaml");
         let yaml = r#"
@@ -1114,7 +1114,7 @@ nodes:
 
     #[test]
     fn list_launch_nodes_with_valid_file() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("list.yaml");
         let yaml = r#"
@@ -1135,7 +1135,7 @@ nodes:
 
     #[test]
     fn list_launch_nodes_empty_nodes() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.yaml");
         std::fs::write(&path, "nodes: []").unwrap();
@@ -1198,7 +1198,7 @@ nodes:
 
     #[test]
     fn run_launch_yaml_with_only_env() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("env_only.yaml");
         let yaml = r#"

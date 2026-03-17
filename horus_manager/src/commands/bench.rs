@@ -66,8 +66,8 @@ mod tests {
     #[test]
     fn bench_no_source_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_bench(None, vec![]);
@@ -80,8 +80,8 @@ mod tests {
     #[test]
     fn bench_with_filter_no_source_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_bench(Some("my_bench".to_string()), vec![]);
@@ -95,8 +95,8 @@ mod tests {
     #[test]
     fn bench_error_message_is_descriptive() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_bench(None, vec![]);
@@ -118,8 +118,8 @@ mod tests {
     #[test]
     fn bench_with_extra_args_still_fails_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_bench(None, vec!["--nocapture".to_string()]);
@@ -131,8 +131,8 @@ mod tests {
     #[test]
     fn bench_filter_and_extra_args_still_fails_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_bench(
@@ -294,8 +294,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_bench(None, vec![]);

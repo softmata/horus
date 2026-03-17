@@ -54,6 +54,8 @@ pub fn auth_config_path() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    // ── Basic contract: all paths work and are absolute ──────────────
+
     #[test]
     fn test_home_dir_returns_absolute_path() {
         let path = home_dir().unwrap();
@@ -61,106 +63,72 @@ mod tests {
     }
 
     #[test]
-    fn test_horus_dir_ends_with_dot_horus() {
-        let path = horus_dir().unwrap();
-        assert!(path.ends_with(".horus"));
-    }
-
-    #[test]
-    fn test_cache_dir_ends_with_cache() {
-        let path = cache_dir().unwrap();
-        assert!(path.ends_with(".horus/cache"));
-    }
-
-    #[test]
-    fn test_recordings_dir_ends_with_recordings() {
-        let path = recordings_dir().unwrap();
-        assert!(path.ends_with(".horus/recordings"));
-    }
-
-    #[test]
-    fn test_keys_dir_ends_with_keys() {
-        let path = keys_dir().unwrap();
-        assert!(path.ends_with(".horus/keys"));
-    }
-
-    #[test]
-    fn test_auth_config_path_ends_with_auth_json() {
-        let path = auth_config_path().unwrap();
-        assert!(path.ends_with(".horus/auth.json"));
-    }
-
-    // --- home_dir deeper tests ---
-
-    #[test]
     fn test_home_dir_exists_on_disk() {
         let path = home_dir().unwrap();
-        assert!(path.exists(), "home directory should exist");
-        assert!(path.is_dir(), "home directory should be a directory");
+        assert!(path.exists());
+        assert!(path.is_dir());
     }
 
     #[test]
     fn test_home_dir_consistent_across_calls() {
-        let p1 = home_dir().unwrap();
-        let p2 = home_dir().unwrap();
-        assert_eq!(p1, p2, "home_dir() should return the same path on repeated calls");
+        assert_eq!(home_dir().unwrap(), home_dir().unwrap());
     }
-
-    // --- horus_dir deeper tests ---
 
     #[test]
     fn test_horus_dir_is_absolute() {
-        let path = horus_dir().unwrap();
-        assert!(path.is_absolute());
+        assert!(horus_dir().unwrap().is_absolute());
     }
 
     #[test]
-    fn test_horus_dir_parent_is_home() {
-        let horus = horus_dir().unwrap();
-        let home = home_dir().unwrap();
-        assert_eq!(horus.parent().unwrap(), home);
+    fn test_cache_dir_is_absolute() {
+        assert!(cache_dir().unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_recordings_dir_is_absolute() {
+        assert!(recordings_dir().unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_keys_dir_is_absolute() {
+        assert!(keys_dir().unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_auth_config_path_is_absolute() {
+        assert!(auth_config_path().unwrap().is_absolute());
+    }
+
+    // ── Path structure: all contain "horus" and correct leaf names ───
+
+    #[test]
+    fn test_horus_dir_contains_horus() {
+        let path = horus_dir().unwrap();
+        assert!(
+            path.to_string_lossy().contains("horus"),
+            "horus_dir should contain 'horus': {:?}",
+            path
+        );
     }
 
     #[test]
     fn test_horus_dir_file_name() {
+        // XDG: ~/.config/horus → file_name = "horus"
         let path = horus_dir().unwrap();
-        assert_eq!(path.file_name().unwrap(), ".horus");
+        assert_eq!(path.file_name().unwrap(), "horus");
     }
 
-    // --- cache_dir deeper tests ---
-
     #[test]
-    fn test_cache_dir_is_absolute() {
+    fn test_cache_dir_contains_horus() {
         let path = cache_dir().unwrap();
-        assert!(path.is_absolute());
-    }
-
-    #[test]
-    fn test_cache_dir_parent_is_horus_dir() {
-        let cache = cache_dir().unwrap();
-        let horus = horus_dir().unwrap();
-        assert_eq!(cache.parent().unwrap(), horus);
+        assert!(path.to_string_lossy().contains("horus"));
     }
 
     #[test]
     fn test_cache_dir_file_name() {
+        // XDG: ~/.cache/horus → file_name = "horus"
         let path = cache_dir().unwrap();
-        assert_eq!(path.file_name().unwrap(), "cache");
-    }
-
-    // --- recordings_dir deeper tests ---
-
-    #[test]
-    fn test_recordings_dir_is_absolute() {
-        let path = recordings_dir().unwrap();
-        assert!(path.is_absolute());
-    }
-
-    #[test]
-    fn test_recordings_dir_parent_is_horus_dir() {
-        let rec = recordings_dir().unwrap();
-        let horus = horus_dir().unwrap();
-        assert_eq!(rec.parent().unwrap(), horus);
+        assert_eq!(path.file_name().unwrap(), "horus");
     }
 
     #[test]
@@ -169,92 +137,81 @@ mod tests {
         assert_eq!(path.file_name().unwrap(), "recordings");
     }
 
-    // --- keys_dir deeper tests ---
-
-    #[test]
-    fn test_keys_dir_is_absolute() {
-        let path = keys_dir().unwrap();
-        assert!(path.is_absolute());
-    }
-
-    #[test]
-    fn test_keys_dir_parent_is_horus_dir() {
-        let keys = keys_dir().unwrap();
-        let horus = horus_dir().unwrap();
-        assert_eq!(keys.parent().unwrap(), horus);
-    }
-
     #[test]
     fn test_keys_dir_file_name() {
         let path = keys_dir().unwrap();
         assert_eq!(path.file_name().unwrap(), "keys");
     }
 
-    // --- auth_config_path deeper tests ---
-
     #[test]
-    fn test_auth_config_path_is_absolute() {
-        let path = auth_config_path().unwrap();
-        assert!(path.is_absolute());
+    fn test_auth_config_path_file_name() {
+        assert_eq!(auth_config_path().unwrap().file_name().unwrap(), "auth.json");
     }
 
     #[test]
-    fn test_auth_config_path_parent_is_horus_dir() {
+    fn test_auth_config_path_extension() {
+        assert_eq!(auth_config_path().unwrap().extension().unwrap(), "json");
+    }
+
+    // ── Parent relationships ────────────────────────────────────────
+
+    #[test]
+    fn test_auth_config_parent_is_horus_dir() {
         let auth = auth_config_path().unwrap();
         let horus = horus_dir().unwrap();
         assert_eq!(auth.parent().unwrap(), horus);
     }
 
     #[test]
-    fn test_auth_config_path_file_name() {
-        let path = auth_config_path().unwrap();
-        assert_eq!(path.file_name().unwrap(), "auth.json");
+    fn test_recordings_parent_is_data_dir() {
+        // recordings_dir = data_dir / "recordings"
+        let rec = recordings_dir().unwrap();
+        let data = horus_sys::platform::data_dir();
+        assert_eq!(rec.parent().unwrap(), data);
     }
 
     #[test]
-    fn test_auth_config_path_extension() {
-        let path = auth_config_path().unwrap();
-        assert_eq!(path.extension().unwrap(), "json");
+    fn test_keys_parent_is_data_dir() {
+        let keys = keys_dir().unwrap();
+        let data = horus_sys::platform::data_dir();
+        assert_eq!(keys.parent().unwrap(), data);
     }
 
-    // --- blackbox_dir tests ---
+    // ── Blackbox (local .horus/blackbox fallback) ───────────────────
 
     #[test]
     fn test_blackbox_dir_is_absolute_or_relative() {
-        // blackbox_dir returns a relative path if .horus/blackbox exists in CWD,
-        // otherwise returns an absolute path under home
         let path = blackbox_dir().unwrap();
-        // Either it's the local relative path or an absolute fallback
         if path.is_absolute() {
-            assert!(path.ends_with(".horus/blackbox"));
+            assert!(
+                path.to_string_lossy().contains("blackbox"),
+                "absolute blackbox dir should contain 'blackbox': {:?}",
+                path
+            );
         } else {
             assert_eq!(path, std::path::PathBuf::from(".horus/blackbox"));
         }
     }
 
     #[test]
-    fn test_blackbox_dir_fallback_ends_with_blackbox() {
-        // When run from a directory without .horus/blackbox, should fall back to home
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+    fn test_blackbox_dir_fallback_is_absolute() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let path = blackbox_dir().unwrap();
-        // No .horus/blackbox in tmp, so should fall back
         assert!(path.is_absolute(), "fallback should be absolute");
-        assert!(path.ends_with(".horus/blackbox"));
+        assert!(path.to_string_lossy().contains("blackbox"));
 
         std::env::set_current_dir(original).unwrap();
     }
 
     #[test]
     fn test_blackbox_dir_uses_local_when_exists() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
-
-        // Create .horus/blackbox in the temp dir
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::fs::create_dir_all(tmp.path().join(".horus/blackbox")).unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
@@ -264,7 +221,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
     }
 
-    // --- All paths are under home ---
+    // ── All paths under home ────────────────────────────────────────
 
     #[test]
     fn test_all_paths_share_home_prefix() {
@@ -280,13 +237,12 @@ mod tests {
             assert!(
                 p.starts_with(&home),
                 "{:?} should start with home dir {:?}",
-                p,
-                home
+                p, home
             );
         }
     }
 
-    // --- All paths are distinct ---
+    // ── All paths are distinct ──────────────────────────────────────
 
     #[test]
     fn test_all_leaf_paths_are_distinct() {
@@ -298,40 +254,8 @@ mod tests {
         ];
         for i in 0..paths.len() {
             for j in (i + 1)..paths.len() {
-                assert_ne!(paths[i], paths[j], "{:?} and {:?} should differ", paths[i], paths[j]);
+                assert_ne!(paths[i], paths[j]);
             }
-        }
-    }
-
-    // --- Path depth / structure ---
-
-    #[test]
-    fn test_horus_dir_is_exactly_two_levels_from_root() {
-        // home is e.g. /home/user, horus_dir is /home/user/.horus
-        let horus = horus_dir().unwrap();
-        let home = home_dir().unwrap();
-        // horus_dir should have exactly one more component than home
-        assert_eq!(
-            horus.components().count(),
-            home.components().count() + 1
-        );
-    }
-
-    #[test]
-    fn test_subdirs_are_three_levels_from_root() {
-        let home = home_dir().unwrap();
-        let subdirs = vec![
-            cache_dir().unwrap(),
-            recordings_dir().unwrap(),
-            keys_dir().unwrap(),
-        ];
-        for dir in &subdirs {
-            assert_eq!(
-                dir.components().count(),
-                home.components().count() + 2,
-                "{:?} should be 2 levels deeper than home",
-                dir,
-            );
         }
     }
 }

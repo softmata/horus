@@ -305,6 +305,205 @@ class TestTopic:
 
 
 # ============================================================================
+# Generic Message / Dict Roundtrip (cross-language data integrity)
+# ============================================================================
+
+class TestGenericMessageRoundtrip:
+    """Rigorous tests for dict/GenericMessage roundtrip via Topic.
+
+    Verifies data integrity across Python → Rust serialization → Python
+    deserialization for all common Python types.
+    """
+
+    def test_simple_dict(self, unique_test_prefix):
+        """Basic dict with string keys and float values."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_simple_dict")
+        sent = {"x": 1.0, "y": 2.0, "z": 3.0}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["x"] == 1.0
+        assert received["y"] == 2.0
+        assert received["z"] == 3.0
+
+    def test_nested_dict(self, unique_test_prefix):
+        """Nested dict — common for structured sensor data."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_nested")
+        sent = {
+            "pose": {"x": 1.5, "y": -2.3, "theta": 0.7},
+            "velocity": {"linear": 0.5, "angular": 0.1},
+            "metadata": {"frame": "base_link", "seq": 42},
+        }
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["pose"]["x"] == 1.5
+        assert received["pose"]["theta"] == 0.7
+        assert received["velocity"]["linear"] == 0.5
+        assert received["metadata"]["frame"] == "base_link"
+        assert received["metadata"]["seq"] == 42
+
+    def test_list_values(self, unique_test_prefix):
+        """Dict with list values — common for arrays of sensor readings."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_lists")
+        sent = {
+            "ranges": [1.0, 2.5, 3.7, 0.0, float('inf')],
+            "ids": [1, 2, 3, 4, 5],
+            "labels": ["person", "car", "tree"],
+        }
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["ranges"][:4] == [1.0, 2.5, 3.7, 0.0]
+        assert received["ids"] == [1, 2, 3, 4, 5]
+        assert received["labels"] == ["person", "car", "tree"]
+
+    def test_bool_values(self, unique_test_prefix):
+        """Bool values survive roundtrip (not converted to int)."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_bools")
+        sent = {"active": True, "error": False, "flags": [True, False, True]}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["active"] is True
+        assert received["error"] is False
+        assert received["flags"] == [True, False, True]
+
+    def test_int_vs_float_precision(self, unique_test_prefix):
+        """Integers and floats maintain their types."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_types")
+        sent = {"count": 42, "rate": 3.14, "big": 1000000, "tiny": 0.001}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["count"] == 42
+        assert abs(received["rate"] - 3.14) < 1e-10
+        assert received["big"] == 1000000
+        assert abs(received["tiny"] - 0.001) < 1e-10
+
+    def test_none_values(self, unique_test_prefix):
+        """None values survive roundtrip."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_none")
+        sent = {"data": None, "value": 1.0, "optional": None}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["data"] is None
+        assert received["value"] == 1.0
+        assert received["optional"] is None
+
+    def test_empty_dict(self, unique_test_prefix):
+        """Empty dict roundtrip."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_empty_dict")
+        topic.send({})
+        received = topic.recv()
+        assert received is not None
+        assert received == {}
+
+    def test_empty_string_values(self, unique_test_prefix):
+        """Empty strings survive roundtrip."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_empty_str")
+        sent = {"name": "", "label": "robot", "note": ""}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["name"] == ""
+        assert received["label"] == "robot"
+        assert received["note"] == ""
+
+    def test_unicode_strings(self, unique_test_prefix):
+        """Unicode strings survive roundtrip."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_unicode")
+        sent = {"name": "ロボット", "label": "café", "emoji": "🤖"}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["name"] == "ロボット"
+        assert received["label"] == "café"
+        assert received["emoji"] == "🤖"
+
+    def test_negative_numbers(self, unique_test_prefix):
+        """Negative integers and floats survive roundtrip."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_negative")
+        sent = {"x": -1.5, "y": -999, "z": -0.0}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["x"] == -1.5
+        assert received["y"] == -999
+
+    def test_large_payload(self, unique_test_prefix):
+        """Payload near 4KB limit (GenericMessage max)."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_large")
+        # Create a dict with enough data to approach 4KB
+        sent = {"data": list(range(500))}  # ~2KB as MessagePack
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["data"] == list(range(500))
+
+    def test_deeply_nested(self, unique_test_prefix):
+        """Deeply nested structure."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_deep")
+        sent = {"a": {"b": {"c": {"d": {"value": 42}}}}}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["a"]["b"]["c"]["d"]["value"] == 42
+
+    def test_mixed_list_types(self, unique_test_prefix):
+        """Lists with mixed types."""
+        from horus._horus import Topic
+        topic = Topic(f"{unique_test_prefix}_mixed_list")
+        sent = {"items": [1, "two", 3.0, True, None, [4, 5]]}
+        topic.send(sent)
+        received = topic.recv()
+        assert received is not None
+        assert received["items"][0] == 1
+        assert received["items"][1] == "two"
+        assert received["items"][2] == 3.0
+        assert received["items"][3] is True
+        assert received["items"][4] is None
+        assert received["items"][5] == [4, 5]
+
+    def test_node_send_recv_dict(self):
+        """Dict roundtrip through Node.send/recv API (not raw Topic)."""
+        import horus
+        received = []
+
+        def pub_tick(node):
+            node.send("test_data", {"battery": 85.0, "active": True, "ids": [1, 2]})
+
+        def sub_tick(node):
+            msg = node.recv("test_data")
+            if msg is not None:
+                received.append(msg)
+                node.request_stop()
+
+        pub = horus.Node(name="pub", tick=pub_tick, rate=30, order=0, pubs=["test_data"])
+        sub = horus.Node(name="sub", tick=sub_tick, rate=30, order=1, subs=["test_data"])
+        horus.run(pub, sub, duration=2.0)
+
+        assert len(received) >= 1, "Should have received dict via Node API"
+        msg = received[0]
+        assert msg["battery"] == 85.0
+        assert msg["active"] is True
+        assert msg["ids"] == [1, 2]
+
+
+# ============================================================================
 # Node (Python-level)
 # ============================================================================
 
@@ -372,7 +571,7 @@ class TestSchedulerConfig:
         from horus._horus import SchedulerConfig
         config = SchedulerConfig.minimal()
         assert config is not None
-        assert config.tick_rate == 60.0
+        assert config.tick_rate == 100.0
 
     def test_config_field_mutation(self):
         from horus._horus import SchedulerConfig

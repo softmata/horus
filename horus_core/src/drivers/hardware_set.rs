@@ -70,6 +70,23 @@ impl DriverHandle {
     }
 }
 
+// ── Topic mapping ───────────────────────────────────────────────────────────
+
+/// Topic mapping for auto-bridging drivers to HORUS topics.
+///
+/// Configured via `topic`, `topic_state`, `topic_command` fields in
+/// `horus.toml` `[drivers.NAME]` entries. Used by bridge layers
+/// (e.g., `terra-horus`) to auto-create sensor/actuator topic forwarding.
+#[derive(Debug, Clone, Default)]
+pub struct TopicMapping {
+    /// Sensor data topic (e.g., `"sensors/imu"`).
+    pub topic: Option<String>,
+    /// Joint state output topic (e.g., `"arm/joint_states"`).
+    pub topic_state: Option<String>,
+    /// Joint command input topic (e.g., `"arm/joint_commands"`).
+    pub topic_command: Option<String>,
+}
+
 // ── Driver entry ────────────────────────────────────────────────────────────
 
 /// Internal entry for a configured driver.
@@ -77,6 +94,7 @@ impl DriverHandle {
 struct DriverEntry {
     driver_type: DriverType,
     params: DriverParams,
+    topics: TopicMapping,
 }
 
 // ── Terra stub node ─────────────────────────────────────────────────────────
@@ -127,10 +145,19 @@ impl HardwareSet {
                     let package = cfg.get("package").and_then(|v| v.as_str()).map(String::from);
                     let node = cfg.get("node").and_then(|v| v.as_str()).map(String::from);
 
-                    // Collect remaining keys as params (skip terra/package/node)
+                    // Extract topic mapping fields
+                    let topic = cfg.get("topic").and_then(|v| v.as_str()).map(String::from);
+                    let topic_state = cfg.get("topic_state").and_then(|v| v.as_str()).map(String::from);
+                    let topic_command = cfg.get("topic_command").and_then(|v| v.as_str()).map(String::from);
+
+                    // Collect remaining keys as params (skip config/bridge keys)
+                    const RESERVED: &[&str] = &[
+                        "terra", "package", "node",
+                        "topic", "topic_state", "topic_command",
+                    ];
                     let mut params_map = HashMap::new();
                     for (k, v) in cfg {
-                        if k != "terra" && k != "package" && k != "node" {
+                        if !RESERVED.contains(&k.as_str()) {
                             params_map.insert(k.clone(), v.clone());
                         }
                     }
@@ -152,6 +179,7 @@ impl HardwareSet {
                     DriverEntry {
                         driver_type,
                         params: DriverParams::new(params_map),
+                        topics: TopicMapping { topic, topic_state, topic_command },
                     }
                 }
                 toml::Value::String(_) | toml::Value::Boolean(_) => {
@@ -159,6 +187,7 @@ impl HardwareSet {
                     DriverEntry {
                         driver_type: DriverType::Legacy,
                         params: DriverParams::empty(),
+                        topics: TopicMapping::default(),
                     }
                 }
                 _ => {
@@ -399,6 +428,11 @@ impl HardwareSet {
     /// Get the driver source type.
     pub fn driver_type(&self, name: &str) -> Option<&DriverType> {
         self.entries.get(name).map(|e| &e.driver_type)
+    }
+
+    /// Get topic mappings for a driver (for auto-bridging).
+    pub fn topic_mapping(&self, name: &str) -> Option<&TopicMapping> {
+        self.entries.get(name).map(|e| &e.topics)
     }
 
     /// Number of configured drivers.
@@ -739,5 +773,99 @@ mod tests {
         let table = test_table(r#"camera = "opencv""#);
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         assert!(hw.node("camera").is_err());
+    }
+
+    // ── TopicMapping tests ────────────────────────────────────────────
+
+    #[test]
+    fn topic_mapping_sensor() {
+        let table = test_table(r#"
+            [imu]
+            terra = "mpu6050"
+            bus = "i2c-1"
+            address = 104
+            topic = "sensors/imu"
+        "#);
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        let mapping = hw.topic_mapping("imu").unwrap();
+        assert_eq!(mapping.topic.as_deref(), Some("sensors/imu"));
+        assert!(mapping.topic_state.is_none());
+        assert!(mapping.topic_command.is_none());
+        // topic should NOT be in params
+        let params = hw.params("imu").unwrap();
+        assert!(!params.has("topic"));
+        assert!(params.has("bus"));
+        assert!(params.has("address"));
+    }
+
+    #[test]
+    fn topic_mapping_actuator() {
+        let table = test_table(r#"
+            [arm]
+            terra = "dynamixel"
+            port = "/dev/ttyUSB0"
+            baudrate = 1000000
+            topic_state = "arm/joint_states"
+            topic_command = "arm/joint_commands"
+        "#);
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        let mapping = hw.topic_mapping("arm").unwrap();
+        assert!(mapping.topic.is_none());
+        assert_eq!(mapping.topic_state.as_deref(), Some("arm/joint_states"));
+        assert_eq!(mapping.topic_command.as_deref(), Some("arm/joint_commands"));
+        // topic fields should NOT be in params
+        let params = hw.params("arm").unwrap();
+        assert!(!params.has("topic_state"));
+        assert!(!params.has("topic_command"));
+        assert!(params.has("port"));
+        assert!(params.has("baudrate"));
+    }
+
+    #[test]
+    fn topic_mapping_none_when_no_topic_fields() {
+        let table = test_table(r#"
+            [lidar]
+            terra = "rplidar"
+            port = "/dev/ttyUSB1"
+        "#);
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        let mapping = hw.topic_mapping("lidar").unwrap();
+        assert!(mapping.topic.is_none());
+        assert!(mapping.topic_state.is_none());
+        assert!(mapping.topic_command.is_none());
+    }
+
+    #[test]
+    fn topic_mapping_legacy_driver_default() {
+        let table = test_table(r#"camera = "opencv""#);
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        let mapping = hw.topic_mapping("camera").unwrap();
+        assert!(mapping.topic.is_none());
+        assert!(mapping.topic_state.is_none());
+        assert!(mapping.topic_command.is_none());
+    }
+
+    #[test]
+    fn topic_mapping_all_three_fields() {
+        let table = test_table(r#"
+            [robot]
+            terra = "dynamixel"
+            port = "/dev/ttyUSB0"
+            topic = "sensors/feedback"
+            topic_state = "robot/state"
+            topic_command = "robot/cmd"
+        "#);
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        let mapping = hw.topic_mapping("robot").unwrap();
+        assert_eq!(mapping.topic.as_deref(), Some("sensors/feedback"));
+        assert_eq!(mapping.topic_state.as_deref(), Some("robot/state"));
+        assert_eq!(mapping.topic_command.as_deref(), Some("robot/cmd"));
+    }
+
+    #[test]
+    fn topic_mapping_missing_driver() {
+        let table = test_table(r#"arm = true"#);
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        assert!(hw.topic_mapping("nonexistent").is_none());
     }
 }

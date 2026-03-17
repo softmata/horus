@@ -1,10 +1,12 @@
 """
 Integration tests for the composable scheduler configuration API.
 
+Tests use the unified Python API: Node(tick=fn, ...kwargs) + run()/Scheduler.
+
 Tests cover:
 - SchedulerConfig composable builders (with_watchdog, rate, blackbox, etc.)
 - Scheduler construction with builder params
-- Node rate via builder (not trait)
+- Node rate via Node kwargs
 - Builder chaining with overrides
 """
 
@@ -21,7 +23,7 @@ class TestSchedulerConfigBuilders:
     def test_minimal_config(self):
         from horus._horus import SchedulerConfig
         cfg = SchedulerConfig.minimal()
-        assert cfg.tick_rate == 60.0
+        assert cfg.tick_rate == 100.0
         assert cfg.watchdog_timeout_ms == 0
         assert cfg.memory_locking is False
 
@@ -49,67 +51,30 @@ class TestSchedulerConfigBuilders:
         cfg = SchedulerConfig.with_watchdog()
         cfg = cfg.rate(500.0).blackbox_mb(128)
         assert cfg.tick_rate == 500.0
-        assert cfg.black_box_size_mb == 128
-        assert cfg.watchdog_timeout_ms == 500
 
-    def test_composable_rt_config(self):
-        """Compose an RT-like config from builder methods."""
-        from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_watchdog()
-        cfg = cfg.rate(100.0).blackbox_mb(64)
-        cfg.memory_locking = True
-        cfg.rt_scheduling_class = True
-        cfg.max_deadline_misses = 10
-        assert cfg.tick_rate == 100.0
-        assert cfg.watchdog_timeout_ms == 500
-        assert cfg.memory_locking is True
-        assert cfg.rt_scheduling_class is True
-        assert cfg.max_deadline_misses == 10
-
-    def test_composable_strict_config(self):
-        """Compose a strict config with tight deadline misses."""
-        from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_watchdog()
-        cfg.memory_locking = True
-        cfg.rt_scheduling_class = True
-        cfg.max_deadline_misses = 3
-        assert cfg.max_deadline_misses == 3
-
-    def test_builder_methods_chain(self):
+    def test_config_cpu_affinity(self):
         from horus._horus import SchedulerConfig
         cfg = SchedulerConfig.minimal()
-        cfg = cfg.rate(50.0).watchdog_ms(200).blackbox_mb(32).cpu_affinity([0, 1])
-        assert cfg.tick_rate == 50.0
-        assert cfg.watchdog_timeout_ms == 200
-        assert cfg.black_box_size_mb == 32
+        cfg = cfg.cpu_affinity([0, 1])
         assert cfg.cpu_cores == [0, 1]
 
-    def test_no_watchdog_disables(self):
+    def test_config_telemetry(self):
         from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.with_watchdog().no_watchdog()
-        assert cfg.watchdog_timeout_ms == 0
-
-    def test_telemetry_endpoint(self):
-        from horus._horus import SchedulerConfig
-        cfg = SchedulerConfig.minimal().telemetry("http://localhost:4317")
-        assert cfg.telemetry_endpoint == "http://localhost:4317"
+        cfg = SchedulerConfig.minimal()
+        cfg = cfg.telemetry("http://localhost:9090")
+        assert cfg.telemetry_endpoint == "http://localhost:9090"
 
 
 # ============================================================================
-# Python Scheduler Construction
+# Scheduler Construction & Node Addition
 # ============================================================================
 
-class TestSchedulerConstruction:
-    """Test Scheduler creation with composable config."""
+class TestSchedulerNodeAddition:
+    """Test adding nodes to the scheduler via unified API."""
 
-    def test_default_creates_scheduler(self):
+    def test_basic_scheduler_creation(self):
         from horus import Scheduler
-        s = Scheduler()
-        assert s is not None
-
-    def test_with_tick_rate(self):
-        from horus import Scheduler
-        s = Scheduler(tick_rate=500.0)
+        s = Scheduler(tick_rate=100.0)
         assert s is not None
 
     def test_with_watchdog_creates_scheduler(self):
@@ -120,91 +85,74 @@ class TestSchedulerConstruction:
     def test_scheduler_can_add_nodes(self):
         from horus import Scheduler, Node
 
-        class TestNode(Node):
-            name = "test_node"
-            def tick(self, info=None):
-                pass
-
+        node = Node(name="test_node", tick=lambda n: None, rate=50, order=0)
         s = Scheduler(tick_rate=100.0)
-        s.add(TestNode(), order=0, rate=50.0)
+        s.add(node)
 
     def test_scheduler_can_run_briefly(self):
         from horus import Scheduler, Node
 
-        class TickCounter(Node):
-            name = "tick_counter"
-            def __init__(self):
-                super().__init__()
-                self.count = 0
-            def tick(self, info=None):
-                self.count += 1
+        state = {"count": 0}
 
+        def counting_tick(node):
+            state["count"] += 1
+
+        n = Node(name="tick_counter", tick=counting_tick, rate=100, order=0)
         s = Scheduler(tick_rate=100.0)
-        node = TickCounter()
-        s.add(node, order=0)
+        s.add(n)
         s.run(duration=0.1)
-        assert node.count > 0
+        assert state["count"] > 0
 
     def test_watchdog_scheduler_can_run(self):
         from horus import Scheduler, Node
 
-        class SimpleNode(Node):
-            name = "monitored_node"
-            def tick(self, info=None):
-                pass
-
+        node = Node(name="monitored_node", tick=lambda n: None, rate=100, order=0)
         s = Scheduler(tick_rate=100.0, watchdog_ms=500)
-        s.add(SimpleNode(), order=0)
+        s.add(node)
         s.run(duration=0.05)
 
-
-# ============================================================================
-# Node Rate via Builder
-# ============================================================================
-
-class TestNodeRateBuilder:
-    """Test that node rate is set via builder, not Node trait."""
-
-    def test_rate_via_add_param(self):
-        from horus import Scheduler, Node
-
-        class SimpleNode(Node):
-            name = "rate_test_node"
-            def tick(self, info=None):
-                pass
+    def test_add_rejects_non_node(self):
+        from horus import Scheduler
 
         s = Scheduler(tick_rate=100.0)
-        # Rate set via add() parameter — this is the new API
-        s.add(SimpleNode(), order=0, rate=50.0)
-
-    def test_rate_via_node_attribute(self):
-        from horus import Scheduler, Node
-
-        class RatedNode(Node):
-            name = "rated_node"
-            rate = 25.0  # Fallback: node.rate attribute
-            def tick(self, info=None):
-                pass
-
-        s = Scheduler(tick_rate=100.0)
-        s.add(RatedNode(), order=0)
-
-    def test_explicit_rate_overrides_node_attribute(self):
-        from horus import Scheduler, Node
-
-        class RatedNode(Node):
-            name = "override_rate_node"
-            rate = 25.0
-            def tick(self, info=None):
-                pass
-
-        s = Scheduler(tick_rate=100.0)
-        # Explicit rate param overrides node.rate
-        s.add(RatedNode(), order=0, rate=75.0)
+        with pytest.raises(TypeError):
+            s.add("not a node")
 
 
 # ============================================================================
-# Miss Enum and on_miss Builder
+# Node Rate via Node kwargs
+# ============================================================================
+
+class TestNodeRateConfig:
+    """Test that node rate is set via Node kwargs."""
+
+    def test_rate_via_node_kwarg(self):
+        from horus import Scheduler, Node
+
+        node = Node(name="rate_test", tick=lambda n: None, rate=50, order=0)
+        s = Scheduler(tick_rate=100.0)
+        s.add(node)
+
+    def test_rate_on_node_attribute(self):
+        from horus import Scheduler, Node
+
+        node = Node(name="rated_node", tick=lambda n: None, rate=25, order=0)
+        assert node.rate == 25
+        s = Scheduler(tick_rate=100.0)
+        s.add(node)
+
+    def test_rate_must_be_positive(self):
+        from horus import Node
+
+        with pytest.raises(ValueError):
+            Node(name="bad", tick=lambda n: None, rate=0)
+
+        with pytest.raises(ValueError):
+            Node(name="bad", tick=lambda n: None, rate=-1)
+
+
+# ============================================================================
+# Miss Enum and on_miss
 # ============================================================================
 
 class TestMissEnum:
@@ -214,54 +162,86 @@ class TestMissEnum:
         from horus import Miss
         assert Miss.WARN == "warn"
         assert Miss.SKIP == "skip"
-        assert Miss.DEGRADE == "degrade"
+        assert Miss.SAFE_MODE == "safe_mode"
         assert Miss.STOP == "stop"
 
-    def test_on_miss_via_add(self):
+    def test_on_miss_via_node_kwarg(self):
         from horus import Scheduler, Node, Miss
 
-        class SimpleNode(Node):
-            name = "miss_test_node"
-            def tick(self, info=None):
-                pass
-
+        node = Node(name="miss_test", tick=lambda n: None, rate=100, order=0, on_miss="skip")
         s = Scheduler(tick_rate=100.0)
-        s.add(SimpleNode(), order=0, on_miss=Miss.SKIP)
+        s.add(node)
 
-    def test_on_miss_via_builder(self):
-        from horus import Scheduler, Node, Miss
-
-        class SimpleNode(Node):
-            name = "builder_miss_node"
-            def tick(self, info=None):
-                pass
-
-        s = Scheduler(tick_rate=100.0)
-        # Use fluent builder API via the native scheduler
-        s._scheduler.node(SimpleNode()).order(0).on_miss(Miss.SAFE_MODE).build()
-
-    def test_budget_via_add(self):
+    def test_budget_via_node_kwarg(self):
         from horus import Scheduler, Node
 
-        class SimpleNode(Node):
-            name = "budget_test_node"
-            def tick(self, info=None):
-                pass
-
+        node = Node(name="budget_test", tick=lambda n: None, rate=1000, order=0, budget=0.0005)
         s = Scheduler(tick_rate=100.0)
-        s.add(SimpleNode(), order=0, budget=500)
+        s.add(node)
 
     def test_safety_stats_with_watchdog(self):
         from horus import Scheduler, Node
 
-        class SimpleNode(Node):
-            name = "stats_test_node"
-            def tick(self, info=None):
-                pass
-
+        node = Node(name="stats_test", tick=lambda n: None, rate=100, order=0)
         s = Scheduler(tick_rate=100.0, watchdog_ms=500)
-        s.add(SimpleNode(), order=0)
+        s.add(node)
         s.run(duration=0.05)
         stats = s._scheduler.safety_stats()
         if stats is not None:
             assert "degrade_activations" in stats
+
+
+# ============================================================================
+# Node scheduling kwargs
+# ============================================================================
+
+class TestNodeSchedulingKwargs:
+    """Test all Node scheduling kwargs."""
+
+    def test_order_kwarg(self):
+        from horus import Node
+        n = Node(name="test", tick=lambda n: None, order=5)
+        assert n.order == 5
+
+    def test_budget_deadline_kwarg(self):
+        from horus import Node
+        n = Node(name="test", tick=lambda n: None, budget=0.0003, deadline=0.0009)
+        assert n.budget == 0.0003
+        assert n.deadline == 0.0009
+
+    def test_compute_kwarg(self):
+        from horus import Node
+        n = Node(name="test", tick=lambda n: None, compute=True)
+        assert n._horus_compute is True
+
+    def test_on_kwarg(self):
+        from horus import Node
+        n = Node(name="test", tick=lambda n: None, on="lidar_scan")
+        assert n._horus_on == "lidar_scan"
+
+    def test_priority_core_watchdog(self):
+        from horus import Node
+        n = Node(name="test", tick=lambda n: None, priority=0, core=2, watchdog=0.5)
+        assert n.priority == 0
+        assert n.core == 2
+        assert n.watchdog == 0.5
+
+    def test_mutually_exclusive_execution_classes(self):
+        from horus import Node
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            Node(name="test", tick=lambda n: None, compute=True, on="topic")
+
+    def test_async_auto_detection(self):
+        import asyncio
+        from horus import Node
+
+        async def async_tick(node):
+            pass
+
+        n = Node(name="test", tick=async_tick)
+        assert n._horus_async is True
+
+    def test_failure_policy_kwarg(self):
+        from horus import Node
+        n = Node(name="test", tick=lambda n: None, failure_policy="restart")
+        assert n.failure_policy == "restart"

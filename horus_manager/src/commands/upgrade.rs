@@ -394,9 +394,9 @@ mod tests {
         // upgrade_horus always returns Ok even if cargo install fails
         // (it prints a fallback message instead of erroring)
         // Run from temp dir where there's no Cargo.toml so cargo install fails fast
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = upgrade_horus("99.99.99");
@@ -408,9 +408,9 @@ mod tests {
     #[test]
     fn upgrade_horus_with_empty_version() {
         // Run from temp dir so cargo install fails fast instead of building
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = upgrade_horus("");
@@ -422,9 +422,9 @@ mod tests {
     #[test]
     fn upgrade_horus_with_real_looking_version() {
         // Run from temp dir so cargo install fails fast instead of building
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = upgrade_horus("0.2.0");
@@ -446,9 +446,9 @@ mod tests {
     #[test]
     fn list_installed_plugins_no_local_plugins_dir() {
         // When there's no .horus/plugins in cwd, local plugins should be empty
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let plugins = list_installed_plugins();
@@ -461,9 +461,9 @@ mod tests {
 
     #[test]
     fn list_installed_plugins_finds_local_plugins() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         // Create .horus/plugins with some entries
         let plugin_dir = tmp.path().join(".horus/plugins");
@@ -491,9 +491,9 @@ mod tests {
 
     #[test]
     fn list_installed_plugins_formats_local_entries() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         let plugin_dir = tmp.path().join(".horus/plugins");
         std::fs::create_dir_all(&plugin_dir).unwrap();
@@ -513,9 +513,9 @@ mod tests {
 
     #[test]
     fn list_installed_plugins_finds_directories_as_plugins() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         // Plugin entries can be directories too
         let plugin_dir = tmp.path().join(".horus/plugins");
@@ -532,9 +532,9 @@ mod tests {
 
     #[test]
     fn list_installed_plugins_empty_plugin_dir() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         // Create empty .horus/plugins
         let plugin_dir = tmp.path().join(".horus/plugins");
@@ -565,9 +565,9 @@ mod tests {
 
     #[test]
     fn run_upgrade_check_only_with_local_plugins() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         // Create local plugin directory
         let plugin_dir = tmp.path().join(".horus/plugins");
@@ -583,9 +583,9 @@ mod tests {
 
     #[test]
     fn run_upgrade_full_with_local_plugins() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         let plugin_dir = tmp.path().join(".horus/plugins");
         std::fs::create_dir_all(&plugin_dir).unwrap();
@@ -606,9 +606,9 @@ mod tests {
         // On Linux we can create non-UTF8 filenames, but for portability
         // we just verify the function doesn't panic with normal filenames
         // containing special characters.
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         let plugin_dir = tmp.path().join(".horus/plugins");
         std::fs::create_dir_all(&plugin_dir).unwrap();
@@ -627,9 +627,9 @@ mod tests {
 
     #[test]
     fn list_installed_plugins_many_entries() {
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         let plugin_dir = tmp.path().join(".horus/plugins");
         std::fs::create_dir_all(&plugin_dir).unwrap();
@@ -661,9 +661,9 @@ mod tests {
         // instead of returning Err. Verify this contract.
         // Run from a temp dir where there's no Cargo.toml — cargo install --path .
         // will definitely fail.
-        let _guard = crate::CWD_LOCK.lock().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
 
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = upgrade_horus("1.0.0");

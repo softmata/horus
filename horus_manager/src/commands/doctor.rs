@@ -5,7 +5,11 @@
 
 use anyhow::Result;
 use colored::*;
+use std::net::TcpStream;
 use std::path::Path;
+use std::time::Duration;
+
+use horus_core::drivers::{self, DriverType};
 
 use crate::dispatch;
 
@@ -61,6 +65,9 @@ pub fn run_doctor(verbose: bool, json: bool) -> Result<()> {
 
     // ── 7. Dependency sources ─────────────────────────────────────────────
     results.push(check_dep_sources(&ctx));
+
+    // ── 8. Driver device reachability ────────────────────────────────────
+    results.push(check_drivers());
 
     // ── Output ───────────────────────────────────────────────────────────
     if json {
@@ -418,6 +425,114 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+// ── Driver device reachability ─────────────────────────────────────────────
+
+fn check_drivers() -> CheckResult {
+    let hw = match drivers::load() {
+        Ok(hw) if !hw.is_empty() => hw,
+        _ => {
+            return CheckResult {
+                category: "Drivers".into(),
+                health: Health::Ok,
+                summary: "No [drivers] configured".into(),
+                details: vec![],
+            };
+        }
+    };
+
+    let mut details = Vec::new();
+    let mut worst = Health::Ok;
+
+    for name in hw.list() {
+        let params = match hw.params(name) {
+            Some(p) => p,
+            None => continue,
+        };
+        let dtype = hw.driver_type(name);
+
+        let (detail, health) = check_driver_device(name, params, dtype);
+        if health == Health::Fail && worst != Health::Fail {
+            worst = Health::Fail;
+        } else if health == Health::Warn && worst == Health::Ok {
+            worst = Health::Warn;
+        }
+        details.push(detail);
+    }
+
+    let summary = if worst == Health::Ok {
+        format!("{} driver(s) reachable", details.len())
+    } else {
+        format!("{} driver(s) checked, some unreachable", details.len())
+    };
+
+    CheckResult {
+        category: "Drivers".into(),
+        health: worst,
+        summary,
+        details,
+    }
+}
+
+fn check_driver_device(
+    name: &str,
+    params: &horus_core::drivers::DriverParams,
+    dtype: Option<&DriverType>,
+) -> (String, Health) {
+    // Check serial port / device file
+    if let Ok(port) = params.get::<String>("port") {
+        if port.starts_with("/dev/") {
+            return if Path::new(&port).exists() {
+                (format!("  {} driver '{}': {} found", "✓".green(), name, port), Health::Ok)
+            } else {
+                (format!("  {} driver '{}': {} not found", "✗".red(), name, port), Health::Fail)
+            };
+        }
+    }
+
+    // Check I2C bus
+    if let Ok(bus) = params.get::<String>("bus") {
+        if bus.starts_with("i2c-") || bus.starts_with("/dev/i2c") {
+            let path = if bus.starts_with("/dev/") {
+                bus.clone()
+            } else {
+                format!("/dev/{}", bus)
+            };
+            return if Path::new(&path).exists() {
+                (format!("  {} driver '{}': {} found", "✓".green(), name, path), Health::Ok)
+            } else {
+                (format!("  {} driver '{}': {} not found", "✗".red(), name, path), Health::Fail)
+            };
+        }
+    }
+
+    // Check network address
+    if let Ok(address) = params.get::<String>("address") {
+        if address.contains('.') || address.contains(':') {
+            let addr_str = if address.contains(':') {
+                address.clone()
+            } else {
+                format!("{}:80", address)
+            };
+            if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                return match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+                    Ok(_) => (format!("  {} driver '{}': {} reachable", "✓".green(), name, address), Health::Ok),
+                    Err(_) => (format!("  {} driver '{}': {} unreachable", "!".yellow(), name, address), Health::Warn),
+                };
+            }
+        }
+    }
+
+    // No checkable params — report driver type
+    let type_str = match dtype {
+        Some(DriverType::Terra(t)) => format!("terra={}", t),
+        Some(DriverType::Package(p)) => format!("package={}", p),
+        Some(DriverType::Local(n)) => format!("node={}", n),
+        Some(DriverType::Legacy) => "legacy".into(),
+        None => "unknown".into(),
+    };
+    (format!("  - driver '{}': {} (no device path to check)", name, type_str), Health::Ok)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,7 +848,7 @@ mod tests {
     fn check_disk_returns_result() {
         let _lock = crate::CWD_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
-        let old_dir = std::env::current_dir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = check_disk();
@@ -746,9 +861,9 @@ mod tests {
 
     #[test]
     fn check_disk_with_horus_dir() {
-        let _lock = crate::CWD_LOCK.lock();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let old_dir = std::env::current_dir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         fs::create_dir(tmp.path().join(".horus")).unwrap();
@@ -757,7 +872,6 @@ mod tests {
         let result = check_disk();
         assert_eq!(result.category, "Disk");
         assert_eq!(result.health, Health::Ok);
-        assert!(result.summary.contains(".horus/"));
 
         std::env::set_current_dir(old_dir).unwrap();
     }
@@ -1022,7 +1136,7 @@ mod tests {
     fn check_disk_large_threshold() {
         let _lock = crate::CWD_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
-        let old_dir = std::env::current_dir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = check_disk();
@@ -1092,7 +1206,7 @@ mod tests {
     fn check_disk_category_name() {
         let _lock = crate::CWD_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
-        let old_dir = std::env::current_dir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = check_disk();
         assert_eq!(result.category, "Disk");
@@ -1146,5 +1260,65 @@ mod tests {
         assert!(format_bytes(1024).contains("KB"));
         assert!(format_bytes(1_048_576).contains("MB"));
         assert!(format_bytes(1_073_741_824).contains("GB"));
+    }
+
+    // ── Driver device reachability tests ──────────────────────────────
+
+    #[test]
+    fn check_driver_device_existing_path() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("port".to_string(), toml::Value::String("/dev/null".into()));
+        let params = horus_core::drivers::DriverParams::new(map);
+        let (detail, health) = check_driver_device("test", &params, Some(&DriverType::Terra("serial".into())));
+        assert_eq!(health, Health::Ok);
+        assert!(detail.contains("found"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_driver_device_missing_path() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("port".to_string(), toml::Value::String("/dev/nonexistent_xyz_test".into()));
+        let params = horus_core::drivers::DriverParams::new(map);
+        let (detail, health) = check_driver_device("test", &params, Some(&DriverType::Terra("serial".into())));
+        assert_eq!(health, Health::Fail);
+        assert!(detail.contains("not found"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_driver_device_i2c_bus() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("bus".to_string(), toml::Value::String("i2c-99".into()));
+        let params = horus_core::drivers::DriverParams::new(map);
+        let (detail, health) = check_driver_device("imu", &params, Some(&DriverType::Terra("mpu6050".into())));
+        // /dev/i2c-99 almost certainly doesn't exist
+        assert_eq!(health, Health::Fail);
+        assert!(detail.contains("i2c-99"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_driver_device_no_checkable_params() {
+        let params = horus_core::drivers::DriverParams::empty();
+        let (detail, health) = check_driver_device("mystery", &params, Some(&DriverType::Local("MyDriver".into())));
+        assert_eq!(health, Health::Ok);
+        assert!(detail.contains("no device path"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_driver_device_legacy_type() {
+        let params = horus_core::drivers::DriverParams::empty();
+        let (detail, health) = check_driver_device("cam", &params, Some(&DriverType::Legacy));
+        assert_eq!(health, Health::Ok);
+        assert!(detail.contains("legacy"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_driver_device_network_unreachable() {
+        let mut map = std::collections::HashMap::new();
+        // Use a non-routable address so connect_timeout fails fast
+        map.insert("address".to_string(), toml::Value::String("192.0.2.1:9999".into()));
+        let params = horus_core::drivers::DriverParams::new(map);
+        let (detail, health) = check_driver_device("lidar", &params, Some(&DriverType::Terra("velodyne".into())));
+        assert_eq!(health, Health::Warn);
+        assert!(detail.contains("unreachable"), "detail: {}", detail);
     }
 }

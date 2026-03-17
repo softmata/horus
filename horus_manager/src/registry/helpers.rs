@@ -1,7 +1,7 @@
 use super::*;
 
 // Helper functions for system detection
-pub(crate) fn get_python_version() -> Option<String> {
+pub fn get_python_version() -> Option<String> {
     std::process::Command::new("python3")
         .arg("--version")
         .output()
@@ -13,7 +13,7 @@ pub(crate) fn get_python_version() -> Option<String> {
         })
 }
 
-pub(crate) fn get_rust_version() -> Option<String> {
+pub fn get_rust_version() -> Option<String> {
     std::process::Command::new("rustc")
         .arg("--version")
         .output()

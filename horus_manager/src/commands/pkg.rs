@@ -1775,30 +1775,11 @@ fn print_package_info(packages_dir: &Path, name: &str, entry_path: &Path) -> boo
 }
 
 /// Publish a package to the registry
-pub fn run_publish(freeze: bool, dry_run: bool) -> HorusResult<()> {
+pub fn run_publish(dry_run: bool) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
     client
         .publish(None, dry_run, None)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-    // If --freeze flag is set, also generate freeze file
-    if freeze {
-        println!(
-            "\n{} Generating freeze file...",
-            cli_output::ICON_INFO.cyan()
-        );
-        let manifest = client
-            .freeze()
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-        let freeze_file = "horus-freeze.toml";
-        let toml_str = toml::to_string_pretty(&manifest)
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        fs::write(freeze_file, toml_str)
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-        println!("  Environment also frozen to {}", freeze_file);
-    }
 
     Ok(())
 }
@@ -2784,9 +2765,9 @@ version = "1.5.0"
 
     #[test]
     fn test_resolve_installed_package_dir_local_not_found() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let result = resolve_installed_package_dir("nonexistent-pkg", "1.0.0", false);
@@ -2905,9 +2886,9 @@ version = "1.5.0"
 
     #[test]
     fn test_remove_from_horus_toml_removes_dependency() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let manifest_content = r#"[package]
@@ -2933,9 +2914,9 @@ other-dep = "2.0.0"
 
     #[test]
     fn test_remove_from_horus_toml_removes_dev_dependency() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let manifest_content = r#"[package]
@@ -2958,9 +2939,9 @@ test-helper = "1.0.0"
 
     #[test]
     fn test_remove_from_horus_toml_nonexistent_package() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let manifest_content = r#"[package]
@@ -2984,9 +2965,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_remove_from_horus_toml_no_manifest_file() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Should not panic when no horus.toml exists
@@ -3001,29 +2982,26 @@ existing = "1.0.0"
     fn test_remove_from_horus_lock_removes_package() {
         use crate::lockfile::{HorusLockfile, LockedPackage, HORUS_LOCK};
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let lockfile = HorusLockfile {
-            version: 3,
-            config_hash: None,
-            packages: vec![
-                LockedPackage {
-                    name: "keep-me".to_string(),
-                    version: "1.0.0".to_string(),
-                    source: "registry".to_string(),
-                    checksum: None,
-                },
-                LockedPackage {
-                    name: "remove-me".to_string(),
-                    version: "2.0.0".to_string(),
-                    source: "registry".to_string(),
-                    checksum: None,
-                },
-            ],
-        };
+        let mut lockfile = HorusLockfile::new();
+        lockfile.packages = vec![
+            LockedPackage {
+                name: "keep-me".to_string(),
+                version: "1.0.0".to_string(),
+                source: "registry".to_string(),
+                checksum: None,
+            },
+            LockedPackage {
+                name: "remove-me".to_string(),
+                version: "2.0.0".to_string(),
+                source: "registry".to_string(),
+                checksum: None,
+            },
+        ];
         lockfile
             .save_to(std::path::Path::new(HORUS_LOCK))
             .unwrap();
@@ -3039,9 +3017,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_remove_from_horus_lock_no_lockfile() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Should not panic when no lockfile exists
@@ -3054,21 +3032,18 @@ existing = "1.0.0"
     fn test_remove_from_horus_lock_package_not_in_lockfile() {
         use crate::lockfile::{HorusLockfile, LockedPackage, HORUS_LOCK};
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let lockfile = HorusLockfile {
-            version: 3,
-            config_hash: None,
-            packages: vec![LockedPackage {
-                name: "existing".to_string(),
-                version: "1.0.0".to_string(),
-                source: "registry".to_string(),
-                checksum: None,
-            }],
-        };
+        let mut lockfile = HorusLockfile::new();
+        lockfile.packages = vec![LockedPackage {
+            name: "existing".to_string(),
+            version: "1.0.0".to_string(),
+            source: "registry".to_string(),
+            checksum: None,
+        }];
         lockfile
             .save_to(std::path::Path::new(HORUS_LOCK))
             .unwrap();
@@ -3131,9 +3106,9 @@ existing = "1.0.0"
     fn test_run_install_detects_path_source_from_slash() {
         // Tests the source detection logic:
         // package containing "/" should be treated as path
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // No horus.toml => error, but the source detection itself works
@@ -3160,9 +3135,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_detects_git_source() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let result = run_install(
@@ -3183,9 +3158,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_with_invalid_source_flag() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let result = run_install(
@@ -3208,9 +3183,9 @@ existing = "1.0.0"
     fn test_run_install_source_flag_crates_io_variants() {
         // All crates.io aliases should be accepted; they all fail at manifest
         // loading since there's no horus.toml, which proves the source was parsed.
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["crates.io", "crates", "cargo"] {
@@ -3238,9 +3213,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_source_flag_pypi_variants() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["pypi", "pip", "python"] {
@@ -3263,9 +3238,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_source_flag_system_variants() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["system", "apt", "brew"] {
@@ -3286,9 +3261,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_source_flag_registry_variants() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["registry", "horus"] {
@@ -3309,9 +3284,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_path_source_nonexistent_path() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Create horus.toml so we get past the manifest check
@@ -3339,9 +3314,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_path_source_existing_path() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Create horus.toml for the project
@@ -3382,9 +3357,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_git_dep_writes_to_manifest() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -3421,9 +3396,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_dev_flag_adds_to_dev_deps() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -3467,9 +3442,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_crates_io_with_version_and_features() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -3498,9 +3473,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_no_manifest_errors() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let result = run_install(
@@ -3521,9 +3496,9 @@ existing = "1.0.0"
 
     #[test]
     fn test_run_install_update_existing_dep() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let manifest_content = r#"[package]
@@ -3909,9 +3884,9 @@ name = "minimal"
 
     #[test]
     fn test_run_install_registry_simple_form_no_version() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -3943,9 +3918,9 @@ name = "minimal"
 
     #[test]
     fn test_run_add_writes_dep_to_horus_toml() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -3966,9 +3941,9 @@ name = "minimal"
 
     #[test]
     fn test_run_add_no_version_fetches_latest() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -3994,9 +3969,9 @@ name = "minimal"
 
     #[test]
     fn test_run_add_driver_writes_to_drivers_section() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4017,9 +3992,9 @@ name = "minimal"
 
     #[test]
     fn test_run_add_driver_boolean_form() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4040,9 +4015,9 @@ name = "minimal"
 
     #[test]
     fn test_run_add_updates_existing_dep() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4062,9 +4037,9 @@ name = "minimal"
 
     #[test]
     fn test_run_add_no_manifest_errors() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // No horus.toml exists
@@ -4077,9 +4052,9 @@ name = "minimal"
 
     #[test]
     fn test_run_remove_dep_removes_from_dependencies() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4100,9 +4075,9 @@ name = "minimal"
 
     #[test]
     fn test_run_remove_dep_removes_from_dev_dependencies() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4122,9 +4097,9 @@ name = "minimal"
 
     #[test]
     fn test_run_remove_dep_removes_from_drivers() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4145,9 +4120,9 @@ name = "minimal"
 
     #[test]
     fn test_run_remove_dep_nonexistent_warns_gracefully() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4164,9 +4139,9 @@ name = "minimal"
 
     #[test]
     fn test_run_remove_dep_no_manifest_errors() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let result = run_remove_dep("foo".to_string());
@@ -4176,9 +4151,9 @@ name = "minimal"
 
     #[test]
     fn test_run_remove_dep_regenerates_cargo_toml() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Create a Rust project with two deps
@@ -4210,9 +4185,9 @@ name = "minimal"
 
     #[test]
     fn test_run_remove_dep_regenerates_pyproject_toml() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Create a Python project with two deps
@@ -4246,9 +4221,9 @@ name = "minimal"
 
     #[test]
     fn test_add_then_remove_lifecycle() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4293,9 +4268,9 @@ name = "minimal"
 
     #[test]
     fn test_install_then_remove_round_trip() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4601,9 +4576,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_system_source_writes_manifest() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4636,9 +4611,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_system_source_no_version() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4669,9 +4644,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_dev_crates_io() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4707,9 +4682,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_dev_pypi() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4739,9 +4714,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_dev_system_source() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4772,9 +4747,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_path_with_features() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4814,9 +4789,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_registry_with_features() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4848,9 +4823,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_pypi_with_features() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4881,9 +4856,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_dev_with_features_combined() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4918,9 +4893,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_version_constraint_caret() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4948,9 +4923,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_version_constraint_tilde() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -4978,9 +4953,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_version_constraint_gte() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5008,9 +4983,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_version_exact_pinned() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5040,9 +5015,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_sequential_installs_accumulate_deps() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5143,9 +5118,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_remove_all_deps_leaves_empty_sections() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5174,9 +5149,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_install_upgrade_version_crates_io() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5223,9 +5198,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_install_upgrade_registry_to_crates_io() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5258,9 +5233,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_remove_dep_present_in_deps_and_drivers() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Same name in both [dependencies] and [drivers]
@@ -5282,9 +5257,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_remove_dep_present_in_deps_and_dev_deps() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Same name in both [dependencies] and [dev-dependencies]
@@ -5308,9 +5283,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_git_with_source_flag() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5363,9 +5338,9 @@ lidar = "rplidar-a2"
 
     #[test]
     fn test_run_install_git_with_features() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5482,9 +5457,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
     #[test]
     fn test_add_then_install_different_deps() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5525,9 +5500,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
     #[test]
     fn test_install_overwrites_add_same_dep() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5569,9 +5544,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
     #[test]
     fn test_many_deps_stress() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5611,9 +5586,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
     #[test]
     fn test_sequential_remove_preserves_remaining() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5655,9 +5630,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
     #[test]
     fn test_run_install_auto_detects_registry_for_simple_name() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5688,9 +5663,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
     #[test]
     fn test_run_install_auto_detects_path_for_dotslash() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5726,9 +5701,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
     #[test]
     fn test_run_install_auto_detects_path_for_tilde() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // No horus.toml => will fail, but we just test detection
@@ -5783,9 +5758,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_remove_dep_from_all_three_sections() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Extreme edge case: same name in all three sections
@@ -5810,9 +5785,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_install_remove_reinstall_cycle() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5871,9 +5846,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_run_install_dev_git_dep() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5904,9 +5879,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_run_install_hyphenated_package_name() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5934,9 +5909,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_run_install_underscored_package_name() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -5966,9 +5941,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_add_driver_then_remove_cycle() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -6009,9 +5984,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_run_install_registry_no_features_produces_simple() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -6040,9 +6015,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_run_install_registry_with_features_produces_detailed() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -6074,9 +6049,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
     #[test]
     fn test_remove_from_horus_toml_both_deps_and_dev() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let manifest_content = r#"[package]
@@ -6105,9 +6080,9 @@ serde = { version = "1.0", source = "crates.io" }
 
     #[test]
     fn test_run_install_many_features() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -6148,9 +6123,9 @@ serde = { version = "1.0", source = "crates.io" }
 
     #[test]
     fn test_run_install_empty_features_vec() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -6182,9 +6157,9 @@ serde = { version = "1.0", source = "crates.io" }
 
     #[test]
     fn test_full_ecosystem_lifecycle() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         fs::write(
@@ -6292,9 +6267,9 @@ serde = { version = "1.0", source = "crates.io" }
     /// E2E: Naive Rust user — horus add → auto-detect → build file → remove → clean
     #[test]
     fn test_e2e_naive_rust_project() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Step 1: Simulate `horus new` — create minimal Rust project
@@ -6361,9 +6336,9 @@ serde = { version = "1.0", source = "crates.io" }
     /// E2E: Naive Python user — horus add → auto-detect → build file → remove → clean
     #[test]
     fn test_e2e_naive_python_project() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Step 1: Simulate `horus new --python` — create minimal Python project
@@ -6427,9 +6402,9 @@ serde = { version = "1.0", source = "crates.io" }
     /// E2E: Mixed Rust+Python project with deps auto-resolved from both ecosystems
     #[test]
     fn test_e2e_mixed_rust_python_project() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // Step 1: Create mixed-language project

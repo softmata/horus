@@ -80,8 +80,8 @@ mod tests {
     #[test]
     fn fmt_no_source_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_fmt(false, vec![]);
@@ -97,8 +97,8 @@ mod tests {
     #[test]
     fn fmt_check_mode_no_source_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_fmt(true, vec![]);
@@ -112,8 +112,8 @@ mod tests {
     #[test]
     fn fmt_error_message_is_descriptive() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_fmt(false, vec![]);
@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn fmt_check_error_message_matches_non_check() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let r1 = run_fmt(false, vec![]);
@@ -153,8 +153,8 @@ mod tests {
     #[test]
     fn fmt_with_extra_args_still_fails_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_fmt(false, vec!["--verbose".to_string()]);
@@ -166,8 +166,8 @@ mod tests {
     #[test]
     fn fmt_empty_extra_args_is_valid() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_fmt(false, Vec::new());
@@ -333,8 +333,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = crate::CWD_LOCK.lock().unwrap();
-        let original = std::env::current_dir().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = run_fmt(false, vec![]);

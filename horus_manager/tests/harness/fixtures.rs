@@ -6,7 +6,7 @@ use horus_core::core::HealthStatus;
 /// Configuration for a simulated test node.
 ///
 /// The test harness writes a presence file that exactly matches what
-/// `NodePresence::read_all()` expects (JSON in `/dev/shm/horus_<ns>/nodes/<name>.json`).
+/// `NodePresence::read_all()` expects (JSON in the SHM nodes directory).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct TestNodeConfig {

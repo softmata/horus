@@ -514,4 +514,127 @@ mod tests {
 
         let _ = NodePresence::remove(&node_name);
     }
+
+    // ── Write/Read roundtrip ────────────────────────────────────
+
+    #[test]
+    fn test_write_then_read_roundtrip() {
+        let name = format!("rt_test_{}", std::process::id());
+        let presence = NodePresence::new(
+            &name,
+            Some("sched_1"),
+            vec![TopicMetadata { topic_name: "cmd_vel".into(), type_name: "CmdVel".into() }],
+            vec![TopicMetadata { topic_name: "odom".into(), type_name: "Odometry".into() }],
+            42,
+            Some(100.0),
+        ).unwrap();
+        presence.write().unwrap();
+
+        let read_back = NodePresence::read(&name);
+        assert!(read_back.is_some(), "read should find written presence");
+        let p = read_back.unwrap();
+        assert_eq!(p.name(), &name);
+        assert_eq!(p.scheduler(), Some("sched_1"));
+        assert_eq!(p.priority(), 42);
+        assert_eq!(p.publishers().len(), 1);
+        assert_eq!(p.publishers()[0].topic_name, "cmd_vel");
+        assert_eq!(p.subscribers().len(), 1);
+        assert_eq!(p.subscribers()[0].topic_name, "odom");
+
+        let _ = NodePresence::remove(&name);
+    }
+
+    #[test]
+    fn test_read_nonexistent_returns_none() {
+        assert!(NodePresence::read("nonexistent_node_xyz_12345").is_none());
+    }
+
+    #[test]
+    fn test_remove_deletes_file() {
+        let name = format!("rm_test_{}", std::process::id());
+        let presence = NodePresence::new(&name, None, vec![], vec![], 0, None).unwrap();
+        presence.write().unwrap();
+        assert!(NodePresence::read(&name).is_some());
+
+        NodePresence::remove(&name).unwrap();
+        assert!(NodePresence::read(&name).is_none(), "should be gone after remove");
+    }
+
+    #[test]
+    fn test_remove_nonexistent_is_ok() {
+        // Should not panic
+        let _ = NodePresence::remove("nonexistent_remove_test");
+    }
+
+    // ── Getters ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_all_getters() {
+        let presence = NodePresence::new(
+            "getter_test",
+            Some("my_sched"),
+            vec![TopicMetadata { topic_name: "t1".into(), type_name: "T1".into() }],
+            vec![],
+            99,
+            Some(50.0),
+        ).unwrap();
+
+        assert_eq!(presence.name(), "getter_test");
+        assert_eq!(presence.pid(), std::process::id());
+        assert_eq!(presence.scheduler(), Some("my_sched"));
+        assert_eq!(presence.publishers().len(), 1);
+        assert!(presence.subscribers().is_empty());
+        assert!(presence.start_time() > 0);
+        assert_eq!(presence.priority(), 99);
+        assert_eq!(presence.rate_hz(), Some(50.0));
+        assert_eq!(presence.tick_count(), 0);
+        assert_eq!(presence.error_count(), 0);
+        assert!(presence.services().is_empty());
+        assert!(presence.actions().is_empty());
+    }
+
+    // ── Validation edge cases ───────────────────────────────────
+
+    #[test]
+    fn test_validate_node_name_valid_chars() {
+        assert!(validate_node_name("my_node").is_ok());
+        assert!(validate_node_name("sensor-1").is_ok());
+        assert!(validate_node_name("arm.joint0").is_ok());
+        assert!(validate_node_name("A").is_ok());
+    }
+
+    #[test]
+    fn test_validate_node_name_rejects_path_traversal() {
+        assert!(validate_node_name("..").is_err());
+        assert!(validate_node_name("../etc/passwd").is_err());
+        assert!(validate_node_name("a\\b").is_err());
+    }
+
+    #[test]
+    fn test_validate_node_name_rejects_spaces() {
+        assert!(validate_node_name("my node").is_err());
+    }
+
+    #[test]
+    fn test_validate_node_name_rejects_long_name() {
+        let long = "x".repeat(256);
+        assert!(validate_node_name(&long).is_err());
+    }
+
+    // ── read_all ────────────────────────────────────────────────
+
+    #[test]
+    fn test_read_all_includes_live_nodes() {
+        let name = format!("readall_test_{}", std::process::id());
+        let presence = NodePresence::new(&name, None, vec![], vec![], 0, None).unwrap();
+        presence.write().unwrap();
+
+        let all = NodePresence::read_all();
+        assert!(
+            all.iter().any(|p| p.name() == name),
+            "read_all should include our live node"
+        );
+
+        let _ = NodePresence::remove(&name);
+    }
 }

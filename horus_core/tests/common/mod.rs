@@ -2,7 +2,7 @@
 //!
 //! # Test Isolation Requirements
 //!
-//! HORUS tests share global state through shared memory (`/dev/shm/horus/`),
+//! HORUS tests share global state through shared memory (managed by `horus_sys`),
 //! the `OnceLock`-based `REGISTRY`, and `EPOCH_NOTIFY`. To avoid interference
 //! when running tests in parallel (`--test-threads=N`):
 //!
@@ -27,12 +27,14 @@
 
 /// Clean up shared memory files before each test.
 ///
-/// Stale `/dev/shm/horus/` files from previous tests can cause SIGSEGV
+/// Stale shared memory files from previous tests can cause SIGSEGV
 /// when mapped with incompatible layouts. Each test must start with a
 /// clean SHM state to avoid cross-test interference.
 pub fn cleanup_stale_shm() {
-    let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
-    let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    let topics = horus_sys::shm::shm_topics_dir();
+    let nodes = horus_sys::shm::shm_nodes_dir();
+    let _ = std::fs::remove_dir_all(&topics);
+    let _ = std::fs::remove_dir_all(&nodes);
 }
 
 /// Generate a unique name for integration tests.
@@ -94,8 +96,8 @@ impl Drop for TestTempDir {
 
 /// RAII guard that cleans up HORUS shared memory on drop.
 ///
-/// Removes `/dev/shm/horus/topics` and `/dev/shm/horus/nodes` when the
-/// guard is dropped, ensuring no stale SHM state leaks between tests.
+/// Removes SHM topics and nodes directories when the guard is dropped,
+/// ensuring no stale SHM state leaks between tests.
 /// Also cleans on construction so the test starts with a fresh state.
 ///
 /// # Example

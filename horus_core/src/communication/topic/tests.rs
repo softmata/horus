@@ -21,10 +21,16 @@ use std::time::{Duration, Instant};
 
 use header::current_time_ms;
 use crate::core::DurationExt;
+use crate::testing::test_spawn;
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Lock held by timing-sensitive cross-thread tests to prevent CPU starvation
+/// when cargo runs many tests in parallel. Tests that require reliable thread
+/// scheduling should call `let _guard = TIMING_LOCK.lock().unwrap();` at the top.
+static TIMING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Generate a unique topic name to avoid SHM collisions between parallel tests
 fn unique(prefix: &str) -> String {
@@ -319,7 +325,7 @@ fn spmc_ring_competing_consumers() {
             let r = ring.clone();
             let c = collected.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
                 while let Some(v) = r.try_recv() {
@@ -354,7 +360,7 @@ fn mpsc_ring_multiple_producers() {
     // Consumer thread runs concurrently to drain the ring
     let consumer_ring = ring.clone();
     let consumer_barrier = barrier.clone();
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         consumer_barrier.wait();
         let mut received = Vec::with_capacity(total);
         while received.len() < total {
@@ -371,7 +377,7 @@ fn mpsc_ring_multiple_producers() {
         .map(|pid| {
             let r = ring.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 for i in 0..n_per_producer {
                     let val = pid as u64 * 10000 + i;
@@ -418,7 +424,7 @@ fn mpmc_ring_concurrent_producers_and_consumers() {
         .map(|pid| {
             let r = ring.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 for i in 0..n_per_producer {
                     let val = pid as u64 * 100000 + i;
@@ -439,7 +445,7 @@ fn mpmc_ring_concurrent_producers_and_consumers() {
             let c = consumer_collected.clone();
             let b = barrier.clone();
             let d = done.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
                 loop {
@@ -642,7 +648,7 @@ fn topic_cross_thread_1p1c_spsc() {
     let barrier = Arc::new(Barrier::new(2));
 
     let b = barrier.clone();
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         let mut received = Vec::with_capacity(n as usize);
         b.wait(); // signal ready
         let deadline = Instant::now() + 10_u64.secs();
@@ -657,7 +663,7 @@ fn topic_cross_thread_1p1c_spsc() {
     });
 
     let b = barrier.clone();
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         b.wait(); // wait for consumer to be ready
         for i in 1..=n {
             pub_t.send(i);
@@ -701,7 +707,7 @@ fn topic_cross_thread_1p_multi_c_spmc() {
             let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
             let c = collected.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
                 let deadline = Instant::now() + 10_u64.secs();
@@ -760,7 +766,7 @@ fn topic_cross_thread_multi_p_1c_mpsc() {
         .map(|pid| {
             let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 for i in 0..n_per_producer {
                     pub_t.send(pid as u64 * 100000 + i);
@@ -833,7 +839,7 @@ fn topic_cross_thread_multi_p_multi_c_mpmc() {
             let b = barrier.clone();
             let tr = total_received.clone();
             let t = total as u64;
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
                 let deadline = Instant::now() + 15_u64.secs();
@@ -865,7 +871,7 @@ fn topic_cross_thread_multi_p_multi_c_mpmc() {
         .map(|pid| {
             let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 for i in 0..n_per_producer {
                     pub_t.send(pid as u64 * 100000 + i);
@@ -934,7 +940,7 @@ fn stress_spsc_sustained_throughput() {
     let n = 100_000u64;
 
     let r = ring.clone();
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         for i in 0..n {
             while r.try_send(i).is_err() {
                 std::hint::spin_loop();
@@ -943,7 +949,7 @@ fn stress_spsc_sustained_throughput() {
     });
 
     let r = ring.clone();
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         let mut count = 0u64;
         let mut last = None;
         while count < n {
@@ -975,7 +981,7 @@ fn stress_mpsc_contention() {
     // Consumer runs concurrently
     let consumer_ring = ring.clone();
     let consumer_barrier = barrier.clone();
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         consumer_barrier.wait();
         let mut count = 0u64;
         while count < total {
@@ -992,7 +998,7 @@ fn stress_mpsc_contention() {
         .map(|pid| {
             let r = ring.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 for i in 0..n_per {
                     let val = pid as u64 * 1_000_000 + i;
@@ -1028,7 +1034,7 @@ fn stress_mpmc_high_contention() {
         .map(|pid| {
             let r = ring.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 for i in 0..n_per {
                     let val = pid as u64 * 1_000_000 + i;
@@ -1047,7 +1053,7 @@ fn stress_mpmc_high_contention() {
             let c = collected.clone();
             let b = barrier.clone();
             let d = done.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
                 loop {
@@ -1089,6 +1095,7 @@ fn stress_mpmc_high_contention() {
 
 #[test]
 fn topic_sustained_cross_thread_throughput() {
+    let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let name = unique("sustained");
     let n = 50_000u64;
 
@@ -1101,13 +1108,13 @@ fn topic_sustained_cross_thread_throughput() {
 
     let start = Instant::now();
 
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         for i in 1..=n {
             pub_t.send(i);
         }
     });
 
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         let mut count = 0u64;
         let deadline = Instant::now() + 30_u64.secs();
         while count < n && Instant::now() < deadline {
@@ -1262,7 +1269,7 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
     let name_clone = name.clone();
 
     // Background thread: alternate between two modes to keep bumping the epoch.
-    let migrator = thread::spawn(move || {
+    let migrator = test_spawn(move || {
         let tm: Topic<u64> = Topic::new(&name_clone).expect("migrator");
         let modes = [BackendMode::MpmcIntra, BackendMode::SpscIntra];
         let mut idx = 0usize;
@@ -1360,7 +1367,7 @@ fn concurrent_migration_no_livelock_16_threads() {
             let name = name.clone();
             let barrier = barrier.clone();
             let completed = completed.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 let t: Topic<u64> = Topic::new(&name).expect("create");
                 t.send(1);
                 let _ = t.recv();
@@ -1644,7 +1651,7 @@ fn robotics_sensor_fusion_pipeline() {
     // IMU publisher
     let imu_name = imu_topic.clone();
     let b = barrier.clone();
-    let imu_thread = thread::spawn(move || {
+    let imu_thread = test_spawn(move || {
         let pub_t: Topic<ImuData> = Topic::new(&imu_name).expect("imu pub");
         b.wait();
         for i in 0..n_ticks {
@@ -1661,7 +1668,7 @@ fn robotics_sensor_fusion_pipeline() {
     let imu_name = imu_topic.clone();
     let cmd_name = cmd_topic.clone();
     let b = barrier.clone();
-    let fusion_thread = thread::spawn(move || {
+    let fusion_thread = test_spawn(move || {
         let imu_sub: Topic<ImuData> = Topic::new(&imu_name).expect("imu sub");
         let cmd_pub: Topic<CmdVel> = Topic::new(&cmd_name).expect("cmd pub");
         b.wait();
@@ -1684,7 +1691,7 @@ fn robotics_sensor_fusion_pipeline() {
     // Motor controller: reads CmdVel
     let cmd_name = cmd_topic.clone();
     let b = barrier.clone();
-    let motor_thread = thread::spawn(move || {
+    let motor_thread = test_spawn(move || {
         let cmd_sub: Topic<CmdVel> = Topic::new(&cmd_name).expect("cmd sub");
         b.wait();
         let mut count = 0;
@@ -1735,7 +1742,7 @@ fn robotics_multi_sensor_multi_actuator() {
         .map(|(sid, name)| {
             let n = name.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 let t: Topic<f64> = Topic::new(&n).expect("sensor");
                 b.wait();
                 for i in 0..n_msgs {
@@ -1749,7 +1756,7 @@ fn robotics_multi_sensor_multi_actuator() {
     let sn = sensor_names.clone();
     let on = output_names.clone();
     let b = barrier.clone();
-    let controller = thread::spawn(move || {
+    let controller = test_spawn(move || {
         let subs: Vec<Topic<f64>> = sn.iter().map(|n| Topic::new(n).expect("sub")).collect();
         let pubs: Vec<Topic<f64>> = on.iter().map(|n| Topic::new(n).expect("pub")).collect();
         b.wait();
@@ -1778,7 +1785,7 @@ fn robotics_multi_sensor_multi_actuator() {
             let n = name.clone();
             let b = barrier.clone();
             let done = done.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 let t: Topic<f64> = Topic::new(&n).expect("actuator");
                 b.wait();
                 let mut count = 0;
@@ -2262,7 +2269,7 @@ fn concurrent_read_latest_with_producer_spmc() {
             let r = ring.clone();
             let b = barrier.clone();
             let d = done.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
@@ -2287,7 +2294,7 @@ fn concurrent_read_latest_with_producer_spmc() {
             let r = ring.clone();
             let b = barrier.clone();
             let d = done.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut seen_count = 0u64;
                 let mut max_seen = 0u64;
@@ -2344,7 +2351,7 @@ fn concurrent_read_latest_with_producer_mpmc() {
             let r = ring.clone();
             let b = barrier.clone();
             let d = done.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
@@ -2372,7 +2379,7 @@ fn concurrent_read_latest_with_producer_mpmc() {
             let r = ring.clone();
             let b = barrier.clone();
             let d = done.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut seen = 0u64;
                 let deadline = Instant::now() + 10_u64.secs();
@@ -2429,7 +2436,7 @@ fn concurrent_migration_during_send_recv() {
 
     let pub_name = name.clone();
     let b = barrier.clone();
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         let t: Topic<u64> = Topic::new(&pub_name).expect("pub");
         b.wait();
         for i in 1..=n_messages {
@@ -2439,7 +2446,7 @@ fn concurrent_migration_during_send_recv() {
 
     let sub_name = name.clone();
     let b = barrier.clone();
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         let t: Topic<u64> = Topic::new(&sub_name).expect("sub");
         b.wait();
         let mut received = Vec::with_capacity(n_messages as usize);
@@ -2459,7 +2466,7 @@ fn concurrent_migration_during_send_recv() {
         .map(|id| {
             let n = name.clone();
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 let t: Topic<u64> = Topic::new(&n).expect("mig");
                 b.wait();
                 let modes = [
@@ -2552,6 +2559,7 @@ fn rapid_migration_no_crash() {
 
 #[test]
 fn topic_cross_thread_1p1c_pre_initialized_99_percent() {
+    let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Pre-initialize to SpscIntra to avoid migration loss
     let name = unique("tight_spsc");
     let n = 10_000u64;
@@ -2573,7 +2581,7 @@ fn topic_cross_thread_1p1c_pre_initialized_99_percent() {
     let barrier = Arc::new(Barrier::new(2));
 
     let b = barrier.clone();
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         b.wait();
         for i in 1..=n {
             pub_t.send(i);
@@ -2581,7 +2589,7 @@ fn topic_cross_thread_1p1c_pre_initialized_99_percent() {
     });
 
     let b = barrier.clone();
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         b.wait();
         let mut received = Vec::with_capacity(n as usize);
         let deadline = Instant::now() + 15_u64.secs();
@@ -2621,6 +2629,7 @@ fn topic_cross_thread_1p1c_pre_initialized_99_percent() {
 
 #[test]
 fn topic_cross_thread_mpmc_pre_initialized_99_percent() {
+    let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let name = unique("tight_mpmc");
     let n_per_producer = 2000u64;
     let n_producers = 3;
@@ -2646,7 +2655,7 @@ fn topic_cross_thread_mpmc_pre_initialized_99_percent() {
             let b = barrier.clone();
             let tr = total_received.clone();
             let t = total as u64;
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
                 let deadline = Instant::now() + 15_u64.secs();
@@ -2677,7 +2686,7 @@ fn topic_cross_thread_mpmc_pre_initialized_99_percent() {
         .map(|pid| {
             let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 b.wait();
                 for i in 0..n_per_producer {
                     pub_t.send(pid as u64 * 100000 + i);
@@ -2800,13 +2809,13 @@ fn shm_backend_cross_thread_no_crash() {
     let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
     let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
 
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         for i in 1..=n {
             pub_t.send(i);
         }
     });
 
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         let mut received = Vec::new();
         let deadline = Instant::now() + 10_u64.secs();
         while received.len() < n as usize && Instant::now() < deadline {
@@ -3699,7 +3708,7 @@ fn dispatch_cross_thread_migrates_to_spsc_intra() {
     pub_t.send(0); // Register as publisher
 
     let recv_name = name.clone();
-    let handle = thread::spawn(move || {
+    let handle = test_spawn(move || {
         let sub_t: Topic<u64> = Topic::new(&recv_name).expect("sub");
         // First recv triggers migration to SpscIntra
         let _ = sub_t.recv();
@@ -3725,14 +3734,14 @@ fn dispatch_cross_thread_mpsc_mode() {
     let _ = sub_t.recv(); // Register as consumer
 
     let send_name = name.clone();
-    let h1 = thread::spawn(move || {
+    let h1 = test_spawn(move || {
         let pub_t: Topic<u64> = Topic::new(&send_name).expect("pub1");
         pub_t.send(1);
         thread::sleep(100_u64.ms());
     });
 
     let send_name2 = name.clone();
-    let h2 = thread::spawn(move || {
+    let h2 = test_spawn(move || {
         let pub_t: Topic<u64> = Topic::new(&send_name2).expect("pub2");
         pub_t.send(2);
         thread::sleep(100_u64.ms());
@@ -4076,7 +4085,7 @@ fn shm_no_partial_reads_cross_thread() {
         MigrationResult::Success { .. } => {
             trigger_shm_dispatch(&name);
             let pub_name = name.clone();
-            let producer = thread::spawn(move || {
+            let producer = test_spawn(move || {
                 let pub_t: Topic<[u64; 4]> = Topic::new(&pub_name).expect("pub");
                 for i in 1..=5000u64 {
                     // Sentinel: first == last == i, middle fields are i*10, i*100
@@ -4086,7 +4095,7 @@ fn shm_no_partial_reads_cross_thread() {
             });
 
             let sub_name = name.clone();
-            let consumer = thread::spawn(move || {
+            let consumer = test_spawn(move || {
                 let sub_t: Topic<[u64; 4]> = Topic::new(&sub_name).expect("sub");
                 let mut partial_reads = 0u64;
                 let mut total = 0u64;
@@ -4418,7 +4427,7 @@ fn register_16_producers_fills_all_slots() {
     // Now try registering from our actual thread — should fail since all slots taken
     // (our thread hash won't match any of the fake ones)
     // But our PID matches so it may find us by PID... let's use a distinct thread
-    let result = thread::spawn(move || h.register_producer()).join().unwrap();
+    let result = test_spawn(move || h.register_producer()).join().unwrap();
 
     assert!(
         result.is_err(),
@@ -4556,7 +4565,7 @@ fn concurrent_reclaim_exactly_one_winner() {
             let b = barrier.clone();
             let sc = success_count.clone();
             let hptr = header as *const TopicHeader as usize;
-            thread::spawn(move || {
+            test_spawn(move || {
                 // SAFETY: `hptr` points to `header` which is stack-allocated in the
                 // enclosing scope. All threads are joined before that scope exits, so
                 // the pointee outlives this reference. `TopicHeader` is Sync, so
@@ -4728,14 +4737,14 @@ fn topic_simultaneous_creation_no_deadlock() {
     let b1 = barrier.clone();
     let b2 = barrier.clone();
 
-    let h1 = thread::spawn(move || {
+    let h1 = test_spawn(move || {
         b1.wait();
         let t: Topic<u64> = Topic::new(&n1).expect("thread1");
         t.send(100);
         true
     });
 
-    let h2 = thread::spawn(move || {
+    let h2 = test_spawn(move || {
         b2.wait();
         let t: Topic<u64> = Topic::new(&n2).expect("thread2");
         t.send(200);
@@ -6251,7 +6260,7 @@ fn migration_lock_concurrent_one_winner() {
     let b1 = barrier.clone();
     let r1 = results.clone();
     let t1_clone = t1.clone();
-    let h1 = thread::spawn(move || {
+    let h1 = test_spawn(move || {
         b1.wait();
         let result = t1_clone.force_migrate(BackendMode::MpmcIntra);
         r1.lock().unwrap().push(result);
@@ -6260,7 +6269,7 @@ fn migration_lock_concurrent_one_winner() {
     let b2 = barrier.clone();
     let r2 = results.clone();
     let t2_clone = t2.clone();
-    let h2 = thread::spawn(move || {
+    let h2 = test_spawn(move || {
         b2.wait();
         let result = t2_clone.force_migrate(BackendMode::SpscIntra);
         r2.lock().unwrap().push(result);
@@ -6321,7 +6330,7 @@ fn migration_lock_sequential_different_threads() {
 
     // First migration in a spawned thread
     let t1c = t1.clone();
-    let h = thread::spawn(move || t1c.force_migrate(BackendMode::MpmcIntra));
+    let h = test_spawn(move || t1c.force_migrate(BackendMode::MpmcIntra));
     let result1 = h.join().unwrap();
     assert!(
         matches!(result1, MigrationResult::Success { .. }),
@@ -6331,7 +6340,7 @@ fn migration_lock_sequential_different_threads() {
 
     // Lock must be released — second migration in another thread
     let t1c = t1.clone();
-    let h = thread::spawn(move || t1c.force_migrate(BackendMode::SpscIntra));
+    let h = test_spawn(move || t1c.force_migrate(BackendMode::SpscIntra));
     let result2 = h.join().unwrap();
     assert!(
         matches!(result2, MigrationResult::Success { .. }),
@@ -6385,7 +6394,7 @@ fn migration_lock_data_flows_during_migration() {
     let b1 = barrier.clone();
     let sc = sent_count.clone();
     let t1c = t1.clone();
-    let h1 = thread::spawn(move || {
+    let h1 = test_spawn(move || {
         b1.wait();
         for i in 1..=200u64 {
             t1c.send(i);
@@ -6396,7 +6405,7 @@ fn migration_lock_data_flows_during_migration() {
     // Thread 2: triggers migration mid-stream
     let b2 = barrier.clone();
     let t2c = t2.clone();
-    let h2 = thread::spawn(move || {
+    let h2 = test_spawn(move || {
         b2.wait();
         // Wait a bit for some messages to flow
         std::thread::sleep(50_u64.us());
@@ -6543,7 +6552,7 @@ fn cross_thread_spsc_to_spmc_migration() {
     // Thread A: publisher sends total_msgs messages
     let pub_name = name.clone();
     let done_pub = done.clone();
-    let h_pub = thread::spawn(move || {
+    let h_pub = test_spawn(move || {
         let pub_t: Topic<u64> = Topic::new(&pub_name).expect("pub");
         pub_t.send(0); // register as publisher
 
@@ -6561,7 +6570,7 @@ fn cross_thread_spsc_to_spmc_migration() {
     let sub1_name = name.clone();
     let r1 = received_sub1.clone();
     let done1 = done.clone();
-    let h_sub1 = thread::spawn(move || {
+    let h_sub1 = test_spawn(move || {
         let sub_t: Topic<u64> = Topic::new(&sub1_name).expect("sub1");
 
         let deadline = std::time::Instant::now() + 5_u64.secs();
@@ -6588,7 +6597,7 @@ fn cross_thread_spsc_to_spmc_migration() {
     let sub2_name = name.clone();
     let r2 = received_sub2.clone();
     let done2 = done.clone();
-    let h_sub2 = thread::spawn(move || {
+    let h_sub2 = test_spawn(move || {
         // Wait for some messages to flow before joining
         thread::sleep(20_u64.ms());
 
@@ -6731,7 +6740,7 @@ fn epoch_increments_exactly_once_per_migration() {
 /// Examples: "links.sensor_test", "robot1.camera.rgb"
 #[test]
 fn topic_name_with_dots_for_namespaces_works() {
-    let name = format!("links.slash_test_{}", std::process::id());
+    let name = unique("links.slash_test");
     let t: Topic<u32> = Topic::new(&name).expect("Dot in topic name should work");
     t.send(42);
     let val = t.recv();
@@ -6742,7 +6751,7 @@ fn topic_name_with_dots_for_namespaces_works() {
 /// Robotics: "motors.cmd_vel", "sensors.imu.data"
 #[test]
 fn topic_name_with_dots_works() {
-    let name = format!("motors.dot_test.cmd_{}", std::process::id());
+    let name = unique("motors.dot_test.cmd");
     let t: Topic<u32> = Topic::new(&name).expect("Dots in topic name should work");
     t.send(99);
     assert_eq!(t.recv(), Some(99));
@@ -6756,7 +6765,7 @@ fn topic_name_with_dots_works() {
 /// must see each other's messages.
 #[test]
 fn duplicate_topic_names_share_ring() {
-    let name = format!("shared_ring_test_{}", std::process::id());
+    let name = unique("shared_ring_test");
     let pub_topic: Topic<u64> = Topic::new(&name).expect("Publisher topic");
     let sub_topic: Topic<u64> = Topic::new(&name).expect("Subscriber topic");
 
@@ -6774,12 +6783,12 @@ fn duplicate_topic_names_share_ring() {
 
 /// Very long topic names work (or fail gracefully).
 /// Linux path limit is typically 255 bytes per component, 4096 for full path.
-/// The SHM path is /dev/shm/horus/topics/horus_{name}, so the name itself
+/// The SHM path includes the topic name (e.g., horus_{name}), so the name itself
 /// can be quite long before hitting limits.
 #[test]
 fn topic_name_very_long() {
     // 200 char name — should be fine (path component < 255)
-    let name = format!("long_{}", "x".repeat(195));
+    let name = unique(&format!("long_{}", "x".repeat(180)));
     let result: HorusResult<Topic<u32>> = Topic::new(&name);
     // This should succeed on most systems
     assert!(
@@ -6797,7 +6806,7 @@ fn topic_name_very_long() {
 /// Robotics: "motor-controller_v2", "lidar_front-left"
 #[test]
 fn topic_name_underscores_and_hyphens() {
-    let name = format!("motor-ctrl_v2-test_{}", std::process::id());
+    let name = unique("motor-ctrl_v2-test");
     let t: Topic<u32> = Topic::new(&name).expect("Underscores and hyphens should work");
     t.send(123);
     assert_eq!(t.recv(), Some(123));
@@ -6807,7 +6816,7 @@ fn topic_name_underscores_and_hyphens() {
 /// Robotics: "camera0", "lidar_2", "joint_pos_6"
 #[test]
 fn topic_name_with_numbers() {
-    let name = format!("sensor42_joint7_test_{}", std::process::id());
+    let name = unique("sensor42_joint7_test");
     let t: Topic<u32> = Topic::new(&name).expect("Numbers in topic name should work");
     t.send(7);
     assert_eq!(t.recv(), Some(7));
@@ -6840,8 +6849,8 @@ fn topic_name_empty_no_panic() {
 /// Messages sent on one topic must not appear on another.
 #[test]
 fn different_topic_names_are_independent() {
-    let name_a = format!("independent_a_{}", std::process::id());
-    let name_b = format!("independent_b_{}", std::process::id());
+    let name_a = unique("independent_a");
+    let name_b = unique("independent_b");
 
     let topic_a: Topic<u32> = Topic::new(&name_a).unwrap();
     let topic_b: Topic<u32> = Topic::new(&name_b).unwrap();
@@ -6866,591 +6875,8 @@ fn different_topic_names_are_independent() {
 }
 
 // =============================================================================
-// Section 53: Stress Tests (run with --ignored)
+// Section 53: Stress Tests — moved to tests/stress_topics.rs
 // =============================================================================
-
-/// Stress test: 100 concurrent topics, each with a publisher thread and subscriber
-/// checking thread, sustained for several seconds.
-///
-/// Robotics: humanoid robot scenario — 100+ active topics running simultaneously
-/// at various rates. Verifies no corruption, no deadlocks, no panics.
-///
-/// Run with: cargo test --lib stress_100_concurrent -- --ignored
-#[test]
-#[ignore]
-fn stress_100_concurrent_topics_sustained() {
-    let num_topics = 100;
-    let msgs_per_topic = 5_000; // 500K total messages
-    let pid = std::process::id();
-
-    let done = Arc::new(AtomicBool::new(false));
-    let total_sent = Arc::new(AtomicU64::new(0));
-    let total_recv = Arc::new(AtomicU64::new(0));
-    let corruption_count = Arc::new(AtomicU64::new(0));
-
-    let mut handles = Vec::new();
-
-    for i in 0..num_topics {
-        let done_flag = done.clone();
-        let sent_count = total_sent.clone();
-        let recv_count = total_recv.clone();
-        let corrupt = corruption_count.clone();
-
-        // Publisher thread
-        let pub_handle = std::thread::spawn(move || {
-            let name = format!("stress_{}_t{}_{}", pid, i, "pub");
-            let topic: Topic<u64> = Topic::new(&name).expect("Topic creation failed");
-
-            for seq in 0..msgs_per_topic {
-                // Encode topic index in high bits, sequence in low bits
-                let msg = ((i as u64) << 32) | (seq as u64);
-                topic.send(msg);
-                sent_count.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-
-        // Subscriber thread
-        let sub_handle = std::thread::spawn(move || {
-            let name = format!("stress_{}_t{}_{}", pid, i, "pub");
-            let topic: Topic<u64> = Topic::new(&name).expect("Topic creation failed");
-
-            let mut received = 0u64;
-            let deadline = std::time::Instant::now() + 15_u64.secs();
-
-            while std::time::Instant::now() < deadline && !done_flag.load(Ordering::Relaxed) {
-                if let Some(msg) = topic.recv() {
-                    let topic_idx = (msg >> 32) as usize;
-                    if topic_idx != i {
-                        corrupt.fetch_add(1, Ordering::Relaxed);
-                    }
-                    received += 1;
-                    recv_count.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    std::thread::yield_now();
-                }
-            }
-            received
-        });
-
-        handles.push((pub_handle, sub_handle));
-    }
-
-    // Wait for all publishers to finish, collect subscriber handles
-    let mut sub_handles = Vec::new();
-    for (pub_h, sub_h) in handles {
-        pub_h.join().expect("Publisher thread panicked");
-        sub_handles.push(sub_h);
-    }
-
-    // Signal subscribers to stop
-    done.store(true, Ordering::Relaxed);
-    std::thread::sleep(100_u64.ms());
-
-    // Wait for subscribers
-    for sub_h in sub_handles {
-        let _ = sub_h.join().expect("Subscriber thread panicked");
-    }
-
-    let sent = total_sent.load(Ordering::Relaxed);
-    let recv = total_recv.load(Ordering::Relaxed);
-    let corrupted = corruption_count.load(Ordering::Relaxed);
-
-    assert_eq!(
-        sent,
-        (num_topics * msgs_per_topic) as u64,
-        "All messages should be sent"
-    );
-    assert!(recv > 0, "At least some messages should be received");
-    assert_eq!(
-        corrupted, 0,
-        "Zero corruption: {} messages had wrong topic index",
-        corrupted
-    );
-}
-
-/// Stress test: sustained 1kHz single topic for 60 seconds (60,000 messages).
-/// Verifies the hot path handles sustained high-frequency messaging.
-/// Uses cross-thread pub/sub to test real IPC path.
-///
-/// Robotics: IMU sensor publishing at 1kHz continuously. Must not:
-/// - Drop >5% of messages
-/// - Grow memory over time (ring buffer is fixed-size)
-/// - Stall for >10ms gaps
-///
-/// Run with: cargo test --lib stress_1khz_sustained -- --ignored
-#[test]
-#[ignore]
-fn stress_1khz_sustained_single_topic() {
-    let pid = std::process::id();
-    let name = format!("stress_1khz_{}", pid);
-    let duration_secs = 60u64;
-    let target_hz = 1000u64;
-    let total_msgs = duration_secs * target_hz;
-
-    let sent_count = Arc::new(AtomicU64::new(0));
-    let recv_count = Arc::new(AtomicU64::new(0));
-    let done = Arc::new(AtomicBool::new(false));
-
-    // Publisher thread: send at 1kHz for 60 seconds
-    let pub_name = name.clone();
-    let pub_sent = sent_count.clone();
-    let pub_handle = std::thread::spawn(move || {
-        let topic: Topic<u64> = Topic::new(&pub_name).unwrap();
-        let period = (1_000_000 / target_hz).us();
-        let start = Instant::now();
-
-        for i in 0..total_msgs {
-            topic.send(i);
-            pub_sent.fetch_add(1, Ordering::Relaxed);
-            // Busy-wait to maintain rate
-            let target_time = period * (i as u32 + 1);
-            while start.elapsed() < target_time {
-                std::hint::spin_loop();
-            }
-        }
-        start.elapsed()
-    });
-
-    // Subscriber thread: consume as fast as possible
-    let sub_name = name.clone();
-    let sub_recv = recv_count.clone();
-    let sub_done = done.clone();
-    let sub_handle = std::thread::spawn(move || {
-        let topic: Topic<u64> = Topic::new(&sub_name).unwrap();
-        let mut max_gap = Duration::ZERO;
-        let mut last_recv_time = Instant::now();
-
-        while !sub_done.load(Ordering::Relaxed) {
-            if topic.recv().is_some() {
-                let now = Instant::now();
-                let gap = now - last_recv_time;
-                if gap > max_gap && sub_recv.load(Ordering::Relaxed) > 0 {
-                    max_gap = gap;
-                }
-                last_recv_time = now;
-                sub_recv.fetch_add(1, Ordering::Relaxed);
-            } else {
-                std::thread::yield_now();
-            }
-        }
-        // Drain remaining
-        while topic.recv().is_some() {
-            sub_recv.fetch_add(1, Ordering::Relaxed);
-        }
-        max_gap
-    });
-
-    // Wait for publisher
-    let elapsed = pub_handle.join().expect("Publisher panicked");
-    let actual_hz = total_msgs as f64 / elapsed.as_secs_f64();
-
-    // Give subscriber a moment to drain
-    std::thread::sleep(200_u64.ms());
-    done.store(true, Ordering::Relaxed);
-    let _max_gap = sub_handle.join().expect("Subscriber panicked");
-
-    let sent = sent_count.load(Ordering::Relaxed);
-    let recv = recv_count.load(Ordering::Relaxed);
-    let delivery_rate = recv as f64 / sent as f64 * 100.0;
-
-    assert_eq!(sent, total_msgs, "All messages should be sent");
-    assert!(
-        actual_hz > 800.0,
-        "Should sustain at least 800Hz, got {:.0}Hz",
-        actual_hz
-    );
-    // Ring buffer may overwrite old messages — require >50% delivery
-    // (ring capacity is typically 512-1024 slots, subscriber may fall behind)
-    assert!(
-        delivery_rate > 50.0,
-        "Should deliver >50% of messages, got {:.1}% ({}/{})",
-        delivery_rate,
-        recv,
-        sent
-    );
-}
-
-/// Stress test: rapid subscriber connect/disconnect cycles.
-/// Simulates sensor hot-plugging and node restarts.
-///
-/// Robotics: USB sensor plugged/unplugged, node crash and restart.
-///
-/// Run with: cargo test --lib stress_rapid_connect_disconnect -- --ignored
-#[test]
-#[ignore]
-fn stress_rapid_connect_disconnect_cycles() {
-    let pid = std::process::id();
-    let name = format!("stress_churn_{}", pid);
-    let num_cycles = 200;
-
-    let done = Arc::new(AtomicBool::new(false));
-
-    // Continuous publisher
-    let done_pub = done.clone();
-    let pub_name = name.clone();
-    let pub_handle = std::thread::spawn(move || {
-        let topic: Topic<u64> = Topic::new(&pub_name).unwrap();
-        let mut seq = 0u64;
-        while !done_pub.load(Ordering::Relaxed) {
-            topic.send(seq);
-            seq += 1;
-            if seq.is_multiple_of(100) {
-                std::thread::yield_now();
-            }
-        }
-        seq
-    });
-
-    // Rapid connect/disconnect cycles
-    for _cycle in 0..num_cycles {
-        let topic: Topic<u64> = Topic::new(&name).unwrap();
-        // Read a few messages (discard results — point is no crashes)
-        for _ in 0..10 {
-            let _ = topic.recv();
-        }
-        // Topic dropped here — subscriber disconnects
-    }
-
-    done.store(true, Ordering::Relaxed);
-    let total_sent = pub_handle.join().expect("Publisher panicked");
-
-    assert!(total_sent > 0, "Publisher should have sent messages");
-    // We don't require all messages received — the point is no crashes
-}
-
-/// Stress test: multi-producer multi-consumer on a single topic.
-/// Verifies MPMC dispatch handles concurrent access correctly.
-///
-/// Robotics: multiple sensor fusion nodes publishing to shared topic,
-/// multiple consumer nodes reading from it.
-///
-/// Run with: cargo test --lib stress_mpmc_single_topic -- --ignored
-#[test]
-#[ignore]
-fn stress_mpmc_single_topic() {
-    let pid = std::process::id();
-    let name = format!("stress_mpmc_{}", pid);
-    let num_producers = 4;
-    let num_consumers = 4;
-    let msgs_per_producer = 10_000;
-
-    let total_sent = Arc::new(AtomicU64::new(0));
-    let total_recv = Arc::new(AtomicU64::new(0));
-    let done = Arc::new(AtomicBool::new(false));
-
-    let mut handles = Vec::new();
-
-    // Spawn producers
-    for p in 0..num_producers {
-        let sent = total_sent.clone();
-        let topic_name = name.clone();
-        handles.push(std::thread::spawn(move || {
-            let topic: Topic<u64> = Topic::new(&topic_name).unwrap();
-            for seq in 0..msgs_per_producer {
-                let msg = ((p as u64) << 48) | (seq as u64);
-                topic.send(msg);
-                sent.fetch_add(1, Ordering::Relaxed);
-            }
-        }));
-    }
-
-    // Spawn consumers
-    for _c in 0..num_consumers {
-        let recv = total_recv.clone();
-        let done_flag = done.clone();
-        let topic_name = name.clone();
-        handles.push(std::thread::spawn(move || {
-            let topic: Topic<u64> = Topic::new(&topic_name).unwrap();
-            let deadline = std::time::Instant::now() + 10_u64.secs();
-            while std::time::Instant::now() < deadline && !done_flag.load(Ordering::Relaxed) {
-                if topic.recv().is_some() {
-                    recv.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    std::thread::yield_now();
-                }
-            }
-        }));
-    }
-
-    // Wait for producers
-    for _ in 0..num_producers {
-        handles.remove(0).join().expect("Producer panicked");
-    }
-
-    // Give consumers time to drain
-    std::thread::sleep(500_u64.ms());
-    done.store(true, Ordering::Relaxed);
-
-    // Wait for consumers
-    for h in handles {
-        h.join().expect("Consumer panicked");
-    }
-
-    let sent = total_sent.load(Ordering::Relaxed);
-    let recv = total_recv.load(Ordering::Relaxed);
-
-    assert_eq!(
-        sent,
-        (num_producers * msgs_per_producer) as u64,
-        "All messages should be sent"
-    );
-    assert!(
-        recv > 0,
-        "Consumers should have received some messages, got 0"
-    );
-}
-
-/// Stress test: memory pressure — create/destroy many topics rapidly.
-/// Verifies SHM files are cleaned up and no file descriptor leaks.
-///
-/// Robotics: rapid reconfiguration, dynamic topic creation during operation.
-///
-/// Run with: cargo test --lib stress_topic_create_destroy -- --ignored
-#[test]
-#[ignore]
-fn stress_topic_create_destroy_cycles() {
-    let pid = std::process::id();
-    let num_cycles = 500;
-
-    for i in 0..num_cycles {
-        let name = format!("stress_create_{}_c{}", pid, i);
-        let topic: Topic<u64> = Topic::new(&name).unwrap();
-        topic.send(i as u64);
-        assert_eq!(topic.recv(), Some(i as u64));
-        // Topic dropped here — SHM should be cleaned up
-    }
-
-    // If we got here without running out of file descriptors or memory, success
-}
-
-/// Stress test: producer crash recovery.
-/// Simulates a sensor driver crash (thread exits abruptly) and verifies
-/// a new producer can reclaim the SHM and resume publishing without
-/// subscribers reading corrupted data.
-///
-/// Robotics scenario: IMU driver crashes due to hardware fault. The driver
-/// restarts, re-creates the same topic, and resumes publishing. Subscribers
-/// (EKF, path planner) must not see corrupted data and must receive valid
-/// data from the new producer.
-///
-/// Run with: cargo test --lib stress_producer_crash_recovery -- --ignored
-#[test]
-#[ignore]
-fn stress_producer_crash_recovery() {
-    let pid = std::process::id();
-    let name = format!("stress_crash_{}", pid);
-    let num_crash_cycles = 20;
-    let msgs_per_cycle = 500;
-
-    // Long-lived subscriber that outlives producer crashes
-    let sub_name = name.clone();
-    let total_valid = Arc::new(AtomicU64::new(0));
-    let total_corrupt = Arc::new(AtomicU64::new(0));
-    let done = Arc::new(AtomicBool::new(false));
-
-    let sub_valid = total_valid.clone();
-    let sub_corrupt = total_corrupt.clone();
-    let sub_done = done.clone();
-    let sub_handle = std::thread::spawn(move || {
-        let topic: Topic<[u64; 4]> = Topic::new(&sub_name).unwrap();
-        while !sub_done.load(Ordering::Relaxed) {
-            if let Some(msg) = topic.recv() {
-                // Validate message integrity: each message is [cycle, seq, cycle^seq, magic]
-                let cycle = msg[0];
-                let seq = msg[1];
-                let checksum = msg[2];
-                let magic = msg[3];
-                if checksum == (cycle ^ seq) && magic == 0xDEAD_BEEF_CAFE_BABE {
-                    sub_valid.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    sub_corrupt.fetch_add(1, Ordering::Relaxed);
-                }
-            } else {
-                std::thread::yield_now();
-            }
-        }
-        // Drain remaining
-        while let Some(msg) = topic.recv() {
-            let cycle = msg[0];
-            let seq = msg[1];
-            let checksum = msg[2];
-            let magic = msg[3];
-            if checksum == (cycle ^ seq) && magic == 0xDEAD_BEEF_CAFE_BABE {
-                sub_valid.fetch_add(1, Ordering::Relaxed);
-            } else {
-                sub_corrupt.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    });
-
-    // Repeatedly crash and restart producers
-    for cycle in 0..num_crash_cycles {
-        let pub_name = name.clone();
-        // Spawn a producer that sends messages then exits abruptly
-        let handle = std::thread::spawn(move || {
-            let topic: Topic<[u64; 4]> = Topic::new(&pub_name).unwrap();
-            for seq in 0..msgs_per_cycle {
-                let msg = [
-                    cycle as u64,
-                    seq as u64,
-                    (cycle as u64) ^ (seq as u64),
-                    0xDEAD_BEEF_CAFE_BABEu64,
-                ];
-                topic.send(msg);
-            }
-            // Thread exits — topic dropped without explicit cleanup,
-            // simulating a crash. SHM region left in whatever state.
-        });
-        handle.join().expect("Producer thread panicked");
-
-        // Brief pause to simulate restart delay
-        std::thread::sleep(5_u64.ms());
-    }
-
-    // Let subscriber drain
-    std::thread::sleep(200_u64.ms());
-    done.store(true, Ordering::Relaxed);
-    sub_handle.join().expect("Subscriber panicked");
-
-    let valid = total_valid.load(Ordering::Relaxed);
-    let corrupt = total_corrupt.load(Ordering::Relaxed);
-
-    assert!(
-        valid > 0,
-        "Subscriber should have received valid messages from restarted producers"
-    );
-    assert_eq!(
-        corrupt,
-        0,
-        "Subscriber must NEVER read corrupted data: got {} corrupt out of {} total",
-        corrupt,
-        valid + corrupt
-    );
-}
-
-/// Stress test: ring buffer saturation with fast publisher / slow subscriber.
-/// Verifies that the publisher NEVER blocks (critical real-time constraint)
-/// and the subscriber reads recent data, not stale.
-///
-/// Robotics scenario: 30Hz camera → AI inference at 5Hz. Ring buffer saturates.
-/// Publisher must never block. Subscriber must see latest frames, not old ones.
-///
-/// Run with: cargo test --lib stress_ring_buffer_saturation -- --ignored
-#[test]
-#[ignore]
-fn stress_ring_buffer_saturation() {
-    let pid = std::process::id();
-    let name = format!("stress_saturate_{}", pid);
-    let pub_hz = 100u64;
-    let sub_hz = 10u64;
-    let duration_secs = 10u64;
-    let expected_sends = pub_hz * duration_secs;
-
-    let done = Arc::new(AtomicBool::new(false));
-    let pub_blocked_count = Arc::new(AtomicU64::new(0));
-
-    // Publisher: 100Hz for 10 seconds. Measure how long each send takes.
-    let pub_name = name.clone();
-    let pub_blocked = pub_blocked_count.clone();
-    let pub_handle = std::thread::spawn(move || {
-        let topic: Topic<u64> = Topic::new(&pub_name).unwrap();
-        let period = (1_000_000 / pub_hz).us();
-        let block_threshold = period * 5; // >5x period means "blocked"
-        let start = Instant::now();
-        let mut sent = 0u64;
-
-        for seq in 0..expected_sends {
-            let before_send = Instant::now();
-            topic.send(seq);
-            let send_time = before_send.elapsed();
-            if send_time > block_threshold {
-                pub_blocked.fetch_add(1, Ordering::Relaxed);
-            }
-            sent += 1;
-
-            // Pace to target Hz
-            let target = period * (seq as u32 + 1);
-            while start.elapsed() < target {
-                std::hint::spin_loop();
-            }
-        }
-        (sent, start.elapsed())
-    });
-
-    // Subscriber: 10Hz — deliberately slow. Track received sequence numbers.
-    let sub_name = name.clone();
-    let sub_done = done.clone();
-    let sub_handle = std::thread::spawn(move || {
-        let topic: Topic<u64> = Topic::new(&sub_name).unwrap();
-        let period = (1_000_000 / sub_hz).us();
-        let mut received_seqs: Vec<u64> = Vec::new();
-
-        while !sub_done.load(Ordering::Relaxed) {
-            if let Some(seq) = topic.recv() {
-                received_seqs.push(seq);
-            }
-            // Sleep to simulate slow consumer
-            std::thread::sleep(period);
-        }
-        // One final drain
-        while let Some(seq) = topic.recv() {
-            received_seqs.push(seq);
-        }
-        received_seqs
-    });
-
-    // Wait for publisher to finish
-    let (sent, elapsed) = pub_handle.join().expect("Publisher panicked");
-    let actual_hz = sent as f64 / elapsed.as_secs_f64();
-
-    // Give subscriber a moment to process remaining
-    std::thread::sleep(200_u64.ms());
-    done.store(true, Ordering::Relaxed);
-    let received_seqs = sub_handle.join().expect("Subscriber panicked");
-    let blocked = pub_blocked_count.load(Ordering::Relaxed);
-
-    // Publisher must have sent all messages
-    assert_eq!(
-        sent, expected_sends,
-        "Publisher should send all {} messages",
-        expected_sends
-    );
-
-    // Publisher must sustain target rate
-    assert!(
-        actual_hz > (pub_hz as f64 * 0.8),
-        "Publisher should sustain >80% of target {}Hz, got {:.0}Hz",
-        pub_hz,
-        actual_hz
-    );
-
-    // Publisher must NEVER block (real-time constraint)
-    assert_eq!(
-        blocked, 0,
-        "Publisher must NEVER block on full ring buffer, but was blocked {} times",
-        blocked
-    );
-
-    // Subscriber should have received some messages (~100 at 10Hz × 10s)
-    assert!(
-        received_seqs.len() > 50,
-        "Subscriber at {}Hz for {}s should receive >50 msgs, got {}",
-        sub_hz,
-        duration_secs,
-        received_seqs.len()
-    );
-
-    // Subscriber should be reading RECENT data, not stale.
-    // The last received sequence should be close to the last sent sequence.
-    if let Some(&last_seq) = received_seqs.last() {
-        let staleness = expected_sends - 1 - last_seq;
-        assert!(
-            staleness < expected_sends / 2,
-            "Subscriber should read recent data. Last recv'd seq {} but last sent was {}. Staleness: {}",
-            last_seq, expected_sends - 1, staleness
-        );
-    }
-}
 
 // ============================================================================
 // 52. Registry module unit tests
@@ -7929,7 +7355,7 @@ fn crash_producer_panic_consumer_not_stuck() {
 
     // Spawn a producer that panics mid-operation
     let name_clone = name.clone();
-    let producer_handle = thread::spawn(move || {
+    let producer_handle = test_spawn(move || {
         let t: Topic<u64> = Topic::new(&name_clone).unwrap();
         t.send(100u64);
         panic!("producer crash");
@@ -7971,7 +7397,7 @@ fn crash_consumer_panic_producer_continues() {
 
     // Spawn a consumer that panics
     let name_clone = name.clone();
-    let consumer_handle = thread::spawn(move || {
+    let consumer_handle = test_spawn(move || {
         let t: Topic<u64> = Topic::new(&name_clone).unwrap();
         let _ = t.recv();
         panic!("consumer crash");
@@ -8039,7 +7465,7 @@ fn crash_one_producer_others_unaffected() {
 
     let name_c = name.clone();
     // Producer 1: sends normally
-    let p1 = thread::spawn(move || {
+    let p1 = test_spawn(move || {
         let t: Topic<u64> = Topic::new(&name_c).unwrap();
         for i in 0..5u64 {
             t.send(i);
@@ -8049,7 +7475,7 @@ fn crash_one_producer_others_unaffected() {
 
     let name_c2 = name.clone();
     // Producer 2: panics after 2 sends
-    let p2 = thread::spawn(move || {
+    let p2 = test_spawn(move || {
         let t: Topic<u64> = Topic::new(&name_c2).unwrap();
         t.send(100u64);
         t.send(101u64);
@@ -8088,7 +7514,7 @@ fn crash_consumer_drops_producer_not_blocked() {
 
     let name_c = name.clone();
     // Consumer that drops after receiving a few
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         let t: Topic<u64> = Topic::new(&name_c).unwrap();
         for _ in 0..3 {
             thread::sleep(5_u64.ms());
@@ -8157,7 +7583,7 @@ fn crash_concurrent_send_recv_no_corruption() {
 
     let barrier_p = barrier.clone();
     let done_flag = producer_done.clone();
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         barrier_p.wait();
         for i in 0..1000u64 {
             pub_t.send(i);
@@ -8173,7 +7599,7 @@ fn crash_concurrent_send_recv_no_corruption() {
     let received = Arc::new(AtomicU64::new(0));
     let recv_count = received.clone();
     let done_check = producer_done.clone();
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         barrier_c.wait();
         let deadline = Instant::now() + 5_u64.secs();
         loop {
@@ -8595,7 +8021,7 @@ fn partial_write_concurrent_writers_no_partial_data() {
     let handles: Vec<_> = (0..n_writers)
         .map(|writer_id| {
             let b = barrier.clone();
-            thread::spawn(move || {
+            test_spawn(move || {
                 // SAFETY: `t_ptr` points to `t` which is stack-allocated in the
                 // enclosing test function. All writer handles are joined before `t`
                 // is dropped, so the reference is valid for the duration of the
@@ -8612,7 +8038,7 @@ fn partial_write_concurrent_writers_no_partial_data() {
 
     // Reader
     let reader_barrier = barrier.clone();
-    let reader = thread::spawn(move || {
+    let reader = test_spawn(move || {
         // SAFETY: `t_ptr` points to `t` which is stack-allocated in the enclosing
         // test function. The reader handle is joined before `t` is dropped, so the
         // reference remains valid. `Topic` is Sync, permitting concurrent reads.
@@ -8822,7 +8248,7 @@ fn send_blocking_unblocks_when_consumer_drains() {
     pub_t.send(1u64); // fill ring
 
     // Spawn consumer that drains after a short delay
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         thread::sleep(10_u64.ms());
         sub_t.recv()
     });
@@ -8884,12 +8310,12 @@ fn send_blocking_no_deadlock_two_producers() {
     let barrier = Arc::new(Barrier::new(2));
     let barrier_c = barrier.clone();
 
-    let h1 = thread::spawn(move || {
+    let h1 = test_spawn(move || {
         barrier_c.wait();
         t1.send_blocking(10u64, 50_u64.ms())
     });
 
-    let h2 = thread::spawn(move || {
+    let h2 = test_spawn(move || {
         barrier.wait();
         t2.send_blocking(20u64, 50_u64.ms())
     });
@@ -8979,7 +8405,7 @@ fn send_blocking_cross_thread_producer_consumer() {
     let recv_count = received.clone();
 
     // Consumer thread: drains messages after barrier
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         barrier_c.wait();
         thread::sleep(20_u64.ms());
         let mut count = 0u64;
@@ -9390,7 +8816,7 @@ fn spsc_ring_fast_producer_slow_consumer() {
     let sent_c = sent.clone();
     let recv_c = received.clone();
 
-    let producer = thread::spawn(move || {
+    let producer = test_spawn(move || {
         for i in 0..total_msgs {
             loop {
                 if ring.try_send(i).is_ok() {
@@ -9402,7 +8828,7 @@ fn spsc_ring_fast_producer_slow_consumer() {
         }
     });
 
-    let consumer = thread::spawn(move || {
+    let consumer = test_spawn(move || {
         let start = Instant::now();
         while recv_c.load(Ordering::Relaxed) < total_msgs
             && start.elapsed() < 5_u64.secs()
@@ -9448,7 +8874,7 @@ fn mpmc_ring_multi_producer_multi_consumer_no_loss() {
     // Producers
     for p in 0..num_producers {
         let r = ring.clone();
-        handles.push(thread::spawn(move || {
+        handles.push(test_spawn(move || {
             for i in 0..msgs_per_producer {
                 let val = p as u64 * 10000 + i;
                 loop {
@@ -9466,7 +8892,7 @@ fn mpmc_ring_multi_producer_multi_consumer_no_loss() {
         let r = ring.clone();
         let recv = total_received.clone();
         let done = all_sent.clone();
-        handles.push(thread::spawn(move || {
+        handles.push(test_spawn(move || {
             loop {
                 if r.try_recv().is_some() {
                     recv.fetch_add(1, Ordering::Relaxed);
@@ -10802,12 +10228,7 @@ fn e2e_multiple_topics_distinct_type_names() {
 fn e2e_registry_write_read_roundtrip() {
     use crate::scheduling::registry::SchedulerRegistry;
 
-    let reg_name = format!("e2e_reg_{}_{}", std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos()
-    );
+    let reg_name = unique("e2e_reg");
     let reg = SchedulerRegistry::open(&reg_name).expect("open registry");
 
     // Register 3 nodes

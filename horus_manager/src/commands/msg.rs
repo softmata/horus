@@ -1483,7 +1483,7 @@ pub struct Range {
 
     #[test]
     fn discover_messages_via_env_var() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         // Set the HORUS_SOURCE_DIR to the temp root
@@ -1515,7 +1515,7 @@ pub struct Range {
 
     #[test]
     fn discover_messages_skips_mod_rs() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1532,7 +1532,7 @@ pub struct Range {
 
     #[test]
     fn discover_messages_skips_non_rs_files() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1549,7 +1549,7 @@ pub struct Range {
 
     #[test]
     fn discover_messages_sorts_by_module_then_name() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1571,7 +1571,7 @@ pub struct Range {
 
     #[test]
     fn discover_messages_error_when_no_dir_found() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Point to a nonexistent directory
         std::env::set_var("HORUS_SOURCE_DIR", "/tmp/definitely_does_not_exist_horus_test");
         // Also clear HORUS_SOURCE to avoid fallback
@@ -1607,7 +1607,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_json_output() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1621,7 +1621,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_verbose() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1634,7 +1634,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_compact() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1650,7 +1650,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_with_filter_match() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1663,7 +1663,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_with_filter_no_match() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1677,7 +1677,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_filter_by_module() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1691,7 +1691,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_filter_case_insensitive() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1705,7 +1705,7 @@ pub struct Range {
 
     #[test]
     fn show_message_found_by_name() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1718,7 +1718,7 @@ pub struct Range {
 
     #[test]
     fn show_message_case_insensitive() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1731,7 +1731,7 @@ pub struct Range {
 
     #[test]
     fn show_message_by_module_qualified_name() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1744,7 +1744,7 @@ pub struct Range {
 
     #[test]
     fn show_message_not_found() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1762,7 +1762,7 @@ pub struct Range {
 
     #[test]
     fn show_message_json() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1775,7 +1775,7 @@ pub struct Range {
 
     #[test]
     fn show_message_with_empty_fields() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let msgs_dir = tmp.path().join("horus_library").join("messages");
         fs::create_dir_all(&msgs_dir).unwrap();
@@ -1796,7 +1796,7 @@ pub struct Range {
 
     #[test]
     fn message_hash_found() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1809,7 +1809,7 @@ pub struct Range {
 
     #[test]
     fn message_hash_not_found() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1822,7 +1822,7 @@ pub struct Range {
 
     #[test]
     fn message_hash_json() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1835,7 +1835,7 @@ pub struct Range {
 
     #[test]
     fn message_hash_case_insensitive() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1848,7 +1848,7 @@ pub struct Range {
 
     #[test]
     fn message_hash_qualified_name() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1861,7 +1861,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_empty_dir() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let msgs_dir = tmp.path().join("horus_library").join("messages");
         fs::create_dir_all(&msgs_dir).unwrap();
@@ -1877,7 +1877,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_empty_dir_with_filter() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let msgs_dir = tmp.path().join("horus_library").join("messages");
         fs::create_dir_all(&msgs_dir).unwrap();
@@ -1892,7 +1892,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_json_with_filter() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -1905,7 +1905,7 @@ pub struct Range {
 
     #[test]
     fn list_messages_verbose_with_filter() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root) = setup_messages_dir();
 
         std::env::set_var("HORUS_SOURCE_DIR", root.to_str().unwrap());
@@ -2045,7 +2045,7 @@ pub struct Msg {
 
     #[test]
     fn discover_messages_via_horus_source_env() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let msgs_dir = tmp.path().join("horus_library").join("messages");
         fs::create_dir_all(&msgs_dir).unwrap();
@@ -2083,7 +2083,7 @@ pub struct Msg {
 
     #[test]
     fn show_message_displays_doc() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let msgs_dir = tmp.path().join("horus_library").join("messages");
         fs::create_dir_all(&msgs_dir).unwrap();
@@ -2115,7 +2115,7 @@ pub struct DocMsg {
 
     #[test]
     fn show_message_json_with_fields() {
-        let _lock = crate::CWD_LOCK.lock().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let msgs_dir = tmp.path().join("horus_library").join("messages");
         fs::create_dir_all(&msgs_dir).unwrap();

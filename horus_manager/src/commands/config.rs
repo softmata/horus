@@ -297,8 +297,8 @@ mod tests {
             "[package]\nname = \"my_robot\"\nversion = \"0.1.0\"\n",
         ).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::Get("package.name".to_string()));
         std::env::set_current_dir(prev).unwrap();
@@ -310,8 +310,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join(HORUS_TOML), "[package]\nname = \"test\"\n").unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::Get("package.nonexistent".to_string()));
         std::env::set_current_dir(prev).unwrap();
@@ -322,8 +322,8 @@ mod tests {
     #[test]
     fn config_get_no_horus_toml_fails() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::Get("package.name".to_string()));
         std::env::set_current_dir(prev).unwrap();
@@ -338,8 +338,8 @@ mod tests {
             "[package]\nname = \"old\"\nversion = \"0.1.0\"\n",
         ).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::Set(
             "package.version".to_string(),
@@ -358,8 +358,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join(HORUS_TOML), "[package]\nname = \"test\"\n").unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::Set(
             "package.description".to_string(),
@@ -381,8 +381,8 @@ mod tests {
             "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
         ).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::List);
         std::env::set_current_dir(prev).unwrap();
@@ -397,8 +397,8 @@ mod tests {
         let content = "# My robot config\n[package]\nname = \"robot\"\nversion = \"0.1.0\"\n";
         fs::write(tmp.path().join(HORUS_TOML), content).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         run_config(ConfigAction::Set("package.version".to_string(), "1.0.0".to_string())).unwrap();
         std::env::set_current_dir(prev).unwrap();
@@ -413,8 +413,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join(HORUS_TOML), "[package]\nname = \"test\"\n").unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::Set(
             "custom.section.deep.key".to_string(),
@@ -435,8 +435,8 @@ mod tests {
             "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
         ).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         // Getting a section (table) should succeed
         let result = run_config(ConfigAction::Get("package".to_string()));
@@ -452,8 +452,8 @@ mod tests {
             "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
         ).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
         run_config(ConfigAction::Set("package.description".to_string(), "A robot".to_string())).unwrap();
@@ -504,8 +504,8 @@ sim = "echo sim"
 "#;
         fs::write(tmp.path().join(HORUS_TOML), content).unwrap();
 
-        let _lock = crate::CWD_LOCK.lock().unwrap();
-        let prev = std::env::current_dir().unwrap();
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::List);
         std::env::set_current_dir(prev).unwrap();

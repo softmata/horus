@@ -1,14 +1,19 @@
 //! Unified lockfile for deterministic builds (`horus.lock`).
 //!
 //! Tracks pinned versions for all dependency sources (registry, crates.io, PyPI)
-//! alongside a config hash for fast staleness detection. This replaces relying
-//! solely on `Cargo.lock` / `pip freeze` with a single source of truth.
+//! alongside toolchain versions, system dependencies, and feature flags.
+//! This is the single source of truth for reproducible builds across machines.
 //!
-//! ## Format (v3)
+//! ## Format (v4)
 //!
 //! ```toml
-//! version = 3
+//! version = 4
 //! config_hash = "sha256:..."
+//! features = ["cuda", "monitor"]
+//!
+//! [toolchain]
+//! rust = "1.78.0"
+//! python = "3.12.3"
 //!
 //! [[package]]
 //! name = "rplidar"
@@ -21,10 +26,12 @@
 //! source = "crates.io"
 //! checksum = "sha256:abc..."
 //!
-//! [[package]]
-//! name = "numpy"
-//! version = "1.26.4"
-//! source = "pypi"
+//! [[system]]
+//! name = "opencv"
+//! version = "4.8.1"
+//! pkg_config = "opencv4"
+//! apt = "libopencv-dev"
+//! brew = "opencv"
 //! ```
 
 use anyhow::{Context, Result};
@@ -36,15 +43,61 @@ use std::path::Path;
 pub const HORUS_LOCK: &str = "horus.lock";
 
 /// Current lockfile schema version.
-const CURRENT_VERSION: u32 = 3;
+const CURRENT_VERSION: u32 = 4;
+
+/// Pinned toolchain versions for reproducible builds.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ToolchainPins {
+    /// Rust toolchain version (e.g., "1.78.0").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<String>,
+
+    /// Python version (e.g., "3.12.3").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
+
+    /// CMake version (e.g., "3.28.0"), if C++ deps exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmake: Option<String>,
+}
+
+/// A pinned system dependency with cross-platform package names.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemLock {
+    /// Canonical name (e.g., "opencv").
+    pub name: String,
+
+    /// Pinned version (e.g., "4.8.1").
+    pub version: String,
+
+    /// pkg-config name for detection (e.g., "opencv4").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pkg_config: Option<String>,
+
+    /// apt package name (Debian/Ubuntu).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apt: Option<String>,
+
+    /// Homebrew formula name (macOS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brew: Option<String>,
+
+    /// pacman package name (Arch Linux).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pacman: Option<String>,
+
+    /// Chocolatey package name (Windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choco: Option<String>,
+}
 
 /// The typed representation of a `horus.lock` file.
 ///
-/// Tracks config hash for staleness detection and pinned package versions
-/// across all dependency sources (registry, crates.io, PyPI).
+/// Tracks config hash for staleness detection, pinned package versions,
+/// toolchain versions, system dependencies, and active feature flags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HorusLockfile {
-    /// Schema version (3 = unified deps).
+    /// Schema version (4 = unified deps + toolchain + system + features).
     pub version: u32,
 
     /// SHA-256 hash of the `horus.toml` config + detected imports.
@@ -52,9 +105,21 @@ pub struct HorusLockfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_hash: Option<String>,
 
+    /// Pinned toolchain versions (Rust, Python, CMake).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolchain: Option<ToolchainPins>,
+
+    /// Active feature flags at lock time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+
     /// Pinned package versions across all sources.
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "package")]
     pub packages: Vec<LockedPackage>,
+
+    /// Pinned system dependencies with cross-platform package names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "system")]
+    pub system_deps: Vec<SystemLock>,
 }
 
 /// A single pinned dependency in the lockfile.
@@ -86,7 +151,10 @@ impl HorusLockfile {
         Self {
             version: CURRENT_VERSION,
             config_hash: None,
+            toolchain: None,
+            features: Vec::new(),
             packages: Vec::new(),
+            system_deps: Vec::new(),
         }
     }
 
@@ -100,7 +168,8 @@ impl HorusLockfile {
 
         anyhow::ensure!(
             lockfile.version >= 3,
-            "Outdated lockfile version {} (expected 3+). Delete horus.lock and re-run to regenerate.",
+            "Outdated lockfile version {} (expected 3+). Delete horus.lock and re-run to regenerate.\n\
+             Note: v3 lockfiles are supported but will be upgraded to v4 on next write.",
             lockfile.version
         );
 
@@ -233,7 +302,10 @@ mod tests {
         let lock = HorusLockfile {
             version: CURRENT_VERSION,
             config_hash: Some("abc123".to_string()),
+            toolchain: None,
+            features: Vec::new(),
             packages: Vec::new(),
+            system_deps: Vec::new(),
         };
         assert!(!lock.is_stale("abc123"));
         assert!(lock.is_stale("different"));
@@ -395,5 +467,141 @@ mod tests {
         assert_eq!(lock.packages.len(), 2);
         assert_eq!(lock.get_pinned("serde", "crates.io"), Some("1.0.215"));
         assert_eq!(lock.get_pinned("numpy", "pypi"), Some("1.26.4"));
+    }
+
+    // --- v4 lockfile tests ---
+
+    #[test]
+    fn v4_lockfile_roundtrip() {
+        let mut lock = HorusLockfile::new();
+        lock.config_hash = Some("deadbeef".to_string());
+        lock.toolchain = Some(ToolchainPins {
+            rust: Some("1.78.0".to_string()),
+            python: Some("3.12.3".to_string()),
+            cmake: None,
+        });
+        lock.features = vec!["cuda".to_string(), "monitor".to_string()];
+        lock.pin("serde", "1.0.215", "crates.io", Some("sha256:abc".to_string()));
+        lock.system_deps = vec![SystemLock {
+            name: "opencv".to_string(),
+            version: "4.8.1".to_string(),
+            pkg_config: Some("opencv4".to_string()),
+            apt: Some("libopencv-dev".to_string()),
+            brew: Some("opencv".to_string()),
+            pacman: Some("opencv".to_string()),
+            choco: None,
+        }];
+
+        let serialized = toml::to_string_pretty(&lock).unwrap();
+        let deserialized: HorusLockfile = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.version, 4);
+        assert_eq!(deserialized.toolchain.as_ref().unwrap().rust, Some("1.78.0".to_string()));
+        assert_eq!(deserialized.toolchain.as_ref().unwrap().python, Some("3.12.3".to_string()));
+        assert_eq!(deserialized.toolchain.as_ref().unwrap().cmake, None);
+        assert_eq!(deserialized.features, vec!["cuda", "monitor"]);
+        assert_eq!(deserialized.packages.len(), 1);
+        assert_eq!(deserialized.system_deps.len(), 1);
+        assert_eq!(deserialized.system_deps[0].name, "opencv");
+        assert_eq!(deserialized.system_deps[0].apt, Some("libopencv-dev".to_string()));
+        assert_eq!(deserialized.system_deps[0].brew, Some("opencv".to_string()));
+    }
+
+    #[test]
+    fn v3_lockfile_backward_compat() {
+        // A v3 lockfile has no toolchain, features, or system_deps sections.
+        // It should parse successfully with defaults.
+        let v3_content = r#"
+version = 3
+config_hash = "abc123"
+
+[[package]]
+name = "serde"
+version = "1.0.215"
+source = "crates.io"
+"#;
+        let lock: HorusLockfile = toml::from_str(v3_content).unwrap();
+        assert_eq!(lock.version, 3);
+        assert!(lock.toolchain.is_none());
+        assert!(lock.features.is_empty());
+        assert!(lock.system_deps.is_empty());
+        assert_eq!(lock.packages.len(), 1);
+        assert_eq!(lock.packages[0].name, "serde");
+    }
+
+    #[test]
+    fn v4_save_and_load_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("horus.lock");
+
+        let mut lock = HorusLockfile::new();
+        lock.toolchain = Some(ToolchainPins {
+            rust: Some("1.78.0".to_string()),
+            python: None,
+            cmake: None,
+        });
+        lock.features = vec!["monitor".to_string()];
+        lock.system_deps = vec![SystemLock {
+            name: "libudev".to_string(),
+            version: "252".to_string(),
+            pkg_config: Some("libudev".to_string()),
+            apt: Some("libudev-dev".to_string()),
+            brew: None,
+            pacman: Some("systemd-libs".to_string()),
+            choco: None,
+        }];
+        lock.pin("serde", "1.0.0", "crates.io", None);
+
+        lock.save_to(&path).unwrap();
+        let loaded = HorusLockfile::load_from(&path).unwrap();
+
+        assert_eq!(loaded.version, 4);
+        assert_eq!(loaded.toolchain.as_ref().unwrap().rust, Some("1.78.0".to_string()));
+        assert_eq!(loaded.features, vec!["monitor"]);
+        assert_eq!(loaded.system_deps.len(), 1);
+        assert_eq!(loaded.system_deps[0].name, "libudev");
+        assert_eq!(loaded.system_deps[0].pacman, Some("systemd-libs".to_string()));
+        assert_eq!(loaded.packages.len(), 1);
+    }
+
+    #[test]
+    fn toolchain_pins_default() {
+        let pins = ToolchainPins::default();
+        assert!(pins.rust.is_none());
+        assert!(pins.python.is_none());
+        assert!(pins.cmake.is_none());
+    }
+
+    #[test]
+    fn toolchain_pins_roundtrip() {
+        let pins = ToolchainPins {
+            rust: Some("1.78.0".to_string()),
+            python: Some("3.12.3".to_string()),
+            cmake: Some("3.28.0".to_string()),
+        };
+        let serialized = toml::to_string_pretty(&pins).unwrap();
+        let deserialized: ToolchainPins = toml::from_str(&serialized).unwrap();
+        assert_eq!(pins, deserialized);
+    }
+
+    #[test]
+    fn system_lock_minimal() {
+        let lock = SystemLock {
+            name: "cuda".to_string(),
+            version: "12.4".to_string(),
+            pkg_config: None,
+            apt: Some("nvidia-cuda-toolkit".to_string()),
+            brew: None,
+            pacman: None,
+            choco: None,
+        };
+        let serialized = toml::to_string_pretty(&lock).unwrap();
+        assert!(serialized.contains("nvidia-cuda-toolkit"));
+        assert!(!serialized.contains("brew"));
+        assert!(!serialized.contains("pacman"));
+        assert!(!serialized.contains("choco"));
+
+        let deserialized: SystemLock = toml::from_str(&serialized).unwrap();
+        assert_eq!(lock, deserialized);
     }
 }
