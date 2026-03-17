@@ -81,6 +81,15 @@ pub struct ServiceRequest<Req> {
     pub request_id: u64,
     /// The actual request payload.
     pub payload: Req,
+    /// Per-client response topic name.
+    ///
+    /// When set, the server publishes the response to this topic instead of
+    /// the shared `{service}.response` topic. This eliminates response routing
+    /// contention when multiple clients call the same service concurrently.
+    ///
+    /// Format: `{service}.response.{client_id}` (e.g., `add_two_ints.response.42`)
+    #[serde(default)]
+    pub response_topic: Option<String>,
 }
 
 /// Response wrapper that flows over the response topic.

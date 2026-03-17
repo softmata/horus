@@ -182,18 +182,55 @@ fn run_server_loop<Req, Res>(
     Req: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static,
     Res: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
+    // Cache per-client response topics to avoid re-creating them on every request.
+    // Key: client response topic name, Value: Topic handle.
+    let mut client_topics: std::collections::HashMap<String, Topic<ServiceResponse<Res>>> =
+        std::collections::HashMap::new();
+
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
 
-        if let Some(req) = req_topic.recv() {
+        // Drain ALL pending requests before sleeping.
+        let mut processed = 0;
+        while let Some(req) = req_topic.recv() {
             let request_id = req.request_id;
+            let client_response_topic = req.response_topic;
+
             let response = match handler(req.payload) {
                 Ok(payload) => ServiceResponse::success(request_id, payload),
                 Err(err_msg) => ServiceResponse::failure(request_id, err_msg),
             };
-            res_topic.send(response);
+
+            // Route response to per-client topic if specified,
+            // otherwise fall back to shared response topic.
+            if let Some(ref topic_name) = client_response_topic {
+                let client_topic = client_topics
+                    .entry(topic_name.clone())
+                    .or_insert_with(|| {
+                        Topic::new_with_kind(
+                            topic_name,
+                            crate::communication::TopicKind::ServiceResponse as u8,
+                        )
+                        .unwrap_or_else(|_| {
+                            // Fallback: if per-client topic creation fails,
+                            // this shouldn't happen in normal operation.
+                            panic!("Failed to create per-client response topic: {}", topic_name);
+                        })
+                    });
+                client_topic.send(response);
+            } else {
+                // Legacy path: shared response topic (for backward compat)
+                res_topic.send(response);
+            }
+
+            processed += 1;
+
+            // Safety valve: don't starve the shutdown check.
+            if processed >= 1000 {
+                break;
+            }
         }
 
         thread::sleep(poll_interval);

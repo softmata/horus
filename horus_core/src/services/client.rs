@@ -44,15 +44,28 @@ fn next_request_id() -> u64 {
     NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Process-wide monotonic client ID counter for per-client response topics.
+static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_client_id() -> u64 {
+    NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 // ─── ServiceClient ────────────────────────────────────────────────────────
 
 /// Blocking service client.
 ///
-/// Creates topics on construction and reuses them for subsequent calls.
-/// Thread-safe: the internal topics use atomic operations.
+/// Each client creates its own per-client response topic to eliminate
+/// contention when multiple clients call the same service concurrently.
+/// The server reads the `response_topic` field from the request and
+/// publishes the response to the client's dedicated topic.
+///
+/// Topic naming: `{service}.response.{client_id}`
 pub struct ServiceClient<S: Service> {
     req_topic: Topic<ServiceRequest<S::Request>>,
     res_topic: Topic<ServiceResponse<S::Response>>,
+    /// Per-client response topic name (e.g., "add_two_ints.response.42")
+    response_topic_name: String,
     /// How often to check for a response while blocking (default: 1 ms).
     poll_interval: Duration,
 }
@@ -73,13 +86,20 @@ where
             &S::request_topic(),
             crate::communication::TopicKind::ServiceRequest as u8,
         )?;
+
+        // Per-client response topic: eliminates contention when multiple
+        // clients call the same service. Each client polls its own topic.
+        let client_id = next_client_id();
+        let response_topic_name = format!("{}.{}", S::response_topic(), client_id);
         let res_topic = Topic::new_with_kind(
-            &S::response_topic(),
+            &response_topic_name,
             crate::communication::TopicKind::ServiceResponse as u8,
         )?;
+
         Ok(Self {
             req_topic,
             res_topic,
+            response_topic_name,
             poll_interval,
         })
     }
@@ -87,13 +107,16 @@ where
     /// Call the service synchronously.
     ///
     /// Blocks until a matching response is received or `timeout` elapses.
+    /// The response is published to this client's per-client response topic,
+    /// eliminating contention with other concurrent clients.
     pub fn call(&mut self, request: S::Request, timeout: Duration) -> ServiceResult<S::Response> {
         let request_id = next_request_id();
 
-        // Send the request.
+        // Send the request with per-client response topic.
         self.req_topic.send(ServiceRequest {
             request_id,
             payload: request,
+            response_topic: Some(self.response_topic_name.clone()),
         });
 
         // Poll for a matching response.
@@ -272,6 +295,7 @@ where
 pub struct AsyncServiceClient<S: Service> {
     req_topic: Topic<ServiceRequest<S::Request>>,
     res_topic: Arc<Topic<ServiceResponse<S::Response>>>,
+    response_topic_name: String,
     poll_interval: Duration,
 }
 
@@ -288,10 +312,14 @@ where
     /// Create a client with a custom polling interval.
     pub fn with_poll_interval(poll_interval: Duration) -> HorusResult<Self> {
         let req_topic = Topic::new(&S::request_topic())?;
-        let res_topic = Arc::new(Topic::new(&S::response_topic())?);
+        // Per-client response topic for async client
+        let client_id = next_client_id();
+        let response_topic_name = format!("{}.{}", S::response_topic(), client_id);
+        let res_topic = Arc::new(Topic::new(&response_topic_name)?);
         Ok(Self {
             req_topic,
             res_topic,
+            response_topic_name,
             poll_interval,
         })
     }
@@ -308,6 +336,7 @@ where
         self.req_topic.send(ServiceRequest {
             request_id,
             payload: request,
+            response_topic: Some(self.response_topic_name.clone()),
         });
         PendingServiceCall {
             request_id,

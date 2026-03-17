@@ -447,6 +447,20 @@ impl NodeRegistration {
             }
         }
 
+        // Auto-derive deadline from budget when deadline is not set.
+        //
+        // Robotics developers expect `.budget(500.us()).on_miss(Miss::Stop)` to
+        // trigger the Stop policy when the budget is exceeded. Without this rule,
+        // on_miss only fires on DEADLINE misses, so setting budget without deadline
+        // means on_miss silently never fires. By deriving deadline = budget, the
+        // user's budget IS their hard deadline — matching their mental model.
+        //
+        // If the user wants slack between budget and deadline (e.g., budget 500μs,
+        // deadline 900μs), they set both explicitly.
+        if self.tick_budget.is_some() && self.deadline.is_none() {
+            self.deadline = self.tick_budget;
+        }
+
         // Explicit budget/deadline without .rate() implies RT
         if (has_explicit_budget || has_explicit_deadline)
             && matches!(self.execution_class, ExecutionClass::BestEffort)

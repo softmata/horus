@@ -1612,6 +1612,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.header().messages_total.fetch_add(1, Ordering::Relaxed);
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);
+            // Notify event nodes that new data arrived on this topic
+            crate::core::NodeInfo::notify_event(&self.name);
             return;
         }
         // Fast path: DirectChannel-local (role=Both, same-thread pub+sub).
@@ -1633,11 +1635,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                     self.check_migration_periodic();
                 }
+                // Notify event nodes that new data arrived on this topic.
+                // This uses the topic name to find registered event node notifiers.
+                // Cost: ~100ns (mutex + HashMap lookup). Only impacts topics that
+                // have a registered event subscriber. No-op if no event node exists.
+                crate::core::NodeInfo::notify_event(&self.name);
                 return;
             }
             // Buffer full — extremely rare for same-thread, fall through to retry
         }
         self.send_lossy(msg);
+        // Notify event nodes after successful send through dispatched path
+        crate::core::NodeInfo::notify_event(&self.name);
     }
 
     /// Content logging path for send() — outlined to keep send() hot path tight.

@@ -1801,8 +1801,16 @@ impl Scheduler {
                         Vec::new()
                     };
 
-                    // Split RT nodes into independent chains for parallel execution.
-                    // If a dependency graph is available, use it. Otherwise, single chain.
+                    // Split RT nodes into isolated threads for safety.
+                    //
+                    // DEFAULT: One thread per RT node. If node A stalls in tick(),
+                    // node B keeps ticking on its own thread. This prevents a single
+                    // stalled node from blocking all RT siblings — critical for robots
+                    // where each actuator must be independently controllable.
+                    //
+                    // If a dependency graph is available AND has explicit ordering
+                    // constraints, nodes with dependencies are grouped into chains
+                    // (sequential on same thread). Independent nodes get their own threads.
                     let rt_chains = if let Some(ref graph) = self.dependency_graph {
                         let rt_indices: Vec<usize> = (0..groups.rt_nodes.len()).collect();
                         let chain_groups = graph.independent_chains(&rt_indices);
@@ -1827,10 +1835,13 @@ impl Scheduler {
                             }
                             chains
                         } else {
-                            vec![groups.rt_nodes]
+                            // Single chain from dependency graph — isolate each node
+                            groups.rt_nodes.into_iter().map(|n| vec![n]).collect()
                         }
                     } else {
-                        vec![groups.rt_nodes]
+                        // No dependency graph — isolate each RT node on its own thread.
+                        // This is the safe default: a stalled node cannot block siblings.
+                        groups.rt_nodes.into_iter().map(|n| vec![n]).collect()
                     };
 
                     rt_executor = Some(super::rt_executor::RtExecutor::start_pool(

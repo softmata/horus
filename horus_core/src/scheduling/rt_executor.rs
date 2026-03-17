@@ -114,15 +114,47 @@ impl RtExecutor {
     /// Stop the RT executor and reclaim its nodes.
     ///
     /// The caller should have already set `running` to `false` before calling this.
-    /// This method blocks until all RT threads finish and returns the collected nodes.
+    /// Each RT thread gets up to 3 seconds to exit cleanly. If a thread is stuck
+    /// (stalled `tick()`, deadlock, infinite loop), it is detached after the timeout
+    /// to prevent the entire scheduler shutdown from hanging.
+    ///
+    /// # Safety guarantee
+    /// Shutdown always completes within `SHUTDOWN_TIMEOUT_PER_THREAD × num_threads`.
+    /// A single stalled node cannot block the process from exiting.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
+        /// Maximum time to wait for each RT thread to exit during shutdown.
+        /// If a thread doesn't exit within this time, it is detached.
+        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+
         let mut all_nodes = Vec::new();
-        for handle in std::mem::take(&mut self.handles) {
-            match handle.join() {
-                Ok(nodes) => all_nodes.extend(nodes),
-                Err(_) => {
-                    print_line("[RT-thread] Thread panicked during stop");
+        for (i, handle) in std::mem::take(&mut self.handles).into_iter().enumerate() {
+            let start = Instant::now();
+            loop {
+                if handle.is_finished() {
+                    match handle.join() {
+                        Ok(nodes) => all_nodes.extend(nodes),
+                        Err(_) => {
+                            print_line(&format!(
+                                "[RT-thread] Thread {} panicked during stop", i
+                            ));
+                        }
+                    }
+                    break;
                 }
+                if start.elapsed() > SHUTDOWN_TIMEOUT {
+                    print_line(&format!(
+                        "[RT-thread] Thread {} did not exit within {:?} — \
+                         detaching (possible stalled tick). The thread will be \
+                         terminated when the process exits.",
+                        i, SHUTDOWN_TIMEOUT
+                    ));
+                    // Drop JoinHandle without joining. The thread continues
+                    // running but dies when the process exits. Nodes on this
+                    // thread are lost (not returned to the scheduler).
+                    drop(handle);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
         all_nodes

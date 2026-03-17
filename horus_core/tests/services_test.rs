@@ -176,6 +176,7 @@ mod tests {
         let req = ServiceRequest {
             request_id: 42,
             payload: AddTwoIntsRequest { a: 1, b: 2 },
+            response_topic: None,
         };
         assert_eq!(req.request_id, 42);
         assert_eq!(req.payload.a, 1);
@@ -187,6 +188,7 @@ mod tests {
         let req = ServiceRequest {
             request_id: 1,
             payload: "hello".to_string(),
+            response_topic: None,
         };
         let cloned = req.clone();
         assert_eq!(cloned.request_id, 1);
@@ -198,6 +200,7 @@ mod tests {
         let req = ServiceRequest {
             request_id: 99,
             payload: AddTwoIntsRequest { a: 7, b: 8 },
+            response_topic: None,
         };
         let bytes = serde_json::to_vec(&req).unwrap();
         let decoded: ServiceRequest<AddTwoIntsRequest> = serde_json::from_slice(&bytes).unwrap();

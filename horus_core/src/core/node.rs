@@ -517,12 +517,31 @@ impl NodeInfo {
     ///
     /// The notifier is an atomic counter that publishers bump to signal new data.
     /// The event watcher thread checks this counter to decide when to tick.
+    /// Registers the notifier under the node name for lookup via `notify_event()`.
     pub(crate) fn set_event_notifier(&mut self, notifier: Arc<std::sync::atomic::AtomicU64>) {
-        // Also register in the global registry for external notification
+        // Register in the global registry for external notification
         EVENT_NOTIFIER_REGISTRY
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(self.name.clone(), notifier.clone());
+        self.event_notifier = Some(notifier);
+    }
+
+    /// Set the event notifier AND register it under the topic name.
+    ///
+    /// This allows `Topic::send()` to notify event nodes by topic name,
+    /// since Topic knows its own name but not which event nodes subscribe to it.
+    pub(crate) fn set_event_notifier_with_topic(
+        &mut self,
+        notifier: Arc<std::sync::atomic::AtomicU64>,
+        topic_name: &str,
+    ) {
+        let mut registry = EVENT_NOTIFIER_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // Register under both node name and topic name
+        registry.insert(self.name.clone(), notifier.clone());
+        registry.insert(topic_name.to_string(), notifier.clone());
         self.event_notifier = Some(notifier);
     }
 

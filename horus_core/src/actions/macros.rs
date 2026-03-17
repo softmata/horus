@@ -147,10 +147,14 @@ macro_rules! action {
 
             impl $crate::core::LogSummary for [<$action_name Goal>] {
                 fn log_summary(&self) -> String {
-                    format!(
-                        concat!(stringify!([<$action_name Goal>]), "(", $crate::action!(@fmt_args $($goal_field),*), ")"),
-                        $(self.$goal_field),*
-                    )
+                    let mut s = String::from(stringify!([<$action_name Goal>]));
+                    s.push('(');
+                    $(
+                        if !s.ends_with('(') { s.push_str(", "); }
+                        s.push_str(&format!("{}={:?}", stringify!($goal_field), self.$goal_field));
+                    )*
+                    s.push(')');
+                    s
                 }
             }
 
@@ -177,10 +181,14 @@ macro_rules! action {
 
             impl $crate::core::LogSummary for [<$action_name Feedback>] {
                 fn log_summary(&self) -> String {
-                    format!(
-                        concat!(stringify!([<$action_name Feedback>]), "(", $crate::action!(@fmt_args $($feedback_field),*), ")"),
-                        $(self.$feedback_field),*
-                    )
+                    let mut s = String::from(stringify!([<$action_name Feedback>]));
+                    s.push('(');
+                    $(
+                        if !s.ends_with('(') { s.push_str(", "); }
+                        s.push_str(&format!("{}={:?}", stringify!($feedback_field), self.$feedback_field));
+                    )*
+                    s.push(')');
+                    s
                 }
             }
 
@@ -196,10 +204,14 @@ macro_rules! action {
 
             impl $crate::core::LogSummary for [<$action_name Result>] {
                 fn log_summary(&self) -> String {
-                    format!(
-                        concat!(stringify!([<$action_name Result>]), "(", $crate::action!(@fmt_args $($result_field),*), ")"),
-                        $(self.$result_field),*
-                    )
+                    let mut s = String::from(stringify!([<$action_name Result>]));
+                    s.push('(');
+                    $(
+                        if !s.ends_with('(') { s.push_str(", "); }
+                        s.push_str(&format!("{}={:?}", stringify!($result_field), self.$result_field));
+                    )*
+                    s.push(')');
+                    s
                 }
             }
 

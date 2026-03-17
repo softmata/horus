@@ -146,10 +146,11 @@ impl EventExecutor {
         let notifier = Arc::new(AtomicU64::new(0));
         let notifier_for_node = notifier.clone();
 
-        // Store the notifier in the node's context for publishers to find
-        // (future integration point — for now, we fall back to periodic polling)
+        // Store the notifier in the node's context and register under the topic name.
+        // This allows Topic::send() to notify event nodes automatically when
+        // new data is published — completing the Topic::send() → event tick wiring.
         if let Some(ref mut ctx) = node.context {
-            ctx.set_event_notifier(notifier_for_node);
+            ctx.set_event_notifier_with_topic(notifier_for_node, &topic_name);
         }
 
         let mut last_seen_generation: u64 = 0;

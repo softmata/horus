@@ -369,22 +369,17 @@ impl Scheduler {
                         Vec::new()
                     };
 
-                    // Split RT nodes into independent chains for parallel execution.
-                    // If a dependency graph is available, use it. Otherwise, single chain.
+                    // Split RT nodes into isolated threads for safety.
+                    // Default: one thread per node to prevent stalled nodes from
+                    // blocking siblings. Dependency graph can group dependent nodes.
                     let rt_chains = if let Some(ref graph) = self.dependency_graph {
                         let rt_indices: Vec<usize> = (0..groups.rt_nodes.len()).collect();
                         let chain_groups = graph.independent_chains(&rt_indices);
                         if chain_groups.len() > 1 {
-                            print_line(&format!(
-                                "RT executor: {} independent chains → {} threads",
-                                chain_groups.len(),
-                                chain_groups.len()
-                            ));
                             // Distribute nodes into chain groups
                             let mut chains: Vec<Vec<types::RegisteredNode>> =
                                 chain_groups.iter().map(|_| Vec::new()).collect();
                             let mut rt_nodes = groups.rt_nodes;
-                            // Reverse so we can pop from the end
                             rt_nodes.reverse();
                             for (chain_idx, group) in chain_groups.iter().enumerate() {
                                 for _ in group {
@@ -395,10 +390,11 @@ impl Scheduler {
                             }
                             chains
                         } else {
-                            vec![groups.rt_nodes]
+                            groups.rt_nodes.into_iter().map(|n| vec![n]).collect()
                         }
                     } else {
-                        vec![groups.rt_nodes]
+                        // No dependency graph — isolate each RT node on its own thread
+                        groups.rt_nodes.into_iter().map(|n| vec![n]).collect()
                     };
 
                     rt_executor = Some(rt_executor::RtExecutor::start_pool(
