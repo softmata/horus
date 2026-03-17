@@ -71,6 +71,9 @@ sync-all.sh
 *.swo
 *~
 
+# Cargo local config
+.cargo/
+
 # Claude Code
 .claude/
 .claude

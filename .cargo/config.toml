@@ -1,4 +1,0 @@
-[build]
-# Limit parallel rustc jobs to prevent WSL VM crashes under heavy compilation load
-# Even with 32GB RAM, 32 parallel rustc instances destabilize the WSL2 VM
-jobs = 4
