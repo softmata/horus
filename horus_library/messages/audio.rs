@@ -194,7 +194,6 @@ impl LogSummary for AudioFrame {
 }
 
 // Pod/Zeroable for zero-copy SHM
-use crate::messages::impl_pod_message;
 impl_pod_message!(AudioFrame);
 
 #[cfg(test)]

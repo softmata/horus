@@ -439,4 +439,93 @@ mod tests {
         assert!(commands.contains(&"viz".to_string()));
         assert!(commands.contains(&"slam".to_string()));
     }
+
+    // ── Additional resolver tests ──────────────────────────────────────
+
+    #[test]
+    fn test_is_disabled_global() {
+        let mut global = PluginRegistry::new_global();
+        global.register_plugin("nav", make_test_entry("nav", "1.0.0"));
+        global.disable_plugin("nav", "testing").unwrap();
+
+        let resolver = PluginResolver::with_registries(global, None, None);
+        assert!(resolver.is_disabled("nav"));
+    }
+
+    #[test]
+    fn test_is_disabled_false_for_active() {
+        let mut global = PluginRegistry::new_global();
+        global.register_plugin("nav", make_test_entry("nav", "1.0.0"));
+
+        let resolver = PluginResolver::with_registries(global, None, None);
+        assert!(!resolver.is_disabled("nav"));
+    }
+
+    #[test]
+    fn test_is_disabled_false_for_unknown() {
+        let global = PluginRegistry::new_global();
+        let resolver = PluginResolver::with_registries(global, None, None);
+        assert!(!resolver.is_disabled("nonexistent"));
+    }
+
+    #[test]
+    fn test_all_plugins_with_override() {
+        let mut global = PluginRegistry::new_global();
+        global.register_plugin("nav", make_test_entry("nav-global", "1.0.0"));
+
+        let mut project = PluginRegistry::new_project("test");
+        project.register_plugin("nav", make_test_entry("nav-project", "2.0.0"));
+
+        let resolver =
+            PluginResolver::with_registries(global, Some(project), Some(PathBuf::from("/test")));
+
+        let plugins = resolver.all_plugins();
+        let nav = plugins.iter().find(|p| p.command == "nav").unwrap();
+        // Project version should win
+        assert_eq!(nav.entry.version, "2.0.0");
+        assert!(nav.is_override);
+    }
+
+    #[test]
+    fn test_all_plugins_no_override() {
+        let mut global = PluginRegistry::new_global();
+        global.register_plugin("nav", make_test_entry("nav", "1.0.0"));
+        global.register_plugin("viz", make_test_entry("viz", "1.0.0"));
+
+        let resolver = PluginResolver::with_registries(global, None, None);
+
+        let plugins = resolver.all_plugins();
+        assert_eq!(plugins.len(), 2);
+        assert!(plugins.iter().all(|p| !p.is_override));
+    }
+
+    #[test]
+    fn test_in_project_false_without_project() {
+        let global = PluginRegistry::new_global();
+        let resolver = PluginResolver::with_registries(global, None, None);
+        assert!(!resolver.in_project());
+    }
+
+    #[test]
+    fn test_in_project_true_with_project() {
+        let global = PluginRegistry::new_global();
+        let project = PluginRegistry::new_project("test");
+        let resolver =
+            PluginResolver::with_registries(global, Some(project), Some(PathBuf::from("/test")));
+        assert!(resolver.in_project());
+    }
+
+    #[test]
+    fn test_resolve_nonexistent_returns_none() {
+        let global = PluginRegistry::new_global();
+        let resolver = PluginResolver::with_registries(global, None, None);
+        assert!(resolver.resolve("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_verification_status_variants() {
+        assert_ne!(VerificationStatus::Valid, VerificationStatus::ChecksumMismatch);
+        assert_ne!(VerificationStatus::Valid, VerificationStatus::Error);
+        assert_ne!(VerificationStatus::ChecksumMismatch, VerificationStatus::Error);
+    }
 }

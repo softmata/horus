@@ -8,11 +8,11 @@ expression: render_to_string(&buffer)
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌Node Details - Use  to select, Enter to view logs─────────────────────────────────────────────────────────────────────┐
 │ Name               PID      CPU      Memory     Status     Publishes                    Subscribes                   │
-│ lidar_driver       1001     12.5%    48 MB      Stopped    scan                         -                            │
-│ planner            1002     45.2%    128 MB     Stopped    cmd_vel                      scan, odom                   │
-│ motor_controller   1003     5.1%     16 MB      Stopped    odom                         cmd_vel                      │
-│ camera_node        1004     0.0%     256 MB     Stopped    image                        -                            │
-│ safety_monitor     1005     2.3%     8 MB       Stopped    -                            scan, odom, cmd_vel          │
+│ lidar_driver       1001     12.5%    48.0MB     Stopped    scan                         -                            │
+│ planner            1002     45.2%    128.0MB    Stopped    cmd_vel                      scan, odom                   │
+│ motor_controller   1003     5.1%     16.0MB     Stopped    odom                         cmd_vel                      │
+│ camera_node        1004     0.0%     256.0MB    Stopped    image                        -                            │
+│ safety_monitor     1005     2.3%     8.0MB      Stopped    -                            scan, odom, cmd_vel          │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

@@ -160,28 +160,6 @@ fn load_horusignore(dir: &std::path::Path) -> Vec<String> {
     }
 }
 
-/// Compute a SHA256 hash of all files in a directory (sorted for determinism)
-fn hash_directory(dir: &std::path::Path) -> Result<String> {
-    let mut hasher = Sha256::new();
-    let mut paths: Vec<_> = WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file())
-        .map(|e| e.path().to_path_buf())
-        .collect();
-    paths.sort();
-
-    for path in &paths {
-        let relative = path.strip_prefix(dir).unwrap_or(path);
-        hasher.update(relative.to_string_lossy().as_bytes());
-        let content = fs::read(path)?;
-        hasher.update(&content);
-    }
-
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
 impl RegistryClient {
     /// Fetch driver metadata for a package from the registry
     /// Returns error if the package is not a driver or not found in the registry
@@ -844,6 +822,181 @@ impl RegistryClient {
             .collect();
 
         Ok(packages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // ── registry_error formatting ───────────────────────────────────────
+
+    #[test]
+    fn test_registry_error_401_shows_auth_hint() {
+        let err = registry_error(reqwest::StatusCode::UNAUTHORIZED, "", "publish");
+        let msg = format!("{err}");
+        assert!(msg.contains("horus auth login"), "Should suggest auth login: {msg}");
+    }
+
+    #[test]
+    fn test_registry_error_403_shows_permission_hint() {
+        let err = registry_error(reqwest::StatusCode::FORBIDDEN, "", "publish");
+        let msg = format!("{err}");
+        assert!(msg.contains("permission"), "Should mention permission: {msg}");
+    }
+
+    #[test]
+    fn test_registry_error_404_shows_not_found() {
+        let err = registry_error(reqwest::StatusCode::NOT_FOUND, "", "search");
+        let msg = format!("{err}");
+        assert!(msg.contains("not found"), "Should say not found: {msg}");
+    }
+
+    #[test]
+    fn test_registry_error_409_shows_conflict() {
+        let err = registry_error(reqwest::StatusCode::CONFLICT, "", "publish");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("version") || msg.contains("conflict"),
+            "Should mention version conflict: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_registry_error_429_shows_rate_limit() {
+        let err = registry_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "", "search");
+        let msg = format!("{err}");
+        assert!(msg.contains("Rate limit") || msg.contains("wait"), "Should mention rate limit: {msg}");
+    }
+
+    #[test]
+    fn test_registry_error_500_shows_server_error() {
+        let err = registry_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "", "publish");
+        let msg = format!("{err}");
+        assert!(msg.contains("server") || msg.contains("temporary"), "Should mention server error: {msg}");
+    }
+
+    #[test]
+    fn test_registry_error_unknown_status() {
+        let err = registry_error(reqwest::StatusCode::IM_A_TEAPOT, "", "brew");
+        let msg = format!("{err}");
+        assert!(msg.contains("418"), "Should include status code: {msg}");
+    }
+
+    #[test]
+    fn test_registry_error_includes_body() {
+        let err = registry_error(reqwest::StatusCode::BAD_REQUEST, "invalid name format", "publish");
+        let msg = format!("{err}");
+        assert!(msg.contains("invalid name format"), "Should include body: {msg}");
+    }
+
+    #[test]
+    fn test_registry_error_empty_body_no_detail() {
+        let err = registry_error(reqwest::StatusCode::BAD_REQUEST, "", "publish");
+        let msg = format!("{err}");
+        assert!(!msg.contains("Server response:"), "Empty body should not show detail line: {msg}");
+    }
+
+    // ── should_exclude ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_should_exclude_git_dir() {
+        let base = Path::new("/project");
+        assert!(should_exclude(Path::new("/project/.git/config"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_target_dir() {
+        let base = Path::new("/project");
+        assert!(should_exclude(Path::new("/project/target/debug/binary"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_horus_dir() {
+        let base = Path::new("/project");
+        assert!(should_exclude(Path::new("/project/.horus/Cargo.toml"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_env_file() {
+        let base = Path::new("/project");
+        assert!(should_exclude(Path::new("/project/.env"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_env_variants() {
+        let base = Path::new("/project");
+        assert!(should_exclude(Path::new("/project/.env.local"), base, &[]));
+        assert!(should_exclude(Path::new("/project/.env.production"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_credentials() {
+        let base = Path::new("/project");
+        assert!(should_exclude(Path::new("/project/credentials.json"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_ssh_keys() {
+        let base = Path::new("/project");
+        assert!(should_exclude(Path::new("/project/id_rsa"), base, &[]));
+        assert!(should_exclude(Path::new("/project/id_ed25519"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_not_exclude_source_code() {
+        let base = Path::new("/project");
+        assert!(!should_exclude(Path::new("/project/src/main.rs"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_not_exclude_horus_toml() {
+        let base = Path::new("/project");
+        assert!(!should_exclude(Path::new("/project/horus.toml"), base, &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_custom_pattern() {
+        let base = Path::new("/project");
+        let custom = vec!["experiments".to_string()];
+        assert!(should_exclude(Path::new("/project/experiments/data.csv"), base, &custom));
+    }
+
+    #[test]
+    fn test_should_exclude_glob_pattern() {
+        let base = Path::new("/project");
+        let custom = vec!["*.log".to_string()];
+        assert!(should_exclude(Path::new("/project/debug.log"), base, &custom));
+    }
+
+    // ── DEFAULT_EXCLUDES and SECRET_PATTERNS constants ──────────────────
+
+    #[test]
+    fn test_default_excludes_count() {
+        assert!(DEFAULT_EXCLUDES.len() >= 11, "Should have at least 11 default excludes");
+    }
+
+    #[test]
+    fn test_secret_patterns_count() {
+        assert!(SECRET_PATTERNS.len() >= 10, "Should have at least 10 secret patterns");
+    }
+
+    #[test]
+    fn test_default_excludes_contains_critical_dirs() {
+        assert!(DEFAULT_EXCLUDES.contains(&".git"));
+        assert!(DEFAULT_EXCLUDES.contains(&"target"));
+        assert!(DEFAULT_EXCLUDES.contains(&".horus"));
+        assert!(DEFAULT_EXCLUDES.contains(&"node_modules"));
+        assert!(DEFAULT_EXCLUDES.contains(&"__pycache__"));
+    }
+
+    #[test]
+    fn test_secret_patterns_contains_credentials() {
+        assert!(SECRET_PATTERNS.contains(&"credentials.json"));
+        assert!(SECRET_PATTERNS.contains(&".aws"));
+        assert!(SECRET_PATTERNS.contains(&"id_rsa"));
+        assert!(SECRET_PATTERNS.contains(&"signing_key"));
     }
 }
 

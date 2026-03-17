@@ -32,6 +32,7 @@ pub(crate) mod nodes;
 pub(crate) mod topics;
 
 use horus_core::core::HealthStatus;
+#[allow(unused_imports)] // used by discovery/tests.rs for SHM presence mocking
 use horus_core::core::NodePresence;
 use horus_core::error::HorusResult;
 use horus_core::memory::shm_topics_dir;
@@ -220,3 +221,122 @@ pub fn cleanup_stale_topics() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    // ── Type construction ───────────────────────────────────────────────
+
+    #[test]
+    fn topic_status_active_variant() {
+        let s = TopicStatus::Active;
+        assert_eq!(s, TopicStatus::Active);
+    }
+
+    #[test]
+    fn topic_status_idle_variant() {
+        let s = TopicStatus::Idle;
+        assert_eq!(s, TopicStatus::Idle);
+    }
+
+    #[test]
+    fn topic_status_stale_variant() {
+        let s = TopicStatus::Stale;
+        assert_eq!(s, TopicStatus::Stale);
+    }
+
+    #[test]
+    fn topic_status_all_distinct() {
+        assert_ne!(TopicStatus::Active, TopicStatus::Idle);
+        assert_ne!(TopicStatus::Active, TopicStatus::Stale);
+        assert_ne!(TopicStatus::Idle, TopicStatus::Stale);
+    }
+
+    #[test]
+    fn process_category_variants() {
+        assert_eq!(ProcessCategory::Node, ProcessCategory::Node);
+        assert_ne!(ProcessCategory::Node, ProcessCategory::Tool);
+        assert_ne!(ProcessCategory::Node, ProcessCategory::CLI);
+        assert_ne!(ProcessCategory::Tool, ProcessCategory::CLI);
+    }
+
+    #[test]
+    fn topic_info_construction() {
+        let info = TopicInfo {
+            topic: "cmd_vel".to_string(),
+            type_name: "CmdVel".to_string(),
+        };
+        assert_eq!(info.topic, "cmd_vel");
+        assert_eq!(info.type_name, "CmdVel");
+    }
+
+    // ── DiscoveryCache ──────────────────────────────────────────────────
+
+    #[test]
+    fn discovery_cache_new_is_stale() {
+        let cache = DiscoveryCache::new();
+        // New cache should be stale (forces first fetch)
+        assert!(cache.is_nodes_stale());
+        assert!(cache.is_shared_memory_stale());
+    }
+
+    #[test]
+    fn discovery_cache_fresh_after_update() {
+        let mut cache = DiscoveryCache::new();
+        cache.update_nodes(vec![]);
+        assert!(!cache.is_nodes_stale());
+    }
+
+    #[test]
+    fn discovery_cache_shm_fresh_after_update() {
+        let mut cache = DiscoveryCache::new();
+        cache.update_shared_memory(vec![]);
+        assert!(!cache.is_shared_memory_stale());
+    }
+
+    #[test]
+    fn discovery_cache_stores_data() {
+        let mut cache = DiscoveryCache::new();
+        let shm = vec![SharedMemoryInfo {
+            topic_name: "test_topic".to_string(),
+            size_bytes: 4096,
+            active: true,
+            accessing_processes: vec![1234],
+            last_modified: None,
+            message_type: Some("CmdVel".to_string()),
+            publishers: vec!["node_a".to_string()],
+            subscribers: vec!["node_b".to_string()],
+            message_rate_hz: 100.0,
+            status: TopicStatus::Active,
+            age_string: "just now".to_string(),
+            is_system: false,
+            messages_total: 42,
+            topic_kind: 0,
+        }];
+        cache.update_shared_memory(shm);
+        assert_eq!(cache.shared_memory.len(), 1);
+        assert_eq!(cache.shared_memory[0].topic_name, "test_topic");
+    }
+
+    // ── Dispatch functions ──────────────────────────────────────────────
+
+    #[test]
+    fn discover_nodes_returns_ok() {
+        // On a clean system (no running HORUS), should return Ok
+        let result = discover_nodes();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn discover_shared_memory_returns_ok() {
+        let result = discover_shared_memory();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cleanup_stale_topics_does_not_panic() {
+        // Should not panic even with no SHM directory
+        cleanup_stale_topics();
+    }
+}

@@ -74,7 +74,7 @@ impl PointCloud {
     /// assert_eq!(pc.point_count(), 2);
     /// ```
     pub fn from_xyz(points: &[[f32; 3]]) -> HorusResult<Self> {
-        let mut pc = Self::new(points.len() as u32, 3, TensorDtype::F32)?;
+        let pc = Self::new(points.len() as u32, 3, TensorDtype::F32)?;
         let data = pc.data_mut();
         let floats: &mut [f32] = bytemuck::cast_slice_mut(data);
         for (i, p) in points.iter().enumerate() {
@@ -98,7 +98,7 @@ impl PointCloud {
     /// assert!(pc.has_intensity());
     /// ```
     pub fn from_xyzi(points: &[[f32; 4]]) -> HorusResult<Self> {
-        let mut pc = Self::new(points.len() as u32, 4, TensorDtype::F32)?;
+        let pc = Self::new(points.len() as u32, 4, TensorDtype::F32)?;
         let data = pc.data_mut();
         let floats: &mut [f32] = bytemuck::cast_slice_mut(data);
         for (i, p) in points.iter().enumerate() {
@@ -115,7 +115,7 @@ impl PointCloud {
     ///
     /// Each point is `[x, y, z, r, g, b]`. Data is copied into shared memory.
     pub fn from_xyzrgb(points: &[[f32; 6]]) -> HorusResult<Self> {
-        let mut pc = Self::new(points.len() as u32, 6, TensorDtype::F32)?;
+        let pc = Self::new(points.len() as u32, 6, TensorDtype::F32)?;
         let data = pc.data_mut();
         let floats: &mut [f32] = bytemuck::cast_slice_mut(data);
         for (i, p) in points.iter().enumerate() {

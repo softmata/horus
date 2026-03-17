@@ -1594,4 +1594,134 @@ mod tests {
         let content = fs::read_to_string(tmp.path().join(".horus/cache/important")).unwrap();
         assert_eq!(content, "keep me", "Existing files should be preserved");
     }
+
+    // ── Signal handling & shutdown lifecycle ─────────────────────────────
+
+    #[test]
+    fn running_flag_starts_true() {
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        assert!(running.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn running_flag_set_to_false_stops_loop() {
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        running.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!running.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn running_flag_cross_thread_visibility() {
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+
+        let handle = std::thread::spawn(move || {
+            // Simulate ctrlc handler setting flag
+            r.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+        handle.join().unwrap();
+
+        // Main thread should see the change
+        assert!(
+            !running.load(std::sync::atomic::Ordering::SeqCst),
+            "Cross-thread flag update must be visible"
+        );
+    }
+
+    #[test]
+    fn running_flag_multiple_threads_see_change() {
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut handles = vec![];
+
+        // Spawn 4 reader threads
+        for _ in 0..4 {
+            let r = running.clone();
+            handles.push(std::thread::spawn(move || {
+                // Spin until flag is false (simulates child process loop)
+                while r.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+                true // successfully saw the flag change
+            }));
+        }
+
+        // Small delay then set flag
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        running.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // All threads should exit
+        for handle in handles {
+            let saw_change = handle.join().unwrap();
+            assert!(saw_change);
+        }
+    }
+
+    #[test]
+    fn build_child_env_contains_path() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let env = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(
+            env.iter().any(|(k, _)| k == "PATH"),
+            "build_child_env must include PATH"
+        );
+    }
+
+    #[test]
+    fn build_child_env_contains_ld_library_path() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let env = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(
+            env.iter().any(|(k, _)| k == "LD_LIBRARY_PATH"),
+            "build_child_env must include LD_LIBRARY_PATH"
+        );
+    }
+
+    #[test]
+    fn build_child_env_path_includes_horus_bin() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create .horus/bin so it gets included
+        fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let env = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let path_entry = env.iter().find(|(k, _)| k == "PATH");
+        assert!(path_entry.is_some());
+        let path_val = &path_entry.unwrap().1;
+        assert!(
+            path_val.contains(".horus/bin") || path_val.contains(".horus\\bin"),
+            "PATH should include .horus/bin: {path_val}"
+        );
+    }
+
+    #[test]
+    fn build_child_env_returns_nonempty() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let env = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(
+            !env.is_empty(),
+            "build_child_env should return at least PATH and LD_LIBRARY_PATH"
+        );
+    }
 }

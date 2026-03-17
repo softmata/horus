@@ -1348,4 +1348,206 @@ version = "0.1.0"
         assert_eq!(cmd.get_program(), "/bin/true");
         assert_eq!(cmd.get_args().count(), 0);
     }
+
+    // ── default_manifest ─────────────────────────────────────────────────
+
+    #[test]
+    fn default_manifest_has_expected_name() {
+        let m = default_manifest();
+        assert_eq!(m.package.name, "horus-project");
+    }
+
+    #[test]
+    fn default_manifest_has_expected_version() {
+        let m = default_manifest();
+        assert_eq!(m.package.version, "0.1.0");
+    }
+
+    #[test]
+    fn default_manifest_has_edition_1() {
+        let m = default_manifest();
+        assert_eq!(m.package.edition, "1");
+    }
+
+    #[test]
+    fn default_manifest_has_empty_collections() {
+        let m = default_manifest();
+        assert!(m.dependencies.is_empty());
+        assert!(m.dev_dependencies.is_empty());
+        assert!(m.drivers.is_empty());
+        assert!(m.scripts.is_empty());
+        assert!(m.enable.is_empty());
+    }
+
+    #[test]
+    fn default_manifest_has_no_optional_fields() {
+        let m = default_manifest();
+        assert!(m.package.description.is_none());
+        assert!(m.package.license.is_none());
+        assert!(m.package.repository.is_none());
+        assert!(m.package.package_type.is_none());
+        assert!(m.cpp.is_none());
+    }
+
+    // ── execute_build_only ───────────────────────────────────────────────
+
+    #[test]
+    fn execute_build_only_bails_on_multiple_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let f1 = tmp.path().join("a.rs");
+        let f2 = tmp.path().join("b.rs");
+        fs::write(&f1, "fn main() {}").unwrap();
+        fs::write(&f2, "fn main() {}").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![f1, f2], false, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("multiple files") || err.contains("Build-only"),
+            "Expected multi-file error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn execute_build_only_python_skips_build() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let py_file = tmp.path().join("main.py");
+        fs::write(&py_file, "print('hello')").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![py_file], false, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // Python is interpreted — build-only should succeed with no-op
+        assert!(result.is_ok(), "Python build should succeed (no-op): {:?}", result.err());
+    }
+
+    #[test]
+    fn execute_build_only_unsupported_language_bails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("main.xyz");
+        fs::write(&file, "some content").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![file], false, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // Should fail with unsupported language or detection failure
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn execute_build_only_clean_flag_cleans_before_build() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Create some cache artifacts
+        fs::create_dir_all(tmp.path().join("__pycache__")).unwrap();
+        fs::write(tmp.path().join("__pycache__/mod.pyc"), b"x").unwrap();
+        // Create a Python file so build succeeds (python = no-op)
+        let py_file = tmp.path().join("main.py");
+        fs::write(&py_file, "print('hello')").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![py_file], false, true);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // __pycache__ should have been cleaned by the clean flag
+        assert!(!tmp.path().join("__pycache__").exists());
+    }
+
+    #[test]
+    fn execute_build_only_empty_files_needs_auto_detect() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Empty dir — auto-detect should fail (no main.rs or main.py)
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![], false, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // Should fail because auto_detect_main_file() finds nothing
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn execute_build_only_empty_files_auto_detects_main_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(tmp.path().join("main.py"), "print('hi')").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![], false, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // Should auto-detect main.py and succeed (python = no-op build)
+        assert!(result.is_ok(), "Auto-detect main.py should work: {:?}", result.err());
+    }
+
+    #[test]
+    fn execute_build_only_release_flag_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let py_file = tmp.path().join("main.py");
+        fs::write(&py_file, "pass").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![py_file], true, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // release=true should not cause errors for python
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_build_only_nonexistent_file_errors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fake = tmp.path().join("nonexistent.rs");
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![fake], false, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn execute_build_only_single_file_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let py_file = tmp.path().join("app.py");
+        fs::write(&py_file, "x = 1").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        env::set_current_dir(tmp.path()).unwrap();
+        let result = execute_build_only(vec![py_file], false, false);
+        env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // Single python file should be fine
+        assert!(result.is_ok());
+    }
 }

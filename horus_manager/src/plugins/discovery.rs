@@ -460,4 +460,131 @@ hardware = []
         let result = discovery.discover_registry();
         assert!(result.is_ok(), "should gracefully handle offline registry");
     }
+
+    // ── Additional discovery tests ─────────────────────────────────────
+
+    #[test]
+    fn test_category_more_types() {
+        let discovery = PluginDiscovery::new();
+        let dummy = toml::Value::Table(toml::Table::new());
+
+        assert_eq!(
+            discovery.detect_category("horus-imu-bno055", &dummy),
+            PluginCategory::Imu
+        );
+        assert_eq!(
+            discovery.detect_category("horus-motor-driver", &dummy),
+            PluginCategory::Motor
+        );
+        assert_eq!(
+            discovery.detect_category("horus-gps-ublox", &dummy),
+            PluginCategory::Gps
+        );
+    }
+
+    #[test]
+    fn test_category_unknown_name() {
+        let discovery = PluginDiscovery::new();
+        let dummy = toml::Value::Table(toml::Table::new());
+
+        // Names that don't match known categories should be Other
+        assert_eq!(
+            discovery.detect_category("horus-custom-tool", &dummy),
+            PluginCategory::Other
+        );
+    }
+
+    #[test]
+    fn test_discover_local_non_horus_prefix_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let non_horus = tmp.path().join("my-package");
+        fs::create_dir_all(&non_horus).unwrap();
+        fs::write(
+            non_horus.join("Cargo.toml"),
+            "[package]\nname = \"my-package\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let discovery = PluginDiscovery::new();
+        let plugins = discovery.discover_local(tmp.path()).unwrap();
+
+        // Non-horus-prefixed packages should not be discovered as plugins
+        assert!(
+            plugins.is_empty(),
+            "Non-horus packages should be skipped: {:?}",
+            plugins
+        );
+    }
+
+    #[test]
+    fn test_discover_local_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let discovery = PluginDiscovery::new();
+        let plugins = discovery.discover_local(tmp.path()).unwrap();
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn test_discover_local_multiple_plugins() {
+        let tmp = TempDir::new().unwrap();
+
+        for name in &["horus-camera", "horus-lidar", "horus-sim3d"] {
+            let dir = tmp.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ndescription = \"Test\"\n",
+                    name
+                ),
+            )
+            .unwrap();
+        }
+
+        let discovery = PluginDiscovery::new();
+        let plugins = discovery.discover_local(tmp.path()).unwrap();
+        assert_eq!(plugins.len(), 3);
+    }
+
+    #[test]
+    fn test_add_workspace_path_accumulates() {
+        let mut discovery = PluginDiscovery::new();
+        let initial_len = discovery.workspace_paths.len();
+        discovery.add_workspace_path(PathBuf::from("/tmp/workspace1"));
+        discovery.add_workspace_path(PathBuf::from("/tmp/workspace2"));
+        assert_eq!(discovery.workspace_paths.len(), initial_len + 2);
+    }
+
+    #[test]
+    fn test_new_discovery_has_empty_cache() {
+        let discovery = PluginDiscovery::new();
+        assert!(discovery.cache.is_empty());
+    }
+
+    #[test]
+    fn test_plugin_source_type_variants() {
+        let _ = PluginSourceType::Local;
+        let _ = PluginSourceType::Registry;
+        let _ = PluginSourceType::CratesIo;
+        let _ = PluginSourceType::Git;
+    }
+
+    #[test]
+    fn test_available_plugin_struct_construction() {
+        let plugin = AvailablePlugin {
+            name: "horus-nav".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Navigation".to_string(),
+            category: PluginCategory::Other,
+            source: PluginSourceType::Registry,
+            platforms: vec!["linux".to_string()],
+            horus_compat: ">=0.1.0".to_string(),
+            has_prebuilt: true,
+            system_deps: vec![],
+            features: vec!["slam".to_string()],
+        };
+        assert_eq!(plugin.name, "horus-nav");
+        assert!(plugin.has_prebuilt);
+        assert_eq!(plugin.features.len(), 1);
+    }
 }

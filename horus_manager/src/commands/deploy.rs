@@ -1322,4 +1322,513 @@ targets:
         assert!(dev.port.is_none());
         assert!(dev.identity.is_none());
     }
+
+    // ── extract_python_file ────────────────────────────────────────────
+
+    #[test]
+    fn extract_python_file_standard() {
+        assert_eq!(
+            extract_python_file("python3 src/app.py"),
+            Some("src/app.py".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_python_file_python2_syntax() {
+        assert_eq!(
+            extract_python_file("python main.py"),
+            Some("main.py".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_python_file_with_flags_after() {
+        assert_eq!(
+            extract_python_file("python3 main.py --verbose --port 8080"),
+            Some("main.py".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_python_file_bare_py_file() {
+        assert_eq!(
+            extract_python_file("app.py"),
+            Some("app.py".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_python_file_non_python_returns_none() {
+        assert_eq!(extract_python_file("node index.js"), None);
+    }
+
+    #[test]
+    fn extract_python_file_empty_string() {
+        assert_eq!(extract_python_file(""), None);
+    }
+
+    #[test]
+    fn extract_python_file_python3_without_file() {
+        // "python3" alone without a .py file after it
+        assert_eq!(extract_python_file("python3 --version"), None);
+    }
+
+    #[test]
+    fn extract_python_file_nested_path() {
+        assert_eq!(
+            extract_python_file("python3 src/nodes/sensor.py"),
+            Some("src/nodes/sensor.py".to_string())
+        );
+    }
+
+    // ── find_binary_name (with tempdir) ────────────────────────────────
+
+    #[test]
+    fn find_binary_name_from_horus_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("horus.toml"),
+            "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\nedition = \"1\"\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_binary_name();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // horus.toml name with hyphens → underscores for binary
+        assert_eq!(result, Some("my_robot".to_string()));
+    }
+
+    #[test]
+    fn find_binary_name_from_cargo_toml_bin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cargo = r#"
+[[bin]]
+name = "sensor_node"
+path = "src/main.rs"
+
+[package]
+name = "my-project"
+version = "0.1.0"
+"#;
+        std::fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_binary_name();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        // [[bin]].name takes precedence
+        assert_eq!(result, Some("sensor_node".to_string()));
+    }
+
+    #[test]
+    fn find_binary_name_empty_dir_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_binary_name();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_none());
+    }
+
+    // ── find_python_entry (with tempdir) ───────────────────────────────
+
+    #[test]
+    fn find_python_entry_from_src_main_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.py"), "pass").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_python_entry();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(result, Some("src/main.py".to_string()));
+    }
+
+    #[test]
+    fn find_python_entry_from_root_main_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("main.py"), "pass").unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_python_entry();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(result, Some("main.py".to_string()));
+    }
+
+    #[test]
+    fn find_python_entry_empty_dir_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_python_entry();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_python_entry_from_horus_toml_scripts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "bot"
+version = "0.1.0"
+edition = "1"
+
+[scripts]
+run = "python3 src/robot.py"
+"#;
+        std::fs::write(tmp.path().join("horus.toml"), toml).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_python_entry();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(result, Some("src/robot.py".to_string()));
+    }
+
+    // ── find_cpp_binary (with tempdir) ─────────────────────────────────
+
+    #[test]
+    fn find_cpp_binary_from_cmake() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("CMakeLists.txt"),
+            "add_executable(my_robot src/main.cpp)\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_cpp_binary();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(result, Some("my_robot".to_string()));
+    }
+
+    #[test]
+    fn find_cpp_binary_from_horus_toml_fallback() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("horus.toml"),
+            "[package]\nname = \"cpp-bot\"\nversion = \"0.1.0\"\nedition = \"1\"\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_cpp_binary();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert_eq!(result, Some("cpp_bot".to_string()));
+    }
+
+    #[test]
+    fn find_cpp_binary_empty_dir_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = find_cpp_binary();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_none());
+    }
+
+    // ── DeployConfig command construction ──────────────────────────────
+
+    #[test]
+    fn deploy_config_excludes_default_patterns() {
+        let config = DeployConfig {
+            excludes: vec![
+                "target".to_string(),
+                ".git".to_string(),
+                "node_modules".to_string(),
+                "__pycache__".to_string(),
+                "*.pyc".to_string(),
+            ],
+            ..Default::default()
+        };
+        assert!(config.excludes.contains(&"target".to_string()));
+        assert!(config.excludes.contains(&".git".to_string()));
+        assert!(config.excludes.contains(&"__pycache__".to_string()));
+        assert_eq!(config.excludes.len(), 5);
+    }
+
+    #[test]
+    fn deploy_config_with_identity() {
+        let config = DeployConfig {
+            target: "pi@10.0.0.1".to_string(),
+            identity: Some(PathBuf::from("/home/user/.ssh/robot_key")),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.identity.unwrap(),
+            PathBuf::from("/home/user/.ssh/robot_key")
+        );
+    }
+
+    #[test]
+    fn deploy_config_custom_port() {
+        let config = DeployConfig {
+            target: "pi@10.0.0.1".to_string(),
+            port: 2222,
+            ..Default::default()
+        };
+        assert_eq!(config.port, 2222);
+    }
+
+    #[test]
+    fn deploy_config_debug_mode() {
+        let config = DeployConfig {
+            release: false,
+            ..Default::default()
+        };
+        assert!(!config.release);
+    }
+
+    #[test]
+    fn resolve_target_with_at_sign_bypasses_yaml() {
+        // Any target containing '@' is treated as direct user@host
+        let resolved = resolve_target("admin@10.0.0.5");
+        assert_eq!(resolved.host, "admin@10.0.0.5");
+        // No YAML fields should be populated
+        assert!(resolved.arch.is_none());
+        assert!(resolved.dir.is_none());
+        assert!(resolved.port.is_none());
+        assert!(resolved.identity.is_none());
+    }
+
+    // ── Fleet deployment (load_deploy_yaml + multi-target) ─────────────
+
+    #[test]
+    fn load_deploy_yaml_with_valid_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        std::fs::write(
+            tmp.path().join(".horus/deploy.yaml"),
+            "targets:\n  robot:\n    host: pi@10.0.0.1\n    arch: aarch64\n  jetson:\n    host: nvidia@10.0.0.2\n",
+        ).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_deploy_yaml();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_some());
+        let yaml = result.unwrap();
+        assert_eq!(yaml.targets.len(), 2);
+        assert!(yaml.targets.contains_key("robot"));
+        assert!(yaml.targets.contains_key("jetson"));
+    }
+
+    #[test]
+    fn load_deploy_yaml_missing_file_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_deploy_yaml();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_deploy_yaml_invalid_yaml_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        std::fs::write(
+            tmp.path().join(".horus/deploy.yaml"),
+            "{{{{invalid yaml content",
+        ).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = load_deploy_yaml();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn deploy_multi_args_empty_targets_no_all() {
+        let args = DeployMultiArgs {
+            targets: vec![],
+            all: false,
+            parallel: false,
+            remote_dir: None,
+            arch: None,
+            run_after: false,
+            release: true,
+            port: 22,
+            identity: None,
+            dry_run: false,
+        };
+        let result = run_deploy_multi(args);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("No target"),
+            "Expected 'No target' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deploy_multi_args_all_without_yaml_errors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let args = DeployMultiArgs {
+            targets: vec![],
+            all: true,
+            parallel: false,
+            remote_dir: None,
+            arch: None,
+            run_after: false,
+            release: true,
+            port: 22,
+            identity: None,
+            dry_run: false,
+        };
+        let result = run_deploy_multi(args);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("No targets configured") || err.contains("deploy.yaml"),
+            "Expected deploy.yaml error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deploy_yaml_target_resolution_merges_fields() {
+        let yaml_str = r#"
+targets:
+  robot:
+    host: pi@10.0.0.1
+    arch: aarch64
+    dir: ~/app
+    port: 2222
+    identity: ~/.ssh/id_robot
+"#;
+        let yaml: DeployYaml = serde_yaml::from_str(yaml_str).unwrap();
+        let target = &yaml.targets["robot"];
+        assert_eq!(target.host, "pi@10.0.0.1");
+        assert_eq!(target.arch.as_deref(), Some("aarch64"));
+        assert_eq!(target.dir.as_deref(), Some("~/app"));
+        assert_eq!(target.port, Some(2222));
+        assert_eq!(target.identity.as_deref(), Some("~/.ssh/id_robot"));
+    }
+
+    #[test]
+    fn deploy_yaml_multiple_targets_sorted() {
+        let yaml_str = r#"
+targets:
+  zebra:
+    host: z@z.local
+  alpha:
+    host: a@a.local
+  middle:
+    host: m@m.local
+"#;
+        let yaml: DeployYaml = serde_yaml::from_str(yaml_str).unwrap();
+        let mut names: Vec<String> = yaml.targets.keys().cloned().collect();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn deploy_yaml_target_minimal_only_host() {
+        let yaml_str = r#"
+targets:
+  dev:
+    host: user@localhost
+"#;
+        let yaml: DeployYaml = serde_yaml::from_str(yaml_str).unwrap();
+        let dev = &yaml.targets["dev"];
+        assert_eq!(dev.host, "user@localhost");
+        assert!(dev.arch.is_none());
+        assert!(dev.dir.is_none());
+        assert!(dev.port.is_none());
+        assert!(dev.identity.is_none());
+    }
+
+    #[test]
+    fn deploy_args_dry_run_flag() {
+        let args = DeployArgs {
+            target: "pi@10.0.0.1".to_string(),
+            remote_dir: None,
+            arch: None,
+            run_after: false,
+            release: true,
+            port: 22,
+            identity: None,
+            dry_run: true,
+        };
+        // dry_run should print plan without executing
+        // We can't easily capture stdout, but verify the struct is constructible
+        assert!(args.dry_run);
+        assert_eq!(args.target, "pi@10.0.0.1");
+    }
+
+    #[test]
+    fn deploy_multi_args_parallel_flag() {
+        let args = DeployMultiArgs {
+            targets: vec!["robot1".to_string(), "robot2".to_string()],
+            all: false,
+            parallel: true,
+            remote_dir: None,
+            arch: None,
+            run_after: false,
+            release: true,
+            port: 22,
+            identity: None,
+            dry_run: false,
+        };
+        assert!(args.parallel);
+        assert_eq!(args.targets.len(), 2);
+    }
 }

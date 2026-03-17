@@ -128,6 +128,73 @@ impl<T> SpscRing<T> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_send_recv_roundtrip() {
+        let ring = SpscRing::<u64>::new(16);
+        ring.try_send(42).unwrap();
+        assert_eq!(ring.try_recv(), Some(42));
+        assert_eq!(ring.try_recv(), None);
+    }
+
+    #[test]
+    fn fifo_ordering() {
+        let ring = SpscRing::<u64>::new(16);
+        for i in 0..5 {
+            ring.try_send(i).unwrap();
+        }
+        for i in 0..5 {
+            assert_eq!(ring.try_recv(), Some(i));
+        }
+    }
+
+    #[test]
+    fn capacity_fill_and_drain() {
+        let ring = SpscRing::<u64>::new(4);
+        for i in 0..4 {
+            ring.try_send(i).unwrap();
+        }
+        assert!(ring.try_send(99).is_err()); // full
+        for i in 0..4 {
+            assert_eq!(ring.try_recv(), Some(i));
+        }
+        assert_eq!(ring.try_recv(), None); // empty
+    }
+
+    #[test]
+    fn read_latest_returns_most_recent() {
+        let ring = SpscRing::<u64>::new(16);
+        ring.try_send(1).unwrap();
+        ring.try_send(2).unwrap();
+        ring.try_send(3).unwrap();
+        let latest = ring.read_latest();
+        assert_eq!(latest, Some(3));
+        // read_latest doesn't consume — recv still works
+        assert_eq!(ring.try_recv(), Some(1));
+    }
+
+    #[test]
+    fn read_latest_empty_returns_none() {
+        let ring = SpscRing::<u64>::new(16);
+        assert_eq!(ring.read_latest(), None);
+    }
+
+    #[test]
+    fn pending_count_tracks_correctly() {
+        let ring = SpscRing::<u64>::new(16);
+        assert_eq!(ring.pending_count(), 0);
+        ring.try_send(1).unwrap();
+        assert_eq!(ring.pending_count(), 1);
+        ring.try_send(2).unwrap();
+        assert_eq!(ring.pending_count(), 2);
+        ring.try_recv();
+        assert_eq!(ring.pending_count(), 1);
+    }
+}
+
 impl<T> Drop for SpscRing<T> {
     fn drop(&mut self) {
         sp_drop_ring!(self);

@@ -124,3 +124,218 @@ pub fn run_sync(check_only: bool) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::{
+        CppConfig, DepSource, DependencyValue, DetailedDependency, HooksConfig, IgnoreConfig,
+        PackageInfo,
+    };
+    use std::collections::BTreeMap;
+
+    fn base_manifest() -> HorusManifest {
+        HorusManifest {
+            package: PackageInfo {
+                name: "my-robot".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+                authors: vec![],
+                license: None,
+                edition: "2024".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+                standard: None,
+                rust_edition: None,
+            },
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+            cpp: None,
+            hooks: HooksConfig::default(),
+        }
+    }
+
+    // ── rust_edition ─────────────────────────────────────────────────────
+
+    #[test]
+    fn rust_edition_returns_edition_from_manifest() {
+        let m = base_manifest();
+        assert_eq!(m.rust_edition(), Some("2024".to_string()));
+    }
+
+    #[test]
+    fn rust_edition_returns_default_edition() {
+        let mut m = base_manifest();
+        m.package.edition = "1".to_string();
+        assert_eq!(m.rust_edition(), Some("1".to_string()));
+    }
+
+    // ── python_version ───────────────────────────────────────────────────
+
+    #[test]
+    fn python_version_none_without_pypi_deps() {
+        let m = base_manifest();
+        assert_eq!(m.python_version(), None);
+    }
+
+    #[test]
+    fn python_version_some_with_pypi_dep() {
+        let mut m = base_manifest();
+        m.dependencies.insert(
+            "numpy".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some(">=1.24".to_string()),
+                source: Some(DepSource::PyPI),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                apt: None,
+                cmake_package: None,
+            }),
+        );
+        let py = m.python_version();
+        assert!(py.is_some());
+        assert_eq!(py.unwrap(), ">=3.9");
+    }
+
+    #[test]
+    fn python_version_none_with_crates_io_dep() {
+        let mut m = base_manifest();
+        m.dependencies.insert(
+            "serde".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some("1.0".to_string()),
+                source: Some(DepSource::CratesIo),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                apt: None,
+                cmake_package: None,
+            }),
+        );
+        assert_eq!(m.python_version(), None);
+    }
+
+    #[test]
+    fn python_version_none_with_simple_dep() {
+        let mut m = base_manifest();
+        m.dependencies.insert(
+            "horus_library".to_string(),
+            DependencyValue::Simple("0.1.9".to_string()),
+        );
+        assert_eq!(m.python_version(), None);
+    }
+
+    // ── system_deps ──────────────────────────────────────────────────────
+
+    #[test]
+    fn system_deps_empty_without_system_deps() {
+        let m = base_manifest();
+        assert!(m.system_deps().is_empty());
+    }
+
+    #[test]
+    fn system_deps_extracts_system_source_dep() {
+        let mut m = base_manifest();
+        m.dependencies.insert(
+            "opencv".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: None,
+                source: Some(DepSource::System),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                apt: Some("libopencv-dev".to_string()),
+                cmake_package: Some("OpenCV".to_string()),
+            }),
+        );
+        let deps = m.system_deps();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "opencv");
+        assert_eq!(deps[0].apt, Some("libopencv-dev".to_string()));
+        assert_eq!(deps[0].pkg_config, Some("OpenCV".to_string()));
+    }
+
+    #[test]
+    fn system_deps_defaults_apt_to_name() {
+        let mut m = base_manifest();
+        m.dependencies.insert(
+            "libeigen3".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: None,
+                source: Some(DepSource::System),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                apt: None, // no explicit apt name
+                cmake_package: None,
+            }),
+        );
+        let deps = m.system_deps();
+        assert_eq!(deps.len(), 1);
+        // apt defaults to the dependency name
+        assert_eq!(deps[0].apt, Some("libeigen3".to_string()));
+    }
+
+    #[test]
+    fn system_deps_skips_non_system_deps() {
+        let mut m = base_manifest();
+        m.dependencies.insert(
+            "serde".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some("1.0".to_string()),
+                source: Some(DepSource::CratesIo),
+                features: vec![],
+                optional: false,
+                path: None,
+                git: None,
+                apt: None,
+                cmake_package: None,
+            }),
+        );
+        m.dependencies.insert(
+            "numpy".to_string(),
+            DependencyValue::Simple("1.24".to_string()),
+        );
+        assert!(m.system_deps().is_empty());
+    }
+
+    // ── needs_cpp ────────────────────────────────────────────────────────
+
+    #[test]
+    fn needs_cpp_false_by_default() {
+        let m = base_manifest();
+        assert!(!m.needs_cpp());
+    }
+
+    #[test]
+    fn needs_cpp_true_with_cpp_config() {
+        let mut m = base_manifest();
+        m.cpp = Some(CppConfig::default());
+        assert!(m.needs_cpp());
+    }
+
+    // ── project_name ─────────────────────────────────────────────────────
+
+    #[test]
+    fn project_name_returns_package_name() {
+        let m = base_manifest();
+        assert_eq!(m.project_name(), "my-robot");
+    }
+
+    #[test]
+    fn project_name_with_different_name() {
+        let mut m = base_manifest();
+        m.package.name = "warehouse-bot".to_string();
+        assert_eq!(m.project_name(), "warehouse-bot");
+    }
+}

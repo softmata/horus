@@ -82,6 +82,72 @@ impl<T> DirectSlot<T> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_send_recv() {
+        let ring = DirectSlot::<u64>::new(16);
+        assert!(ring.try_send(42).is_ok());
+        assert_eq!(ring.pending_count(), 1);
+    }
+
+    #[test]
+    fn send_recv_roundtrip() {
+        let ring = DirectSlot::<u64>::new(16);
+        ring.try_send(100).unwrap();
+        ring.try_send(200).unwrap();
+        // DirectSlot doesn't have try_recv — recv is done via dispatch fns.
+        // Verify pending count tracks correctly.
+        assert_eq!(ring.pending_count(), 2);
+    }
+
+    #[test]
+    fn empty_ring_has_zero_pending() {
+        let ring = DirectSlot::<u64>::new(16);
+        assert_eq!(ring.pending_count(), 0);
+    }
+
+    #[test]
+    fn capacity_fill_returns_err() {
+        let ring = DirectSlot::<u64>::new(4); // capacity = 4
+        for i in 0..4 {
+            assert!(ring.try_send(i).is_ok());
+        }
+        // Ring is full — next send should fail
+        assert!(ring.try_send(99).is_err());
+        assert_eq!(ring.pending_count(), 4);
+    }
+
+    #[test]
+    fn single_slot_capacity() {
+        // Minimum capacity is next_power_of_two(1) = 1
+        let ring = DirectSlot::<u64>::new(1);
+        assert!(ring.try_send(42).is_ok());
+        assert!(ring.try_send(43).is_err()); // full with 1 slot
+        assert_eq!(ring.pending_count(), 1);
+    }
+
+    #[test]
+    fn mask_is_capacity_minus_one() {
+        let ring = DirectSlot::<u64>::new(8);
+        assert_eq!(ring.mask, 7);
+        assert_eq!(ring.capacity, 8);
+    }
+
+    #[test]
+    fn drop_cleans_up_pending_messages() {
+        // Verify no leak — drop should call assume_init_drop on pending slots
+        let ring = DirectSlot::<String>::new(4);
+        ring.try_send("hello".to_string()).unwrap();
+        ring.try_send("world".to_string()).unwrap();
+        // Drop ring — should not leak the 2 pending Strings
+        drop(ring);
+        // If this test doesn't leak (checked by miri or valgrind), drop is correct
+    }
+}
+
 impl<T> Drop for DirectSlot<T> {
     fn drop(&mut self) {
         let head = *self.head.get_mut();

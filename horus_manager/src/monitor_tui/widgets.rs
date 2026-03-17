@@ -187,7 +187,7 @@ impl TuiDashboard {
                     Cell::from(status_symbol).style(Style::default().fg(status_color)),
                     Cell::from(node.name.clone()),
                     Cell::from(node.process_id.to_string()),
-                    Cell::from(format!("{} MB", node.memory_usage / 1024 / 1024)),
+                    Cell::from(format_bytes(node.memory_usage)),
                 ])
             })
             .collect();
@@ -1582,7 +1582,7 @@ impl TuiDashboard {
                     Cell::from(node.name.clone()),
                     Cell::from(node.process_id.to_string()),
                     Cell::from(format!("{:.1}%", node.cpu_usage)),
-                    Cell::from(format!("{} MB", node.memory_usage / 1024 / 1024)),
+                    Cell::from(format_bytes(node.memory_usage)),
                     Cell::from(status).style(Style::default().fg(status_color)),
                     Cell::from(pubs).style(Style::default().fg(Color::Green)),
                     Cell::from(subs).style(Style::default().fg(Color::Blue)),

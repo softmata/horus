@@ -6541,4 +6541,225 @@ serde = { version = "1.0", source = "crates.io" }
         let stderr = "SyntaxError: invalid syntax";
         assert!(pip_error_hint(stderr).is_empty(), "no hint for syntax errors");
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Per-Command Tests: search, publish, list, info, uninstall
+    // ════════════════════════════════════════════════════════════════════
+
+    // ── Search Command Tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_search_empty_query_does_not_panic() {
+        // run_search("") should not panic — may return empty or error gracefully
+        // We can't test network calls, but we verify no crash
+        let _ = run_search("".to_string(), false, false);
+    }
+
+    #[test]
+    fn test_search_with_query_does_not_panic() {
+        let _ = run_search("rplidar".to_string(), false, false);
+    }
+
+    #[test]
+    fn test_search_json_flag_does_not_panic() {
+        let _ = run_search("camera".to_string(), false, true);
+    }
+
+    // ── List Command Tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_list_no_packages_does_not_panic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let _ = run_list(None, false, false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_list_global_flag_does_not_panic() {
+        let _ = run_list(None, true, false, false);
+    }
+
+    #[test]
+    fn test_list_json_flag_does_not_panic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let _ = run_list(None, false, false, true);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_list_with_query_filter() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let _ = run_list(Some("camera".to_string()), false, false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+    }
+
+    // ── Uninstall / Remove Tests ────────────────────────────────────────
+
+    #[test]
+    fn test_remove_from_horus_toml_nonexistent_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // Should not panic with no horus.toml
+        remove_from_horus_toml("nonexistent-package");
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_remove_from_horus_lock_nonexistent_lockfile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // Should not panic with no horus.lock
+        remove_from_horus_lock("nonexistent-package");
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+    }
+
+    #[test]
+    fn test_remove_dep_no_manifest_errors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove_dep("serde".to_string());
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+        // Should fail gracefully without manifest
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_dep_from_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+edition = "1"
+
+[dependencies]
+serde = "1.0"
+tokio = "1.0"
+"#;
+        std::fs::write(tmp.path().join("horus.toml"), toml).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_remove_dep("serde".to_string());
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        // Verify serde removed from manifest
+        let content = std::fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
+        assert!(!content.contains("serde"));
+        assert!(content.contains("tokio")); // other deps preserved
+    }
+
+    // ── Publish Tests (helper logic) ────────────────────────────────────
+
+    #[test]
+    fn test_publish_no_manifest_errors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_publish(true); // dry_run = true
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+        // Should fail — no horus.toml
+        assert!(result.is_err());
+    }
+
+    // ── Add Command Tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_add_dep_no_manifest_errors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_add("serde".to_string(), Some("1.0".to_string()), false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+        // Should fail — no horus.toml
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_dep_to_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+edition = "1"
+"#;
+        std::fs::write(tmp.path().join("horus.toml"), toml).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = run_add("serde".to_string(), Some("1.0".to_string()), false, false);
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(result.is_ok());
+        let content = std::fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
+        assert!(content.contains("serde"));
+    }
+
+    // ── Info Command Tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_print_package_info_nonexistent_package() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("packages")).unwrap();
+        let result = print_package_info(
+            tmp.path().join("packages").as_path(),
+            "nonexistent-pkg",
+            tmp.path(),
+        );
+        assert!(!result, "Should return false for missing package");
+    }
+
+    #[test]
+    fn test_read_package_name_from_horus_toml_in_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("horus.toml"),
+            "[package]\nname = \"my-pkg\"\nversion = \"0.1.0\"\nedition = \"1\"\n",
+        )
+        .unwrap();
+        let name = read_package_name_from_path(tmp.path());
+        assert!(name.is_ok());
+        assert_eq!(name.unwrap(), "my-pkg");
+    }
+
+    #[test]
+    fn test_read_package_name_fallback_to_dirname() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // No manifest files — should fall back to directory name
+        let name = read_package_name_from_path(tmp.path());
+        assert!(name.is_ok());
+        let n = name.unwrap();
+        assert!(!n.is_empty());
+    }
 }

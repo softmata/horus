@@ -297,3 +297,197 @@ impl RegistryClient {
         &self.base_url
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    // ── validate_package_name: reserved names ───────────────────────────
+
+    #[test]
+    fn all_reserved_names_rejected() {
+        for name in RESERVED_NAMES {
+            let result = validate_package_name(name);
+            assert!(
+                result.is_err(),
+                "Reserved name '{}' should be rejected",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_names_count() {
+        // Ensure we have the expected count of reserved names
+        assert!(
+            RESERVED_NAMES.len() >= 30,
+            "Should have at least 30 reserved names, got {}",
+            RESERVED_NAMES.len()
+        );
+    }
+
+    // ── validate_package_name: edge cases ───────────────────────────────
+
+    #[test]
+    fn validate_name_too_short() {
+        assert!(validate_package_name("a").is_err());
+    }
+
+    #[test]
+    fn validate_name_exact_min_length() {
+        assert!(validate_package_name("ab").is_ok());
+    }
+
+    #[test]
+    fn validate_name_too_long() {
+        let name = "a".repeat(65);
+        assert!(validate_package_name(&name).is_err());
+    }
+
+    #[test]
+    fn validate_name_exact_max_length() {
+        let name = "a".repeat(64);
+        assert!(validate_package_name(&name).is_ok());
+    }
+
+    #[test]
+    fn validate_name_uppercase_rejected() {
+        assert!(validate_package_name("MyPackage").is_err());
+    }
+
+    #[test]
+    fn validate_name_starts_with_digit_rejected() {
+        assert!(validate_package_name("123pkg").is_err());
+    }
+
+    #[test]
+    fn validate_name_path_traversal_rejected() {
+        assert!(validate_package_name("..evil").is_err());
+    }
+
+    #[test]
+    fn validate_name_backslash_rejected() {
+        assert!(validate_package_name("evil\\pkg").is_err());
+    }
+
+    #[test]
+    fn validate_name_valid_with_hyphens_underscores() {
+        assert!(validate_package_name("my-cool_package").is_ok());
+    }
+
+    #[test]
+    fn validate_name_valid_with_digits() {
+        assert!(validate_package_name("horus-driver-v2").is_ok());
+    }
+
+    // ── scoped package names ────────────────────────────────────────────
+
+    #[test]
+    fn validate_scoped_name_valid() {
+        assert!(validate_package_name("@myorg/my-package").is_ok());
+    }
+
+    #[test]
+    fn validate_scoped_name_reserved_org() {
+        assert!(validate_package_name("@horus/my-package").is_err());
+    }
+
+    #[test]
+    fn validate_scoped_name_reserved_pkg() {
+        assert!(validate_package_name("@myorg/core").is_err());
+    }
+
+    #[test]
+    fn validate_scoped_name_missing_slash() {
+        assert!(validate_package_name("@myorg-package").is_err());
+    }
+
+    // ── url_encode_package_name ─────────────────────────────────────────
+
+    #[test]
+    fn url_encode_simple_name() {
+        assert_eq!(url_encode_package_name("my-package"), "my-package");
+    }
+
+    #[test]
+    fn url_encode_scoped_name() {
+        assert_eq!(
+            url_encode_package_name("@org/package"),
+            "%40org%2Fpackage"
+        );
+    }
+
+    // ── package_name_to_path ────────────────────────────────────────────
+
+    #[test]
+    fn path_simple_name() {
+        assert_eq!(package_name_to_path("my-package"), "my-package");
+    }
+
+    #[test]
+    fn path_scoped_name() {
+        assert_eq!(package_name_to_path("@org/package"), "org__package");
+    }
+
+    // ── PackageSource enum ──────────────────────────────────────────────
+
+    #[test]
+    fn package_source_all_variants() {
+        let _ = PackageSource::Registry;
+        let _ = PackageSource::PyPI;
+        let _ = PackageSource::CratesIO;
+        let _ = PackageSource::System;
+        let _ = PackageSource::Path {
+            path: "/tmp".to_string(),
+        };
+    }
+
+    #[test]
+    fn package_source_equality() {
+        assert_eq!(PackageSource::Registry, PackageSource::Registry);
+        assert_ne!(PackageSource::Registry, PackageSource::PyPI);
+    }
+
+    // ── RegistryClient ──────────────────────────────────────────────────
+
+    #[test]
+    fn registry_client_default_url() {
+        let client = RegistryClient::new();
+        assert!(
+            !client.base_url().is_empty(),
+            "Base URL should not be empty"
+        );
+    }
+
+    #[test]
+    fn registry_client_has_http_client() {
+        let client = RegistryClient::new();
+        let _ = client.http_client(); // should not panic
+    }
+
+    // ── LockedPackage ───────────────────────────────────────────────────
+
+    #[test]
+    fn locked_package_construction() {
+        let pkg = LockedPackage {
+            name: "serde".to_string(),
+            version: "1.0.215".to_string(),
+            checksum: "sha256:abc".to_string(),
+            source: PackageSource::CratesIO,
+        };
+        assert_eq!(pkg.name, "serde");
+        assert_eq!(pkg.version, "1.0.215");
+    }
+
+    // ── DriverMetadata ──────────────────────────────────────────────────
+
+    #[test]
+    fn driver_metadata_default() {
+        let meta = DriverMetadata::default();
+        assert!(meta.bus_type.is_none());
+        assert!(meta.required_features.is_none());
+        assert!(meta.cargo_dependencies.is_none());
+        assert!(meta.python_dependencies.is_none());
+        assert!(meta.system_dependencies.is_none());
+    }
+}

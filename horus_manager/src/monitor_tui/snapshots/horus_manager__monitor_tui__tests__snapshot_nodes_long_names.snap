@@ -8,7 +8,7 @@ expression: render_to_string(&buffer)
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌Node Details - Use  to select, Enter to view logs─────────────────────────────────────────────────────────────────────┐
 │ Name               PID      CPU      Memory     Status     Publishes                    Subscribes                   │
-│ very_long_robot_se 9999     99.9%    4096 MB    Stopped    extremely_long_topic_name_fo another_very_long_topic_name_│
+│ very_long_robot_se 9999     99.9%    4.0GB      Stopped    extremely_long_topic_name_fo another_very_long_topic_name_│
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

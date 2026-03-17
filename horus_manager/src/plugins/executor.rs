@@ -322,4 +322,101 @@ mod tests {
         fs::set_permissions(&file_path, perms).unwrap();
         assert!(is_executable(&file_path));
     }
+
+    // ── Additional executor tests ──────────────────────────────────────
+
+    #[test]
+    fn test_executor_default_has_no_resolver() {
+        let executor = PluginExecutor::default();
+        // Default executor should handle try_execute gracefully
+        let result = executor.try_execute("anything", &[]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_plugins_empty() {
+        let executor = PluginExecutor::default();
+        let plugins = executor.list_plugins();
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn test_list_plugins_multiple() {
+        let mut global = PluginRegistry::new_global();
+        global.register_plugin(
+            "nav2",
+            make_test_entry("nav2-lite", PathBuf::from("/bin/nav2")),
+        );
+        global.register_plugin(
+            "sim",
+            make_test_entry("horus-sim", PathBuf::from("/bin/sim")),
+        );
+
+        let resolver = PluginResolver::with_registries(global, None, None);
+        let executor = PluginExecutor::with_resolver(resolver);
+
+        let plugins = executor.list_plugins();
+        assert_eq!(plugins.len(), 2);
+    }
+
+    #[test]
+    fn test_list_plugins_shows_scope() {
+        let global = PluginRegistry::new_global();
+        let mut project = PluginRegistry::new_project("test");
+        project.register_plugin(
+            "local-tool",
+            make_test_entry("local-tool", PathBuf::from("/bin/local")),
+        );
+
+        let resolver =
+            PluginResolver::with_registries(global, Some(project), Some(PathBuf::from("/test")));
+        let executor = PluginExecutor::with_resolver(resolver);
+
+        let plugins = executor.list_plugins();
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].scope, "project");
+    }
+
+    #[test]
+    fn test_try_execute_unregistered_returns_none() {
+        let mut global = PluginRegistry::new_global();
+        global.register_plugin(
+            "nav2",
+            make_test_entry("nav2-lite", PathBuf::from("/bin/nav2")),
+        );
+
+        let resolver = PluginResolver::with_registries(global, None, None);
+        let executor = PluginExecutor::with_resolver(resolver);
+
+        // "unknown" is not registered
+        let result = executor.try_execute("unknown", &[]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_plugin_info_struct() {
+        let info = PluginInfo {
+            command: "nav2".to_string(),
+            package: "nav2-lite".to_string(),
+            version: "1.0.0".to_string(),
+            scope: "global".to_string(),
+            is_override: false,
+        };
+        assert_eq!(info.command, "nav2");
+        assert!(!info.is_override);
+    }
+
+    #[test]
+    fn test_plugin_info_override_flag() {
+        let info = PluginInfo {
+            command: "nav2".to_string(),
+            package: "nav2-lite".to_string(),
+            version: "2.0.0".to_string(),
+            scope: "project".to_string(),
+            is_override: true,
+        };
+        assert!(info.is_override);
+        assert_eq!(info.scope, "project");
+    }
 }

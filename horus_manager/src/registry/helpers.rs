@@ -25,64 +25,6 @@ pub fn get_rust_version() -> Option<String> {
         })
 }
 
-pub(crate) fn get_gcc_version() -> Option<String> {
-    std::process::Command::new("gcc")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|output| {
-            String::from_utf8(output.stdout).ok().and_then(|s| {
-                s.lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().last())
-                    .map(|v| v.to_string())
-            })
-        })
-}
-
-pub(crate) fn get_cuda_version() -> Option<String> {
-    // Try nvcc first (CUDA compiler)
-    if let Some(version) = std::process::Command::new("nvcc")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|output| {
-            String::from_utf8(output.stdout).ok().and_then(|s| {
-                // Parse output like: "Cuda compilation tools, release 11.8, V11.8.89"
-                // Look for "release X.Y" pattern
-                s.lines()
-                    .find(|line| line.contains("release"))
-                    .and_then(|line| {
-                        line.split("release")
-                            .nth(1)
-                            .and_then(|part| part.split(',').next())
-                            .map(|v| v.trim().to_string())
-                    })
-            })
-        })
-    {
-        return Some(version);
-    }
-
-    // Fallback to nvidia-smi
-    std::process::Command::new("nvidia-smi")
-        .output()
-        .ok()
-        .and_then(|output| {
-            String::from_utf8(output.stdout).ok().and_then(|s| {
-                // Parse output to find CUDA Version line
-                // Format: "CUDA Version: 12.0"
-                s.lines()
-                    .find(|line| line.contains("CUDA Version"))
-                    .and_then(|line| {
-                        line.split("CUDA Version:")
-                            .nth(1)
-                            .map(|v| v.split_whitespace().next().unwrap_or("").to_string())
-                    })
-            })
-        })
-}
-
 // Check if any version of a package exists in global cache
 pub(crate) fn check_global_versions(cache_dir: &Path, package_name: &str) -> Result<bool> {
     check_global_version_satisfies(cache_dir, package_name, None)
@@ -564,19 +506,6 @@ pub(crate) fn add_dep_to_pyproject_toml(
 
     fs::write(&pyproject_path, doc.to_string())?;
     Ok(())
-}
-
-/// Parse a pip dependency spec like "numpy>=1.0" into (name, version)
-pub(crate) fn parse_pip_dependency_spec(spec: &str) -> (String, String) {
-    let operators = [">=", "<=", "==", "!=", "~=", ">", "<"];
-    for op in operators {
-        if let Some(idx) = spec.find(op) {
-            let name = spec[..idx].trim().to_string();
-            let version = spec[idx..].trim().to_string();
-            return (name, version);
-        }
-    }
-    (spec.trim().to_string(), "latest".to_string())
 }
 
 // Copy directory recursively with symlink safety

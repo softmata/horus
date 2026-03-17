@@ -532,4 +532,133 @@ mod tests {
 
         assert!(registry.is_compatible(&compatible_entry));
     }
+
+    // ── Additional registry tests ──────────────────────────────────────
+
+    fn test_entry(name: &str) -> PluginEntry {
+        PluginEntry {
+            package: name.to_string(),
+            version: "1.0.0".to_string(),
+            source: PluginSource::Registry,
+            binary: PathBuf::from(format!("/bin/horus-{}", name)),
+            checksum: "sha256:abc123".to_string(),
+            signature: None,
+            installed_at: Utc::now(),
+            installed_by: HORUS_VERSION.to_string(),
+            compatibility: Compatibility::default(),
+            commands: vec![CommandInfo {
+                name: "run".to_string(),
+                description: "Run".to_string(),
+            }],
+            permissions: vec![],
+        }
+    }
+
+    #[test]
+    fn test_unregister_plugin_returns_entry() {
+        let mut registry = PluginRegistry::default();
+        registry.register_plugin("nav", test_entry("nav"));
+        assert!(registry.get_plugin("nav").is_some());
+
+        registry.unregister_plugin("nav");
+        assert!(registry.get_plugin("nav").is_none());
+    }
+
+    #[test]
+    fn test_unregister_nonexistent_is_noop() {
+        let mut registry = PluginRegistry::default();
+        // Should not panic
+        registry.unregister_plugin("nonexistent");
+        assert!(registry.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_active_commands_returns_registered() {
+        let mut registry = PluginRegistry::default();
+        registry.register_plugin("nav", test_entry("nav"));
+        registry.register_plugin("sim", test_entry("sim"));
+
+        let cmds = registry.active_commands();
+        assert_eq!(cmds.len(), 2);
+    }
+
+    #[test]
+    fn test_disabled_commands_empty_by_default() {
+        let registry = PluginRegistry::default();
+        assert!(registry.disabled_commands().is_empty());
+    }
+
+    #[test]
+    fn test_disabled_commands_after_disable() {
+        let mut registry = PluginRegistry::default();
+        registry.register_plugin("nav", test_entry("nav"));
+        registry.disable_plugin("nav", "testing").unwrap();
+
+        let disabled = registry.disabled_commands();
+        assert_eq!(disabled.len(), 1);
+    }
+
+    #[test]
+    fn test_calculate_checksum_on_real_file() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test_binary");
+        std::fs::write(&file, b"hello world binary data").unwrap();
+
+        let checksum = PluginRegistry::calculate_checksum(&file).unwrap();
+        assert!(checksum.starts_with("sha256:"));
+        assert!(checksum.len() > 10);
+    }
+
+    #[test]
+    fn test_calculate_checksum_deterministic() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test_binary");
+        std::fs::write(&file, b"deterministic content").unwrap();
+
+        let c1 = PluginRegistry::calculate_checksum(&file).unwrap();
+        let c2 = PluginRegistry::calculate_checksum(&file).unwrap();
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_calculate_checksum_different_content() {
+        let tmp = TempDir::new().unwrap();
+        let f1 = tmp.path().join("a");
+        let f2 = tmp.path().join("b");
+        std::fs::write(&f1, b"content A").unwrap();
+        std::fs::write(&f2, b"content B").unwrap();
+
+        let c1 = PluginRegistry::calculate_checksum(&f1).unwrap();
+        let c2 = PluginRegistry::calculate_checksum(&f2).unwrap();
+        assert_ne!(c1, c2);
+    }
+
+    #[test]
+    fn test_save_load_preserves_disabled_plugins() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("plugins.lock");
+
+        let mut registry = PluginRegistry::new_global();
+        registry.register_plugin("nav", test_entry("nav"));
+        registry.disable_plugin("nav", "maintenance").unwrap();
+        registry.save_to(&path).unwrap();
+
+        let loaded = PluginRegistry::load(&path).unwrap();
+        assert!(loaded.is_disabled("nav"));
+        assert!(loaded.get_plugin("nav").is_none()); // disabled = not in active
+    }
+
+    #[test]
+    fn test_global_scope_set_correctly() {
+        let registry = PluginRegistry::new_global();
+        assert_eq!(registry.scope, PluginScope::Global);
+        assert!(registry.project_name.is_none());
+    }
+
+    #[test]
+    fn test_project_scope_set_correctly() {
+        let registry = PluginRegistry::new_project("my-bot");
+        assert_eq!(registry.scope, PluginScope::Project);
+        assert_eq!(registry.project_name, Some("my-bot".to_string()));
+    }
 }

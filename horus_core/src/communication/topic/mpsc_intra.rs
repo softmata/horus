@@ -116,6 +116,57 @@ impl<T> MpscRing<T> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_send_recv() {
+        let ring = MpscRing::<u64>::new(16);
+        ring.try_send(42).unwrap();
+        assert_eq!(ring.try_recv(), Some(42));
+        assert_eq!(ring.try_recv(), None);
+    }
+
+    #[test]
+    fn fifo_ordering() {
+        let ring = MpscRing::<u64>::new(16);
+        for i in 0..5 {
+            ring.try_send(i).unwrap();
+        }
+        for i in 0..5 {
+            assert_eq!(ring.try_recv(), Some(i));
+        }
+    }
+
+    #[test]
+    fn capacity_full_returns_err() {
+        let ring = MpscRing::<u64>::new(4);
+        for i in 0..4 {
+            ring.try_send(i).unwrap();
+        }
+        assert!(ring.try_send(99).is_err());
+    }
+
+    #[test]
+    fn read_latest_returns_most_recent() {
+        let ring = MpscRing::<u64>::new(16);
+        ring.try_send(10).unwrap();
+        ring.try_send(20).unwrap();
+        ring.try_send(30).unwrap();
+        assert_eq!(ring.read_latest(), Some(30));
+    }
+
+    #[test]
+    fn pending_count() {
+        let ring = MpscRing::<u64>::new(16);
+        assert_eq!(ring.pending_count(), 0);
+        ring.try_send(1).unwrap();
+        ring.try_send(2).unwrap();
+        assert_eq!(ring.pending_count(), 2);
+    }
+}
+
 impl<T> Drop for MpscRing<T> {
     fn drop(&mut self) {
         mp_drop_ring!(self);
