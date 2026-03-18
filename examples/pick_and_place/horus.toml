@@ -1,0 +1,11 @@
+[package]
+name = "pick_and_place"
+version = "0.1.0"
+description = "Action-based pick-and-place — goal lifecycle, feedback, cancellation"
+author = "softmata"
+license = "Apache-2.0"
+language = "rust"
+
+[dependencies]
+horus = "*"
+horus_library = "*"
