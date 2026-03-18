@@ -401,10 +401,11 @@ mod tests {
             package: "nav2-lite".to_string(),
             version: "1.0.0".to_string(),
             scope: "global".to_string(),
-            is_override: false,
+            is_overridden: false,
+            description: String::new(),
         };
         assert_eq!(info.command, "nav2");
-        assert!(!info.is_override);
+        assert!(!info.is_overridden);
     }
 
     #[test]
@@ -414,9 +415,10 @@ mod tests {
             package: "nav2-lite".to_string(),
             version: "2.0.0".to_string(),
             scope: "project".to_string(),
-            is_override: true,
+            is_overridden: true,
+            description: String::new(),
         };
-        assert!(info.is_override);
+        assert!(info.is_overridden);
         assert_eq!(info.scope, "project");
     }
 }

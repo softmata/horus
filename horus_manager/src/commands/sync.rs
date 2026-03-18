@@ -195,8 +195,12 @@ mod tests {
                 optional: false,
                 path: None,
                 git: None,
+                branch: None,
+                tag: None,
+                rev: None,
                 apt: None,
                 cmake_package: None,
+                lang: None,
             }),
         );
         let py = m.python_version();
@@ -216,8 +220,12 @@ mod tests {
                 optional: false,
                 path: None,
                 git: None,
+                branch: None,
+                tag: None,
+                rev: None,
                 apt: None,
                 cmake_package: None,
+                lang: None,
             }),
         );
         assert_eq!(m.python_version(), None);
@@ -253,8 +261,12 @@ mod tests {
                 optional: false,
                 path: None,
                 git: None,
+                branch: None,
+                tag: None,
+                rev: None,
                 apt: Some("libopencv-dev".to_string()),
                 cmake_package: Some("OpenCV".to_string()),
+                lang: None,
             }),
         );
         let deps = m.system_deps();
@@ -276,8 +288,12 @@ mod tests {
                 optional: false,
                 path: None,
                 git: None,
+                branch: None,
+                tag: None,
+                rev: None,
                 apt: None, // no explicit apt name
                 cmake_package: None,
+                lang: None,
             }),
         );
         let deps = m.system_deps();
@@ -298,8 +314,12 @@ mod tests {
                 optional: false,
                 path: None,
                 git: None,
+                branch: None,
+                tag: None,
+                rev: None,
                 apt: None,
                 cmake_package: None,
+                lang: None,
             }),
         );
         m.dependencies.insert(
@@ -320,7 +340,11 @@ mod tests {
     #[test]
     fn needs_cpp_true_with_cpp_config() {
         let mut m = base_manifest();
-        m.cpp = Some(CppConfig::default());
+        m.cpp = Some(CppConfig {
+            compiler: None,
+            cmake_args: vec![],
+            toolchain: None,
+        });
         assert!(m.needs_cpp());
     }
 

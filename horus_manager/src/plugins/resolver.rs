@@ -480,10 +480,17 @@ mod tests {
             PluginResolver::with_registries(global, Some(project), Some(PathBuf::from("/test")));
 
         let plugins = resolver.all_plugins();
-        let nav = plugins.iter().find(|p| p.command == "nav").unwrap();
-        // Project version should win
-        assert_eq!(nav.entry.version, "2.0.0");
-        assert!(nav.is_override);
+        let nav_plugins: Vec<_> = plugins.iter().filter(|p| p.command == "nav").collect();
+        // Both global and project entries are present
+        assert_eq!(nav_plugins.len(), 2);
+        // The global one should be marked as overridden
+        let global_nav = nav_plugins.iter().find(|p| p.scope == PluginScope::Global).unwrap();
+        assert!(global_nav.is_overridden);
+        assert_eq!(global_nav.entry.version, "1.0.0");
+        // The project one is the active override
+        let project_nav = nav_plugins.iter().find(|p| p.scope == PluginScope::Project).unwrap();
+        assert!(!project_nav.is_overridden);
+        assert_eq!(project_nav.entry.version, "2.0.0");
     }
 
     #[test]
@@ -496,7 +503,7 @@ mod tests {
 
         let plugins = resolver.all_plugins();
         assert_eq!(plugins.len(), 2);
-        assert!(plugins.iter().all(|p| !p.is_override));
+        assert!(plugins.iter().all(|p| !p.is_overridden));
     }
 
     #[test]

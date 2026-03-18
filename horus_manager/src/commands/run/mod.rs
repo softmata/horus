@@ -1666,6 +1666,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
+        let env = env.unwrap();
         assert!(
             env.iter().any(|(k, _)| k == "PATH"),
             "build_child_env must include PATH"
@@ -1682,6 +1683,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
+        let env = env.unwrap();
         assert!(
             env.iter().any(|(k, _)| k == "LD_LIBRARY_PATH"),
             "build_child_env must include LD_LIBRARY_PATH"
@@ -1689,7 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn build_child_env_path_includes_horus_bin() {
+    fn build_child_env_path_includes_horus_bin_2() {
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         // Create .horus/bin so it gets included
@@ -1700,6 +1702,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
+        let env = env.unwrap();
         let path_entry = env.iter().find(|(k, _)| k == "PATH");
         assert!(path_entry.is_some());
         let path_val = &path_entry.unwrap().1;
@@ -1720,7 +1723,7 @@ mod tests {
         drop(_guard);
 
         assert!(
-            !env.is_empty(),
+            !env.unwrap().is_empty(),
             "build_child_env should return at least PATH and LD_LIBRARY_PATH"
         );
     }

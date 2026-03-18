@@ -1856,6 +1856,151 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
     Ok(())
 }
 
+// ── Yank / Unyank / Deprecate / Owner ───────────────────────────────────
+
+pub fn run_yank(package: String, version: String, reason: Option<String>) -> HorusResult<()> {
+    println!(
+        "{} Yanking {} v{}...",
+        cli_output::ICON_INFO.cyan(),
+        package.yellow(),
+        version.yellow()
+    );
+    let client = registry::RegistryClient::new();
+    client.yank(&package, &version, reason.as_deref())
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  {} v{} yanked — hidden from new installs", package.green(), version.green());
+    if let Some(r) = &reason {
+        println!("  Reason: {}", r.dimmed());
+    }
+    Ok(())
+}
+
+pub fn run_unyank(package: String, version: String) -> HorusResult<()> {
+    println!(
+        "{} Unyanking {} v{}...",
+        cli_output::ICON_INFO.cyan(),
+        package.yellow(),
+        version.yellow()
+    );
+    let client = registry::RegistryClient::new();
+    client.unyank(&package, &version)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  {} v{} restored — available for install again", package.green(), version.green());
+    Ok(())
+}
+
+pub fn run_deprecate(package: String, message: Option<String>) -> HorusResult<()> {
+    println!(
+        "{} Deprecating {}...",
+        cli_output::ICON_INFO.cyan(),
+        package.yellow(),
+    );
+    let client = registry::RegistryClient::new();
+    client.deprecate(&package, message.as_deref())
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  {} is now deprecated", package.green());
+    if let Some(msg) = &message {
+        println!("  Message: {}", msg.dimmed());
+    }
+    Ok(())
+}
+
+pub fn run_undeprecate(package: String) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    client.undeprecate(&package)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  {} deprecation removed", package.green());
+    Ok(())
+}
+
+pub fn run_owner_list(package: String) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    let owners = client.list_owners(&package)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    println!("{} Owners of {}:", cli_output::ICON_INFO.cyan(), package.yellow());
+    if owners.is_empty() {
+        println!("  (no owners found)");
+    } else {
+        for owner in &owners {
+            let username = owner.get("username").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let role = owner.get("role").and_then(|v| v.as_str()).unwrap_or("owner");
+            println!("  {} ({})", username.green(), role.dimmed());
+        }
+    }
+    Ok(())
+}
+
+pub fn run_owner_add(package: String, user: String) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    client.add_owner(&package, &user)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  {} added as owner of {}", user.green(), package.yellow());
+    Ok(())
+}
+
+pub fn run_owner_remove(package: String, user: String) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    client.remove_owner(&package, &user)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  {} removed from owners of {}", user.green(), package.yellow());
+    Ok(())
+}
+
+pub fn run_owner_transfer(package: String, target: String, org: bool) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    if org {
+        client.transfer_to_org(&package, &target)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        println!("  {} transferred to org {}", package.green(), target.yellow());
+    } else {
+        let result = client.transfer_to_user(&package, &target)
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+        let msg = result.get("message").and_then(|v| v.as_str()).unwrap_or("Transfer request sent");
+        println!("  {}", msg.green());
+        println!("  {} must accept the transfer before ownership changes", target.yellow());
+    }
+    Ok(())
+}
+
+pub fn run_owner_pending() -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    let transfers = client.pending_transfers()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    if transfers.is_empty() {
+        println!("  No pending transfers");
+        return Ok(());
+    }
+
+    println!("{} Pending ownership transfers:", cli_output::ICON_INFO.cyan());
+    for t in &transfers {
+        let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let pkg = t.get("package_name").and_then(|v| v.as_str()).unwrap_or("?");
+        let from = t.get("from_username").and_then(|v| v.as_str()).unwrap_or("?");
+        println!("  {} — {} from {}", id.dimmed(), pkg.yellow(), from.green());
+    }
+    println!("\n  Accept: horus owner accept <id>");
+    println!("  Reject: horus owner reject <id>");
+    Ok(())
+}
+
+pub fn run_owner_accept(id: String) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    client.accept_transfer(&id)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  Transfer {} accepted — you are now the owner", id.green());
+    Ok(())
+}
+
+pub fn run_owner_reject(id: String) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    client.reject_transfer(&id)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    println!("  Transfer {} rejected", id.green());
+    Ok(())
+}
+
 /// Add a dependency.
 ///
 /// Detects the project language from CWD and delegates to the native package
@@ -6552,17 +6697,17 @@ serde = { version = "1.0", source = "crates.io" }
     fn test_search_empty_query_does_not_panic() {
         // run_search("") should not panic — may return empty or error gracefully
         // We can't test network calls, but we verify no crash
-        let _ = run_search("".to_string(), false, false);
+        let _ = crate::commands::plugin::run_search("".to_string());
     }
 
     #[test]
     fn test_search_with_query_does_not_panic() {
-        let _ = run_search("rplidar".to_string(), false, false);
+        let _ = crate::commands::plugin::run_search("rplidar".to_string());
     }
 
     #[test]
     fn test_search_json_flag_does_not_panic() {
-        let _ = run_search("camera".to_string(), false, true);
+        let _ = crate::commands::plugin::run_search_with_category("camera".to_string(), None, true);
     }
 
     // ── List Command Tests ──────────────────────────────────────────────
