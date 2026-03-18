@@ -289,6 +289,7 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
     req_topic.send(ServiceRequest {
         request_id,
         payload: request_value,
+        response_topic: None,
     });
 
     // Poll for the matching response with Ctrl+C support.
