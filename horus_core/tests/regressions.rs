@@ -23,10 +23,10 @@
 mod common;
 
 use horus_core::communication::Topic;
+use horus_core::core::DurationExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use horus_core::core::DurationExt;
 
 // ============================================================================
 // 1. Topic system regressions

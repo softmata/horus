@@ -170,8 +170,8 @@ pub use types::{FrameId, NO_PARENT};
 
 // Re-export Transform and message types
 pub use messages::{
-    frame_id_to_string, string_to_frame_id, StaticTransformStamped, TFMessage,
-    TransformStamped, FRAME_ID_SIZE, MAX_TRANSFORMS_PER_MESSAGE,
+    frame_id_to_string, string_to_frame_id, StaticTransformStamped, TFMessage, TransformStamped,
+    FRAME_ID_SIZE, MAX_TRANSFORMS_PER_MESSAGE,
 };
 pub use transform::Transform;
 
@@ -1575,8 +1575,10 @@ mod tests {
         let base_transform = Transform::from_translation([1.0, 0.0, 0.0]);
         let camera_transform = Transform::from_translation([0.0, 0.0, 0.5]);
 
-        tf.update_transform_by_id(base, &base_transform, 1000).unwrap();
-        tf.update_transform_by_id(camera, &camera_transform, 1000).unwrap();
+        tf.update_transform_by_id(base, &base_transform, 1000)
+            .unwrap();
+        tf.update_transform_by_id(camera, &camera_transform, 1000)
+            .unwrap();
 
         // Query
         let result = tf.tf("camera", "world").unwrap();
@@ -2361,9 +2363,7 @@ mod tests {
         tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let result = tf
-            .wait_for_transform("a", "world", 1_u64.secs())
-            .unwrap();
+        let result = tf.wait_for_transform("a", "world", 1_u64.secs()).unwrap();
         assert!((result.translation[0] - 1.0).abs() < 1e-10);
     }
 
@@ -2431,9 +2431,8 @@ mod tests {
 
         // Spawn a thread that waits — frame "sensor" doesn't exist yet
         let tf_waiter = tf.clone();
-        let handle = thread::spawn(move || {
-            tf_waiter.wait_for_transform("sensor", "world", 5_u64.secs())
-        });
+        let handle =
+            thread::spawn(move || tf_waiter.wait_for_transform("sensor", "world", 5_u64.secs()));
 
         thread::sleep(20_u64.ms());
 
@@ -2495,8 +2494,7 @@ mod tests {
         tf.update_transform("a", &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
             .unwrap();
 
-        let result =
-            tf.wait_for_transform_at("a", "world", 5000, 50_u64.ms());
+        let result = tf.wait_for_transform_at("a", "world", 5000, 50_u64.ms());
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),
             "Expected Timeout, got: {:?}",
@@ -2531,9 +2529,7 @@ mod tests {
         tf.register_frame("world", None).unwrap();
         tf.register_frame("a", None).unwrap(); // No path to world
 
-        let result = tf
-            .wait_for_transform_async("a", "world", 50_u64.ms())
-            .await;
+        let result = tf.wait_for_transform_async("a", "world", 50_u64.ms()).await;
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),
             "Expected Timeout, got: {:?}",

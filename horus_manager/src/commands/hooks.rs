@@ -32,7 +32,10 @@ pub fn run_hooks(phase: &str, manifest: &HorusManifest) -> Result<()> {
                     super::scripts::run_scripts(Some(other.to_string()), vec![])
                         .map_err(|e| anyhow::anyhow!("{}", e))?;
                 } else {
-                    anyhow::bail!("Unknown hook '{}'. Must be 'fmt', 'lint', 'check', or a [scripts] entry.", other);
+                    anyhow::bail!(
+                        "Unknown hook '{}'. Must be 'fmt', 'lint', 'check', or a [scripts] entry.",
+                        other
+                    );
                 }
             }
         }

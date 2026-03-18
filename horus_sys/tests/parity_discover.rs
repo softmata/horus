@@ -20,7 +20,10 @@ fn test_process_info_current_has_cmdline() {
 #[test]
 fn test_process_info_current_has_memory() {
     let info = process_info(std::process::id()).unwrap();
-    assert!(info.memory_kb > 0, "current process should have memory usage");
+    assert!(
+        info.memory_kb > 0,
+        "current process should have memory usage"
+    );
 }
 
 #[test]
@@ -28,7 +31,10 @@ fn test_process_info_dead_pid() {
     let result = process_info(99_999_999);
     // Dead PID should either error or return empty defaults
     match result {
-        Ok(info) => assert!(info.cmdline.is_empty(), "dead PID should have empty cmdline"),
+        Ok(info) => assert!(
+            info.cmdline.is_empty(),
+            "dead PID should have empty cmdline"
+        ),
         Err(_) => {} // error is also acceptable
     }
 }
@@ -92,7 +98,10 @@ fn test_find_nodes_with_presence_file() {
 
     let nodes = find_nodes();
     let node = nodes.iter().find(|n| n.name == "parity_test_node");
-    assert!(node.is_some(), "presence file should be discovered on all platforms");
+    assert!(
+        node.is_some(),
+        "presence file should be discovered on all platforms"
+    );
 
     let node = node.unwrap();
     assert_eq!(node.pid, std::process::id());
@@ -230,5 +239,8 @@ fn test_format_duration_units() {
     assert_eq!(format_duration(std::time::Duration::from_secs(30)), "30s");
     assert_eq!(format_duration(std::time::Duration::from_secs(120)), "2m");
     assert_eq!(format_duration(std::time::Duration::from_secs(7200)), "2h");
-    assert_eq!(format_duration(std::time::Duration::from_secs(172800)), "2d");
+    assert_eq!(
+        format_duration(std::time::Duration::from_secs(172800)),
+        "2d"
+    );
 }

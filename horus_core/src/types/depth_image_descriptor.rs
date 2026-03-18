@@ -156,7 +156,10 @@ mod tests {
         assert_eq!(align, 8, "alignment must be 8 from u64 fields");
         assert_eq!(size % align, 0, "size must be a multiple of alignment");
         // Same size as ImageDescriptor (both 224 bytes) for uniform ring buffer slots
-        assert_eq!(size, std::mem::size_of::<super::super::image_descriptor::ImageDescriptor>());
+        assert_eq!(
+            size,
+            std::mem::size_of::<super::super::image_descriptor::ImageDescriptor>()
+        );
     }
 
     #[test]
@@ -184,7 +187,10 @@ mod tests {
         // Default range: 20cm to 10m (200mm to 10000mm)
         assert_eq!(di.min_depth(), 200);
         assert_eq!(di.max_depth(), 10000);
-        assert!(di.min_depth() < di.max_depth(), "min_depth must be less than max_depth");
+        assert!(
+            di.min_depth() < di.max_depth(),
+            "min_depth must be less than max_depth"
+        );
         assert_eq!(di.depth_scale(), 1.0);
     }
 

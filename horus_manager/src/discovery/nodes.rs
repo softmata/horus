@@ -98,7 +98,6 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     Ok(nodes)
 }
 
-
 fn discover_horus_processes() -> anyhow::Result<Vec<NodeStatus>> {
     let mut nodes = Vec::new();
 

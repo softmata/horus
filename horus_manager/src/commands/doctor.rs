@@ -29,7 +29,6 @@ impl Health {
             Self::Fail => "✗".red(),
         }
     }
-
 }
 
 /// A single check result.
@@ -128,10 +127,7 @@ pub(crate) fn print_summary(results: &[CheckResult], verbose: bool) {
             "Summary:".bold()
         );
     } else {
-        println!(
-            "  {} All {ok_count} checks passed",
-            "Summary:".bold()
-        );
+        println!("  {} All {ok_count} checks passed", "Summary:".bold());
     }
 }
 
@@ -259,11 +255,7 @@ fn check_shm() -> CheckResult {
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("horus_")
-                })
+                .filter(|e| e.file_name().to_string_lossy().starts_with("horus_"))
                 .count()
         })
         .unwrap_or(0);
@@ -271,7 +263,11 @@ fn check_shm() -> CheckResult {
     CheckResult {
         category: "Shared Memory".to_string(),
         health: Health::Ok,
-        summary: format!("{} available, {} horus namespaces", shm_parent.display(), count),
+        summary: format!(
+            "{} available, {} horus namespaces",
+            shm_parent.display(),
+            count
+        ),
         details: vec![],
     }
 }
@@ -364,14 +360,9 @@ fn check_dep_sources(ctx: &dispatch::ProjectContext) -> CheckResult {
         };
     }
 
-    let issues = crate::source_resolver::validate_deps(
-        &manifest.dependencies,
-        &ctx.languages,
-    );
-    let dev_issues = crate::source_resolver::validate_deps(
-        &manifest.dev_dependencies,
-        &ctx.languages,
-    );
+    let issues = crate::source_resolver::validate_deps(&manifest.dependencies, &ctx.languages);
+    let dev_issues =
+        crate::source_resolver::validate_deps(&manifest.dev_dependencies, &ctx.languages);
 
     let all_issues: Vec<_> = issues.into_iter().chain(dev_issues).collect();
 
@@ -388,7 +379,11 @@ fn check_dep_sources(ctx: &dispatch::ProjectContext) -> CheckResult {
         let details: Vec<String> = all_issues.iter().map(|i| i.message.clone()).collect();
         CheckResult {
             category: "Dependencies".to_string(),
-            health: if has_errors { Health::Fail } else { Health::Warn },
+            health: if has_errors {
+                Health::Fail
+            } else {
+                Health::Warn
+            },
             summary: format!("{} issue(s) found", all_issues.len()),
             details,
         }
@@ -482,9 +477,15 @@ fn check_driver_device(
     if let Ok(port) = params.get::<String>("port") {
         if port.starts_with("/dev/") {
             return if Path::new(&port).exists() {
-                (format!("  {} driver '{}': {} found", "✓".green(), name, port), Health::Ok)
+                (
+                    format!("  {} driver '{}': {} found", "✓".green(), name, port),
+                    Health::Ok,
+                )
             } else {
-                (format!("  {} driver '{}': {} not found", "✗".red(), name, port), Health::Fail)
+                (
+                    format!("  {} driver '{}': {} not found", "✗".red(), name, port),
+                    Health::Fail,
+                )
             };
         }
     }
@@ -498,9 +499,15 @@ fn check_driver_device(
                 format!("/dev/{}", bus)
             };
             return if Path::new(&path).exists() {
-                (format!("  {} driver '{}': {} found", "✓".green(), name, path), Health::Ok)
+                (
+                    format!("  {} driver '{}': {} found", "✓".green(), name, path),
+                    Health::Ok,
+                )
             } else {
-                (format!("  {} driver '{}': {} not found", "✗".red(), name, path), Health::Fail)
+                (
+                    format!("  {} driver '{}': {} not found", "✗".red(), name, path),
+                    Health::Fail,
+                )
             };
         }
     }
@@ -515,8 +522,19 @@ fn check_driver_device(
             };
             if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
                 return match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-                    Ok(_) => (format!("  {} driver '{}': {} reachable", "✓".green(), name, address), Health::Ok),
-                    Err(_) => (format!("  {} driver '{}': {} unreachable", "!".yellow(), name, address), Health::Warn),
+                    Ok(_) => (
+                        format!("  {} driver '{}': {} reachable", "✓".green(), name, address),
+                        Health::Ok,
+                    ),
+                    Err(_) => (
+                        format!(
+                            "  {} driver '{}': {} unreachable",
+                            "!".yellow(),
+                            name,
+                            address
+                        ),
+                        Health::Warn,
+                    ),
                 };
             }
         }
@@ -530,7 +548,13 @@ fn check_driver_device(
         Some(DriverType::Legacy) => "legacy".into(),
         None => "unknown".into(),
     };
-    (format!("  - driver '{}': {} (no device path to check)", name, type_str), Health::Ok)
+    (
+        format!(
+            "  - driver '{}': {} (no device path to check)",
+            name, type_str
+        ),
+        Health::Ok,
+    )
 }
 
 #[cfg(test)]
@@ -813,7 +837,10 @@ mod tests {
         };
         let result = check_manifest(&ctx);
         let details = result.details.join("\n");
-        assert!(details.contains("mybot"), "details should include package name");
+        assert!(
+            details.contains("mybot"),
+            "details should include package name"
+        );
     }
 
     // ── check_shm ───────────────────────────────────────────────────────
@@ -1269,7 +1296,8 @@ mod tests {
         let mut map = std::collections::HashMap::new();
         map.insert("port".to_string(), toml::Value::String("/dev/null".into()));
         let params = horus_core::drivers::DriverParams::new(map);
-        let (detail, health) = check_driver_device("test", &params, Some(&DriverType::Terra("serial".into())));
+        let (detail, health) =
+            check_driver_device("test", &params, Some(&DriverType::Terra("serial".into())));
         assert_eq!(health, Health::Ok);
         assert!(detail.contains("found"), "detail: {}", detail);
     }
@@ -1277,9 +1305,13 @@ mod tests {
     #[test]
     fn check_driver_device_missing_path() {
         let mut map = std::collections::HashMap::new();
-        map.insert("port".to_string(), toml::Value::String("/dev/nonexistent_xyz_test".into()));
+        map.insert(
+            "port".to_string(),
+            toml::Value::String("/dev/nonexistent_xyz_test".into()),
+        );
         let params = horus_core::drivers::DriverParams::new(map);
-        let (detail, health) = check_driver_device("test", &params, Some(&DriverType::Terra("serial".into())));
+        let (detail, health) =
+            check_driver_device("test", &params, Some(&DriverType::Terra("serial".into())));
         assert_eq!(health, Health::Fail);
         assert!(detail.contains("not found"), "detail: {}", detail);
     }
@@ -1289,7 +1321,8 @@ mod tests {
         let mut map = std::collections::HashMap::new();
         map.insert("bus".to_string(), toml::Value::String("i2c-99".into()));
         let params = horus_core::drivers::DriverParams::new(map);
-        let (detail, health) = check_driver_device("imu", &params, Some(&DriverType::Terra("mpu6050".into())));
+        let (detail, health) =
+            check_driver_device("imu", &params, Some(&DriverType::Terra("mpu6050".into())));
         // /dev/i2c-99 almost certainly doesn't exist
         assert_eq!(health, Health::Fail);
         assert!(detail.contains("i2c-99"), "detail: {}", detail);
@@ -1298,7 +1331,11 @@ mod tests {
     #[test]
     fn check_driver_device_no_checkable_params() {
         let params = horus_core::drivers::DriverParams::empty();
-        let (detail, health) = check_driver_device("mystery", &params, Some(&DriverType::Local("MyDriver".into())));
+        let (detail, health) = check_driver_device(
+            "mystery",
+            &params,
+            Some(&DriverType::Local("MyDriver".into())),
+        );
         assert_eq!(health, Health::Ok);
         assert!(detail.contains("no device path"), "detail: {}", detail);
     }
@@ -1315,9 +1352,16 @@ mod tests {
     fn check_driver_device_network_unreachable() {
         let mut map = std::collections::HashMap::new();
         // Use a non-routable address so connect_timeout fails fast
-        map.insert("address".to_string(), toml::Value::String("192.0.2.1:9999".into()));
+        map.insert(
+            "address".to_string(),
+            toml::Value::String("192.0.2.1:9999".into()),
+        );
         let params = horus_core::drivers::DriverParams::new(map);
-        let (detail, health) = check_driver_device("lidar", &params, Some(&DriverType::Terra("velodyne".into())));
+        let (detail, health) = check_driver_device(
+            "lidar",
+            &params,
+            Some(&DriverType::Terra("velodyne".into())),
+        );
         assert_eq!(health, Health::Warn);
         assert!(detail.contains("unreachable"), "detail: {}", detail);
     }

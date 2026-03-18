@@ -99,8 +99,8 @@ fn print_cpp_deps_tree(root: &Path) -> Result<()> {
 
         // Use dep name as apt package name (convention for system deps)
         let apt_name = name.as_str();
-        let version = query_dpkg_version(apt_name)
-            .unwrap_or_else(|| "not installed".red().to_string());
+        let version =
+            query_dpkg_version(apt_name).unwrap_or_else(|| "not installed".red().to_string());
         println!("  {} {}", name.cyan(), version);
         found = true;
     }
@@ -265,19 +265,17 @@ fn print_cpp_deps_outdated(root: &Path) -> Result<()> {
                 );
             }
             (None, _) => {
-                println!(
-                    "  {} ({})  {}",
-                    name.cyan(),
-                    apt,
-                    "not installed".red()
-                );
+                println!("  {} ({})  {}", name.cyan(), apt, "not installed".red());
                 any_outdated = true;
             }
         }
     }
 
     if found && !any_outdated {
-        println!("  {}", "All C++ system dependencies are up to date.".green());
+        println!(
+            "  {}",
+            "All C++ system dependencies are up to date.".green()
+        );
     }
     if !found {
         println!("  (no C++ system dependencies in horus.toml)");
@@ -598,7 +596,11 @@ mod tests {
     #[test]
     fn deps_cpp_project_context() {
         let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\n").unwrap();
+        std::fs::write(
+            tmp.path().join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.16)\n",
+        )
+        .unwrap();
 
         let ctx = dispatch::detect_context(tmp.path());
         assert!(ctx.has_cpp(), "Should detect C++ from CMakeLists.txt");

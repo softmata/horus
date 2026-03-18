@@ -162,7 +162,10 @@ impl TrackedObject {
 
 impl LogSummary for TrackedObject {
     fn log_summary(&self) -> String {
-        format!("Tracked(id={}, cls={}, conf={:.2}, age={})", self.track_id, self.class_id, self.confidence, self.age)
+        format!(
+            "Tracked(id={}, cls={}, conf={:.2}, age={})",
+            self.track_id, self.class_id, self.confidence, self.age
+        )
     }
 }
 
@@ -212,7 +215,10 @@ impl TrackingHeader {
 
 impl LogSummary for TrackingHeader {
     fn log_summary(&self) -> String {
-        format!("TrackingHdr(tracks={}, active={}, frame={})", self.num_tracks, self.active_tracks, self.frame_id)
+        format!(
+            "TrackingHdr(tracks={}, active={}, frame={})",
+            self.num_tracks, self.active_tracks, self.frame_id
+        )
     }
 }
 

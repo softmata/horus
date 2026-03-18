@@ -554,7 +554,10 @@ mod tests {
     #[test]
     fn format_size_delegates_to_format_bytes() {
         let result = format_size(1024);
-        assert!(!result.is_empty(), "format_size should return non-empty string");
+        assert!(
+            !result.is_empty(),
+            "format_size should return non-empty string"
+        );
         // 1024 bytes should format as some form of "1 KB" or "1.0 KB"
         assert!(
             result.contains("KB") || result.contains("KiB") || result.contains("1"),
@@ -563,11 +566,18 @@ mod tests {
         );
         // Zero bytes should still produce output
         let zero = format_size(0);
-        assert!(!zero.is_empty(), "format_size(0) should return non-empty string");
+        assert!(
+            !zero.is_empty(),
+            "format_size(0) should return non-empty string"
+        );
 
         // Large sizes should produce different output than small sizes
         let large = format_size(1_000_000_000);
-        assert_ne!(format_size(100), large, "100 bytes and 1GB should format differently");
+        assert_ne!(
+            format_size(100),
+            large,
+            "100 bytes and 1GB should format differently"
+        );
     }
 
     // ── Battle-testing: run_clean ────────────────────────────────────────

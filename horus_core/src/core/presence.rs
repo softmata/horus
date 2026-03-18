@@ -523,11 +523,18 @@ mod tests {
         let presence = NodePresence::new(
             &name,
             Some("sched_1"),
-            vec![TopicMetadata { topic_name: "cmd_vel".into(), type_name: "CmdVel".into() }],
-            vec![TopicMetadata { topic_name: "odom".into(), type_name: "Odometry".into() }],
+            vec![TopicMetadata {
+                topic_name: "cmd_vel".into(),
+                type_name: "CmdVel".into(),
+            }],
+            vec![TopicMetadata {
+                topic_name: "odom".into(),
+                type_name: "Odometry".into(),
+            }],
             42,
             Some(100.0),
-        ).unwrap();
+        )
+        .unwrap();
         presence.write().unwrap();
 
         let read_back = NodePresence::read(&name);
@@ -557,7 +564,10 @@ mod tests {
         assert!(NodePresence::read(&name).is_some());
 
         NodePresence::remove(&name).unwrap();
-        assert!(NodePresence::read(&name).is_none(), "should be gone after remove");
+        assert!(
+            NodePresence::read(&name).is_none(),
+            "should be gone after remove"
+        );
     }
 
     #[test]
@@ -573,11 +583,15 @@ mod tests {
         let presence = NodePresence::new(
             "getter_test",
             Some("my_sched"),
-            vec![TopicMetadata { topic_name: "t1".into(), type_name: "T1".into() }],
+            vec![TopicMetadata {
+                topic_name: "t1".into(),
+                type_name: "T1".into(),
+            }],
             vec![],
             99,
             Some(50.0),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(presence.name(), "getter_test");
         assert_eq!(presence.pid(), std::process::id());

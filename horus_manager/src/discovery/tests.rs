@@ -2,7 +2,9 @@ use super::nodes::{
     categorize_process, extract_process_name, format_duration, parse_memory_from_stat,
     parse_stat_fields, process_exists, should_track_process,
 };
-use super::topics::{compute_topic_status, discover_shared_memory_uncached, format_age, is_horus_process};
+use super::topics::{
+    compute_topic_status, discover_shared_memory_uncached, format_age, is_horus_process,
+};
 use super::*;
 use horus_core::core::DurationExt;
 
@@ -38,12 +40,7 @@ impl TestPresenceWriter {
         format!("{}_{}", self.prefix, name)
     }
 
-    fn write_node(
-        &mut self,
-        name: &str,
-        pubs_json: &str,
-        subs_json: &str,
-    ) -> String {
+    fn write_node(&mut self, name: &str, pubs_json: &str, subs_json: &str) -> String {
         self.write_node_ext(name, pubs_json, subs_json, None, None, None, 0, 0)
     }
 
@@ -76,7 +73,16 @@ impl TestPresenceWriter {
         };
         let json = format!(
             r#"{{"name":"{}","pid":{},"scheduler":"{}","publishers":{},"subscribers":{},"start_time":{},"priority":0,"rate_hz":{},"pid_start_time":0,"health_status":{},"tick_count":{},"error_count":{}}}"#,
-            full_name, pid, sched, pubs_json, subs_json, now_secs, rate_json, health_json, tick_count, error_count
+            full_name,
+            pid,
+            sched,
+            pubs_json,
+            subs_json,
+            now_secs,
+            rate_json,
+            health_json,
+            tick_count,
+            error_count
         );
         let path = self.nodes_dir.join(format!("{}.json", full_name));
         // Use atomic write (tmp+rename) to prevent parallel read_all() from
@@ -125,12 +131,14 @@ impl TestPresenceWriter {
     /// Read all presence files created by THIS test (not the global directory).
     /// Each file is read individually, avoiding the read_all() global scan.
     fn read_all_own(&self) -> Vec<NodePresence> {
-        self.created_files.iter().filter_map(|path| {
-            let content = std::fs::read_to_string(path).ok()?;
-            serde_json::from_str(&content).ok()
-        }).collect()
+        self.created_files
+            .iter()
+            .filter_map(|path| {
+                let content = std::fs::read_to_string(path).ok()?;
+                serde_json::from_str(&content).ok()
+            })
+            .collect()
     }
-
 }
 
 impl Drop for TestPresenceWriter {
@@ -231,8 +239,12 @@ fn test_node_status_with_publishers_subscribers() {
         actual_rate_hz: 0,
         publishers: vec![pub_topic],
         subscribers: vec![sub_topic],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     };
 
     assert_eq!(node.publishers.len(), 1);
@@ -299,12 +311,16 @@ fn test_shared_memory_info_creation() {
     assert!(
         total_participants <= shm.accessing_processes.len() + 10, // allow headroom
         "participant count ({}) should be reasonable relative to accessing processes ({})",
-        total_participants, shm.accessing_processes.len()
+        total_participants,
+        shm.accessing_processes.len()
     );
 
     // Debug output should contain the topic name
     let debug = format!("{:?}", shm);
-    assert!(debug.contains("robot.pose"), "Debug should contain topic name");
+    assert!(
+        debug.contains("robot.pose"),
+        "Debug should contain topic name"
+    );
     assert!(debug.contains("Active"), "Debug should contain status");
 }
 
@@ -338,7 +354,11 @@ fn test_shared_memory_info_inactive() {
     assert!((shm.message_rate_hz - 0.0).abs() < f32::EPSILON);
 
     // Inactive topics should be consistent: no rate, no processes, stale status
-    assert_eq!(shm.status, TopicStatus::Stale, "inactive topic should be Stale");
+    assert_eq!(
+        shm.status,
+        TopicStatus::Stale,
+        "inactive topic should be Stale"
+    );
     assert!(
         shm.accessing_processes.is_empty(),
         "inactive topic should have no accessing processes"
@@ -365,8 +385,14 @@ fn test_topic_info_creation() {
 
     // Verify Debug output contains fields
     let debug = format!("{:?}", topic);
-    assert!(debug.contains("camera.image"), "Debug should contain topic name");
-    assert!(debug.contains("sensor_msgs::Image"), "Debug should contain type name");
+    assert!(
+        debug.contains("camera.image"),
+        "Debug should contain topic name"
+    );
+    assert!(
+        debug.contains("sensor_msgs::Image"),
+        "Debug should contain type name"
+    );
 }
 
 // =====================
@@ -550,8 +576,7 @@ fn test_discover_shared_memory_with_real_topic() {
         let cache_refreshed = DISCOVERY_CACHE
             .write()
             .map(|mut cache| {
-                cache.shared_memory_last_updated =
-                    std::time::Instant::now() - 10_u64.secs();
+                cache.shared_memory_last_updated = std::time::Instant::now() - 10_u64.secs();
                 true
             })
             .unwrap_or(false);
@@ -645,8 +670,7 @@ fn test_topic_inactive_detection() {
 
         // Force cache refresh
         if let Ok(mut cache) = DISCOVERY_CACHE.write() {
-            cache.shared_memory_last_updated =
-                std::time::Instant::now() - 10_u64.secs();
+            cache.shared_memory_last_updated = std::time::Instant::now() - 10_u64.secs();
         }
 
         let result = discover_shared_memory();
@@ -693,8 +717,12 @@ fn test_discovery_cache_update_nodes() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     }];
 
     cache.update_nodes(nodes);
@@ -773,8 +801,12 @@ fn test_node_status_clone() {
             type_name: "Msg".to_string(),
         }],
         subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     };
 
     let cloned = node.clone();
@@ -850,7 +882,10 @@ fn test_health_status_variants() {
     for (i, a) in debug_strs.iter().enumerate() {
         for (j, b) in debug_strs.iter().enumerate() {
             if i != j {
-                assert_ne!(a, b, "All health variants should have distinct Debug output");
+                assert_ne!(
+                    a, b,
+                    "All health variants should have distinct Debug output"
+                );
             }
         }
     }
@@ -875,8 +910,12 @@ fn test_health_status_variants() {
             actual_rate_hz: 0,
             publishers: vec![],
             subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+            live_tick_count: None,
+            live_health: None,
+            live_avg_tick_ns: None,
+            live_max_tick_ns: None,
+            live_budget_misses: None,
+            live_deadline_misses: None,
         };
         let debug = format!("{:?}", node.health);
         assert!(!debug.is_empty(), "Health debug should not be empty");
@@ -977,8 +1016,12 @@ fn test_cache_update_replaces_data() {
             actual_rate_hz: 0,
             publishers: vec![],
             subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+            live_tick_count: None,
+            live_health: None,
+            live_avg_tick_ns: None,
+            live_max_tick_ns: None,
+            live_budget_misses: None,
+            live_deadline_misses: None,
         },
         NodeStatus {
             name: "node_b".to_string(),
@@ -998,8 +1041,12 @@ fn test_cache_update_replaces_data() {
             actual_rate_hz: 0,
             publishers: vec![],
             subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+            live_tick_count: None,
+            live_health: None,
+            live_avg_tick_ns: None,
+            live_max_tick_ns: None,
+            live_budget_misses: None,
+            live_deadline_misses: None,
         },
     ];
     cache.update_nodes(nodes1);
@@ -1024,8 +1071,12 @@ fn test_cache_update_replaces_data() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     }];
     cache.update_nodes(nodes2);
     assert_eq!(cache.nodes.len(), 1, "update should replace, not append");
@@ -1079,8 +1130,12 @@ fn test_cache_concurrent_read_write_safety() {
                     actual_rate_hz: 0,
                     publishers: vec![],
                     subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+                    live_tick_count: None,
+                    live_health: None,
+                    live_avg_tick_ns: None,
+                    live_max_tick_ns: None,
+                    live_budget_misses: None,
+                    live_deadline_misses: None,
                 }]);
                 drop(c);
                 std::thread::yield_now();
@@ -1123,8 +1178,12 @@ fn test_cache_miss_refresh_hit_cycle() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     }]);
 
     // Step 3: Cache hit (fresh)
@@ -1159,8 +1218,12 @@ fn test_stale_data_dead_node_replaced_on_refresh() {
         actual_rate_hz: 0,
         publishers: vec![],
         subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     }]);
     assert_eq!(cache.nodes.len(), 1);
     assert_eq!(cache.nodes[0].name, "dead_node");
@@ -1184,8 +1247,12 @@ fn test_stale_data_dead_node_replaced_on_refresh() {
         actual_rate_hz: 50,
         publishers: vec![],
         subscribers: vec![],
-        live_tick_count: None, live_health: None, live_avg_tick_ns: None,
-        live_max_tick_ns: None, live_budget_misses: None, live_deadline_misses: None,
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     }]);
     assert_eq!(cache.nodes.len(), 1);
     assert_eq!(cache.nodes[0].name, "live_node");
@@ -1553,17 +1620,15 @@ fn test_e2e_multi_node_discovery() {
 
     // Verify sensor has publisher
     let sensor_path = nodes_dir.join("e2e_sensor.json");
-    let sensor: NodePresence = serde_json::from_str(
-        &std::fs::read_to_string(&sensor_path).unwrap()
-    ).unwrap();
+    let sensor: NodePresence =
+        serde_json::from_str(&std::fs::read_to_string(&sensor_path).unwrap()).unwrap();
     assert_eq!(sensor.publishers().len(), 1);
     assert_eq!(sensor.publishers()[0].topic_name, "sensor.data");
 
     // Verify motor has subscriber
     let motor_path = nodes_dir.join("e2e_motor.json");
-    let motor: NodePresence = serde_json::from_str(
-        &std::fs::read_to_string(&motor_path).unwrap()
-    ).unwrap();
+    let motor: NodePresence =
+        serde_json::from_str(&std::fs::read_to_string(&motor_path).unwrap()).unwrap();
     assert_eq!(motor.subscribers().len(), 1);
     assert_eq!(motor.subscribers()[0].topic_name, "motor.cmd");
 
@@ -1601,7 +1666,9 @@ fn test_stress_100_nodes_discovery() {
 
     // Verify via direct file reads (parallel-safe)
     for name in &expected_names {
-        let p = w.read_presence(name).unwrap_or_else(|| panic!("missing: {}", name));
+        let p = w
+            .read_presence(name)
+            .unwrap_or_else(|| panic!("missing: {}", name));
         assert_eq!(p.publishers().len(), 1);
         assert_eq!(p.subscribers().len(), 1);
     }
@@ -1621,7 +1688,8 @@ fn test_stress_rapid_creation_teardown() {
             assert!(
                 w.read_presence(name).is_some(),
                 "iter {}: missing {}",
-                iteration, name
+                iteration,
+                name
             );
         }
         // Drop w → files deleted
@@ -1786,16 +1854,24 @@ fn test_scenario_perception_pipeline() {
     let pipeline_topics: Vec<_> = topics
         .iter()
         .filter(|t| {
-            ["camera.image", "detection.objects", "plan.trajectory", "motor.cmd_vel"]
-                .iter()
-                .any(|name| t.topic_name == *name)
+            [
+                "camera.image",
+                "detection.objects",
+                "plan.trajectory",
+                "motor.cmd_vel",
+            ]
+            .iter()
+            .any(|name| t.topic_name == *name)
         })
         .collect();
     assert_eq!(
         pipeline_topics.len(),
         4,
         "all 4 pipeline topics should appear from presence, found: {:?}",
-        pipeline_topics.iter().map(|t| &t.topic_name).collect::<Vec<_>>()
+        pipeline_topics
+            .iter()
+            .map(|t| &t.topic_name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1807,13 +1883,21 @@ fn test_scenario_arm_control_with_rates() {
         "joint_state_pub",
         r#"[{"topic_name":"arm.joint_states","type_name":"JointState"}]"#,
         "[]",
-        Some("control_sched"), None, Some(1000.0), 100000, 0,
+        Some("control_sched"),
+        None,
+        Some(1000.0),
+        100000,
+        0,
     );
     w.write_node_ext(
         "ik_solver",
         "[]",
         r#"[{"topic_name":"arm.goal_pose","type_name":"Pose"}]"#,
-        Some("control_sched"), None, Some(100.0), 10000, 0,
+        Some("control_sched"),
+        None,
+        Some(100.0),
+        10000,
+        0,
     );
     w.write_node_ext(
         "safety_monitor",
@@ -1854,14 +1938,24 @@ fn test_scenario_multi_publisher_sensor_fusion() {
 
     // Verify via direct file reads (parallel-safe)
     let all = w.read_all_own();
-    let pc_pubs: Vec<_> = all.iter().filter(|p| {
-        p.publishers().iter().any(|t| t.topic_name == "sensor.pointcloud")
-    }).collect();
+    let pc_pubs: Vec<_> = all
+        .iter()
+        .filter(|p| {
+            p.publishers()
+                .iter()
+                .any(|t| t.topic_name == "sensor.pointcloud")
+        })
+        .collect();
     assert_eq!(pc_pubs.len(), 4, "4 lidars should publish pointcloud");
 
-    let pc_subs: Vec<_> = all.iter().filter(|p| {
-        p.subscribers().iter().any(|t| t.topic_name == "sensor.pointcloud")
-    }).collect();
+    let pc_subs: Vec<_> = all
+        .iter()
+        .filter(|p| {
+            p.subscribers()
+                .iter()
+                .any(|t| t.topic_name == "sensor.pointcloud")
+        })
+        .collect();
     assert_eq!(pc_subs.len(), 1, "1 fusion node should subscribe");
 }
 
@@ -1871,23 +1965,37 @@ fn test_scenario_hierarchical_schedulers() {
 
     for i in 0..3 {
         w.write_node_ext(
-            &format!("perception_{}", i), "[]", "[]",
-            Some("perception_sched"), None, None, 0, 0,
+            &format!("perception_{}", i),
+            "[]",
+            "[]",
+            Some("perception_sched"),
+            None,
+            None,
+            0,
+            0,
         );
     }
     for i in 0..3 {
         w.write_node_ext(
-            &format!("control_{}", i), "[]", "[]",
-            Some("control_sched"), None, None, 0, 0,
+            &format!("control_{}", i),
+            "[]",
+            "[]",
+            Some("control_sched"),
+            None,
+            None,
+            0,
+            0,
         );
     }
 
     // Verify via direct file reads (parallel-safe)
     let all = w.read_all_own();
-    let perc_nodes: Vec<_> = all.iter()
+    let perc_nodes: Vec<_> = all
+        .iter()
         .filter(|n| n.scheduler() == Some("perception_sched"))
         .collect();
-    let ctrl_nodes: Vec<_> = all.iter()
+    let ctrl_nodes: Vec<_> = all
+        .iter()
         .filter(|n| n.scheduler() == Some("control_sched"))
         .collect();
     assert_eq!(perc_nodes.len(), 3);
@@ -1901,17 +2009,25 @@ fn test_scenario_health_degradation_matrix() {
     let h = w.write_node_ext("healthy", "[]", "[]", None, Some("Healthy"), None, 10000, 0);
     let warn = w.write_node_ext("warning", "[]", "[]", None, Some("Warning"), None, 5000, 5);
     let err = w.write_node_ext("error", "[]", "[]", None, Some("Error"), None, 3000, 100);
-    let crit = w.write_node_ext("critical", "[]", "[]", None, Some("Critical"), None, 1000, 500);
+    let crit = w.write_node_ext(
+        "critical",
+        "[]",
+        "[]",
+        None,
+        Some("Critical"),
+        None,
+        1000,
+        500,
+    );
     let unk = w.write_node_ext("unknown", "[]", "[]", None, None, None, 0, 0);
 
     // Verify presence data by reading files directly (avoids both cache races
     // and read_all() liveness filtering which can race with parallel tests)
     let read_presence = |name: &str| -> NodePresence {
         let path = w.nodes_dir.join(format!("{}.json", name));
-        let content = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {}", name, e));
-        serde_json::from_str(&content)
-            .unwrap_or_else(|e| panic!("parse {}: {}", name, e))
+        let content =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", name, e));
+        serde_json::from_str(&content).unwrap_or_else(|e| panic!("parse {}: {}", name, e))
     };
 
     assert_eq!(read_presence(&h).health_status(), Some("Healthy"));
@@ -1982,11 +2098,23 @@ fn test_crash_corrupt_json_variants() {
 
     // Write various corrupt files
     let corrupt_prefix = w.prefixed_name("corrupt");
-    w.write_raw(&format!("{}_truncated.json", corrupt_prefix), b"{\"name\":\"x\",\"pid");
+    w.write_raw(
+        &format!("{}_truncated.json", corrupt_prefix),
+        b"{\"name\":\"x\",\"pid",
+    );
     w.write_raw(&format!("{}_empty.json", corrupt_prefix), b"");
-    w.write_raw(&format!("{}_binary.json", corrupt_prefix), &[0xDE, 0xAD, 0xBE, 0xEF]);
-    w.write_raw(&format!("{}_wrong_schema.json", corrupt_prefix), b"{\"foo\": \"bar\"}");
-    w.write_raw(&format!("{}_no_brace.json", corrupt_prefix), b"{\"name\":\"test\",\"pid\":1234");
+    w.write_raw(
+        &format!("{}_binary.json", corrupt_prefix),
+        &[0xDE, 0xAD, 0xBE, 0xEF],
+    );
+    w.write_raw(
+        &format!("{}_wrong_schema.json", corrupt_prefix),
+        b"{\"foo\": \"bar\"}",
+    );
+    w.write_raw(
+        &format!("{}_no_brace.json", corrupt_prefix),
+        b"{\"name\":\"test\",\"pid\":1234",
+    );
 
     // Write one valid file
     let valid_name = w.write_node("valid", "[]", "[]");
@@ -2003,7 +2131,9 @@ fn test_crash_corrupt_json_variants() {
     // Corrupt UTF-8 files should be cleaned up
     // (read_all removes files that fail JSON parse but are valid UTF-8)
     for suffix in ["truncated", "empty", "wrong_schema", "no_brace"] {
-        let path = w.nodes_dir.join(format!("{}_{}.json", corrupt_prefix, suffix));
+        let path = w
+            .nodes_dir
+            .join(format!("{}_{}.json", corrupt_prefix, suffix));
         assert!(
             !path.exists(),
             "corrupt file {} should be cleaned up",
@@ -2013,7 +2143,9 @@ fn test_crash_corrupt_json_variants() {
 
     // Binary (non-UTF-8) files are skipped, not removed — we don't delete
     // files we can't even read as text (they may belong to another system)
-    let binary_path = w.nodes_dir.join(format!("{}_{}.json", corrupt_prefix, "binary"));
+    let binary_path = w
+        .nodes_dir
+        .join(format!("{}_{}.json", corrupt_prefix, "binary"));
     // Clean up manually since read_all won't touch it
     let _ = std::fs::remove_file(&binary_path);
 }
@@ -2130,14 +2262,20 @@ fn test_lifecycle_start_discover_shutdown() {
     let name = w.write_node("ephemeral", "[]", "[]");
 
     // Node file should exist (direct read, parallel-safe)
-    assert!(w.read_presence(&name).is_some(), "node must appear after start");
+    assert!(
+        w.read_presence(&name).is_some(),
+        "node must appear after start"
+    );
 
     // Simulate shutdown: delete the file
     let path = w.nodes_dir.join(format!("{}.json", name));
     std::fs::remove_file(&path).expect("delete presence");
 
     // Node file should no longer exist
-    assert!(w.read_presence(&name).is_none(), "node must vanish after shutdown");
+    assert!(
+        w.read_presence(&name).is_none(),
+        "node must vanish after shutdown"
+    );
 }
 
 #[test]
@@ -2160,7 +2298,8 @@ fn test_lifecycle_topic_change_mid_run() {
     let tmp = w.nodes_dir.join(format!("{}.json.tmp", name));
     let new_json = format!(
         r#"{{"name":"{}","pid":{},"scheduler":"test_sched","publishers":[{{"topic_name":"topic.a","type_name":"A"}},{{"topic_name":"topic.b","type_name":"B"}}],"subscribers":[],"start_time":1,"priority":0,"rate_hz":null,"pid_start_time":0}}"#,
-        name, std::process::id()
+        name,
+        std::process::id()
     );
     std::fs::write(&tmp, &new_json).expect("write tmp");
     std::fs::rename(&tmp, &path).expect("atomic rename");
@@ -2206,7 +2345,8 @@ fn test_lifecycle_health_progression() {
     let tmp = w.nodes_dir.join(format!("{}.json.tmp", name));
     let json = format!(
         r#"{{"name":"{}","pid":{},"scheduler":"test_sched","publishers":[],"subscribers":[],"start_time":1,"priority":0,"rate_hz":null,"pid_start_time":0,"health_status":"Warning","tick_count":100,"error_count":5}}"#,
-        name, std::process::id()
+        name,
+        std::process::id()
     );
     std::fs::write(&tmp, &json).unwrap();
     std::fs::rename(&tmp, &path).unwrap();
@@ -2218,7 +2358,8 @@ fn test_lifecycle_health_progression() {
     // Degrade to Critical (atomic write)
     let json = format!(
         r#"{{"name":"{}","pid":{},"scheduler":"test_sched","publishers":[],"subscribers":[],"start_time":1,"priority":0,"rate_hz":null,"pid_start_time":0,"health_status":"Critical","tick_count":200,"error_count":500}}"#,
-        name, std::process::id()
+        name,
+        std::process::id()
     );
     std::fs::write(&tmp, &json).unwrap();
     std::fs::rename(&tmp, &path).unwrap();
@@ -2238,7 +2379,8 @@ fn test_presence_forward_compatibility_unknown_fields() {
     let full_name = w.prefixed_name("future");
     let json = format!(
         r#"{{"name":"{}","pid":{},"scheduler":"s","publishers":[],"subscribers":[],"start_time":1,"priority":0,"rate_hz":null,"pid_start_time":0,"future_field":42,"metadata":{{"version":2}}}}"#,
-        full_name, std::process::id()
+        full_name,
+        std::process::id()
     );
     let path = w.nodes_dir.join(format!("{}.json", full_name));
     std::fs::write(&path, json).unwrap();
@@ -2261,14 +2403,17 @@ fn test_presence_minimal_fields() {
     let full_name = w.prefixed_name("bare");
     let json = format!(
         r#"{{"name":"{}","pid":{},"publishers":[],"subscribers":[],"start_time":1,"priority":0}}"#,
-        full_name, std::process::id()
+        full_name,
+        std::process::id()
     );
     let path = w.nodes_dir.join(format!("{}.json", full_name));
     std::fs::write(&path, json).unwrap();
     w.created_files.push(path);
 
     // Direct file read (parallel-safe)
-    let p = w.read_presence(&full_name).expect("minimal node must be found");
+    let p = w
+        .read_presence(&full_name)
+        .expect("minimal node must be found");
     assert_eq!(p.tick_count(), 0); // serde default
     assert_eq!(p.error_count(), 0);
 }
@@ -2305,7 +2450,8 @@ fn test_fs_non_json_files_ignored() {
     // (read_all only scans .json files, verify via read_all_own which reads all created files)
     let all = w.read_all_own();
     assert!(
-        !all.iter().any(|p| p.name().contains("readme") || p.name().contains("backup")),
+        !all.iter()
+            .any(|p| p.name().contains("readme") || p.name().contains("backup")),
         "non-.json files must not parse as presence"
     );
 }

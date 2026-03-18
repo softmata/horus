@@ -144,12 +144,7 @@ fn test_consumer_survives_producer_crash() {
     std::thread::sleep(Duration::from_millis(100));
 
     // Start producer that will crash after 30 messages
-    let mut producer = spawn_child(
-        "test_consumer_survives_producer_crash",
-        &topic,
-        30,
-        "crash",
-    );
+    let mut producer = spawn_child("test_consumer_survives_producer_crash", &topic, 30, "crash");
 
     // Wait for producer to crash
     let producer_status = producer.wait().unwrap();
@@ -191,24 +186,14 @@ fn test_topic_reusable_after_crash() {
     let topic = unique("crash_reuse");
 
     // First producer: sends 20 messages then crashes
-    let mut producer1 = spawn_child(
-        "test_topic_reusable_after_crash",
-        &topic,
-        20,
-        "crash",
-    );
+    let mut producer1 = spawn_child("test_topic_reusable_after_crash", &topic, 20, "crash");
     let _ = producer1.wait();
 
     // Wait for crash cleanup
     std::thread::sleep(Duration::from_millis(200));
 
     // Second producer: sends 20 messages normally (with sentinel)
-    let mut producer2 = spawn_child(
-        "test_topic_reusable_after_crash",
-        &topic,
-        20,
-        "normal",
-    );
+    let mut producer2 = spawn_child("test_topic_reusable_after_crash", &topic, 20, "normal");
     let p2_status = producer2.wait().unwrap();
 
     // Second producer should exit successfully

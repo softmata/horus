@@ -28,11 +28,11 @@
 //! timeout-based tests unreliable.  The underlying condvar logic IS tested by
 //! the loom tests in `loom_ring_buffers.rs`.
 
+use horus_core::core::DurationExt;
 use horus_core::error::HorusError;
 use horus_core::memory::tensor_pool::{Device, TensorDtype};
 use horus_core::memory::{TensorPool, TensorPoolConfig};
 use std::sync::Arc;
-use horus_core::core::DurationExt;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -329,12 +329,7 @@ fn pool_exhaustion_triggers_timeout() {
         .expect("second alloc failed");
 
     // Next alloc must time out.
-    let result = pool.alloc_with_timeout(
-        &[4],
-        TensorDtype::U8,
-        Device::cpu(),
-        50_u64.ms(),
-    );
+    let result = pool.alloc_with_timeout(&[4], TensorDtype::U8, Device::cpu(), 50_u64.ms());
 
     assert!(
         matches!(result, Err(HorusError::Timeout(_))),

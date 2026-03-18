@@ -21,8 +21,8 @@ pub struct RustExtractionResult {
 pub fn extract_rust_file(path: &Path, include_private: bool) -> Result<RustExtractionResult> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    let file = syn::parse_file(&source)
-        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    let file =
+        syn::parse_file(&source).with_context(|| format!("Failed to parse {}", path.display()))?;
 
     let module_doc = extract_module_doc(&file.attrs);
     let mut symbols = Vec::new();
@@ -147,14 +147,13 @@ fn extract_struct_item(s: &syn::ItemStruct, path: &Path) -> StructDoc {
             .named
             .iter()
             .filter(|f| {
-                matches!(&f.vis, syn::Visibility::Public(_) | syn::Visibility::Inherited)
+                matches!(
+                    &f.vis,
+                    syn::Visibility::Public(_) | syn::Visibility::Inherited
+                )
             })
             .map(|f| FieldDoc {
-                name: f
-                    .ident
-                    .as_ref()
-                    .map(|i| i.to_string())
-                    .unwrap_or_default(),
+                name: f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default(),
                 type_str: Some(type_to_string(&f.ty)),
                 doc: extract_doc_comment(&f.attrs),
             })
@@ -182,7 +181,7 @@ fn extract_struct_item(s: &syn::ItemStruct, path: &Path) -> StructDoc {
         deprecated: extract_deprecated(&s.attrs),
         generic_params: extract_generics(&s.generics),
         fields,
-        methods: vec![], // filled by associate_impl_methods
+        methods: vec![],     // filled by associate_impl_methods
         trait_impls: vec![], // filled by associate_impl_methods
         derives,
         examples: extract_examples_from_doc(&s.attrs),
@@ -310,11 +309,7 @@ fn extract_static_item(s: &syn::ItemStatic, path: &Path) -> ConstantDoc {
     }
 }
 
-fn extract_impl_methods(
-    i: &syn::ItemImpl,
-    path: &Path,
-    include_private: bool,
-) -> Vec<FunctionDoc> {
+fn extract_impl_methods(i: &syn::ItemImpl, path: &Path, include_private: bool) -> Vec<FunctionDoc> {
     i.items
         .iter()
         .filter_map(|item| {
@@ -931,7 +926,11 @@ fn type_to_string(ty: &Type) -> String {
             format!("[{}; ...]", type_to_string(&a.elem))
         }
         Type::Ptr(p) => {
-            let m = if p.mutability.is_some() { "mut" } else { "const" };
+            let m = if p.mutability.is_some() {
+                "mut"
+            } else {
+                "const"
+            };
             format!("*{m} {}", type_to_string(&p.elem))
         }
         Type::ImplTrait(i) => {
@@ -968,11 +967,15 @@ fn path_to_string_with_args(path: &syn::Path) -> String {
             match &s.arguments {
                 syn::PathArguments::None => name,
                 syn::PathArguments::AngleBracketed(ab) => {
-                    let args: Vec<String> = ab.args.iter().map(|a| match a {
-                        syn::GenericArgument::Type(t) => type_to_string(t),
-                        syn::GenericArgument::Lifetime(l) => format!("'{}", l.ident),
-                        _ => "...".to_string(),
-                    }).collect();
+                    let args: Vec<String> = ab
+                        .args
+                        .iter()
+                        .map(|a| match a {
+                            syn::GenericArgument::Type(t) => type_to_string(t),
+                            syn::GenericArgument::Lifetime(l) => format!("'{}", l.ident),
+                            _ => "...".to_string(),
+                        })
+                        .collect();
                     format!("{}<{}>", name, args.join(", "))
                 }
                 syn::PathArguments::Parenthesized(p) => {
@@ -1062,7 +1065,10 @@ fn use_tree_to_string(tree: &syn::UseTree) -> String {
 // ─── Visibility Helpers ─────────────────────────────────────────────────────
 
 fn is_public(vis: &syn::Visibility) -> bool {
-    matches!(vis, syn::Visibility::Public(_) | syn::Visibility::Restricted(_))
+    matches!(
+        vis,
+        syn::Visibility::Public(_) | syn::Visibility::Restricted(_)
+    )
 }
 
 fn is_impl_method_public(vis: &syn::Visibility) -> bool {
@@ -1144,9 +1150,7 @@ mod tests {
 
     #[test]
     fn test_extract_pub_fn() {
-        let result = extract_from_source(
-            "pub fn hello(name: &str) -> String { name.to_string() }",
-        );
+        let result = extract_from_source("pub fn hello(name: &str) -> String { name.to_string() }");
         assert_eq!(result.module.symbols.len(), 1);
         let sym = &result.module.symbols[0];
         assert_eq!(sym.name(), "hello");
@@ -1181,9 +1185,7 @@ mod tests {
 
     #[test]
     fn test_extract_pub_enum() {
-        let result = extract_from_source(
-            "pub enum Color { Red, Green, Blue }",
-        );
+        let result = extract_from_source("pub enum Color { Red, Green, Blue }");
         assert_eq!(result.module.symbols.len(), 1);
         if let SymbolDoc::Enum(e) = &result.module.symbols[0] {
             assert_eq!(e.name, "Color");
@@ -1252,9 +1254,8 @@ mod tests {
 
     #[test]
     fn test_extract_deprecated() {
-        let result = extract_from_source(
-            "#[deprecated(note = \"use new_fn instead\")]\npub fn old_fn() {}",
-        );
+        let result =
+            extract_from_source("#[deprecated(note = \"use new_fn instead\")]\npub fn old_fn() {}");
         if let SymbolDoc::Function(f) = &result.module.symbols[0] {
             assert_eq!(f.deprecated.as_deref(), Some("use new_fn instead"));
         } else {
@@ -1264,9 +1265,7 @@ mod tests {
 
     #[test]
     fn test_extract_deprecated_bare() {
-        let result = extract_from_source(
-            "#[deprecated]\npub fn old_fn() {}",
-        );
+        let result = extract_from_source("#[deprecated]\npub fn old_fn() {}");
         if let SymbolDoc::Function(f) = &result.module.symbols[0] {
             assert!(f.deprecated.is_some());
         } else {
@@ -1311,9 +1310,8 @@ mod tests {
 
     #[test]
     fn test_impl_methods_associated() {
-        let result = extract_from_source(
-            "pub struct Foo;\nimpl Foo {\n    pub fn bar(&self) {}\n}",
-        );
+        let result =
+            extract_from_source("pub struct Foo;\nimpl Foo {\n    pub fn bar(&self) {}\n}");
         if let SymbolDoc::Struct(s) = &result.module.symbols[0] {
             assert_eq!(s.name, "Foo");
             assert_eq!(s.methods.len(), 1);
@@ -1369,7 +1367,10 @@ mod tests {
 
     #[test]
     fn test_scan_todos_no_match() {
-        let todos = scan_todos("// This is a normal comment\nlet x = 1;", Path::new("test.rs"));
+        let todos = scan_todos(
+            "// This is a normal comment\nlet x = 1;",
+            Path::new("test.rs"),
+        );
         assert!(todos.is_empty());
     }
 
@@ -1388,7 +1389,9 @@ mod tests {
 
     #[test]
     fn test_module_doc() {
-        let result = extract_from_source("//! This is the module doc.\n//! It has two lines.\npub fn f() {}");
+        let result = extract_from_source(
+            "//! This is the module doc.\n//! It has two lines.\npub fn f() {}",
+        );
         assert!(result.module.module_doc.is_some());
         let doc = result.module.module_doc.unwrap();
         assert!(doc.contains("module doc"));
@@ -1433,7 +1436,12 @@ mod tests {
         let result = extract_from_source(
             "message! {\n    TemperatureReading {\n        sensor_id: u32,\n        celsius: f64,\n    }\n}",
         );
-        let msgs: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::HorusMessage(_))).collect();
+        let msgs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::HorusMessage(_)))
+            .collect();
         assert_eq!(msgs.len(), 1, "should extract 1 message");
         if let SymbolDoc::HorusMessage(m) = &msgs[0] {
             assert_eq!(m.name, "TemperatureReading");
@@ -1447,10 +1455,14 @@ mod tests {
 
     #[test]
     fn test_extract_message_multiple() {
-        let result = extract_from_source(
-            "message! {\n    Foo { x: f64 }\n    Bar { y: u32, z: String }\n}",
-        );
-        let msgs: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::HorusMessage(_))).collect();
+        let result =
+            extract_from_source("message! {\n    Foo { x: f64 }\n    Bar { y: u32, z: String }\n}");
+        let msgs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::HorusMessage(_)))
+            .collect();
         assert_eq!(msgs.len(), 2, "should extract 2 messages");
         assert_eq!(msgs[0].name(), "Foo");
         assert_eq!(msgs[1].name(), "Bar");
@@ -1461,7 +1473,12 @@ mod tests {
         let result = extract_from_source(
             "service! {\n    AddTwoInts {\n        request {\n            a: i64,\n            b: i64,\n        }\n        response {\n            sum: i64,\n        }\n    }\n}",
         );
-        let svcs: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::HorusService(_))).collect();
+        let svcs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::HorusService(_)))
+            .collect();
         assert_eq!(svcs.len(), 1);
         if let SymbolDoc::HorusService(s) = &svcs[0] {
             assert_eq!(s.name, "AddTwoInts");
@@ -1477,7 +1494,12 @@ mod tests {
         let result = extract_from_source(
             "action! {\n    Navigate {\n        goal {\n            x: f64,\n            y: f64,\n        }\n        feedback {\n            progress: f32,\n        }\n        result {\n            success: bool,\n        }\n    }\n}",
         );
-        let acts: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::HorusAction(_))).collect();
+        let acts: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::HorusAction(_)))
+            .collect();
         assert_eq!(acts.len(), 1);
         if let SymbolDoc::HorusAction(a) = &acts[0] {
             assert_eq!(a.name, "Navigate");
@@ -1493,8 +1515,16 @@ mod tests {
     #[test]
     fn test_no_false_positive_macro() {
         let result = extract_from_source("println!(\"hello world\");");
-        let msgs: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::HorusMessage(_))).collect();
-        assert!(msgs.is_empty(), "println should not be detected as message macro");
+        let msgs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::HorusMessage(_)))
+            .collect();
+        assert!(
+            msgs.is_empty(),
+            "println should not be detected as message macro"
+        );
     }
 
     #[test]
@@ -1502,7 +1532,12 @@ mod tests {
         let result = extract_from_source(
             "message! {\n    Scan {\n        points: Vec<f32>,\n        header: Option<String>,\n    }\n}",
         );
-        let msgs: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::HorusMessage(_))).collect();
+        let msgs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::HorusMessage(_)))
+            .collect();
         assert_eq!(msgs.len(), 1);
         if let SymbolDoc::HorusMessage(m) = &msgs[0] {
             assert_eq!(m.fields.len(), 2);
@@ -1555,9 +1590,7 @@ mod tests {
 
     #[test]
     fn test_extract_lifetime_fn() {
-        let result = extract_from_source(
-            "pub fn borrow<'a>(s: &'a str) -> &'a str { s }",
-        );
+        let result = extract_from_source("pub fn borrow<'a>(s: &'a str) -> &'a str { s }");
         assert_eq!(result.module.symbols.len(), 1);
         if let SymbolDoc::Function(f) = &result.module.symbols[0] {
             assert_eq!(f.name, "borrow");
@@ -1585,8 +1618,16 @@ mod tests {
             assert_eq!(f.returns.as_deref(), Some("T"));
             // Function with where clause is extracted correctly even though
             // the signature builder omits the where clause text
-            assert!(f.signature.contains("pub fn complex"), "signature: {}", f.signature);
-            assert!(f.signature.contains("-> T"), "return type in signature: {}", f.signature);
+            assert!(
+                f.signature.contains("pub fn complex"),
+                "signature: {}",
+                f.signature
+            );
+            assert!(
+                f.signature.contains("-> T"),
+                "return type in signature: {}",
+                f.signature
+            );
         } else {
             panic!("expected Function");
         }
@@ -1618,7 +1659,11 @@ mod tests {
         assert_eq!(result.module.symbols.len(), 1);
         if let SymbolDoc::Struct(s) = &result.module.symbols[0] {
             assert_eq!(s.name, "Foo");
-            assert_eq!(s.methods.len(), 2, "Foo should have 2 methods from separate impl blocks");
+            assert_eq!(
+                s.methods.len(),
+                2,
+                "Foo should have 2 methods from separate impl blocks"
+            );
             let method_names: Vec<&str> = s.methods.iter().map(|m| m.name.as_str()).collect();
             assert!(method_names.contains(&"a"), "should contain method 'a'");
             assert!(method_names.contains(&"b"), "should contain method 'b'");
@@ -1633,11 +1678,29 @@ mod tests {
             "pub struct Bar;\npub trait Baz { fn do_thing(&self); }\nimpl Baz for Bar { fn do_thing(&self) {} }",
         );
         // Should have Bar (struct) and Baz (trait)
-        let structs: Vec<_> = result.module.symbols.iter()
-            .filter_map(|s| if let SymbolDoc::Struct(st) = s { Some(st) } else { None })
+        let structs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter_map(|s| {
+                if let SymbolDoc::Struct(st) = s {
+                    Some(st)
+                } else {
+                    None
+                }
+            })
             .collect();
-        let traits: Vec<_> = result.module.symbols.iter()
-            .filter_map(|s| if let SymbolDoc::Trait(t) = s { Some(t) } else { None })
+        let traits: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter_map(|s| {
+                if let SymbolDoc::Trait(t) = s {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(structs.len(), 1, "should have 1 struct");
         assert_eq!(traits.len(), 1, "should have 1 trait");
@@ -1700,11 +1763,22 @@ message! {
         let result = extract_rust_file(&file, false).unwrap();
 
         // StructDoc should have trait_impls populated
-        let structs: Vec<_> = result.module.symbols.iter()
-            .filter_map(|s| if let SymbolDoc::Struct(st) = s { Some(st) } else { None })
+        let structs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter_map(|s| {
+                if let SymbolDoc::Struct(st) = s {
+                    Some(st)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(!structs.is_empty(), "should extract at least one struct");
-        let temp_sensor = structs.iter().find(|s| s.name == "TempSensor")
+        let temp_sensor = structs
+            .iter()
+            .find(|s| s.name == "TempSensor")
             .expect("TempSensor struct should be extracted");
         assert!(
             temp_sensor.trait_impls.contains(&"Node".to_string()),
@@ -1718,12 +1792,25 @@ message! {
         );
 
         // HorusMessageDoc should have fields
-        let messages: Vec<_> = result.module.symbols.iter()
-            .filter_map(|s| if let SymbolDoc::HorusMessage(m) = s { Some(m) } else { None })
+        let messages: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter_map(|s| {
+                if let SymbolDoc::HorusMessage(m) = s {
+                    Some(m)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(messages.len(), 1, "should extract 1 message");
         assert_eq!(messages[0].name, "SensorReading");
-        assert_eq!(messages[0].fields.len(), 2, "SensorReading should have 2 fields");
+        assert_eq!(
+            messages[0].fields.len(),
+            2,
+            "SensorReading should have 2 fields"
+        );
 
         // TodoItem should be captured
         assert!(!result.todos.is_empty(), "should capture TODO comment");
@@ -1734,15 +1821,26 @@ message! {
 
         // entry_points should contain HorusNode because `impl Node` exists
         assert!(
-            result.entry_points.iter().any(|ep| ep.kind == EntryPointKind::HorusNode && ep.name == "TempSensor"),
+            result
+                .entry_points
+                .iter()
+                .any(|ep| ep.kind == EntryPointKind::HorusNode && ep.name == "TempSensor"),
             "entry_points should contain TempSensor as HorusNode, got: {:?}",
             result.entry_points
         );
 
         // Module doc captured
-        assert!(result.module.module_doc.is_some(), "module doc should be captured");
         assert!(
-            result.module.module_doc.as_ref().unwrap().contains("integration test"),
+            result.module.module_doc.is_some(),
+            "module doc should be captured"
+        );
+        assert!(
+            result
+                .module
+                .module_doc
+                .as_ref()
+                .unwrap()
+                .contains("integration test"),
             "module doc should contain 'integration test'"
         );
     }
@@ -1759,7 +1857,8 @@ message! {
         std::fs::write(
             src_dir.join("lib.rs"),
             "/// Library root.\npub struct AppConfig {\n    pub debug: bool,\n}\npub fn init() {}",
-        ).unwrap();
+        )
+        .unwrap();
 
         // helper.rs — a different function and constant
         std::fs::write(
@@ -1768,28 +1867,49 @@ message! {
         ).unwrap();
 
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let doc = extract_project(dir.path(), &config).unwrap();
 
         // Should have 2 modules (one per file)
         assert_eq!(
-            doc.modules.len(), 2,
+            doc.modules.len(),
+            2,
             "should extract 2 modules, got {}",
             doc.modules.len()
         );
 
         // Collect all symbol names across modules
-        let all_names: Vec<&str> = doc.modules.iter()
+        let all_names: Vec<&str> = doc
+            .modules
+            .iter()
             .flat_map(|m| m.symbols.iter().map(|s| s.name()))
             .collect();
 
-        assert!(all_names.contains(&"AppConfig"), "should find AppConfig from lib.rs");
+        assert!(
+            all_names.contains(&"AppConfig"),
+            "should find AppConfig from lib.rs"
+        );
         assert!(all_names.contains(&"init"), "should find init from lib.rs");
-        assert!(all_names.contains(&"compute"), "should find compute from helper.rs");
-        assert!(all_names.contains(&"VERSION"), "should find VERSION from helper.rs");
+        assert!(
+            all_names.contains(&"compute"),
+            "should find compute from helper.rs"
+        );
+        assert!(
+            all_names.contains(&"VERSION"),
+            "should find VERSION from helper.rs"
+        );
     }
 
     // ── Level 5: Error path tests ────────────────────────────────────────────
@@ -1800,7 +1920,10 @@ message! {
         let file = dir.path().join("bad.rs");
         std::fs::write(&file, "pub fn broken( { }}}}}").unwrap();
         let result = extract_rust_file(&file, false);
-        assert!(result.is_err(), "invalid Rust syntax should return Err, not panic");
+        assert!(
+            result.is_err(),
+            "invalid Rust syntax should return Err, not panic"
+        );
     }
 
     #[test]
@@ -1817,6 +1940,9 @@ message! {
         // Write bytes that are not valid UTF-8
         std::fs::write(&file, &[0xFF, 0xFE, 0x00, 0x01, 0x80, 0x81, 0xCC, 0xDD]).unwrap();
         let result = extract_rust_file(&file, false);
-        assert!(result.is_err(), "binary/non-UTF-8 file should return Err, not panic");
+        assert!(
+            result.is_err(),
+            "binary/non-UTF-8 file should return Err, not panic"
+        );
     }
 }

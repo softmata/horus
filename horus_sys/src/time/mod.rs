@@ -238,7 +238,10 @@ mod tests {
     fn timer_resolution_is_reasonable() {
         let res = timer_resolution_ns();
         // Should be between 1ns and 1ms (1,000,000ns)
-        assert!(res >= 1 && res <= 1_000_000,
-            "timer resolution {}ns is outside reasonable range", res);
+        assert!(
+            res >= 1 && res <= 1_000_000,
+            "timer resolution {}ns is outside reasonable range",
+            res
+        );
     }
 }

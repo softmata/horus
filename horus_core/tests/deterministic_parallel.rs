@@ -28,7 +28,13 @@ impl TrackedNode {
         log: Arc<Mutex<Vec<String>>>,
         tick_count: Arc<AtomicU64>,
     ) -> Self {
-        Self { name, pubs, subs, log, tick_count }
+        Self {
+            name,
+            pubs,
+            subs,
+            log,
+            tick_count,
+        }
     }
 }
 
@@ -37,16 +43,22 @@ impl Node for TrackedNode {
         self.name
     }
     fn publishers(&self) -> Vec<TopicMetadata> {
-        self.pubs.iter().map(|t| TopicMetadata {
-            topic_name: t.to_string(),
-            type_name: "T".to_string(),
-        }).collect()
+        self.pubs
+            .iter()
+            .map(|t| TopicMetadata {
+                topic_name: t.to_string(),
+                type_name: "T".to_string(),
+            })
+            .collect()
     }
     fn subscribers(&self) -> Vec<TopicMetadata> {
-        self.subs.iter().map(|t| TopicMetadata {
-            topic_name: t.to_string(),
-            type_name: "T".to_string(),
-        }).collect()
+        self.subs
+            .iter()
+            .map(|t| TopicMetadata {
+                topic_name: t.to_string(),
+                type_name: "T".to_string(),
+            })
+            .collect()
     }
     fn tick(&mut self) {
         self.log.lock().unwrap().push(self.name.to_string());
@@ -62,17 +74,42 @@ fn deterministic_dependency_chain_ordering() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let counts: Vec<_> = (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     // Add in REVERSE order — dependency graph should fix it
-    scheduler.add(TrackedNode::new("C", vec![], vec!["bc"], log.clone(), counts[2].clone()))
-        .order(2).build().unwrap();
-    scheduler.add(TrackedNode::new("B", vec!["bc"], vec!["ab"], log.clone(), counts[1].clone()))
-        .order(1).build().unwrap();
-    scheduler.add(TrackedNode::new("A", vec!["ab"], vec![], log.clone(), counts[0].clone()))
-        .order(0).build().unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "C",
+            vec![],
+            vec!["bc"],
+            log.clone(),
+            counts[2].clone(),
+        ))
+        .order(2)
+        .build()
+        .unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "B",
+            vec!["bc"],
+            vec!["ab"],
+            log.clone(),
+            counts[1].clone(),
+        ))
+        .order(1)
+        .build()
+        .unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "A",
+            vec!["ab"],
+            vec![],
+            log.clone(),
+            counts[0].clone(),
+        ))
+        .order(0)
+        .build()
+        .unwrap();
 
     for _ in 0..5 {
         scheduler.tick_once().unwrap();
@@ -89,7 +126,12 @@ fn deterministic_dependency_chain_ordering() {
 
     // All ticked 5 times
     for (i, c) in counts.iter().enumerate() {
-        assert_eq!(c.load(Ordering::Relaxed), 5, "Node {} should tick 5 times", i);
+        assert_eq!(
+            c.load(Ordering::Relaxed),
+            5,
+            "Node {} should tick 5 times",
+            i
+        );
     }
 }
 
@@ -99,16 +141,41 @@ fn deterministic_independent_nodes_same_step() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-    scheduler.add(TrackedNode::new("A", vec!["a_out"], vec![], log.clone(), count.clone()))
-        .order(0).build().unwrap();
-    scheduler.add(TrackedNode::new("B", vec!["b_out"], vec![], log.clone(), count.clone()))
-        .order(0).build().unwrap();
-    scheduler.add(TrackedNode::new("C", vec![], vec!["a_out", "b_out"], log.clone(), count.clone()))
-        .order(1).build().unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "A",
+            vec!["a_out"],
+            vec![],
+            log.clone(),
+            count.clone(),
+        ))
+        .order(0)
+        .build()
+        .unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "B",
+            vec!["b_out"],
+            vec![],
+            log.clone(),
+            count.clone(),
+        ))
+        .order(0)
+        .build()
+        .unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "C",
+            vec![],
+            vec!["a_out", "b_out"],
+            log.clone(),
+            count.clone(),
+        ))
+        .order(1)
+        .build()
+        .unwrap();
 
     scheduler.tick_once().unwrap();
 
@@ -130,18 +197,52 @@ fn deterministic_diamond_dependency() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-    scheduler.add(TrackedNode::new("A", vec!["a_b", "a_c"], vec![], log.clone(), count.clone()))
-        .order(0).build().unwrap();
-    scheduler.add(TrackedNode::new("B", vec!["b_d"], vec!["a_b"], log.clone(), count.clone()))
-        .order(1).build().unwrap();
-    scheduler.add(TrackedNode::new("C", vec!["c_d"], vec!["a_c"], log.clone(), count.clone()))
-        .order(1).build().unwrap();
-    scheduler.add(TrackedNode::new("D", vec![], vec!["b_d", "c_d"], log.clone(), count.clone()))
-        .order(2).build().unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "A",
+            vec!["a_b", "a_c"],
+            vec![],
+            log.clone(),
+            count.clone(),
+        ))
+        .order(0)
+        .build()
+        .unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "B",
+            vec!["b_d"],
+            vec!["a_b"],
+            log.clone(),
+            count.clone(),
+        ))
+        .order(1)
+        .build()
+        .unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "C",
+            vec!["c_d"],
+            vec!["a_c"],
+            log.clone(),
+            count.clone(),
+        ))
+        .order(1)
+        .build()
+        .unwrap();
+    scheduler
+        .add(TrackedNode::new(
+            "D",
+            vec![],
+            vec!["b_d", "c_d"],
+            log.clone(),
+            count.clone(),
+        ))
+        .order(2)
+        .build()
+        .unwrap();
 
     scheduler.tick_once().unwrap();
 
@@ -168,18 +269,52 @@ fn deterministic_ordering_stable_across_runs() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let count = Arc::new(AtomicU64::new(0));
 
-        let mut scheduler = Scheduler::new()
-            .deterministic(true)
-            .tick_rate(100_u64.hz());
+        let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-        scheduler.add(TrackedNode::new("sensor", vec!["scan"], vec![], log.clone(), count.clone()))
-            .order(0).build().unwrap();
-        scheduler.add(TrackedNode::new("filter", vec!["filtered"], vec!["scan"], log.clone(), count.clone()))
-            .order(1).build().unwrap();
-        scheduler.add(TrackedNode::new("controller", vec!["cmd"], vec!["filtered"], log.clone(), count.clone()))
-            .order(2).build().unwrap();
-        scheduler.add(TrackedNode::new("motor", vec![], vec!["cmd"], log.clone(), count.clone()))
-            .order(3).build().unwrap();
+        scheduler
+            .add(TrackedNode::new(
+                "sensor",
+                vec!["scan"],
+                vec![],
+                log.clone(),
+                count.clone(),
+            ))
+            .order(0)
+            .build()
+            .unwrap();
+        scheduler
+            .add(TrackedNode::new(
+                "filter",
+                vec!["filtered"],
+                vec!["scan"],
+                log.clone(),
+                count.clone(),
+            ))
+            .order(1)
+            .build()
+            .unwrap();
+        scheduler
+            .add(TrackedNode::new(
+                "controller",
+                vec!["cmd"],
+                vec!["filtered"],
+                log.clone(),
+                count.clone(),
+            ))
+            .order(2)
+            .build()
+            .unwrap();
+        scheduler
+            .add(TrackedNode::new(
+                "motor",
+                vec![],
+                vec!["cmd"],
+                log.clone(),
+                count.clone(),
+            ))
+            .order(3)
+            .build()
+            .unwrap();
 
         scheduler.tick_once().unwrap();
 
@@ -187,7 +322,11 @@ fn deterministic_ordering_stable_across_runs() {
     }
 
     for (i, order) in all_orders.iter().enumerate().skip(1) {
-        assert_eq!(order, &all_orders[0], "Run {} has different order than run 0", i);
+        assert_eq!(
+            order, &all_orders[0],
+            "Run {} has different order than run 0",
+            i
+        );
     }
 }
 
@@ -200,7 +339,9 @@ fn deterministic_mode_with_failure_policy_restart() {
     }
 
     impl Node for FailingNode {
-        fn name(&self) -> &str { "failing" }
+        fn name(&self) -> &str {
+            "failing"
+        }
         fn tick(&mut self) {
             self.fail_count += 1;
             self.ticked.fetch_add(1, Ordering::Relaxed);
@@ -212,11 +353,14 @@ fn deterministic_mode_with_failure_policy_restart() {
 
     let ticked = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-    scheduler.add(FailingNode { fail_count: 0, max_fails: 2, ticked: ticked.clone() })
+    scheduler
+        .add(FailingNode {
+            fail_count: 0,
+            max_fails: 2,
+            ticked: ticked.clone(),
+        })
         .order(0)
         .failure_policy(horus_core::scheduling::FailurePolicy::Ignore)
         .build()
@@ -227,7 +371,10 @@ fn deterministic_mode_with_failure_policy_restart() {
         let _ = scheduler.tick_once();
     }
 
-    assert!(ticked.load(Ordering::Relaxed) >= 3, "Node should have ticked at least 3 times");
+    assert!(
+        ticked.load(Ordering::Relaxed) >= 3,
+        "Node should have ticked at least 3 times"
+    );
 }
 
 #[test]
@@ -243,22 +390,36 @@ fn deterministic_fallback_to_order_tiers() {
     }
 
     impl Node for SimpleNode {
-        fn name(&self) -> &str { &self.name }
+        fn name(&self) -> &str {
+            &self.name
+        }
         fn tick(&mut self) {
             self.log.lock().unwrap().push(self.name.clone());
             self.count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     // Order 10 nodes should run AFTER order 0 nodes
-    scheduler.add(SimpleNode { name: "late".into(), log: log.clone(), count: count.clone() })
-        .order(10).build().unwrap();
-    scheduler.add(SimpleNode { name: "early".into(), log: log.clone(), count: count.clone() })
-        .order(0).build().unwrap();
+    scheduler
+        .add(SimpleNode {
+            name: "late".into(),
+            log: log.clone(),
+            count: count.clone(),
+        })
+        .order(10)
+        .build()
+        .unwrap();
+    scheduler
+        .add(SimpleNode {
+            name: "early".into(),
+            log: log.clone(),
+            count: count.clone(),
+        })
+        .order(0)
+        .build()
+        .unwrap();
 
     scheduler.tick_once().unwrap();
 

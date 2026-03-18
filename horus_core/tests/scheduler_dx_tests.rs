@@ -152,7 +152,6 @@ fn test_new_no_blackbox_by_default() {
     );
 }
 
-
 #[test]
 fn test_status_no_blackbox_by_default() {
     cleanup_stale_shm();

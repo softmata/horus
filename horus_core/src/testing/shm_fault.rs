@@ -15,11 +15,11 @@
 //! // errors or None, never panic.
 //! ```
 
+use crate::core::DurationExt;
 use crate::error::{HorusError, HorusResult, ValidationError};
 use crate::memory::platform::shm_topics_dir;
 use crate::memory::shm_region::ShmRegion;
 use std::path::PathBuf;
-use crate::core::DurationExt;
 
 /// Types of faults that can be injected into shared memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -19,9 +19,9 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use header::current_time_ms;
 use crate::core::DurationExt;
 use crate::testing::test_spawn;
+use header::current_time_ms;
 
 // ============================================================================
 // Helpers
@@ -7321,7 +7321,11 @@ fn topic_clone_shares_backend() {
     // The exact behavior depends on backend detection, but recv should not error/panic
     let received = topic2.recv();
     // Clone shares the same backend, so the message should be available
-    assert_eq!(received, Some(42u64), "Cloned topic should receive the value sent on the original");
+    assert_eq!(
+        received,
+        Some(42u64),
+        "Cloned topic should receive the value sent on the original"
+    );
 }
 
 /// SendBlockingError displays correctly
@@ -7900,7 +7904,10 @@ fn corrupted_flipped_bits_returns_error() {
         Ok(v) => {
             // If bincode somehow decoded it, the data must differ from original
             // since we flipped the length-prefix bytes
-            assert_ne!(v, &original, "Flipped length bytes should not produce the original data");
+            assert_ne!(
+                v, &original,
+                "Flipped length bytes should not produce the original data"
+            );
         }
         Err(_) => {
             // Error is the expected outcome for a corrupted length field
@@ -8830,9 +8837,7 @@ fn spsc_ring_fast_producer_slow_consumer() {
 
     let consumer = test_spawn(move || {
         let start = Instant::now();
-        while recv_c.load(Ordering::Relaxed) < total_msgs
-            && start.elapsed() < 5_u64.secs()
-        {
+        while recv_c.load(Ordering::Relaxed) < total_msgs && start.elapsed() < 5_u64.secs() {
             if r.try_recv().is_some() {
                 recv_c.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -9990,10 +9995,7 @@ fn messages_total_increments_with_verbose_off() {
     let name = unique("mt_voff");
     let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
     // Verbose is OFF by default
-    assert!(
-        !t.header().is_verbose(),
-        "verbose should be off by default"
-    );
+    assert!(!t.header().is_verbose(), "verbose should be off by default");
     for i in 0..50 {
         t.send(i);
     }
@@ -10187,10 +10189,7 @@ fn e2e_non_pod_type_detected() {
 
     let path = shm_topics_dir().join(format!("horus_{}", name));
     let info = read_topic_header_info(&path).expect("header info");
-    assert!(
-        !info.is_pod,
-        "String should not be POD"
-    );
+    assert!(!info.is_pod, "String should not be POD");
     assert!(
         info.type_name.contains("String"),
         "type_name should contain 'String', got: '{}'",
@@ -10242,8 +10241,7 @@ fn e2e_registry_write_read_roundtrip() {
     // idx2 left at defaults (no update)
 
     // Read back via external reader path
-    let slots = SchedulerRegistry::read_all_slots(&reg_name)
-        .expect("read slots");
+    let slots = SchedulerRegistry::read_all_slots(&reg_name).expect("read slots");
 
     assert_eq!(slots.len(), 3);
 
@@ -10283,5 +10281,8 @@ fn e2e_zero_sends_zero_messages_total() {
 
     let path = shm_topics_dir().join(format!("horus_{}", name));
     let info = read_topic_header_info(&path).expect("header info");
-    assert_eq!(info.messages_total, 0, "no sends should mean 0 messages_total");
+    assert_eq!(
+        info.messages_total, 0,
+        "no sends should mean 0 messages_total"
+    );
 }

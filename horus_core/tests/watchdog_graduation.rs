@@ -177,8 +177,18 @@ fn test_watchdog_stalled_node_doesnt_block_others() {
 
     // Both nodes at 100Hz — stalling node hangs after 2 ticks,
     // healthy node should keep ticking independently
-    sched.add(stalling_node).rate(100_u64.hz()).order(0).build().unwrap();
-    sched.add(healthy_node).rate(100_u64.hz()).order(1).build().unwrap();
+    sched
+        .add(stalling_node)
+        .rate(100_u64.hz())
+        .order(0)
+        .build()
+        .unwrap();
+    sched
+        .add(healthy_node)
+        .rate(100_u64.hz())
+        .order(1)
+        .build()
+        .unwrap();
     sched.run_for(Duration::from_millis(500)).unwrap();
 
     let stall_final = stall_ticks.load(Ordering::SeqCst);

@@ -131,9 +131,7 @@ pub mod server;
 pub mod types;
 
 // Re-export main types at module level
-pub use client::{
-    ActionClientBuilder, ActionClientNode, ClientGoalHandle, SyncActionClient,
-};
+pub use client::{ActionClientBuilder, ActionClientNode, ClientGoalHandle, SyncActionClient};
 #[doc(hidden)]
 pub use client::{ActionClientMetrics, FeedbackCallback, ResultCallback, StatusCallback};
 
@@ -141,14 +139,12 @@ pub use client::{ActionClientMetrics, FeedbackCallback, ResultCallback, StatusCa
 ///
 /// Named `ActionClient` for symmetry with [`crate::services::ServiceClient`].
 pub type ActionClient<A> = SyncActionClient<A>;
-pub use server::{
-    ActionServerBuilder, ActionServerNode, GoalOutcome, ServerGoalHandle,
-};
+pub use server::{ActionServerBuilder, ActionServerNode, GoalOutcome, ServerGoalHandle};
 #[doc(hidden)]
 pub use server::{ActionServerMetrics, CancelCallback, ExecuteCallback, GoalCallback};
 pub use types::{
-    Action, ActionError, ActionResult, CancelResponse, GoalId, GoalPriority,
-    GoalResponse, GoalStatus, PreemptionPolicy,
+    Action, ActionError, ActionResult, CancelResponse, GoalId, GoalPriority, GoalResponse,
+    GoalStatus, PreemptionPolicy,
 };
 #[doc(hidden)]
 pub use types::{ActionFeedback, ActionServerConfig, CancelRequest, GoalRequest, GoalStatusUpdate};
@@ -179,7 +175,10 @@ mod tests {
         let id = GoalId::new();
         let id2 = GoalId::new();
         assert_ne!(id, id2, "Each GoalId should be unique");
-        assert!(!format!("{:?}", id).is_empty(), "GoalId should implement Debug");
+        assert!(
+            !format!("{:?}", id).is_empty(),
+            "GoalId should implement Debug"
+        );
 
         let status = GoalStatus::Pending;
         assert!(status.is_active(), "Pending should be an active status");

@@ -7,10 +7,10 @@ use horus_core::memory::{shm_base_dir, shm_topics_dir};
 use horus_core::scheduling::{BlackBoxEvent, BlackBoxRecord};
 use horus_core::{NodePresence, TopicMetadata};
 
+use horus_core::core::DurationExt;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use horus_core::core::DurationExt;
 
 /// Handle for a single simulated node.
 #[derive(Debug)]

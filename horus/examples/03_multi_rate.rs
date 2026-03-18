@@ -10,7 +10,6 @@
 
 use horus::prelude::*;
 
-
 message! {
     /// Velocity command for a differential-drive robot
     CmdVelMsg {

@@ -34,7 +34,10 @@ fn test_cleanup_preserves_current_process() {
     // Our directory should still exist (we're alive)
     // Note: cleanup might not remove our dir because our PID is still running
     // The key assertion: cleanup doesn't panic or error
-    assert!(result.removed >= 0, "Cleanup should report non-negative count");
+    assert!(
+        result.removed >= 0,
+        "Cleanup should report non-negative count"
+    );
 }
 
 // ============================================================================
@@ -71,16 +74,10 @@ fn test_namespace_unique_per_session() {
     let ns2 = shm_namespace();
 
     // Same process, same session — should be the same namespace
-    assert_eq!(
-        ns1, ns2,
-        "Same session should return same namespace"
-    );
+    assert_eq!(ns1, ns2, "Same session should return same namespace");
 
     // Namespace should contain session/PID info
-    assert!(
-        !ns1.is_empty(),
-        "Namespace should be non-empty"
-    );
+    assert!(!ns1.is_empty(), "Namespace should be non-empty");
 }
 
 // ============================================================================

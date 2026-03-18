@@ -82,6 +82,11 @@ Maintenance:
 Publishing & Deploy:
   publish           Publish package to registry
   unpublish         Unpublish a package (name@version syntax)
+  yank              Yank a version (hide from new installs)
+  unyank            Restore a yanked version
+  deprecate         Mark a package as deprecated
+  undeprecate       Remove deprecation from a package
+  owner             Manage owners and transfer ownership
   deploy            Deploy project to a remote robot
   auth              Authentication (login, api-key, signing-key)
 
@@ -813,6 +818,42 @@ enum Commands {
         yes: bool,
     },
 
+    /// Yank a package version (hide from new installs, existing lockfiles still work)
+    Yank {
+        /// Package name@version (e.g., my-pkg@0.2.1)
+        package: String,
+        /// Reason for yanking
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Unyank a previously yanked package version
+    Unyank {
+        /// Package name@version (e.g., my-pkg@0.2.1)
+        package: String,
+    },
+
+    /// Mark a package as deprecated
+    Deprecate {
+        /// Package name
+        package: String,
+        /// Deprecation message (e.g., "moved to @horus/lidar-unified")
+        #[arg(long, short = 'm')]
+        message: Option<String>,
+    },
+
+    /// Remove deprecation from a package
+    Undeprecate {
+        /// Package name
+        package: String,
+    },
+
+    /// Manage package owners and ownership transfers
+    Owner {
+        #[command(subcommand)]
+        command: OwnerCommands,
+    },
+
     /// DEPRECATED: Use `horus auth signing-key` instead
     #[command(name = "keygen", hide = true)]
     DeprecatedKeyGen,
@@ -983,6 +1024,51 @@ enum AuthKeysCommands {
     Revoke {
         /// Key ID to revoke (e.g., horus_key_abc123...)
         key_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum OwnerCommands {
+    /// List owners of a package
+    List {
+        /// Package name
+        package: String,
+    },
+    /// Add an owner to a package
+    Add {
+        /// Package name
+        package: String,
+        /// Username or user ID to add
+        user: String,
+    },
+    /// Remove an owner from a package
+    Remove {
+        /// Package name
+        package: String,
+        /// Username or user ID to remove
+        user: String,
+    },
+    /// Transfer package ownership to a user or organization
+    Transfer {
+        /// Package name
+        package: String,
+        /// Target username or org name
+        target: String,
+        /// Transfer to an organization instead of a user
+        #[arg(long)]
+        org: bool,
+    },
+    /// List pending incoming ownership transfers
+    Pending,
+    /// Accept a pending ownership transfer
+    Accept {
+        /// Transfer ID
+        id: String,
+    },
+    /// Reject a pending ownership transfer
+    Reject {
+        /// Transfer ID
+        id: String,
     },
 }
 
@@ -1637,6 +1723,20 @@ fn parse_override(s: &str) -> Result<(String, String, String), String> {
     ))
 }
 
+/// Parse "name@version" syntax, returning (name, version). Errors if no version.
+fn parse_name_version(input: &str, action: &str) -> Result<(String, String), HorusError> {
+    match input.find('@') {
+        Some(idx) => {
+            let (name, rest) = input.split_at(idx);
+            Ok((name.to_string(), rest[1..].to_string()))
+        }
+        None => Err(HorusError::Config(ConfigError::Other(format!(
+            "Version required. Use: horus {} name@version",
+            action
+        )))),
+    }
+}
+
 fn main() {
     // First, try to handle as a plugin command before clap parsing
     // This allows plugins to be invoked as: `horus <plugin-name> [args...]`
@@ -1735,7 +1835,10 @@ fn extract_exit_code(msg: &str) -> Option<i32> {
     // Single-file: "Process exited with code 42"
     if let Some(pos) = msg.find("Process exited with code ") {
         let after = &msg[pos + "Process exited with code ".len()..];
-        if let Some(num_str) = after.split(|c: char| !c.is_ascii_digit() && c != '-').next() {
+        if let Some(num_str) = after
+            .split(|c: char| !c.is_ascii_digit() && c != '-')
+            .next()
+        {
             if let Ok(code) = num_str.parse::<i32>() {
                 return Some(code);
             }
@@ -1744,7 +1847,10 @@ fn extract_exit_code(msg: &str) -> Option<i32> {
     // Multi-file: "worst exit code: 42)"
     if let Some(pos) = msg.find("worst exit code: ") {
         let after = &msg[pos + "worst exit code: ".len()..];
-        if let Some(num_str) = after.split(|c: char| !c.is_ascii_digit() && c != '-').next() {
+        if let Some(num_str) = after
+            .split(|c: char| !c.is_ascii_digit() && c != '-')
+            .next()
+        {
             if let Ok(code) = num_str.parse::<i32>() {
                 return Some(code);
             }
@@ -1815,7 +1921,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
 
             if !no_hooks {
-                if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml")) {
+                if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(
+                    std::path::Path::new("horus.toml"),
+                ) {
                     if let Err(e) = commands::hooks::run_hooks("pre_run", &manifest) {
                         eprintln!("Hook failed: {}", e);
                         return Err(HorusError::from(e));
@@ -1827,8 +1935,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
             let result = commands::run::execute_run(files, args, release, clean);
             if json {
                 match &result {
-                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "run"})),
-                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "run", "errors": [{"message": e.to_string()}]})),
+                    Ok(()) => {
+                        println!("{}", serde_json::json!({"success": true, "command": "run"}))
+                    }
+                    Err(e) => println!(
+                        "{}",
+                        serde_json::json!({"success": false, "command": "run", "errors": [{"message": e.to_string()}]})
+                    ),
                 }
             }
             result.map_err(HorusError::from)
@@ -1858,7 +1971,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
 
             if !no_hooks {
-                if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml")) {
+                if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(
+                    std::path::Path::new("horus.toml"),
+                ) {
                     if let Err(e) = commands::hooks::run_hooks("pre_build", &manifest) {
                         eprintln!("Hook failed: {}", e);
                         return Err(HorusError::from(e));
@@ -1871,19 +1986,25 @@ fn run_command(command: Commands) -> HorusResult<()> {
             if json {
                 match &result {
                     Ok(()) => {
-                        println!("{}", serde_json::json!({
-                            "success": true,
-                            "command": "build",
-                        }));
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "success": true,
+                                "command": "build",
+                            })
+                        );
                     }
                     Err(e) => {
-                        println!("{}", serde_json::json!({
-                            "success": false,
-                            "command": "build",
-                            "errors": [{
-                                "message": e.to_string(),
-                            }]
-                        }));
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "success": false,
+                                "command": "build",
+                                "errors": [{
+                                    "message": e.to_string(),
+                                }]
+                            })
+                        );
                     }
                 }
                 result.map_err(HorusError::from)
@@ -1899,12 +2020,18 @@ fn run_command(command: Commands) -> HorusResult<()> {
             if check {
                 // Verify lockfile exists and is parseable
                 if !lock_path.exists() {
-                    println!("{} No horus.lock found. Run `horus lock` to generate one.", "[!]".yellow());
-                    return Err(HorusError::Config(ConfigError::Other("No lockfile found".to_string())));
+                    println!(
+                        "{} No horus.lock found. Run `horus lock` to generate one.",
+                        "[!]".yellow()
+                    );
+                    return Err(HorusError::Config(ConfigError::Other(
+                        "No lockfile found".to_string(),
+                    )));
                 }
                 match HorusLockfile::load_from(lock_path) {
                     Ok(lf) => {
-                        println!("{} horus.lock v{} is valid ({} packages, {} system deps)",
+                        println!(
+                            "{} horus.lock v{} is valid ({} packages, {} system deps)",
                             "[✓]".green(),
                             lf.version,
                             lf.packages.len(),
@@ -1938,9 +2065,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     cmake: None,
                 });
 
-                lockfile.save_to(lock_path)
+                lockfile
+                    .save_to(lock_path)
                     .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-                println!("{} Generated horus.lock v{} ({} packages)",
+                println!(
+                    "{} Generated horus.lock v{} ({} packages)",
                     "[✓]".green(),
                     lockfile.version,
                     lockfile.packages.len(),
@@ -1949,11 +2078,17 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
-        Commands::Check { path, json, full, health } => {
+        Commands::Check {
+            path,
+            json,
+            full,
+            health,
+        } => {
             if health {
                 return commands::doctor::run_doctor(false, json).map_err(HorusError::from);
             }
-            let has_manifest = path.as_ref()
+            let has_manifest = path
+                .as_ref()
                 .map(|p| p.join("horus.toml").exists())
                 .unwrap_or_else(|| std::path::Path::new("horus.toml").exists());
             if !has_manifest && path.is_none() {
@@ -1990,7 +2125,10 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
 
             let hooks_manifest = if !no_hooks {
-                horus_manager::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml")).ok()
+                horus_manager::manifest::HorusManifest::load_from(std::path::Path::new(
+                    "horus.toml",
+                ))
+                .ok()
             } else {
                 None
             };
@@ -2015,8 +2153,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
             });
             if json {
                 match &result {
-                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "test"})),
-                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "test", "errors": [{"message": e.to_string()}]})),
+                    Ok(()) => println!(
+                        "{}",
+                        serde_json::json!({"success": true, "command": "test"})
+                    ),
+                    Err(e) => println!(
+                        "{}",
+                        serde_json::json!({"success": false, "command": "test", "errors": [{"message": e.to_string()}]})
+                    ),
                 }
             }
             result.map_err(HorusError::from)?;
@@ -2282,12 +2426,26 @@ fn run_command(command: Commands) -> HorusResult<()> {
             let result = if driver {
                 commands::pkg::run_add(pkg_name.clone(), pkg_ver.clone(), true, false)
             } else {
-                commands::pkg::run_install(pkg_name.clone(), pkg_ver.clone(), false, None, source, features, dev)
+                commands::pkg::run_install(
+                    pkg_name.clone(),
+                    pkg_ver.clone(),
+                    false,
+                    None,
+                    source,
+                    features,
+                    dev,
+                )
             };
             if json {
                 match &result {
-                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "add", "package": pkg_name, "version": pkg_ver})),
-                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "add", "package": pkg_name, "errors": [{"message": e.to_string()}]})),
+                    Ok(()) => println!(
+                        "{}",
+                        serde_json::json!({"success": true, "command": "add", "package": pkg_name, "version": pkg_ver})
+                    ),
+                    Err(e) => println!(
+                        "{}",
+                        serde_json::json!({"success": false, "command": "add", "package": pkg_name, "errors": [{"message": e.to_string()}]})
+                    ),
                 }
             }
             result
@@ -2310,12 +2468,26 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 let local = target.is_some();
                 commands::plugin::run_install(pkg_name.clone(), pkg_ver.clone(), local)
             } else {
-                commands::pkg::run_install(pkg_name.clone(), pkg_ver.clone(), true, target, None, None, false)
+                commands::pkg::run_install(
+                    pkg_name.clone(),
+                    pkg_ver.clone(),
+                    true,
+                    target,
+                    None,
+                    None,
+                    false,
+                )
             };
             if json {
                 match &result {
-                    Ok(()) => println!("{}", serde_json::json!({"success": true, "command": "install", "package": pkg_name, "version": pkg_ver})),
-                    Err(e) => println!("{}", serde_json::json!({"success": false, "command": "install", "package": pkg_name, "errors": [{"message": e.to_string()}]})),
+                    Ok(()) => println!(
+                        "{}",
+                        serde_json::json!({"success": true, "command": "install", "package": pkg_name, "version": pkg_ver})
+                    ),
+                    Err(e) => println!(
+                        "{}",
+                        serde_json::json!({"success": false, "command": "install", "package": pkg_name, "errors": [{"message": e.to_string()}]})
+                    ),
                 }
             }
             result
@@ -2371,8 +2543,41 @@ fn run_command(command: Commands) -> HorusResult<()> {
             commands::pkg::run_unpublish(pkg_name, pkg_ver, yes)
         }
 
+        Commands::Yank { package, reason } => {
+            let (pkg_name, pkg_ver) = parse_name_version(&package, "yank")?;
+            commands::pkg::run_yank(pkg_name, pkg_ver, reason)
+        }
+
+        Commands::Unyank { package } => {
+            let (pkg_name, pkg_ver) = parse_name_version(&package, "unyank")?;
+            commands::pkg::run_unyank(pkg_name, pkg_ver)
+        }
+
+        Commands::Deprecate { package, message } => commands::pkg::run_deprecate(package, message),
+
+        Commands::Undeprecate { package } => commands::pkg::run_undeprecate(package),
+
+        Commands::Owner { command } => match command {
+            OwnerCommands::List { package } => commands::pkg::run_owner_list(package),
+            OwnerCommands::Add { package, user } => commands::pkg::run_owner_add(package, user),
+            OwnerCommands::Remove { package, user } => {
+                commands::pkg::run_owner_remove(package, user)
+            }
+            OwnerCommands::Transfer {
+                package,
+                target,
+                org,
+            } => commands::pkg::run_owner_transfer(package, target, org),
+            OwnerCommands::Pending => commands::pkg::run_owner_pending(),
+            OwnerCommands::Accept { id } => commands::pkg::run_owner_accept(id),
+            OwnerCommands::Reject { id } => commands::pkg::run_owner_reject(id),
+        },
+
         Commands::DeprecatedKeyGen => {
-            eprintln!("{} `horus keygen` is deprecated. Use `horus auth signing-key` instead.", "WARNING:".yellow().bold());
+            eprintln!(
+                "{} `horus keygen` is deprecated. Use `horus auth signing-key` instead.",
+                "WARNING:".yellow().bold()
+            );
             commands::pkg::run_keygen()
         }
 
@@ -2388,7 +2593,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             PluginCommands::Verify { plugin, json } => {
                 commands::pkg::verify_plugins(plugin.as_deref(), json).map_err(HorusError::from)
             }
-        }
+        },
 
         Commands::Auth { command } => match command {
             AuthCommands::Login => commands::github_auth::login(),
@@ -2444,10 +2649,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             Ok(())
         }
 
-        Commands::Remove {
-            name,
-            purge,
-        } => {
+        Commands::Remove { name, purge } => {
             {
                 // Remove from local horus.toml
                 commands::pkg::run_remove_dep(name)?;
@@ -2536,15 +2738,42 @@ fn run_command(command: Commands) -> HorusResult<()> {
             commands::fmt::run_fmt(check, extra_args).map_err(HorusError::from)
         }
 
-        Commands::Lint { fix, types, extra_args } => {
-            commands::lint::run_lint(fix, types, extra_args).map_err(HorusError::from)
-        }
+        Commands::Lint {
+            fix,
+            types,
+            extra_args,
+        } => commands::lint::run_lint(fix, types, extra_args).map_err(HorusError::from),
 
-        Commands::Doc { open, extract, json, md, html, full, all, lang, coverage, output, diff, fail_under, watch, extra_args } => {
+        Commands::Doc {
+            open,
+            extract,
+            json,
+            md,
+            html,
+            full,
+            all,
+            lang,
+            coverage,
+            output,
+            diff,
+            fail_under,
+            watch,
+            extra_args,
+        } => {
             if extract || json || md || html || coverage || diff.is_some() {
                 let config = commands::doc_extract::ExtractConfig {
-                    json, md, html, brief: false, full, all, lang, coverage,
-                    output, watch, diff, fail_under,
+                    json,
+                    md,
+                    html,
+                    brief: false,
+                    full,
+                    all,
+                    lang,
+                    coverage,
+                    output,
+                    watch,
+                    diff,
+                    fail_under,
                 };
                 commands::doc_extract::run_extract(config).map_err(HorusError::from)
             } else {
@@ -2561,10 +2790,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 commands::deps::run_deps(commands::deps::DepsAction::Tree, extra_args)
                     .map_err(HorusError::from)
             }
-            DepsCommands::Why { package, extra_args } => {
-                commands::deps::run_deps(commands::deps::DepsAction::Why(package), extra_args)
-                    .map_err(HorusError::from)
-            }
+            DepsCommands::Why {
+                package,
+                extra_args,
+            } => commands::deps::run_deps(commands::deps::DepsAction::Why(package), extra_args)
+                .map_err(HorusError::from),
             DepsCommands::Outdated { extra_args } => {
                 commands::deps::run_deps(commands::deps::DepsAction::Outdated, extra_args)
                     .map_err(HorusError::from)
@@ -2588,16 +2818,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
         },
 
         Commands::DeprecatedUpgrade { check_only } => {
-            eprintln!("{} `horus upgrade` is deprecated. Use `horus self update` instead.", "WARNING:".yellow().bold());
+            eprintln!(
+                "{} `horus upgrade` is deprecated. Use `horus self update` instead.",
+                "WARNING:".yellow().bold()
+            );
             commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
 
             Ok(())
         }
 
-        Commands::Sync { check } => {
-            commands::sync::run_sync(check).map_err(HorusError::from)
-        }
-
+        Commands::Sync { check } => commands::sync::run_sync(check).map_err(HorusError::from),
 
         Commands::Config { command } => match command {
             ConfigCommands::Get { key } => {

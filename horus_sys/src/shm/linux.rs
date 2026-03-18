@@ -34,7 +34,12 @@ impl ShmRegion {
             .recursive(true)
             .mode(0o700)
             .create(&horus_shm_dir)
-            .with_context(|| format!("Failed to create SHM directory: {}", horus_shm_dir.display()))?;
+            .with_context(|| {
+                format!(
+                    "Failed to create SHM directory: {}",
+                    horus_shm_dir.display()
+                )
+            })?;
 
         let path = horus_shm_dir.join(format!("horus_{}", name));
 
@@ -298,7 +303,10 @@ mod tests {
             assert!(!region2.is_owner());
         }
 
-        assert!(path.exists(), "File should still exist after non-owner drop");
+        assert!(
+            path.exists(),
+            "File should still exist after non-owner drop"
+        );
         assert!(region1.is_owner());
     }
 

@@ -502,8 +502,19 @@ mod tests {
 
     #[test]
     fn valid_names_pass() {
-        for name in &["my_robot", "diff-drive", "robot2", "_internal", "a", "A_B_c"] {
-            assert!(validate_project_name(name).is_ok(), "should accept '{}'", name);
+        for name in &[
+            "my_robot",
+            "diff-drive",
+            "robot2",
+            "_internal",
+            "a",
+            "A_B_c",
+        ] {
+            assert!(
+                validate_project_name(name).is_ok(),
+                "should accept '{}'",
+                name
+            );
         }
     }
 
@@ -856,7 +867,9 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // validate() returns Ok(warnings), should have no errors
-        let warnings = manifest.validate().expect("manifest validation should pass");
+        let warnings = manifest
+            .validate()
+            .expect("manifest validation should pass");
         // Warnings are acceptable, but errors are not (validate returns Err on error)
         let _ = warnings;
     }
@@ -898,8 +911,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate .horus/Cargo.toml from the manifest
-        let cargo_path =
-            crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
 
         assert!(cargo_path.exists());
         let content = fs::read_to_string(&cargo_path).unwrap();
@@ -953,29 +965,19 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate .horus/pyproject.toml from the manifest
-        let pyproj_path =
-            crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
 
         assert!(pyproj_path.exists());
         let content = fs::read_to_string(&pyproj_path).unwrap();
 
         // PEP 621 compliance checks
-        assert!(
-            content.contains("[build-system]"),
-            "missing [build-system]"
-        );
-        assert!(
-            content.contains("[project]"),
-            "missing [project] section"
-        );
+        assert!(content.contains("[build-system]"), "missing [build-system]");
+        assert!(content.contains("[project]"), "missing [project] section");
         assert!(
             content.contains("name = \"pyproj_test\""),
             "wrong project name"
         );
-        assert!(
-            content.contains("version = \"0.1.0\""),
-            "wrong version"
-        );
+        assert!(content.contains("version = \"0.1.0\""), "wrong version");
         assert!(
             content.contains("requires-python"),
             "missing requires-python"
@@ -1142,7 +1144,10 @@ mod tests {
         let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
 
         // Macro project specifics
-        assert!(content.contains("node!"), "macro project should use node! macro");
+        assert!(
+            content.contains("node!"),
+            "macro project should use node! macro"
+        );
         assert!(
             content.contains("use horus_macros::node"),
             "macro project should import horus_macros"
@@ -1203,8 +1208,7 @@ mod tests {
 
         // Macro variant
         create_main_rs(dir.path(), true).unwrap();
-        let macro_content =
-            fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
+        let macro_content = fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
         assert!(
             macro_content.contains("use horus::prelude::*"),
             "macro variant should use horus prelude"
@@ -1212,8 +1216,7 @@ mod tests {
 
         // Non-macro variant
         create_main_rs(dir.path(), false).unwrap();
-        let plain_content =
-            fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
+        let plain_content = fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
         assert!(
             plain_content.contains("use horus::prelude::*"),
             "non-macro variant should use horus prelude"
@@ -1334,8 +1337,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate with no explicit source_files (should auto-detect main.rs)
-        let cargo_path =
-            crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
         // Should have exactly one [[bin]] entry
@@ -1367,8 +1369,7 @@ mod tests {
         // Pass main.rs explicitly
         let main_rs = project.join("src/main.rs");
         let cargo_path =
-            crate::cargo_gen::generate(&manifest, &project, &[main_rs], false)
-                .unwrap();
+            crate::cargo_gen::generate(&manifest, &project, &[main_rs], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
         assert!(content.contains("[[bin]]"));
@@ -1392,8 +1393,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate without dev deps
-        let pyproj_path =
-            crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
 
         assert!(
@@ -1798,10 +1798,7 @@ mod tests {
             raw.contains("license = \"Apache-2.0\""),
             "raw toml should have license field"
         );
-        assert!(
-            raw.contains("\"tester\""),
-            "raw toml should contain author"
-        );
+        assert!(raw.contains("\"tester\""), "raw toml should contain author");
     }
 
     #[test]
@@ -1895,7 +1892,10 @@ mod tests {
 
         // main.rs should now be macro version
         let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
-        assert!(content.contains("node!"), "should have switched to macro version");
+        assert!(
+            content.contains("node!"),
+            "should have switched to macro version"
+        );
     }
 
     // ── Overwrite: switching language replaces source file ───────────
@@ -1952,8 +1952,7 @@ mod tests {
 
         let project = dir.path().join("ws_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let cargo_path =
-            crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
         // Workspace isolation: [workspace] with empty members
@@ -1978,8 +1977,7 @@ mod tests {
 
         let project = dir.path().join("path_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let cargo_path =
-            crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
         // [[bin]] path should point back to main.rs in project root
@@ -2005,8 +2003,7 @@ mod tests {
 
         let project = dir.path().join("pep621_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let pyproj_path =
-            crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
 
         assert!(
@@ -2039,8 +2036,7 @@ mod tests {
 
         let project = dir.path().join(name);
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let pyproj_path =
-            crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
 
         let expected = format!("name = \"{}\"", name);
@@ -2070,8 +2066,7 @@ mod tests {
                     .unwrap();
 
                     let project = dir.path().join(&name);
-                    let manifest =
-                        HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
+                    let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
                     assert_eq!(manifest.package.name, name);
                     // Keep dir alive until assertions complete
                     drop(dir);
@@ -2241,8 +2236,7 @@ mod tests {
         assert_eq!(manifest.package.name, name);
 
         // Cargo.toml also uses the hyphenated name
-        let cargo_path =
-            crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
         assert!(
             cargo_content.contains(&format!("name = \"{}\"", name)),
@@ -2268,8 +2262,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.package.name, name);
 
-        let pyproj_path =
-            crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
         assert!(
             content.contains(&format!("name = \"{}\"", name)),
@@ -2292,8 +2285,7 @@ mod tests {
 
         let project = dir.path().join("loc_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let cargo_path =
-            crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
 
         // Cargo.toml should be in .horus/, not project root
         assert!(
@@ -2321,8 +2313,7 @@ mod tests {
 
         let project = dir.path().join("py_loc_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let pyproj_path =
-            crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
 
         assert!(
             pyproj_path.starts_with(project.join(".horus")),
@@ -2425,7 +2416,9 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Should pass full manifest validation (2 chars is minimum)
-        let warnings = manifest.validate().expect("2-char name should pass validation");
+        let warnings = manifest
+            .validate()
+            .expect("2-char name should pass validation");
         let _ = warnings;
     }
 

@@ -114,11 +114,7 @@ impl DependencyGraph {
         // Group node indices by order tier
         let steps: Vec<Vec<usize>> = order_values
             .iter()
-            .map(|&order| {
-                (0..n)
-                    .filter(|&i| nodes[i].priority == order)
-                    .collect()
-            })
+            .map(|&order| (0..n).filter(|&i| nodes[i].priority == order).collect())
             .collect();
 
         Self {
@@ -353,10 +349,7 @@ mod tests {
 
     #[test]
     fn single_node() {
-        let nodes = vec![make_registered(
-            TestNode::new("A").publishes("out"),
-            0,
-        )];
+        let nodes = vec![make_registered(TestNode::new("A").publishes("out"), 0)];
         let graph = DependencyGraph::build(&nodes).unwrap();
         assert_eq!(graph.step_count(), 1);
         assert_eq!(graph.steps()[0], vec![0]);
@@ -400,11 +393,11 @@ mod tests {
         ];
         let graph = DependencyGraph::build(&nodes).unwrap();
         assert_eq!(graph.step_count(), 3);
-        assert_eq!(graph.steps()[0], vec![0]);       // A alone
-        assert_eq!(graph.steps()[1].len(), 2);        // B and C parallel
+        assert_eq!(graph.steps()[0], vec![0]); // A alone
+        assert_eq!(graph.steps()[1].len(), 2); // B and C parallel
         assert!(graph.steps()[1].contains(&1));
         assert!(graph.steps()[1].contains(&2));
-        assert_eq!(graph.steps()[2], vec![3]);       // D alone
+        assert_eq!(graph.steps()[2], vec![3]); // D alone
     }
 
     #[test]
@@ -418,8 +411,8 @@ mod tests {
         ];
         let graph = DependencyGraph::build(&nodes).unwrap();
         assert_eq!(graph.step_count(), 2);
-        assert_eq!(graph.steps()[0], vec![0]);        // A
-        assert_eq!(graph.steps()[1].len(), 3);         // B, C, D parallel
+        assert_eq!(graph.steps()[0], vec![0]); // A
+        assert_eq!(graph.steps()[1].len(), 3); // B, C, D parallel
     }
 
     #[test]
@@ -429,12 +422,18 @@ mod tests {
             make_registered(TestNode::new("A").publishes("a"), 0),
             make_registered(TestNode::new("B").publishes("b"), 0),
             make_registered(TestNode::new("C").publishes("c"), 0),
-            make_registered(TestNode::new("D").subscribes("a").subscribes("b").subscribes("c"), 1),
+            make_registered(
+                TestNode::new("D")
+                    .subscribes("a")
+                    .subscribes("b")
+                    .subscribes("c"),
+                1,
+            ),
         ];
         let graph = DependencyGraph::build(&nodes).unwrap();
         assert_eq!(graph.step_count(), 2);
-        assert_eq!(graph.steps()[0].len(), 3);         // A, B, C parallel
-        assert_eq!(graph.steps()[1], vec![3]);         // D
+        assert_eq!(graph.steps()[0].len(), 3); // A, B, C parallel
+        assert_eq!(graph.steps()[1], vec![3]); // D
     }
 
     #[test]
@@ -498,9 +497,7 @@ mod tests {
                 1,
             ),
             make_registered(
-                TestNode::new("slam")
-                    .subscribes("image")
-                    .publishes("pose"),
+                TestNode::new("slam").subscribes("image").publishes("pose"),
                 1,
             ),
             make_registered(
@@ -510,10 +507,7 @@ mod tests {
                     .publishes("joint_cmd"),
                 2,
             ),
-            make_registered(
-                TestNode::new("motor_driver").subscribes("joint_cmd"),
-                3,
-            ),
+            make_registered(TestNode::new("motor_driver").subscribes("joint_cmd"), 3),
             make_registered(
                 TestNode::new("logger")
                     .subscribes("joint_cmd")
@@ -530,7 +524,7 @@ mod tests {
         // Step 2: balance_ctrl (depends on state_estimator and slam)
         assert_eq!(graph.steps()[2].len(), 1);
         assert_eq!(graph.steps()[2][0], 5); // balance_ctrl
-        // Step 3: motor_driver and logger (both depend on balance_ctrl/state)
+                                            // Step 3: motor_driver and logger (both depend on balance_ctrl/state)
         assert_eq!(graph.steps()[3].len(), 2);
     }
 
@@ -562,8 +556,7 @@ mod tests {
         let mut nodes = Vec::new();
         for i in 0..100 {
             nodes.push(make_registered(
-                TestNode::new(&format!("producer_{}", i))
-                    .publishes(&format!("topic_{}", i)),
+                TestNode::new(&format!("producer_{}", i)).publishes(&format!("topic_{}", i)),
                 0,
             ));
         }

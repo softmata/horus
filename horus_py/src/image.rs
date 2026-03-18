@@ -93,11 +93,14 @@ impl PyImage {
     #[pyo3(signature = (height, width, encoding="rgb8"))]
     fn new(height: u32, width: u32, encoding: &str) -> PyResult<Self> {
         let enc = parse_encoding(encoding)?;
-        let img = Image::new(width, height, enc)
-            .map_err(|e| PyRuntimeError::new_err(format!(
+        let img = Image::new(width, height, enc).map_err(|e| {
+            PyRuntimeError::new_err(format!(
                 "Failed to create Image: {}. Common causes: dimensions must be > 0, \
                  unsupported encoding (valid: rgb8, rgba8, bgr8, bgra8, mono8, mono16, \
-                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)", e)))?;
+                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)",
+                e
+            ))
+        })?;
         Ok(Self { inner: img })
     }
 
@@ -121,10 +124,12 @@ impl PyImage {
             )));
         }
 
-        let height = u32::try_from(shape_tuple[0])
-            .map_err(|_| PyValueError::new_err(format!("Height {} exceeds u32::MAX", shape_tuple[0])))?;
-        let width = u32::try_from(shape_tuple[1])
-            .map_err(|_| PyValueError::new_err(format!("Width {} exceeds u32::MAX", shape_tuple[1])))?;
+        let height = u32::try_from(shape_tuple[0]).map_err(|_| {
+            PyValueError::new_err(format!("Height {} exceeds u32::MAX", shape_tuple[0]))
+        })?;
+        let width = u32::try_from(shape_tuple[1]).map_err(|_| {
+            PyValueError::new_err(format!("Width {} exceeds u32::MAX", shape_tuple[1]))
+        })?;
 
         let enc = if let Some(enc_str) = encoding {
             parse_encoding(enc_str)?
@@ -132,11 +137,14 @@ impl PyImage {
             infer_encoding(&shape_tuple, &dtype_name)?
         };
 
-        let mut img = Image::new(width, height, enc)
-            .map_err(|e| PyRuntimeError::new_err(format!(
+        let mut img = Image::new(width, height, enc).map_err(|e| {
+            PyRuntimeError::new_err(format!(
                 "Failed to create Image: {}. Common causes: dimensions must be > 0, \
                  unsupported encoding (valid: rgb8, rgba8, bgr8, bgra8, mono8, mono16, \
-                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)", e)))?;
+                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)",
+                e
+            ))
+        })?;
 
         let np = py.import("numpy")?;
         let contiguous = np.call_method1("ascontiguousarray", (array,))?;
@@ -177,11 +185,14 @@ impl PyImage {
     #[pyo3(signature = (data, height, width, encoding="rgb8"))]
     fn from_bytes(data: &[u8], height: u32, width: u32, encoding: &str) -> PyResult<Self> {
         let enc = parse_encoding(encoding)?;
-        let mut img = Image::new(width, height, enc)
-            .map_err(|e| PyRuntimeError::new_err(format!(
+        let mut img = Image::new(width, height, enc).map_err(|e| {
+            PyRuntimeError::new_err(format!(
                 "Failed to create Image: {}. Common causes: dimensions must be > 0, \
                  unsupported encoding (valid: rgb8, rgba8, bgr8, bgra8, mono8, mono16, \
-                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)", e)))?;
+                 depth32f, yuv422), or insufficient shared memory (check: df -h /dev/shm)",
+                e
+            ))
+        })?;
 
         let expected = img.nbytes() as usize;
         if data.len() != expected {

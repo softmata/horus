@@ -703,10 +703,7 @@ mod tests {
     #[test]
     fn enable_to_features_opencv() {
         assert_eq!(enable_to_features("opencv"), vec!["opencv-backend"]);
-        assert_eq!(
-            enable_to_features("opencv-backend"),
-            vec!["opencv-backend"]
-        );
+        assert_eq!(enable_to_features("opencv-backend"), vec!["opencv-backend"]);
     }
 
     #[test]

@@ -6,24 +6,24 @@ mod dlpack_utils;
 mod driver_params;
 mod drivers;
 pub mod errors;
-mod params;
-mod rate;
-mod transform_frame;
 mod image;
 mod messages;
 mod node;
+mod params;
 mod perception;
 mod pointcloud;
+mod rate;
 mod scheduler;
 mod tensor;
 mod topic;
+mod transform_frame;
 mod types;
 
 use config::PySchedulerConfig;
-use transform_frame::{PyTransformFrame, PyTransformFrameConfig, PyTransform};
 use node::{PyNodeInfo, PyNodeState};
 use scheduler::{PyMiss, PyScheduler};
 use topic::PyTopic;
+use transform_frame::{PyTransform, PyTransformFrame, PyTransformFrameConfig};
 use types::Priority;
 
 /// HORUS Python Bindings

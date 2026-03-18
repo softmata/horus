@@ -134,9 +134,7 @@ impl RtExecutor {
                     match handle.join() {
                         Ok(nodes) => all_nodes.extend(nodes),
                         Err(_) => {
-                            print_line(&format!(
-                                "[RT-thread] Thread {} panicked during stop", i
-                            ));
+                            print_line(&format!("[RT-thread] Thread {} panicked during stop", i));
                         }
                     }
                     break;
@@ -202,7 +200,9 @@ impl RtExecutor {
                 if monitors.verbose {
                     print_line(&format!(
                         "[RT-thread] budget violation in '{}': {:?} > {:?}",
-                        node.name, budget_result.violation.actual(), budget_result.violation.budget()
+                        node.name,
+                        budget_result.violation.actual(),
+                        budget_result.violation.budget()
                     ));
                 }
                 if let Some(ref mut stats) = node.rt_stats {
@@ -311,7 +311,8 @@ impl RtExecutor {
         rt_cpus: Vec<usize>,
     ) -> Vec<RegisteredNode> {
         // Use per-node priority if any node in this chain has one, otherwise default 80
-        let thread_priority = nodes.iter()
+        let thread_priority = nodes
+            .iter()
             .filter_map(|n| n.os_priority)
             .max()
             .unwrap_or(80);

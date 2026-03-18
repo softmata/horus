@@ -90,9 +90,12 @@ fn test_service_info_fields() {
 
 #[test]
 fn test_server_builder_default_builds() {
-    let server = ServiceServerBuilder::<EchoBuild>::new()
-        .build();
-    assert!(server.is_ok(), "default builder should build: {:?}", server.err());
+    let server = ServiceServerBuilder::<EchoBuild>::new().build();
+    assert!(
+        server.is_ok(),
+        "default builder should build: {:?}",
+        server.err()
+    );
     // Server runs with default "no handler" — will return error for any request
 }
 
@@ -130,13 +133,22 @@ fn test_server_stop() {
 #[test]
 fn test_client_new_succeeds() {
     let client = ServiceClient::<EchoTimeout>::new();
-    assert!(client.is_ok(), "client creation should succeed: {:?}", client.err());
+    assert!(
+        client.is_ok(),
+        "client creation should succeed: {:?}",
+        client.err()
+    );
 }
 
 #[test]
 fn test_client_call_timeout_no_server() {
     let mut client = ServiceClient::<EchoTimeout>::new().unwrap();
-    let result = client.call(EchoTimeoutRequest { message: "hello".into() }, 50_u64.ms());
+    let result = client.call(
+        EchoTimeoutRequest {
+            message: "hello".into(),
+        },
+        50_u64.ms(),
+    );
     // No server running — should timeout
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -148,7 +160,12 @@ fn test_client_call_timeout_no_server() {
 #[test]
 fn test_client_call_optional_returns_none_on_timeout() {
     let mut client = ServiceClient::<EchoOptional>::new().unwrap();
-    let result = client.call_optional(EchoOptionalRequest { message: "hello".into() }, 50_u64.ms());
+    let result = client.call_optional(
+        EchoOptionalRequest {
+            message: "hello".into(),
+        },
+        50_u64.ms(),
+    );
     assert!(result.is_ok());
     assert!(result.unwrap().is_none(), "should return None on timeout");
 }
@@ -171,10 +188,7 @@ fn test_end_to_end_add_two_ints() {
 
     // Call from client
     let mut client = ServiceClient::<AddTwoInts>::new().unwrap();
-    let result = client.call(
-        AddTwoIntsRequest { a: 3, b: 4 },
-        1_u64.secs(),
-    );
+    let result = client.call(AddTwoIntsRequest { a: 3, b: 4 }, 1_u64.secs());
 
     assert!(result.is_ok(), "call should succeed: {:?}", result.err());
     assert_eq!(result.unwrap().sum, 7);
@@ -183,7 +197,11 @@ fn test_end_to_end_add_two_ints() {
 #[test]
 fn test_end_to_end_echo() {
     let _server = ServiceServerBuilder::<EchoE2E>::new()
-        .on_request(|req| Ok(EchoE2EResponse { reply: format!("ECHO: {}", req.message) }))
+        .on_request(|req| {
+            Ok(EchoE2EResponse {
+                reply: format!("ECHO: {}", req.message),
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
@@ -192,7 +210,9 @@ fn test_end_to_end_echo() {
 
     let mut client = ServiceClient::<EchoE2E>::new().unwrap();
     let result = client.call(
-        EchoE2ERequest { message: "hello world".into() },
+        EchoE2ERequest {
+            message: "hello world".into(),
+        },
         1_u64.secs(),
     );
 
@@ -212,7 +232,9 @@ fn test_end_to_end_server_returns_error() {
 
     let mut client = ServiceClient::<EchoFail>::new().unwrap();
     let result = client.call(
-        EchoFailRequest { message: "fail".into() },
+        EchoFailRequest {
+            message: "fail".into(),
+        },
         1_u64.secs(),
     );
 
@@ -239,7 +261,9 @@ fn test_async_client_new_succeeds() {
 fn test_async_client_call_returns_pending() {
     let mut client = AsyncServiceClient::<EchoPending>::new().unwrap();
     let pending = client.call_async(
-        EchoPendingRequest { message: "async".into() },
+        EchoPendingRequest {
+            message: "async".into(),
+        },
         100_u64.ms(),
     );
     // Immediately returns — not blocking
@@ -250,7 +274,9 @@ fn test_async_client_call_returns_pending() {
 fn test_pending_call_expires_after_timeout() {
     let mut client = AsyncServiceClient::<EchoExpire>::new().unwrap();
     let mut pending = client.call_async(
-        EchoExpireRequest { message: "timeout".into() },
+        EchoExpireRequest {
+            message: "timeout".into(),
+        },
         10_u64.ms(),
     );
     std::thread::sleep(20_u64.ms());

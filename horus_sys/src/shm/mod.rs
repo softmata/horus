@@ -9,23 +9,23 @@
 //! - **Windows**: `CreateFileMappingW` + pagefile
 //! - **Fallback**: `/tmp` file-based mmap + flock
 
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod fallback;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-mod fallback;
 
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub use self::fallback::ShmRegion;
 #[cfg(target_os = "linux")]
 pub use self::linux::ShmRegion;
 #[cfg(target_os = "macos")]
 pub use self::macos::ShmRegion;
 #[cfg(target_os = "windows")]
 pub use self::windows::ShmRegion;
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-pub use self::fallback::ShmRegion;
 
 use std::path::PathBuf;
 
@@ -272,9 +272,7 @@ pub fn is_shm_file_stale(path: &std::path::Path) -> bool {
         unsafe { libc::flock(fd, libc::LOCK_UN) };
         true
     } else {
-        let errno = std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or(0);
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         if errno == libc::EWOULDBLOCK {
             false
         } else {
@@ -345,7 +343,11 @@ fn is_directory_all_files_stale(dir: &std::path::Path) -> bool {
 #[cfg(not(unix))]
 pub fn is_namespace_stale_by_flock(namespace_path: &std::path::Path) -> bool {
     let topics_dir = namespace_path.join("topics");
-    let dir = if topics_dir.exists() { &topics_dir } else { namespace_path };
+    let dir = if topics_dir.exists() {
+        &topics_dir
+    } else {
+        namespace_path
+    };
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return true,
@@ -409,9 +411,7 @@ pub fn session_alive(sid: i32) -> bool {
     if ret == 0 {
         return true;
     }
-    let errno = std::io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or(0);
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     errno == libc::EPERM
 }
 
@@ -742,10 +742,8 @@ mod tests {
     #[test]
     fn test_dir_size_bytes_and_file_count() {
         use std::io::Write;
-        let tmp = std::env::temp_dir().join(format!(
-            "horus_sys_test_dir_size_{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("horus_sys_test_dir_size_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -767,10 +765,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_flock_stale_no_holder() {
-        let tmp = std::env::temp_dir().join(format!(
-            "horus_sys_flock_test_{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("horus_sys_flock_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let path = tmp.join("topic_a");
@@ -785,12 +780,17 @@ mod tests {
 
     #[test]
     fn test_write_and_list_topic_meta_roundtrip() {
-        std::env::set_var("HORUS_NAMESPACE", format!("test_meta_{}", std::process::id()));
+        std::env::set_var(
+            "HORUS_NAMESPACE",
+            format!("test_meta_{}", std::process::id()),
+        );
         // Reset cached namespace
         write_topic_meta("sensor_imu", 4096).unwrap();
         let metas = list_topic_metas();
         assert!(
-            metas.iter().any(|m| m.name == "sensor_imu" && m.size == 4096),
+            metas
+                .iter()
+                .any(|m| m.name == "sensor_imu" && m.size == 4096),
             "written topic meta should be discoverable"
         );
         // Verify creator PID
@@ -810,7 +810,10 @@ mod tests {
 
     #[test]
     fn test_remove_topic_meta_deletes_file() {
-        std::env::set_var("HORUS_NAMESPACE", format!("test_rm_meta_{}", std::process::id()));
+        std::env::set_var(
+            "HORUS_NAMESPACE",
+            format!("test_rm_meta_{}", std::process::id()),
+        );
         write_topic_meta("to_delete", 1024).unwrap();
         let path = shm_topics_dir().join(format!("{}.meta", sanitize_namespace("to_delete")));
         assert!(path.exists(), "meta file should exist after write");
@@ -854,7 +857,10 @@ mod tests {
 
     #[test]
     fn test_topic_meta_name_sanitized_in_filename() {
-        std::env::set_var("HORUS_NAMESPACE", format!("test_sanitize_{}", std::process::id()));
+        std::env::set_var(
+            "HORUS_NAMESPACE",
+            format!("test_sanitize_{}", std::process::id()),
+        );
         write_topic_meta("my-topic/v1", 512).unwrap();
         let expected_path = shm_topics_dir().join("my_topic_v1.meta");
         assert!(expected_path.exists(), "filename should be sanitized");
@@ -948,10 +954,8 @@ mod tests {
     fn test_flock_alive_with_shared_lock() {
         use std::os::unix::io::AsRawFd;
 
-        let tmp = std::env::temp_dir().join(format!(
-            "horus_sys_flock_alive_{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("horus_sys_flock_alive_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let path = tmp.join("topic_b");

@@ -10,11 +10,11 @@
 //!   horus tf info `<frame>`  - Show frame details
 
 use colored::*;
-use std::io::BufRead;
 use horus_core::communication::Topic;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
-use horus_library::transform_frame::{TFMessage, TransformFrame, Transform, TransformStamped};
+use horus_library::transform_frame::{TFMessage, Transform, TransformFrame, TransformStamped};
 use std::collections::{HashMap, HashSet};
+use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -155,9 +155,9 @@ impl TransformFrameReader {
                     if !self.tf.has_frame(child) {
                         // Register new frame
                         if *is_static {
-                            let _ =
-                                self.tf
-                                    .register_static_frame(child, Some(parent), transform);
+                            let _ = self
+                                .tf
+                                .register_static_frame(child, Some(parent), transform);
                         } else {
                             let _ = self.tf.register_frame(child, Some(parent));
                             let _ = self.tf.update_transform(child, transform, *timestamp);
@@ -1070,10 +1070,7 @@ struct TfrEntry {
 /// Record TF transforms from shared memory to a .tfr file
 ///
 /// Usage: `horus tf record --output recording.tfr [--duration 60]`
-pub fn record_transforms(
-    output_path: &str,
-    max_duration_secs: Option<f64>,
-) -> HorusResult<()> {
+pub fn record_transforms(output_path: &str, max_duration_secs: Option<f64>) -> HorusResult<()> {
     use std::io::Write;
 
     println!("{}", "Recording TF transforms...".green().bold());
@@ -1095,7 +1092,9 @@ pub fn record_transforms(
 
     // Open output file and write placeholder header (will update entry_count later)
     let mut file = std::fs::File::create(output_path).map_err(|e| {
-        HorusError::Config(ConfigError::other(format!("Failed to create output file: {e}")))
+        HorusError::Config(ConfigError::other(format!(
+            "Failed to create output file: {e}"
+        )))
     })?;
 
     let header = TfrHeader {
@@ -1197,9 +1196,8 @@ pub fn record_transforms(
 
     // Update header with final entry count
     use std::io::Seek;
-    file.seek(std::io::SeekFrom::Start(0)).map_err(|e| {
-        HorusError::Config(ConfigError::other(format!("Failed to seek: {e}")))
-    })?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|e| HorusError::Config(ConfigError::other(format!("Failed to seek: {e}"))))?;
     let final_header = TfrHeader {
         magic: *TFR_MAGIC,
         version: TFR_VERSION,
@@ -1233,7 +1231,9 @@ fn read_tfr_file(path: &str) -> HorusResult<(TfrHeader, Vec<TfrEntry>)> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(path).map_err(|e| {
-        HorusError::Config(ConfigError::other(format!("Failed to open file '{path}': {e}")))
+        HorusError::Config(ConfigError::other(format!(
+            "Failed to open file '{path}': {e}"
+        )))
     })?;
 
     // Read header
@@ -1534,7 +1534,8 @@ fn build_tf_from_entries(entries: &[TfrEntry]) -> TransformFrame {
             if !tf.has_frame(&child) {
                 let _ = tf.register_frame(&child, Some(&parent));
             }
-            let _ = tf.update_transform(&child, &entry.stamped.transform, entry.stamped.timestamp_ns);
+            let _ =
+                tf.update_transform(&child, &entry.stamped.transform, entry.stamped.timestamp_ns);
         }
     }
 
@@ -1578,11 +1579,7 @@ impl DiffStatus {
 /// then saves the result.
 ///
 /// Usage: `horus tf tune <frame_name> [--step 0.001]`
-pub fn tune_static_frame(
-    frame_name: &str,
-    step_m: f64,
-    step_deg: f64,
-) -> HorusResult<()> {
+pub fn tune_static_frame(frame_name: &str, step_m: f64, step_deg: f64) -> HorusResult<()> {
     println!("{}", "Static Frame Offset Tuner".green().bold());
     println!("  Frame: {}", frame_name.cyan());
     println!("  Translation step: {:.4} m", step_m);
@@ -1610,17 +1607,26 @@ pub fn tune_static_frame(
 
     let step_rad = step_deg.to_radians();
 
-    println!("  Original: xyz=[{:.4}, {:.4}, {:.4}]",
-        original.translation[0], original.translation[1], original.translation[2]);
+    println!(
+        "  Original: xyz=[{:.4}, {:.4}, {:.4}]",
+        original.translation[0], original.translation[1], original.translation[2]
+    );
     let euler = original.to_euler();
-    println!("            rpy=[{:.4}, {:.4}, {:.4}] deg",
-        euler[0].to_degrees(), euler[1].to_degrees(), euler[2].to_degrees());
+    println!(
+        "            rpy=[{:.4}, {:.4}, {:.4}] deg",
+        euler[0].to_degrees(),
+        euler[1].to_degrees(),
+        euler[2].to_degrees()
+    );
     println!();
     println!("  {}", "Commands:".bold());
     println!("    x+/x-  : adjust X translation  (+/- {:.4} m)", step_m);
     println!("    y+/y-  : adjust Y translation");
     println!("    z+/z-  : adjust Z translation");
-    println!("    r+/r-  : adjust roll           (+/- {:.2} deg)", step_deg);
+    println!(
+        "    r+/r-  : adjust roll           (+/- {:.2} deg)",
+        step_deg
+    );
     println!("    p+/p-  : adjust pitch");
     println!("    w+/w-  : adjust yaw");
     println!("    reset  : revert to original");
@@ -1640,8 +1646,12 @@ pub fn tune_static_frame(
         let _current_euler = current.to_euler();
         print!(
             "\r  Current: xyz=[{:.4}, {:.4}, {:.4}] delta=[{:.4}, {:.4}, {:.4}]  > ",
-            current.translation[0], current.translation[1], current.translation[2],
-            delta_t[0], delta_t[1], delta_t[2],
+            current.translation[0],
+            current.translation[1],
+            current.translation[2],
+            delta_t[0],
+            delta_t[1],
+            delta_t[2],
         );
         let _ = std::io::Write::flush(&mut std::io::stdout());
 
@@ -1679,13 +1689,21 @@ pub fn tune_static_frame(
             "save" => {
                 println!();
                 println!("  {}", "Final transform:".green().bold());
-                println!("    xyz=[{:.6}, {:.6}, {:.6}]",
-                    current.translation[0], current.translation[1], current.translation[2]);
+                println!(
+                    "    xyz=[{:.6}, {:.6}, {:.6}]",
+                    current.translation[0], current.translation[1], current.translation[2]
+                );
                 let final_euler = current.to_euler();
-                println!("    rpy=[{:.6}, {:.6}, {:.6}] rad",
-                    final_euler[0], final_euler[1], final_euler[2]);
-                println!("    rpy=[{:.4}, {:.4}, {:.4}] deg",
-                    final_euler[0].to_degrees(), final_euler[1].to_degrees(), final_euler[2].to_degrees());
+                println!(
+                    "    rpy=[{:.6}, {:.6}, {:.6}] rad",
+                    final_euler[0], final_euler[1], final_euler[2]
+                );
+                println!(
+                    "    rpy=[{:.4}, {:.4}, {:.4}] deg",
+                    final_euler[0].to_degrees(),
+                    final_euler[1].to_degrees(),
+                    final_euler[2].to_degrees()
+                );
 
                 // Try to update via SHM
                 let tf = TransformFrame::new();
@@ -1720,16 +1738,16 @@ pub fn tune_static_frame(
 /// Usage: `horus tf calibrate --points-file pairs.csv`
 ///
 /// CSV format: `sensor_x,sensor_y,sensor_z,world_x,world_y,world_z`
-pub fn calibrate_from_points(
-    points_file: &str,
-) -> HorusResult<()> {
+pub fn calibrate_from_points(points_file: &str) -> HorusResult<()> {
     println!("{}", "Sensor-to-Base Calibration".green().bold());
     println!("  Points file: {}", points_file.cyan());
     println!();
 
     // Read point pairs from CSV
     let content = std::fs::read_to_string(points_file).map_err(|e| {
-        HorusError::Config(ConfigError::other(format!("Failed to read points file: {e}")))
+        HorusError::Config(ConfigError::other(format!(
+            "Failed to read points file: {e}"
+        )))
     })?;
 
     let mut sensor_points: Vec<[f64; 3]> = Vec::new();
@@ -1787,11 +1805,23 @@ pub fn calibrate_from_points(
     // Center the points
     let sensor_centered: Vec<[f64; 3]> = sensor_points
         .iter()
-        .map(|p| [p[0] - sensor_centroid[0], p[1] - sensor_centroid[1], p[2] - sensor_centroid[2]])
+        .map(|p| {
+            [
+                p[0] - sensor_centroid[0],
+                p[1] - sensor_centroid[1],
+                p[2] - sensor_centroid[2],
+            ]
+        })
         .collect();
     let world_centered: Vec<[f64; 3]> = world_points
         .iter()
-        .map(|p| [p[0] - world_centroid[0], p[1] - world_centroid[1], p[2] - world_centroid[2]])
+        .map(|p| {
+            [
+                p[0] - world_centroid[0],
+                p[1] - world_centroid[1],
+                p[2] - world_centroid[2],
+            ]
+        })
         .collect();
 
     // Compute cross-covariance matrix H = sum(sensor_i * world_i^T)
@@ -1810,9 +1840,15 @@ pub fn calibrate_from_points(
     //
     // Simplified approach: use quaternion-based registration via the method of Horn (1987)
     // Build the 4x4 symmetric matrix N from the cross-covariance
-    let sxx = h[0][0]; let sxy = h[0][1]; let sxz = h[0][2];
-    let syx = h[1][0]; let syy = h[1][1]; let syz = h[1][2];
-    let szx = h[2][0]; let szy = h[2][1]; let szz = h[2][2];
+    let sxx = h[0][0];
+    let sxy = h[0][1];
+    let sxz = h[0][2];
+    let syx = h[1][0];
+    let syy = h[1][1];
+    let syz = h[1][2];
+    let szx = h[2][0];
+    let szy = h[2][1];
+    let szz = h[2][2];
 
     // Horn's quaternion method: build 4x4 matrix and find max eigenvalue
     let n_mat = [
@@ -1832,7 +1868,9 @@ pub fn calibrate_from_points(
             }
         }
         // Normalize
-        let norm = (q_new[0]*q_new[0] + q_new[1]*q_new[1] + q_new[2]*q_new[2] + q_new[3]*q_new[3]).sqrt();
+        let norm =
+            (q_new[0] * q_new[0] + q_new[1] * q_new[1] + q_new[2] * q_new[2] + q_new[3] * q_new[3])
+                .sqrt();
         if norm > 1e-15 {
             for i in 0..4 {
                 q_new[i] /= norm;
@@ -1870,19 +1908,30 @@ pub fn calibrate_from_points(
     // Display results
     println!();
     println!("  {}", "Calibration Result:".green().bold());
-    println!("    Translation: [{:.6}, {:.6}, {:.6}] m",
-        result.translation[0], result.translation[1], result.translation[2]);
+    println!(
+        "    Translation: [{:.6}, {:.6}, {:.6}] m",
+        result.translation[0], result.translation[1], result.translation[2]
+    );
     let euler = result.to_euler();
-    println!("    Rotation:    [{:.4}, {:.4}, {:.4}] deg (rpy)",
-        euler[0].to_degrees(), euler[1].to_degrees(), euler[2].to_degrees());
-    println!("    Quaternion:  [{:.6}, {:.6}, {:.6}, {:.6}] (xyzw)",
-        result.rotation[0], result.rotation[1], result.rotation[2], result.rotation[3]);
+    println!(
+        "    Rotation:    [{:.4}, {:.4}, {:.4}] deg (rpy)",
+        euler[0].to_degrees(),
+        euler[1].to_degrees(),
+        euler[2].to_degrees()
+    );
+    println!(
+        "    Quaternion:  [{:.6}, {:.6}, {:.6}, {:.6}] (xyzw)",
+        result.rotation[0], result.rotation[1], result.rotation[2], result.rotation[3]
+    );
     println!();
     println!("    RMSE: {:.4} mm", rmse * 1000.0);
     println!("    Points: {}", n);
 
     if rmse > 0.01 {
-        println!("    {}", "Warning: RMSE > 10mm — check point accuracy".yellow());
+        println!(
+            "    {}",
+            "Warning: RMSE > 10mm — check point accuracy".yellow()
+        );
     } else {
         println!("    {}", "Quality: Good".green());
     }
@@ -1890,15 +1939,28 @@ pub fn calibrate_from_points(
     // Print per-point residuals
     println!();
     println!("  {}", "Per-point residuals:".dimmed());
-    println!("    {:>5} {:>10} {:>10} {:>10} {:>10}",
-        "Pt".dimmed(), "dx (mm)".dimmed(), "dy (mm)".dimmed(), "dz (mm)".dimmed(), "err (mm)".dimmed());
+    println!(
+        "    {:>5} {:>10} {:>10} {:>10} {:>10}",
+        "Pt".dimmed(),
+        "dx (mm)".dimmed(),
+        "dy (mm)".dimmed(),
+        "dz (mm)".dimmed(),
+        "err (mm)".dimmed()
+    );
     for i in 0..n {
         let transformed = result.transform_point(sensor_points[i]);
         let dx = (transformed[0] - world_points[i][0]) * 1000.0;
         let dy = (transformed[1] - world_points[i][1]) * 1000.0;
         let dz = (transformed[2] - world_points[i][2]) * 1000.0;
-        let err = (dx*dx + dy*dy + dz*dz).sqrt();
-        println!("    {:>5} {:>10.3} {:>10.3} {:>10.3} {:>10.3}", i + 1, dx, dy, dz, err);
+        let err = (dx * dx + dy * dy + dz * dz).sqrt();
+        println!(
+            "    {:>5} {:>10.3} {:>10.3} {:>10.3} {:>10.3}",
+            i + 1,
+            dx,
+            dy,
+            dz,
+            err
+        );
     }
 
     Ok(())
@@ -1941,8 +2003,7 @@ pub fn hand_eye_calibration(
     let n = robot_poses.len();
     println!(
         "{}",
-        format!("Hand-eye calibration with {} pose pairs", n)
-            .bold()
+        format!("Hand-eye calibration with {} pose pairs", n).bold()
     );
 
     // Compute relative motions between consecutive poses
@@ -2068,7 +2129,11 @@ pub fn hand_eye_calibration(
             (rx[1][0] - rx[0][1]) * s,
         )
     } else if rx[0][0] > rx[1][1] && rx[0][0] > rx[2][2] {
-        let s = 2.0 * (1.0 + rx[0][0] - rx[1][1] - rx[2][2]).max(0.0).sqrt().max(1e-12);
+        let s = 2.0
+            * (1.0 + rx[0][0] - rx[1][1] - rx[2][2])
+                .max(0.0)
+                .sqrt()
+                .max(1e-12);
         (
             (rx[2][1] - rx[1][2]) / s,
             0.25 * s,
@@ -2076,7 +2141,11 @@ pub fn hand_eye_calibration(
             (rx[0][2] + rx[2][0]) / s,
         )
     } else if rx[1][1] > rx[2][2] {
-        let s = 2.0 * (1.0 + rx[1][1] - rx[0][0] - rx[2][2]).max(0.0).sqrt().max(1e-12);
+        let s = 2.0
+            * (1.0 + rx[1][1] - rx[0][0] - rx[2][2])
+                .max(0.0)
+                .sqrt()
+                .max(1e-12);
         (
             (rx[0][2] - rx[2][0]) / s,
             (rx[0][1] + rx[1][0]) / s,
@@ -2084,7 +2153,11 @@ pub fn hand_eye_calibration(
             (rx[1][2] + rx[2][1]) / s,
         )
     } else {
-        let s = 2.0 * (1.0 + rx[2][2] - rx[0][0] - rx[1][1]).max(0.0).sqrt().max(1e-12);
+        let s = 2.0
+            * (1.0 + rx[2][2] - rx[0][0] - rx[1][1])
+                .max(0.0)
+                .sqrt()
+                .max(1e-12);
         (
             (rx[1][0] - rx[0][1]) / s,
             (rx[0][2] + rx[2][0]) / s,
@@ -2095,7 +2168,10 @@ pub fn hand_eye_calibration(
 
     let (roll, pitch, yaw) = quaternion_to_euler([qx, qy, qz, qw]);
 
-    println!("\n{}", "Hand-Eye Calibration Result (X: sensor → end-effector):".bold());
+    println!(
+        "\n{}",
+        "Hand-Eye Calibration Result (X: sensor → end-effector):".bold()
+    );
     println!("  {}", "Translation:".cyan());
     println!("    x: {:.6} m", tx[0]);
     println!("    y: {:.6} m", tx[1]);
@@ -2176,9 +2252,7 @@ fn read_poses_csv(path: &str) -> Result<Vec<([f64; 3], [f64; 4])>, ConfigError> 
             .split(',')
             .map(|s| s.trim().parse::<f64>())
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                ConfigError::other(format!("Parse error line {}: {}", line_num + 1, e))
-            })?;
+            .map_err(|e| ConfigError::other(format!("Parse error line {}: {}", line_num + 1, e)))?;
         if parts.len() != 7 {
             return Err(ConfigError::other(format!(
                 "Line {} has {} values, expected 7 (x,y,z,qx,qy,qz,qw)",
@@ -2186,7 +2260,10 @@ fn read_poses_csv(path: &str) -> Result<Vec<([f64; 3], [f64; 4])>, ConfigError> 
                 parts.len()
             )));
         }
-        poses.push(([parts[0], parts[1], parts[2]], [parts[3], parts[4], parts[5], parts[6]]));
+        poses.push((
+            [parts[0], parts[1], parts[2]],
+            [parts[3], parts[4], parts[5], parts[6]],
+        ));
     }
 
     Ok(poses)
@@ -2224,11 +2301,7 @@ fn rotation_to_modified_rodrigues(r: &[[f64; 3]; 3]) -> [f64; 3] {
     ];
 
     let half_tan = (theta / 2.0).tan();
-    [
-        axis[0] * half_tan,
-        axis[1] * half_tan,
-        axis[2] * half_tan,
-    ]
+    [axis[0] * half_tan, axis[1] * half_tan, axis[2] * half_tan]
 }
 
 /// Extract 3x3 rotation matrix from a pose (translation, quaternion)
@@ -2355,18 +2428,29 @@ mod tests {
         // Without a running HORUS application, list_frames should succeed
         // with an empty reader (no shared memory data).
         let result = list_frames(false, false);
-        assert!(result.is_ok(), "list_frames should succeed even with no shared memory: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "list_frames should succeed even with no shared memory: {:?}",
+            result.err()
+        );
 
         // Verify the underlying reader starts empty
         let reader = TransformFrameReader::new();
-        assert!(reader.get_all_frames().is_empty(), "no frames should exist without live data");
+        assert!(
+            reader.get_all_frames().is_empty(),
+            "no frames should exist without live data"
+        );
     }
 
     #[test]
     fn test_view_frames() {
         // view_frames with no output file should succeed even without live data
         let result = view_frames(None);
-        assert!(result.is_ok(), "view_frames(None) should succeed with no live data: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "view_frames(None) should succeed with no live data: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2374,7 +2458,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dot_path = dir.path().join("frames.dot");
         let result = view_frames(Some(dot_path.to_str().unwrap()));
-        assert!(result.is_ok(), "view_frames with output file should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "view_frames with output file should succeed: {:?}",
+            result.err()
+        );
         // Even with no frames, the DOT file should not be written (empty tree short-circuits)
         // but the function itself should not error
     }
@@ -2383,23 +2471,36 @@ mod tests {
     fn test_frame_info() {
         // frame_info on a non-existent frame should still succeed (prints "not found" message)
         let result = frame_info("base_link");
-        assert!(result.is_ok(), "frame_info should succeed even for missing frame: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "frame_info should succeed even for missing frame: {:?}",
+            result.err()
+        );
 
         // Verify the reader finds no frames when no app is running
         let reader = TransformFrameReader::new();
-        assert!(!reader.frame_data.contains_key("base_link"), "base_link should not exist without live data");
+        assert!(
+            !reader.frame_data.contains_key("base_link"),
+            "base_link should not exist without live data"
+        );
     }
 
     #[test]
     fn test_can_transform() {
         // can_transform between non-existent frames should succeed (prints "No")
         let result = can_transform("base_link", "camera_link");
-        assert!(result.is_ok(), "can_transform should succeed even for missing frames: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "can_transform should succeed even for missing frames: {:?}",
+            result.err()
+        );
 
         // Verify the underlying TransformFrame correctly reports no transform available
         let reader = TransformFrameReader::new();
-        assert!(!reader.tf.can_transform("base_link", "camera_link"),
-            "transform should not be available between non-existent frames");
+        assert!(
+            !reader.tf.can_transform("base_link", "camera_link"),
+            "transform should not be available between non-existent frames"
+        );
     }
 
     #[test]
@@ -2720,7 +2821,11 @@ mod tests {
     fn test_diff_status_debug() {
         let d = DiffStatus::Same;
         let s = format!("{:?}", d);
-        assert!(s.contains("Same"), "debug should contain variant name: {}", s);
+        assert!(
+            s.contains("Same"),
+            "debug should contain variant name: {}",
+            s
+        );
     }
 
     // ── Battle tests: FrameDiff ───────────────────────────────────────────
@@ -2734,8 +2839,16 @@ mod tests {
             rotation_err_deg: 1.2,
         };
         let s = format!("{:?}", d);
-        assert!(s.contains("base_link"), "debug should contain frame name: {}", s);
-        assert!(s.contains("Different"), "debug should contain status: {}", s);
+        assert!(
+            s.contains("base_link"),
+            "debug should contain frame name: {}",
+            s
+        );
+        assert!(
+            s.contains("Different"),
+            "debug should contain status: {}",
+            s
+        );
     }
 
     // ── Battle tests: FrameData ───────────────────────────────────────────
@@ -2880,7 +2993,11 @@ mod tests {
         };
         std::fs::write(&path, header_bytes).unwrap();
         let result = read_tfr_file(path.to_str().unwrap());
-        assert!(result.is_ok(), "valid empty recording should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "valid empty recording should succeed: {:?}",
+            result.err()
+        );
         let (h, entries) = result.unwrap();
         assert_eq!(h.entry_count, 0);
         assert!(entries.is_empty());
@@ -2917,7 +3034,10 @@ mod tests {
                 assert!(
                     (m[i][j] - expected).abs() < 1e-10,
                     "m[{}][{}] = {}, expected {}",
-                    i, j, m[i][j], expected
+                    i,
+                    j,
+                    m[i][j],
+                    expected
                 );
             }
         }
@@ -2943,7 +3063,11 @@ mod tests {
         assert!((roundtrip.0[0]).abs() < 1e-10, "x: {}", roundtrip.0[0]);
         assert!((roundtrip.0[1]).abs() < 1e-10, "y: {}", roundtrip.0[1]);
         assert!((roundtrip.0[2]).abs() < 1e-10, "z: {}", roundtrip.0[2]);
-        assert!((roundtrip.1[3].abs() - 1.0).abs() < 1e-10, "w: {}", roundtrip.1[3]);
+        assert!(
+            (roundtrip.1[3].abs() - 1.0).abs() < 1e-10,
+            "w: {}",
+            roundtrip.1[3]
+        );
     }
 
     #[test]
@@ -3150,7 +3274,10 @@ mod tests {
     #[test]
     fn test_calibrate_nonexistent_file() {
         let result = calibrate_from_points("/tmp/no_such_points.csv");
-        assert!(result.is_err(), "calibrate with nonexistent file should fail");
+        assert!(
+            result.is_err(),
+            "calibrate with nonexistent file should fail"
+        );
     }
 
     #[test]
@@ -3176,7 +3303,11 @@ mod tests {
         let result = calibrate_from_points(path.to_str().unwrap());
         assert!(result.is_err(), "calibrate with 3-column CSV should fail");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("expected 6"), "should mention expected 6 values: {}", err);
+        assert!(
+            err.contains("expected 6"),
+            "should mention expected 6 values: {}",
+            err
+        );
     }
 
     #[test]
@@ -3187,7 +3318,10 @@ mod tests {
         // First line starts with "a" which is not a comment/header... but wait,
         // the code skips lines starting with "sensor". "a,b,c,..." is not skipped.
         let result = calibrate_from_points(path.to_str().unwrap());
-        assert!(result.is_err(), "calibrate with non-numeric data should fail");
+        assert!(
+            result.is_err(),
+            "calibrate with non-numeric data should fail"
+        );
     }
 
     #[test]
@@ -3262,7 +3396,11 @@ sensor_x,sensor_y,sensor_z,world_x,world_y,world_z
         let result = hand_eye_calibration(robot.to_str().unwrap(), sensor.to_str().unwrap());
         assert!(result.is_err(), "too few poses should fail");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("at least 3"), "should mention min poses: {}", err);
+        assert!(
+            err.contains("at least 3"),
+            "should mention min poses: {}",
+            err
+        );
     }
 
     #[test]
@@ -3276,7 +3414,11 @@ sensor_x,sensor_y,sensor_z,world_x,world_y,world_z
         let result = hand_eye_calibration(robot.to_str().unwrap(), sensor.to_str().unwrap());
         assert!(result.is_err(), "bad CSV format should fail");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("expected 7"), "should mention expected 7: {}", err);
+        assert!(
+            err.contains("expected 7"),
+            "should mention expected 7: {}",
+            err
+        );
     }
 
     // ── Battle tests: read_poses_csv ──────────────────────────────────────

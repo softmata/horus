@@ -6,8 +6,8 @@
 use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use colored::*;
-use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::core::DurationExt;
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 
 // ─── Action discovery ─────────────────────────────────────────────────────────
 
@@ -530,8 +530,14 @@ mod tests {
         // A complete action must have all 5 sub-topics
         assert!(action.has_goal && action.has_result && action.has_feedback);
         assert!(action.has_status && action.has_cancel);
-        assert!(action.goal_publishers > 0, "complete action needs at least one goal publisher");
-        assert!(action.result_subscribers > 0, "complete action needs at least one result subscriber");
+        assert!(
+            action.goal_publishers > 0,
+            "complete action needs at least one goal publisher"
+        );
+        assert!(
+            action.result_subscribers > 0,
+            "complete action needs at least one result subscriber"
+        );
 
         // Clone preserves all fields
         let cloned = action.clone();
@@ -541,7 +547,10 @@ mod tests {
 
         // Debug contains action name
         let debug = format!("{:?}", action);
-        assert!(debug.contains("navigate"), "Debug should contain action name");
+        assert!(
+            debug.contains("navigate"),
+            "Debug should contain action name"
+        );
     }
 
     #[test]
@@ -837,7 +846,10 @@ mod tests {
                 .map(|base| base == search)
                 .unwrap_or(false);
         // "/" ends_with "/" => true
-        assert!(matches, "slash action should match empty search via ends_with");
+        assert!(
+            matches,
+            "slash action should match empty search via ends_with"
+        );
     }
 
     // ── Battle tests: topic suffix stripping edge cases ──────────────────
@@ -1009,7 +1021,7 @@ mod tests {
             "nav.goal",
             "nav.result",
             "nav.feedback",
-            "nav.request",   // This makes it look like a service
+            "nav.request", // This makes it look like a service
             "nav.response",
         ]
         .iter()

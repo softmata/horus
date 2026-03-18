@@ -333,8 +333,7 @@ mod tests {
         let ctx = dispatch::detect_context(tmp.path());
         let toolchain = dispatch::detect_toolchain(&ctx);
 
-        if let Some(tool) =
-            toolchain.get(crate::manifest::Language::Rust, dispatch::Operation::Doc)
+        if let Some(tool) = toolchain.get(crate::manifest::Language::Rust, dispatch::Operation::Doc)
         {
             assert_eq!(tool.bin, "cargo");
             assert!(

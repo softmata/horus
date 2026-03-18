@@ -19,8 +19,8 @@
 //! scheduler.run()?;
 //! ```
 
-pub mod control;
 pub(crate) mod config;
+pub mod control;
 pub(crate) mod dependency_graph;
 pub(crate) mod graph;
 pub mod registry;

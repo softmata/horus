@@ -108,7 +108,8 @@ impl RecordingConfig {
     ///
     /// Session name is sanitized to prevent directory traversal.
     pub fn session_dir(&self) -> PathBuf {
-        self.base_dir.join(sanitize_path_component(&self.session_name))
+        self.base_dir
+            .join(sanitize_path_component(&self.session_name))
     }
 
     /// Get the path for a node recording.
@@ -145,8 +146,13 @@ impl From<super::config::RecordingConfigYaml> for RecordingConfig {
                 .join(RECORDINGS_DIR)
         });
 
-        let session_name = yaml.session_name
-            .or_else(|| std::env::var("HORUS_RECORD_SESSION").ok().filter(|s| !s.is_empty()))
+        let session_name = yaml
+            .session_name
+            .or_else(|| {
+                std::env::var("HORUS_RECORD_SESSION")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or_else(|| {
                 let now = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
@@ -231,8 +237,8 @@ pub trait Recording: Serialize + serde::de::DeserializeOwned + Sized {
             writer.write_all(&RECORDING_FORMAT_VERSION_ZSTD.to_le_bytes())?;
 
             // Compress bincode payload with zstd
-            let data = bincode::serialize(self)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let data =
+                bincode::serialize(self).map_err(|e| std::io::Error::other(e.to_string()))?;
             let compressed = zstd::encode_all(data.as_slice(), 3)
                 .map_err(|e| std::io::Error::other(format!("zstd compress: {}", e)))?;
             writer.write_all(&compressed)?;
@@ -286,19 +292,23 @@ pub trait Recording: Serialize + serde::de::DeserializeOwned + Sized {
                         // Version 2: zstd-compressed bincode
                         let mut compressed = Vec::new();
                         reader.read_to_end(&mut compressed)?;
-                        let decompressed = zstd::decode_all(compressed.as_slice())
-                            .map_err(|e| std::io::Error::other(format!("zstd decompress: {}", e)))?;
+                        let decompressed =
+                            zstd::decode_all(compressed.as_slice()).map_err(|e| {
+                                std::io::Error::other(format!("zstd decompress: {}", e))
+                            })?;
                         bincode::deserialize(&decompressed)
                             .map_err(|e| std::io::Error::other(e.to_string()))
                     }
-                    _ => {
-                        Err(std::io::Error::other(format!(
-                            "Unsupported recording format version {} (supported: 1{}). File: {}",
-                            version,
-                            if cfg!(feature = "recording-compression") { ", 2" } else { "" },
-                            path.display()
-                        )))
-                    }
+                    _ => Err(std::io::Error::other(format!(
+                        "Unsupported recording format version {} (supported: 1{}). File: {}",
+                        version,
+                        if cfg!(feature = "recording-compression") {
+                            ", 2"
+                        } else {
+                            ""
+                        },
+                        path.display()
+                    ))),
                 }
             }
             _ => {
@@ -672,7 +682,8 @@ impl NodeRecorder {
             ));
         }
 
-        self.recording.save_with_compression(&path, self.config.compress)?;
+        self.recording
+            .save_with_compression(&path, self.config.compress)?;
 
         Ok(path)
     }
@@ -939,16 +950,10 @@ pub fn diff_recordings(
     let mut diffs = Vec::new();
 
     // Build tick → snapshot index maps for O(1) lookup
-    let map1: HashMap<u64, &NodeTickSnapshot> = recording1
-        .snapshots
-        .iter()
-        .map(|s| (s.tick, s))
-        .collect();
-    let map2: HashMap<u64, &NodeTickSnapshot> = recording2
-        .snapshots
-        .iter()
-        .map(|s| (s.tick, s))
-        .collect();
+    let map1: HashMap<u64, &NodeTickSnapshot> =
+        recording1.snapshots.iter().map(|s| (s.tick, s)).collect();
+    let map2: HashMap<u64, &NodeTickSnapshot> =
+        recording2.snapshots.iter().map(|s| (s.tick, s)).collect();
 
     // Collect the union of all ticks from both recordings within the
     // overlapping range, then iterate only those ticks.
@@ -2319,10 +2324,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let state_path = dir.path().join("session.json");
 
-        let mut state = DebugSessionState::new(
-            PathBuf::from("/tmp/test.horus"),
-            "test_session",
-        );
+        let mut state = DebugSessionState::new(PathBuf::from("/tmp/test.horus"), "test_session");
         state.current_tick = 42;
         state.breakpoints.push(Breakpoint {
             id: 1,
@@ -2331,7 +2333,9 @@ mod tests {
             hit_count: 3,
             name: None,
         });
-        state.watches.push(WatchExpression::output("w1", "Motor", "motor"));
+        state
+            .watches
+            .push(WatchExpression::output("w1", "Motor", "motor"));
 
         state.save(&state_path).unwrap();
 
@@ -2355,7 +2359,10 @@ mod tests {
             r2.add_snapshot(NodeTickSnapshot::new(t).with_output("out", vec![t as u8]));
         }
         let diffs = diff_recordings(&r1, &r2);
-        assert!(diffs.is_empty(), "identical recordings should produce no diffs");
+        assert!(
+            diffs.is_empty(),
+            "identical recordings should produce no diffs"
+        );
     }
 
     #[test]
@@ -2404,9 +2411,7 @@ mod tests {
     fn test_replayer_outputs_sequence() {
         let mut rec = NodeRecording::new("motor", "m1", "session");
         for t in 0..5 {
-            rec.add_snapshot(
-                NodeTickSnapshot::new(t).with_output("cmd", vec![t as u8]),
-            );
+            rec.add_snapshot(NodeTickSnapshot::new(t).with_output("cmd", vec![t as u8]));
         }
         let mut replayer = NodeReplayer::from_recording(rec);
 
@@ -2432,7 +2437,12 @@ mod tests {
         replayer.seek(7);
         assert_eq!(replayer.current_tick(), 7);
         assert_eq!(
-            replayer.current_snapshot().unwrap().outputs.get("out").unwrap(),
+            replayer
+                .current_snapshot()
+                .unwrap()
+                .outputs
+                .get("out")
+                .unwrap(),
             &vec![7u8]
         );
     }
@@ -2444,7 +2454,7 @@ mod tests {
         rec.add_snapshot(NodeTickSnapshot::new(1).with_output("o", vec![2]));
 
         let mut replayer = NodeReplayer::from_recording(rec);
-        assert!(replayer.advance());  // index 0 -> 1
+        assert!(replayer.advance()); // index 0 -> 1
         assert!(!replayer.advance()); // at last, returns false
 
         // At last snapshot, not "finished" (still valid current_snapshot)
@@ -2475,7 +2485,11 @@ mod tests {
 
         // Should have stopped before recording all 100 ticks
         let snap_count = recorder.recording().snapshot_count();
-        assert!(snap_count < 100, "max_size should cap recording, got {} snapshots", snap_count);
+        assert!(
+            snap_count < 100,
+            "max_size should cap recording, got {} snapshots",
+            snap_count
+        );
     }
 
     #[test]
@@ -2495,8 +2509,15 @@ mod tests {
         }
 
         let rec = recorder.recording();
-        assert_eq!(rec.snapshot_count(), 5, "ring buffer should keep only 5 snapshots");
-        assert_eq!(rec.first_tick, 15, "first_tick should be updated after eviction");
+        assert_eq!(
+            rec.snapshot_count(),
+            5,
+            "ring buffer should keep only 5 snapshots"
+        );
+        assert_eq!(
+            rec.first_tick, 15,
+            "first_tick should be updated after eviction"
+        );
         assert_eq!(rec.last_tick, 19);
     }
 
@@ -2533,7 +2554,10 @@ mod tests {
         let config = RecordingConfig::default();
         // Should contain milliseconds and process ID
         assert!(config.session_name.contains('_'));
-        assert!(config.session_name.contains("_p"), "session name should contain _p<pid>");
+        assert!(
+            config.session_name.contains("_p"),
+            "session name should contain _p<pid>"
+        );
     }
 
     // ---- Empty recording handling tests ----
@@ -2614,8 +2638,14 @@ mod tests {
         // Second set for same topic should not overwrite
         rec.set_topic_type("sensor.imu", "WRONG");
 
-        assert_eq!(rec.topic_types.get("sensor.imu").unwrap(), "sensor_msgs/Imu");
-        assert_eq!(rec.topic_types.get("cmd_vel").unwrap(), "geometry_msgs/Twist");
+        assert_eq!(
+            rec.topic_types.get("sensor.imu").unwrap(),
+            "sensor_msgs/Imu"
+        );
+        assert_eq!(
+            rec.topic_types.get("cmd_vel").unwrap(),
+            "geometry_msgs/Twist"
+        );
     }
 
     #[test]
@@ -2779,11 +2809,8 @@ mod tests {
                     max_snapshots: 0,
                 };
 
-                let mut recorder = NodeRecorder::new(
-                    &format!("node_{}", i),
-                    &format!("id_{}", i),
-                    config,
-                );
+                let mut recorder =
+                    NodeRecorder::new(&format!("node_{}", i), &format!("id_{}", i), config);
 
                 // Synchronize start
                 barrier.wait();
@@ -2830,7 +2857,7 @@ mod tests {
         for tick in 0..1000 {
             recorder.begin_tick(tick);
             recorder.record_output("imu", vec![0u8; 48]); // typical IMU frame
-            recorder.record_input("cmd", vec![0u8; 16]);   // command input
+            recorder.record_input("cmd", vec![0u8; 16]); // command input
             recorder.end_tick(tick);
         }
 
@@ -2903,7 +2930,11 @@ mod tests {
         let path = recorder.finish().unwrap();
         let loaded = NodeRecording::load(&path).unwrap();
         // Should have stopped well before 1000
-        assert!(loaded.snapshots.len() < 100, "got {} snapshots, expected < 100", loaded.snapshots.len());
+        assert!(
+            loaded.snapshots.len() < 100,
+            "got {} snapshots, expected < 100",
+            loaded.snapshots.len()
+        );
         assert!(!loaded.snapshots.is_empty());
     }
 

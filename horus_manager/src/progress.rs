@@ -3,9 +3,9 @@
 //! Provides spinners and progress bars for long-running operations.
 
 use console::style;
+use horus_core::core::DurationExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::atomic::{AtomicBool, Ordering};
-use horus_core::core::DurationExt;
 
 /// Global quiet mode flag
 static QUIET_MODE: AtomicBool = AtomicBool::new(false);
@@ -76,7 +76,6 @@ pub fn finish_error(pb: &ProgressBar, message: &str) {
     pb.finish_with_message(format!("{} {}", STATUS_ERROR, style(message).red()));
 }
 
-
 /// Format bytes in a human-readable way
 pub fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -103,7 +102,10 @@ mod tests {
         let pb = spinner("Testing...");
         assert!(!pb.is_finished(), "Spinner should be active after creation");
         finish_success(&pb, "Test complete!");
-        assert!(pb.is_finished(), "Spinner should be finished after finish_success");
+        assert!(
+            pb.is_finished(),
+            "Spinner should be finished after finish_success"
+        );
     }
 
     #[test]
@@ -195,7 +197,11 @@ mod tests {
     fn test_format_bytes_u64_max_region() {
         // Very large value — should produce a large GB number without panic
         let result = format_bytes(u64::MAX);
-        assert!(result.contains("GB"), "very large value should be in GB: {}", result);
+        assert!(
+            result.contains("GB"),
+            "very large value should be in GB: {}",
+            result
+        );
     }
 
     // --- quiet mode / set_quiet / is_quiet ---
@@ -296,7 +302,11 @@ mod tests {
     #[test]
     fn test_braille_spinner_has_frames() {
         assert!(!BRAILLE_SPINNER.is_empty());
-        assert_eq!(BRAILLE_SPINNER.len(), 10, "braille spinner should have 10 frames");
+        assert_eq!(
+            BRAILLE_SPINNER.len(),
+            10,
+            "braille spinner should have 10 frames"
+        );
     }
 
     #[test]

@@ -34,9 +34,9 @@ use std::time::Duration;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::communication::Topic;
+use crate::core::DurationExt;
 use crate::error::HorusResult;
 use crate::services::types::{Service, ServiceRequest, ServiceResponse};
-use crate::core::DurationExt;
 
 // ─── Handler type alias ───────────────────────────────────────────────────────
 
@@ -206,19 +206,17 @@ fn run_server_loop<Req, Res>(
             // Route response to per-client topic if specified,
             // otherwise fall back to shared response topic.
             if let Some(ref topic_name) = client_response_topic {
-                let client_topic = client_topics
-                    .entry(topic_name.clone())
-                    .or_insert_with(|| {
-                        Topic::new_with_kind(
-                            topic_name,
-                            crate::communication::TopicKind::ServiceResponse as u8,
-                        )
-                        .unwrap_or_else(|_| {
-                            // Fallback: if per-client topic creation fails,
-                            // this shouldn't happen in normal operation.
-                            panic!("Failed to create per-client response topic: {}", topic_name);
-                        })
-                    });
+                let client_topic = client_topics.entry(topic_name.clone()).or_insert_with(|| {
+                    Topic::new_with_kind(
+                        topic_name,
+                        crate::communication::TopicKind::ServiceResponse as u8,
+                    )
+                    .unwrap_or_else(|_| {
+                        // Fallback: if per-client topic creation fails,
+                        // this shouldn't happen in normal operation.
+                        panic!("Failed to create per-client response topic: {}", topic_name);
+                    })
+                });
                 client_topic.send(response);
             } else {
                 // Legacy path: shared response topic (for backward compat)

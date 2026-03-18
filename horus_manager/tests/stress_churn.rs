@@ -13,10 +13,10 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::get_request;
 
+use horus_core::core::DurationExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 use tower::ServiceExt;
-use horus_core::core::DurationExt;
 
 static CHURN_COUNTER: AtomicU32 = AtomicU32::new(0);
 

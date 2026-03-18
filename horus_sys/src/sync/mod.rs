@@ -96,9 +96,7 @@ pub fn check_environment(manifest: &dyn SyncManifest) -> SyncReport {
 
     // Check Python if needed
     if manifest.python_version().is_some() {
-        report.add(python::check_python(
-            manifest.python_version().as_deref(),
-        ));
+        report.add(python::check_python(manifest.python_version().as_deref()));
     }
 
     // Check C++ if needed
@@ -126,9 +124,7 @@ pub fn sync_environment(manifest: &dyn SyncManifest) -> anyhow::Result<SyncRepor
 
     // Sync Python if needed
     if manifest.python_version().is_some() {
-        report.add(python::ensure_python(
-            manifest.python_version().as_deref(),
-        )?);
+        report.add(python::ensure_python(manifest.python_version().as_deref())?);
     }
 
     // Sync C++ if needed
@@ -194,7 +190,10 @@ mod tests {
         assert!(!report.items.is_empty());
         // Rust should be detected on this machine
         let rust_item = report.items.iter().find(|i| i.name == "rust").unwrap();
-        assert!(rust_item.installed, "Rust should be installed on dev machine");
+        assert!(
+            rust_item.installed,
+            "Rust should be installed on dev machine"
+        );
     }
 
     #[test]

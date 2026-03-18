@@ -199,16 +199,16 @@ mod tests {
         }
     }
     impl Node for SimpleStub {
-        fn name(&self) -> &str { "simple_stub" }
+        fn name(&self) -> &str {
+            "simple_stub"
+        }
         fn tick(&mut self) {}
     }
 
     #[test]
     fn local_driver_registered_and_instantiated() {
         // Register with fn pointer (no captures)
-        registry::register("IntegTestDriver", |_params| {
-            Ok(Box::new(SimpleStub))
-        });
+        registry::register("IntegTestDriver", |_params| Ok(Box::new(SimpleStub)));
 
         let table = parse_toml_table(
             r#"
@@ -249,7 +249,9 @@ mod tests {
             baudrate = 115200
         "#,
         );
-        let err = HardwareSet::from_toml_table(&table).unwrap_err().to_string();
+        let err = HardwareSet::from_toml_table(&table)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("terra"));
         assert!(err.contains("package"));
         assert!(err.contains("node"));
@@ -262,7 +264,10 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
 
         let mut sched = Scheduler::new().deterministic(true);
-        sched.add(StubDriverNode::new("tick_test", counter.clone())).build().unwrap();
+        sched
+            .add(StubDriverNode::new("tick_test", counter.clone()))
+            .build()
+            .unwrap();
         sched.tick_once().unwrap();
 
         assert_eq!(counter.load(Ordering::Relaxed), 1);
@@ -277,8 +282,16 @@ mod tests {
         let counter_b = Arc::new(AtomicU32::new(0));
 
         let mut sched = Scheduler::new().deterministic(true);
-        sched.add(StubDriverNode::new("driver_a", counter_a.clone())).order(0).build().unwrap();
-        sched.add(StubDriverNode::new("driver_b", counter_b.clone())).order(1).build().unwrap();
+        sched
+            .add(StubDriverNode::new("driver_a", counter_a.clone()))
+            .order(0)
+            .build()
+            .unwrap();
+        sched
+            .add(StubDriverNode::new("driver_b", counter_b.clone()))
+            .order(1)
+            .build()
+            .unwrap();
         sched.tick_once().unwrap();
 
         assert_eq!(counter_a.load(Ordering::Relaxed), 1);
@@ -303,8 +316,12 @@ mod tests {
 
     struct SchedIntegStub;
     impl Node for SchedIntegStub {
-        fn name(&self) -> &str { "sched_integ" }
-        fn tick(&mut self) { SCHED_INTEG_COUNTER.fetch_add(1, Ordering::Relaxed); }
+        fn name(&self) -> &str {
+            "sched_integ"
+        }
+        fn tick(&mut self) {
+            SCHED_INTEG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[test]

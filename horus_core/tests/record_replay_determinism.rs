@@ -16,11 +16,7 @@ fn deterministic_record_produces_reproducible_outputs() {
     let outputs_run1 = run_deterministic_session(50);
     let outputs_run2 = run_deterministic_session(50);
 
-    assert_eq!(
-        outputs_run1.len(),
-        50,
-        "Should produce 50 outputs"
-    );
+    assert_eq!(outputs_run1.len(), 50, "Should produce 50 outputs");
     assert_eq!(
         outputs_run1, outputs_run2,
         "Two deterministic runs must produce identical outputs"
@@ -200,9 +196,7 @@ fn run_deterministic_session(num_ticks: usize) -> Vec<u64> {
     let outputs = Arc::new(Mutex::new(Vec::new()));
 
     {
-        let mut scheduler = Scheduler::new()
-            .deterministic(true)
-            .tick_rate(100_u64.hz());
+        let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
         scheduler
             .add(DeterministicNode::new(outputs.clone()))

@@ -104,19 +104,13 @@ impl PyNodeInfo {
 
     #[getter]
     fn name(&self) -> PyResult<String> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.name().to_string())
     }
 
     #[getter]
     fn state(&self) -> PyResult<PyNodeState> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(PyNodeState::from(info.state()))
     }
 
@@ -129,10 +123,7 @@ impl PyNodeInfo {
     fn log_warning(&self, message: String) -> PyResult<()> {
         // Use hlog!() for logging and track in metrics
         horus::hlog!(warn, "{}", message);
-        let mut info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
         info.track_warning(&message);
         Ok(())
     }
@@ -140,10 +131,7 @@ impl PyNodeInfo {
     fn log_error(&self, message: String) -> PyResult<()> {
         // Use hlog!() for logging and track in metrics
         horus::hlog!(error, "{}", message);
-        let mut info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
         info.track_error(&message);
         Ok(())
     }
@@ -155,62 +143,45 @@ impl PyNodeInfo {
     }
 
     fn set_custom_data(&self, key: String, value: String) -> PyResult<()> {
-        let mut info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
         info.set_custom_data(key, value);
         Ok(())
     }
 
     fn get_custom_data(&self, key: String) -> PyResult<Option<String>> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.get_custom_data(&key).cloned())
     }
 
     fn remove_custom_data(&self, key: String) -> PyResult<Option<String>> {
-        let mut info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.remove_custom_data(&key))
     }
 
     fn custom_data_keys(&self) -> PyResult<Vec<String>> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
-        Ok(info.custom_data_keys().into_iter().map(|s| s.to_string()).collect())
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info
+            .custom_data_keys()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect())
     }
 
     /// Get total tick count
     fn tick_count(&self) -> PyResult<u64> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.metrics().total_ticks())
     }
 
     /// Get error count
     fn error_count(&self) -> PyResult<u64> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.metrics().errors_count())
     }
 
     /// Transition to error state
     fn transition_to_error(&self, error_msg: String) -> PyResult<()> {
-        let mut info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
         info.transition_to_error(error_msg);
         Ok(())
     }
@@ -218,10 +189,7 @@ impl PyNodeInfo {
     /// Log a publish operation with IPC timing
     fn log_pub(&self, topic: String, data_repr: String, ipc_ns: u64) -> PyResult<()> {
         // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         let node_name = info.name().to_string();
@@ -248,10 +216,7 @@ impl PyNodeInfo {
     /// Log a subscribe operation with IPC timing
     fn log_sub(&self, topic: String, data_repr: String, ipc_ns: u64) -> PyResult<()> {
         // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         let node_name = info.name().to_string();
@@ -277,10 +242,7 @@ impl PyNodeInfo {
 
     /// Get comprehensive metrics dictionary
     fn get_metrics(&self) -> PyResult<std::collections::HashMap<String, f64>> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
 
         let metrics = info.metrics();
         let mut result = std::collections::HashMap::new();
@@ -314,37 +276,25 @@ impl PyNodeInfo {
 
     /// Get node uptime in seconds
     fn get_uptime(&self) -> PyResult<f64> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.uptime().as_secs_f64())
     }
 
     /// Get average tick duration in milliseconds
     fn avg_tick_duration_ms(&self) -> PyResult<f64> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.metrics().avg_tick_duration_ms())
     }
 
     /// Get number of failed ticks
     fn failed_ticks(&self) -> PyResult<u64> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.metrics().failed_ticks())
     }
 
     /// Get successful ticks
     fn successful_ticks(&self) -> PyResult<u64> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok(info.metrics().successful_ticks())
     }
 
@@ -372,10 +322,7 @@ impl PyNodeInfo {
 
     /// Pickle support: Provide constructor arguments
     fn __getnewargs__(&self) -> PyResult<(String,)> {
-        let info = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let info = self.inner.lock().map_err(lock_poisoned)?;
         Ok((info.name().to_string(),))
     }
 }

@@ -1127,10 +1127,7 @@ impl TuiDashboard {
 
         let data_content = vec![
             Line::from(vec![
-                Span::styled(
-                    "Tick ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
+                Span::styled("Tick ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
                     format!("{}", self.debugger_state.current_tick),
                     Style::default().fg(Color::Green),
@@ -1647,9 +1644,7 @@ impl TuiDashboard {
                 "Navigation:",
                 Style::default().fg(Color::Cyan),
             )]),
-            Line::from(
-                "  Tab        - Next tab (Overview  Nodes  Topics  TF  Packages  Params)",
-            ),
+            Line::from("  Tab        - Next tab (Overview  Nodes  Topics  TF  Packages  Params)"),
             Line::from("  Shift+Tab  - Previous tab"),
             Line::from("  ↑/↓        - Navigate lists"),
             Line::from("  PgUp/PgDn  - Scroll quickly"),

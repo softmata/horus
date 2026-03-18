@@ -2,11 +2,11 @@
 
 use crate::cli_output;
 use colored::*;
+use horus_core::core::DurationExt;
 use horus_core::error::HorusResult;
 use horus_core::horus_internal;
 use horus_core::scheduling::{diff_recordings, Recording, RecordingManager};
 use std::path::PathBuf;
-use horus_core::core::DurationExt;
 
 /// List recording sessions
 pub fn run_list(long: bool, json: bool) -> HorusResult<()> {
@@ -902,13 +902,21 @@ mod tests {
     #[test]
     fn parse_hex_string_odd_length_errors() {
         let err = parse_hex_string("abc").unwrap_err();
-        assert!(err.contains("even length"), "should mention even length requirement: {}", err);
+        assert!(
+            err.contains("even length"),
+            "should mention even length requirement: {}",
+            err
+        );
     }
 
     #[test]
     fn parse_hex_string_invalid_chars_errors() {
         let err = parse_hex_string("zzzz").unwrap_err();
-        assert!(err.contains("Invalid hex"), "should mention invalid hex: {}", err);
+        assert!(
+            err.contains("Invalid hex"),
+            "should mention invalid hex: {}",
+            err
+        );
     }
 
     #[test]
@@ -958,7 +966,10 @@ mod tests {
         // The function does NOT strip 0x prefix; caller does
         let result = parse_hex_string("0xff");
         // "0xff" is 4 chars, even length, but "0x" is not valid hex
-        assert!(result.is_err(), "0x prefix should fail as invalid hex chars");
+        assert!(
+            result.is_err(),
+            "0x prefix should fail as invalid hex chars"
+        );
     }
 
     #[test]
@@ -1002,7 +1013,11 @@ mod tests {
         let result = run_replay("x".to_string(), Some(0), Some(100), 0.0, vec![]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("greater than 0"), "speed check should come first: {}", err);
+        assert!(
+            err.contains("greater than 0"),
+            "speed check should come first: {}",
+            err
+        );
     }
 
     // ── Battle tests: run_inject error paths ─────────────────────────────
@@ -1081,25 +1096,41 @@ mod tests {
     #[test]
     fn run_list_short_succeeds() {
         let result = run_list(false, false);
-        assert!(result.is_ok(), "listing sessions should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "listing sessions should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn run_list_long_succeeds() {
         let result = run_list(true, false);
-        assert!(result.is_ok(), "long listing should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "long listing should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn run_list_json_succeeds() {
         let result = run_list(false, true);
-        assert!(result.is_ok(), "json listing should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "json listing should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn run_list_long_json_succeeds() {
         let result = run_list(true, true);
-        assert!(result.is_ok(), "long+json listing should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "long+json listing should succeed: {:?}",
+            result.err()
+        );
     }
 
     // ── Battle tests: run_info ────────────────────────────────────────────
@@ -1125,7 +1156,10 @@ mod tests {
     #[test]
     fn run_info_json_nonexistent_returns_error() {
         let result = run_info("nonexistent_json_session".to_string(), true);
-        assert!(result.is_err(), "json info on nonexistent session should fail");
+        assert!(
+            result.is_err(),
+            "json info on nonexistent session should fail"
+        );
     }
 
     #[test]
@@ -1176,14 +1210,14 @@ mod tests {
         // Unsupported format prints a warning and returns Ok (does not error)
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("export_test.xyz");
-        let result = run_export(
-            "ghost_session_xyz".to_string(),
-            output,
-            "xyz".to_string(),
-        );
+        let result = run_export("ghost_session_xyz".to_string(), output, "xyz".to_string());
         // The function loads recordings (empty), then hits the else branch
         // which prints a warning but returns Ok
-        assert!(result.is_ok(), "unsupported format should warn, not error: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "unsupported format should warn, not error: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1222,14 +1256,22 @@ mod tests {
             "session_beta_zzz".to_string(),
             None,
         );
-        assert!(result.is_ok(), "diff with empty sessions should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "diff with empty sessions should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn run_diff_empty_session_names_returns_ok() {
         // Empty session names -> empty recording lists -> no diffs -> Ok
         let result = run_diff("".to_string(), "".to_string(), None);
-        assert!(result.is_ok(), "diff with empty names should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "diff with empty names should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1241,22 +1283,22 @@ mod tests {
 
     #[test]
     fn run_diff_with_limit_zero() {
-        let result = run_diff(
-            "alpha".to_string(),
-            "beta".to_string(),
-            Some(0),
+        let result = run_diff("alpha".to_string(), "beta".to_string(), Some(0));
+        assert!(
+            result.is_ok(),
+            "diff with limit=0 should succeed: {:?}",
+            result.err()
         );
-        assert!(result.is_ok(), "diff with limit=0 should succeed: {:?}", result.err());
     }
 
     #[test]
     fn run_diff_with_limit_one() {
-        let result = run_diff(
-            "alpha".to_string(),
-            "beta".to_string(),
-            Some(1),
+        let result = run_diff("alpha".to_string(), "beta".to_string(), Some(1));
+        assert!(
+            result.is_ok(),
+            "diff with limit=1 should succeed: {:?}",
+            result.err()
         );
-        assert!(result.is_ok(), "diff with limit=1 should succeed: {:?}", result.err());
     }
 
     // ── Battle tests: value parsing in run_replay overrides ──────────────
@@ -1401,7 +1443,11 @@ mod tests {
         let manager = RecordingManager::new();
         let result = manager.list_sessions();
         // Should succeed (possibly empty)
-        assert!(result.is_ok(), "list_sessions should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "list_sessions should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1410,7 +1456,10 @@ mod tests {
         let result = manager.session_recordings("this_session_does_not_exist_xyz");
         // Should return Ok(empty) or Err
         match result {
-            Ok(recordings) => assert!(recordings.is_empty(), "nonexistent session should have no recordings"),
+            Ok(recordings) => assert!(
+                recordings.is_empty(),
+                "nonexistent session should have no recordings"
+            ),
             Err(_) => {} // Also acceptable
         }
     }

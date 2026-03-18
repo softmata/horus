@@ -320,7 +320,14 @@ mod tests {
 
     #[test]
     fn resolve_all_serial_protocols() {
-        for name in ["dynamixel", "rplidar", "vesc", "modbus", "mavlink", "robotiq"] {
+        for name in [
+            "dynamixel",
+            "rplidar",
+            "vesc",
+            "modbus",
+            "mavlink",
+            "robotiq",
+        ] {
             let info = resolve(name).unwrap();
             assert_eq!(info.crate_name, "terra-serial", "failed for {}", name);
         }

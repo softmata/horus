@@ -413,11 +413,7 @@ mod tests {
     /// BudgetViolation stores correct values and auto-computes overrun.
     #[test]
     fn budget_violation_fields() {
-        let v = BudgetViolation::new(
-            "motor_ctrl".to_string(),
-            100_u64.us(),
-            250_u64.us(),
-        );
+        let v = BudgetViolation::new("motor_ctrl".to_string(), 100_u64.us(), 250_u64.us());
         assert_eq!(v.node_name(), "motor_ctrl");
         assert_eq!(v.budget(), 100_u64.us());
         assert_eq!(v.actual(), 250_u64.us());
@@ -432,5 +428,4 @@ mod tests {
     fn miss_default_is_warn() {
         assert_eq!(Miss::default(), Miss::Warn);
     }
-
 }

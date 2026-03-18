@@ -26,6 +26,7 @@ use horus_benchmarks::{
     write_json_report, BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics,
     Statistics, ThroughputMetrics,
 };
+use horus_core::core::DurationExt;
 use horus_library::messages::CmdVel;
 use horus_library::messages::{
     control::JointCommand,
@@ -34,7 +35,6 @@ use horus_library::messages::{
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use horus_core::core::DurationExt;
 
 const DEFAULT_ITERATIONS: usize = 50_000;
 const DEFAULT_WARMUP: usize = 5_000;

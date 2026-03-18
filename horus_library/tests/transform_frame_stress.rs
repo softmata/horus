@@ -50,7 +50,7 @@
 //! - **No cross-process IPC tests**: These tests are in-process only. Shared-memory IPC
 //!   correctness (Pod safety, zero-copy) is validated at the type level but not end-to-end.
 
-use horus_library::transform_frame::{TransformFrame, TransformFrameConfig, Transform};
+use horus_library::transform_frame::{Transform, TransformFrame, TransformFrameConfig};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
@@ -651,7 +651,8 @@ fn stress_concurrent_4_writers_8_readers() {
             for i in 0..iterations {
                 let val = (w * iterations + i) as f64 * 0.001;
                 let xform = Transform::from_translation([val, 0.0, 0.0]);
-                tf.update_transform(&frame, &xform, i as u64 * 1000).unwrap();
+                tf.update_transform(&frame, &xform, i as u64 * 1000)
+                    .unwrap();
             }
         }));
     }

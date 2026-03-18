@@ -325,9 +325,7 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
                 let path = entry.path();
                 if path.extension().map_or(false, |e| e == "meta") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(meta) =
-                            serde_json::from_str::<crate::shm::TopicMeta>(&content)
-                        {
+                        if let Ok(meta) = serde_json::from_str::<crate::shm::TopicMeta>(&content) {
                             let alive = is_process_alive(meta.creator_pid);
                             topics.entry(meta.name.clone()).or_insert(DiscoveredTopic {
                                 name: meta.name,
@@ -372,8 +370,9 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
             }
         }
         for sub_topic in &node.subscribers {
-            let ti = topics.entry(sub_topic.topic.clone()).or_insert_with(|| {
-                DiscoveredTopic {
+            let ti = topics
+                .entry(sub_topic.topic.clone())
+                .or_insert_with(|| DiscoveredTopic {
                     name: sub_topic.topic.clone(),
                     size: 0,
                     creator_pid: 0,
@@ -382,8 +381,7 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
                     subscribers: Vec::new(),
                     message_type: None,
                     created_at: 0,
-                }
-            });
+                });
             if !ti.subscribers.contains(&node.name) {
                 ti.subscribers.push(node.name.clone());
             }
@@ -434,14 +432,20 @@ mod tests {
         assert_eq!(format_duration(std::time::Duration::from_secs(30)), "30s");
         assert_eq!(format_duration(std::time::Duration::from_secs(120)), "2m");
         assert_eq!(format_duration(std::time::Duration::from_secs(7200)), "2h");
-        assert_eq!(format_duration(std::time::Duration::from_secs(172800)), "2d");
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(172800)),
+            "2d"
+        );
     }
 
     // ── find_nodes tests ────────────────────────────────────────────
 
     #[test]
     fn find_nodes_empty_dir_returns_empty() {
-        std::env::set_var("HORUS_NAMESPACE", format!("test_nodes_empty_{}", std::process::id()));
+        std::env::set_var(
+            "HORUS_NAMESPACE",
+            format!("test_nodes_empty_{}", std::process::id()),
+        );
         let nodes = find_nodes();
         assert!(nodes.is_empty(), "no presence files = no nodes");
         std::env::remove_var("HORUS_NAMESPACE");
@@ -472,7 +476,8 @@ mod tests {
         std::fs::write(
             nodes_dir.join("test_node.json"),
             serde_json::to_string(&presence).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let nodes = find_nodes();
         assert_eq!(nodes.len(), 1, "should discover the written presence file");
@@ -488,7 +493,10 @@ mod tests {
         assert_eq!(node.services, vec!["get_state"]);
         assert_eq!(node.actions, vec!["navigate"]);
         // Process enrichment should populate cmdline
-        assert!(!node.cmdline.is_empty(), "cmdline should be enriched from process_info");
+        assert!(
+            !node.cmdline.is_empty(),
+            "cmdline should be enriched from process_info"
+        );
 
         let _ = std::fs::remove_dir_all(crate::shm::shm_base_dir());
         std::env::remove_var("HORUS_NAMESPACE");
@@ -509,7 +517,8 @@ mod tests {
         std::fs::write(
             nodes_dir.join("dead_node.json"),
             serde_json::to_string(&presence).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let nodes = find_nodes();
         assert!(nodes.is_empty(), "dead PID should be filtered out");
@@ -539,7 +548,10 @@ mod tests {
 
     #[test]
     fn find_topics_empty_returns_empty() {
-        std::env::set_var("HORUS_NAMESPACE", format!("test_topics_empty_{}", std::process::id()));
+        std::env::set_var(
+            "HORUS_NAMESPACE",
+            format!("test_topics_empty_{}", std::process::id()),
+        );
         let topics = find_topics();
         assert!(topics.is_empty(), "no meta files = no topics");
         std::env::remove_var("HORUS_NAMESPACE");
@@ -555,7 +567,9 @@ mod tests {
 
         let topics = find_topics();
         assert!(
-            topics.iter().any(|t| t.name == "lidar_scan" && t.size == 8192),
+            topics
+                .iter()
+                .any(|t| t.name == "lidar_scan" && t.size == 8192),
             "should discover topic from .meta file"
         );
 
@@ -580,12 +594,16 @@ mod tests {
         std::fs::write(
             dir.join("dead_topic.meta"),
             serde_json::to_string(&meta).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let topics = find_topics();
         let topic = topics.iter().find(|t| t.name == "dead_topic");
         assert!(topic.is_some(), "dead topic should still be listed");
-        assert!(!topic.unwrap().is_alive, "dead creator PID should mark topic as not alive");
+        assert!(
+            !topic.unwrap().is_alive,
+            "dead creator PID should mark topic as not alive"
+        );
 
         let _ = std::fs::remove_dir_all(crate::shm::shm_base_dir());
         std::env::remove_var("HORUS_NAMESPACE");
@@ -603,7 +621,10 @@ mod tests {
     #[test]
     fn process_info_current_has_memory() {
         let info = process_info(std::process::id()).unwrap();
-        assert!(info.memory_kb > 0, "current process should have some memory");
+        assert!(
+            info.memory_kb > 0,
+            "current process should have some memory"
+        );
     }
 
     #[test]

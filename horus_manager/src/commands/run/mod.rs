@@ -79,13 +79,8 @@ pub fn execute_run(
                 if let Ok(content) = std::fs::read_to_string(path) {
                     if content.contains("nodes:") {
                         log::info!("Detected launch file: {:?}", path);
-                        return super::launch::run_launch(
-                            path,
-                            false,
-                            None,
-                            10,
-                        )
-                        .map_err(|e| anyhow!("{}", e));
+                        return super::launch::run_launch(path, false, None, 10)
+                            .map_err(|e| anyhow!("{}", e));
                     }
                 }
             }
@@ -110,7 +105,10 @@ pub fn execute_run(
     load_params_from_project()?;
 
     let mode = if release { "release" } else { "debug" };
-    cli_output::info(&format!("Starting HORUS runtime in {} mode...", mode.yellow()));
+    cli_output::info(&format!(
+        "Starting HORUS runtime in {} mode...",
+        mode.yellow()
+    ));
 
     // Step 1: Resolve target(s) - file(s), directory, or pattern
     let execution_targets = if files.is_empty() {
@@ -374,21 +372,29 @@ fn execute_multiple_files(
 
         let rust_executables = run_rust::build_rust_files_batch(rust_files, release, clean)?;
         executables.extend(rust_executables);
-        progress::finish_success(&spinner, &format!("Rust files built ({:.1}s)", build_start.elapsed().as_secs_f64()));
+        progress::finish_success(
+            &spinner,
+            &format!(
+                "Rust files built ({:.1}s)",
+                build_start.elapsed().as_secs_f64()
+            ),
+        );
     }
 
     // Build other languages individually
     for (file_path, language) in other_files {
         let build_start = std::time::Instant::now();
-        let spinner =
-            progress::build_spinner(&format!("Building {}...", file_path.display()));
+        let spinner = progress::build_spinner(&format!("Building {}...", file_path.display()));
 
         let exec_info = run_rust::build_file_for_concurrent_execution(
             file_path, language, release, false, // Don't clean - already done if needed
         )?;
 
         executables.push(exec_info);
-        progress::finish_success(&spinner, &format!("Built ({:.1}s)", build_start.elapsed().as_secs_f64()));
+        progress::finish_success(
+            &spinner,
+            &format!("Built ({:.1}s)", build_start.elapsed().as_secs_f64()),
+        );
     }
 
     println!(
@@ -566,7 +572,10 @@ fn execute_multiple_files(
 
     let exit_code = worst_exit_code.load(Ordering::SeqCst);
     if exit_code != 0 {
-        bail!("One or more processes failed (worst exit code: {})", exit_code);
+        bail!(
+            "One or more processes failed (worst exit code: {})",
+            exit_code
+        );
     }
 
     Ok(())
@@ -1025,7 +1034,10 @@ mod tests {
         let env_vars = result.unwrap();
         let names: Vec<&str> = env_vars.iter().map(|(k, _)| k.as_str()).collect();
         assert!(names.contains(&"PATH"), "Must set PATH");
-        assert!(names.contains(&"LD_LIBRARY_PATH"), "Must set LD_LIBRARY_PATH");
+        assert!(
+            names.contains(&"LD_LIBRARY_PATH"),
+            "Must set LD_LIBRARY_PATH"
+        );
         assert!(names.contains(&"PYTHONPATH"), "Must set PYTHONPATH");
     }
 
@@ -1104,11 +1116,7 @@ mod tests {
     fn load_params_with_config_subdir_params() {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join("config")).unwrap();
-        fs::write(
-            tmp.path().join("config/params.yaml"),
-            "sensor_rate: 100\n",
-        )
-        .unwrap();
+        fs::write(tmp.path().join("config/params.yaml"), "sensor_rate: 100\n").unwrap();
 
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -1145,11 +1153,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join("params.yaml"), "source: root\n").unwrap();
         fs::create_dir_all(tmp.path().join("config")).unwrap();
-        fs::write(
-            tmp.path().join("config/params.yaml"),
-            "source: config\n",
-        )
-        .unwrap();
+        fs::write(tmp.path().join("config/params.yaml"), "source: config\n").unwrap();
 
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -1213,7 +1217,10 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok(), "Nested YAML structure should load successfully");
+        assert!(
+            result.is_ok(),
+            "Nested YAML structure should load successfully"
+        );
     }
 
     #[test]
@@ -1246,7 +1253,10 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok(), "Should load from highest-priority params.yaml");
+        assert!(
+            result.is_ok(),
+            "Should load from highest-priority params.yaml"
+        );
     }
 
     // ── Battle tests: auto_detect_main_file behavior ────────────────────
@@ -1440,7 +1450,10 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok(), "clean_build_cache should not error on empty directory");
+        assert!(
+            result.is_ok(),
+            "clean_build_cache should not error on empty directory"
+        );
     }
 
     // ── Battle tests: resolve_execution_target edge cases ────────────────
@@ -1485,7 +1498,10 @@ mod tests {
         drop(_guard);
 
         let env_vars = result.unwrap();
-        let ld_path_val = env_vars.iter().find(|(k, _)| k == "LD_LIBRARY_PATH").unwrap();
+        let ld_path_val = env_vars
+            .iter()
+            .find(|(k, _)| k == "LD_LIBRARY_PATH")
+            .unwrap();
         assert!(
             ld_path_val.1.contains(".horus/lib"),
             "LD_LIBRARY_PATH should include .horus/lib, got: {}",

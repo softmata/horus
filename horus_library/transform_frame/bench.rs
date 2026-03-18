@@ -84,7 +84,10 @@ fn transform_frame_benchmark_lookup_by_name() {
     let elapsed = start.elapsed();
 
     let ns_per_op = elapsed.as_nanos() / ITERATIONS as u128;
-    println!("TransformFrame lookup by name (depth 2): {} ns/op", ns_per_op);
+    println!(
+        "TransformFrame lookup by name (depth 2): {} ns/op",
+        ns_per_op
+    );
     println!("  Total time: {:?} for {} ops", elapsed, ITERATIONS);
     println!(
         "  Throughput: {:.2} M ops/sec",
@@ -183,7 +186,10 @@ fn transform_frame_benchmark_deep_chain() {
     let elapsed = start.elapsed();
 
     let ns_per_op = elapsed.as_nanos() / ITERATIONS as u128;
-    println!("TransformFrame lookup by ID (depth 10): {} ns/op", ns_per_op);
+    println!(
+        "TransformFrame lookup by ID (depth 10): {} ns/op",
+        ns_per_op
+    );
     println!("  Total time: {:?} for {} ops", elapsed, ITERATIONS);
     println!(
         "  Throughput: {:.2} M ops/sec",

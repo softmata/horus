@@ -823,6 +823,308 @@ impl RegistryClient {
 
         Ok(packages)
     }
+
+    // ── Yank / Unyank ──────────────────────────────────────────────────
+
+    pub fn yank(&self, package_name: &str, version: &str, reason: Option<&str>) -> Result<()> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!(
+            "{}/api/packages/{}/{}/yank",
+            self.base_url, encoded_name, version
+        );
+
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key));
+        if let Some(r) = reason {
+            req = req.json(&serde_json::json!({"reason": r}));
+        }
+        let response = req.send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("yank {} v{}", package_name, version),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn unyank(&self, package_name: &str, version: &str) -> Result<()> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!(
+            "{}/api/packages/{}/{}/unyank",
+            self.base_url, encoded_name, version
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("unyank {} v{}", package_name, version),
+            ));
+        }
+        Ok(())
+    }
+
+    // ── Deprecate / Undeprecate ─────────────────────────────────────────
+
+    pub fn deprecate(&self, package_name: &str, message: Option<&str>) -> Result<()> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!("{}/api/packages/{}/deprecate", self.base_url, encoded_name);
+
+        let mut body = serde_json::json!({});
+        if let Some(msg) = message {
+            body["message"] = serde_json::Value::String(msg.to_string());
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&body)
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("deprecate {}", package_name),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn undeprecate(&self, package_name: &str) -> Result<()> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!(
+            "{}/api/packages/{}/undeprecate",
+            self.base_url, encoded_name
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("undeprecate {}", package_name),
+            ));
+        }
+        Ok(())
+    }
+
+    // ── Owner management ────────────────────────────────────────────────
+
+    pub fn list_owners(&self, package_name: &str) -> Result<Vec<serde_json::Value>> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!("{}/api/packages/{}/owners", self.base_url, encoded_name);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("list owners of {}", package_name),
+            ));
+        }
+
+        let data: serde_json::Value = response.json()?;
+        Ok(data
+            .get("owners")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn add_owner(&self, package_name: &str, user_id: &str) -> Result<()> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!("{}/api/packages/{}/owners", self.base_url, encoded_name);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({"user_id": user_id}))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("add owner to {}", package_name),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn remove_owner(&self, package_name: &str, user_id: &str) -> Result<()> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!(
+            "{}/api/packages/{}/owners/{}",
+            self.base_url, encoded_name, user_id
+        );
+
+        let response = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("remove owner from {}", package_name),
+            ));
+        }
+        Ok(())
+    }
+
+    // ── Transfer ────────────────────────────────────────────────────────
+
+    pub fn transfer_to_user(
+        &self,
+        package_name: &str,
+        target_username: &str,
+    ) -> Result<serde_json::Value> {
+        let api_key = get_api_key()?;
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!("{}/api/packages/{}/transfer", self.base_url, encoded_name);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({"target_username": target_username}))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("transfer {}", package_name),
+            ));
+        }
+        Ok(response.json()?)
+    }
+
+    pub fn transfer_to_org(&self, package_name: &str, org: &str) -> Result<serde_json::Value> {
+        let api_key = get_api_key()?;
+        let url = format!("{}/api/orgs/{}/transfer-package", self.base_url, org);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({"package_name": package_name}))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("transfer {} to org {}", package_name, org),
+            ));
+        }
+        Ok(response.json()?)
+    }
+
+    pub fn pending_transfers(&self) -> Result<Vec<serde_json::Value>> {
+        let api_key = get_api_key()?;
+        let url = format!("{}/api/user/transfers", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "list pending transfers"));
+        }
+
+        let data: serde_json::Value = response.json()?;
+        Ok(data
+            .get("transfers")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn accept_transfer(&self, transfer_id: &str) -> Result<()> {
+        let api_key = get_api_key()?;
+        let url = format!(
+            "{}/api/user/transfers/{}/accept",
+            self.base_url, transfer_id
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "accept transfer"));
+        }
+        Ok(())
+    }
+
+    pub fn reject_transfer(&self, transfer_id: &str) -> Result<()> {
+        let api_key = get_api_key()?;
+        let url = format!(
+            "{}/api/user/transfers/{}/reject",
+            self.base_url, transfer_id
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "reject transfer"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -836,14 +1138,20 @@ mod tests {
     fn test_registry_error_401_shows_auth_hint() {
         let err = registry_error(reqwest::StatusCode::UNAUTHORIZED, "", "publish");
         let msg = format!("{err}");
-        assert!(msg.contains("horus auth login"), "Should suggest auth login: {msg}");
+        assert!(
+            msg.contains("horus auth login"),
+            "Should suggest auth login: {msg}"
+        );
     }
 
     #[test]
     fn test_registry_error_403_shows_permission_hint() {
         let err = registry_error(reqwest::StatusCode::FORBIDDEN, "", "publish");
         let msg = format!("{err}");
-        assert!(msg.contains("permission"), "Should mention permission: {msg}");
+        assert!(
+            msg.contains("permission"),
+            "Should mention permission: {msg}"
+        );
     }
 
     #[test]
@@ -867,14 +1175,20 @@ mod tests {
     fn test_registry_error_429_shows_rate_limit() {
         let err = registry_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "", "search");
         let msg = format!("{err}");
-        assert!(msg.contains("Rate limit") || msg.contains("wait"), "Should mention rate limit: {msg}");
+        assert!(
+            msg.contains("Rate limit") || msg.contains("wait"),
+            "Should mention rate limit: {msg}"
+        );
     }
 
     #[test]
     fn test_registry_error_500_shows_server_error() {
         let err = registry_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "", "publish");
         let msg = format!("{err}");
-        assert!(msg.contains("server") || msg.contains("temporary"), "Should mention server error: {msg}");
+        assert!(
+            msg.contains("server") || msg.contains("temporary"),
+            "Should mention server error: {msg}"
+        );
     }
 
     #[test]
@@ -886,16 +1200,26 @@ mod tests {
 
     #[test]
     fn test_registry_error_includes_body() {
-        let err = registry_error(reqwest::StatusCode::BAD_REQUEST, "invalid name format", "publish");
+        let err = registry_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "invalid name format",
+            "publish",
+        );
         let msg = format!("{err}");
-        assert!(msg.contains("invalid name format"), "Should include body: {msg}");
+        assert!(
+            msg.contains("invalid name format"),
+            "Should include body: {msg}"
+        );
     }
 
     #[test]
     fn test_registry_error_empty_body_no_detail() {
         let err = registry_error(reqwest::StatusCode::BAD_REQUEST, "", "publish");
         let msg = format!("{err}");
-        assert!(!msg.contains("Server response:"), "Empty body should not show detail line: {msg}");
+        assert!(
+            !msg.contains("Server response:"),
+            "Empty body should not show detail line: {msg}"
+        );
     }
 
     // ── should_exclude ──────────────────────────────────────────────────
@@ -909,13 +1233,21 @@ mod tests {
     #[test]
     fn test_should_exclude_target_dir() {
         let base = Path::new("/project");
-        assert!(should_exclude(Path::new("/project/target/debug/binary"), base, &[]));
+        assert!(should_exclude(
+            Path::new("/project/target/debug/binary"),
+            base,
+            &[]
+        ));
     }
 
     #[test]
     fn test_should_exclude_horus_dir() {
         let base = Path::new("/project");
-        assert!(should_exclude(Path::new("/project/.horus/Cargo.toml"), base, &[]));
+        assert!(should_exclude(
+            Path::new("/project/.horus/Cargo.toml"),
+            base,
+            &[]
+        ));
     }
 
     #[test]
@@ -928,13 +1260,21 @@ mod tests {
     fn test_should_exclude_env_variants() {
         let base = Path::new("/project");
         assert!(should_exclude(Path::new("/project/.env.local"), base, &[]));
-        assert!(should_exclude(Path::new("/project/.env.production"), base, &[]));
+        assert!(should_exclude(
+            Path::new("/project/.env.production"),
+            base,
+            &[]
+        ));
     }
 
     #[test]
     fn test_should_exclude_credentials() {
         let base = Path::new("/project");
-        assert!(should_exclude(Path::new("/project/credentials.json"), base, &[]));
+        assert!(should_exclude(
+            Path::new("/project/credentials.json"),
+            base,
+            &[]
+        ));
     }
 
     #[test]
@@ -947,7 +1287,11 @@ mod tests {
     #[test]
     fn test_should_not_exclude_source_code() {
         let base = Path::new("/project");
-        assert!(!should_exclude(Path::new("/project/src/main.rs"), base, &[]));
+        assert!(!should_exclude(
+            Path::new("/project/src/main.rs"),
+            base,
+            &[]
+        ));
     }
 
     #[test]
@@ -960,26 +1304,40 @@ mod tests {
     fn test_should_exclude_custom_pattern() {
         let base = Path::new("/project");
         let custom = vec!["experiments".to_string()];
-        assert!(should_exclude(Path::new("/project/experiments/data.csv"), base, &custom));
+        assert!(should_exclude(
+            Path::new("/project/experiments/data.csv"),
+            base,
+            &custom
+        ));
     }
 
     #[test]
     fn test_should_exclude_glob_pattern() {
         let base = Path::new("/project");
         let custom = vec!["*.log".to_string()];
-        assert!(should_exclude(Path::new("/project/debug.log"), base, &custom));
+        assert!(should_exclude(
+            Path::new("/project/debug.log"),
+            base,
+            &custom
+        ));
     }
 
     // ── DEFAULT_EXCLUDES and SECRET_PATTERNS constants ──────────────────
 
     #[test]
     fn test_default_excludes_count() {
-        assert!(DEFAULT_EXCLUDES.len() >= 11, "Should have at least 11 default excludes");
+        assert!(
+            DEFAULT_EXCLUDES.len() >= 11,
+            "Should have at least 11 default excludes"
+        );
     }
 
     #[test]
     fn test_secret_patterns_count() {
-        assert!(SECRET_PATTERNS.len() >= 10, "Should have at least 10 secret patterns");
+        assert!(
+            SECRET_PATTERNS.len() >= 10,
+            "Should have at least 10 secret patterns"
+        );
     }
 
     #[test]
@@ -999,4 +1357,3 @@ mod tests {
         assert!(SECRET_PATTERNS.contains(&"signing_key"));
     }
 }
-

@@ -82,19 +82,32 @@ fn walk_node(
                     namespace_stack.push(name);
                 }
                 if let Some(body) = child.child_by_field_name("body") {
-                    walk_node(body, source, source_str, symbols, imports, namespace_stack, include_private, path);
+                    walk_node(
+                        body,
+                        source,
+                        source_str,
+                        symbols,
+                        imports,
+                        namespace_stack,
+                        include_private,
+                        path,
+                    );
                 }
                 if child.child_by_field_name("name").is_some() {
                     namespace_stack.pop();
                 }
             }
             "function_definition" | "declaration" => {
-                if let Some(sym) = extract_function_or_declaration(child, source, namespace_stack, path) {
+                if let Some(sym) =
+                    extract_function_or_declaration(child, source, namespace_stack, path)
+                {
                     symbols.push(sym);
                 }
             }
             "class_specifier" | "struct_specifier" => {
-                if let Some(sym) = extract_class_or_struct(child, source, namespace_stack, include_private, path) {
+                if let Some(sym) =
+                    extract_class_or_struct(child, source, namespace_stack, include_private, path)
+                {
                     symbols.push(sym);
                 }
             }
@@ -114,12 +127,23 @@ fn walk_node(
                 for inner in child.children(&mut inner_cursor) {
                     match inner.kind() {
                         "class_specifier" | "struct_specifier" => {
-                            if let Some(sym) = extract_class_or_struct(inner, source, namespace_stack, include_private, path) {
+                            if let Some(sym) = extract_class_or_struct(
+                                inner,
+                                source,
+                                namespace_stack,
+                                include_private,
+                                path,
+                            ) {
                                 symbols.push(sym);
                             }
                         }
                         "function_definition" | "declaration" => {
-                            if let Some(sym) = extract_function_or_declaration(inner, source, namespace_stack, path) {
+                            if let Some(sym) = extract_function_or_declaration(
+                                inner,
+                                source,
+                                namespace_stack,
+                                path,
+                            ) {
                                 symbols.push(sym);
                             }
                         }
@@ -133,7 +157,16 @@ fn walk_node(
             }
             _ => {
                 // Recurse into other containers (e.g., linkage_specification for extern "C")
-                walk_node(child, source, source_str, symbols, imports, namespace_stack, include_private, path);
+                walk_node(
+                    child,
+                    source,
+                    source_str,
+                    symbols,
+                    imports,
+                    namespace_stack,
+                    include_private,
+                    path,
+                );
             }
         }
     }
@@ -152,7 +185,8 @@ fn extract_function_or_declaration(
     let name = declarator_name(&declarator, source)?;
     let qualified_name = qualified_name(namespace_stack, &name);
 
-    let return_type = node.child_by_field_name("type")
+    let return_type = node
+        .child_by_field_name("type")
         .map(|n| node_text(n, source));
 
     let params = extract_function_params(node, source);
@@ -210,7 +244,11 @@ fn extract_class_or_struct(
 
     let doc = extract_preceding_comment(node, source);
     let deprecated = doc.as_ref().and_then(|d| {
-        if d.contains("@deprecated") { Some(extract_doxygen_tag(d, "deprecated")) } else { None }
+        if d.contains("@deprecated") {
+            Some(extract_doxygen_tag(d, "deprecated"))
+        } else {
+            None
+        }
     });
 
     // Extract base classes
@@ -221,7 +259,8 @@ fn extract_class_or_struct(
             let base_text = node_text(child, source);
             // Parse "public BaseClass" or just "BaseClass"
             for part in base_text.split(',') {
-                let trimmed = part.trim()
+                let trimmed = part
+                    .trim()
                     .strip_prefix(": ")
                     .unwrap_or(part.trim())
                     .trim()
@@ -251,7 +290,9 @@ fn extract_class_or_struct(
                 "function_definition" | "declaration" if is_public || include_private => {
                     // Check if it's a field or method
                     if has_function_declarator(member) {
-                        if let Some(SymbolDoc::Function(f)) = extract_function_or_declaration(member, source, &[], path) {
+                        if let Some(SymbolDoc::Function(f)) =
+                            extract_function_or_declaration(member, source, &[], path)
+                        {
                             methods.push(f);
                         }
                     } else {
@@ -302,7 +343,11 @@ fn extract_enum(
 
     let doc = extract_preceding_comment(node, source);
     let deprecated = doc.as_ref().and_then(|d| {
-        if d.contains("@deprecated") { Some(extract_doxygen_tag(d, "deprecated")) } else { None }
+        if d.contains("@deprecated") {
+            Some(extract_doxygen_tag(d, "deprecated"))
+        } else {
+            None
+        }
     });
 
     let mut variants = Vec::new();
@@ -310,7 +355,8 @@ fn extract_enum(
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
             if child.kind() == "enumerator" {
-                let variant_name = child.child_by_field_name("name")
+                let variant_name = child
+                    .child_by_field_name("name")
                     .map(|n| node_text(n, source))
                     .unwrap_or_default();
                 if !variant_name.is_empty() {
@@ -349,8 +395,10 @@ fn extract_type_alias(
     // using Name = Type;
     let name = if text.starts_with("using ") {
         text.strip_prefix("using ")?
-            .split('=').next()?
-            .trim().to_string()
+            .split('=')
+            .next()?
+            .trim()
+            .to_string()
     } else if text.starts_with("typedef ") {
         // typedef Type Name;
         text.rsplit_once(' ')?.1.trim_end_matches(';').to_string()
@@ -358,7 +406,9 @@ fn extract_type_alias(
         return None;
     };
 
-    let target = text.split('=').nth(1)
+    let target = text
+        .split('=')
+        .nth(1)
         .map(|s| s.trim().trim_end_matches(';').to_string())
         .unwrap_or_else(|| "...".to_string());
 
@@ -409,7 +459,10 @@ fn qualified_name(namespace_stack: &[String], name: &str) -> String {
     }
 }
 
-fn find_declarator<'a>(node: tree_sitter::Node<'a>, _source: &[u8]) -> Option<tree_sitter::Node<'a>> {
+fn find_declarator<'a>(
+    node: tree_sitter::Node<'a>,
+    _source: &[u8],
+) -> Option<tree_sitter::Node<'a>> {
     node.child_by_field_name("declarator")
 }
 
@@ -444,8 +497,7 @@ fn has_function_declarator(node: tree_sitter::Node) -> bool {
         return true;
     }
     if let Some(decl) = node.child_by_field_name("declarator") {
-        return decl.kind() == "function_declarator"
-            || has_function_declarator_recursive(decl);
+        return decl.kind() == "function_declarator" || has_function_declarator_recursive(decl);
     }
     false
 }
@@ -486,7 +538,11 @@ fn extract_function_params(node: tree_sitter::Node, source: &[u8]) -> Vec<ParamD
                 let text = node_text(child, source);
                 let parts: Vec<&str> = text.split_whitespace().collect();
                 if parts.len() >= 2 {
-                    let name = parts.last().unwrap().trim_end_matches(&['&', '*', ','][..]).to_string();
+                    let name = parts
+                        .last()
+                        .unwrap()
+                        .trim_end_matches(&['&', '*', ','][..])
+                        .to_string();
                     let type_str = parts[..parts.len() - 1].join(" ");
                     params.push(ParamDoc {
                         name,
@@ -552,7 +608,11 @@ fn extract_preceding_comment(node: tree_sitter::Node, source: &[u8]) -> Option<S
         .collect();
 
     let result = combined.join("\n").trim().to_string();
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 fn extract_file_comment(source: &str) -> Option<String> {
@@ -569,14 +629,24 @@ fn extract_file_comment(source: &str) -> Option<String> {
     for line in source.lines() {
         let t = line.trim();
         if t.starts_with("///") || t.starts_with("//!") {
-            lines.push(t.strip_prefix("///").or_else(|| t.strip_prefix("//!")).unwrap_or("").trim().to_string());
+            lines.push(
+                t.strip_prefix("///")
+                    .or_else(|| t.strip_prefix("//!"))
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            );
         } else if t.is_empty() && lines.is_empty() {
             continue;
         } else {
             break;
         }
     }
-    if lines.is_empty() { None } else { Some(lines.join("\n")) }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
 }
 
 fn clean_doxygen(text: &str) -> String {
@@ -602,7 +672,10 @@ fn extract_doxygen_tag(doc: &str, tag: &str) -> String {
     let alt_pattern = format!("\\{tag}");
     for line in doc.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(&pattern).or_else(|| trimmed.strip_prefix(&alt_pattern)) {
+        if let Some(rest) = trimmed
+            .strip_prefix(&pattern)
+            .or_else(|| trimmed.strip_prefix(&alt_pattern))
+        {
             return rest.trim().to_string();
         }
     }
@@ -679,21 +752,32 @@ mod tests {
         let result = extract_from_header(
             "class Robot {\npublic:\n    void move();\n    int speed;\nprivate:\n    int internal;\n};",
         );
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert_eq!(classes.len(), 1);
         if let SymbolDoc::Struct(s) = &classes[0] {
             assert_eq!(s.name, "Robot");
             // public method should be extracted
-            assert!(!s.methods.is_empty() || !s.fields.is_empty(), "should have public members");
+            assert!(
+                !s.methods.is_empty() || !s.fields.is_empty(),
+                "should have public members"
+            );
         }
     }
 
     #[test]
     fn test_extract_struct_default_public() {
-        let result = extract_from_header(
-            "struct Point {\n    double x;\n    double y;\n};",
-        );
-        let structs: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let result = extract_from_header("struct Point {\n    double x;\n    double y;\n};");
+        let structs: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert_eq!(structs.len(), 1);
         if let SymbolDoc::Struct(s) = &structs[0] {
             assert_eq!(s.name, "Point");
@@ -704,7 +788,12 @@ mod tests {
     #[test]
     fn test_extract_enum() {
         let result = extract_from_header("enum Color { Red, Green, Blue };");
-        let enums: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Enum(_))).collect();
+        let enums: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Enum(_)))
+            .collect();
         assert_eq!(enums.len(), 1);
         if let SymbolDoc::Enum(e) = &enums[0] {
             assert_eq!(e.name, "Color");
@@ -715,7 +804,12 @@ mod tests {
     #[test]
     fn test_extract_enum_class() {
         let result = extract_from_header("enum class Direction { North, South, East, West };");
-        let enums: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Enum(_))).collect();
+        let enums: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Enum(_)))
+            .collect();
         assert_eq!(enums.len(), 1);
         if let SymbolDoc::Enum(e) = &enums[0] {
             assert_eq!(e.name, "Direction");
@@ -728,11 +822,21 @@ mod tests {
         let result = extract_from_header(
             "namespace horus {\n    namespace sensors {\n        void read();\n    }\n}",
         );
-        let fns: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Function(_))).collect();
+        let fns: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Function(_)))
+            .collect();
         assert!(!fns.is_empty());
         // Should have qualified name
-        assert!(fns[0].name().contains("horus") || fns[0].name().contains("sensors") || fns[0].name() == "read",
-            "got name: {}", fns[0].name());
+        assert!(
+            fns[0].name().contains("horus")
+                || fns[0].name().contains("sensors")
+                || fns[0].name() == "read",
+            "got name: {}",
+            fns[0].name()
+        );
     }
 
     #[test]
@@ -743,30 +847,48 @@ mod tests {
         if let SymbolDoc::Function(f) = &result.module.symbols[0] {
             assert!(f.doc.is_some(), "should extract doc comment");
             let doc = f.doc.as_ref().unwrap();
-            assert!(doc.contains("velocity") || doc.contains("Compute"), "doc: {doc}");
+            assert!(
+                doc.contains("velocity") || doc.contains("Compute"),
+                "doc: {doc}"
+            );
         }
     }
 
     #[test]
     fn test_extract_inheritance() {
-        let result = extract_from_header(
-            "class Base {};\nclass Derived : public Base {};",
-        );
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let result = extract_from_header("class Base {};\nclass Derived : public Base {};");
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert!(classes.len() >= 2);
         // Find Derived
         let derived = classes.iter().find(|s| s.name() == "Derived");
         assert!(derived.is_some(), "should find Derived class");
         if let SymbolDoc::Struct(s) = derived.unwrap() {
-            assert!(!s.trait_impls.is_empty(), "should have base class in trait_impls");
-            assert!(s.trait_impls.iter().any(|b| b.contains("Base")), "trait_impls: {:?}", s.trait_impls);
+            assert!(
+                !s.trait_impls.is_empty(),
+                "should have base class in trait_impls"
+            );
+            assert!(
+                s.trait_impls.iter().any(|b| b.contains("Base")),
+                "trait_impls: {:?}",
+                s.trait_impls
+            );
         }
     }
 
     #[test]
     fn test_extract_using_alias() {
         let result = extract_from_header("using Vec3 = std::array<double, 3>;");
-        let aliases: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::TypeAlias(_))).collect();
+        let aliases: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::TypeAlias(_)))
+            .collect();
         assert_eq!(aliases.len(), 1);
         if let SymbolDoc::TypeAlias(t) = &aliases[0] {
             assert_eq!(t.name, "Vec3");
@@ -791,7 +913,10 @@ mod tests {
 
     #[test]
     fn test_cpp_todos() {
-        let todos = scan_cpp_todos("// TODO: fix this\n// FIXME: broken\nint x;", std::path::Path::new("test.hpp"));
+        let todos = scan_cpp_todos(
+            "// TODO: fix this\n// FIXME: broken\nint x;",
+            std::path::Path::new("test.hpp"),
+        );
         assert_eq!(todos.len(), 2);
         assert_eq!(todos[0].kind, TodoKind::Todo);
         assert_eq!(todos[1].kind, TodoKind::Fixme);
@@ -814,21 +939,40 @@ mod tests {
         let result = extract_from_header(
             "template<typename T>\nclass Container {\npublic:\n    T value;\n    T get() const;\n};",
         );
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
-        assert_eq!(classes.len(), 1, "should extract exactly one class from template");
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
+        assert_eq!(
+            classes.len(),
+            1,
+            "should extract exactly one class from template"
+        );
         if let SymbolDoc::Struct(s) = &classes[0] {
             assert_eq!(s.name, "Container");
-            assert!(!s.fields.is_empty() || !s.methods.is_empty(), "template class should have public members");
+            assert!(
+                !s.fields.is_empty() || !s.methods.is_empty(),
+                "template class should have public members"
+            );
         }
     }
 
     #[test]
     fn test_extract_deep_nested_namespace() {
-        let result = extract_from_header(
-            "namespace a { namespace b { namespace c { void deep(); } } }",
+        let result =
+            extract_from_header("namespace a { namespace b { namespace c { void deep(); } } }");
+        let fns: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Function(_)))
+            .collect();
+        assert!(
+            !fns.is_empty(),
+            "should extract function from deep namespace"
         );
-        let fns: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Function(_))).collect();
-        assert!(!fns.is_empty(), "should extract function from deep namespace");
         let name = fns[0].name();
         assert!(
             name.contains("a") || name.contains("b") || name.contains("c"),
@@ -838,10 +982,13 @@ mod tests {
 
     #[test]
     fn test_extract_default_args() {
-        let result = extract_from_header(
-            "void configure(int speed = 100, bool verbose = false);",
-        );
-        let fns: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Function(_))).collect();
+        let result = extract_from_header("void configure(int speed = 100, bool verbose = false);");
+        let fns: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Function(_)))
+            .collect();
         assert_eq!(fns.len(), 1, "should extract function with default args");
         assert_eq!(fns[0].name(), "configure");
         if let SymbolDoc::Function(f) = &fns[0] {
@@ -850,7 +997,8 @@ mod tests {
             // assertion is that the function itself is extracted with its signature.
             assert!(
                 f.signature.contains("configure"),
-                "signature should contain function name, got: {}", f.signature
+                "signature should contain function name, got: {}",
+                f.signature
             );
         }
     }
@@ -861,18 +1009,25 @@ mod tests {
         let result = extract_from_header(
             "class Priv {\nprivate:\n    int secret;\npublic:\n    int visible;\n};",
         );
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert_eq!(classes.len(), 1);
         if let SymbolDoc::Struct(s) = &classes[0] {
             assert_eq!(s.name, "Priv");
             // Only public field "visible" should be present; private "secret" excluded
             assert!(
                 s.fields.iter().any(|f| f.name == "visible"),
-                "should include public field 'visible', fields: {:?}", s.fields
+                "should include public field 'visible', fields: {:?}",
+                s.fields
             );
             assert!(
                 !s.fields.iter().any(|f| f.name == "secret"),
-                "should exclude private field 'secret', fields: {:?}", s.fields
+                "should exclude private field 'secret', fields: {:?}",
+                s.fields
             );
         }
     }
@@ -885,40 +1040,58 @@ mod tests {
             !result.module.symbols.is_empty(),
             "should extract constexpr as a symbol"
         );
-        let names: Vec<_> = result.module.symbols.iter().map(|s| s.name().to_string()).collect();
+        let names: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
         assert!(
             names.iter().any(|n| n.contains("MAX_SIZE")),
-            "should extract symbol named MAX_SIZE, got: {:?}", names
+            "should extract symbol named MAX_SIZE, got: {:?}",
+            names
         );
     }
 
     #[test]
     fn test_extract_multiple_inheritance() {
-        let result = extract_from_header(
-            "class A {};\nclass B {};\nclass C : public A, public B {};",
-        );
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let result =
+            extract_from_header("class A {};\nclass B {};\nclass C : public A, public B {};");
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         let c_class = classes.iter().find(|s| s.name() == "C");
         assert!(c_class.is_some(), "should find class C");
         if let SymbolDoc::Struct(s) = c_class.unwrap() {
             assert!(
                 s.trait_impls.iter().any(|b| b.contains("A")),
-                "C should inherit from A, trait_impls: {:?}", s.trait_impls
+                "C should inherit from A, trait_impls: {:?}",
+                s.trait_impls
             );
             assert!(
                 s.trait_impls.iter().any(|b| b.contains("B")),
-                "C should inherit from B, trait_impls: {:?}", s.trait_impls
+                "C should inherit from B, trait_impls: {:?}",
+                s.trait_impls
             );
         }
     }
 
     #[test]
     fn test_extract_multiline_signature() {
-        let result = extract_from_header(
-            "int\ncompute(\n    double x,\n    double y\n);",
+        let result = extract_from_header("int\ncompute(\n    double x,\n    double y\n);");
+        let fns: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Function(_)))
+            .collect();
+        assert!(
+            !fns.is_empty(),
+            "should extract function with multiline signature"
         );
-        let fns: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Function(_))).collect();
-        assert!(!fns.is_empty(), "should extract function with multiline signature");
         assert_eq!(fns[0].name(), "compute");
     }
 
@@ -927,14 +1100,26 @@ mod tests {
         let result = extract_from_header(
             "/// @brief Compute sum.\n/// @param a First value.\n/// @param b Second value.\n/// @return Sum of a and b.\nint add(int a, int b);",
         );
-        let fns: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Function(_))).collect();
+        let fns: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Function(_)))
+            .collect();
         assert_eq!(fns.len(), 1, "should extract documented function");
         if let SymbolDoc::Function(f) = &fns[0] {
             assert_eq!(f.name, "add");
             assert!(f.doc.is_some(), "should have doc comment");
             let doc = f.doc.as_ref().unwrap();
-            assert!(doc.contains("Compute sum"), "doc should contain '@brief' text, got: {doc}");
-            assert!(f.params.len() >= 2, "should extract at least 2 params, got: {}", f.params.len());
+            assert!(
+                doc.contains("Compute sum"),
+                "doc should contain '@brief' text, got: {doc}"
+            );
+            assert!(
+                f.params.len() >= 2,
+                "should extract at least 2 params, got: {}",
+                f.params.len()
+            );
         }
     }
 
@@ -977,20 +1162,26 @@ void init_sensors(int count);
         );
 
         // Namespace-qualified name should be present
-        let names: Vec<String> = result.module.symbols.iter().map(|s| s.name().to_string()).collect();
+        let names: Vec<String> = result
+            .module
+            .symbols
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
         assert!(
-            names.iter().any(|n| n.contains("sensors::") || n == "sensors::Reading" || n == "sensors::Status"),
-            "should have a namespace-qualified symbol, got: {:?}", names
+            names.iter().any(|n| n.contains("sensors::")
+                || n == "sensors::Reading"
+                || n == "sensors::Status"),
+            "should have a namespace-qualified symbol, got: {:?}",
+            names
         );
 
         // TODO captured
-        assert!(
-            !result.todos.is_empty(),
-            "should capture the TODO comment"
-        );
+        assert!(!result.todos.is_empty(), "should capture the TODO comment");
         assert!(
             result.todos.iter().any(|t| t.text.contains("calibration")),
-            "TODO text should mention 'calibration', got: {:?}", result.todos
+            "TODO text should mention 'calibration', got: {:?}",
+            result.todos
         );
     }
 
@@ -1002,8 +1193,14 @@ void init_sensors(int count);
         let file = dir.path().join("empty.hpp");
         std::fs::write(&file, "").unwrap();
         let result = extract_cpp_file(&file, false).unwrap();
-        assert!(result.module.symbols.is_empty(), "empty file should produce no symbols");
-        assert!(result.todos.is_empty(), "empty file should produce no TODOs");
+        assert!(
+            result.module.symbols.is_empty(),
+            "empty file should produce no symbols"
+        );
+        assert!(
+            result.todos.is_empty(),
+            "empty file should produce no TODOs"
+        );
     }
 
     #[test]
@@ -1013,7 +1210,11 @@ void init_sensors(int count);
         std::fs::write(&file, "}}}{{{{").unwrap();
         // tree-sitter is error-tolerant; extract_cpp_file should still return Ok
         let result = extract_cpp_file(&file, false);
-        assert!(result.is_ok(), "invalid syntax should not cause an error, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "invalid syntax should not cause an error, got: {:?}",
+            result.err()
+        );
         // No panic is the primary assertion — the function returned without crashing
     }
 }

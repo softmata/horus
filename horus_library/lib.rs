@@ -4,9 +4,9 @@
 //! import from `horus::prelude::*`.
 
 #[doc(hidden)]
-pub mod transform_frame;
-#[doc(hidden)]
 pub mod messages;
+#[doc(hidden)]
+pub mod transform_frame;
 
 // Re-export core traits needed for message types
 #[doc(hidden)]

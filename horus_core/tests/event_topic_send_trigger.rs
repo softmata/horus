@@ -17,13 +17,25 @@ use common::cleanup_stale_shm;
 
 fn unique(prefix: &str) -> String {
     static CTR: AtomicU64 = AtomicU64::new(0);
-    format!("{}_{}_{}",prefix, std::process::id(), CTR.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        CTR.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
-struct EventCounter { name: String, ticks: Arc<AtomicU64> }
+struct EventCounter {
+    name: String,
+    ticks: Arc<AtomicU64>,
+}
 impl Node for EventCounter {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
-    fn tick(&mut self) { self.ticks.fetch_add(1, Ordering::SeqCst); }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+    fn tick(&mut self) {
+        self.ticks.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 struct TopicPublisher {
@@ -34,7 +46,9 @@ struct TopicPublisher {
     sent: u64,
 }
 impl Node for TopicPublisher {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -77,7 +91,12 @@ fn test_topic_send_triggers_event_node() {
     // Publisher as BestEffort node — uses Topic::send() internally
     sched.add(publisher).order(0).build().unwrap();
     // Event node — should tick when Topic::send() publishes to topic_name
-    sched.add(event_node).order(1).on(&topic_name).build().unwrap();
+    sched
+        .add(event_node)
+        .order(1)
+        .on(&topic_name)
+        .build()
+        .unwrap();
 
     sched.run_for(Duration::from_millis(500)).unwrap();
 
@@ -107,10 +126,19 @@ fn test_event_no_tick_without_topic_send() {
     };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-    sched.add(event_node).order(0).on(&topic_name).build().unwrap();
+    sched
+        .add(event_node)
+        .order(0)
+        .on(&topic_name)
+        .build()
+        .unwrap();
     // No publisher — event node should not tick
     sched.run_for(Duration::from_millis(300)).unwrap();
 
     let ticks = event_ticks.load(Ordering::SeqCst);
-    assert_eq!(ticks, 0, "Event node should NOT tick without data, got {}", ticks);
+    assert_eq!(
+        ticks, 0,
+        "Event node should NOT tick without data, got {}",
+        ticks
+    );
 }

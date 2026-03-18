@@ -85,9 +85,11 @@ fn symbol_signature(sym: &SymbolDoc) -> String {
     match sym {
         SymbolDoc::Function(f) => f.signature.clone(),
         SymbolDoc::Struct(s) => {
-            let fields: Vec<String> = s.fields.iter().map(|f| {
-                format!("{}: {}", f.name, f.type_str.as_deref().unwrap_or("?"))
-            }).collect();
+            let fields: Vec<String> = s
+                .fields
+                .iter()
+                .map(|f| format!("{}: {}", f.name, f.type_str.as_deref().unwrap_or("?")))
+                .collect();
             format!("struct {} {{ {} }}", s.name, fields.join(", "))
         }
         SymbolDoc::Enum(e) => {
@@ -101,9 +103,11 @@ fn symbol_signature(sym: &SymbolDoc) -> String {
         SymbolDoc::TypeAlias(t) => format!("type {} = {}", t.name, t.target_type),
         SymbolDoc::Constant(c) => format!("const {}: {}", c.name, c.type_str),
         SymbolDoc::HorusMessage(m) => {
-            let fields: Vec<String> = m.fields.iter().map(|f| {
-                format!("{}: {}", f.name, f.type_str.as_deref().unwrap_or("?"))
-            }).collect();
+            let fields: Vec<String> = m
+                .fields
+                .iter()
+                .map(|f| format!("{}: {}", f.name, f.type_str.as_deref().unwrap_or("?")))
+                .collect();
             format!("message {} {{ {} }}", m.name, fields.join(", "))
         }
         SymbolDoc::HorusService(s) => format!("service {}", s.name),
@@ -114,11 +118,17 @@ fn symbol_signature(sym: &SymbolDoc) -> String {
 fn build_symbol_map(doc: &ProjectDoc) -> HashMap<SymbolKey, SymbolInfo> {
     let mut map = HashMap::new();
     for module in &doc.modules {
-        let file_stem = module.path.file_stem()
+        let file_stem = module
+            .path
+            .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         for sym in &module.symbols {
-            let key = (file_stem.clone(), sym.name().to_string(), symbol_kind_str(sym).to_string());
+            let key = (
+                file_stem.clone(),
+                sym.name().to_string(),
+                symbol_kind_str(sym).to_string(),
+            );
             let info = SymbolInfo {
                 signature: symbol_signature(sym),
                 deprecated: sym.deprecated().map(|s| s.to_string()),
@@ -215,15 +225,25 @@ pub fn compute_diff(baseline: &ProjectDoc, current: &ProjectDoc) -> ApiDiff {
     }
 
     // Topic changes
-    let baseline_topics: HashSet<String> = baseline.message_graph.as_ref()
+    let baseline_topics: HashSet<String> = baseline
+        .message_graph
+        .as_ref()
         .map(|g| g.topics.iter().map(|t| t.name.clone()).collect())
         .unwrap_or_default();
-    let current_topics: HashSet<String> = current.message_graph.as_ref()
+    let current_topics: HashSet<String> = current
+        .message_graph
+        .as_ref()
         .map(|g| g.topics.iter().map(|t| t.name.clone()).collect())
         .unwrap_or_default();
 
-    let topics_added: Vec<String> = current_topics.difference(&baseline_topics).cloned().collect();
-    let topics_removed: Vec<String> = baseline_topics.difference(&current_topics).cloned().collect();
+    let topics_added: Vec<String> = current_topics
+        .difference(&baseline_topics)
+        .cloned()
+        .collect();
+    let topics_removed: Vec<String> = baseline_topics
+        .difference(&current_topics)
+        .cloned()
+        .collect();
 
     let summary = DiffSummary {
         added: added.len(),
@@ -294,8 +314,14 @@ fn detect_breaking_signature_change(old: &str, new: &str, kind: &str) -> bool {
             // New required method added is breaking
             let old_methods = extract_brace_contents(old);
             let new_methods = extract_brace_contents(new);
-            let old_count = old_methods.split(',').filter(|s| !s.trim().is_empty()).count();
-            let new_count = new_methods.split(',').filter(|s| !s.trim().is_empty()).count();
+            let old_count = old_methods
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .count();
+            let new_count = new_methods
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .count();
             new_count > old_count
         }
         _ => false,
@@ -388,8 +414,16 @@ pub fn format_diff_text(diff: &ApiDiff) -> String {
     if !diff.changed.is_empty() {
         let _ = writeln!(out, "  Changed:");
         for entry in &diff.changed {
-            let breaking = if entry.is_breaking { " \u{26a0} BREAKING" } else { "" };
-            let _ = writeln!(out, "    ~ {}: {} {}{}", entry.file, entry.kind, entry.name, breaking);
+            let breaking = if entry.is_breaking {
+                " \u{26a0} BREAKING"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                out,
+                "    ~ {}: {} {}{}",
+                entry.file, entry.kind, entry.name, breaking
+            );
             let _ = writeln!(out, "      was: {}", entry.old_signature);
             let _ = writeln!(out, "      now: {}", entry.new_signature);
         }
@@ -400,7 +434,11 @@ pub fn format_diff_text(diff: &ApiDiff) -> String {
         let _ = writeln!(out, "  Deprecated:");
         for entry in &diff.deprecated {
             let note = entry.signature.as_deref().unwrap_or("");
-            let _ = writeln!(out, "    \u{26a0} {}: {} {} — {}", entry.file, entry.kind, entry.name, note);
+            let _ = writeln!(
+                out,
+                "    \u{26a0} {}: {} {} — {}",
+                entry.file, entry.kind, entry.name, note
+            );
         }
         let _ = writeln!(out);
     }
@@ -439,17 +477,28 @@ mod tests {
             project: name.to_string(),
             version: "0.1.0".to_string(),
             languages: vec!["rust".to_string()],
-            module_tree: ModuleTree { name: "root".to_string(), children: vec![] },
+            module_tree: ModuleTree {
+                name: "root".to_string(),
+                children: vec![],
+            },
             modules: vec![],
             relationships: vec![],
             message_graph: None,
             entry_points: vec![],
             todos: vec![],
             stats: DocStats {
-                total_files: 0, total_symbols: 0, documented_symbols: 0,
-                deprecated_symbols: 0, documentation_coverage: 1.0,
-                horus_nodes: 0, horus_messages: 0, horus_services: 0,
-                horus_actions: 0, topics_discovered: 0, todos: 0, fixmes: 0,
+                total_files: 0,
+                total_symbols: 0,
+                documented_symbols: 0,
+                deprecated_symbols: 0,
+                documentation_coverage: 1.0,
+                horus_nodes: 0,
+                horus_messages: 0,
+                horus_services: 0,
+                horus_actions: 0,
+                topics_discovered: 0,
+                todos: 0,
+                fixmes: 0,
             },
         }
     }
@@ -458,7 +507,11 @@ mod tests {
         SymbolDoc::Function(FunctionDoc {
             name: name.to_string(),
             visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 1,
+                end_line: None,
+            },
             signature: sig.to_string(),
             doc: None,
             deprecated: deprecated.map(|s| s.to_string()),
@@ -474,12 +527,26 @@ mod tests {
         SymbolDoc::Struct(StructDoc {
             name: name.to_string(),
             visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
-            doc: None, deprecated: None, generic_params: vec![],
-            fields: fields.iter().map(|(n, t)| FieldDoc {
-                name: n.to_string(), type_str: Some(t.to_string()), doc: None,
-            }).collect(),
-            methods: vec![], trait_impls: vec![], derives: vec![], examples: vec![],
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 1,
+                end_line: None,
+            },
+            doc: None,
+            deprecated: None,
+            generic_params: vec![],
+            fields: fields
+                .iter()
+                .map(|(n, t)| FieldDoc {
+                    name: n.to_string(),
+                    type_str: Some(t.to_string()),
+                    doc: None,
+                })
+                .collect(),
+            methods: vec![],
+            trait_impls: vec![],
+            derives: vec![],
+            examples: vec![],
         })
     }
 
@@ -499,9 +566,7 @@ mod tests {
     #[test]
     fn test_diff_added_symbol() {
         let baseline = empty_doc("test");
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("new_fn", "pub fn new_fn()", None),
-        ]);
+        let current = doc_with_symbols(vec![make_fn_symbol("new_fn", "pub fn new_fn()", None)]);
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.added.len(), 1);
         assert_eq!(diff.added[0].name, "new_fn");
@@ -511,9 +576,7 @@ mod tests {
 
     #[test]
     fn test_diff_removed_symbol() {
-        let baseline = doc_with_symbols(vec![
-            make_fn_symbol("old_fn", "pub fn old_fn()", None),
-        ]);
+        let baseline = doc_with_symbols(vec![make_fn_symbol("old_fn", "pub fn old_fn()", None)]);
         let current = empty_doc("test");
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.removed.len(), 1);
@@ -523,12 +586,16 @@ mod tests {
 
     #[test]
     fn test_diff_changed_signature() {
-        let baseline = doc_with_symbols(vec![
-            make_fn_symbol("compute", "pub fn compute(x: f64) -> f64", None),
-        ]);
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("compute", "pub fn compute(x: f64, dt: f64) -> f64", None),
-        ]);
+        let baseline = doc_with_symbols(vec![make_fn_symbol(
+            "compute",
+            "pub fn compute(x: f64) -> f64",
+            None,
+        )]);
+        let current = doc_with_symbols(vec![make_fn_symbol(
+            "compute",
+            "pub fn compute(x: f64, dt: f64) -> f64",
+            None,
+        )]);
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].name, "compute");
@@ -538,12 +605,12 @@ mod tests {
 
     #[test]
     fn test_diff_newly_deprecated() {
-        let baseline = doc_with_symbols(vec![
-            make_fn_symbol("old_api", "pub fn old_api()", None),
-        ]);
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("old_api", "pub fn old_api()", Some("use new_api")),
-        ]);
+        let baseline = doc_with_symbols(vec![make_fn_symbol("old_api", "pub fn old_api()", None)]);
+        let current = doc_with_symbols(vec![make_fn_symbol(
+            "old_api",
+            "pub fn old_api()",
+            Some("use new_api"),
+        )]);
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.deprecated.len(), 1);
         assert_eq!(diff.deprecated[0].name, "old_api");
@@ -551,9 +618,7 @@ mod tests {
 
     #[test]
     fn test_diff_no_changes() {
-        let doc = doc_with_symbols(vec![
-            make_fn_symbol("stable", "pub fn stable()", None),
-        ]);
+        let doc = doc_with_symbols(vec![make_fn_symbol("stable", "pub fn stable()", None)]);
         let diff = compute_diff(&doc, &doc);
         assert!(diff.added.is_empty());
         assert!(diff.removed.is_empty());
@@ -564,26 +629,29 @@ mod tests {
 
     #[test]
     fn test_diff_breaking_field_removed() {
-        let baseline = doc_with_symbols(vec![
-            make_struct_symbol("Config", &[("name", "String"), ("verbose", "bool")]),
-        ]);
-        let current = doc_with_symbols(vec![
-            make_struct_symbol("Config", &[("name", "String")]),
-        ]);
+        let baseline = doc_with_symbols(vec![make_struct_symbol(
+            "Config",
+            &[("name", "String"), ("verbose", "bool")],
+        )]);
+        let current = doc_with_symbols(vec![make_struct_symbol("Config", &[("name", "String")])]);
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.changed.len(), 1);
-        assert!(diff.changed[0].is_breaking, "removing a field should be breaking");
+        assert!(
+            diff.changed[0].is_breaking,
+            "removing a field should be breaking"
+        );
         assert!(diff.breaking_changes > 0);
     }
 
     #[test]
     fn test_diff_breaking_return_type_changed() {
-        let baseline = doc_with_symbols(vec![
-            make_fn_symbol("get", "pub fn get() -> String", None),
-        ]);
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("get", "pub fn get() -> Option<String>", None),
-        ]);
+        let baseline =
+            doc_with_symbols(vec![make_fn_symbol("get", "pub fn get() -> String", None)]);
+        let current = doc_with_symbols(vec![make_fn_symbol(
+            "get",
+            "pub fn get() -> Option<String>",
+            None,
+        )]);
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.changed.len(), 1);
         assert!(diff.changed[0].is_breaking);
@@ -604,9 +672,7 @@ mod tests {
 
     #[test]
     fn test_diff_identical() {
-        let doc = doc_with_symbols(vec![
-            make_fn_symbol("f", "pub fn f()", None),
-        ]);
+        let doc = doc_with_symbols(vec![make_fn_symbol("f", "pub fn f()", None)]);
         let diff = compute_diff(&doc, &doc);
         let text = format_diff_text(&diff);
         assert!(text.contains("No API changes"));
@@ -614,12 +680,8 @@ mod tests {
 
     #[test]
     fn test_format_diff_text_markers() {
-        let baseline = doc_with_symbols(vec![
-            make_fn_symbol("old", "pub fn old()", None),
-        ]);
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("new", "pub fn new()", None),
-        ]);
+        let baseline = doc_with_symbols(vec![make_fn_symbol("old", "pub fn old()", None)]);
+        let current = doc_with_symbols(vec![make_fn_symbol("new", "pub fn new()", None)]);
         let diff = compute_diff(&baseline, &current);
         let text = format_diff_text(&diff);
         assert!(text.contains("+"), "should have + for added");
@@ -630,9 +692,7 @@ mod tests {
     #[test]
     fn test_format_diff_json_valid() {
         let baseline = empty_doc("test");
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("f", "pub fn f()", None),
-        ]);
+        let current = doc_with_symbols(vec![make_fn_symbol("f", "pub fn f()", None)]);
         let diff = compute_diff(&baseline, &current);
         let json = format_diff_json(&diff);
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
@@ -688,117 +748,186 @@ mod tests {
     fn test_extract_return_type() {
         assert_eq!(extract_return_type_str("pub fn f() -> String"), "String");
         assert_eq!(extract_return_type_str("pub fn f()"), "");
-        assert_eq!(extract_return_type_str("pub fn f() -> Option<String>"), "Option<String>");
+        assert_eq!(
+            extract_return_type_str("pub fn f() -> Option<String>"),
+            "Option<String>"
+        );
     }
 
     #[test]
     fn test_diff_breaking_enum_variant_removed() {
-        let baseline = doc_with_symbols(vec![
-            SymbolDoc::Enum(EnumDoc {
-                name: "Color".to_string(),
-                visibility: Visibility::Public,
-                location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
-                doc: None,
-                deprecated: None,
-                variants: vec![
-                    VariantDoc { name: "Red".to_string(), doc: None, fields: vec![] },
-                    VariantDoc { name: "Green".to_string(), doc: None, fields: vec![] },
-                    VariantDoc { name: "Blue".to_string(), doc: None, fields: vec![] },
-                ],
-                methods: vec![],
-            }),
-        ]);
-        let current = doc_with_symbols(vec![
-            SymbolDoc::Enum(EnumDoc {
-                name: "Color".to_string(),
-                visibility: Visibility::Public,
-                location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
-                doc: None,
-                deprecated: None,
-                variants: vec![
-                    VariantDoc { name: "Red".to_string(), doc: None, fields: vec![] },
-                    VariantDoc { name: "Green".to_string(), doc: None, fields: vec![] },
-                ],
-                methods: vec![],
-            }),
-        ]);
+        let baseline = doc_with_symbols(vec![SymbolDoc::Enum(EnumDoc {
+            name: "Color".to_string(),
+            visibility: Visibility::Public,
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 1,
+                end_line: None,
+            },
+            doc: None,
+            deprecated: None,
+            variants: vec![
+                VariantDoc {
+                    name: "Red".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+                VariantDoc {
+                    name: "Green".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+                VariantDoc {
+                    name: "Blue".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+            ],
+            methods: vec![],
+        })]);
+        let current = doc_with_symbols(vec![SymbolDoc::Enum(EnumDoc {
+            name: "Color".to_string(),
+            visibility: Visibility::Public,
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 1,
+                end_line: None,
+            },
+            doc: None,
+            deprecated: None,
+            variants: vec![
+                VariantDoc {
+                    name: "Red".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+                VariantDoc {
+                    name: "Green".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+            ],
+            methods: vec![],
+        })]);
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.changed.len(), 1, "should detect enum change");
-        assert!(diff.changed[0].is_breaking, "removing an enum variant should be breaking");
+        assert!(
+            diff.changed[0].is_breaking,
+            "removing an enum variant should be breaking"
+        );
         assert!(diff.breaking_changes > 0);
     }
 
     #[test]
     fn test_diff_breaking_trait_method_added() {
-        let baseline = doc_with_symbols(vec![
-            SymbolDoc::Trait(TraitDoc {
-                name: "Driver".to_string(),
+        let baseline = doc_with_symbols(vec![SymbolDoc::Trait(TraitDoc {
+            name: "Driver".to_string(),
+            visibility: Visibility::Public,
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 1,
+                end_line: None,
+            },
+            doc: None,
+            deprecated: None,
+            generic_params: vec![],
+            required_methods: vec![FunctionDoc {
+                name: "init".to_string(),
                 visibility: Visibility::Public,
-                location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
+                location: SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 2,
+                    end_line: None,
+                },
+                signature: "fn init(&mut self)".to_string(),
                 doc: None,
                 deprecated: None,
+                params: vec![],
+                returns: None,
+                is_async: false,
                 generic_params: vec![],
-                required_methods: vec![
-                    FunctionDoc {
-                        name: "init".to_string(),
-                        visibility: Visibility::Public,
-                        location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 2, end_line: None },
-                        signature: "fn init(&mut self)".to_string(),
-                        doc: None, deprecated: None, params: vec![],
-                        returns: None, is_async: false, generic_params: vec![], examples: vec![],
+                examples: vec![],
+            }],
+            provided_methods: vec![],
+            implementors: vec![],
+        })]);
+        let current = doc_with_symbols(vec![SymbolDoc::Trait(TraitDoc {
+            name: "Driver".to_string(),
+            visibility: Visibility::Public,
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 1,
+                end_line: None,
+            },
+            doc: None,
+            deprecated: None,
+            generic_params: vec![],
+            required_methods: vec![
+                FunctionDoc {
+                    name: "init".to_string(),
+                    visibility: Visibility::Public,
+                    location: SourceLocation {
+                        file: PathBuf::from("src/lib.rs"),
+                        line: 2,
+                        end_line: None,
                     },
-                ],
-                provided_methods: vec![],
-                implementors: vec![],
-            }),
-        ]);
-        let current = doc_with_symbols(vec![
-            SymbolDoc::Trait(TraitDoc {
-                name: "Driver".to_string(),
-                visibility: Visibility::Public,
-                location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
-                doc: None,
-                deprecated: None,
-                generic_params: vec![],
-                required_methods: vec![
-                    FunctionDoc {
-                        name: "init".to_string(),
-                        visibility: Visibility::Public,
-                        location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 2, end_line: None },
-                        signature: "fn init(&mut self)".to_string(),
-                        doc: None, deprecated: None, params: vec![],
-                        returns: None, is_async: false, generic_params: vec![], examples: vec![],
+                    signature: "fn init(&mut self)".to_string(),
+                    doc: None,
+                    deprecated: None,
+                    params: vec![],
+                    returns: None,
+                    is_async: false,
+                    generic_params: vec![],
+                    examples: vec![],
+                },
+                FunctionDoc {
+                    name: "shutdown".to_string(),
+                    visibility: Visibility::Public,
+                    location: SourceLocation {
+                        file: PathBuf::from("src/lib.rs"),
+                        line: 5,
+                        end_line: None,
                     },
-                    FunctionDoc {
-                        name: "shutdown".to_string(),
-                        visibility: Visibility::Public,
-                        location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 5, end_line: None },
-                        signature: "fn shutdown(&mut self)".to_string(),
-                        doc: None, deprecated: None, params: vec![],
-                        returns: None, is_async: false, generic_params: vec![], examples: vec![],
-                    },
-                ],
-                provided_methods: vec![],
-                implementors: vec![],
-            }),
-        ]);
+                    signature: "fn shutdown(&mut self)".to_string(),
+                    doc: None,
+                    deprecated: None,
+                    params: vec![],
+                    returns: None,
+                    is_async: false,
+                    generic_params: vec![],
+                    examples: vec![],
+                },
+            ],
+            provided_methods: vec![],
+            implementors: vec![],
+        })]);
         let diff = compute_diff(&baseline, &current);
         assert_eq!(diff.changed.len(), 1, "should detect trait change");
-        assert!(diff.changed[0].is_breaking, "adding a required trait method should be breaking");
+        assert!(
+            diff.changed[0].is_breaking,
+            "adding a required trait method should be breaking"
+        );
         assert!(diff.breaking_changes > 0);
     }
 
     #[test]
     fn test_diff_doc_only_not_breaking() {
-        let baseline = doc_with_symbols(vec![
-            make_fn_symbol("stable", "pub fn stable(x: i32) -> bool", None),
-        ]);
+        let baseline = doc_with_symbols(vec![make_fn_symbol(
+            "stable",
+            "pub fn stable(x: i32) -> bool",
+            None,
+        )]);
         // Same name, same signature — only doc differs (which is not in the signature)
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("stable", "pub fn stable(x: i32) -> bool", None),
-        ]);
+        let current = doc_with_symbols(vec![make_fn_symbol(
+            "stable",
+            "pub fn stable(x: i32) -> bool",
+            None,
+        )]);
         let diff = compute_diff(&baseline, &current);
-        assert!(diff.changed.is_empty(), "doc-only change should not appear as changed since signatures match");
+        assert!(
+            diff.changed.is_empty(),
+            "doc-only change should not appear as changed since signatures match"
+        );
         assert_eq!(diff.breaking_changes, 0);
     }
 
@@ -849,12 +978,12 @@ mod tests {
 
     #[test]
     fn test_integration_diff_format_roundtrip() {
-        let baseline = doc_with_symbols(vec![
-            make_fn_symbol("old", "pub fn old()", None),
-        ]);
-        let current = doc_with_symbols(vec![
-            make_fn_symbol("new_fn", "pub fn new_fn(x: f64) -> f64", None),
-        ]);
+        let baseline = doc_with_symbols(vec![make_fn_symbol("old", "pub fn old()", None)]);
+        let current = doc_with_symbols(vec![make_fn_symbol(
+            "new_fn",
+            "pub fn new_fn(x: f64) -> f64",
+            None,
+        )]);
         let diff = compute_diff(&baseline, &current);
 
         // Serialize to JSON
@@ -888,7 +1017,10 @@ mod tests {
         assert!(diff.deprecated.is_empty(), "no symbols to deprecate");
         assert!(diff.topics_added.is_empty(), "no topics to add");
         assert!(diff.topics_removed.is_empty(), "no topics to remove");
-        assert_eq!(diff.breaking_changes, 0, "empty diff has no breaking changes");
+        assert_eq!(
+            diff.breaking_changes, 0,
+            "empty diff has no breaking changes"
+        );
 
         // Summary counts must all be zero
         assert_eq!(diff.summary.added, 0);
@@ -898,6 +1030,9 @@ mod tests {
 
         // Text format should say "No API changes"
         let text = format_diff_text(&diff);
-        assert!(text.contains("No API changes"), "empty-vs-empty should report no changes");
+        assert!(
+            text.contains("No API changes"),
+            "empty-vs-empty should report no changes"
+        );
     }
 }

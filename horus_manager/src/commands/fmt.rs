@@ -243,10 +243,7 @@ mod tests {
 
         if dispatch::tool_version("cargo").is_some() {
             let has_rust_tool = tools.iter().any(|t| t.bin == "cargo");
-            assert!(
-                has_rust_tool,
-                "Mixed project should include cargo fmt tool"
-            );
+            assert!(has_rust_tool, "Mixed project should include cargo fmt tool");
         }
     }
 

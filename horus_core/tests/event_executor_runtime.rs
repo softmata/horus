@@ -77,12 +77,7 @@ fn test_event_node_ticks_on_notification() {
 
     let sched_thread = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-        sched
-            .add(event_node)
-            .order(0)
-            .on(&tn)
-            .build()
-            .unwrap();
+        sched.add(event_node).order(0).on(&tn).build().unwrap();
 
         while running_clone.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
@@ -233,12 +228,7 @@ fn test_event_rapid_burst_no_crash() {
 
     let sched_thread = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-        sched
-            .add(event_node)
-            .order(0)
-            .on(&tn)
-            .build()
-            .unwrap();
+        sched.add(event_node).order(0).on(&tn).build().unwrap();
 
         while running_clone.load(Ordering::Relaxed) {
             let _ = sched.tick_once();

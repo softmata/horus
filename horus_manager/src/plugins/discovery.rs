@@ -295,7 +295,8 @@ impl PluginDiscovery {
         let plugins = packages
             .into_iter()
             .map(|pkg| {
-                let category = self.detect_category(&pkg.name, &toml::Value::Table(toml::Table::new()));
+                let category =
+                    self.detect_category(&pkg.name, &toml::Value::Table(toml::Table::new()));
                 AvailablePlugin {
                     name: pkg.name.clone(),
                     version: pkg.version,
@@ -449,7 +450,11 @@ hardware = []
         let results = discovery.search("camera");
 
         // search() should succeed without panic — results depend on local/registry state
-        assert!(results.is_ok(), "search should not error: {:?}", results.err());
+        assert!(
+            results.is_ok(),
+            "search should not error: {:?}",
+            results.err()
+        );
         // Results may be empty if no camera plugins are installed/registered
     }
 

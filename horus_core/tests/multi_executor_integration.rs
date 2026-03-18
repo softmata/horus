@@ -21,8 +21,12 @@ struct RtCounterNode {
     tick_count: Arc<AtomicU64>,
 }
 impl Node for RtCounterNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
-    fn tick(&mut self) { self.tick_count.fetch_add(1, Ordering::SeqCst); }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+    fn tick(&mut self) {
+        self.tick_count.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 struct ComputeCounterNode {
@@ -31,7 +35,9 @@ struct ComputeCounterNode {
     work_ms: u64,
 }
 impl Node for ComputeCounterNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         if self.work_ms > 0 {
@@ -46,7 +52,9 @@ struct AsyncCounterNode {
     work_ms: u64,
 }
 impl Node for AsyncCounterNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         if self.work_ms > 0 {
@@ -60,11 +68,17 @@ struct BestEffortCounterNode {
     tick_count: Arc<AtomicU64>,
 }
 impl Node for BestEffortCounterNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
-    fn tick(&mut self) { self.tick_count.fetch_add(1, Ordering::SeqCst); }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+    fn tick(&mut self) {
+        self.tick_count.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
-fn pid() -> u32 { std::process::id() }
+fn pid() -> u32 {
+    std::process::id()
+}
 
 // ============================================================================
 // Test: RT + Compute coexist — RT node is not starved by heavy compute
@@ -88,8 +102,19 @@ fn test_rt_not_starved_by_compute() {
     };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-    sched.add(rt_node).rate(100_u64.hz()).order(0).build().unwrap();
-    sched.add(compute_node).compute().rate(10_u64.hz()).order(1).build().unwrap();
+    sched
+        .add(rt_node)
+        .rate(100_u64.hz())
+        .order(0)
+        .build()
+        .unwrap();
+    sched
+        .add(compute_node)
+        .compute()
+        .rate(10_u64.hz())
+        .order(1)
+        .build()
+        .unwrap();
     sched.run_for(Duration::from_millis(500)).unwrap();
 
     let rt_final = rt_ticks.load(Ordering::SeqCst);
@@ -139,8 +164,19 @@ fn test_async_does_not_block_rt() {
     };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-    sched.add(rt_node).rate(100_u64.hz()).order(0).build().unwrap();
-    sched.add(async_node).async_io().rate(10_u64.hz()).order(1).build().unwrap();
+    sched
+        .add(rt_node)
+        .rate(100_u64.hz())
+        .order(0)
+        .build()
+        .unwrap();
+    sched
+        .add(async_node)
+        .async_io()
+        .rate(10_u64.hz())
+        .order(1)
+        .build()
+        .unwrap();
     sched.run_for(Duration::from_millis(500)).unwrap();
 
     let rt_final = rt_ticks.load(Ordering::SeqCst);
@@ -185,7 +221,12 @@ fn test_three_execution_classes_coexist() {
     };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-    sched.add(rt_node).rate(100_u64.hz()).order(0).build().unwrap();
+    sched
+        .add(rt_node)
+        .rate(100_u64.hz())
+        .order(0)
+        .build()
+        .unwrap();
     sched.add(compute_node).compute().order(1).build().unwrap();
     sched.add(be_node).order(2).build().unwrap();
     sched.run_for(Duration::from_millis(300)).unwrap();
@@ -196,7 +237,11 @@ fn test_three_execution_classes_coexist() {
 
     // All three should tick
     assert!(rt_final >= 1, "RT should tick, got {}", rt_final);
-    assert!(compute_final >= 1, "Compute should tick, got {}", compute_final);
+    assert!(
+        compute_final >= 1,
+        "Compute should tick, got {}",
+        compute_final
+    );
     assert!(be_final >= 1, "BestEffort should tick, got {}", be_final);
 }
 
@@ -217,7 +262,13 @@ fn test_compute_rate_limiting() {
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
     // Rate-limited compute node at 10Hz
-    sched.add(node).compute().rate(10_u64.hz()).order(0).build().unwrap();
+    sched
+        .add(node)
+        .compute()
+        .rate(10_u64.hz())
+        .order(0)
+        .build()
+        .unwrap();
     sched.run_for(Duration::from_millis(500)).unwrap();
 
     let final_ticks = ticks.load(Ordering::SeqCst);
@@ -245,7 +296,13 @@ fn test_async_rate_limiting() {
     };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-    sched.add(node).async_io().rate(10_u64.hz()).order(0).build().unwrap();
+    sched
+        .add(node)
+        .async_io()
+        .rate(10_u64.hz())
+        .order(0)
+        .build()
+        .unwrap();
     sched.run_for(Duration::from_millis(500)).unwrap();
 
     let final_ticks = ticks.load(Ordering::SeqCst);

@@ -56,7 +56,10 @@ fn uat_rust_project_full_lifecycle() {
         .success();
     let proj = tmp.path().join("my-robot");
     assert!(proj.join("horus.toml").exists(), "horus.toml should exist");
-    assert!(proj.join("src/main.rs").exists(), "src/main.rs should exist");
+    assert!(
+        proj.join("src/main.rs").exists(),
+        "src/main.rs should exist"
+    );
 
     // 2. Check project is valid
     let output = horus_cmd()
@@ -78,23 +81,18 @@ fn uat_rust_project_full_lifecycle() {
 
     // Verify horus.toml was updated
     let toml = fs::read_to_string(proj.join("horus.toml")).unwrap();
-    assert!(toml.contains("serde"), "horus.toml should contain serde after add");
+    assert!(
+        toml.contains("serde"),
+        "horus.toml should contain serde after add"
+    );
 
     // 4. Format code
-    let output = horus_cmd()
-        .arg("fmt")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("fmt").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "fmt should not panic");
 
     // 5. Lint code
-    let output = horus_cmd()
-        .arg("lint")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("lint").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "lint should not panic");
 
@@ -107,7 +105,10 @@ fn uat_rust_project_full_lifecycle() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "build should not panic");
     // .horus/ directory should be created by build pipeline
-    assert!(proj.join(".horus").exists(), ".horus/ should be created by build");
+    assert!(
+        proj.join(".horus").exists(),
+        ".horus/ should be created by build"
+    );
 
     // 7. Remove dependency
     let output = horus_cmd()
@@ -169,7 +170,10 @@ fn uat_python_project_lifecycle() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "add pypi dep should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "add pypi dep should not panic"
+    );
 
     // Verify horus.toml was updated
     let toml = fs::read_to_string(proj.join("horus.toml")).unwrap();
@@ -232,7 +236,10 @@ fn uat_project_health_workflow() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "sync --check should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "sync --check should not panic"
+    );
 
     // 3. Doctor
     let output = horus_cmd()
@@ -242,7 +249,10 @@ fn uat_project_health_workflow() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "doctor should not panic");
-    assert!(output.status.success(), "doctor should succeed in a valid project");
+    assert!(
+        output.status.success(),
+        "doctor should succeed in a valid project"
+    );
 
     // 4. Check --full (comprehensive validation)
     let output = horus_cmd()
@@ -251,7 +261,10 @@ fn uat_project_health_workflow() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "check --full should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "check --full should not panic"
+    );
 }
 
 // ============================================================================
@@ -309,11 +322,7 @@ fn uat_multi_dependency_project() {
     assert!(!stderr.contains("panicked"), "build should not panic");
 
     // 4. Test (may have 0 tests, that's fine)
-    let output = horus_cmd()
-        .arg("test")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("test").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "test should not panic");
 
@@ -359,7 +368,10 @@ fn uat_init_existing_directory() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "check after init should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "check after init should not panic"
+    );
 
     // 3. Doctor the workspace
     let output = horus_cmd()
@@ -368,7 +380,10 @@ fn uat_init_existing_directory() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "doctor after init should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "doctor after init should not panic"
+    );
 }
 
 // ============================================================================
@@ -404,11 +419,7 @@ fn uat_build_and_run_quick_exit() {
     assert!(!stderr.contains("panicked"), "build should not panic");
 
     // 2. Run (should exit immediately with our quick-exit main)
-    let output = horus_cmd()
-        .arg("run")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("run").current_dir(&proj).output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "run should not panic");
@@ -441,33 +452,28 @@ fn uat_auth_and_publish_workflow() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "signing-key should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "signing-key should not panic"
+    );
 
     // 2. Check whoami (not logged in)
-    let output = horus_cmd()
-        .args(["auth", "whoami"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["auth", "whoami"]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("Not logged in") || combined.contains("not logged in")
+        combined.contains("Not logged in")
+            || combined.contains("not logged in")
             || combined.contains("authenticate"),
         "should report not logged in"
     );
 
     // 3. Create a project and try to publish (should fail — not logged in)
     horus_cmd()
-        .args([
-            "new",
-            "pub-test",
-            "-r",
-            "-o",
-            &tmp.path().to_string_lossy(),
-        ])
+        .args(["new", "pub-test", "-r", "-o", &tmp.path().to_string_lossy()])
         .assert()
         .success();
     let proj = tmp.path().join("pub-test");
@@ -479,10 +485,7 @@ fn uat_auth_and_publish_workflow() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "publish should not panic");
-    assert!(
-        !output.status.success(),
-        "publish without auth should fail"
-    );
+    assert!(!output.status.success(), "publish without auth should fail");
 }
 
 // ============================================================================
@@ -493,13 +496,7 @@ fn uat_auth_and_publish_workflow() {
 fn uat_dev_dependency_workflow() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args([
-            "new",
-            "dev-dep",
-            "-r",
-            "-o",
-            &tmp.path().to_string_lossy(),
-        ])
+        .args(["new", "dev-dep", "-r", "-o", &tmp.path().to_string_lossy()])
         .assert()
         .success();
     let proj = tmp.path().join("dev-dep");
@@ -527,7 +524,10 @@ fn uat_dev_dependency_workflow() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "build with dev deps should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "build with dev deps should not panic"
+    );
 
     // 4. Remove dev dep
     let output = horus_cmd()
@@ -536,10 +536,10 @@ fn uat_dev_dependency_workflow() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "remove dev dep should not panic");
-    let toml2 = fs::read_to_string(proj.join("horus.toml")).unwrap();
     assert!(
-        !toml2.contains("criterion"),
-        "criterion should be removed"
+        !stderr.contains("panicked"),
+        "remove dev dep should not panic"
     );
+    let toml2 = fs::read_to_string(proj.join("horus.toml")).unwrap();
+    assert!(!toml2.contains("criterion"), "criterion should be removed");
 }

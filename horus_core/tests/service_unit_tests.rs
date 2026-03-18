@@ -66,13 +66,7 @@ fn test_service_multiple_sequential_calls() {
     let mut client = ServiceClient::<ConcurrentAdd>::new().unwrap();
     for i in 0..10 {
         let resp = client
-            .call(
-                ConcurrentAddRequest {
-                    a: i,
-                    b: i * 2,
-                },
-                2_u64.secs(),
-            )
+            .call(ConcurrentAddRequest { a: i, b: i * 2 }, 2_u64.secs())
             .unwrap();
         assert_eq!(
             resp.sum,
@@ -114,10 +108,7 @@ fn test_concurrent_multi_client() {
             for i in 0..calls_per_thread {
                 let a = (t * 100 + i) as i64;
                 let b = (t * 100 + i + 1) as i64;
-                match client.call(
-                    MultiClientARequest { a, b },
-                    3_u64.secs(),
-                ) {
+                match client.call(MultiClientARequest { a, b }, 3_u64.secs()) {
                     Ok(resp) => {
                         if resp.sum == a + b {
                             success.fetch_add(1, Ordering::SeqCst);
@@ -278,9 +269,15 @@ fn test_request_ids_are_unique_sequential() {
     let mut client1 = ServiceClient::<RapidFire>::new().unwrap();
     let mut client2 = ServiceClient::<RapidFire>::new().unwrap();
 
-    let r1 = client1.call(RapidFireRequest { seq: 1 }, 2_u64.secs()).unwrap();
-    let r2 = client2.call(RapidFireRequest { seq: 2 }, 2_u64.secs()).unwrap();
-    let r3 = client1.call(RapidFireRequest { seq: 3 }, 2_u64.secs()).unwrap();
+    let r1 = client1
+        .call(RapidFireRequest { seq: 1 }, 2_u64.secs())
+        .unwrap();
+    let r2 = client2
+        .call(RapidFireRequest { seq: 2 }, 2_u64.secs())
+        .unwrap();
+    let r3 = client1
+        .call(RapidFireRequest { seq: 3 }, 2_u64.secs())
+        .unwrap();
 
     assert_eq!(r1.echo, 1);
     assert_eq!(r2.echo, 2);

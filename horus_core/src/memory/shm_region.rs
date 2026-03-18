@@ -67,7 +67,11 @@ mod tests {
     fn test_shm_create_succeeds() {
         let name = format!("core_shm_test_{}", std::process::id());
         let region = ShmRegion::new(&name, 4096);
-        assert!(region.is_ok(), "ShmRegion::new should succeed: {:?}", region.err());
+        assert!(
+            region.is_ok(),
+            "ShmRegion::new should succeed: {:?}",
+            region.err()
+        );
         drop(region);
     }
 

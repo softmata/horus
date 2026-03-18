@@ -413,7 +413,11 @@ mod tests {
         // Alignment is 8 (from u64 fields)
         assert_eq!(std::mem::align_of::<Tensor>(), 8);
         // Size must be a multiple of alignment (no trailing padding)
-        assert_eq!(168 % 8, 0, "Tensor size must be a multiple of its alignment");
+        assert_eq!(
+            168 % 8,
+            0,
+            "Tensor size must be a multiple of its alignment"
+        );
     }
 
     #[test]

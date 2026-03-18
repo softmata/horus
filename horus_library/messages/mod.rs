@@ -225,7 +225,8 @@ impl GenericMessage {
                 actual: data.len().to_string(),
                 min: "0".into(),
                 max: MAX_GENERIC_PAYLOAD.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         let mut msg = Self {
@@ -267,7 +268,8 @@ impl GenericMessage {
                 actual: metadata.len().to_string(),
                 min: "0".into(),
                 max: "255".into(),
-            }.into());
+            }
+            .into());
         }
 
         let metadata_bytes = metadata.as_bytes();
@@ -739,10 +741,22 @@ mod tests {
         let msg = GenericMessage::new(json_data.as_bytes().to_vec()).unwrap();
         let summary = msg.log_summary();
         // JSON path should parse and include both key and value
-        assert!(summary.contains("key"), "summary should contain key name: {}", summary);
-        assert!(summary.contains("value"), "summary should contain value: {}", summary);
+        assert!(
+            summary.contains("key"),
+            "summary should contain key name: {}",
+            summary
+        );
+        assert!(
+            summary.contains("value"),
+            "summary should contain value: {}",
+            summary
+        );
         // Should NOT be the hex fallback path
-        assert!(!summary.contains("bytes:"), "JSON data should not use hex fallback: {}", summary);
+        assert!(
+            !summary.contains("bytes:"),
+            "JSON data should not use hex fallback: {}",
+            summary
+        );
     }
 
     #[test]
@@ -752,9 +766,21 @@ mod tests {
         let msg = GenericMessage::from_value(&value).unwrap();
         let summary = msg.log_summary();
         // MessagePack path should decode the array values
-        assert!(summary.contains('1'), "summary should contain value 1: {}", summary);
-        assert!(summary.contains('2'), "summary should contain value 2: {}", summary);
-        assert!(summary.contains('3'), "summary should contain value 3: {}", summary);
+        assert!(
+            summary.contains('1'),
+            "summary should contain value 1: {}",
+            summary
+        );
+        assert!(
+            summary.contains('2'),
+            "summary should contain value 2: {}",
+            summary
+        );
+        assert!(
+            summary.contains('3'),
+            "summary should contain value 3: {}",
+            summary
+        );
     }
 
     #[test]
@@ -766,15 +792,27 @@ mod tests {
         let msg = GenericMessage::new(binary_data).unwrap();
         let summary = msg.log_summary();
         // 0xFF is msgpack negative fixint for -1, so it should decode as "-1"
-        assert_eq!(summary, "-1", "0xFF should decode as msgpack -1: {}", summary);
+        assert_eq!(
+            summary, "-1",
+            "0xFF should decode as msgpack -1: {}",
+            summary
+        );
 
         // Use bytes that are genuinely invalid for both JSON and MessagePack
         // 0xC1 is the "never used" type in MessagePack
         let truly_binary = vec![0xC1, 0xC1, 0xC1, 0xC1];
         let msg2 = GenericMessage::new(truly_binary).unwrap();
         let summary2 = msg2.log_summary();
-        assert!(summary2.contains("4 bytes"), "invalid msgpack should use hex fallback: {}", summary2);
-        assert!(summary2.contains("c1"), "hex fallback should contain c1: {}", summary2);
+        assert!(
+            summary2.contains("4 bytes"),
+            "invalid msgpack should use hex fallback: {}",
+            summary2
+        );
+        assert!(
+            summary2.contains("c1"),
+            "hex fallback should contain c1: {}",
+            summary2
+        );
     }
 
     #[test]
@@ -784,11 +822,23 @@ mod tests {
         let msg = GenericMessage::new(large_json.as_bytes().to_vec()).unwrap();
         let summary = msg.log_summary();
         // JSON string is >200 chars formatted, so truncation with "..." must occur
-        assert!(summary.contains("..."), "large message summary should be truncated: {}", summary);
-        assert!(summary.contains("bytes total"), "truncated summary should show total bytes: {}", summary);
+        assert!(
+            summary.contains("..."),
+            "large message summary should be truncated: {}",
+            summary
+        );
+        assert!(
+            summary.contains("bytes total"),
+            "truncated summary should show total bytes: {}",
+            summary
+        );
         // Truncated portion should be at most ~200 chars before the "..."
         let prefix_len = summary.find("...").unwrap();
-        assert!(prefix_len <= 210, "prefix before '...' should be ~200 chars, got {}", prefix_len);
+        assert!(
+            prefix_len <= 210,
+            "prefix before '...' should be ~200 chars, got {}",
+            prefix_len
+        );
     }
 
     #[test]
@@ -796,7 +846,11 @@ mod tests {
         // Empty message should produce hex fallback with 0 bytes
         let msg = GenericMessage::new(vec![]).unwrap();
         let summary = msg.log_summary();
-        assert!(summary.contains("0 bytes"), "empty message summary should say 0 bytes: {}", summary);
+        assert!(
+            summary.contains("0 bytes"),
+            "empty message summary should say 0 bytes: {}",
+            summary
+        );
     }
 
     #[test]
@@ -806,8 +860,16 @@ mod tests {
         let binary_data: Vec<u8> = vec![0xC1; 64];
         let msg = GenericMessage::new(binary_data).unwrap();
         let summary = msg.log_summary();
-        assert!(summary.contains("64 bytes"), "should report 64 bytes: {}", summary);
-        assert!(summary.contains("..."), "large binary should show truncated hex: {}", summary);
+        assert!(
+            summary.contains("64 bytes"),
+            "should report 64 bytes: {}",
+            summary
+        );
+        assert!(
+            summary.contains("..."),
+            "large binary should show truncated hex: {}",
+            summary
+        );
     }
 
     #[test]
@@ -816,7 +878,11 @@ mod tests {
         let binary_data = vec![0xAB; 4];
         let msg = GenericMessage::with_metadata(binary_data, "my_type".to_string()).unwrap();
         let summary = msg.log_summary();
-        assert!(summary.contains("meta: my_type"), "summary should include metadata: {}", summary);
+        assert!(
+            summary.contains("meta: my_type"),
+            "summary should include metadata: {}",
+            summary
+        );
     }
 
     // ============================================================================
@@ -838,8 +904,16 @@ mod tests {
         let msg = GenericMessage::new(vec![1, 2, 3]).unwrap();
         let debug_str = format!("{:?}", msg);
         // Debug output should reference struct field names
-        assert!(debug_str.contains("GenericMessage"), "debug should name the struct: {}", debug_str);
-        assert!(debug_str.contains("inline_len"), "debug should include field names: {}", debug_str);
+        assert!(
+            debug_str.contains("GenericMessage"),
+            "debug should name the struct: {}",
+            debug_str
+        );
+        assert!(
+            debug_str.contains("inline_len"),
+            "debug should include field names: {}",
+            debug_str
+        );
     }
 
     // ============================================================================
@@ -861,7 +935,8 @@ mod tests {
     #[test]
     fn test_generic_message_json_roundtrip_with_metadata() {
         let data = vec![42; 10];
-        let msg = GenericMessage::with_metadata(data.clone(), "roundtrip_test".to_string()).unwrap();
+        let msg =
+            GenericMessage::with_metadata(data.clone(), "roundtrip_test".to_string()).unwrap();
         let json = serde_json::to_string(&msg).unwrap();
         let restored: GenericMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.data(), data);
@@ -895,7 +970,9 @@ mod tests {
 
         let original = Outer {
             name: "test".into(),
-            inner: Inner { values: vec![1.0, 2.5, -3.7] },
+            inner: Inner {
+                values: vec![1.0, 2.5, -3.7],
+            },
             count: 42,
         };
         let msg = GenericMessage::from_value(&original).unwrap();
@@ -908,9 +985,16 @@ mod tests {
         // Maximum payload: verify all bytes survive, not just length
         let data: Vec<u8> = (0..MAX_GENERIC_PAYLOAD).map(|i| (i % 256) as u8).collect();
         let msg = GenericMessage::new(data.clone()).unwrap();
-        assert_eq!(msg.data(), data, "max-size payload content must survive round-trip");
+        assert_eq!(
+            msg.data(),
+            data,
+            "max-size payload content must survive round-trip"
+        );
         assert_eq!(msg.inline_len as usize, INLINE_BUFFER_SIZE);
-        assert_eq!(msg.overflow_len as usize, MAX_GENERIC_PAYLOAD - INLINE_BUFFER_SIZE);
+        assert_eq!(
+            msg.overflow_len as usize,
+            MAX_GENERIC_PAYLOAD - INLINE_BUFFER_SIZE
+        );
     }
 
     #[test]
@@ -936,6 +1020,9 @@ mod tests {
         // Serialize a string, try to deserialize as Vec<i32> — should fail
         let msg = GenericMessage::from_value(&"hello".to_string()).unwrap();
         let result: Result<Vec<i32>, _> = msg.to_value();
-        assert!(result.is_err(), "deserializing string as Vec<i32> should fail");
+        assert!(
+            result.is_err(),
+            "deserializing string as Vec<i32> should fail"
+        );
     }
 }

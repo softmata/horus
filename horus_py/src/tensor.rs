@@ -81,10 +81,13 @@ fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResul
         allocator: auto_allocator(),
         ..TensorPoolConfig::default()
     });
-    let pool = TensorPool::new(pool_id, config)
-        .map_err(|e| PyRuntimeError::new_err(format!(
-        "Failed to create tensor pool: {}. Common causes: pool size too large, \
-         insufficient system memory, or invalid tensor dimensions", e)))?;
+    let pool = TensorPool::new(pool_id, config).map_err(|e| {
+        PyRuntimeError::new_err(format!(
+            "Failed to create tensor pool: {}. Common causes: pool size too large, \
+         insufficient system memory, or invalid tensor dimensions",
+            e
+        ))
+    })?;
     let pool = Arc::new(pool);
 
     // Register pool
@@ -758,7 +761,6 @@ use dlpack_utils::{device_to_string, dtype_to_str, parse_device, parse_dtype};
 fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
     dtype.numpy_typestr()
 }
-
 
 #[cfg(test)]
 mod tests {

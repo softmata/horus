@@ -232,7 +232,6 @@ impl PluginExecutor {
 
         plugins
     }
-
 }
 
 impl Default for PluginExecutor {

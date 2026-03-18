@@ -50,7 +50,6 @@ impl Node for FastCounterNode {
 // Tests
 // ============================================================================
 
-
 #[test]
 fn test_multiple_watchdogs_expire_simultaneously() {
     cleanup_stale_shm();

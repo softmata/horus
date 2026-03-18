@@ -113,7 +113,8 @@ impl<'a> TransformQuery<'a> {
     /// Equivalent to `tf.can_transform_at(src, dst, timestamp_ns)`.
     #[inline]
     pub fn can_at(&self, timestamp_ns: u64) -> bool {
-        self.frame.can_transform_at(self.src, self.dst, timestamp_ns)
+        self.frame
+            .can_transform_at(self.src, self.dst, timestamp_ns)
     }
 
     /// Check if a transform is available at the given timestamp with tolerance.

@@ -98,20 +98,23 @@ pub fn run_tests(cfg: TestConfig) -> Result<()> {
         ran_any = true;
     }
     if has_python {
-        if ran_any { println!(); }
+        if ran_any {
+            println!();
+        }
         run_python_tests(&cfg)?;
         ran_any = true;
     }
     if has_cpp {
-        if ran_any { println!(); }
+        if ran_any {
+            println!();
+        }
         run_cpp_tests(&cfg)?;
         ran_any = true;
     }
 
     if !ran_any {
         // Fallback: check for .rs files (standalone, no Cargo.toml)
-        let has_rs = PathBuf::from("main.rs").exists()
-            || PathBuf::from("src/main.rs").exists();
+        let has_rs = PathBuf::from("main.rs").exists() || PathBuf::from("src/main.rs").exists();
         if has_rs {
             run_rust_tests(&cfg)?;
         } else {
@@ -158,7 +161,10 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     if !use_root_cargo {
         let cargo_toml = horus_dir.join(CARGO_TOML);
         if !cargo_toml.exists() {
-            println!("{} No build manifest found. Run horus build first.", "[!]".yellow());
+            println!(
+                "{} No build manifest found. Run horus build first.",
+                "[!]".yellow()
+            );
             println!(
                 "    Run {} first to set up the build environment.",
                 "horus build".cyan()
@@ -219,7 +225,11 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     println!(
         "  {} Executing: cargo test{}",
         "->".blue(),
-        if use_root_cargo { "" } else { " (generated workspace)" }
+        if use_root_cargo {
+            ""
+        } else {
+            " (generated workspace)"
+        }
     );
 
     let status = cmd.status().context("Failed to execute cargo test")?;
@@ -227,7 +237,10 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     if status.success() {
         println!("{}", "Rust tests passed!".green().bold());
     } else {
-        anyhow::bail!("Rust tests failed with exit code {}", status.code().unwrap_or(1));
+        anyhow::bail!(
+            "Rust tests failed with exit code {}",
+            status.code().unwrap_or(1)
+        );
     }
 
     Ok(())
@@ -250,7 +263,10 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
     let (test_cmd, test_args) = if Command::new("pytest").arg("--version").output().is_ok() {
         ("pytest".to_string(), vec![])
     } else {
-        (python_cmd.clone(), vec!["-m".to_string(), "pytest".to_string()])
+        (
+            python_cmd.clone(),
+            vec!["-m".to_string(), "pytest".to_string()],
+        )
     };
 
     let mut cmd = Command::new(&test_cmd);
@@ -293,7 +309,10 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
     if status.success() {
         println!("{}", "Python tests passed!".green().bold());
     } else {
-        anyhow::bail!("Python tests failed with exit code {}", status.code().unwrap_or(1));
+        anyhow::bail!(
+            "Python tests failed with exit code {}",
+            status.code().unwrap_or(1)
+        );
     }
 
     Ok(())
@@ -336,12 +355,12 @@ fn run_cpp_tests(cfg: &TestConfig) -> Result<()> {
 
     let status = cmd.status()?;
     if status.success() {
-        println!(
-            "\n  {} C++ tests passed",
-            "✓".green()
-        );
+        println!("\n  {} C++ tests passed", "✓".green());
     } else {
-        anyhow::bail!("C++ tests failed with exit code {}", status.code().unwrap_or(1));
+        anyhow::bail!(
+            "C++ tests failed with exit code {}",
+            status.code().unwrap_or(1)
+        );
     }
 
     Ok(())
@@ -361,11 +380,7 @@ fn generate_test_cargo_toml(verbose: bool) -> Result<()> {
     let main_file = run::auto_detect_main_file()?;
 
     if verbose {
-        println!(
-            "  {} Source file: {}",
-            "[*]".cyan(),
-            main_file.display()
-        );
+        println!("  {} Source file: {}", "[*]".cyan(), main_file.display());
     }
 
     crate::cargo_gen::generate(
@@ -427,7 +442,10 @@ mod tests {
     #[test]
     fn needs_rebuild_nonexistent_dir() {
         let p = PathBuf::from("/tmp/definitely_not_a_real_dir_xyz_987654");
-        assert!(needs_rebuild(&p), "Nonexistent dir should always need rebuild");
+        assert!(
+            needs_rebuild(&p),
+            "Nonexistent dir should always need rebuild"
+        );
     }
 
     #[test]
@@ -475,7 +493,10 @@ mod tests {
             needs_rebuild(&horus_dir)
         });
 
-        assert!(result, "Should need rebuild when horus.toml is newer than Cargo.toml");
+        assert!(
+            result,
+            "Should need rebuild when horus.toml is newer than Cargo.toml"
+        );
     }
 
     #[test]
@@ -503,7 +524,10 @@ mod tests {
         .unwrap();
 
         let result = in_tmp(&tmp, || needs_rebuild(&horus_dir));
-        assert!(!result, "Should NOT need rebuild when Cargo.toml is newer than horus.toml");
+        assert!(
+            !result,
+            "Should NOT need rebuild when Cargo.toml is newer than horus.toml"
+        );
     }
 
     #[test]
@@ -617,7 +641,10 @@ mod tests {
         .unwrap();
 
         let result = in_tmp(&tmp, || needs_rebuild(&horus_dir));
-        assert!(!result, "Should NOT need rebuild when sources are older than Cargo.toml");
+        assert!(
+            !result,
+            "Should NOT need rebuild when sources are older than Cargo.toml"
+        );
     }
 
     #[test]
@@ -632,7 +659,10 @@ mod tests {
         .unwrap();
 
         let result = in_tmp(&tmp, || needs_rebuild(&horus_dir));
-        assert!(!result, "No source files and no horus.toml means up to date");
+        assert!(
+            !result,
+            "No source files and no horus.toml means up to date"
+        );
     }
 
     #[test]
@@ -663,7 +693,10 @@ mod tests {
             needs_rebuild(&horus_dir)
         });
 
-        assert!(result, "Any single newer source file should trigger rebuild");
+        assert!(
+            result,
+            "Any single newer source file should trigger rebuild"
+        );
     }
 
     #[test]
@@ -969,11 +1002,7 @@ mod tests {
     #[test]
     fn detect_languages_python_requirements_txt() {
         let tmp = tempfile::TempDir::new().unwrap();
-        fs::write(
-            tmp.path().join("requirements.txt"),
-            "numpy\npytest\n",
-        )
-        .unwrap();
+        fs::write(tmp.path().join("requirements.txt"), "numpy\npytest\n").unwrap();
         let langs = manifest::detect_languages(tmp.path());
         assert!(langs.contains(&Language::Python));
     }
@@ -1035,9 +1064,17 @@ mod tests {
     #[test]
     fn detect_languages_all_four() {
         let tmp = tempfile::TempDir::new().unwrap();
-        fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.1.0\"\n").unwrap();
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
         fs::write(tmp.path().join("pyproject.toml"), "[project]\nname=\"x\"\n").unwrap();
-        fs::write(tmp.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\n").unwrap();
+        fs::write(
+            tmp.path().join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.20)\n",
+        )
+        .unwrap();
         fs::write(tmp.path().join("package.xml"), "<package/>").unwrap();
         let langs = manifest::detect_languages(tmp.path());
         assert_eq!(langs.len(), 4, "Should detect all four languages");
@@ -1079,7 +1116,11 @@ mod tests {
 
         // Create a horus.toml that's older
         in_tmp(&tmp, || {
-            fs::write(HORUS_TOML, "[package]\nname = \"test\"\nversion = \"0.1.0\"\n").unwrap();
+            fs::write(
+                HORUS_TOML,
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .unwrap();
         });
 
         std::thread::sleep(Duration::from_millis(50));
@@ -1092,7 +1133,10 @@ mod tests {
         .unwrap();
 
         let result = in_tmp(&tmp, || needs_rebuild(&horus_dir));
-        assert!(!result, "Freshly rewritten Cargo.toml should NOT need rebuild");
+        assert!(
+            !result,
+            "Freshly rewritten Cargo.toml should NOT need rebuild"
+        );
     }
 
     #[test]
@@ -1151,7 +1195,10 @@ mod tests {
         .unwrap();
         let cfg = default_cfg();
         let result = in_tmp(&tmp, || run_tests(cfg));
-        assert!(result.is_err(), "horus.toml alone should not activate a test runner");
+        assert!(
+            result.is_err(),
+            "horus.toml alone should not activate a test runner"
+        );
     }
 
     #[test]
@@ -1230,7 +1277,11 @@ mod tests {
         let result = in_tmp(&tmp, || run_tests(cfg));
         // Should return Ok (prints hint about running `horus build` first)
         // because run_rust_tests returns Ok(()) when .horus/Cargo.toml is missing
-        assert!(result.is_ok(), "Should return Ok with hint, not error: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Should return Ok with hint, not error: {:?}",
+            result
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1302,7 +1353,10 @@ mod tests {
         } else {
             1
         };
-        assert_eq!(threads, 1, "Explicit test_threads=1 should override parallel");
+        assert_eq!(
+            threads, 1,
+            "Explicit test_threads=1 should override parallel"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1345,14 +1399,21 @@ mod tests {
     fn battle_test_config_struct_size() {
         // Smoke test: the struct should be small and stack-allocatable
         let size = std::mem::size_of::<TestConfig>();
-        assert!(size < 256, "TestConfig should be a lightweight struct, size={}", size);
+        assert!(
+            size < 256,
+            "TestConfig should be a lightweight struct, size={}",
+            size
+        );
     }
 
     #[test]
     fn battle_detect_languages_nonexistent_dir() {
         let path = PathBuf::from("/tmp/nonexistent_dir_xyz_99999");
         let langs = manifest::detect_languages(&path);
-        assert!(langs.is_empty(), "Nonexistent dir should detect no languages");
+        assert!(
+            langs.is_empty(),
+            "Nonexistent dir should detect no languages"
+        );
     }
 
     #[test]

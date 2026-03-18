@@ -194,8 +194,9 @@ mod tests {
 
     #[test]
     fn navigate_nested_key() {
-        let doc: toml_edit::DocumentMut =
-            "[package]\nname = \"test\"\nversion = \"1.0\"\n".parse().unwrap();
+        let doc: toml_edit::DocumentMut = "[package]\nname = \"test\"\nversion = \"1.0\"\n"
+            .parse()
+            .unwrap();
         let item = navigate_toml(&doc, "package.name");
         assert!(item.is_some());
         assert_eq!(item.unwrap().as_str(), Some("test"));
@@ -203,8 +204,7 @@ mod tests {
 
     #[test]
     fn navigate_deep_nested_key() {
-        let doc: toml_edit::DocumentMut =
-            "[a]\n[a.b]\n[a.b.c]\nvalue = 42\n".parse().unwrap();
+        let doc: toml_edit::DocumentMut = "[a]\n[a.b]\n[a.b.c]\nvalue = 42\n".parse().unwrap();
         let item = navigate_toml(&doc, "a.b.c.value");
         assert!(item.is_some());
         assert_eq!(item.unwrap().as_integer(), Some(42));
@@ -243,16 +243,14 @@ mod tests {
 
     #[test]
     fn set_overwrites_existing() {
-        let mut doc: toml_edit::DocumentMut =
-            "[package]\nversion = \"0.1.0\"\n".parse().unwrap();
+        let mut doc: toml_edit::DocumentMut = "[package]\nversion = \"0.1.0\"\n".parse().unwrap();
         set_toml_value(&mut doc, "package.version", "2.0.0").unwrap();
         assert_eq!(doc["package"]["version"].as_str(), Some("2.0.0"));
     }
 
     #[test]
     fn set_fails_on_non_table_intermediate() {
-        let mut doc: toml_edit::DocumentMut =
-            "[package]\nname = \"test\"\n".parse().unwrap();
+        let mut doc: toml_edit::DocumentMut = "[package]\nname = \"test\"\n".parse().unwrap();
         let result = set_toml_value(&mut doc, "package.name.sub", "val");
         assert!(result.is_err());
     }
@@ -295,7 +293,8 @@ mod tests {
         fs::write(
             tmp.path().join(HORUS_TOML),
             "[package]\nname = \"my_robot\"\nversion = \"0.1.0\"\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -336,7 +335,8 @@ mod tests {
         fs::write(
             tmp.path().join(HORUS_TOML),
             "[package]\nname = \"old\"\nversion = \"0.1.0\"\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -379,7 +379,8 @@ mod tests {
         fs::write(
             tmp.path().join(HORUS_TOML),
             "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -400,7 +401,11 @@ mod tests {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
-        run_config(ConfigAction::Set("package.version".to_string(), "1.0.0".to_string())).unwrap();
+        run_config(ConfigAction::Set(
+            "package.version".to_string(),
+            "1.0.0".to_string(),
+        ))
+        .unwrap();
         std::env::set_current_dir(prev).unwrap();
 
         let updated = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
@@ -433,7 +438,8 @@ mod tests {
         fs::write(
             tmp.path().join(HORUS_TOML),
             "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -450,15 +456,28 @@ mod tests {
         fs::write(
             tmp.path().join(HORUS_TOML),
             "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        run_config(ConfigAction::Set("package.description".to_string(), "A robot".to_string())).unwrap();
-        run_config(ConfigAction::Set("package.license".to_string(), "MIT".to_string())).unwrap();
-        run_config(ConfigAction::Set("package.version".to_string(), "2.0.0".to_string())).unwrap();
+        run_config(ConfigAction::Set(
+            "package.description".to_string(),
+            "A robot".to_string(),
+        ))
+        .unwrap();
+        run_config(ConfigAction::Set(
+            "package.license".to_string(),
+            "MIT".to_string(),
+        ))
+        .unwrap();
+        run_config(ConfigAction::Set(
+            "package.version".to_string(),
+            "2.0.0".to_string(),
+        ))
+        .unwrap();
 
         std::env::set_current_dir(prev).unwrap();
 

@@ -12,8 +12,8 @@
 
 use horus_core::communication::Topic;
 use horus_core::core::node::TopicMetadata;
-use horus_core::{Node, Scheduler};
 use horus_core::core::DurationExt;
+use horus_core::{Node, Scheduler};
 
 struct CiTestNode {
     topic_name: String,

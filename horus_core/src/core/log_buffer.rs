@@ -449,7 +449,10 @@ impl SharedLogBuffer {
     #[doc(hidden)]
     pub fn write_slot_raw(&self, slot_idx: usize, data: &[u8], seq_even: u64) {
         assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
-        assert!(seq_even != 0 && seq_even & 1 == 0, "seq must be even nonzero");
+        assert!(
+            seq_even != 0 && seq_even & 1 == 0,
+            "seq must be even nonzero"
+        );
         let mut guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base: *mut u8 = {
             let s: &mut [u8] = &mut guard;
@@ -793,12 +796,12 @@ mod tests {
         let (buf, path) = temp_buf(15);
 
         let entry = LogEntry {
-            timestamp: "T".repeat(200),         // way over 32-byte cap
+            timestamp: "T".repeat(200), // way over 32-byte cap
             tick_number: 1,
-            node_name: "N".repeat(200),          // way over 64-byte cap
+            node_name: "N".repeat(200), // way over 64-byte cap
             log_type: LogType::Info,
-            topic: Some("X".repeat(200)),        // way over 64-byte cap
-            message: "M".repeat(1000),           // way over 300-byte cap
+            topic: Some("X".repeat(200)), // way over 64-byte cap
+            message: "M".repeat(1000),    // way over 300-byte cap
             tick_us: 0,
             ipc_ns: 0,
         };
@@ -809,11 +812,20 @@ mod tests {
 
         let e = &all[0];
         assert!(e.message.len() <= MAX_MESSAGE_LEN, "message too long");
-        assert!(e.message.ends_with("..."), "message must show truncation marker");
+        assert!(
+            e.message.ends_with("..."),
+            "message must show truncation marker"
+        );
         assert!(e.node_name.len() <= 67, "node_name too long"); // 64 + "..."
-        assert!(e.node_name.ends_with("..."), "node_name must show truncation marker");
+        assert!(
+            e.node_name.ends_with("..."),
+            "node_name must show truncation marker"
+        );
         assert!(e.timestamp.len() <= 35, "timestamp too long"); // 32 + "..."
-        assert!(e.timestamp.ends_with("..."), "timestamp must show truncation marker");
+        assert!(
+            e.timestamp.ends_with("..."),
+            "timestamp must show truncation marker"
+        );
         let topic = e.topic.as_ref().unwrap();
         assert!(topic.len() <= 67, "topic too long");
         assert!(topic.ends_with("..."), "topic must show truncation marker");
@@ -944,8 +956,7 @@ mod tests {
     #[test]
     fn discovery_module_file_deleted() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let discovery_path =
-            std::path::Path::new(manifest_dir).join("src/core/discovery.rs");
+        let discovery_path = std::path::Path::new(manifest_dir).join("src/core/discovery.rs");
         assert!(
             !discovery_path.exists(),
             "core/discovery.rs should be deleted (dead discovery topic code)"

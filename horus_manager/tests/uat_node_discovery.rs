@@ -20,10 +20,10 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::{assert_json_ok, get_request};
 
+use horus_core::core::DurationExt;
 use horus_core::NodePresence;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tower::ServiceExt;
-use horus_core::core::DurationExt;
 
 /// Monotonically increasing counter for unique test prefixes.
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -152,9 +152,12 @@ fn all_nodes_have_current_process_pid() {
     for name in rt.node_names() {
         let node = all.iter().find(|p| p.name() == name).unwrap();
         assert_eq!(
-            node.pid(), my_pid,
+            node.pid(),
+            my_pid,
             "node '{}' should have PID {} (current process), got {}",
-            name, my_pid, node.pid()
+            name,
+            my_pid,
+            node.pid()
         );
     }
 }

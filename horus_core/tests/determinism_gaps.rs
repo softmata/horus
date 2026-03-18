@@ -21,14 +21,23 @@ struct TimedNode {
 
 impl TimedNode {
     fn new(name: &str, timestamps: Arc<Mutex<Vec<u128>>>, count: Arc<AtomicU64>) -> Self {
-        Self { name: name.into(), timestamps, count }
+        Self {
+            name: name.into(),
+            timestamps,
+            count,
+        }
     }
 }
 
 impl Node for TimedNode {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     fn tick(&mut self) {
-        self.timestamps.lock().unwrap().push(Instant::now().elapsed().as_nanos());
+        self.timestamps
+            .lock()
+            .unwrap()
+            .push(Instant::now().elapsed().as_nanos());
         self.count.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -61,7 +70,10 @@ fn topic_shm_multiple_sends() {
 
     // recv() returns data — the exact value depends on ring buffer semantics
     let received = topic.recv();
-    assert!(received.is_some(), "Should receive something after 10 sends");
+    assert!(
+        received.is_some(),
+        "Should receive something after 10 sends"
+    );
 }
 
 // ── RT Pool Parallel Execution ──
@@ -72,19 +84,19 @@ fn rt_pool_multiple_nodes_all_tick_in_run_mode() {
     let counts: Vec<_> = (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let timestamps: Vec<_> = (0..3).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(500_u64.hz());
+    let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
 
     for i in 0..3 {
-        scheduler.add(TimedNode::new(
-            &format!("rt_{}", i),
-            timestamps[i].clone(),
-            counts[i].clone(),
-        ))
-        .order(i as u32)
-        .rate(500_u64.hz())
-        .build()
-        .unwrap();
+        scheduler
+            .add(TimedNode::new(
+                &format!("rt_{}", i),
+                timestamps[i].clone(),
+                counts[i].clone(),
+            ))
+            .order(i as u32)
+            .rate(500_u64.hz())
+            .build()
+            .unwrap();
     }
 
     scheduler.run_for(30_u64.ms()).unwrap();
@@ -94,7 +106,8 @@ fn rt_pool_multiple_nodes_all_tick_in_run_mode() {
         assert!(
             ticks > 0,
             "RT node {} should have ticked at least once in run_for, got {}",
-            i, ticks
+            i,
+            ticks
         );
     }
 }
@@ -109,7 +122,9 @@ fn rt_pool_with_compute_isolation() {
         count: Arc<AtomicU64>,
     }
     impl Node for SlowCompute {
-        fn name(&self) -> &str { "slow_compute" }
+        fn name(&self) -> &str {
+            "slow_compute"
+        }
         fn tick(&mut self) {
             // Simulate 10ms of work
             let start = Instant::now();
@@ -124,19 +139,32 @@ fn rt_pool_with_compute_isolation() {
         count: Arc<AtomicU64>,
     }
     impl Node for FastRt {
-        fn name(&self) -> &str { "fast_rt" }
+        fn name(&self) -> &str {
+            "fast_rt"
+        }
         fn tick(&mut self) {
             self.count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(200_u64.hz());
+    let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
 
-    scheduler.add(FastRt { count: rt_count.clone() })
-        .order(0).rate(200_u64.hz()).build().unwrap();
-    scheduler.add(SlowCompute { count: compute_count.clone() })
-        .order(5).compute().build().unwrap();
+    scheduler
+        .add(FastRt {
+            count: rt_count.clone(),
+        })
+        .order(0)
+        .rate(200_u64.hz())
+        .build()
+        .unwrap();
+    scheduler
+        .add(SlowCompute {
+            count: compute_count.clone(),
+        })
+        .order(5)
+        .compute()
+        .build()
+        .unwrap();
 
     scheduler.run_for(50_u64.ms()).unwrap();
 
@@ -145,7 +173,10 @@ fn rt_pool_with_compute_isolation() {
 
     // Both should tick — the point is isolation (compute doesn't block RT)
     assert!(rt > 0, "RT node should tick (not blocked by compute)");
-    assert!(compute > 0, "Compute node should tick (runs on separate pool)");
+    assert!(
+        compute > 0,
+        "Compute node should tick (runs on separate pool)"
+    );
 }
 
 // ── Graceful Degradation ──
@@ -154,50 +185,84 @@ fn rt_pool_with_compute_isolation() {
 fn priority_without_permissions_no_crash() {
     let count = Arc::new(AtomicU64::new(0));
 
-    struct Counter { count: Arc<AtomicU64> }
+    struct Counter {
+        count: Arc<AtomicU64>,
+    }
     impl Node for Counter {
-        fn name(&self) -> &str { "priority_test" }
-        fn tick(&mut self) { self.count.fetch_add(1, Ordering::Relaxed); }
+        fn name(&self) -> &str {
+            "priority_test"
+        }
+        fn tick(&mut self) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
-    scheduler.add(Counter { count: count.clone() })
-        .order(0).rate(100_u64.hz())
+    scheduler
+        .add(Counter {
+            count: count.clone(),
+        })
+        .order(0)
+        .rate(100_u64.hz())
         .priority(99) // Will fail without CAP_SYS_NICE — should degrade gracefully
-        .build().unwrap();
+        .build()
+        .unwrap();
 
     scheduler.run_for(30_u64.ms()).unwrap();
-    assert!(count.load(Ordering::Relaxed) > 0, "Should tick despite priority failure");
+    assert!(
+        count.load(Ordering::Relaxed) > 0,
+        "Should tick despite priority failure"
+    );
 }
 
 #[test]
 fn core_pinning_invalid_core_no_crash() {
     let count = Arc::new(AtomicU64::new(0));
 
-    struct Counter { count: Arc<AtomicU64> }
+    struct Counter {
+        count: Arc<AtomicU64>,
+    }
     impl Node for Counter {
-        fn name(&self) -> &str { "core_test" }
-        fn tick(&mut self) { self.count.fetch_add(1, Ordering::Relaxed); }
+        fn name(&self) -> &str {
+            "core_test"
+        }
+        fn tick(&mut self) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
-    scheduler.add(Counter { count: count.clone() })
-        .order(0).rate(100_u64.hz())
+    scheduler
+        .add(Counter {
+            count: count.clone(),
+        })
+        .order(0)
+        .rate(100_u64.hz())
         .core(9999) // Non-existent core — should degrade gracefully
-        .build().unwrap();
+        .build()
+        .unwrap();
 
     scheduler.run_for(30_u64.ms()).unwrap();
-    assert!(count.load(Ordering::Relaxed) > 0, "Should tick despite invalid core");
+    assert!(
+        count.load(Ordering::Relaxed) > 0,
+        "Should tick despite invalid core"
+    );
 }
 
 #[test]
 fn watchdog_on_non_rt_node_no_crash() {
     let count = Arc::new(AtomicU64::new(0));
 
-    struct Counter { count: Arc<AtomicU64> }
+    struct Counter {
+        count: Arc<AtomicU64>,
+    }
     impl Node for Counter {
-        fn name(&self) -> &str { "watchdog_non_rt" }
-        fn tick(&mut self) { self.count.fetch_add(1, Ordering::Relaxed); }
+        fn name(&self) -> &str {
+            "watchdog_non_rt"
+        }
+        fn tick(&mut self) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     let mut scheduler = Scheduler::new()
@@ -205,10 +270,14 @@ fn watchdog_on_non_rt_node_no_crash() {
         .watchdog(500_u64.ms());
 
     // Non-RT node (no .rate()) with per-node watchdog
-    scheduler.add(Counter { count: count.clone() })
+    scheduler
+        .add(Counter {
+            count: count.clone(),
+        })
         .order(0)
         .watchdog(100_u64.ms())
-        .build().unwrap();
+        .build()
+        .unwrap();
 
     scheduler.run_for(30_u64.ms()).unwrap();
     assert!(count.load(Ordering::Relaxed) > 0);
@@ -224,7 +293,9 @@ fn ctx_functions_inside_tick() {
     }
 
     impl Node for AllCtxNode {
-        fn name(&self) -> &str { "ctx_test" }
+        fn name(&self) -> &str {
+            "ctx_test"
+        }
         fn tick(&mut self) {
             let now = horus_core::core::tick_context::ctx_now();
             let dt = horus_core::core::tick_context::ctx_dt();
@@ -238,7 +309,12 @@ fn ctx_functions_inside_tick() {
 
             self.results.lock().unwrap().push(format!(
                 "now={} dt={:?} elapsed={:?} tick={} budget={:?} rng={:.4}",
-                now.as_nanos(), dt, elapsed, tick, budget, rng_val
+                now.as_nanos(),
+                dt,
+                elapsed,
+                tick,
+                budget,
+                rng_val
             ));
         }
     }
@@ -246,15 +322,17 @@ fn ctx_functions_inside_tick() {
     let results = Arc::new(Mutex::new(Vec::new()));
 
     {
-        let mut scheduler = Scheduler::new()
-            .deterministic(true)
-            .tick_rate(100_u64.hz());
+        let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-        scheduler.add(AllCtxNode { results: results.clone() })
+        scheduler
+            .add(AllCtxNode {
+                results: results.clone(),
+            })
             .order(0)
             .rate(100_u64.hz())
             .budget(800_u64.us())
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..3 {
             scheduler.tick_once().unwrap();
@@ -268,15 +346,17 @@ fn ctx_functions_inside_tick() {
     let results2 = Arc::new(Mutex::new(Vec::new()));
 
     {
-        let mut scheduler2 = Scheduler::new()
-            .deterministic(true)
-            .tick_rate(100_u64.hz());
+        let mut scheduler2 = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-        scheduler2.add(AllCtxNode { results: results2.clone() })
+        scheduler2
+            .add(AllCtxNode {
+                results: results2.clone(),
+            })
             .order(0)
             .rate(100_u64.hz())
             .budget(800_u64.us())
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..3 {
             scheduler2.tick_once().unwrap();
@@ -309,7 +389,10 @@ fn ctx_functions_outside_tick_safe() {
         use rand::Rng;
         rng.gen::<f64>()
     });
-    assert!((0.0..1.0).contains(&rng_val), "Fallback rng should produce valid float");
+    assert!(
+        (0.0..1.0).contains(&rng_val),
+        "Fallback rng should produce valid float"
+    );
 }
 
 // ── Cross-Thread Determinism ──
@@ -317,48 +400,52 @@ fn ctx_functions_outside_tick_safe() {
 #[test]
 fn deterministic_output_from_multiple_threads() {
     // Run deterministic system on multiple threads — each produces same output
-    let handles: Vec<_> = (0..4).map(|thread_id| {
-        std::thread::spawn(move || {
-            let out = Arc::new(Mutex::new(Vec::new()));
-            {
-                let mut scheduler = Scheduler::new()
-                    .deterministic(true)
-                    .tick_rate(100_u64.hz());
+    let handles: Vec<_> = (0..4)
+        .map(|thread_id| {
+            std::thread::spawn(move || {
+                let out = Arc::new(Mutex::new(Vec::new()));
+                {
+                    let mut scheduler =
+                        Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-                struct DetNode {
-                    out: Arc<Mutex<Vec<u64>>>,
-                }
-                impl Node for DetNode {
-                    fn name(&self) -> &str { "det" }
-                    fn tick(&mut self) {
-                        let tick = horus_core::core::tick_context::ctx_tick();
-                        let rng = horus_core::core::tick_context::ctx_with_rng(|r| {
-                            use rand::Rng;
-                            r.gen::<u64>()
-                        });
-                        self.out.lock().unwrap().push(tick ^ rng);
+                    struct DetNode {
+                        out: Arc<Mutex<Vec<u64>>>,
+                    }
+                    impl Node for DetNode {
+                        fn name(&self) -> &str {
+                            "det"
+                        }
+                        fn tick(&mut self) {
+                            let tick = horus_core::core::tick_context::ctx_tick();
+                            let rng = horus_core::core::tick_context::ctx_with_rng(|r| {
+                                use rand::Rng;
+                                r.gen::<u64>()
+                            });
+                            self.out.lock().unwrap().push(tick ^ rng);
+                        }
+                    }
+
+                    scheduler
+                        .add(DetNode { out: out.clone() })
+                        .order(0)
+                        .rate(100_u64.hz())
+                        .build()
+                        .unwrap();
+
+                    for _ in 0..20 {
+                        scheduler.tick_once().unwrap();
                     }
                 }
-
-                scheduler.add(DetNode { out: out.clone() })
-                    .order(0).rate(100_u64.hz()).build().unwrap();
-
-                for _ in 0..20 {
-                    scheduler.tick_once().unwrap();
-                }
-            }
-            let result = out.lock().unwrap().clone();
-            result
+                let result = out.lock().unwrap().clone();
+                result
+            })
         })
-    }).collect();
+        .collect();
 
     let results: Vec<Vec<u64>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
     for (i, r) in results.iter().enumerate().skip(1) {
-        assert_eq!(
-            r, &results[0],
-            "Thread {} output differs from thread 0", i
-        );
+        assert_eq!(r, &results[0], "Thread {} output differs from thread 0", i);
     }
 }
 
@@ -371,16 +458,28 @@ fn recording_captures_execution_order() {
         log: Arc<Mutex<Vec<String>>>,
     }
     impl Node for OrderNode {
-        fn name(&self) -> &str { &self.name }
+        fn name(&self) -> &str {
+            &self.name
+        }
         fn publishers(&self) -> Vec<TopicMetadata> {
             if self.name == "producer" {
-                vec![TopicMetadata { topic_name: "data".into(), type_name: "T".into() }]
-            } else { vec![] }
+                vec![TopicMetadata {
+                    topic_name: "data".into(),
+                    type_name: "T".into(),
+                }]
+            } else {
+                vec![]
+            }
         }
         fn subscribers(&self) -> Vec<TopicMetadata> {
             if self.name == "consumer" {
-                vec![TopicMetadata { topic_name: "data".into(), type_name: "T".into() }]
-            } else { vec![] }
+                vec![TopicMetadata {
+                    topic_name: "data".into(),
+                    type_name: "T".into(),
+                }]
+            } else {
+                vec![]
+            }
         }
         fn tick(&mut self) {
             self.log.lock().unwrap().push(self.name.clone());
@@ -395,10 +494,22 @@ fn recording_captures_execution_order() {
             .with_recording()
             .tick_rate(100_u64.hz());
 
-        scheduler.add(OrderNode { name: "consumer".into(), log: log.clone() })
-            .order(1).build().unwrap();
-        scheduler.add(OrderNode { name: "producer".into(), log: log.clone() })
-            .order(0).build().unwrap();
+        scheduler
+            .add(OrderNode {
+                name: "consumer".into(),
+                log: log.clone(),
+            })
+            .order(1)
+            .build()
+            .unwrap();
+        scheduler
+            .add(OrderNode {
+                name: "producer".into(),
+                log: log.clone(),
+            })
+            .order(0)
+            .build()
+            .unwrap();
 
         for _ in 0..5 {
             scheduler.tick_once().unwrap();
@@ -428,9 +539,13 @@ fn stress_100_runs_10_ticks_identical() {
 fn run_deterministic(ticks: usize) -> Vec<u64> {
     let out = Arc::new(Mutex::new(Vec::new()));
     {
-        struct Det { out: Arc<Mutex<Vec<u64>>> }
+        struct Det {
+            out: Arc<Mutex<Vec<u64>>>,
+        }
         impl Node for Det {
-            fn name(&self) -> &str { "det" }
+            fn name(&self) -> &str {
+                "det"
+            }
             fn tick(&mut self) {
                 let t = horus_core::core::tick_context::ctx_tick();
                 let r = horus_core::core::tick_context::ctx_with_rng(|rng| {
@@ -443,8 +558,14 @@ fn run_deterministic(ticks: usize) -> Vec<u64> {
         }
 
         let mut s = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
-        s.add(Det { out: out.clone() }).order(0).rate(100_u64.hz()).build().unwrap();
-        for _ in 0..ticks { s.tick_once().unwrap(); }
+        s.add(Det { out: out.clone() })
+            .order(0)
+            .rate(100_u64.hz())
+            .build()
+            .unwrap();
+        for _ in 0..ticks {
+            s.tick_once().unwrap();
+        }
     }
     let result = out.lock().unwrap().clone();
     result

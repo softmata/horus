@@ -1080,10 +1080,7 @@ fn test_unpublish_help() {
 #[test]
 fn test_keygen_deprecated_still_works() {
     // keygen is deprecated but should still work (hidden command)
-    horus_cmd()
-        .args(["keygen", "--help"])
-        .assert()
-        .success();
+    horus_cmd().args(["keygen", "--help"]).assert().success();
 }
 
 #[test]
@@ -1383,7 +1380,10 @@ fn test_check_json_flag_accepted() {
     // check --json may return nonzero (warnings), but should not crash
     let output = horus_cmd().args(["check", "--json"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "check --json should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "check --json should not panic"
+    );
 }
 
 #[test]
@@ -1393,8 +1393,10 @@ fn test_check_json_output_is_valid_json() {
     // check --json should produce parseable JSON (array or object)
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|_| panic!("check --json should produce valid JSON, got: {}", stdout));
-    assert!(parsed.is_array() || parsed.is_object(),
-        "check --json should return JSON array or object");
+    assert!(
+        parsed.is_array() || parsed.is_object(),
+        "check --json should return JSON array or object"
+    );
 }
 
 #[test]
@@ -1476,10 +1478,7 @@ fn test_auth_login_help() {
 
 #[test]
 fn test_auth_whoami_not_logged_in() {
-    let output = horus_cmd()
-        .args(["auth", "whoami"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["auth", "whoami"]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -1487,7 +1486,8 @@ fn test_auth_whoami_not_logged_in() {
     );
     assert!(!combined.contains("panicked"), "whoami should not panic");
     assert!(
-        combined.contains("Not logged in") || combined.contains("not logged in")
+        combined.contains("Not logged in")
+            || combined.contains("not logged in")
             || combined.contains("authenticate"),
         "whoami without login should indicate not logged in, got: {}",
         combined
@@ -1496,10 +1496,7 @@ fn test_auth_whoami_not_logged_in() {
 
 #[test]
 fn test_auth_logout_not_logged_in() {
-    let output = horus_cmd()
-        .args(["auth", "logout"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["auth", "logout"]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -1520,8 +1517,11 @@ fn test_auth_api_key_help() {
         .args(["auth", "api-key", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("API") .or(predicate::str::contains("api"))
-            .or(predicate::str::contains("key")));
+        .stdout(
+            predicate::str::contains("API")
+                .or(predicate::str::contains("api"))
+                .or(predicate::str::contains("key")),
+        );
 }
 
 #[test]
@@ -1550,7 +1550,10 @@ fn test_auth_signing_key_generates() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "signing-key should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "signing-key should not panic"
+    );
     // Should either create keys or report existing
     assert!(
         combined.contains("key") || combined.contains("Key") || combined.contains("signing"),
@@ -1579,15 +1582,15 @@ fn test_auth_signing_key_idempotent() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "second signing-key should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "second signing-key should not panic"
+    );
 }
 
 #[test]
 fn test_auth_keys_list_not_logged_in() {
-    let output = horus_cmd()
-        .args(["auth", "keys", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["auth", "keys", "list"]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -1595,8 +1598,10 @@ fn test_auth_keys_list_not_logged_in() {
     );
     assert!(!combined.contains("panicked"), "keys list should not panic");
     assert!(
-        combined.contains("Not logged in") || combined.contains("not logged in")
-            || combined.contains("No") || combined.contains("login"),
+        combined.contains("Not logged in")
+            || combined.contains("not logged in")
+            || combined.contains("No")
+            || combined.contains("login"),
         "keys list without login should indicate auth needed, got: {}",
         combined
     );
@@ -1613,11 +1618,16 @@ fn test_auth_keys_revoke_not_logged_in() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "keys revoke should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "keys revoke should not panic"
+    );
     // Should fail gracefully (not logged in or invalid key)
     assert!(
-        combined.contains("Not logged in") || combined.contains("not logged in")
-            || combined.contains("Error") || combined.contains("error"),
+        combined.contains("Not logged in")
+            || combined.contains("not logged in")
+            || combined.contains("Error")
+            || combined.contains("error"),
         "keys revoke with bad key should error gracefully, got: {}",
         combined
     );
@@ -1648,11 +1658,19 @@ fn test_plugin_enable_nonexistent() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "enable nonexistent plugin should not panic");
-    assert!(!output.status.success(), "enable nonexistent plugin should fail");
     assert!(
-        combined.contains("not found") || combined.contains("Not found")
-            || combined.contains("Error") || combined.contains("error"),
+        !combined.contains("panicked"),
+        "enable nonexistent plugin should not panic"
+    );
+    assert!(
+        !output.status.success(),
+        "enable nonexistent plugin should fail"
+    );
+    assert!(
+        combined.contains("not found")
+            || combined.contains("Not found")
+            || combined.contains("Error")
+            || combined.contains("error"),
         "should report plugin not found, got: {}",
         combined
     );
@@ -1669,14 +1687,26 @@ fn test_plugin_disable_nonexistent() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "disable nonexistent plugin should not panic");
-    assert!(!output.status.success(), "disable nonexistent plugin should fail");
+    assert!(
+        !combined.contains("panicked"),
+        "disable nonexistent plugin should not panic"
+    );
+    assert!(
+        !output.status.success(),
+        "disable nonexistent plugin should fail"
+    );
 }
 
 #[test]
 fn test_plugin_disable_with_reason() {
     let output = horus_cmd()
-        .args(["plugin", "disable", "nonexistent-plugin", "--reason", "maintenance"])
+        .args([
+            "plugin",
+            "disable",
+            "nonexistent-plugin",
+            "--reason",
+            "maintenance",
+        ])
         .output()
         .unwrap();
     let combined = format!(
@@ -1684,7 +1714,10 @@ fn test_plugin_disable_with_reason() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "disable with --reason should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "disable with --reason should not panic"
+    );
     // --reason flag should be accepted (even if plugin doesn't exist)
     assert!(
         !combined.contains("unexpected argument"),
@@ -1694,20 +1727,22 @@ fn test_plugin_disable_with_reason() {
 
 #[test]
 fn test_plugin_verify_no_plugins() {
-    let output = horus_cmd()
-        .args(["plugin", "verify"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["plugin", "verify"]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "verify with no plugins should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "verify with no plugins should not panic"
+    );
     // Should report clean or no plugins
     assert!(
-        combined.contains("No plugins") || combined.contains("no plugins")
-            || combined.contains("verified") || combined.contains("ok")
+        combined.contains("No plugins")
+            || combined.contains("no plugins")
+            || combined.contains("verified")
+            || combined.contains("ok")
             || output.status.success(),
         "verify with no plugins should succeed or report none, got: {}",
         combined
@@ -1722,7 +1757,10 @@ fn test_plugin_verify_json_output() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "verify --json should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "verify --json should not panic"
+    );
     // If there's JSON output, it should be valid
     if !stdout.trim().is_empty() {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
@@ -1745,7 +1783,10 @@ fn test_plugin_verify_specific_plugin() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "verify specific plugin should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "verify specific plugin should not panic"
+    );
 }
 
 #[test]
@@ -2633,7 +2674,12 @@ fn test_frame_calibrate_with_points() {
     .unwrap();
 
     horus_cmd()
-        .args(["frame", "calibrate", "--points-file", &csv.to_string_lossy()])
+        .args([
+            "frame",
+            "calibrate",
+            "--points-file",
+            &csv.to_string_lossy(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Calibration Result"))
@@ -2649,7 +2695,12 @@ fn test_frame_calibrate_insufficient_points() {
     fs::write(&csv, "0.0,0.0,0.0,1.0,0.0,0.0\n1.0,0.0,0.0,2.0,0.0,0.0\n").unwrap();
 
     let output = horus_cmd()
-        .args(["frame", "calibrate", "--points-file", &csv.to_string_lossy()])
+        .args([
+            "frame",
+            "calibrate",
+            "--points-file",
+            &csv.to_string_lossy(),
+        ])
         .output()
         .unwrap();
     // Either fails or succeeds with warning — just shouldn't crash
@@ -2663,7 +2714,12 @@ fn test_frame_calibrate_bad_csv() {
     fs::write(&csv, "not,a,valid,csv\ndata\n").unwrap();
 
     horus_cmd()
-        .args(["frame", "calibrate", "--points-file", &csv.to_string_lossy()])
+        .args([
+            "frame",
+            "calibrate",
+            "--points-file",
+            &csv.to_string_lossy(),
+        ])
         .assert()
         .failure();
 }
@@ -2671,7 +2727,12 @@ fn test_frame_calibrate_bad_csv() {
 #[test]
 fn test_frame_calibrate_missing_file() {
     horus_cmd()
-        .args(["frame", "calibrate", "--points-file", "/tmp/nonexistent_xyz.csv"])
+        .args([
+            "frame",
+            "calibrate",
+            "--points-file",
+            "/tmp/nonexistent_xyz.csv",
+        ])
         .assert()
         .failure();
 }
@@ -2864,10 +2925,7 @@ fn test_example_multi_robot_valid() {
 #[test]
 fn test_search_returns_results() {
     // Search for a broad term — should succeed even if no results
-    horus_cmd()
-        .args(["search", "robot"])
-        .assert()
-        .success();
+    horus_cmd().args(["search", "robot"]).assert().success();
 }
 
 #[test]
@@ -2956,7 +3014,11 @@ fn test_publish_with_path_deps_rejected() {
 #[test]
 fn test_deploy_list_no_targets() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"d\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
 
     horus_cmd()
         .args(["deploy", "--list"])
@@ -2969,7 +3031,11 @@ fn test_deploy_list_no_targets() {
 #[test]
 fn test_deploy_list_configured_targets() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"d\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     let horus_dir = tmp.path().join(".horus");
     fs::create_dir_all(&horus_dir).unwrap();
     fs::write(
@@ -2992,7 +3058,11 @@ fn test_deploy_list_configured_targets() {
 #[test]
 fn test_deploy_dry_run_direct_target() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"d\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
 
     horus_cmd()
         .args(["deploy", "--dry-run", "user@10.0.0.1"])
@@ -3008,7 +3078,11 @@ fn test_deploy_dry_run_direct_target() {
 #[test]
 fn test_deploy_dry_run_named_target() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"d\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     let horus_dir = tmp.path().join(".horus");
     fs::create_dir_all(&horus_dir).unwrap();
     fs::write(
@@ -3030,7 +3104,11 @@ fn test_deploy_dry_run_named_target() {
 #[test]
 fn test_deploy_dry_run_debug_mode() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"d\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
 
     horus_cmd()
         .args(["deploy", "--dry-run", "--debug", "user@host"])
@@ -3043,7 +3121,11 @@ fn test_deploy_dry_run_debug_mode() {
 #[test]
 fn test_deploy_dry_run_custom_arch() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"d\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
 
     horus_cmd()
         .args(["deploy", "--dry-run", "--arch", "armv7", "user@host"])
@@ -3056,7 +3138,11 @@ fn test_deploy_dry_run_custom_arch() {
 #[test]
 fn test_deploy_requires_target() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"d\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"d\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
 
     // No target provided — should fail
     horus_cmd()
@@ -3091,10 +3177,7 @@ fn test_action_list_help() {
 #[test]
 fn test_action_list_no_runtime() {
     // Without a running scheduler, action list should succeed with empty or "no actions"
-    horus_cmd()
-        .args(["action", "list"])
-        .assert()
-        .success();
+    horus_cmd().args(["action", "list"]).assert().success();
 }
 
 #[test]
@@ -3105,7 +3188,8 @@ fn test_action_list_json_no_runtime() {
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("action list --json should be valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("action list --json should be valid JSON");
     assert!(parsed["items"].is_array());
 }
 
@@ -3165,7 +3249,10 @@ fn test_fmt_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "fmt without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "fmt without project should not panic"
+    );
 }
 
 #[test]
@@ -3177,13 +3264,12 @@ fn test_fmt_in_rust_project() {
         .success();
     let proj = tmp.path().join("fmt-test");
 
-    let output = horus_cmd()
-        .arg("fmt")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("fmt").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "fmt in project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "fmt in project should not panic"
+    );
 }
 
 #[test]
@@ -3219,7 +3305,10 @@ fn test_fmt_verbose() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "fmt --verbose should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "fmt --verbose should not panic"
+    );
 }
 
 // ============================================================================
@@ -3245,25 +3334,33 @@ fn test_lint_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "lint without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "lint without project should not panic"
+    );
 }
 
 #[test]
 fn test_lint_in_rust_project() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "lint-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "lint-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("lint-test");
 
-    let output = horus_cmd()
-        .arg("lint")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("lint").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "lint in project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "lint in project should not panic"
+    );
 }
 
 #[test]
@@ -3299,7 +3396,10 @@ fn test_lint_types_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "lint --types should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "lint --types should not panic"
+    );
 }
 
 // ============================================================================
@@ -3325,7 +3425,10 @@ fn test_doc_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "doc without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "doc without project should not panic"
+    );
 }
 
 #[test]
@@ -3337,13 +3440,12 @@ fn test_doc_in_rust_project() {
         .success();
     let proj = tmp.path().join("doc-test");
 
-    let output = horus_cmd()
-        .arg("doc")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("doc").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "doc in project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "doc in project should not panic"
+    );
 }
 
 #[test]
@@ -3361,7 +3463,10 @@ fn test_doc_extract_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "doc --extract should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "doc --extract should not panic"
+    );
 }
 
 #[test]
@@ -3379,7 +3484,10 @@ fn test_doc_coverage_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "doc --coverage should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "doc --coverage should not panic"
+    );
 }
 
 // ============================================================================
@@ -3404,14 +3512,23 @@ fn test_bench_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "bench without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "bench without project should not panic"
+    );
 }
 
 #[test]
 fn test_bench_with_filter() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "bench-flt", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "bench-flt",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("bench-flt");
@@ -3422,7 +3539,10 @@ fn test_bench_with_filter() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "bench with filter should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "bench with filter should not panic"
+    );
 }
 
 #[test]
@@ -3440,7 +3560,10 @@ fn test_bench_verbose() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "bench --verbose should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "bench --verbose should not panic"
+    );
 }
 
 // ============================================================================
@@ -3476,14 +3599,23 @@ fn test_deps_tree_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "deps tree without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "deps tree without project should not panic"
+    );
 }
 
 #[test]
 fn test_deps_tree_in_project() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "deps-tree", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "deps-tree",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("deps-tree");
@@ -3494,7 +3626,10 @@ fn test_deps_tree_in_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "deps tree in project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "deps tree in project should not panic"
+    );
 }
 
 #[test]
@@ -3506,7 +3641,10 @@ fn test_deps_outdated_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "deps outdated without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "deps outdated without project should not panic"
+    );
 }
 
 #[test]
@@ -3518,7 +3656,10 @@ fn test_deps_audit_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "deps audit without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "deps audit without project should not panic"
+    );
 }
 
 #[test]
@@ -3530,7 +3671,10 @@ fn test_deps_why_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "deps why without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "deps why without project should not panic"
+    );
 }
 
 // ============================================================================
@@ -3557,25 +3701,33 @@ fn test_horus_test_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "test without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "test without project should not panic"
+    );
 }
 
 #[test]
 fn test_horus_test_in_rust_project() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "test-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "test-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("test-test");
 
-    let output = horus_cmd()
-        .arg("test")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("test").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "test in project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "test in project should not panic"
+    );
 }
 
 #[test]
@@ -3593,14 +3745,23 @@ fn test_horus_test_with_filter() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "test with filter should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "test with filter should not panic"
+    );
 }
 
 #[test]
 fn test_horus_test_json_flag() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "test-json", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "test-json",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("test-json");
@@ -3618,7 +3779,13 @@ fn test_horus_test_json_flag() {
 fn test_horus_test_verbose() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "test-verb", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "test-verb",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("test-verb");
@@ -3629,7 +3796,10 @@ fn test_horus_test_verbose() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "test --verbose should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "test --verbose should not panic"
+    );
 }
 
 // ============================================================================
@@ -3649,26 +3819,26 @@ fn test_log_help() {
 
 #[test]
 fn test_log_no_runtime() {
-    let output = horus_cmd()
-        .arg("log")
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("log").output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!combined.contains("panicked"), "log without runtime should not panic");
+    assert!(
+        !combined.contains("panicked"),
+        "log without runtime should not panic"
+    );
 }
 
 #[test]
 fn test_log_with_node_filter() {
-    let output = horus_cmd()
-        .args(["log", "sensor_node"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["log", "sensor_node"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "log with node filter should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "log with node filter should not panic"
+    );
 }
 
 #[test]
@@ -3683,30 +3853,21 @@ fn test_log_level_filter() {
 
 #[test]
 fn test_log_since_flag() {
-    let output = horus_cmd()
-        .args(["log", "--since", "5m"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["log", "--since", "5m"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "log --since should not panic");
 }
 
 #[test]
 fn test_log_count_flag() {
-    let output = horus_cmd()
-        .args(["log", "--count", "10"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["log", "--count", "10"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "log --count should not panic");
 }
 
 #[test]
 fn test_log_clear_flag() {
-    let output = horus_cmd()
-        .args(["log", "--clear"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["log", "--clear"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "log --clear should not panic");
 }
@@ -3735,8 +3896,11 @@ fn test_doctor_runs_outside_project() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Should produce diagnostic output, not crash
-    assert!(stdout.contains("doctor") || stdout.contains("Toolchain") || stdout.contains("Summary"),
-        "doctor should produce diagnostic output, got: {}", stdout);
+    assert!(
+        stdout.contains("doctor") || stdout.contains("Toolchain") || stdout.contains("Summary"),
+        "doctor should produce diagnostic output, got: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -3753,8 +3917,10 @@ fn test_doctor_runs_in_project() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("doctor") || stdout.contains("Summary"),
-        "doctor in project should produce output");
+    assert!(
+        stdout.contains("doctor") || stdout.contains("Summary"),
+        "doctor in project should produce output"
+    );
 }
 
 #[test]
@@ -3769,7 +3935,10 @@ fn test_doctor_json_output() {
     // Should be parseable JSON (doctor may return nonzero for warnings)
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|_| panic!("doctor --json should be valid JSON, got: {}", stdout));
-    assert!(parsed.is_array() || parsed.is_object(), "doctor --json should return JSON array or object");
+    assert!(
+        parsed.is_array() || parsed.is_object(),
+        "doctor --json should return JSON array or object"
+    );
 }
 
 #[test]
@@ -3796,9 +3965,13 @@ fn test_doctor_checks_toolchains() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Doctor should mention toolchains
     assert!(
-        stdout.contains("Toolchain") || stdout.contains("tools") || stdout.contains("rustc")
-            || stdout.contains("cargo") || stdout.contains("Rust"),
-        "doctor should check toolchains, got: {}", stdout
+        stdout.contains("Toolchain")
+            || stdout.contains("tools")
+            || stdout.contains("rustc")
+            || stdout.contains("cargo")
+            || stdout.contains("Rust"),
+        "doctor should check toolchains, got: {}",
+        stdout
     );
 }
 
@@ -3813,7 +3986,8 @@ fn test_doctor_shows_summary() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Summary") || stdout.contains("ok") || stdout.contains("warning"),
-        "doctor should show summary, got: {}", stdout
+        "doctor should show summary, got: {}",
+        stdout
     );
 }
 
@@ -3828,13 +4002,20 @@ fn test_doctor_no_crash_empty_dir() {
         .unwrap();
     // Any exit code is fine, but should not have panicked
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "doctor should not panic in empty dir");
+    assert!(
+        !stderr.contains("panicked"),
+        "doctor should not panic in empty dir"
+    );
 }
 
 #[test]
 fn test_doctor_no_crash_malformed_toml() {
     let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("horus.toml"), "this is {{{{ not valid toml !!!!").unwrap();
+    fs::write(
+        tmp.path().join("horus.toml"),
+        "this is {{{{ not valid toml !!!!",
+    )
+    .unwrap();
     let output = horus_cmd()
         .arg("doctor")
         .current_dir(tmp.path())
@@ -3842,7 +4023,10 @@ fn test_doctor_no_crash_malformed_toml() {
         .unwrap();
     // Should report error, not crash
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "doctor should not panic on malformed toml");
+    assert!(
+        !stderr.contains("panicked"),
+        "doctor should not panic on malformed toml"
+    );
 }
 
 // ============================================================================
@@ -3916,7 +4100,10 @@ fn test_sync_writes_lockfile() {
         .current_dir(tmp.path())
         .assert()
         .success();
-    assert!(tmp.path().join("horus-sync.lock").exists(), "sync should create horus-sync.lock");
+    assert!(
+        tmp.path().join("horus-sync.lock").exists(),
+        "sync should create horus-sync.lock"
+    );
 }
 
 #[test]
@@ -3946,22 +4133,19 @@ fn test_sync_check_output_lists_deps() {
 
 #[test]
 fn test_completion_bash() {
-    let output = horus_cmd()
-        .args(["completion", "bash"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["completion", "bash"]).output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty(), "bash completion should produce output");
-    assert!(stdout.contains("horus") || stdout.contains("complete"), "should be a bash completion script");
+    assert!(
+        stdout.contains("horus") || stdout.contains("complete"),
+        "should be a bash completion script"
+    );
 }
 
 #[test]
 fn test_completion_zsh() {
-    let output = horus_cmd()
-        .args(["completion", "zsh"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["completion", "zsh"]).output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty(), "zsh completion should produce output");
@@ -3969,10 +4153,7 @@ fn test_completion_zsh() {
 
 #[test]
 fn test_completion_fish() {
-    let output = horus_cmd()
-        .args(["completion", "fish"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["completion", "fish"]).output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty(), "fish completion should produce output");
@@ -3986,7 +4167,10 @@ fn test_completion_powershell() {
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.is_empty(), "powershell completion should produce output");
+    assert!(
+        !stdout.is_empty(),
+        "powershell completion should produce output"
+    );
 }
 
 // ============================================================================
@@ -4039,7 +4223,10 @@ fn test_launch_empty_yaml() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "launch with empty yaml should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "launch with empty yaml should not panic"
+    );
 }
 
 #[test]
@@ -4054,19 +4241,23 @@ nodes:
     fs::write(tmp.path().join("launch.yaml"), yaml).unwrap();
     // Dry run should show what would launch without actually launching
     let output = horus_cmd()
-        .args(["launch", "--dry-run", &tmp.path().join("launch.yaml").to_string_lossy()])
+        .args([
+            "launch",
+            "--dry-run",
+            &tmp.path().join("launch.yaml").to_string_lossy(),
+        ])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "launch --dry-run should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "launch --dry-run should not panic"
+    );
 }
 
 #[test]
 fn test_launch_no_args() {
-    horus_cmd()
-        .arg("launch")
-        .assert()
-        .failure(); // missing required FILE argument
+    horus_cmd().arg("launch").assert().failure(); // missing required FILE argument
 }
 
 #[test]
@@ -4100,7 +4291,10 @@ fn test_scripts_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "scripts without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "scripts without project should not panic"
+    );
 }
 
 #[test]
@@ -4118,7 +4312,8 @@ fn test_scripts_list_with_scripts() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("test") || stdout.contains("sim"),
-        "scripts should list defined scripts, got: {}", stdout
+        "scripts should list defined scripts, got: {}",
+        stdout
     );
 }
 
@@ -4134,9 +4329,15 @@ fn test_scripts_run_echo() {
         .current_dir(tmp.path())
         .output()
         .unwrap();
-    assert!(output.status.success(), "running echo script should succeed");
+    assert!(
+        output.status.success(),
+        "running echo script should succeed"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello-from-script"), "script output should contain echo text");
+    assert!(
+        stdout.contains("hello-from-script"),
+        "script output should contain echo text"
+    );
 }
 
 #[test]
@@ -4145,7 +4346,8 @@ fn test_scripts_run_nonexistent() {
     fs::write(
         tmp.path().join("horus.toml"),
         "[package]\nname = \"s\"\nversion = \"0.1.0\"\n\n[scripts]\ntest = \"echo hi\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     horus_cmd()
         .args(["scripts", "nonexistent_script_xyz"])
         .current_dir(tmp.path())
@@ -4159,14 +4361,18 @@ fn test_scripts_empty_section() {
     fs::write(
         tmp.path().join("horus.toml"),
         "[package]\nname = \"s\"\nversion = \"0.1.0\"\n\n[scripts]\n",
-    ).unwrap();
+    )
+    .unwrap();
     let output = horus_cmd()
         .arg("scripts")
         .current_dir(tmp.path())
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "empty scripts section should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "empty scripts section should not panic"
+    );
 }
 
 // ============================================================================
@@ -4185,10 +4391,7 @@ fn test_uninstall_help() {
 
 #[test]
 fn test_uninstall_no_args() {
-    horus_cmd()
-        .arg("uninstall")
-        .assert()
-        .failure(); // missing required NAME argument
+    horus_cmd().arg("uninstall").assert().failure(); // missing required NAME argument
 }
 
 #[test]
@@ -4199,7 +4402,10 @@ fn test_uninstall_nonexistent_package() {
         .unwrap();
     // Should fail gracefully (not installed)
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "uninstalling nonexistent package should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "uninstalling nonexistent package should not panic"
+    );
 }
 
 #[test]
@@ -4209,7 +4415,10 @@ fn test_uninstall_with_purge_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "uninstall --purge should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "uninstall --purge should not panic"
+    );
 }
 
 #[test]
@@ -4222,7 +4431,10 @@ fn test_uninstall_output_is_helpful() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{}{}", stdout, stderr);
     // Should give some indication of what went wrong
-    assert!(!combined.is_empty(), "uninstall should produce output on failure");
+    assert!(
+        !combined.is_empty(),
+        "uninstall should produce output on failure"
+    );
 }
 
 // ============================================================================
@@ -4261,12 +4473,18 @@ fn test_run_no_project() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run without project should not panic"
+    );
     // Should mention missing project or main file
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("main") || combined.contains("horus.toml") || combined.contains("No")
-            || combined.contains("not found") || combined.contains("Error"),
+        combined.contains("main")
+            || combined.contains("horus.toml")
+            || combined.contains("No")
+            || combined.contains("not found")
+            || combined.contains("Error"),
         "run should report missing project/main file"
     );
 }
@@ -4283,13 +4501,12 @@ fn test_run_in_rust_project() {
 
     // horus run will try to compile — may fail without full toolchain in CI
     // but should not panic
-    let output = horus_cmd()
-        .arg("run")
-        .current_dir(&proj)
-        .output()
-        .unwrap();
+    let output = horus_cmd().arg("run").current_dir(&proj).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run in project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run in project should not panic"
+    );
 }
 
 #[test]
@@ -4328,7 +4545,10 @@ fn test_run_release_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run --release should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run --release should not panic"
+    );
 }
 
 #[test]
@@ -4367,7 +4587,10 @@ fn test_run_with_args_passthrough() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run with pass-through args should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run with pass-through args should not panic"
+    );
     // Should not fail with "unknown flag" — the args go to the child process
     assert!(
         !stderr.contains("unexpected argument"),
@@ -4391,14 +4614,23 @@ fn test_run_specific_file() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run specific file should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run specific file should not panic"
+    );
 }
 
 #[test]
 fn test_run_nonexistent_file() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "run-nofile", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "run-nofile",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("run-nofile");
@@ -4409,7 +4641,10 @@ fn test_run_nonexistent_file() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run nonexistent file should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run nonexistent file should not panic"
+    );
     assert!(!output.status.success(), "run nonexistent file should fail");
 }
 
@@ -4417,7 +4652,13 @@ fn test_run_nonexistent_file() {
 fn test_run_script_mode() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "run-script", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "run-script",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("run-script");
@@ -4460,7 +4701,10 @@ fn test_run_json_diagnostics_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run --json-diagnostics should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run --json-diagnostics should not panic"
+    );
 }
 
 #[test]
@@ -4479,7 +4723,10 @@ fn test_run_no_hooks_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run --no-hooks should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "run --no-hooks should not panic"
+    );
 }
 
 #[test]
@@ -4498,13 +4745,12 @@ fn test_run_empty_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "run in empty project should not panic");
-    // Should fail since there's no source to run
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        stderr
+    assert!(
+        !stderr.contains("panicked"),
+        "run in empty project should not panic"
     );
+    // Should fail since there's no source to run
+    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
     assert!(
         !output.status.success() || combined.contains("No") || combined.contains("not found"),
         "run with no source should fail or report missing files"
@@ -4524,14 +4770,23 @@ fn test_build_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "build without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "build without project should not panic"
+    );
 }
 
 #[test]
 fn test_build_creates_horus_dir() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "build-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "build-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("build-test");
@@ -4544,7 +4799,10 @@ fn test_build_creates_horus_dir() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "build should not panic");
     // After build, .horus/ directory should exist
-    assert!(proj.join(".horus").exists(), ".horus/ should be created by build");
+    assert!(
+        proj.join(".horus").exists(),
+        ".horus/ should be created by build"
+    );
 }
 
 #[test]
@@ -4559,7 +4817,13 @@ fn test_build_verbose_flag() {
 fn test_build_generates_cargo_toml() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "bgen-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "bgen-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("bgen-test");
@@ -4582,7 +4846,13 @@ fn test_build_generates_cargo_toml() {
 fn test_build_release_flag() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "brel-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "brel-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("brel-test");
@@ -4593,14 +4863,23 @@ fn test_build_release_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "build --release should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "build --release should not panic"
+    );
 }
 
 #[test]
 fn test_build_clean_flag() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "bcln-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "bcln-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("bcln-test");
@@ -4619,7 +4898,10 @@ fn test_build_clean_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "build --clean should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "build --clean should not panic"
+    );
 }
 
 #[test]
@@ -4637,14 +4919,23 @@ fn test_build_json_diagnostics_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "build --json-diagnostics should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "build --json-diagnostics should not panic"
+    );
 }
 
 #[test]
 fn test_build_no_hooks_flag() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "bnohk-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "bnohk-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("bnohk-test");
@@ -4655,14 +4946,23 @@ fn test_build_no_hooks_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "build --no-hooks should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "build --no-hooks should not panic"
+    );
 }
 
 #[test]
 fn test_build_twice_incremental() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "binc-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "binc-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("binc-test");
@@ -4674,7 +4974,10 @@ fn test_build_twice_incremental() {
         .output()
         .unwrap();
     let stderr1 = String::from_utf8_lossy(&output1.stderr);
-    assert!(!stderr1.contains("panicked"), "first build should not panic");
+    assert!(
+        !stderr1.contains("panicked"),
+        "first build should not panic"
+    );
 
     // Second build (incremental — should also succeed without panic)
     let output2 = horus_cmd()
@@ -4683,7 +4986,10 @@ fn test_build_twice_incremental() {
         .output()
         .unwrap();
     let stderr2 = String::from_utf8_lossy(&output2.stderr);
-    assert!(!stderr2.contains("panicked"), "incremental build should not panic");
+    assert!(
+        !stderr2.contains("panicked"),
+        "incremental build should not panic"
+    );
 }
 
 // ============================================================================
@@ -4701,10 +5007,7 @@ fn test_install_alias_i() {
 
 #[test]
 fn test_install_no_name() {
-    horus_cmd()
-        .arg("install")
-        .assert()
-        .failure(); // missing required NAME argument
+    horus_cmd().arg("install").assert().failure(); // missing required NAME argument
 }
 
 #[test]
@@ -4715,7 +5018,10 @@ fn test_install_name_at_version_parses() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "install with @version should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "install with @version should not panic"
+    );
 }
 
 #[test]
@@ -4725,7 +5031,10 @@ fn test_install_plugin_flag() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "install --plugin should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "install --plugin should not panic"
+    );
 }
 
 #[test]
@@ -4738,7 +5047,11 @@ fn test_install_json_output_on_error() {
     // JSON output should still be valid even on error
     if !stdout.trim().is_empty() {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-        assert!(parsed.is_ok(), "install --json should produce valid JSON, got: {}", stdout);
+        assert!(
+            parsed.is_ok(),
+            "install --json should produce valid JSON, got: {}",
+            stdout
+        );
     }
 }
 
@@ -4750,19 +5063,33 @@ fn test_install_nonexistent_package() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "install nonexistent package should not panic");
-    assert!(!output.status.success(), "install nonexistent package should fail");
+    assert!(
+        !stderr.contains("panicked"),
+        "install nonexistent package should not panic"
+    );
+    assert!(
+        !output.status.success(),
+        "install nonexistent package should fail"
+    );
 }
 
 #[test]
 fn test_install_target_flag() {
     let tmp = TempDir::new().unwrap();
     let output = horus_cmd()
-        .args(["install", "some-pkg", "--target", &tmp.path().to_string_lossy()])
+        .args([
+            "install",
+            "some-pkg",
+            "--target",
+            &tmp.path().to_string_lossy(),
+        ])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "install --target should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "install --target should not panic"
+    );
     // Will fail (package doesn't exist) but the flag should be accepted
     assert!(
         !stderr.contains("unexpected argument"),
@@ -4777,7 +5104,10 @@ fn test_install_invalid_version_format() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "install with invalid version should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "install with invalid version should not panic"
+    );
 }
 
 // ============================================================================
@@ -4793,7 +5123,10 @@ fn test_update_no_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "update without project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "update without project should not panic"
+    );
 }
 
 #[test]
@@ -4802,14 +5135,18 @@ fn test_update_dry_run() {
     fs::write(
         tmp.path().join("horus.toml"),
         "[package]\nname = \"up\"\nversion = \"0.1.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     let output = horus_cmd()
         .args(["update", "--dry-run"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "update --dry-run should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "update --dry-run should not panic"
+    );
 }
 
 #[test]
@@ -4818,14 +5155,18 @@ fn test_update_specific_package() {
     fs::write(
         tmp.path().join("horus.toml"),
         "[package]\nname = \"up\"\nversion = \"0.1.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     let output = horus_cmd()
         .args(["update", "serde"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "update specific package should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "update specific package should not panic"
+    );
 }
 
 #[test]
@@ -4834,7 +5175,8 @@ fn test_update_mentions_self_update() {
     fs::write(
         tmp.path().join("horus.toml"),
         "[package]\nname = \"up\"\nversion = \"0.1.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     let output = horus_cmd()
         .arg("update")
         .current_dir(tmp.path())
@@ -4849,12 +5191,12 @@ fn test_update_mentions_self_update() {
 
 #[test]
 fn test_update_global_flag() {
-    let output = horus_cmd()
-        .args(["update", "--global"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["update", "--global"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "update --global should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "update --global should not panic"
+    );
     assert!(
         !stderr.contains("unexpected argument"),
         "--global flag should be accepted by the parser"
@@ -4882,7 +5224,10 @@ fn test_update_in_project_with_deps() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "update in project with deps should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "update in project with deps should not panic"
+    );
 }
 
 #[test]
@@ -4903,11 +5248,17 @@ fn test_update_dry_run_preserves_files() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "update --dry-run should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "update --dry-run should not panic"
+    );
 
     // Dry-run should NOT modify horus.toml
     let toml_after = fs::read_to_string(proj.join("horus.toml")).unwrap();
-    assert_eq!(toml_before, toml_after, "dry-run should not modify horus.toml");
+    assert_eq!(
+        toml_before, toml_after,
+        "dry-run should not modify horus.toml"
+    );
 }
 
 // ============================================================================
@@ -4930,14 +5281,18 @@ fn test_publish_dry_run() {
     fs::write(
         tmp.path().join("horus.toml"),
         "[package]\nname = \"pub-test\"\nversion = \"0.1.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     let output = horus_cmd()
         .args(["publish", "--dry-run"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "publish --dry-run should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "publish --dry-run should not panic"
+    );
 }
 
 #[test]
@@ -4963,8 +5318,14 @@ fn test_publish_missing_required_fields() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "publish with missing fields should not panic");
-    assert!(!output.status.success(), "publish with missing fields should fail");
+    assert!(
+        !stderr.contains("panicked"),
+        "publish with missing fields should not panic"
+    );
+    assert!(
+        !output.status.success(),
+        "publish with missing fields should fail"
+    );
 }
 
 #[test]
@@ -4983,7 +5344,10 @@ fn test_publish_in_real_project() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "publish in real project should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "publish in real project should not panic"
+    );
     assert!(!output.status.success(), "publish without auth should fail");
 }
 
@@ -5007,7 +5371,10 @@ fn test_self_update_check() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "self update --check should not panic");
+    assert!(
+        !stderr.contains("panicked"),
+        "self update --check should not panic"
+    );
 }
 
 // ============================================================================
@@ -5028,10 +5395,7 @@ fn test_add_help() {
 
 #[test]
 fn test_add_no_args() {
-    horus_cmd()
-        .arg("add")
-        .assert()
-        .failure(); // missing required NAME
+    horus_cmd().arg("add").assert().failure(); // missing required NAME
 }
 
 #[test]
@@ -5063,14 +5427,23 @@ fn test_add_to_project() {
 
     // Verify horus.toml was updated
     let toml = fs::read_to_string(proj.join("horus.toml")).unwrap();
-    assert!(toml.contains("serde"), "horus.toml should contain serde after add");
+    assert!(
+        toml.contains("serde"),
+        "horus.toml should contain serde after add"
+    );
 }
 
 #[test]
 fn test_add_with_version() {
     let tmp = TempDir::new().unwrap();
     horus_cmd()
-        .args(["new", "addv-test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "addv-test",
+            "-r",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
     let proj = tmp.path().join("addv-test");
@@ -5090,7 +5463,8 @@ fn test_add_invalid_source() {
     fs::write(
         tmp.path().join("horus.toml"),
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     horus_cmd()
         .args(["add", "serde", "--source", "fake-source"])
         .current_dir(tmp.path())

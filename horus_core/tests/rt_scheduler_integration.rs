@@ -103,8 +103,14 @@ fn test_scheduler_with_safety_critical_config() {
     let flight_count = flight_ticks.load(Ordering::SeqCst);
     let nav_count = nav_ticks.load(Ordering::SeqCst);
 
-    assert!(flight_count > 0, "flight_control node never ticked in safety-critical config");
-    assert!(nav_count > 0, "navigation node never ticked in safety-critical config");
+    assert!(
+        flight_count > 0,
+        "flight_control node never ticked in safety-critical config"
+    );
+    assert!(
+        nav_count > 0,
+        "navigation node never ticked in safety-critical config"
+    );
 }
 
 #[test]
@@ -143,7 +149,8 @@ fn test_mixed_rt_and_normal_nodes() {
     assert!(
         rt_count >= bg_count,
         "RT critical ({}) should tick at least as much as background ({})",
-        rt_count, bg_count
+        rt_count,
+        bg_count
     );
 }
 

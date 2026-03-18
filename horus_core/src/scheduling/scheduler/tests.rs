@@ -1,11 +1,11 @@
 // Scheduler tests
 
 use super::*;
+use crate::core::{DurationExt, Node};
 use crate::scheduling::fault_tolerance::FailurePolicy;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-use crate::core::{DurationExt, Node};
 
 /// Global mutex to serialize scheduler tests. The scheduler uses process-global
 /// state (SIGTERM handler, shared memory namespaces, event notifier registry)
@@ -308,10 +308,7 @@ fn test_scheduler_with_watchdog() {
 fn test_scheduler_add_rt_node() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler
-        .add(CounterNode::new("rt_node"))
-        .order(0)
-        .build();
+    scheduler.add(CounterNode::new("rt_node")).order(0).build();
 
     let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 1);
@@ -1618,9 +1615,15 @@ fn test_set_node_rate_nonexistent() {
     // Setting rate on non-existent node should not panic and should return &mut Self for chaining
     let returned = scheduler.set_node_rate("does_not_exist", 100_u64.hz());
     // Verify the scheduler is still in a valid state (running flag starts true)
-    assert!(returned.is_running(), "Scheduler should still be in valid state after set_node_rate on nonexistent node");
+    assert!(
+        returned.is_running(),
+        "Scheduler should still be in valid state after set_node_rate on nonexistent node"
+    );
     // Verify that rt_stats returns None for the nonexistent node (rate was not applied)
-    assert!(scheduler.rt_stats("does_not_exist").is_none(), "Nonexistent node should have no rt_stats");
+    assert!(
+        scheduler.rt_stats("does_not_exist").is_none(),
+        "Nonexistent node should have no rt_stats"
+    );
 }
 
 #[test]
@@ -1675,10 +1678,16 @@ fn test_stop_before_run() {
     let _lock = lock_scheduler();
     let scheduler = Scheduler::new();
     // A new scheduler starts with running=true
-    assert!(scheduler.is_running(), "New scheduler should start as running");
+    assert!(
+        scheduler.is_running(),
+        "New scheduler should start as running"
+    );
     // Stopping before running should not panic and should set running to false
     scheduler.stop();
-    assert!(!scheduler.is_running(), "Scheduler should not be running after stop()");
+    assert!(
+        !scheduler.is_running(),
+        "Scheduler should not be running after stop()"
+    );
 }
 
 #[test]
@@ -1715,7 +1724,10 @@ fn test_scheduler_capabilities_before_run() {
     let scheduler = Scheduler::new();
     // Capabilities are detected at construction time
     let caps = scheduler.capabilities();
-    assert!(caps.is_some(), "Capabilities should be detected at construction time");
+    assert!(
+        caps.is_some(),
+        "Capabilities should be detected at construction time"
+    );
 }
 
 // ============================================================================
@@ -2762,7 +2774,9 @@ fn test_tick_once_single_node() {
 #[test]
 fn test_watchdog_scheduler_runs_without_nodes() {
     let _guard = lock_scheduler();
-    let mut scheduler = Scheduler::new().watchdog(500_u64.ms()).tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new()
+        .watchdog(500_u64.ms())
+        .tick_rate(100_u64.hz());
     let result = scheduler.run_for(50_u64.ms());
     result.unwrap();
 }
@@ -2803,7 +2817,10 @@ fn test_watchdog_with_deterministic_tick_once() {
         .tick_rate(100_u64.hz());
 
     scheduler
-        .add(CounterNode::with_counter("monitored_tick_once", counter.clone()))
+        .add(CounterNode::with_counter(
+            "monitored_tick_once",
+            counter.clone(),
+        ))
         .order(0)
         .build();
 
@@ -2823,7 +2840,9 @@ fn test_watchdog_with_healthy_nodes() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new().watchdog(500_u64.ms()).tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new()
+        .watchdog(500_u64.ms())
+        .tick_rate(100_u64.hz());
 
     scheduler
         .add(CounterNode::with_counter("fast_node", counter.clone()))
@@ -2896,9 +2915,7 @@ fn test_deterministic_builder() {
     let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     scheduler
         .add(CounterNode::with_counter("det_node", counter.clone()))

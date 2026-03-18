@@ -58,18 +58,13 @@ fn single_rt_node_runs() {
 
 #[test]
 fn multiple_independent_rt_nodes_run() {
-    let counts: Vec<_> = (0..4)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let counts: Vec<_> = (0..4).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
     for (i, c) in counts.iter().enumerate() {
         scheduler
-            .add(RtCounterNode::new(
-                &format!("joint_{}", i),
-                c.clone(),
-            ))
+            .add(RtCounterNode::new(&format!("joint_{}", i), c.clone()))
             .order(0)
             .rate(100_u64.hz())
             .build()
@@ -168,20 +163,13 @@ fn non_rt_node_with_watchdog() {
 #[test]
 fn deterministic_mode_ticks_all_rt_nodes() {
     // In deterministic mode (tick_once), RT nodes should tick on main thread
-    let counts: Vec<_> = (0..3)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let counts: Vec<_> = (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     for (i, c) in counts.iter().enumerate() {
         scheduler
-            .add(RtCounterNode::new(
-                &format!("rt_{}", i),
-                c.clone(),
-            ))
+            .add(RtCounterNode::new(&format!("rt_{}", i), c.clone()))
             .order(0)
             .rate(100_u64.hz())
             .build()

@@ -6,11 +6,11 @@ use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use crate::progress::format_bytes;
 use colored::*;
+use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_topics_dir;
 use std::io::Write;
 use std::time::Instant;
-use horus_core::core::DurationExt;
 
 /// List all active topics
 pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
@@ -779,7 +779,10 @@ mod tests {
     fn hex_dump_exactly_max_bytes_no_truncation() {
         let data: Vec<u8> = (0..16).collect();
         let hex = format_hex_dump(&data, 16);
-        assert!(!hex.contains("..."), "Exactly max_bytes should not truncate");
+        assert!(
+            !hex.contains("..."),
+            "Exactly max_bytes should not truncate"
+        );
         assert_eq!(hex, "00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f");
     }
 
@@ -787,7 +790,11 @@ mod tests {
     fn hex_dump_one_over_max_truncates() {
         let data: Vec<u8> = (0..17).collect();
         let hex = format_hex_dump(&data, 16);
-        assert!(hex.contains("... (1 more bytes)"), "One over should truncate, got: '{}'", hex);
+        assert!(
+            hex.contains("... (1 more bytes)"),
+            "One over should truncate, got: '{}'",
+            hex
+        );
     }
 
     #[test]
@@ -796,14 +803,23 @@ mod tests {
         let data: Vec<u8> = (0..32).collect();
         let hex = format_hex_dump(&data, 64);
         let rows: Vec<&str> = hex.split("\n  ").collect();
-        assert_eq!(rows.len(), 2, "32 bytes should produce 2 rows, got: {}", rows.len());
+        assert_eq!(
+            rows.len(),
+            2,
+            "32 bytes should produce 2 rows, got: {}",
+            rows.len()
+        );
     }
 
     #[test]
     fn hex_dump_max_zero_shows_nothing_but_remainder() {
         let data = vec![0xAA, 0xBB];
         let hex = format_hex_dump(&data, 0);
-        assert!(hex.contains("2 more bytes"), "max_bytes=0 should show remainder, got: '{}'", hex);
+        assert!(
+            hex.contains("2 more bytes"),
+            "max_bytes=0 should show remainder, got: '{}'",
+            hex
+        );
     }
 
     #[test]
@@ -868,7 +884,11 @@ mod tests {
         let fmt = classify_message(b"\"hello\"", false);
         match fmt {
             MessageFormat::Json(pretty) => {
-                assert!(pretty.contains("hello"), "Should contain hello, got: {}", pretty);
+                assert!(
+                    pretty.contains("hello"),
+                    "Should contain hello, got: {}",
+                    pretty
+                );
             }
             other => panic!("Expected Json variant, got {:?}", other),
         }
@@ -890,7 +910,11 @@ mod tests {
         let fmt = classify_message(b"null", false);
         match fmt {
             MessageFormat::Json(pretty) => {
-                assert!(pretty.contains("null"), "Should contain null, got: {}", pretty);
+                assert!(
+                    pretty.contains("null"),
+                    "Should contain null, got: {}",
+                    pretty
+                );
             }
             other => panic!("Expected Json variant, got {:?}", other),
         }
@@ -915,7 +939,11 @@ mod tests {
         let result = publish_topic("test_topic", "not valid json", None, None);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("Invalid JSON"), "Error should mention JSON, got: {}", err);
+        assert!(
+            err.contains("Invalid JSON"),
+            "Error should mention JSON, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -924,7 +952,11 @@ mod tests {
         let result = publish_topic("test_topic", "{\"x\": 1}", Some(-5.0), None);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("greater than 0"), "Should reject negative rate, got: {}", err);
+        assert!(
+            err.contains("greater than 0"),
+            "Should reject negative rate, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -932,7 +964,11 @@ mod tests {
         let result = publish_topic("test_topic", "{\"x\": 1}", Some(0.0), None);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("greater than 0"), "Should reject zero rate, got: {}", err);
+        assert!(
+            err.contains("greater than 0"),
+            "Should reject zero rate, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -951,6 +987,10 @@ mod tests {
         let result = topic_info("__definitely_not_a_topic_12345__");
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("not found"), "Should say not found, got: {}", err);
+        assert!(
+            err.contains("not found"),
+            "Should say not found, got: {}",
+            err
+        );
     }
 }

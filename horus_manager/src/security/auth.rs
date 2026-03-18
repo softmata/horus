@@ -10,11 +10,11 @@ use argon2::{
     },
     Argon2,
 };
+use horus_core::core::DurationExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use horus_core::core::DurationExt;
 
 /// Authentication service with password-based authentication
 pub struct AuthService {
@@ -124,17 +124,13 @@ impl AuthService {
 
         if let Some(session) = sessions.get_mut(token) {
             // Absolute session lifetime — expire regardless of activity.
-            if session.created_at.elapsed()
-                > crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS.secs()
-            {
+            if session.created_at.elapsed() > crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS.secs() {
                 sessions.remove(token);
                 return false;
             }
 
             // Idle timeout — expire after 1 hour of inactivity.
-            if session.last_used.elapsed()
-                > crate::config::SESSION_TIMEOUT_SECS.secs()
-            {
+            if session.last_used.elapsed() > crate::config::SESSION_TIMEOUT_SECS.secs() {
                 sessions.remove(token);
                 return false;
             }
@@ -268,8 +264,8 @@ pub fn save_password_hash(hash: &str) -> Result<()> {
     // Create file with restricted permissions from the start to avoid TOCTOU race
     {
         use std::io::Write;
-        let mut file = horus_sys::fs::open_private(&path)
-            .context("Failed to create password hash file")?;
+        let mut file =
+            horus_sys::fs::open_private(&path).context("Failed to create password hash file")?;
         file.write_all(hash.as_bytes())
             .context("Failed to write password hash file")?;
     }
@@ -550,8 +546,8 @@ mod tests {
         {
             let mut sessions = auth.sessions.write().unwrap();
             if let Some(session) = sessions.get_mut(&token) {
-                session.created_at = Instant::now()
-                    - (crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS + 1).secs();
+                session.created_at =
+                    Instant::now() - (crate::config::SESSION_ABSOLUTE_TIMEOUT_SECS + 1).secs();
             }
         }
 

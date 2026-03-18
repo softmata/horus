@@ -49,7 +49,9 @@ fn test_8_concurrent_clients() {
                 let a = (t * 1000 + i) as i64;
                 let b = (t * 1000 + i + 1) as i64;
                 match client.call(StressAddRequest { a, b }, 5_u64.secs()) {
-                    Ok(resp) if resp.sum == a + b => { s.fetch_add(1, Ordering::SeqCst); }
+                    Ok(resp) if resp.sum == a + b => {
+                        s.fetch_add(1, Ordering::SeqCst);
+                    }
                     Ok(resp) => {
                         eprintln!("Wrong sum: {} + {} = {} (got {})", a, b, a + b, resp.sum);
                         e.fetch_add(1, Ordering::SeqCst);
@@ -77,7 +79,9 @@ fn test_8_concurrent_clients() {
     assert!(
         total_success >= total_calls / 2,
         "8 clients × 10 calls: expected >={}  successes, got {} successes, {} errors",
-        total_calls / 2, total_success, total_errors
+        total_calls / 2,
+        total_success,
+        total_errors
     );
 }
 
@@ -195,7 +199,10 @@ fn test_slow_handler_other_clients_succeed() {
     let t1 = std::thread::spawn(move || {
         let mut client = ServiceClient::<StressSlow>::new().unwrap();
         for i in 0..5 {
-            if client.call(StressSlowRequest { x: i }, 3_u64.secs()).is_ok() {
+            if client
+                .call(StressSlowRequest { x: i }, 3_u64.secs())
+                .is_ok()
+            {
                 s1.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -205,7 +212,10 @@ fn test_slow_handler_other_clients_succeed() {
     let t2 = std::thread::spawn(move || {
         let mut client = ServiceClient::<StressSlow>::new().unwrap();
         for i in 0..5 {
-            if client.call(StressSlowRequest { x: i + 100 }, 3_u64.secs()).is_ok() {
+            if client
+                .call(StressSlowRequest { x: i + 100 }, 3_u64.secs())
+                .is_ok()
+            {
                 s2.fetch_add(1, Ordering::SeqCst);
             }
         }

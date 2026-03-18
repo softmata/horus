@@ -219,7 +219,8 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
             }
             _ => {
                 return Err(HorusError::Config(ConfigError::Other(
-                    "No targets configured in deploy.yaml. Create one with target definitions.".to_string(),
+                    "No targets configured in deploy.yaml. Create one with target definitions."
+                        .to_string(),
                 )));
             }
         }
@@ -379,9 +380,10 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
     );
 
     if failures > 0 {
-        return Err(HorusError::Config(ConfigError::Other(
-            format!("{} of {} deployments failed", failures, total),
-        )));
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "{} of {} deployments failed",
+            failures, total
+        ))));
     }
 
     Ok(())
@@ -683,7 +685,10 @@ fn build_for_target_cpp(config: &DeployConfig) -> HorusResult<()> {
         configure_cmd.stderr(Stdio::inherit());
 
         let status = configure_cmd.status().map_err(|e| {
-            HorusError::Config(ConfigError::Other(format!("Failed to run cmake configure: {}", e)))
+            HorusError::Config(ConfigError::Other(format!(
+                "Failed to run cmake configure: {}",
+                e
+            )))
         })?;
 
         if !status.success() {
@@ -693,10 +698,7 @@ fn build_for_target_cpp(config: &DeployConfig) -> HorusResult<()> {
         }
     }
 
-    print!(
-        "  {} Building C++ project",
-        cli_output::ICON_INFO.cyan()
-    );
+    print!("  {} Building C++ project", cli_output::ICON_INFO.cyan());
     println!(" ({})...", build_type);
 
     let mut cmd = Command::new("cmake");
@@ -706,7 +708,10 @@ fn build_for_target_cpp(config: &DeployConfig) -> HorusResult<()> {
     cmd.stderr(Stdio::inherit());
 
     let status = cmd.status().map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!("Failed to run cmake build: {}", e)))
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to run cmake build: {}",
+            e
+        )))
     })?;
 
     if !status.success() {
@@ -813,12 +818,18 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
             } else {
                 format!("./target/{}/{}/{}", target, mode, binary_name)
             };
-            (format!("'{}'", binary_path.replace('\'', "'\\''")), binary_path)
+            (
+                format!("'{}'", binary_path.replace('\'', "'\\''")),
+                binary_path,
+            )
         }
         Language::Python => {
             let entry = find_python_entry().unwrap_or_else(|| "main.py".to_string());
             let display = format!("python3 {}", entry);
-            (format!("python3 '{}'", entry.replace('\'', "'\\''")), display)
+            (
+                format!("python3 '{}'", entry.replace('\'', "'\\''")),
+                display,
+            )
         }
         Language::Cpp | Language::Ros2 => {
             let binary_name = find_cpp_binary().unwrap_or_else(|| "horus_project".to_string());
@@ -1351,10 +1362,7 @@ targets:
 
     #[test]
     fn extract_python_file_bare_py_file() {
-        assert_eq!(
-            extract_python_file("app.py"),
-            Some("app.py".to_string())
-        );
+        assert_eq!(extract_python_file("app.py"), Some("app.py".to_string()));
     }
 
     #[test]
@@ -1677,7 +1685,8 @@ run = "python3 src/robot.py"
         std::fs::write(
             tmp.path().join(".horus/deploy.yaml"),
             "{{{{invalid yaml content",
-        ).unwrap();
+        )
+        .unwrap();
 
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());

@@ -11,8 +11,8 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::{get_request, post_json_request};
 
-use tower::ServiceExt;
 use horus_core::core::DurationExt;
+use tower::ServiceExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Concurrent GET /api/nodes
@@ -297,12 +297,9 @@ async fn concurrent_mixed_endpoints() {
     // Total: 100 concurrent requests
     assert_eq!(handles.len(), 100, "must have 100 concurrent requests");
 
-    let timeout = tokio::time::timeout(
-        30_u64.secs(),
-        futures_util::future::join_all(handles),
-    )
-    .await
-    .expect("all 100 concurrent requests must complete within 30s");
+    let timeout = tokio::time::timeout(30_u64.secs(), futures_util::future::join_all(handles))
+        .await
+        .expect("all 100 concurrent requests must complete within 30s");
 
     for (i, r) in timeout.iter().enumerate() {
         r.as_ref()

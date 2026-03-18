@@ -120,7 +120,9 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::pip_error_hint(&stderr));
+                crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::pip_error_hint(
+                    &stderr,
+                ));
                 bail!("pip install failed for {}: {}", pkg.name, stderr);
             }
 
@@ -238,7 +240,9 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::cargo_error_hint(&stderr));
+                crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::cargo_error_hint(
+                    &stderr,
+                ));
                 bail!("cargo install failed for {}: {}", pkg.name, stderr);
             }
 

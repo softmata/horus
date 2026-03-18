@@ -19,8 +19,7 @@
 use horus_library::messages::clock::{Clock, TimeReference};
 use horus_library::messages::cmd_vel::CmdVel;
 use horus_library::messages::control::{
-    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand,
-    TrajectoryPoint,
+    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand, TrajectoryPoint,
 };
 use horus_library::messages::detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 use horus_library::messages::diagnostics::{

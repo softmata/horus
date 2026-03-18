@@ -4,7 +4,7 @@
 //! provides equivalent functionality.
 
 use horus_core::error::{HorusError, NotFoundError, TransformError};
-use horus_library::transform_frame::{TransformFrame, Transform};
+use horus_library::transform_frame::{Transform, TransformFrame};
 
 // ==========================================================================
 // 1. Extrapolation Detection

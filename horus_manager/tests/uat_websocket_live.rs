@@ -15,9 +15,9 @@ use harness::HorusTestRuntime;
 use monitor_tests::builders;
 
 use futures_util::StreamExt;
+use horus_core::core::DurationExt;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use horus_core::core::DurationExt;
 
 /// Start a test server on a random port and return the bound address.
 async fn start_test_server() -> SocketAddr {

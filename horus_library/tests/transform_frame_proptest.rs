@@ -4,7 +4,7 @@
 //! catching edge cases that hand-picked examples would miss: denormalized
 //! floats, near-antipodal quaternions, extreme scales, etc.
 
-use horus_library::transform_frame::{TransformFrame, Transform};
+use horus_library::transform_frame::{Transform, TransformFrame};
 use proptest::prelude::*;
 
 // ========================================================================

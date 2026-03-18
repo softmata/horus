@@ -6,9 +6,9 @@
 //! - OS version and kernel
 //! - CPU frequency (measured, not just reported)
 
+use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use horus_core::core::DurationExt;
 
 /// CPU information for benchmark context
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -357,7 +357,9 @@ impl PyNodeBuilder {
     /// Use ``horus.us`` and ``horus.ms`` constants for clarity.
     fn budget(mut slf: PyRefMut<'_, Self>, seconds: f64) -> PyResult<PyRefMut<'_, Self>> {
         if seconds <= 0.0 || !seconds.is_finite() {
-            return Err(PyRuntimeError::new_err("budget must be positive and finite"));
+            return Err(PyRuntimeError::new_err(
+                "budget must be positive and finite",
+            ));
         }
         if seconds > 1.0 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -380,7 +382,9 @@ impl PyNodeBuilder {
     /// Use ``horus.us`` and ``horus.ms`` constants for clarity.
     fn deadline(mut slf: PyRefMut<'_, Self>, seconds: f64) -> PyResult<PyRefMut<'_, Self>> {
         if seconds <= 0.0 || !seconds.is_finite() {
-            return Err(PyRuntimeError::new_err("deadline must be positive and finite"));
+            return Err(PyRuntimeError::new_err(
+                "deadline must be positive and finite",
+            ));
         }
         if seconds > 5.0 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -424,10 +428,7 @@ impl PyNodeBuilder {
         let policy = match name.as_str() {
             "fatal" => FailurePolicy::Fatal,
             "restart" => {
-                FailurePolicy::restart(
-                    max_retries.unwrap_or(5),
-                    backoff_ms.unwrap_or(100).ms(),
-                )
+                FailurePolicy::restart(max_retries.unwrap_or(5), backoff_ms.unwrap_or(100).ms())
             }
             "skip" => FailurePolicy::skip(
                 max_failures.unwrap_or(5),
@@ -481,7 +482,9 @@ impl PyNodeBuilder {
     /// Set per-node watchdog timeout in seconds.
     fn watchdog(mut slf: PyRefMut<'_, Self>, seconds: f64) -> PyResult<PyRefMut<'_, Self>> {
         if seconds <= 0.0 || !seconds.is_finite() {
-            return Err(PyRuntimeError::new_err("watchdog must be positive and finite"));
+            return Err(PyRuntimeError::new_err(
+                "watchdog must be positive and finite",
+            ));
         }
         slf.watchdog_seconds = Some(seconds);
         Ok(slf)
@@ -656,10 +659,7 @@ impl PyScheduler {
             config = config.watchdog(wd_s.secs());
         }
 
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot add nodes while scheduler is running")
         })?;
@@ -708,10 +708,7 @@ impl PyScheduler {
         // CoreScheduler must be Send for py.detach
     {
         let mut inner = {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(lock_poisoned)?;
+            let mut guard = self.inner.lock().map_err(lock_poisoned)?;
             guard.take().ok_or_else(|| {
                 PyRuntimeError::new_err("Scheduler already running or not initialized")
             })?
@@ -727,10 +724,7 @@ impl PyScheduler {
         let (returned_inner, run_result) = result;
 
         {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(lock_poisoned)?;
+            let mut guard = self.inner.lock().map_err(lock_poisoned)?;
             *guard = Some(returned_inner);
         }
 
@@ -816,9 +810,7 @@ impl PyScheduler {
     ) -> PyResult<()> {
         let parsed_policy = match failure_policy.as_deref() {
             Some("fatal") => Some(FailurePolicy::Fatal),
-            Some("restart") => {
-                Some(FailurePolicy::restart(5, 100_u64.ms()))
-            }
+            Some("restart") => Some(FailurePolicy::restart(5, 100_u64.ms())),
             Some("skip") => Some(FailurePolicy::skip(5, 30_u64.secs())),
             Some("ignore") => Some(FailurePolicy::Ignore),
             Some(other) => {
@@ -856,10 +848,7 @@ impl PyScheduler {
             ));
         }
 
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Cannot modify while scheduler is running"))?;
@@ -917,10 +906,7 @@ impl PyScheduler {
 
     /// Get node statistics.
     fn get_node_stats(&self, py: Python, node_name: String) -> PyResult<Py<PyAny>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("Stats unavailable while scheduler is running")
         })?;
@@ -940,26 +926,17 @@ impl PyScheduler {
     /// Remove a node from the scheduler.
     /// Note: horus_core doesn't support runtime removal; node is excluded from stats.
     fn remove_node(&self, name: String) -> PyResult<bool> {
-        let mut removed = self
-            .removed_nodes
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
         Ok(removed.insert(name))
     }
 
     /// Get list of all nodes with basic information.
     fn get_all_nodes(&self, py: Python) -> PyResult<Vec<Py<PyAny>>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("Node list unavailable while scheduler is running")
         })?;
-        let removed = self
-            .removed_nodes
-            .lock()
-            .map_err(lock_poisoned)?;
+        let removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
 
         let mut result = Vec::new();
         for metric in inner.metrics() {
@@ -974,16 +951,10 @@ impl PyScheduler {
 
     /// Get count of all registered nodes.
     fn get_node_count(&self) -> PyResult<usize> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
-                let removed = self
-                    .removed_nodes
-                    .lock()
-                    .map_err(lock_poisoned)?;
+                let removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
                 Ok(sched.node_list().len() - removed.len())
             }
             None => Ok(0),
@@ -992,16 +963,10 @@ impl PyScheduler {
 
     /// Check if a node exists by name.
     fn has_node(&self, name: String) -> PyResult<bool> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
-                let removed = self
-                    .removed_nodes
-                    .lock()
-                    .map_err(lock_poisoned)?;
+                let removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
                 Ok(sched.node_list().contains(&name) && !removed.contains(&name))
             }
             None => Ok(false),
@@ -1010,16 +975,10 @@ impl PyScheduler {
 
     /// Get list of node names.
     fn get_node_names(&self) -> PyResult<Vec<String>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
-                let removed = self
-                    .removed_nodes
-                    .lock()
-                    .map_err(lock_poisoned)?;
+                let removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
                 Ok(sched
                     .node_list()
                     .into_iter()
@@ -1032,10 +991,7 @@ impl PyScheduler {
 
     /// Get node order (execution priority).
     fn get_node_info(&self, name: String) -> PyResult<Option<u32>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => {
                 for metric in sched.metrics() {
@@ -1055,10 +1011,7 @@ impl PyScheduler {
 
     /// Get scheduler status string.
     fn status(&self) -> PyResult<String> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.status()),
             None => Ok("running".to_string()),
@@ -1067,10 +1020,7 @@ impl PyScheduler {
 
     /// Get runtime capabilities as a dict.
     fn capabilities(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = match guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -1090,10 +1040,7 @@ impl PyScheduler {
 
     /// Check if full real-time capabilities are available.
     fn has_full_rt(&self) -> PyResult<bool> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.has_full_rt()),
             None => Ok(false),
@@ -1102,10 +1049,7 @@ impl PyScheduler {
 
     /// Get RT degradations as a list of dicts.
     fn degradations(&self, py: Python) -> PyResult<Py<PyAny>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = match guard.as_ref() {
             Some(s) => s,
             None => return Ok(PyList::empty(py).into()),
@@ -1123,10 +1067,7 @@ impl PyScheduler {
 
     /// Get the current tick count.
     fn current_tick(&self) -> PyResult<u64> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.current_tick()),
             None => Ok(0),
@@ -1135,10 +1076,7 @@ impl PyScheduler {
 
     /// Get the scheduler name.
     fn scheduler_name(&self) -> PyResult<String> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.scheduler_name().to_string()),
             None => Ok("PythonScheduler".to_string()),
@@ -1151,10 +1089,7 @@ impl PyScheduler {
 
     /// Get safety statistics as a dict.
     fn safety_stats(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = match guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -1179,10 +1114,7 @@ impl PyScheduler {
 
     /// Check if scheduler is currently recording.
     fn is_recording(&self) -> PyResult<bool> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.is_recording()),
             None => Ok(false),
@@ -1191,10 +1123,7 @@ impl PyScheduler {
 
     /// Check if scheduler is currently replaying.
     fn is_replaying(&self) -> PyResult<bool> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.is_replaying()),
             None => Ok(false),
@@ -1203,10 +1132,7 @@ impl PyScheduler {
 
     /// Stop recording and return saved file paths.
     fn stop_recording(&self) -> PyResult<Vec<String>> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot stop recording while scheduler is running")
         })?;
@@ -1228,10 +1154,7 @@ impl PyScheduler {
 
     /// Set tick budget for a node in microseconds.
     fn set_tick_budget(&self, node_name: String, us: u64) -> PyResult<()> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot set tick budget while scheduler is running")
         })?;
@@ -1243,10 +1166,7 @@ impl PyScheduler {
 
     /// Add a critical node with watchdog timeout in milliseconds.
     fn add_critical_node(&self, node_name: String, timeout_ms: u64) -> PyResult<()> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let mut guard = self.inner.lock().map_err(lock_poisoned)?;
         let inner = guard.as_mut().ok_or_else(|| {
             PyRuntimeError::new_err("Cannot add critical node while scheduler is running")
         })?;
@@ -1264,10 +1184,7 @@ impl PyScheduler {
     }
 
     fn __repr__(&self) -> PyResult<String> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)?;
+        let guard = self.inner.lock().map_err(lock_poisoned)?;
         let count = guard.as_ref().map(|s| s.node_list().len()).unwrap_or(0);
         Ok(format!(
             "Scheduler(nodes={}, tick_rate={}Hz)",
@@ -1293,14 +1210,8 @@ impl PyScheduler {
 
         let core_sched = CoreScheduler::new();
         self.scheduler_running = core_sched.running_flag();
-        *self
-            .inner
-            .lock()
-            .map_err(lock_poisoned)? = Some(core_sched);
-        *self
-            .removed_nodes
-            .lock()
-            .map_err(lock_poisoned)? = HashSet::new();
+        *self.inner.lock().map_err(lock_poisoned)? = Some(core_sched);
+        *self.removed_nodes.lock().map_err(lock_poisoned)? = HashSet::new();
 
         Ok(())
     }
@@ -1456,7 +1367,10 @@ mod tests {
         assert_eq!(params.pinned_core, Some(2));
         assert_eq!(params.watchdog_seconds, Some(0.5));
         assert!(matches!(params.miss_policy.as_deref(), Some("skip")));
-        assert!(matches!(params.execution_class, Some(ExecutionClass::Compute)));
+        assert!(matches!(
+            params.execution_class,
+            Some(ExecutionClass::Compute)
+        ));
     }
 
     #[test]
@@ -1520,7 +1434,10 @@ mod tests {
             pinned_core: None,
             watchdog_seconds: None,
         };
-        assert!(matches!(params.execution_class, Some(ExecutionClass::AsyncIo)));
+        assert!(matches!(
+            params.execution_class,
+            Some(ExecutionClass::AsyncIo)
+        ));
     }
 
     #[test]
@@ -1589,8 +1506,14 @@ mod tests {
     fn miss_policy_parsing() {
         assert!(matches!(parse_miss_policy("warn").unwrap(), Miss::Warn));
         assert!(matches!(parse_miss_policy("skip").unwrap(), Miss::Skip));
-        assert!(matches!(parse_miss_policy("safe_mode").unwrap(), Miss::SafeMode));
-        assert!(matches!(parse_miss_policy("safemode").unwrap(), Miss::SafeMode));
+        assert!(matches!(
+            parse_miss_policy("safe_mode").unwrap(),
+            Miss::SafeMode
+        ));
+        assert!(matches!(
+            parse_miss_policy("safemode").unwrap(),
+            Miss::SafeMode
+        ));
         assert!(matches!(parse_miss_policy("stop").unwrap(), Miss::Stop));
         assert!(parse_miss_policy("invalid").is_err());
     }
@@ -1618,37 +1541,65 @@ mod tests {
     fn node_params_all_execution_classes() {
         // BestEffort (default)
         let p1 = NodeParams {
-            order: 0, rate_hz: None, rt: false, failure_policy: None,
-            miss_policy: None, execution_class: None,
-            budget_seconds: None, deadline_seconds: None,
-            priority: None, pinned_core: None, watchdog_seconds: None,
+            order: 0,
+            rate_hz: None,
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: None,
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
         };
         assert!(p1.execution_class.is_none());
 
         // Compute
         let p2 = NodeParams {
-            order: 0, rate_hz: None, rt: false, failure_policy: None,
-            miss_policy: None, execution_class: Some(ExecutionClass::Compute),
-            budget_seconds: None, deadline_seconds: None,
-            priority: None, pinned_core: None, watchdog_seconds: None,
+            order: 0,
+            rate_hz: None,
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: Some(ExecutionClass::Compute),
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
         };
         assert!(matches!(p2.execution_class, Some(ExecutionClass::Compute)));
 
         // AsyncIo
         let p3 = NodeParams {
-            order: 0, rate_hz: None, rt: false, failure_policy: None,
-            miss_policy: None, execution_class: Some(ExecutionClass::AsyncIo),
-            budget_seconds: None, deadline_seconds: None,
-            priority: None, pinned_core: None, watchdog_seconds: None,
+            order: 0,
+            rate_hz: None,
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: Some(ExecutionClass::AsyncIo),
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
         };
         assert!(matches!(p3.execution_class, Some(ExecutionClass::AsyncIo)));
 
         // Event
         let p4 = NodeParams {
-            order: 0, rate_hz: None, rt: false, failure_policy: None,
-            miss_policy: None, execution_class: Some(ExecutionClass::Event("scan".into())),
-            budget_seconds: None, deadline_seconds: None,
-            priority: None, pinned_core: None, watchdog_seconds: None,
+            order: 0,
+            rate_hz: None,
+            rt: false,
+            failure_policy: None,
+            miss_policy: None,
+            execution_class: Some(ExecutionClass::Event("scan".into())),
+            budget_seconds: None,
+            deadline_seconds: None,
+            priority: None,
+            pinned_core: None,
+            watchdog_seconds: None,
         };
         assert!(matches!(p4.execution_class, Some(ExecutionClass::Event(_))));
     }

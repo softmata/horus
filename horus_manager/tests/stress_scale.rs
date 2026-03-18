@@ -13,9 +13,9 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::get_request;
 
+use horus_core::core::DurationExt;
 use std::time::Instant;
 use tower::ServiceExt;
-use horus_core::core::DurationExt;
 
 /// Create a runtime with `n` nodes and `t` topics.
 fn build_large_runtime(n: usize, t: usize) -> HorusTestRuntime {

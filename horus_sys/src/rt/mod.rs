@@ -136,8 +136,8 @@ pub fn lock_memory() -> anyhow::Result<()> {
 ///
 /// Uses the `core_affinity` crate which is cross-platform.
 pub fn pin_to_core(core_id: usize) -> anyhow::Result<()> {
-    let core_ids = core_affinity::get_core_ids()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get core IDs"))?;
+    let core_ids =
+        core_affinity::get_core_ids().ok_or_else(|| anyhow::anyhow!("Failed to get core IDs"))?;
 
     if core_id >= core_ids.len() {
         anyhow::bail!(
@@ -160,8 +160,8 @@ pub fn pin_to_cores(cores: &[usize]) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let core_ids = core_affinity::get_core_ids()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get core IDs"))?;
+    let core_ids =
+        core_affinity::get_core_ids().ok_or_else(|| anyhow::anyhow!("Failed to get core IDs"))?;
 
     for &core_idx in cores {
         if core_idx < core_ids.len() && core_affinity::set_for_current(core_ids[core_idx]) {
@@ -370,7 +370,10 @@ mod tests {
     fn test_capabilities_cpu_affinity_is_true() {
         // core_affinity crate works on all platforms
         let caps = detect_capabilities();
-        assert!(caps.cpu_affinity, "cpu_affinity should be true (core_affinity crate is cross-platform)");
+        assert!(
+            caps.cpu_affinity,
+            "cpu_affinity should be true (core_affinity crate is cross-platform)"
+        );
     }
 
     #[test]

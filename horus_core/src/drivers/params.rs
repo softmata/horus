@@ -56,9 +56,8 @@ impl DriverParams {
         let value = self.params.get(key).ok_or_else(|| {
             ConfigError::Other(format!("driver param '{}': required but not found", key))
         })?;
-        T::from_toml(value).map_err(|e| {
-            ConfigError::Other(format!("driver param '{}': {}", key, e)).into()
-        })
+        T::from_toml(value)
+            .map_err(|e| ConfigError::Other(format!("driver param '{}': {}", key, e)).into())
     }
 
     /// Get an optional param with a default value.
@@ -113,35 +112,33 @@ pub trait FromToml: Sized {
 
 impl FromToml for String {
     fn from_toml(value: &toml::Value) -> HorusResult<Self> {
-        value
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| ConfigError::Other(format!("expected string, got {}", value.type_str())).into())
+        value.as_str().map(|s| s.to_string()).ok_or_else(|| {
+            ConfigError::Other(format!("expected string, got {}", value.type_str())).into()
+        })
     }
 }
 
 impl FromToml for bool {
     fn from_toml(value: &toml::Value) -> HorusResult<Self> {
-        value
-            .as_bool()
-            .ok_or_else(|| ConfigError::Other(format!("expected bool, got {}", value.type_str())).into())
+        value.as_bool().ok_or_else(|| {
+            ConfigError::Other(format!("expected bool, got {}", value.type_str())).into()
+        })
     }
 }
 
 impl FromToml for i64 {
     fn from_toml(value: &toml::Value) -> HorusResult<Self> {
-        value
-            .as_integer()
-            .ok_or_else(|| ConfigError::Other(format!("expected integer, got {}", value.type_str())).into())
+        value.as_integer().ok_or_else(|| {
+            ConfigError::Other(format!("expected integer, got {}", value.type_str())).into()
+        })
     }
 }
 
 impl FromToml for i32 {
     fn from_toml(value: &toml::Value) -> HorusResult<Self> {
         let v = i64::from_toml(value)?;
-        i32::try_from(v).map_err(|_| {
-            ConfigError::Other(format!("integer {} out of i32 range", v)).into()
-        })
+        i32::try_from(v)
+            .map_err(|_| ConfigError::Other(format!("integer {} out of i32 range", v)).into())
     }
 }
 
@@ -157,9 +154,8 @@ impl FromToml for u64 {
 impl FromToml for u32 {
     fn from_toml(value: &toml::Value) -> HorusResult<Self> {
         let v = i64::from_toml(value)?;
-        u32::try_from(v).map_err(|_| {
-            ConfigError::Other(format!("integer {} out of u32 range", v)).into()
-        })
+        u32::try_from(v)
+            .map_err(|_| ConfigError::Other(format!("integer {} out of u32 range", v)).into())
     }
 }
 
@@ -178,7 +174,9 @@ impl FromToml for f64 {
         value
             .as_float()
             .or_else(|| value.as_integer().map(|i| i as f64))
-            .ok_or_else(|| ConfigError::Other(format!("expected number, got {}", value.type_str())).into())
+            .ok_or_else(|| {
+                ConfigError::Other(format!("expected number, got {}", value.type_str())).into()
+            })
     }
 }
 
@@ -190,15 +188,14 @@ impl FromToml for f32 {
 
 impl<T: FromToml> FromToml for Vec<T> {
     fn from_toml(value: &toml::Value) -> HorusResult<Self> {
-        let arr = value
-            .as_array()
-            .ok_or_else(|| ConfigError::Other(format!("expected array, got {}", value.type_str())))?;
+        let arr = value.as_array().ok_or_else(|| {
+            ConfigError::Other(format!("expected array, got {}", value.type_str()))
+        })?;
         arr.iter()
             .enumerate()
             .map(|(i, v)| {
-                T::from_toml(v).map_err(|e| {
-                    ConfigError::Other(format!("array element [{}]: {}", i, e)).into()
-                })
+                T::from_toml(v)
+                    .map_err(|e| ConfigError::Other(format!("array element [{}]: {}", i, e)).into())
             })
             .collect()
     }
@@ -316,8 +313,16 @@ mod tests {
         let result = params.get::<String>("nonexistent");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("nonexistent"), "error should mention key: {}", err);
-        assert!(err.contains("required"), "error should mention required: {}", err);
+        assert!(
+            err.contains("nonexistent"),
+            "error should mention key: {}",
+            err
+        );
+        assert!(
+            err.contains("required"),
+            "error should mention required: {}",
+            err
+        );
     }
 
     #[test]
@@ -326,7 +331,11 @@ mod tests {
         let result = params.get::<String>("port");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("string"), "error should mention expected type: {}", err);
+        assert!(
+            err.contains("string"),
+            "error should mention expected type: {}",
+            err
+        );
     }
 
     #[test]

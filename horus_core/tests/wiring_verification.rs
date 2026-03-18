@@ -5,10 +5,10 @@
 //! - Topic::send() → EventExecutor notification
 //! - is_safe_state() polling for Isolated node recovery
 
-use horus_core::core::{DurationExt, Miss, Node};
 use horus_core::communication::Topic;
+use horus_core::core::{DurationExt, Miss, Node};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
-use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 // ============================================================================
@@ -21,7 +21,9 @@ struct PanicAfterN {
 }
 
 impl Node for PanicAfterN {
-    fn name(&self) -> &str { "panic_after_n" }
+    fn name(&self) -> &str {
+        "panic_after_n"
+    }
     fn tick(&mut self) {
         let c = self.count.fetch_add(1, Ordering::SeqCst);
         if c >= self.panic_at {
@@ -34,7 +36,10 @@ impl Node for PanicAfterN {
 fn fatal_policy_stops_scheduler_on_panic() {
     let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
     scheduler
-        .add(PanicAfterN { count: AtomicU32::new(0), panic_at: 3 })
+        .add(PanicAfterN {
+            count: AtomicU32::new(0),
+            panic_at: 3,
+        })
         .order(0)
         .rate(500_u64.hz())
         .failure_policy(FailurePolicy::Fatal)
@@ -46,7 +51,10 @@ fn fatal_policy_stops_scheduler_on_panic() {
 
     // The scheduler should have stopped early due to Fatal policy, not because 2s elapsed
     // We can't easily distinguish, but we CAN verify it stopped (didn't hang)
-    assert!(!scheduler.is_running(), "Scheduler should not be running after Fatal policy triggered");
+    assert!(
+        !scheduler.is_running(),
+        "Scheduler should not be running after Fatal policy triggered"
+    );
 }
 
 #[test]
@@ -59,7 +67,9 @@ fn ignore_policy_continues_after_panic() {
         panic_at: u32,
     }
     impl Node for CounterWithPanic {
-        fn name(&self) -> &str { "counter_with_panic" }
+        fn name(&self) -> &str {
+            "counter_with_panic"
+        }
         fn tick(&mut self) {
             let c = self.count.fetch_add(1, Ordering::SeqCst);
             if c == self.panic_at {
@@ -70,7 +80,10 @@ fn ignore_policy_continues_after_panic() {
 
     let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
     scheduler
-        .add(CounterWithPanic { count: tc, panic_at: 2 })
+        .add(CounterWithPanic {
+            count: tc,
+            panic_at: 2,
+        })
         .order(0)
         .rate(200_u64.hz())
         .failure_policy(FailurePolicy::Ignore)
@@ -81,7 +94,11 @@ fn ignore_policy_continues_after_panic() {
 
     // With Ignore policy, the scheduler continues ticking past the panic
     let ticks = tick_count.load(Ordering::SeqCst);
-    assert!(ticks > 3, "Scheduler should continue past panic with Ignore policy (got {} ticks)", ticks);
+    assert!(
+        ticks > 3,
+        "Scheduler should continue past panic with Ignore policy (got {} ticks)",
+        ticks
+    );
 }
 
 // ============================================================================
@@ -95,7 +112,9 @@ struct RecoverableNode {
 }
 
 impl Node for RecoverableNode {
-    fn name(&self) -> &str { "recoverable" }
+    fn name(&self) -> &str {
+        "recoverable"
+    }
 
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -121,11 +140,16 @@ fn is_safe_state_default_returns_true() {
     // Verify the default Node trait impl
     struct MinimalNode;
     impl Node for MinimalNode {
-        fn name(&self) -> &str { "minimal" }
+        fn name(&self) -> &str {
+            "minimal"
+        }
         fn tick(&mut self) {}
     }
     let node = MinimalNode;
-    assert!(node.is_safe_state(), "Default is_safe_state() should return true");
+    assert!(
+        node.is_safe_state(),
+        "Default is_safe_state() should return true"
+    );
 }
 
 // ============================================================================
@@ -139,7 +163,10 @@ fn notify_event_returns_false_for_unregistered_node() {
     // notify_event for a node that was never registered should return false
     // and must not panic or crash
     let result = NodeInfo::notify_event("nonexistent_node_xyz_test");
-    assert!(!result, "notify_event should return false for unregistered node");
+    assert!(
+        !result,
+        "notify_event should return false for unregistered node"
+    );
 }
 
 #[test]
@@ -159,7 +186,9 @@ fn event_node_ticks_via_notify_event() {
         count: Arc<AtomicU64>,
     }
     impl Node for EventCounterNode {
-        fn name(&self) -> &str { "event_wiring_test" }
+        fn name(&self) -> &str {
+            "event_wiring_test"
+        }
         fn tick(&mut self) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
@@ -196,10 +225,17 @@ fn event_node_ticks_via_notify_event() {
     scheduler.run_for(500_u64.ms()).unwrap();
 
     let registered = notifier_thread.join().expect("Notifier thread panicked");
-    assert!(registered, "Event node should register in EVENT_NOTIFIER_REGISTRY");
+    assert!(
+        registered,
+        "Event node should register in EVENT_NOTIFIER_REGISTRY"
+    );
 
     let ticks = tick_count.load(Ordering::SeqCst);
-    assert!(ticks >= 1, "Event node should tick after notify_event (got {} ticks)", ticks);
+    assert!(
+        ticks >= 1,
+        "Event node should tick after notify_event (got {} ticks)",
+        ticks
+    );
 }
 
 // ============================================================================
@@ -215,7 +251,9 @@ fn skip_policy_suppresses_after_failures() {
         count: Arc<AtomicU32>,
     }
     impl Node for AlwaysPanicNode {
-        fn name(&self) -> &str { "always_panic" }
+        fn name(&self) -> &str {
+            "always_panic"
+        }
         fn tick(&mut self) {
             self.count.fetch_add(1, Ordering::SeqCst);
             panic!("Always fails");

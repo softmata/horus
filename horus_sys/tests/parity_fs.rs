@@ -27,7 +27,10 @@ fn test_symlink_create_and_read() {
     fs::symlink(&src, &dst).unwrap();
     assert!(dst.exists(), "symlink should exist");
     let content = std::fs::read_to_string(&dst).unwrap();
-    assert_eq!(content, "hello parity", "symlink should read source content");
+    assert_eq!(
+        content, "hello parity",
+        "symlink should read source content"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -89,7 +92,10 @@ fn test_set_executable_then_is_executable() {
     // On Unix: execute bit is set. On Windows: is_executable checks existence.
     // Either way, after set_executable, is_executable should return true.
     #[cfg(unix)]
-    assert!(fs::is_executable(&path), "should be executable after set_executable");
+    assert!(
+        fs::is_executable(&path),
+        "should be executable after set_executable"
+    );
 
     let _ = std::fs::remove_file(&path);
 }

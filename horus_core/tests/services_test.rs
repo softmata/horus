@@ -285,10 +285,7 @@ mod tests {
 
         // Display should produce a meaningful message
         let display = format!("{}", std_err);
-        assert!(
-            !display.is_empty(),
-            "Display output should not be empty"
-        );
+        assert!(!display.is_empty(), "Display output should not be empty");
         assert!(
             display.contains("timed out"),
             "Timeout display should mention 'timed out', got: {}",
@@ -381,8 +378,7 @@ mod tests {
 
     #[test]
     fn test_async_service_client_with_custom_poll_interval() {
-        let client =
-            AsyncServiceClient::<RtAsyncCreatePoll>::with_poll_interval(100_u64.us());
+        let client = AsyncServiceClient::<RtAsyncCreatePoll>::with_poll_interval(100_u64.us());
         client.unwrap();
     }
 
@@ -521,10 +517,7 @@ mod tests {
         let mut client = ServiceClient::<RtMultiCall>::new().unwrap();
 
         for i in 0..5 {
-            let resp = client.call(
-                RtMultiCallRequest { a: i, b: i * 10 },
-                2_u64.secs(),
-            );
+            let resp = client.call(RtMultiCallRequest { a: i, b: i * 10 }, 2_u64.secs());
             assert!(resp.is_ok(), "call {} should succeed", i);
             assert_eq!(resp.unwrap().sum, i + i * 10);
         }
@@ -589,10 +582,7 @@ mod tests {
         std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<RtCallOptional>::new().unwrap();
-        let resp = client.call_optional(
-            RtCallOptionalRequest { a: 10, b: 20 },
-            2_u64.secs(),
-        );
+        let resp = client.call_optional(RtCallOptionalRequest { a: 10, b: 20 }, 2_u64.secs());
         assert!(resp.is_ok());
         let inner = resp.unwrap();
         assert!(inner.is_some());
@@ -658,10 +648,7 @@ mod tests {
         std::thread::sleep(20_u64.ms());
 
         let mut client = AsyncServiceClient::<RtAsyncPoll>::new().unwrap();
-        let mut pending = client.call_async(
-            RtAsyncPollRequest { a: 100, b: 200 },
-            2_u64.secs(),
-        );
+        let mut pending = client.call_async(RtAsyncPollRequest { a: 100, b: 200 }, 2_u64.secs());
 
         let mut result = None;
         for _ in 0..200 {

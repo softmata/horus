@@ -8,8 +8,8 @@ mod common;
 
 use common::TestTempDir;
 use horus_core::scheduling::{
-    BlackBox, BlackBoxEvent, NodeRecording, NodeReplayer, NodeTickSnapshot, Recording,
-    RecordingConfig, RecordingManager, diff_recordings,
+    diff_recordings, BlackBox, BlackBoxEvent, NodeRecording, NodeReplayer, NodeTickSnapshot,
+    Recording, RecordingConfig, RecordingManager,
 };
 use std::path::PathBuf;
 
@@ -104,7 +104,6 @@ fn test_blackbox_legacy_array_compat() {
         }
         other => unreachable!("Should be a Custom event, got {:?}", other),
     }
-
 }
 
 #[cfg(feature = "blackbox")]
@@ -384,7 +383,12 @@ fn test_e2e_record_replay_tick_perfect() {
             "output mismatch at tick {}",
             tick
         );
-        assert_eq!(snap.duration_ns, tick * 100, "duration mismatch at tick {}", tick);
+        assert_eq!(
+            snap.duration_ns,
+            tick * 100,
+            "duration mismatch at tick {}",
+            tick
+        );
 
         if tick < 99 {
             assert!(replayer.advance(), "should advance at tick {}", tick);
@@ -401,9 +405,7 @@ fn test_e2e_diff_detects_divergence() {
     for tick in 0..50u64 {
         let normal_output = (tick * 10).to_le_bytes().to_vec();
 
-        run1.add_snapshot(
-            NodeTickSnapshot::new(tick).with_output("cmd", normal_output.clone()),
-        );
+        run1.add_snapshot(NodeTickSnapshot::new(tick).with_output("cmd", normal_output.clone()));
 
         // Inject fault at tick 25: run2 produces different output
         let r2_output = if tick == 25 {
@@ -426,9 +428,7 @@ fn test_e2e_seek_time_travel() {
     // Record a long run
     let mut recording = NodeRecording::new("lidar", "s1", "seek_test");
     for tick in 0..1000u64 {
-        recording.add_snapshot(
-            NodeTickSnapshot::new(tick).with_output("scan", vec![tick as u8]),
-        );
+        recording.add_snapshot(NodeTickSnapshot::new(tick).with_output("scan", vec![tick as u8]));
     }
     recording.save(&path).expect("save should succeed");
 
@@ -438,7 +438,12 @@ fn test_e2e_seek_time_travel() {
     assert!(replayer.seek(500));
     assert_eq!(replayer.current_tick(), 500);
     assert_eq!(
-        replayer.current_snapshot().unwrap().outputs.get("scan").unwrap(),
+        replayer
+            .current_snapshot()
+            .unwrap()
+            .outputs
+            .get("scan")
+            .unwrap(),
         &vec![(500u16 % 256) as u8]
     );
 

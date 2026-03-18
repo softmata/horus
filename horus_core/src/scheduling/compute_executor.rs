@@ -371,12 +371,7 @@ mod tests {
         let nodes = vec![make_compute_node("compute_1", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = ComputeExecutor::start(
-            nodes,
-            running.clone(),
-            1_u64.ms(),
-            test_monitors(),
-        );
+        let executor = ComputeExecutor::start(nodes, running.clone(), 1_u64.ms(), test_monitors());
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -398,12 +393,7 @@ mod tests {
         ];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = ComputeExecutor::start(
-            nodes,
-            running.clone(),
-            1_u64.ms(),
-            test_monitors(),
-        );
+        let executor = ComputeExecutor::start(nodes, running.clone(), 1_u64.ms(), test_monitors());
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);

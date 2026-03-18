@@ -203,7 +203,10 @@ fn test_topic_meta_name_sanitization() {
 
     let metas = shm::list_topic_metas();
     let found = metas.iter().find(|m| m.name == "sensor.imu/v1");
-    assert!(found.is_some(), "original name should be preserved in JSON content");
+    assert!(
+        found.is_some(),
+        "original name should be preserved in JSON content"
+    );
 
     shm::remove_topic_meta("sensor.imu/v1");
 }
@@ -239,15 +242,30 @@ fn test_base_dir_contains_horus_prefix() {
 #[test]
 fn test_subdirs_are_children_of_base() {
     let base = shm::shm_base_dir();
-    assert!(shm::shm_topics_dir().starts_with(&base), "topics_dir ⊂ base_dir");
-    assert!(shm::shm_nodes_dir().starts_with(&base), "nodes_dir ⊂ base_dir");
-    assert!(shm::shm_network_dir().starts_with(&base), "network_dir ⊂ base_dir");
-    assert!(shm::shm_scheduler_dir().starts_with(&base), "scheduler_dir ⊂ base_dir");
+    assert!(
+        shm::shm_topics_dir().starts_with(&base),
+        "topics_dir ⊂ base_dir"
+    );
+    assert!(
+        shm::shm_nodes_dir().starts_with(&base),
+        "nodes_dir ⊂ base_dir"
+    );
+    assert!(
+        shm::shm_network_dir().starts_with(&base),
+        "network_dir ⊂ base_dir"
+    );
+    assert!(
+        shm::shm_scheduler_dir().starts_with(&base),
+        "scheduler_dir ⊂ base_dir"
+    );
 }
 
 #[test]
 fn test_paths_are_absolute() {
-    assert!(shm::shm_base_dir().is_absolute(), "base_dir should be absolute");
+    assert!(
+        shm::shm_base_dir().is_absolute(),
+        "base_dir should be absolute"
+    );
     assert!(
         shm::shm_topics_dir().is_absolute(),
         "topics_dir should be absolute"

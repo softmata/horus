@@ -1008,7 +1008,6 @@ impl HorusError {
         })
     }
 
-
     /// Returns an actionable remediation hint for this error, if available.
     ///
     /// Help text tells the user **what to do**, not just what went wrong.
@@ -2075,8 +2074,6 @@ mod tests {
         }
     }
 
-
-
     // =========================================================================
     // Section 5: HorusResult and ? operator
     // =========================================================================
@@ -2225,7 +2222,10 @@ mod tests {
         let err = HorusError::InvalidInput(ValidationError::MissingRequired {
             field: "tick".into(),
         });
-        assert!(err.help().is_some(), "MissingRequired should have help text");
+        assert!(
+            err.help().is_some(),
+            "MissingRequired should have help text"
+        );
     }
 
     /// JSON serialization error returns help text.
@@ -2233,8 +2233,15 @@ mod tests {
     fn help_json_serialization() {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let err = HorusError::Serialization(SerializationError::Json { source: json_err });
-        assert!(err.help().is_some(), "Json serialization should have help text");
-        assert!(err.help().unwrap().contains("JSON"), "Help: {}", err.help().unwrap());
+        assert!(
+            err.help().is_some(),
+            "Json serialization should have help text"
+        );
+        assert!(
+            err.help().unwrap().contains("JSON"),
+            "Help: {}",
+            err.help().unwrap()
+        );
     }
 
     /// NodeError::Other returns help text.
@@ -2244,8 +2251,15 @@ mod tests {
             node: "planner".into(),
             message: "something failed".into(),
         });
-        assert!(err.help().is_some(), "NodeError::Other should have help text");
-        assert!(err.help().unwrap().contains("horus log"), "Help: {}", err.help().unwrap());
+        assert!(
+            err.help().is_some(),
+            "NodeError::Other should have help text"
+        );
+        assert!(
+            err.help().unwrap().contains("horus log"),
+            "Help: {}",
+            err.help().unwrap()
+        );
     }
 
     // =========================================================================
@@ -2261,7 +2275,11 @@ mod tests {
             "should suggest cmd_vel: {}",
             msg
         );
-        assert!(msg.contains("cmd_vel"), "should contain suggestion: {}", msg);
+        assert!(
+            msg.contains("cmd_vel"),
+            "should contain suggestion: {}",
+            msg
+        );
     }
 
     #[test]
@@ -2275,16 +2293,23 @@ mod tests {
             msg
         );
         // Falls back to plain Topic variant
-        assert!(msg.contains("totally_different"), "should contain name: {}", msg);
+        assert!(
+            msg.contains("totally_different"),
+            "should contain name: {}",
+            msg
+        );
     }
 
     #[test]
     fn frame_with_suggestion_finds_match() {
-        let err =
-            NotFoundError::frame_with_suggestion("base_lnk", ["base_link", "odom", "world"]);
+        let err = NotFoundError::frame_with_suggestion("base_lnk", ["base_link", "odom", "world"]);
         let msg = err.to_string();
         assert!(msg.contains("Did you mean"), "should suggest: {}", msg);
-        assert!(msg.contains("base_link"), "should contain suggestion: {}", msg);
+        assert!(
+            msg.contains("base_link"),
+            "should contain suggestion: {}",
+            msg
+        );
     }
 
     #[test]
@@ -2293,7 +2318,11 @@ mod tests {
             NotFoundError::node_with_suggestion("motor_ctr", ["motor_ctrl", "planner", "sensor"]);
         let msg = err.to_string();
         assert!(msg.contains("Did you mean"), "should suggest: {}", msg);
-        assert!(msg.contains("motor_ctrl"), "should contain suggestion: {}", msg);
+        assert!(
+            msg.contains("motor_ctrl"),
+            "should contain suggestion: {}",
+            msg
+        );
     }
 
     // =========================================================================

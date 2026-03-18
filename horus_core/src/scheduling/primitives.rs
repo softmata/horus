@@ -97,11 +97,7 @@ impl TimingEnforcer {
     ) -> Option<BudgetViolationResult> {
         if tick_duration > tick_budget {
             Some(BudgetViolationResult {
-                violation: BudgetViolation::new(
-                    node_name.to_string(),
-                    tick_budget,
-                    tick_duration,
-                ),
+                violation: BudgetViolation::new(node_name.to_string(), tick_budget, tick_duration),
             })
         } else {
             None
@@ -204,21 +200,13 @@ mod tests {
 
     #[test]
     fn test_check_budget_no_violation() {
-        let result = TimingEnforcer::check_tick_budget(
-            "node",
-            100_u64.us(),
-            500_u64.us(),
-        );
+        let result = TimingEnforcer::check_tick_budget("node", 100_u64.us(), 500_u64.us());
         assert!(result.is_none());
     }
 
     #[test]
     fn test_check_budget_violation() {
-        let result = TimingEnforcer::check_tick_budget(
-            "motor_ctrl",
-            800_u64.us(),
-            500_u64.us(),
-        );
+        let result = TimingEnforcer::check_tick_budget("motor_ctrl", 800_u64.us(), 500_u64.us());
         let v = result.expect("should detect violation");
         assert_eq!(v.violation.node_name(), "motor_ctrl");
         assert_eq!(v.violation.budget(), 500_u64.us());
@@ -228,11 +216,7 @@ mod tests {
 
     #[test]
     fn test_check_budget_exact_no_violation() {
-        let result = TimingEnforcer::check_tick_budget(
-            "node",
-            500_u64.us(),
-            500_u64.us(),
-        );
+        let result = TimingEnforcer::check_tick_budget("node", 500_u64.us(), 500_u64.us());
         assert!(result.is_none(), "exact budget should not be a violation");
     }
 
@@ -240,8 +224,7 @@ mod tests {
     fn test_check_deadline_no_miss() {
         // tick_start is now — elapsed is ~0, well within any deadline
         let tick_start = Instant::now();
-        let result =
-            TimingEnforcer::check_deadline(tick_start, 100_u64.ms(), Miss::Warn);
+        let result = TimingEnforcer::check_deadline(tick_start, 100_u64.ms(), Miss::Warn);
         assert!(result.is_none());
     }
 
@@ -249,8 +232,7 @@ mod tests {
     fn test_check_deadline_miss() {
         // tick_start was 50ms ago — deadline is 10ms
         let tick_start = Instant::now() - 50_u64.ms();
-        let result =
-            TimingEnforcer::check_deadline(tick_start, 10_u64.ms(), Miss::Stop);
+        let result = TimingEnforcer::check_deadline(tick_start, 10_u64.ms(), Miss::Stop);
         let dm = result.expect("should detect deadline miss");
         assert!(dm.elapsed >= 50_u64.ms());
         assert_eq!(dm.deadline, 10_u64.ms());

@@ -161,7 +161,10 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
-pub use header::{read_latest_slot_bytes, read_topic_header_info, read_topic_sequence, set_topic_verbose, TopicHeaderInfo, TopicSlotRead, TopicKind, TOPIC_VERBOSE_OFFSET};
+pub use header::{
+    read_latest_slot_bytes, read_topic_header_info, read_topic_sequence, set_topic_verbose,
+    TopicHeaderInfo, TopicKind, TopicSlotRead, TOPIC_VERBOSE_OFFSET,
+};
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
 pub use metrics::TopicMetrics;
@@ -426,13 +429,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Create a new topic with custom capacity, slot size, and topic kind.
-    pub fn with_capacity_and_kind(name: &str, capacity: u32, slot_size: Option<usize>, topic_kind: u8) -> HorusResult<Self> {
+    pub fn with_capacity_and_kind(
+        name: &str,
+        capacity: u32,
+        slot_size: Option<usize>,
+        topic_kind: u8,
+    ) -> HorusResult<Self> {
         // Validate topic name
         if name.is_empty() {
             return Err(crate::HorusError::InvalidInput(
-                crate::error::ValidationError::Other(
-                    "Topic name cannot be empty".to_string(),
-                ),
+                crate::error::ValidationError::Other("Topic name cannot be empty".to_string()),
             ));
         }
         if name.len() > 255 {
@@ -468,9 +474,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if let Some(size) = slot_size {
             if size == 0 {
                 return Err(crate::HorusError::InvalidInput(
-                    crate::error::ValidationError::Other(
-                        "Slot size must be > 0".to_string(),
-                    ),
+                    crate::error::ValidationError::Other("Slot size must be > 0".to_string()),
                 ));
             }
             if size > MAX_SLOT_SIZE {
@@ -507,10 +511,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
         // Extract a short type name for the header (e.g. "CmdVel" from "horus_library::messages::CmdVel")
         let full_type_name = std::any::type_name::<T>();
-        let short_type_name = full_type_name
-            .rsplit("::")
-            .next()
-            .unwrap_or(full_type_name);
+        let short_type_name = full_type_name.rsplit("::").next().unwrap_or(full_type_name);
         let final_slot_size = Self::negotiate_shm_header(
             name,
             &storage,
@@ -2075,12 +2076,12 @@ impl<T> Drop for RingTopic<T> {
 // For direct types (CmdVel, i32, etc.), Wire = T → zero overhead.
 // For pool-backed types (Image, PointCloud, DepthImage), Wire = XxxDescriptor.
 
+use crate::core::DurationExt;
 use crate::memory::depth_image::DepthImage;
 use crate::memory::image::Image;
 use crate::memory::pointcloud::PointCloud;
 use crate::memory::TensorPool;
 use crate::types::Tensor;
-use crate::core::DurationExt;
 
 /// Topic — Universal IPC with automatic backend detection.
 ///

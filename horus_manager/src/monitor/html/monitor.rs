@@ -1342,6 +1342,9 @@ pub fn generate_html(port: u16) -> String {
                 <li><button class="nav-item" onclick="switchTab('params')">Parameters</button></li>
                 <li><button class="nav-item" onclick="switchTab('packages')">Packages</button></li>
                 <li><button class="nav-item" onclick="switchTab('docs')">API Docs</button></li>
+                <li><button class="nav-item" onclick="switchTab('recordings')">Recordings</button></li>
+                <li><button class="nav-item" onclick="switchTab('blackbox')">Blackbox</button></li>
+                <li><button class="nav-item" onclick="switchTab('debug')">Debug</button></li>
             </ul>
         </nav>
 
@@ -1617,6 +1620,141 @@ pub fn generate_html(port: u16) -> String {
             </div>
         </div>
 
+        <!-- ═══════ Recordings Tab ═══════ -->
+        <div id="tab-recordings" class="tab-content">
+            <div class="card">
+                <h2 style="color: var(--text-primary);">Recording Sessions</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">Browse recorded sessions for replay and debugging.</p>
+                <div id="recordings-list">
+                    <p style="color: var(--text-secondary);">Click the tab to load recordings...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════ Blackbox Tab ═══════ -->
+        <div id="tab-blackbox" class="tab-content">
+            <div class="card">
+                <h2 style="color: var(--text-primary);">Flight Recorder (Blackbox)</h2>
+                <div style="display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;">
+                    <input id="bb-node-filter" type="text" placeholder="Node name..."
+                        style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; width: 150px;" />
+                    <select id="bb-event-filter"
+                        style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace;">
+                        <option value="">All Events</option>
+                        <option value="DeadlineMiss">Deadline Miss</option>
+                        <option value="BudgetViolation">Budget Violation</option>
+                        <option value="NodeError">Node Error</option>
+                        <option value="EmergencyStop">Emergency Stop</option>
+                        <option value="SchedulerStart">Scheduler Start</option>
+                        <option value="SchedulerStop">Scheduler Stop</option>
+                    </select>
+                    <input id="bb-tick-from" type="number" placeholder="Tick from"
+                        style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; width: 110px;" />
+                    <input id="bb-tick-to" type="number" placeholder="Tick to"
+                        style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; width: 110px;" />
+                    <label style="color: var(--text-secondary); display: flex; align-items: center; gap: 0.4rem; font-size: 0.875rem;">
+                        <input type="checkbox" id="bb-anomalies-only" /> Anomalies only
+                    </label>
+                    <button onclick="applyBlackboxFilters()"
+                        style="padding: 8px 16px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-family: 'JetBrains Mono', monospace;">Apply</button>
+                    <button onclick="clearBlackbox()"
+                        style="padding: 8px 16px; background: var(--error, #e74c3c); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-family: 'JetBrains Mono', monospace;">Clear All</button>
+                </div>
+                <div id="blackbox-events" style="max-height: 600px; overflow-y: auto;">
+                    <p style="color: var(--text-secondary);">Click Apply to load blackbox events...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════ Debug Tab ═══════ -->
+        <div id="tab-debug" class="tab-content">
+            <!-- Session List View -->
+            <div id="debug-sessions-list">
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <h2 style="color: var(--text-primary);">Debug Sessions</h2>
+                        <button onclick="toggleCreateSessionForm()"
+                            style="padding: 8px 16px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-family: 'JetBrains Mono', monospace;">+ New Session</button>
+                    </div>
+                    <div id="debug-create-form" style="display: none; margin-bottom: 1rem; padding: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;">
+                        <label style="color: var(--text-secondary); font-size: 0.875rem;">Recording session name:</label>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                            <input id="debug-recording-name" type="text" placeholder="session_001"
+                                style="flex: 1; padding: 8px 12px; background: var(--dark-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace;" />
+                            <button onclick="createDebugSession()"
+                                style="padding: 8px 16px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Create</button>
+                            <button onclick="toggleCreateSessionForm()"
+                                style="padding: 8px 16px; background: var(--surface); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Cancel</button>
+                        </div>
+                    </div>
+                    <div id="debug-sessions-table">
+                        <p style="color: var(--text-secondary);">Loading sessions...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Session View (hidden by default) -->
+            <div id="debug-active-session" style="display: none;">
+                <button onclick="backToSessionList()"
+                    style="background: none; border: none; color: var(--accent); cursor: pointer; font-family: 'JetBrains Mono', monospace; margin-bottom: 1rem; font-size: 0.9rem;">&larr; Back to sessions</button>
+                <h2 style="color: var(--text-primary); margin-bottom: 1rem;">Session: <span id="debug-session-name" style="color: var(--accent);"></span></h2>
+
+                <!-- Replay Controls -->
+                <div class="card" style="margin-bottom: 1rem;">
+                    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                        <button onclick="debugStepBack()" title="Step Back" style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); cursor: pointer; font-size: 1rem;">&#9198;</button>
+                        <button onclick="debugStepForward()" title="Step Forward" style="padding: 8px 12px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: 600;">&#9197;</button>
+                        <button onclick="debugContinue()" title="Continue" style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--neon-green, #4CAF50); cursor: pointer; font-size: 1rem;">&#9654;</button>
+                        <button onclick="debugPause()" title="Pause" style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--warning, #FFC107); cursor: pointer; font-size: 1rem;">&#9646;&#9646;</button>
+                        <button onclick="debugReset()" title="Reset" style="padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--error, #e74c3c); cursor: pointer; font-size: 1rem;">&#9632;</button>
+                        <span style="margin: 0 0.75rem; color: var(--text-secondary); font-size: 0.875rem;">Tick:</span>
+                        <span id="debug-current-tick" style="color: var(--accent); font-weight: 600; font-size: 1.1rem;">0</span>
+                        <span style="color: var(--text-secondary); margin: 0 0.25rem;">/</span>
+                        <span id="debug-total-ticks" style="color: var(--text-secondary);">0</span>
+                        <input id="debug-seek-tick" type="number" placeholder="Seek to tick"
+                            style="width: 120px; margin-left: 1rem; padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace;" />
+                        <button onclick="debugSeek()" style="padding: 6px 12px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Seek</button>
+                    </div>
+                </div>
+
+                <!-- Three columns: Breakpoints | Snapshot | Watches -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                    <!-- Breakpoints -->
+                    <div class="card">
+                        <h3 style="color: var(--accent); margin-bottom: 0.75rem; font-size: 1rem;">Breakpoints</h3>
+                        <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+                            <select id="bp-type" style="padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;">
+                                <option value="AtTick">At Tick</option>
+                                <option value="TopicHasData">Topic Has Data</option>
+                                <option value="OnError">On Error</option>
+                            </select>
+                            <input id="bp-value" placeholder="value" style="flex: 1; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;" />
+                            <button onclick="addBreakpoint()" style="padding: 6px 10px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.8rem;">Add</button>
+                        </div>
+                        <div id="breakpoints-list" style="max-height: 300px; overflow-y: auto;"></div>
+                    </div>
+
+                    <!-- Tick Snapshot -->
+                    <div class="card">
+                        <h3 style="color: var(--accent); margin-bottom: 0.75rem; font-size: 1rem;">Tick Snapshot</h3>
+                        <div id="tick-snapshot">
+                            <p style="color: var(--text-secondary); font-size: 0.85rem;">Step to a tick to see snapshot</p>
+                        </div>
+                    </div>
+
+                    <!-- Watches -->
+                    <div class="card">
+                        <h3 style="color: var(--accent); margin-bottom: 0.75rem; font-size: 1rem;">Watch Expressions</h3>
+                        <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+                            <input id="watch-topic" placeholder="topic name" style="flex: 1; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;" />
+                            <button onclick="addWatch()" style="padding: 6px 10px; background: var(--accent); color: var(--primary); border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.8rem;">Add</button>
+                        </div>
+                        <div id="watches-list" style="max-height: 300px; overflow-y: auto;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         </div> <!-- end main-content -->
     </div> <!-- end container -->
 
@@ -1645,6 +1783,15 @@ pub fn generate_html(port: u16) -> String {
             }}
             if (tabName === 'docs') {{
                 loadDocs();
+            }}
+            if (tabName === 'recordings') {{
+                loadRecordings();
+            }}
+            if (tabName === 'blackbox') {{
+                loadBlackbox();
+            }}
+            if (tabName === 'debug') {{
+                loadDebugSessions();
             }}
         }}
 
@@ -3536,6 +3683,407 @@ pub fn generate_html(port: u16) -> String {
         function escHtml(s) {{
             if (!s) return '';
             return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }}
+
+        // ═══════════════════════════════════════════════════════════════
+        // Recordings Tab
+        // ═══════════════════════════════════════════════════════════════
+
+        async function loadRecordings() {{
+            const container = document.getElementById('recordings-list');
+            try {{
+                const response = await fetch('/api/recordings');
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const data = await response.json();
+                const sessions = data.sessions || data || [];
+                if (!Array.isArray(sessions) || sessions.length === 0) {{
+                    container.innerHTML = '<p style="color: var(--text-secondary);">No recordings found. Use <code style="color: var(--accent);">horus run --record &lt;name&gt;</code> to create one.</p>';
+                    return;
+                }}
+                let html = '<table style="width: 100%; border-collapse: collapse; font-family: \'JetBrains Mono\', monospace; font-size: 0.85rem;">';
+                html += '<thead style="border-bottom: 2px solid var(--border);"><tr>';
+                html += '<th style="padding: 0.75rem; text-align: left; color: var(--accent);">Session</th>';
+                html += '<th style="padding: 0.75rem; text-align: left; color: var(--accent);">Date</th>';
+                html += '<th style="padding: 0.75rem; text-align: right; color: var(--accent);">Ticks</th>';
+                html += '<th style="padding: 0.75rem; text-align: right; color: var(--accent);">Nodes</th>';
+                html += '<th style="padding: 0.75rem; text-align: right; color: var(--accent);">Size</th>';
+                html += '<th style="padding: 0.75rem; text-align: right; color: var(--accent);">Actions</th>';
+                html += '</tr></thead><tbody>';
+                sessions.forEach(s => {{
+                    const name = escHtml(s.session_name || s.name || 'unknown');
+                    const date = s.started_at ? new Date(s.started_at / 1000).toLocaleString() : '—';
+                    const ticks = s.total_ticks || 0;
+                    const nodes = s.node_count || 0;
+                    const size = s.size_bytes ? (s.size_bytes / 1024).toFixed(1) + ' KB' : '—';
+                    html += '<tr style="border-bottom: 1px solid var(--border);" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">';
+                    html += '<td style="padding: 0.75rem; font-weight: 600; color: var(--accent);">' + name + '</td>';
+                    html += '<td style="padding: 0.75rem; color: var(--text-secondary);">' + date + '</td>';
+                    html += '<td style="padding: 0.75rem; text-align: right;">' + ticks.toLocaleString() + '</td>';
+                    html += '<td style="padding: 0.75rem; text-align: right;">' + nodes + '</td>';
+                    html += '<td style="padding: 0.75rem; text-align: right; color: var(--text-secondary);">' + size + '</td>';
+                    html += '<td style="padding: 0.75rem; text-align: right;"><button onclick="deleteRecording(\'' + name + '\')" style="padding: 4px 10px; background: var(--error, #e74c3c); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">Delete</button></td>';
+                    html += '</tr>';
+                }});
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            }} catch (err) {{
+                container.innerHTML = '<p style="color: var(--error, #e74c3c);">Failed to load recordings: ' + escHtml(err.message) + '</p>';
+            }}
+        }}
+
+        async function deleteRecording(sessionName) {{
+            if (!confirm('Delete recording "' + sessionName + '"? This cannot be undone.')) return;
+            try {{
+                const resp = await fetch('/api/recordings/' + encodeURIComponent(sessionName), {{ method: 'DELETE' }});
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                loadRecordings();
+            }} catch (err) {{
+                alert('Failed to delete: ' + err.message);
+            }}
+        }}
+
+        // ═══════════════════════════════════════════════════════════════
+        // Blackbox Tab
+        // ═══════════════════════════════════════════════════════════════
+
+        async function loadBlackbox() {{
+            applyBlackboxFilters();
+        }}
+
+        async function applyBlackboxFilters() {{
+            const container = document.getElementById('blackbox-events');
+            const node = document.getElementById('bb-node-filter').value.trim();
+            const event = document.getElementById('bb-event-filter').value;
+            const tickFrom = document.getElementById('bb-tick-from').value;
+            const tickTo = document.getElementById('bb-tick-to').value;
+            const anomaliesOnly = document.getElementById('bb-anomalies-only').checked;
+
+            let url = anomaliesOnly ? '/api/blackbox/anomalies' : '/api/blackbox';
+            const params = [];
+            if (node) params.push('node=' + encodeURIComponent(node));
+            if (event) params.push('event=' + encodeURIComponent(event));
+            if (tickFrom && tickTo) params.push('tick=' + tickFrom + '-' + tickTo);
+            else if (tickFrom) params.push('tick=' + tickFrom + '-');
+            else if (tickTo) params.push('tick=-' + tickTo);
+            params.push('limit=500');
+            if (params.length > 0) url += '?' + params.join('&');
+
+            try {{
+                container.innerHTML = '<p style="color: var(--text-secondary);">Loading...</p>';
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const data = await response.json();
+                const events = data.events || data || [];
+                if (!Array.isArray(events) || events.length === 0) {{
+                    container.innerHTML = '<p style="color: var(--text-secondary);">No blackbox events. Enable with <code style="color: var(--accent);">.blackbox(64)</code> in your scheduler.</p>';
+                    return;
+                }}
+                let html = '<table style="width: 100%; border-collapse: collapse; font-family: \'JetBrains Mono\', monospace; font-size: 0.8rem;">';
+                html += '<thead style="border-bottom: 2px solid var(--border);"><tr>';
+                html += '<th style="padding: 0.5rem; text-align: right; color: var(--accent);">Tick</th>';
+                html += '<th style="padding: 0.5rem; text-align: left; color: var(--accent);">Node</th>';
+                html += '<th style="padding: 0.5rem; text-align: left; color: var(--accent);">Event</th>';
+                html += '<th style="padding: 0.5rem; text-align: left; color: var(--accent);">Details</th>';
+                html += '</tr></thead><tbody>';
+                events.forEach(ev => {{
+                    const tick = ev.tick || 0;
+                    const nodeName = escHtml(ev.node || '—');
+                    const evtType = Object.keys(ev.event || {{}})[0] || 'Unknown';
+                    const evtData = ev.event ? ev.event[evtType] : {{}};
+                    const details = typeof evtData === 'object' ? JSON.stringify(evtData) : String(evtData);
+                    const color = (evtType === 'DeadlineMiss' || evtType === 'BudgetViolation' || evtType === 'EmergencyStop' || evtType === 'NodeError') ? 'var(--error, #e74c3c)' : 'var(--text-secondary)';
+                    html += '<tr style="border-bottom: 1px solid var(--border);" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'transparent\'">';
+                    html += '<td style="padding: 0.5rem; text-align: right; color: var(--text-secondary);">' + tick.toLocaleString() + '</td>';
+                    html += '<td style="padding: 0.5rem; font-weight: 600;">' + nodeName + '</td>';
+                    html += '<td style="padding: 0.5rem; color: ' + color + '; font-weight: 600;">' + escHtml(evtType) + '</td>';
+                    html += '<td style="padding: 0.5rem; color: var(--text-secondary); font-size: 0.75rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + escHtml(details) + '</td>';
+                    html += '</tr>';
+                }});
+                html += '</tbody></table>';
+                html += '<p style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.5rem;">Showing ' + events.length + ' event(s)</p>';
+                container.innerHTML = html;
+            }} catch (err) {{
+                container.innerHTML = '<p style="color: var(--error, #e74c3c);">Failed to load: ' + escHtml(err.message) + '</p>';
+            }}
+        }}
+
+        async function clearBlackbox() {{
+            if (!confirm('Delete ALL blackbox data? This cannot be undone.')) return;
+            try {{
+                await fetch('/api/blackbox', {{ method: 'DELETE' }});
+                document.getElementById('blackbox-events').innerHTML = '<p style="color: var(--text-secondary);">Blackbox cleared.</p>';
+            }} catch (err) {{
+                alert('Failed to clear: ' + err.message);
+            }}
+        }}
+
+        // ═══════════════════════════════════════════════════════════════
+        // Debug Sessions Tab
+        // ═══════════════════════════════════════════════════════════════
+
+        let currentDebugSessionId = null;
+
+        function toggleCreateSessionForm() {{
+            const form = document.getElementById('debug-create-form');
+            form.style.display = form.style.display === 'none' ? 'block' : 'none';
+        }}
+
+        async function loadDebugSessions() {{
+            const container = document.getElementById('debug-sessions-table');
+            try {{
+                const response = await fetch('/api/debug/sessions');
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const data = await response.json();
+                const sessions = data.sessions || data || [];
+                if (!Array.isArray(sessions) || sessions.length === 0) {{
+                    container.innerHTML = '<p style="color: var(--text-secondary);">No debug sessions. Create one from a recording.</p>';
+                    return;
+                }}
+                let html = '';
+                sessions.forEach(s => {{
+                    const id = s.id || s.session_id || '';
+                    const name = escHtml(s.session_name || id);
+                    const tick = s.current_tick || 0;
+                    const state = s.state || 'Unknown';
+                    const bpCount = s.breakpoint_count || 0;
+                    const watchCount = s.watch_count || 0;
+                    html += '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.5rem; background: var(--surface);">';
+                    html += '<div><span style="color: var(--accent); font-weight: 600;">' + name + '</span>';
+                    html += '<span style="color: var(--text-secondary); margin-left: 1rem; font-size: 0.8rem;">Tick: ' + tick + ' | ' + state + ' | BP: ' + bpCount + ' | W: ' + watchCount + '</span></div>';
+                    html += '<div style="display: flex; gap: 0.5rem;">';
+                    html += '<button onclick="selectDebugSession(\'' + id + '\')" style="padding: 4px 10px; background: var(--accent); color: var(--primary); border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">Open</button>';
+                    html += '<button onclick="deleteDebugSession(\'' + id + '\')" style="padding: 4px 10px; background: var(--error, #e74c3c); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">Delete</button>';
+                    html += '</div></div>';
+                }});
+                container.innerHTML = html;
+            }} catch (err) {{
+                container.innerHTML = '<p style="color: var(--error, #e74c3c);">Failed to load sessions: ' + escHtml(err.message) + '</p>';
+            }}
+        }}
+
+        async function createDebugSession() {{
+            const name = document.getElementById('debug-recording-name').value.trim();
+            if (!name) {{ alert('Enter a recording session name.'); return; }}
+            try {{
+                const resp = await fetch('/api/debug/sessions', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ recording_session: name }})
+                }});
+                if (!resp.ok) {{
+                    const err = await resp.text();
+                    throw new Error(err || 'HTTP ' + resp.status);
+                }}
+                toggleCreateSessionForm();
+                document.getElementById('debug-recording-name').value = '';
+                loadDebugSessions();
+            }} catch (err) {{
+                alert('Failed to create session: ' + err.message);
+            }}
+        }}
+
+        async function deleteDebugSession(id) {{
+            if (!confirm('Delete this debug session?')) return;
+            try {{
+                await fetch('/api/debug/sessions/' + encodeURIComponent(id), {{ method: 'DELETE' }});
+                if (currentDebugSessionId === id) backToSessionList();
+                loadDebugSessions();
+            }} catch (err) {{
+                alert('Failed to delete: ' + err.message);
+            }}
+        }}
+
+        async function selectDebugSession(id) {{
+            currentDebugSessionId = id;
+            document.getElementById('debug-sessions-list').style.display = 'none';
+            document.getElementById('debug-active-session').style.display = 'block';
+            await refreshDebugState();
+        }}
+
+        function backToSessionList() {{
+            currentDebugSessionId = null;
+            document.getElementById('debug-active-session').style.display = 'none';
+            document.getElementById('debug-sessions-list').style.display = 'block';
+            loadDebugSessions();
+        }}
+
+        async function refreshDebugState() {{
+            if (!currentDebugSessionId) return;
+            try {{
+                const resp = await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId));
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const s = await resp.json();
+                document.getElementById('debug-session-name').textContent = s.session_name || currentDebugSessionId;
+                document.getElementById('debug-current-tick').textContent = s.current_tick || 0;
+                document.getElementById('debug-total-ticks').textContent = s.total_snapshots || s.total_ticks || '?';
+                renderBreakpoints(s.breakpoints || []);
+                renderWatches(s.watches || []);
+                await loadSnapshot();
+            }} catch (err) {{
+                console.error('Failed to refresh debug state:', err);
+            }}
+        }}
+
+        async function debugStepForward() {{
+            if (!currentDebugSessionId) return;
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/step-forward', {{ method: 'POST' }});
+            await refreshDebugState();
+        }}
+
+        async function debugStepBack() {{
+            if (!currentDebugSessionId) return;
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/step-backward', {{ method: 'POST' }});
+            await refreshDebugState();
+        }}
+
+        async function debugContinue() {{
+            if (!currentDebugSessionId) return;
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/continue', {{ method: 'POST' }});
+            await refreshDebugState();
+        }}
+
+        async function debugPause() {{
+            if (!currentDebugSessionId) return;
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/pause', {{ method: 'POST' }});
+            await refreshDebugState();
+        }}
+
+        async function debugReset() {{
+            if (!currentDebugSessionId) return;
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/reset', {{ method: 'POST' }});
+            await refreshDebugState();
+        }}
+
+        async function debugSeek() {{
+            if (!currentDebugSessionId) return;
+            const tick = parseInt(document.getElementById('debug-seek-tick').value);
+            if (isNaN(tick)) {{ alert('Enter a valid tick number.'); return; }}
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/seek', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ tick: tick }})
+            }});
+            await refreshDebugState();
+        }}
+
+        async function addBreakpoint() {{
+            if (!currentDebugSessionId) return;
+            const bpType = document.getElementById('bp-type').value;
+            const bpValue = document.getElementById('bp-value').value.trim();
+            let body = {{}};
+            if (bpType === 'AtTick') body = {{ condition: {{ AtTick: parseInt(bpValue) || 0 }} }};
+            else if (bpType === 'TopicHasData') body = {{ condition: {{ TopicHasData: bpValue }} }};
+            else if (bpType === 'OnError') body = {{ condition: 'OnError' }};
+            try {{
+                await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/breakpoints', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify(body)
+                }});
+                document.getElementById('bp-value').value = '';
+                await refreshDebugState();
+            }} catch (err) {{
+                alert('Failed to add breakpoint: ' + err.message);
+            }}
+        }}
+
+        async function removeBreakpoint(bpId) {{
+            if (!currentDebugSessionId) return;
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/breakpoints/' + encodeURIComponent(bpId), {{ method: 'DELETE' }});
+            await refreshDebugState();
+        }}
+
+        function renderBreakpoints(bps) {{
+            const container = document.getElementById('breakpoints-list');
+            if (!bps || bps.length === 0) {{
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.8rem;">No breakpoints set.</p>';
+                return;
+            }}
+            let html = '';
+            bps.forEach(bp => {{
+                const id = bp.id || bp.breakpoint_id || '';
+                const cond = typeof bp.condition === 'object' ? JSON.stringify(bp.condition) : String(bp.condition || '');
+                const hits = bp.hit_count || 0;
+                html += '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--border); font-size: 0.8rem;">';
+                html += '<span style="color: var(--text-primary);">' + escHtml(cond) + ' <span style="color: var(--text-secondary);">(hits: ' + hits + ')</span></span>';
+                html += '<button onclick="removeBreakpoint(\'' + id + '\')" style="padding: 2px 6px; background: var(--error, #e74c3c); color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem;">X</button>';
+                html += '</div>';
+            }});
+            container.innerHTML = html;
+        }}
+
+        async function addWatch() {{
+            if (!currentDebugSessionId) return;
+            const topic = document.getElementById('watch-topic').value.trim();
+            if (!topic) {{ alert('Enter a topic name.'); return; }}
+            try {{
+                await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/watches', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ topic: topic }})
+                }});
+                document.getElementById('watch-topic').value = '';
+                await refreshDebugState();
+            }} catch (err) {{
+                alert('Failed to add watch: ' + err.message);
+            }}
+        }}
+
+        async function removeWatch(watchId) {{
+            if (!currentDebugSessionId) return;
+            await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/watches/' + encodeURIComponent(watchId), {{ method: 'DELETE' }});
+            await refreshDebugState();
+        }}
+
+        function renderWatches(watches) {{
+            const container = document.getElementById('watches-list');
+            if (!watches || watches.length === 0) {{
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.8rem;">No watches set.</p>';
+                return;
+            }}
+            let html = '';
+            watches.forEach(w => {{
+                const id = w.id || w.watch_id || '';
+                const topic = escHtml(w.topic || w.expression || '');
+                const value = escHtml(w.current_value || w.value || '—');
+                html += '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--border); font-size: 0.8rem;">';
+                html += '<div><span style="color: var(--accent);">' + topic + '</span> = <span style="color: var(--neon-green, #4CAF50);">' + value + '</span></div>';
+                html += '<button onclick="removeWatch(\'' + id + '\')" style="padding: 2px 6px; background: var(--error, #e74c3c); color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem;">X</button>';
+                html += '</div>';
+            }});
+            container.innerHTML = html;
+        }}
+
+        async function loadSnapshot() {{
+            if (!currentDebugSessionId) return;
+            const container = document.getElementById('tick-snapshot');
+            try {{
+                const resp = await fetch('/api/debug/sessions/' + encodeURIComponent(currentDebugSessionId) + '/snapshot');
+                if (!resp.ok) {{
+                    container.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.85rem;">No snapshot at current tick.</p>';
+                    return;
+                }}
+                const snap = await resp.json();
+                let html = '<div style="font-size: 0.8rem;">';
+                html += '<div style="margin-bottom: 0.5rem;"><span style="color: var(--text-secondary);">Tick:</span> <span style="color: var(--accent); font-weight: 600;">' + (snap.tick || 0) + '</span>';
+                html += ' &nbsp; <span style="color: var(--text-secondary);">Duration:</span> <span style="color: var(--text-primary);">' + (snap.duration_human || '—') + '</span></div>';
+                if (snap.inputs && Object.keys(snap.inputs).length > 0) {{
+                    html += '<div style="color: var(--text-secondary); margin-top: 0.5rem; font-weight: 600;">Inputs:</div>';
+                    Object.entries(snap.inputs).forEach(([topic, info]) => {{
+                        html += '<div style="padding-left: 0.5rem; color: var(--text-primary);"><span style="color: var(--accent);">' + escHtml(topic) + '</span> (' + (info.size || 0) + ' B)</div>';
+                    }});
+                }}
+                if (snap.outputs && Object.keys(snap.outputs).length > 0) {{
+                    html += '<div style="color: var(--text-secondary); margin-top: 0.5rem; font-weight: 600;">Outputs:</div>';
+                    Object.entries(snap.outputs).forEach(([topic, info]) => {{
+                        html += '<div style="padding-left: 0.5rem; color: var(--text-primary);"><span style="color: var(--accent);">' + escHtml(topic) + '</span> (' + (info.size || 0) + ' B)</div>';
+                    }});
+                }}
+                html += '</div>';
+                container.innerHTML = html;
+            }} catch (err) {{
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.85rem;">No snapshot available.</p>';
+            }}
         }}
     </script>
 

@@ -3,8 +3,8 @@
 //! Tests the full action lifecycle: macro generation, type system,
 //! client/server builders, goal state machine, and standard actions.
 
-use horus_core::actions::*;
 use horus_core::action;
+use horus_core::actions::*;
 use std::time::Duration;
 
 // ============================================================================

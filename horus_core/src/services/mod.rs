@@ -69,17 +69,15 @@ pub mod server;
 pub mod types;
 
 // Public re-exports
-pub use client::{AsyncServiceClient, ServiceClient};
 #[doc(hidden)]
 pub use client::PendingServiceCall;
-pub use server::{ServiceServer, ServiceServerBuilder};
+pub use client::{AsyncServiceClient, ServiceClient};
 #[doc(hidden)]
 pub use server::RequestHandler;
-pub use types::{
-    Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
-};
+pub use server::{ServiceServer, ServiceServerBuilder};
 #[doc(hidden)]
 pub use types::ServiceInfo;
+pub use types::{Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult};
 
 /// Prelude for convenient imports.
 ///

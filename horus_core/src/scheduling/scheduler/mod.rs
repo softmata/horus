@@ -1259,7 +1259,10 @@ impl Scheduler {
     /// scheduler.add(ControlNode::new()).order(1).rate(500_u64.hz()).build()?;
     /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
-    pub fn add<N: super::node_builder::IntoNode>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
+    pub fn add<N: super::node_builder::IntoNode>(
+        &mut self,
+        node: N,
+    ) -> super::node_builder::NodeBuilder<'_> {
         super::node_builder::NodeBuilder::new(self, node.into_node())
     }
 
@@ -1493,7 +1496,10 @@ impl Scheduler {
                     self.dependency_graph = Some(graph);
                 }
                 Err(e) => {
-                    print_line(&format!("WARNING: Dependency graph error: {}. Falling back to sequential.", e));
+                    print_line(&format!(
+                        "WARNING: Dependency graph error: {}. Falling back to sequential.",
+                        e
+                    ));
                 }
             }
         }
@@ -1587,16 +1593,25 @@ impl Scheduler {
         if let Some(ref mut recording_state) = self.recording {
             let order: Vec<String> = if let Some(ref graph) = self.dependency_graph {
                 // Deterministic: record dependency step order
-                graph.steps().iter().flatten().map(|&idx| {
-                    self.nodes.get(idx)
-                        .map(|n| n.name.to_string())
-                        .unwrap_or_default()
-                }).collect()
+                graph
+                    .steps()
+                    .iter()
+                    .flatten()
+                    .map(|&idx| {
+                        self.nodes
+                            .get(idx)
+                            .map(|n| n.name.to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect()
             } else {
                 // Normal: record priority-sorted order
                 self.nodes.iter().map(|n| n.name.to_string()).collect()
             };
-            recording_state.scheduler_recording.execution_order.push(order);
+            recording_state
+                .scheduler_recording
+                .execution_order
+                .push(order);
         }
 
         self.tick.current += 1;
@@ -2218,15 +2233,16 @@ impl Scheduler {
     fn check_safety_monitors(&mut self) -> bool {
         if let Some(ref monitor) = self.monitor.safety {
             // Use graduated check for per-node health state transitions
-            monitor
-                .check_watchdogs_graduated(&mut self.monitor.watchdog_graduated_buf);
+            monitor.check_watchdogs_graduated(&mut self.monitor.watchdog_graduated_buf);
 
             // Apply health state transitions based on severity
             for (node_name, severity) in &self.monitor.watchdog_graduated_buf {
                 use super::safety_monitor::WatchdogSeverity;
                 use super::types::NodeHealthState;
 
-                if let Some(registered) = self.nodes.iter_mut().find(|n| n.name.as_ref() == node_name) {
+                if let Some(registered) =
+                    self.nodes.iter_mut().find(|n| n.name.as_ref() == node_name)
+                {
                     let current = registered.health_state.load();
                     match severity {
                         WatchdogSeverity::Ok => {
@@ -2474,16 +2490,18 @@ impl Scheduler {
         }
 
         // Gather safety monitor data (if available)
-        let safety_data: HashMap<String, (super::safety_monitor::TimingStats, Option<Duration>, u64)> =
-            if let Some(ref monitor) = self.monitor.safety {
-                monitor
-                    .all_node_timing()
-                    .into_iter()
-                    .map(|(name, stats, budget, overruns)| (name, (stats, budget, overruns)))
-                    .collect()
-            } else {
-                HashMap::new()
-            };
+        let safety_data: HashMap<
+            String,
+            (super::safety_monitor::TimingStats, Option<Duration>, u64),
+        > = if let Some(ref monitor) = self.monitor.safety {
+            monitor
+                .all_node_timing()
+                .into_iter()
+                .map(|(name, stats, budget, overruns)| (name, (stats, budget, overruns)))
+                .collect()
+        } else {
+            HashMap::new()
+        };
 
         let sep = "=".repeat(90);
         let thin_sep = "-".repeat(90);
@@ -2518,12 +2536,21 @@ impl Scheduler {
                     let misses_s = format!("{}", ring_stats.total_ticks); // reuse total_ticks
                     (p99, budget_s, overruns_s, misses_s)
                 } else {
-                    ("-".to_string(), "-".to_string(), "0".to_string(), "-".to_string())
+                    (
+                        "-".to_string(),
+                        "-".to_string(),
+                        "0".to_string(),
+                        "-".to_string(),
+                    )
                 };
 
             // Status indicator
             let status = if let Some((_, _, overruns)) = safety_data.get(*name) {
-                if *overruns > 0 { "!" } else { "" }
+                if *overruns > 0 {
+                    "!"
+                } else {
+                    ""
+                }
             } else {
                 ""
             };
@@ -2801,7 +2828,10 @@ impl Scheduler {
         {
             use super::types::NodeHealthState;
             let health = self.nodes[i].health_state.load();
-            if matches!(health, NodeHealthState::Unhealthy | NodeHealthState::Isolated) {
+            if matches!(
+                health,
+                NodeHealthState::Unhealthy | NodeHealthState::Isolated
+            ) {
                 return false;
             }
         }
@@ -2863,7 +2893,11 @@ impl Scheduler {
 
             // Capture inputs from subscriber topics (for recording)
             {
-                let RegisteredNode { ref mut node, ref mut recorder, .. } = self.nodes[i];
+                let RegisteredNode {
+                    ref mut node,
+                    ref mut recorder,
+                    ..
+                } = self.nodes[i];
                 if let Some(recorder) = recorder.as_mut() {
                     if recorder.is_active_tick() {
                         let subscribers = node.subscribers();
@@ -2871,7 +2905,9 @@ impl Scheduler {
                             let topics_dir = crate::memory::platform::shm_topics_dir();
                             for sub in &subscribers {
                                 let topic_path = topics_dir.join(&sub.topic_name);
-                                if let Some(slot_read) = crate::communication::read_latest_slot_bytes(&topic_path, 0) {
+                                if let Some(slot_read) =
+                                    crate::communication::read_latest_slot_bytes(&topic_path, 0)
+                                {
                                     recorder.record_input(&sub.topic_name, slot_read.payload);
                                 }
                             }
@@ -2888,20 +2924,25 @@ impl Scheduler {
             // into shared-memory topics so live subscriber nodes see replay data.
             {
                 let node_name = self.nodes[i].name.clone();
-                let replay_outputs: Option<Vec<(String, Vec<u8>)>> = self.replay.as_mut().and_then(|replay| {
-                    let replayer = replay.nodes.get_mut(node_name.as_ref())?;
-                    let node_overrides = replay.overrides.get(node_name.as_ref());
-                    let snapshot = replayer.current_snapshot()?;
-                    let outputs: Vec<(String, Vec<u8>)> = snapshot.outputs.iter().map(|(topic, data)| {
-                        let output_data = node_overrides
-                            .and_then(|ovr| ovr.get(topic))
-                            .unwrap_or(data)
-                            .clone();
-                        (topic.clone(), output_data)
-                    }).collect();
-                    replayer.advance();
-                    Some(outputs)
-                });
+                let replay_outputs: Option<Vec<(String, Vec<u8>)>> =
+                    self.replay.as_mut().and_then(|replay| {
+                        let replayer = replay.nodes.get_mut(node_name.as_ref())?;
+                        let node_overrides = replay.overrides.get(node_name.as_ref());
+                        let snapshot = replayer.current_snapshot()?;
+                        let outputs: Vec<(String, Vec<u8>)> = snapshot
+                            .outputs
+                            .iter()
+                            .map(|(topic, data)| {
+                                let output_data = node_overrides
+                                    .and_then(|ovr| ovr.get(topic))
+                                    .unwrap_or(data)
+                                    .clone();
+                                (topic.clone(), output_data)
+                            })
+                            .collect();
+                        replayer.advance();
+                        Some(outputs)
+                    });
                 if let Some(outputs) = replay_outputs {
                     for (topic, data) in &outputs {
                         // Inject into shared-memory topic so live subscriber nodes see it
@@ -2931,7 +2972,8 @@ impl Scheduler {
 
                     // Set tick context for horus::now(), horus::dt(), horus::rng() etc.
                     let clock_ref: &dyn crate::core::clock::Clock = &*self.clock;
-                    let node_dt = registered.rate_hz
+                    let node_dt = registered
+                        .rate_hz
                         .map(|hz| Duration::from_secs_f64(1.0 / hz))
                         .unwrap_or(self.tick.period);
                     let sim_time = self.clock.elapsed();
@@ -2989,7 +3031,11 @@ impl Scheduler {
 
         // Capture outputs from publisher topics (for recording)
         {
-            let RegisteredNode { ref mut node, ref mut recorder, .. } = self.nodes[i];
+            let RegisteredNode {
+                ref mut node,
+                ref mut recorder,
+                ..
+            } = self.nodes[i];
             if let Some(recorder) = recorder.as_mut() {
                 if recorder.is_active_tick() {
                     let publishers = node.publishers();
@@ -2997,7 +3043,9 @@ impl Scheduler {
                         let topics_dir = crate::memory::platform::shm_topics_dir();
                         for pub_topic in &publishers {
                             let topic_path = topics_dir.join(&pub_topic.topic_name);
-                            if let Some(slot_read) = crate::communication::read_latest_slot_bytes(&topic_path, 0) {
+                            if let Some(slot_read) =
+                                crate::communication::read_latest_slot_bytes(&topic_path, 0)
+                            {
                                 recorder.record_output(&pub_topic.topic_name, slot_read.payload);
                             }
                         }
@@ -3038,8 +3086,7 @@ impl Scheduler {
 
                 // Graduated degradation recovery: track successful ticks at reduced rate
                 if let Some(ref monitor) = self.monitor.safety {
-                    let action =
-                        monitor.record_successful_tick(&self.nodes[i].name);
+                    let action = monitor.record_successful_tick(&self.nodes[i].name);
                     self.apply_degradation_action(i, action);
                 }
 
@@ -3074,7 +3121,9 @@ impl Scheduler {
                     let violation = &budget_result.violation;
                     print_line(&format!(
                         " budget violation in {}: {:?} > {:?}",
-                        violation.node_name(), violation.actual(), violation.budget()
+                        violation.node_name(),
+                        violation.actual(),
+                        violation.budget()
                     ));
 
                     // Update RtStats
@@ -3201,7 +3250,10 @@ impl Scheduler {
                     name
                 ));
             }
-            DegradationAction::ReduceRate { ref node, new_rate_hz } => {
+            DegradationAction::ReduceRate {
+                ref node,
+                new_rate_hz,
+            } => {
                 self.nodes[i].rate_hz = Some(new_rate_hz);
                 self.nodes[i].last_tick = Some(Instant::now());
                 print_line(&format!(

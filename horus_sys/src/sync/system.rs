@@ -57,28 +57,29 @@ fn suggest_install_cmd(dep: &SystemDep) -> Option<String> {
     let distro = crate::platform::detect_distro();
 
     match distro {
-        crate::platform::Distro::Ubuntu | crate::platform::Distro::Debian => {
-            dep.apt.as_ref().map(|pkg| format!("sudo apt install {}", pkg))
-        }
-        crate::platform::Distro::Fedora => {
-            dep.apt.as_ref().map(|pkg| {
-                let pkg = pkg.replace("-dev", "-devel");
-                format!("sudo dnf install {}", pkg)
-            })
-        }
-        crate::platform::Distro::Arch => {
-            dep.brew.as_ref().or(dep.apt.as_ref()).map(|pkg| {
-                format!("sudo pacman -S {}", pkg)
-            })
-        }
+        crate::platform::Distro::Ubuntu | crate::platform::Distro::Debian => dep
+            .apt
+            .as_ref()
+            .map(|pkg| format!("sudo apt install {}", pkg)),
+        crate::platform::Distro::Fedora => dep.apt.as_ref().map(|pkg| {
+            let pkg = pkg.replace("-dev", "-devel");
+            format!("sudo dnf install {}", pkg)
+        }),
+        crate::platform::Distro::Arch => dep
+            .brew
+            .as_ref()
+            .or(dep.apt.as_ref())
+            .map(|pkg| format!("sudo pacman -S {}", pkg)),
         crate::platform::Distro::MacOS => {
             dep.brew.as_ref().map(|pkg| format!("brew install {}", pkg))
         }
-        crate::platform::Distro::Windows => {
-            dep.choco.as_ref().map(|pkg| format!("choco install {}", pkg))
-        }
-        _ => dep.apt.as_ref().map(|pkg| {
-            crate::platform::suggest_install(pkg)
-        }),
+        crate::platform::Distro::Windows => dep
+            .choco
+            .as_ref()
+            .map(|pkg| format!("choco install {}", pkg)),
+        _ => dep
+            .apt
+            .as_ref()
+            .map(|pkg| crate::platform::suggest_install(pkg)),
     }
 }

@@ -17,8 +17,6 @@
 
 #[doc(hidden)]
 pub mod clock;
-#[doc(hidden)]
-pub mod tick_context;
 pub mod duration_ext;
 #[doc(hidden)]
 pub mod hlog;
@@ -33,19 +31,21 @@ pub mod presence;
 pub mod rt_config;
 #[doc(hidden)]
 pub mod rt_node;
+#[doc(hidden)]
+pub mod tick_context;
 pub mod timer;
 
 // LogType must be pub for hlog! macro expansion in downstream crates
 #[doc(hidden)]
 pub use log_buffer::LogType;
 
-pub use node::{HealthStatus, LogSummary, Node, NodeMetrics, NodeState, TopicMetadata};
+pub use duration_ext::{DurationExt, Frequency};
 #[doc(hidden)]
 pub use node::NodeInfo;
+pub use node::{HealthStatus, LogSummary, Node, NodeMetrics, NodeState, TopicMetadata};
 #[doc(hidden)]
 pub use presence::NodePresence;
-pub use timer::{Rate, Stopwatch};
-pub use duration_ext::{DurationExt, Frequency};
-pub use rt_node::{Miss, RtStats};
 #[doc(hidden)]
 pub use rt_node::BudgetViolation;
+pub use rt_node::{Miss, RtStats};
+pub use timer::{Rate, Stopwatch};

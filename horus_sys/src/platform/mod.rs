@@ -307,12 +307,7 @@ pub fn write_script(
         let cmd_path = path.with_extension("cmd");
         let mut file = std::fs::File::create(&cmd_path)?;
         writeln!(file, "@echo off")?;
-        writeln!(
-            file,
-            "{} \"{}\" %*",
-            interpreter,
-            path.display()
-        )?;
+        writeln!(file, "{} \"{}\" %*", interpreter, path.display())?;
         // Also write the actual script content
         let mut script_file = std::fs::File::create(path)?;
         write!(script_file, "{}", content)?;
@@ -411,9 +406,7 @@ pub fn suggest_dev_install(lib_name: &str) -> String {
 /// Suggest a build-essential / base-devel install command.
 pub fn suggest_build_tools() -> String {
     match detect_distro() {
-        Distro::Ubuntu | Distro::Debian | Distro::Unknown => {
-            suggest_install("build-essential")
-        }
+        Distro::Ubuntu | Distro::Debian | Distro::Unknown => suggest_install("build-essential"),
         Distro::Fedora => "sudo dnf groupinstall \"Development Tools\"".to_string(),
         Distro::Arch => suggest_install("base-devel"),
         Distro::NixOS => "nix-env -iA nixpkgs.gcc nixpkgs.gnumake".to_string(),
@@ -444,7 +437,7 @@ pub fn hostname() -> String {
             return "localhost".to_string();
         }
         buf[buf.len() - 1] = 0; // ensure null termination
-        // SAFETY: we just ensured null-termination above.
+                                // SAFETY: we just ensured null-termination above.
         let cstr = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
         cstr.to_str().unwrap_or("localhost").to_string()
     }
@@ -591,25 +584,40 @@ mod tests {
     fn detect_is_cached() {
         let a = detect() as *const OsInfo;
         let b = detect() as *const OsInfo;
-        assert_eq!(a, b, "detect() should return same pointer (OnceLock cached)");
+        assert_eq!(
+            a, b,
+            "detect() should return same pointer (OnceLock cached)"
+        );
     }
 
     #[test]
     fn config_dir_is_absolute() {
         let path = config_dir();
-        assert!(path.is_absolute(), "config_dir should be absolute: {:?}", path);
+        assert!(
+            path.is_absolute(),
+            "config_dir should be absolute: {:?}",
+            path
+        );
     }
 
     #[test]
     fn cache_dir_is_absolute() {
         let path = cache_dir();
-        assert!(path.is_absolute(), "cache_dir should be absolute: {:?}", path);
+        assert!(
+            path.is_absolute(),
+            "cache_dir should be absolute: {:?}",
+            path
+        );
     }
 
     #[test]
     fn data_dir_is_absolute() {
         let path = data_dir();
-        assert!(path.is_absolute(), "data_dir should be absolute: {:?}", path);
+        assert!(
+            path.is_absolute(),
+            "data_dir should be absolute: {:?}",
+            path
+        );
     }
 
     #[test]
@@ -634,14 +642,20 @@ mod tests {
     #[test]
     fn suggest_install_contains_package() {
         let cmd = suggest_install("cmake");
-        assert!(cmd.contains("cmake"), "suggest_install should contain package name");
+        assert!(
+            cmd.contains("cmake"),
+            "suggest_install should contain package name"
+        );
         assert!(!cmd.is_empty());
     }
 
     #[test]
     fn suggest_dev_install_contains_lib() {
         let cmd = suggest_dev_install("ssl");
-        assert!(cmd.contains("ssl"), "suggest_dev_install should contain lib name");
+        assert!(
+            cmd.contains("ssl"),
+            "suggest_dev_install should contain lib name"
+        );
     }
 
     #[test]
@@ -703,7 +717,10 @@ mod tests {
     #[test]
     fn disk_available_mb_returns_some_for_temp_dir() {
         let result = disk_available_mb(&std::env::temp_dir());
-        assert!(result.is_some(), "temp_dir should have measurable disk space");
+        assert!(
+            result.is_some(),
+            "temp_dir should have measurable disk space"
+        );
         assert!(result.unwrap() > 0, "available space should be positive");
     }
 

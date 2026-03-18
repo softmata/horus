@@ -71,7 +71,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         // Propagate the child's exit code as an error
         if !status.success() {
             let code = status.code().unwrap_or(1);
-            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("python", code));
+            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
+                "python", code,
+            ));
             bail!("Python node exited with code {}", code);
         }
     } else {
@@ -108,7 +110,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         // Propagate the child's exit code as an error
         if !status.success() {
             let code = status.code().unwrap_or(1);
-            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("python", code));
+            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
+                "python", code,
+            ));
             bail!("Python script exited with code {}", code);
         }
     }
@@ -293,8 +297,7 @@ fn generate_pyproject_if_needed() -> Result<()> {
         return Ok(());
     }
 
-    let manifest = HorusManifest::load_from(manifest_path)
-        .ok();
+    let manifest = HorusManifest::load_from(manifest_path).ok();
 
     if let Some(manifest) = manifest {
         // Only generate if there are Python deps

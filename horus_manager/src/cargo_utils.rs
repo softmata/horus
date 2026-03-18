@@ -156,8 +156,7 @@ mod tests {
     #[test]
     fn detect_system_cargo_binary_returns_none_for_nonexistent_binary() {
         // Use a name that is extremely unlikely to exist
-        let result =
-            detect_system_cargo_binary("__horus_test_nonexistent_binary_12345__").unwrap();
+        let result = detect_system_cargo_binary("__horus_test_nonexistent_binary_12345__").unwrap();
         assert_eq!(result, None);
     }
 
@@ -169,7 +168,10 @@ mod tests {
             let cargo_bin = home.join(".cargo/bin/cargo");
             if cargo_bin.exists() {
                 let result = detect_system_cargo_binary("cargo").unwrap();
-                assert!(result.is_some(), "cargo exists in ~/.cargo/bin/ but detect returned None");
+                assert!(
+                    result.is_some(),
+                    "cargo exists in ~/.cargo/bin/ but detect returned None"
+                );
                 let version = result.unwrap();
                 // Version should be either a semver-ish string or "unknown"
                 assert!(!version.is_empty());

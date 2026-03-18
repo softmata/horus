@@ -240,7 +240,8 @@ impl RtConfig {
         // Apply scheduler and priority via horus_sys
         if let Some(priority) = self.priority {
             if self.scheduler != RtScheduler::Normal {
-                let actual = priority.clamp(kernel_info.min_rt_priority, kernel_info.max_rt_priority);
+                let actual =
+                    priority.clamp(kernel_info.min_rt_priority, kernel_info.max_rt_priority);
                 match horus_sys::rt::set_realtime_priority(actual) {
                     Ok(()) => {
                         if actual != priority {
@@ -555,7 +556,6 @@ impl RtCpuInfo {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,7 +607,11 @@ mod tests {
     fn test_get_current_scheduler() {
         let (scheduler, priority) = RtConfig::get_current_scheduler().unwrap();
         // Priority should be non-negative
-        assert!(priority >= 0, "Priority should be non-negative, got {}", priority);
+        assert!(
+            priority >= 0,
+            "Priority should be non-negative, got {}",
+            priority
+        );
         // Verify the enum variant is one of the known policies
         match scheduler {
             RtScheduler::Normal | RtScheduler::Fifo => {}

@@ -62,10 +62,7 @@ impl ShmRegion {
         if ptr.is_null() {
             unsafe { CloseHandle(handle) };
             // SAFETY: GetLastError is always safe
-            anyhow::bail!(
-                "MapViewOfFile failed: error {}",
-                unsafe { GetLastError() }
-            );
+            anyhow::bail!("MapViewOfFile failed: error {}", unsafe { GetLastError() });
         }
 
         if is_owner {

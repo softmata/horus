@@ -77,10 +77,10 @@ fn test_goal_status_display() {
 #[test]
 fn test_goal_priority_ordering() {
     let highest = GoalPriority::HIGHEST; // 0
-    let high = GoalPriority::HIGH;       // 64
-    let normal = GoalPriority::NORMAL;   // 128
-    let low = GoalPriority::LOW;         // 192
-    let lowest = GoalPriority::LOWEST;   // 255
+    let high = GoalPriority::HIGH; // 64
+    let normal = GoalPriority::NORMAL; // 128
+    let low = GoalPriority::LOW; // 192
+    let lowest = GoalPriority::LOWEST; // 255
 
     // Lower value = higher priority
     assert!(highest < high);

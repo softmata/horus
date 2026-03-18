@@ -495,7 +495,10 @@ mod tests {
         let result = run_lint(false, false, vec![]);
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_err(), "horus.toml alone should not detect languages");
+        assert!(
+            result.is_err(),
+            "horus.toml alone should not detect languages"
+        );
     }
 
     #[test]

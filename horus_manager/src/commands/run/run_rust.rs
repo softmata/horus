@@ -49,8 +49,7 @@ pub(super) fn get_color_for_index(index: usize) -> &'static str {
 /// `[drivers]` section so that `cargo_gen` picks them up as Cargo features.
 pub(crate) fn load_or_default_manifest(extra_drivers: &[String]) -> Result<HorusManifest> {
     let mut manifest = if Path::new(HORUS_TOML).exists() {
-        HorusManifest::load_from(Path::new(HORUS_TOML))
-            .unwrap_or_else(|_| default_manifest())
+        HorusManifest::load_from(Path::new(HORUS_TOML)).unwrap_or_else(|_| default_manifest())
     } else {
         default_manifest()
     };
@@ -173,11 +172,19 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
 
                 let output = cmd.output()?;
                 if !output.status.success() {
-                    finish_error(&spinner, &format!("Cargo build failed ({:.1}s)", build_start.elapsed().as_secs_f64()));
+                    finish_error(
+                        &spinner,
+                        &format!(
+                            "Cargo build failed ({:.1}s)",
+                            build_start.elapsed().as_secs_f64()
+                        ),
+                    );
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if !stderr.is_empty() {
                         eprintln!("{}", crate::error_wrapper::rewrite_horus_paths(&stderr));
-                        crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::cargo_error_hint(&stderr));
+                        crate::error_wrapper::emit_diagnostics(
+                            &crate::error_wrapper::cargo_error_hint(&stderr),
+                        );
                     }
                     bail!("Cargo build failed");
                 }
@@ -185,7 +192,15 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
                 let profile = if release { "release" } else { "debug" };
                 let project_name = get_project_name()?;
 
-                finish_success(&spinner, &format!("Built: build/{}/{} ({:.1}s)", profile, project_name, build_start.elapsed().as_secs_f64()));
+                finish_success(
+                    &spinner,
+                    &format!(
+                        "Built: build/{}/{} ({:.1}s)",
+                        profile,
+                        project_name,
+                        build_start.elapsed().as_secs_f64()
+                    ),
+                );
             } else {
                 // No root Cargo.toml — generate via cargo_gen
                 cli_output::info("Setting up Cargo workspace for standalone file...");
@@ -212,12 +227,7 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
                 let project_dir = env::current_dir()?;
                 let manifest = load_or_default_manifest(&auto_features)?;
                 let binary_name = crate::cargo_gen::sanitize_cargo_name(&manifest.package.name);
-                crate::cargo_gen::generate(
-                    &manifest,
-                    &project_dir,
-                    &[target_file.clone()],
-                    false,
-                )?;
+                crate::cargo_gen::generate(&manifest, &project_dir, &[target_file.clone()], false)?;
                 cli_output::success("Generated Cargo.toml (no source copying needed)");
 
                 // Run cargo build in .horus directory
@@ -244,17 +254,33 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
 
                 let output = cmd.output()?;
                 if !output.status.success() {
-                    finish_error(&spinner, &format!("Cargo build failed ({:.1}s)", build_start.elapsed().as_secs_f64()));
+                    finish_error(
+                        &spinner,
+                        &format!(
+                            "Cargo build failed ({:.1}s)",
+                            build_start.elapsed().as_secs_f64()
+                        ),
+                    );
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if !stderr.is_empty() {
                         eprintln!("{}", crate::error_wrapper::rewrite_horus_paths(&stderr));
-                        crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::cargo_error_hint(&stderr));
+                        crate::error_wrapper::emit_diagnostics(
+                            &crate::error_wrapper::cargo_error_hint(&stderr),
+                        );
                     }
                     bail!("Cargo build failed");
                 }
 
                 let profile = if release { "release" } else { "debug" };
-                finish_success(&spinner, &format!("Built: build/{}/{} ({:.1}s)", profile, binary_name, build_start.elapsed().as_secs_f64()));
+                finish_success(
+                    &spinner,
+                    &format!(
+                        "Built: build/{}/{} ({:.1}s)",
+                        profile,
+                        binary_name,
+                        build_start.elapsed().as_secs_f64()
+                    ),
+                );
             }
         }
         _ => bail!("Unsupported language: {}", language),
@@ -307,10 +333,8 @@ pub(super) fn execute_from_cargo_toml(
 
         if !Path::new(&binary).exists() || clean {
             let build_start = std::time::Instant::now();
-            let spinner = progress::build_spinner(&format!(
-                "Building Cargo project ({} mode)...",
-                build_dir
-            ));
+            let spinner =
+                progress::build_spinner(&format!("Building Cargo project ({} mode)...", build_dir));
             let mut cmd = Command::new("cargo");
             cmd.arg("build");
             cmd.stdout(std::process::Stdio::piped());
@@ -322,15 +346,26 @@ pub(super) fn execute_from_cargo_toml(
 
             let output = cmd.output()?;
             if !output.status.success() {
-                finish_error(&spinner, &format!("Build failed ({:.1}s)", build_start.elapsed().as_secs_f64()));
+                finish_error(
+                    &spinner,
+                    &format!("Build failed ({:.1}s)", build_start.elapsed().as_secs_f64()),
+                );
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.is_empty() {
                     eprintln!("{}", crate::error_wrapper::rewrite_horus_paths(&stderr));
-                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::cargo_error_hint(&stderr));
+                    crate::error_wrapper::emit_diagnostics(
+                        &crate::error_wrapper::cargo_error_hint(&stderr),
+                    );
                 }
                 bail!("Build failed");
             }
-            finish_success(&spinner, &format!("Build complete ({:.1}s)", build_start.elapsed().as_secs_f64()));
+            finish_success(
+                &spinner,
+                &format!(
+                    "Build complete ({:.1}s)",
+                    build_start.elapsed().as_secs_f64()
+                ),
+            );
         }
 
         // Run the binary with environment
@@ -344,7 +379,9 @@ pub(super) fn execute_from_cargo_toml(
         let status = cmd.status()?;
         if !status.success() {
             let code = status.code().unwrap_or(1);
-            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("rust", code));
+            crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
+                "rust", code,
+            ));
             bail!("Process exited with code {}", code);
         }
 
@@ -426,9 +463,7 @@ pub(super) fn build_rust_files_batch(
         .iter()
         .map(|fp| {
             crate::cargo_gen::sanitize_cargo_name(
-                fp.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("node"),
+                fp.file_stem().and_then(|s| s.to_str()).unwrap_or("node"),
             )
         })
         .collect();
@@ -514,12 +549,7 @@ pub(super) fn build_file_for_concurrent_execution(
             let mut manifest = load_or_default_manifest(&[])?;
             manifest.package.name = format!("horus-project-{}", name);
             let project_dir = env::current_dir()?;
-            crate::cargo_gen::generate(
-                &manifest,
-                &project_dir,
-                &[file_path],
-                false,
-            )?;
+            crate::cargo_gen::generate(&manifest, &project_dir, &[file_path], false)?;
 
             if clean {
                 let mut clean_cmd = Command::new("cargo");
@@ -576,7 +606,10 @@ pub(super) fn build_file_for_concurrent_execution(
                 env_vars: child_env,
             })
         }
-        _ => bail!("Unsupported language: {}. HORUS supports Rust, Python, and C++.", language),
+        _ => bail!(
+            "Unsupported language: {}. HORUS supports Rust, Python, and C++.",
+            language
+        ),
     }
 }
 
@@ -631,7 +664,9 @@ pub(super) fn execute_with_scheduler(
                 let status = cmd.status()?;
                 if !status.success() {
                     let code = status.code().unwrap_or(1);
-                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("cargo", code));
+                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
+                        "cargo", code,
+                    ));
                     bail!("Cargo build failed (exit code {})", code);
                 }
 
@@ -649,7 +684,9 @@ pub(super) fn execute_with_scheduler(
 
                 if !status.success() {
                     let code = status.code().unwrap_or(1);
-                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("rust", code));
+                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
+                        "rust", code,
+                    ));
                     bail!("Process exited with code {}", code);
                 }
             } else {
@@ -678,12 +715,7 @@ pub(super) fn execute_with_scheduler(
                 let project_dir = env::current_dir()?;
                 let manifest = load_or_default_manifest(&auto_features)?;
                 let binary_name = crate::cargo_gen::sanitize_cargo_name(&manifest.package.name);
-                crate::cargo_gen::generate(
-                    &manifest,
-                    &project_dir,
-                    &[file.clone()],
-                    false,
-                )?;
+                crate::cargo_gen::generate(&manifest, &project_dir, &[file.clone()], false)?;
                 cli_output::success("Generated Cargo.toml");
 
                 // Run cargo clean if requested
@@ -721,7 +753,9 @@ pub(super) fn execute_with_scheduler(
                 let status = cmd.status()?;
                 if !status.success() {
                     let code = status.code().unwrap_or(1);
-                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("cargo", code));
+                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
+                        "cargo", code,
+                    ));
                     bail!("Cargo build failed (exit code {})", code);
                 }
 
@@ -738,7 +772,9 @@ pub(super) fn execute_with_scheduler(
 
                 if !status.success() {
                     let code = status.code().unwrap_or(1);
-                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint("rust", code));
+                    crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
+                        "rust", code,
+                    ));
                     bail!("Process exited with code {}", code);
                 }
             }
@@ -790,10 +826,7 @@ pub(super) fn clean_build_cache() -> Result<()> {
             let entry = entry?;
             fs::remove_file(entry.path()).ok();
         }
-        println!(
-            "  {} Cleaned build cache",
-            cli_output::ICON_SUCCESS.green()
-        );
+        println!("  {} Cleaned build cache", cli_output::ICON_SUCCESS.green());
     }
 
     // Clean .horus/bin directory
@@ -959,10 +992,7 @@ camera = true
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = load_or_default_manifest(&[
-            "lidar".to_string(),
-            "imu".to_string(),
-        ]);
+        let result = load_or_default_manifest(&["lidar".to_string(), "imu".to_string()]);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1318,8 +1348,7 @@ version = "0.1.0"
         };
 
         let cmd = info.create_command(&[]);
-        let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> =
-            cmd.get_envs().collect();
+        let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = cmd.get_envs().collect();
 
         // Verify env vars were set
         let horus_log = envs
@@ -1428,7 +1457,11 @@ version = "0.1.0"
         drop(_guard);
 
         // Python is interpreted — build-only should succeed with no-op
-        assert!(result.is_ok(), "Python build should succeed (no-op): {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Python build should succeed (no-op): {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1499,7 +1532,11 @@ version = "0.1.0"
         drop(_guard);
 
         // Should auto-detect main.py and succeed (python = no-op build)
-        assert!(result.is_ok(), "Auto-detect main.py should work: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Auto-detect main.py should work: {:?}",
+            result.err()
+        );
     }
 
     #[test]

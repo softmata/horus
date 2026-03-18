@@ -142,18 +142,31 @@ impl HardwareSet {
                 toml::Value::Table(cfg) => {
                     // Config table: determine type from terra/package/node key
                     let terra = cfg.get("terra").and_then(|v| v.as_str()).map(String::from);
-                    let package = cfg.get("package").and_then(|v| v.as_str()).map(String::from);
+                    let package = cfg
+                        .get("package")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                     let node = cfg.get("node").and_then(|v| v.as_str()).map(String::from);
 
                     // Extract topic mapping fields
                     let topic = cfg.get("topic").and_then(|v| v.as_str()).map(String::from);
-                    let topic_state = cfg.get("topic_state").and_then(|v| v.as_str()).map(String::from);
-                    let topic_command = cfg.get("topic_command").and_then(|v| v.as_str()).map(String::from);
+                    let topic_state = cfg
+                        .get("topic_state")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let topic_command = cfg
+                        .get("topic_command")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
 
                     // Collect remaining keys as params (skip config/bridge keys)
                     const RESERVED: &[&str] = &[
-                        "terra", "package", "node",
-                        "topic", "topic_state", "topic_command",
+                        "terra",
+                        "package",
+                        "node",
+                        "topic",
+                        "topic_state",
+                        "topic_command",
                     ];
                     let mut params_map = HashMap::new();
                     for (k, v) in cfg {
@@ -179,7 +192,11 @@ impl HardwareSet {
                     DriverEntry {
                         driver_type,
                         params: DriverParams::new(params_map),
-                        topics: TopicMapping { topic, topic_state, topic_command },
+                        topics: TopicMapping {
+                            topic,
+                            topic_state,
+                            topic_command,
+                        },
                     }
                 }
                 toml::Value::String(_) | toml::Value::Boolean(_) => {
@@ -328,7 +345,8 @@ impl HardwareSet {
                 log::info!(
                     "driver '{}': wrapping terra '{}' as generic node. \
                      For full hardware access, use the typed accessor (e.g., hw.dynamixel()).",
-                    name, terra_name
+                    name,
+                    terra_name
                 );
                 Ok(Box::new(TerraStubNode {
                     driver_name: name.to_string(),
@@ -463,7 +481,8 @@ impl HardwareSet {
                     log::warn!(
                         "driver '{}': unknown terra driver '{}' — \
                          connection will use raw params only",
-                        name, terra_name
+                        name,
+                        terra_name
                     );
                 }
 
@@ -494,12 +513,14 @@ mod tests {
 
     #[test]
     fn from_toml_terra_driver() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [arm]
             terra = "dynamixel"
             port = "/dev/ttyUSB0"
             baudrate = 1000000
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
         assert!(hw.has("arm"));
         assert_eq!(hw.len(), 1);
@@ -511,24 +532,32 @@ mod tests {
 
     #[test]
     fn from_toml_package_driver() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [sensor]
             package = "horus-driver-ati-netft"
             address = "192.168.1.100"
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
-        assert!(matches!(hw.driver_type("sensor"), Some(DriverType::Package(p)) if p == "horus-driver-ati-netft"));
+        assert!(
+            matches!(hw.driver_type("sensor"), Some(DriverType::Package(p)) if p == "horus-driver-ati-netft")
+        );
     }
 
     #[test]
     fn from_toml_local_driver() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [conveyor]
             node = "ConveyorDriver"
             port = "/dev/ttyACM0"
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
-        assert!(matches!(hw.driver_type("conveyor"), Some(DriverType::Local(n)) if n == "ConveyorDriver"));
+        assert!(
+            matches!(hw.driver_type("conveyor"), Some(DriverType::Local(n)) if n == "ConveyorDriver")
+        );
     }
 
     #[test]
@@ -549,7 +578,8 @@ mod tests {
 
     #[test]
     fn from_toml_mixed() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             camera = "opencv"
             gps = true
             [arm]
@@ -559,7 +589,8 @@ mod tests {
             package = "horus-driver-x"
             [conveyor]
             node = "MyDriver"
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
         assert_eq!(hw.len(), 5);
         let names = hw.list();
@@ -572,11 +603,13 @@ mod tests {
 
     #[test]
     fn list_sorted() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             zebra = true
             alpha = true
             mid = true
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
         assert_eq!(hw.list(), vec!["alpha", "mid", "zebra"]);
     }
@@ -591,35 +624,44 @@ mod tests {
 
     #[test]
     fn dynamixel_accessor() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [arm]
             terra = "dynamixel"
             port = "/dev/ttyUSB0"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let handle = hw.dynamixel("arm").unwrap();
         assert_eq!(handle.terra_name(), Some("dynamixel"));
-        assert_eq!(handle.params().get::<String>("port").unwrap(), "/dev/ttyUSB0");
+        assert_eq!(
+            handle.params().get::<String>("port").unwrap(),
+            "/dev/ttyUSB0"
+        );
     }
 
     #[test]
     fn dynamixel_accessor_wrong_type_errors() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [sensor]
             package = "horus-driver-x"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         assert!(hw.dynamixel("sensor").is_err());
     }
 
     #[test]
     fn spi_accessor() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [display]
             terra = "spi"
             bus = 0
             device = 1
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let handle = hw.spi("display").unwrap();
         assert_eq!(handle.terra_name(), Some("spi"));
@@ -628,11 +670,13 @@ mod tests {
 
     #[test]
     fn adc_accessor() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [voltage]
             terra = "adc"
             channel = 3
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let handle = hw.adc("voltage").unwrap();
         assert_eq!(handle.terra_name(), Some("adc"));
@@ -650,11 +694,15 @@ mod tests {
 
     #[test]
     fn config_table_without_source_key_errors() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [broken]
             port = "/dev/ttyUSB0"
-        "#);
-        let err = HardwareSet::from_toml_table(&table).unwrap_err().to_string();
+        "#,
+        );
+        let err = HardwareSet::from_toml_table(&table)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("terra"));
         assert!(err.contains("package"));
         assert!(err.contains("node"));
@@ -681,20 +729,22 @@ mod tests {
 
     struct PkgStub;
     impl crate::core::Node for PkgStub {
-        fn name(&self) -> &str { "pkg_stub" }
+        fn name(&self) -> &str {
+            "pkg_stub"
+        }
         fn tick(&mut self) {}
     }
 
     #[test]
     fn package_factory_dispatch() {
-        super::super::registry::register("test-pkg-driver", |_params| {
-            Ok(Box::new(PkgStub))
-        });
-        let table = test_table(r#"
+        super::super::registry::register("test-pkg-driver", |_params| Ok(Box::new(PkgStub)));
+        let table = test_table(
+            r#"
             [sensor]
             package = "test-pkg-driver"
             address = "192.168.1.100"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let node = hw.package("sensor").unwrap();
         assert_eq!(node.name(), "pkg_stub");
@@ -702,10 +752,12 @@ mod tests {
 
     #[test]
     fn package_unregistered_errors_clearly() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [sensor]
             package = "nonexistent-pkg-xyz"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let result = hw.package("sensor");
         let err = match result {
@@ -718,10 +770,12 @@ mod tests {
 
     #[test]
     fn package_wrong_type_errors() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [arm]
             terra = "dynamixel"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         assert!(hw.package("arm").is_err());
     }
@@ -730,11 +784,13 @@ mod tests {
 
     #[test]
     fn node_generic_terra() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [arm]
             terra = "dynamixel"
             port = "/dev/ttyUSB0"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let node = hw.node("arm").unwrap();
         assert_eq!(node.name(), "arm");
@@ -742,13 +798,13 @@ mod tests {
 
     #[test]
     fn node_generic_local() {
-        super::super::registry::register("NodeGenericLocal", |_params| {
-            Ok(Box::new(PkgStub))
-        });
-        let table = test_table(r#"
+        super::super::registry::register("NodeGenericLocal", |_params| Ok(Box::new(PkgStub)));
+        let table = test_table(
+            r#"
             [conv]
             node = "NodeGenericLocal"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let node = hw.node("conv").unwrap();
         assert_eq!(node.name(), "pkg_stub");
@@ -756,13 +812,13 @@ mod tests {
 
     #[test]
     fn node_generic_package() {
-        super::super::registry::register("test-node-pkg", |_params| {
-            Ok(Box::new(PkgStub))
-        });
-        let table = test_table(r#"
+        super::super::registry::register("test-node-pkg", |_params| Ok(Box::new(PkgStub)));
+        let table = test_table(
+            r#"
             [sensor]
             package = "test-node-pkg"
-        "#);
+        "#,
+        );
         let mut hw = HardwareSet::from_toml_table(&table).unwrap();
         let node = hw.node("sensor").unwrap();
         assert_eq!(node.name(), "pkg_stub");
@@ -779,13 +835,15 @@ mod tests {
 
     #[test]
     fn topic_mapping_sensor() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [imu]
             terra = "mpu6050"
             bus = "i2c-1"
             address = 104
             topic = "sensors/imu"
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
         let mapping = hw.topic_mapping("imu").unwrap();
         assert_eq!(mapping.topic.as_deref(), Some("sensors/imu"));
@@ -800,14 +858,16 @@ mod tests {
 
     #[test]
     fn topic_mapping_actuator() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [arm]
             terra = "dynamixel"
             port = "/dev/ttyUSB0"
             baudrate = 1000000
             topic_state = "arm/joint_states"
             topic_command = "arm/joint_commands"
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
         let mapping = hw.topic_mapping("arm").unwrap();
         assert!(mapping.topic.is_none());
@@ -823,11 +883,13 @@ mod tests {
 
     #[test]
     fn topic_mapping_none_when_no_topic_fields() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [lidar]
             terra = "rplidar"
             port = "/dev/ttyUSB1"
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
         let mapping = hw.topic_mapping("lidar").unwrap();
         assert!(mapping.topic.is_none());
@@ -847,14 +909,16 @@ mod tests {
 
     #[test]
     fn topic_mapping_all_three_fields() {
-        let table = test_table(r#"
+        let table = test_table(
+            r#"
             [robot]
             terra = "dynamixel"
             port = "/dev/ttyUSB0"
             topic = "sensors/feedback"
             topic_state = "robot/state"
             topic_command = "robot/cmd"
-        "#);
+        "#,
+        );
         let hw = HardwareSet::from_toml_table(&table).unwrap();
         let mapping = hw.topic_mapping("robot").unwrap();
         assert_eq!(mapping.topic.as_deref(), Some("sensors/feedback"));

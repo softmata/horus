@@ -501,7 +501,9 @@ impl RuntimeCapabilities {
             return (max_node, topology);
         }
         // Fallback: single NUMA node with all CPUs
-        let cpu_count = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
+        let cpu_count = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
         topology.insert(0, (0..cpu_count).collect());
         (1, topology)
     }
@@ -554,12 +556,23 @@ mod capabilities_tests {
     fn test_detect_capabilities() {
         let caps = RuntimeCapabilities::detect();
         assert!(caps.cpu_count > 0);
-        assert!(!caps.kernel_version.is_empty(), "kernel_version should be detected");
+        assert!(
+            !caps.kernel_version.is_empty(),
+            "kernel_version should be detected"
+        );
         assert!(caps.numa_node_count >= 1, "At least 1 NUMA node expected");
-        assert!(caps.detection_time_us > 0, "Detection should take measurable time");
+        assert!(
+            caps.detection_time_us > 0,
+            "Detection should take measurable time"
+        );
         // recommended_rt_cpus should be a subset of available CPUs
         for &cpu in &caps.recommended_rt_cpus {
-            assert!(cpu < caps.cpu_count, "Recommended RT CPU {} exceeds cpu_count {}", cpu, caps.cpu_count);
+            assert!(
+                cpu < caps.cpu_count,
+                "Recommended RT CPU {} exceeds cpu_count {}",
+                cpu,
+                caps.cpu_count
+            );
         }
     }
 

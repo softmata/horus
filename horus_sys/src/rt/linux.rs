@@ -44,7 +44,11 @@ pub(super) fn set_realtime_priority(priority: i32) -> anyhow::Result<()> {
         if err.raw_os_error() == Some(libc::EPERM) {
             anyhow::bail!("SCHED_FIFO requires CAP_SYS_NICE or root: {}", err)
         } else {
-            anyhow::bail!("sched_setscheduler(SCHED_FIFO, {}) failed: {}", priority, err)
+            anyhow::bail!(
+                "sched_setscheduler(SCHED_FIFO, {}) failed: {}",
+                priority,
+                err
+            )
         }
     }
 }

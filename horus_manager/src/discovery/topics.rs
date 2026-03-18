@@ -158,4 +158,3 @@ pub(super) fn is_horus_process(cmdline: &str) -> bool {
     }
     false
 }
-

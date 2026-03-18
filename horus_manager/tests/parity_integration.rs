@@ -46,7 +46,10 @@ fn test_topic_ref_defaults_on_missing_fields() {
     let minimal = r#"{}"#;
     let tr: horus_sys::discover::TopicRef = serde_json::from_str(minimal).unwrap();
     assert_eq!(tr.topic, "", "missing topic should default to empty");
-    assert_eq!(tr.type_name, "", "missing type_name should default to empty");
+    assert_eq!(
+        tr.type_name, "",
+        "missing type_name should default to empty"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -113,7 +116,10 @@ fn test_full_presence_json_deserialization() {
     assert_eq!(node.subscribers[1].topic, "emergency_stop");
 
     // Process enrichment should work
-    assert!(!node.cmdline.is_empty(), "cmdline should be enriched from process_info");
+    assert!(
+        !node.cmdline.is_empty(),
+        "cmdline should be enriched from process_info"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -155,9 +161,7 @@ fn test_topic_meta_to_discovered_topic() {
 
     // Discover via horus_sys
     let topics = horus_sys::discover::find_topics();
-    let topic = topics
-        .iter()
-        .find(|t| t.name == "parity_pipeline_topic");
+    let topic = topics.iter().find(|t| t.name == "parity_pipeline_topic");
 
     assert!(topic.is_some(), ".meta file should produce DiscoveredTopic");
     let topic = topic.unwrap();
@@ -187,9 +191,7 @@ fn test_topic_discovery_merges_presence_pubsub() {
 
     // find_topics should merge presence pub/sub into the DiscoveredTopic
     let topics = horus_sys::discover::find_topics();
-    let topic = topics
-        .iter()
-        .find(|t| t.name == "parity_merge_topic");
+    let topic = topics.iter().find(|t| t.name == "parity_merge_topic");
 
     assert!(topic.is_some());
     let topic = topic.unwrap();

@@ -10,7 +10,6 @@
 
 use horus::prelude::*;
 
-
 // Define a service using the service! macro
 service! {
     /// Add two integers

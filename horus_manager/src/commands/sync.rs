@@ -16,16 +16,13 @@ impl SyncManifest for HorusManifest {
 
     fn python_version(&self) -> Option<String> {
         // Check if any Python dependencies exist
-        let has_python = self
-            .dependencies
-            .iter()
-            .any(|(_, dep)| {
-                if let crate::manifest::DependencyValue::Detailed(d) = dep {
-                    matches!(d.source, Some(crate::manifest::DepSource::PyPI))
-                } else {
-                    false
-                }
-            });
+        let has_python = self.dependencies.iter().any(|(_, dep)| {
+            if let crate::manifest::DependencyValue::Detailed(d) = dep {
+                matches!(d.source, Some(crate::manifest::DepSource::PyPI))
+            } else {
+                false
+            }
+        });
         if has_python {
             Some(">=3.9".to_string())
         } else {

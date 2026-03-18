@@ -235,12 +235,18 @@ fn crate_name_heuristic(name: &str) -> Option<String> {
 
     // *-sys crates (C binding wrappers)
     if n.ends_with("-sys") {
-        return Some(format!("'{}' has -sys suffix (Rust FFI binding convention)", name));
+        return Some(format!(
+            "'{}' has -sys suffix (Rust FFI binding convention)",
+            name
+        ));
     }
 
     // *-rs suffix
     if n.ends_with("-rs") || n.ends_with("_rs") {
-        return Some(format!("'{}' has -rs suffix (Rust package convention)", name));
+        return Some(format!(
+            "'{}' has -rs suffix (Rust package convention)",
+            name
+        ));
     }
 
     // cargo-* tools
@@ -264,10 +270,16 @@ fn pypi_name_heuristic(name: &str) -> Option<String> {
 
     // django-*, flask-* (Python web frameworks)
     if n.starts_with("django-") || n.starts_with("django_") {
-        return Some(format!("'{}' has django- prefix (Python web framework plugin)", name));
+        return Some(format!(
+            "'{}' has django- prefix (Python web framework plugin)",
+            name
+        ));
     }
     if n.starts_with("flask-") || n.starts_with("flask_") {
-        return Some(format!("'{}' has flask- prefix (Python web framework plugin)", name));
+        return Some(format!(
+            "'{}' has flask- prefix (Python web framework plugin)",
+            name
+        ));
     }
 
     // *-py suffix
@@ -876,10 +888,7 @@ fn fetch_crates_io_version(name: &str) -> Option<String> {
     let json: serde_json::Value = resp.json().ok()?;
     // Prefer max_stable_version, fall back to max_version
     json.get("crate")
-        .and_then(|c| {
-            c.get("max_stable_version")
-                .or_else(|| c.get("max_version"))
-        })
+        .and_then(|c| c.get("max_stable_version").or_else(|| c.get("max_version")))
         .and_then(|v| v.as_str())
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string())
@@ -916,9 +925,7 @@ fn fetch_registry_version(name: &str) -> Option<String> {
         .build()
         .ok()?;
 
-    let encoded = name
-        .replace('@', "%40")
-        .replace('/', "%2F");
+    let encoded = name.replace('@', "%40").replace('/', "%2F");
     let url = format!("{}/api/packages/{}", base_url, encoded);
     let resp = client.get(&url).send().ok()?;
     if !resp.status().is_success() {
@@ -1140,7 +1147,8 @@ mod tests {
         let mut sorted = KNOWN_CRATES.to_vec();
         sorted.sort();
         assert_eq!(
-            KNOWN_CRATES, &sorted[..],
+            KNOWN_CRATES,
+            &sorted[..],
             "KNOWN_CRATES must be sorted for binary search"
         );
     }
@@ -1150,7 +1158,8 @@ mod tests {
         let mut sorted = KNOWN_PYPI.to_vec();
         sorted.sort();
         assert_eq!(
-            KNOWN_PYPI, &sorted[..],
+            KNOWN_PYPI,
+            &sorted[..],
             "KNOWN_PYPI must be sorted for binary search"
         );
     }
@@ -1207,12 +1216,7 @@ mod tests {
             "trimesh",
         ] {
             let result = resolver.resolve(name);
-            assert_eq!(
-                result.source,
-                DepSource::PyPI,
-                "{} should be PyPI",
-                name
-            );
+            assert_eq!(result.source, DepSource::PyPI, "{} should be PyPI", name);
         }
     }
 
@@ -1244,13 +1248,19 @@ mod tests {
 
     #[test]
     fn fetch_crates_io_nonexistent_returns_none() {
-        let v = fetch_latest_version("this-crate-definitely-does-not-exist-xyz", &DepSource::CratesIo);
+        let v = fetch_latest_version(
+            "this-crate-definitely-does-not-exist-xyz",
+            &DepSource::CratesIo,
+        );
         assert!(v.is_none(), "nonexistent crate should return None");
     }
 
     #[test]
     fn fetch_pypi_nonexistent_returns_none() {
-        let v = fetch_latest_version("this-package-definitely-does-not-exist-xyz", &DepSource::PyPI);
+        let v = fetch_latest_version(
+            "this-package-definitely-does-not-exist-xyz",
+            &DepSource::PyPI,
+        );
         assert!(v.is_none(), "nonexistent PyPI package should return None");
     }
 
@@ -1281,8 +1291,12 @@ mod tests {
         let resolver = PackageSourceResolver::without_context();
         let static_result = resolver.resolve("fakeit");
         // Without network: should be Low confidence (not in known lists, no context)
-        assert_eq!(static_result.confidence, Confidence::Low,
-            "fakeit should not be in known lists, got: {}", static_result.reason);
+        assert_eq!(
+            static_result.confidence,
+            Confidence::Low,
+            "fakeit should not be in known lists, got: {}",
+            static_result.reason
+        );
 
         // With network: should confirm it on crates.io
         let network_result = resolver.resolve_with_network("fakeit");
@@ -1297,8 +1311,12 @@ mod tests {
         // and has no heuristic-triggering prefix/suffix
         let resolver = PackageSourceResolver::without_context();
         let static_result = resolver.resolve("codetiming");
-        assert_eq!(static_result.confidence, Confidence::Low,
-            "codetiming should not be in known lists, got: {}", static_result.reason);
+        assert_eq!(
+            static_result.confidence,
+            Confidence::Low,
+            "codetiming should not be in known lists, got: {}",
+            static_result.reason
+        );
 
         let network_result = resolver.resolve_with_network("codetiming");
         // Should find it on one of the registries

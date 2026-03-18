@@ -64,10 +64,10 @@ impl ProcessHandle {
         }
         #[cfg(windows)]
         {
+            use windows_sys::Win32::Foundation::CloseHandle;
             use windows_sys::Win32::System::Threading::{
                 OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
             };
-            use windows_sys::Win32::Foundation::CloseHandle;
             unsafe {
                 let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, self.pid);
                 if handle.is_null() {
@@ -106,17 +106,22 @@ impl ProcessHandle {
                 if err.raw_os_error() == Some(libc::ESRCH) {
                     return Ok(()); // Process already gone — not an error
                 }
-                return Err(anyhow::anyhow!("kill({}, {}) failed: {}", self.pid, signum, err));
+                return Err(anyhow::anyhow!(
+                    "kill({}, {}) failed: {}",
+                    self.pid,
+                    signum,
+                    err
+                ));
             }
         }
         #[cfg(windows)]
         {
             match sig {
                 Signal::Kill => {
+                    use windows_sys::Win32::Foundation::CloseHandle;
                     use windows_sys::Win32::System::Threading::{
                         OpenProcess, TerminateProcess, PROCESS_TERMINATE,
                     };
-                    use windows_sys::Win32::Foundation::CloseHandle;
                     unsafe {
                         let handle = OpenProcess(PROCESS_TERMINATE, 0, self.pid);
                         if !handle.is_null() {
@@ -128,8 +133,8 @@ impl ProcessHandle {
                 Signal::Interrupt | Signal::Terminate => {
                     use windows_sys::Win32::System::Console::GenerateConsoleCtrlEvent;
                     let event = match sig {
-                        Signal::Interrupt => 0,  // CTRL_C_EVENT
-                        Signal::Terminate => 1,  // CTRL_BREAK_EVENT
+                        Signal::Interrupt => 0, // CTRL_C_EVENT
+                        Signal::Terminate => 1, // CTRL_BREAK_EVENT
                         _ => unreachable!(),
                     };
                     // SAFETY: GenerateConsoleCtrlEvent sends a console control event.
@@ -175,7 +180,11 @@ pub fn session_id() -> u64 {
     {
         // SAFETY: getsid(0) is async-signal-safe and always valid for the calling process.
         let sid = unsafe { libc::getsid(0) };
-        if sid < 0 { std::process::id() as u64 } else { sid as u64 }
+        if sid < 0 {
+            std::process::id() as u64
+        } else {
+            sid as u64
+        }
     }
     #[cfg(not(unix))]
     {
@@ -328,9 +337,7 @@ fn pid_start_time_windows(pid: u32) -> u64 {
     let mut kernel = Filetime { low: 0, high: 0 };
     let mut user = Filetime { low: 0, high: 0 };
     // SAFETY: handle is valid; all pointers are initialized.
-    let ret = unsafe {
-        GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
-    };
+    let ret = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
     unsafe { CloseHandle(handle) };
     if ret == 0 {
         return 0;
@@ -384,8 +391,7 @@ pub fn on_terminate(handler: extern "C" fn(i32)) {
 }
 
 #[cfg(windows)]
-static TERMINATE_HANDLER: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static TERMINATE_HANDLER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -410,7 +416,10 @@ mod tests {
     fn overflow_pid_is_not_alive() {
         // u32::MAX wraps to -1 as i32; kill(-1, sig) means "kill all" — guard must catch this
         let handle = ProcessHandle::from_pid(u32::MAX);
-        assert!(!handle.is_alive(), "overflow PID must be rejected, not sent to kill()");
+        assert!(
+            !handle.is_alive(),
+            "overflow PID must be rejected, not sent to kill()"
+        );
     }
 
     #[test]
@@ -436,7 +445,11 @@ mod tests {
     #[test]
     fn namespace_id_format() {
         let ns = namespace_id();
-        assert!(ns.starts_with("sid"), "namespace should start with sid: {}", ns);
+        assert!(
+            ns.starts_with("sid"),
+            "namespace should start with sid: {}",
+            ns
+        );
         assert!(ns.contains("_uid"), "namespace should contain _uid: {}", ns);
     }
 
@@ -445,7 +458,11 @@ mod tests {
         // Sending Kill to a non-existent PID should not error (ESRCH handled as Ok)
         let handle = ProcessHandle::from_pid(99_999_999);
         let result = handle.signal(Signal::Kill);
-        assert!(result.is_ok(), "signal to non-existent PID should be Ok (ESRCH handled), got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "signal to non-existent PID should be Ok (ESRCH handled), got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -453,7 +470,10 @@ mod tests {
         // u32::MAX wraps to -1 — guard must prevent kill(-1, SIGKILL) which kills all processes
         let handle = ProcessHandle::from_pid(u32::MAX);
         let result = handle.signal(Signal::Kill);
-        assert!(result.is_ok(), "overflow PID should be Ok (guard catches it)");
+        assert!(
+            result.is_ok(),
+            "overflow PID should be Ok (guard catches it)"
+        );
     }
 
     #[test]
@@ -470,7 +490,11 @@ mod tests {
     #[test]
     fn pid_start_time_current_process_is_nonzero() {
         let st = pid_start_time(std::process::id());
-        assert!(st > 0, "current process start time should be nonzero, got {}", st);
+        assert!(
+            st > 0,
+            "current process start time should be nonzero, got {}",
+            st
+        );
     }
 
     #[test]
@@ -506,9 +530,7 @@ mod tests {
 
     #[test]
     fn from_child_captures_pid() {
-        let child = std::process::Command::new("sleep")
-            .arg("0")
-            .spawn();
+        let child = std::process::Command::new("sleep").arg("0").spawn();
         if let Ok(child) = child {
             let handle = ProcessHandle::from_child(&child);
             assert!(handle.pid() > 0);

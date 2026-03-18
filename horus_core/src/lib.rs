@@ -57,14 +57,12 @@ pub use actions::{
 };
 #[doc(hidden)]
 pub use communication::{
-    set_topic_verbose, PodMessage, SendBlockingError, Topic, TopicKind,
-    TOPIC_VERBOSE_OFFSET,
+    set_topic_verbose, PodMessage, SendBlockingError, Topic, TopicKind, TOPIC_VERBOSE_OFFSET,
 };
-pub use scheduling::control::ControlCommand;
 #[doc(hidden)]
 pub use core::{
-    HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate,
-    RtStats, Stopwatch, TopicMetadata,
+    HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate, RtStats, Stopwatch,
+    TopicMetadata,
 };
 #[doc(hidden)]
 pub use error::{
@@ -74,6 +72,7 @@ pub use error::{
 };
 #[doc(hidden)]
 pub use params::RuntimeParams;
+pub use scheduling::control::ControlCommand;
 #[doc(hidden)]
 pub use scheduling::Scheduler;
 #[doc(hidden)]

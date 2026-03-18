@@ -76,9 +76,8 @@ pub fn set_tick_context(
     // SAFETY: caller (scheduler) guarantees `clock` outlives the tick() call.
     // clear_tick_context() sets this to None before the reference becomes invalid.
     let clock_ptr: *const dyn Clock = clock;
-    let clock_ptr: *const dyn Clock = unsafe {
-        std::mem::transmute::<*const dyn Clock, *const dyn Clock>(clock_ptr)
-    };
+    let clock_ptr: *const dyn Clock =
+        unsafe { std::mem::transmute::<*const dyn Clock, *const dyn Clock>(clock_ptr) };
 
     TICK_CTX.with(|ctx| {
         let mut slot = ctx.borrow_mut();
@@ -269,7 +268,15 @@ mod tests {
         clock.advance(5_u64.ms());
         let start = clock.now();
 
-        set_tick_context("test_node", 42, &clock, 1_u64.ms(), 5_u64.ms(), start, Some(800_u64.us()));
+        set_tick_context(
+            "test_node",
+            42,
+            &clock,
+            1_u64.ms(),
+            5_u64.ms(),
+            start,
+            Some(800_u64.us()),
+        );
 
         assert_eq!(ctx_tick(), 42);
         assert_eq!(ctx_dt(), 1_u64.ms());
@@ -292,7 +299,15 @@ mod tests {
         let start = clock.now();
 
         // First run
-        set_tick_context("motor_ctrl", 100, &clock, 1_u64.ms(), 100_u64.ms(), start, None);
+        set_tick_context(
+            "motor_ctrl",
+            100,
+            &clock,
+            1_u64.ms(),
+            100_u64.ms(),
+            start,
+            None,
+        );
         let val1 = ctx_with_rng(|rng| {
             use rand::Rng;
             rng.gen::<u64>()
@@ -300,7 +315,15 @@ mod tests {
         clear_tick_context();
 
         // Second run — same node, same tick
-        set_tick_context("motor_ctrl", 100, &clock, 1_u64.ms(), 100_u64.ms(), start, None);
+        set_tick_context(
+            "motor_ctrl",
+            100,
+            &clock,
+            1_u64.ms(),
+            100_u64.ms(),
+            start,
+            None,
+        );
         let val2 = ctx_with_rng(|rng| {
             use rand::Rng;
             rng.gen::<u64>()
@@ -315,21 +338,40 @@ mod tests {
         let clock = SimClock::new();
         let start = clock.now();
 
-        set_tick_context("motor_ctrl", 100, &clock, 1_u64.ms(), 100_u64.ms(), start, None);
+        set_tick_context(
+            "motor_ctrl",
+            100,
+            &clock,
+            1_u64.ms(),
+            100_u64.ms(),
+            start,
+            None,
+        );
         let val1 = ctx_with_rng(|rng| {
             use rand::Rng;
             rng.gen::<u64>()
         });
         clear_tick_context();
 
-        set_tick_context("motor_ctrl", 101, &clock, 1_u64.ms(), 101_u64.ms(), start, None);
+        set_tick_context(
+            "motor_ctrl",
+            101,
+            &clock,
+            1_u64.ms(),
+            101_u64.ms(),
+            start,
+            None,
+        );
         let val2 = ctx_with_rng(|rng| {
             use rand::Rng;
             rng.gen::<u64>()
         });
         clear_tick_context();
 
-        assert_ne!(val1, val2, "Different tick must produce different RNG value");
+        assert_ne!(
+            val1, val2,
+            "Different tick must produce different RNG value"
+        );
     }
 
     #[test]
@@ -351,7 +393,10 @@ mod tests {
         });
         clear_tick_context();
 
-        assert_ne!(val1, val2, "Different node name must produce different RNG value");
+        assert_ne!(
+            val1, val2,
+            "Different node name must produce different RNG value"
+        );
     }
 
     #[test]
@@ -370,7 +415,15 @@ mod tests {
         let clock = SimClock::new();
         let start = clock.now();
 
-        set_tick_context("test", 1, &clock, 1_u64.ms(), 1_u64.ms(), start, Some(800_u64.us()));
+        set_tick_context(
+            "test",
+            1,
+            &clock,
+            1_u64.ms(),
+            1_u64.ms(),
+            start,
+            Some(800_u64.us()),
+        );
 
         // At start: budget = 800μs, used = 0
         let remaining = ctx_budget_remaining();
@@ -410,7 +463,15 @@ mod tests {
         clear_tick_context();
 
         // Set again — reuses allocation
-        set_tick_context("second_node", 2, &clock, 2_u64.ms(), 2_u64.ms(), start, None);
+        set_tick_context(
+            "second_node",
+            2,
+            &clock,
+            2_u64.ms(),
+            2_u64.ms(),
+            start,
+            None,
+        );
         assert_eq!(ctx_tick(), 2);
         assert_eq!(ctx_dt(), 2_u64.ms());
         clear_tick_context();
@@ -421,7 +482,15 @@ mod tests {
         let clock = SimClock::new();
         let start = clock.now();
 
-        set_tick_context("main_node", 10, &clock, 1_u64.ms(), 10_u64.ms(), start, None);
+        set_tick_context(
+            "main_node",
+            10,
+            &clock,
+            1_u64.ms(),
+            10_u64.ms(),
+            start,
+            None,
+        );
 
         let handle = std::thread::spawn(|| {
             // Different thread should not see main thread's context

@@ -43,9 +43,14 @@ impl WorkspaceRegistry {
                     registry_path.display(),
                     e
                 );
-                let empty = Self { workspaces: Vec::new() };
+                let empty = Self {
+                    workspaces: Vec::new(),
+                };
                 // Try to fix the file for next time
-                let _ = fs::write(&registry_path, serde_json::to_string_pretty(&empty).unwrap_or_default());
+                let _ = fs::write(
+                    &registry_path,
+                    serde_json::to_string_pretty(&empty).unwrap_or_default(),
+                );
                 Ok(empty)
             }
         }

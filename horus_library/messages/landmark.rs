@@ -61,7 +61,10 @@ impl Landmark {
 
 impl LogSummary for Landmark {
     fn log_summary(&self) -> String {
-        format!("Landmark(idx={}, {:.1},{:.1} vis={:.2})", self.index, self.x, self.y, self.visibility)
+        format!(
+            "Landmark(idx={}, {:.1},{:.1} vis={:.2})",
+            self.index, self.x, self.y, self.visibility
+        )
     }
 }
 
@@ -137,7 +140,10 @@ impl LogSummary for Landmark3D {
         let (x, y, z) = (self.x, self.y, self.z);
         let vis = self.visibility;
         let idx = self.index;
-        format!("Landmark3D(idx={}, {:.1},{:.1},{:.1} vis={:.2})", idx, x, y, z, vis)
+        format!(
+            "Landmark3D(idx={}, {:.1},{:.1},{:.1} vis={:.2})",
+            idx, x, y, z, vis
+        )
     }
 }
 
@@ -243,7 +249,10 @@ impl LandmarkArray {
 
 impl LogSummary for LandmarkArray {
     fn log_summary(&self) -> String {
-        format!("LandmarkArray(n={}, {}D, conf={:.2})", self.num_landmarks, self.dimension, self.confidence)
+        format!(
+            "LandmarkArray(n={}, {}D, conf={:.2})",
+            self.num_landmarks, self.dimension, self.confidence
+        )
     }
 }
 

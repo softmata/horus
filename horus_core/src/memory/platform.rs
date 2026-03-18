@@ -9,9 +9,8 @@
 
 pub use horus_sys::shm::{
     cleanup_stale_namespaces, has_native_shm, is_namespace_stale_by_flock, is_shm_file_stale,
-    list_all_horus_namespaces, shm_base_dir, shm_logs_path, shm_namespace,
-    shm_network_dir, shm_nodes_dir, shm_scheduler_dir, shm_topics_dir,
-    NamespaceCleanupResult, NamespaceInfo,
+    list_all_horus_namespaces, shm_base_dir, shm_logs_path, shm_namespace, shm_network_dir,
+    shm_nodes_dir, shm_scheduler_dir, shm_topics_dir, NamespaceCleanupResult, NamespaceInfo,
 };
 
 // Re-export for tests and internal use

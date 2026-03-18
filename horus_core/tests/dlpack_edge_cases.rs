@@ -89,7 +89,10 @@ fn test_dlpack_scalar_tensor() {
 
     let managed = to_dlpack(data_ptr, &shape, &strides, TensorDtype::F32, Device::cpu());
 
-    assert_eq!(managed.dl_tensor.ndim, 0, "Scalar tensor should have 0 dims");
+    assert_eq!(
+        managed.dl_tensor.ndim, 0,
+        "Scalar tensor should have 0 dims"
+    );
     assert_eq!(managed.dl_tensor.data, data_ptr);
 
     // Clean up
@@ -109,13 +112,7 @@ fn test_dlpack_deleter_frees_context() {
     let mut data: Vec<f32> = vec![1.0, 2.0, 3.0];
     let data_ptr = data.as_mut_ptr() as *mut c_void;
 
-    let managed = to_dlpack(
-        data_ptr,
-        &[3],
-        &[1],
-        TensorDtype::F32,
-        Device::cpu(),
-    );
+    let managed = to_dlpack(data_ptr, &[3], &[1], TensorDtype::F32, Device::cpu());
 
     // manager_ctx should be non-null before deleter
     assert!(
@@ -148,8 +145,16 @@ fn test_dlpack_roundtrip_dtype_device() {
 
     let descriptor = unsafe { from_dlpack(&*managed) }.unwrap();
 
-    assert_eq!(descriptor.dtype, TensorDtype::U8, "DType should survive roundtrip");
-    assert_eq!(descriptor.device, Device::cpu(), "Device should survive roundtrip");
+    assert_eq!(
+        descriptor.dtype,
+        TensorDtype::U8,
+        "DType should survive roundtrip"
+    );
+    assert_eq!(
+        descriptor.device,
+        Device::cpu(),
+        "Device should survive roundtrip"
+    );
     assert_eq!(descriptor.shape, &[4u64]);
 
     unsafe {
@@ -172,7 +177,11 @@ fn test_dlpack_multiple_dtypes() {
         let managed = to_dlpack(ptr, &[3], &[1], TensorDtype::F64, Device::cpu());
         let desc = unsafe { from_dlpack(&*managed) }.unwrap();
         assert_eq!(desc.dtype, TensorDtype::F64);
-        unsafe { if let Some(d) = managed.deleter { d(Box::into_raw(managed)); } }
+        unsafe {
+            if let Some(d) = managed.deleter {
+                d(Box::into_raw(managed));
+            }
+        }
     }
 
     // I32
@@ -182,7 +191,11 @@ fn test_dlpack_multiple_dtypes() {
         let managed = to_dlpack(ptr, &[3], &[1], TensorDtype::I32, Device::cpu());
         let desc = unsafe { from_dlpack(&*managed) }.unwrap();
         assert_eq!(desc.dtype, TensorDtype::I32);
-        unsafe { if let Some(d) = managed.deleter { d(Box::into_raw(managed)); } }
+        unsafe {
+            if let Some(d) = managed.deleter {
+                d(Box::into_raw(managed));
+            }
+        }
     }
 
     // U16
@@ -192,6 +205,10 @@ fn test_dlpack_multiple_dtypes() {
         let managed = to_dlpack(ptr, &[3], &[1], TensorDtype::U16, Device::cpu());
         let desc = unsafe { from_dlpack(&*managed) }.unwrap();
         assert_eq!(desc.dtype, TensorDtype::U16);
-        unsafe { if let Some(d) = managed.deleter { d(Box::into_raw(managed)); } }
+        unsafe {
+            if let Some(d) = managed.deleter {
+                d(Box::into_raw(managed));
+            }
+        }
     }
 }

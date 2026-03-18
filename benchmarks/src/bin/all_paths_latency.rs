@@ -46,6 +46,7 @@ use horus_benchmarks::set_cpu_affinity;
 use horus_benchmarks::stats::Statistics;
 use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer, RdtscCalibration};
 use horus_benchmarks::{BenchmarkConfig, BenchmarkResult, DeterminismMetrics, ThroughputMetrics};
+use horus_core::core::DurationExt;
 use horus_library::messages::cmd_vel::CmdVel;
 use std::hint::spin_loop;
 use std::process::{Command, Stdio};
@@ -53,7 +54,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use horus_core::core::DurationExt;
 
 // ============================================================================
 // Configuration
@@ -1686,12 +1686,7 @@ fn bench_stress(
     }
 
     // Wait for full topology
-    wait_for_topology(
-        &consumer,
-        num_pubs as u32,
-        num_cons as u32,
-        10_u64.secs(),
-    );
+    wait_for_topology(&consumer, num_pubs as u32, num_cons as u32, 10_u64.secs());
 
     // Drain migration-era messages
     let migration_recv = wait_for_messages(&consumer, 500, 5_u64.secs());

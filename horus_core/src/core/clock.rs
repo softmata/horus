@@ -235,7 +235,10 @@ impl Clock for ReplayClock {
     #[inline]
     fn now(&self) -> ClockInstant {
         let idx = self.index.load(Ordering::Acquire) as usize;
-        let nanos = self.timestamps.get(idx).copied()
+        let nanos = self
+            .timestamps
+            .get(idx)
+            .copied()
             .or_else(|| self.timestamps.last().copied())
             .unwrap_or(0);
         ClockInstant::from_nanos(nanos)
@@ -551,9 +554,7 @@ mod tests {
 
     #[test]
     fn replay_clock_via_trait() {
-        let clock: Box<dyn Clock> = Box::new(ReplayClock::new(vec![
-            100_000, 200_000, 300_000,
-        ]));
+        let clock: Box<dyn Clock> = Box::new(ReplayClock::new(vec![100_000, 200_000, 300_000]));
         assert_eq!(clock.now().as_nanos(), 100_000);
         clock.advance(Duration::ZERO);
         assert_eq!(clock.now().as_nanos(), 200_000);

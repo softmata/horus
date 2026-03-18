@@ -420,7 +420,10 @@ mod tests {
 
     #[test]
     fn format_value_empty_object() {
-        assert_eq!(format_value(&Value::Object(serde_json::Map::new())), "{0} keys");
+        assert_eq!(
+            format_value(&Value::Object(serde_json::Map::new())),
+            "{0} keys"
+        );
     }
 
     #[test]
@@ -481,7 +484,11 @@ mod tests {
         let result = format_value_compact(&s);
         // Should be truncated — the result should be shorter than the full 21+2 chars
         assert!(result.len() < 23, "Should be truncated, got: '{}'", result);
-        assert!(result.contains("..."), "Should contain ellipsis, got: '{}'", result);
+        assert!(
+            result.contains("..."),
+            "Should contain ellipsis, got: '{}'",
+            result
+        );
     }
 
     #[test]
@@ -503,7 +510,11 @@ mod tests {
     fn format_value_compact_negative_float() {
         let val = Value::Number(serde_json::Number::from_f64(-3.14).unwrap());
         let result = format_value_compact(&val);
-        assert!(result.contains("-3.14"), "Should contain -3.14, got: '{}'", result);
+        assert!(
+            result.contains("-3.14"),
+            "Should contain -3.14, got: '{}'",
+            result
+        );
     }
 
     // ── Battle tests: value_type comprehensive ────────────────────────────
@@ -583,7 +594,10 @@ mod tests {
 
     #[test]
     fn infer_value_string_fallback() {
-        assert_eq!(infer_value("hello world"), Value::String("hello world".to_string()));
+        assert_eq!(
+            infer_value("hello world"),
+            Value::String("hello world".to_string())
+        );
     }
 
     #[test]
@@ -654,7 +668,10 @@ mod tests {
         let result = load_params(Path::new("/tmp/__nonexistent_horus_params_12345__.yaml"));
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("not found") || err.contains("File not found"),
-            "Should say file not found, got: {}", err);
+        assert!(
+            err.contains("not found") || err.contains("File not found"),
+            "Should say file not found, got: {}",
+            err
+        );
     }
 }

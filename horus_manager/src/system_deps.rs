@@ -581,7 +581,10 @@ mod tests {
     fn test_has_missing_hardware_with_missing_devices() {
         let mut result = DependencyCheckResult::default();
         result.missing_devices.push("/dev/video0".to_string());
-        assert!(!result.has_issues(), "missing devices alone is not an issue");
+        assert!(
+            !result.has_issues(),
+            "missing devices alone is not an issue"
+        );
         assert!(result.has_missing_hardware());
     }
 
@@ -609,8 +612,16 @@ mod tests {
     fn test_system_deps_no_empty_features() {
         for dep in SYSTEM_DEPS {
             assert!(!dep.feature.is_empty(), "feature name must not be empty");
-            assert!(!dep.description.is_empty(), "description must not be empty for {}", dep.feature);
-            assert!(!dep.docs_url.is_empty(), "docs_url must not be empty for {}", dep.feature);
+            assert!(
+                !dep.description.is_empty(),
+                "description must not be empty for {}",
+                dep.feature
+            );
+            assert!(
+                !dep.docs_url.is_empty(),
+                "docs_url must not be empty for {}",
+                dep.feature
+            );
         }
     }
 
@@ -618,7 +629,11 @@ mod tests {
     fn test_system_deps_unique_features() {
         let mut seen = HashSet::new();
         for dep in SYSTEM_DEPS {
-            assert!(seen.insert(dep.feature), "duplicate feature: {}", dep.feature);
+            assert!(
+                seen.insert(dep.feature),
+                "duplicate feature: {}",
+                dep.feature
+            );
         }
     }
 
@@ -642,7 +657,10 @@ mod tests {
 
     #[test]
     fn test_tflite_dep_has_no_system_requirements() {
-        let dep = SYSTEM_DEPS.iter().find(|d| d.feature == "tflite-inference").unwrap();
+        let dep = SYSTEM_DEPS
+            .iter()
+            .find(|d| d.feature == "tflite-inference")
+            .unwrap();
         assert!(dep.apt_packages.is_empty());
         assert!(dep.device_files.is_empty());
         assert!(dep.user_groups.is_empty());
@@ -807,7 +825,10 @@ mod tests {
     fn test_format_report_with_docs_links() {
         let mut result = DependencyCheckResult::default();
         result.missing_packages.push("libfoo-dev".to_string());
-        result.docs_links.push(("gilrs".to_string(), "https://docs.rs/gilrs/latest/gilrs/".to_string()));
+        result.docs_links.push((
+            "gilrs".to_string(),
+            "https://docs.rs/gilrs/latest/gilrs/".to_string(),
+        ));
         let report = format_dependency_report(&result, &["gilrs".to_string()]);
         assert!(report.contains("Documentation"));
         assert!(report.contains("gilrs: https://docs.rs/gilrs/latest/gilrs/"));
@@ -855,7 +876,10 @@ mod tests {
         let report = format_dependency_report(&result, &[]);
         assert!(report.contains("Quick Fix"));
         assert!(report.contains("sudo usermod -a -G input $USER"));
-        assert!(!report.contains("apt install"), "no apt install when only groups missing");
+        assert!(
+            !report.contains("apt install"),
+            "no apt install when only groups missing"
+        );
     }
 
     // --- get_user_groups tests ---
@@ -864,7 +888,10 @@ mod tests {
     fn test_get_user_groups_returns_non_empty() {
         let groups = get_user_groups();
         // Every user should belong to at least one group
-        assert!(!groups.is_empty(), "current user should have at least one group");
+        assert!(
+            !groups.is_empty(),
+            "current user should have at least one group"
+        );
     }
 
     #[test]
@@ -932,8 +959,12 @@ mod tests {
         result.missing_groups.push("grp1".to_string());
         result.missing_pkg_config.push("lib1".to_string());
         result.missing_devices.push("/dev/foo".to_string());
-        result.docs_links.push(("feat".to_string(), "https://example.com".to_string()));
-        result.install_commands.push("sudo apt install pkg1".to_string());
+        result
+            .docs_links
+            .push(("feat".to_string(), "https://example.com".to_string()));
+        result
+            .install_commands
+            .push("sudo apt install pkg1".to_string());
 
         let report = format_dependency_report(&result, &["feat".to_string()]);
         assert!(report.contains("Missing System Packages"));
@@ -1002,9 +1033,10 @@ mod tests {
     fn test_format_lockfile_report_with_warnings() {
         let result = super::LockfileVerification {
             toolchain_warnings: vec!["Rust version mismatch: 1.78.0 vs 1.79.0".to_string()],
-            missing_system_deps: vec![
-                ("opencv".to_string(), "sudo apt install libopencv-dev".to_string()),
-            ],
+            missing_system_deps: vec![(
+                "opencv".to_string(),
+                "sudo apt install libopencv-dev".to_string(),
+            )],
             has_errors: false,
         };
         let report = super::format_lockfile_report(&result);

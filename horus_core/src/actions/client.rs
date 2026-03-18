@@ -33,6 +33,7 @@ use crate::communication::Topic;
 use crate::core::Node;
 use crate::HorusResult;
 
+use crate::core::DurationExt;
 use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
@@ -41,7 +42,6 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::core::DurationExt;
 
 /// Handle to a goal sent by the client.
 ///

@@ -109,9 +109,7 @@ fn run_deterministic_system(num_ticks: usize) -> (Vec<u64>, Vec<u64>) {
     let sensor_outputs = Arc::new(Mutex::new(Vec::new()));
     let controller_outputs = Arc::new(Mutex::new(Vec::new()));
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     scheduler
         .add(SensorNode::new(sensor_outputs.clone()))
@@ -190,9 +188,7 @@ fn deterministic_mode_uses_simclock() {
         }
     }
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     scheduler
         .add(ClockCheckNode {
@@ -216,9 +212,7 @@ fn deterministic_mode_uses_simclock() {
 
     // Verify timestamps are deterministic by running again
     let outputs2 = Arc::new(Mutex::new(Vec::new()));
-    let mut scheduler2 = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler2 = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     scheduler2
         .add(ClockCheckNode {
@@ -263,9 +257,7 @@ fn deterministic_rng_is_reproducible() {
 
     for _ in 0..5 {
         let values = Arc::new(Mutex::new(Vec::new()));
-        let mut scheduler = Scheduler::new()
-            .deterministic(true)
-            .tick_rate(100_u64.hz());
+        let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
         scheduler
             .add(RngNode {
@@ -285,11 +277,7 @@ fn deterministic_rng_is_reproducible() {
 
     // All 5 runs must produce identical RNG sequences
     for (i, result) in results.iter().enumerate().skip(1) {
-        assert_eq!(
-            result, &results[0],
-            "RNG run {} differs from run 0",
-            i
-        );
+        assert_eq!(result, &results[0], "RNG run {} differs from run 0", i);
     }
 }
 
@@ -329,9 +317,7 @@ fn dependency_ordering_respected() {
         }
     }
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     // Add consumer FIRST (wrong order) — dependency graph should fix it
     scheduler

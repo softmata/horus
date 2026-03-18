@@ -23,11 +23,11 @@
 
 use horus::communication::Topic;
 use horus_core::memory::{DepthImage, Image, PointCloud};
+use horus_library::messages::audio::AudioFrame;
 use horus_library::messages::clock::{Clock, TimeReference};
 use horus_library::messages::cmd_vel::CmdVel;
 use horus_library::messages::control::{
-    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand,
-    TrajectoryPoint,
+    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand, TrajectoryPoint,
 };
 use horus_library::messages::detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 use horus_library::messages::diagnostics::{
@@ -43,7 +43,6 @@ use horus_library::messages::geometry::{
 };
 use horus_library::messages::joystick_msg::JoystickInput;
 use horus_library::messages::keyboard_input_msg::KeyboardInput;
-use horus_library::messages::audio::AudioFrame;
 use horus_library::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
 use horus_library::messages::navigation::{
     CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
@@ -66,20 +65,18 @@ use std::sync::{Arc, RwLock};
 use crate::depth_image::PyDepthImage;
 use crate::image::PyImage;
 use crate::messages::{
-    PyAccel, PyAccelStamped, PyAudioFrame, PyBatteryState, PyBoundingBox2DMsg, PyBoundingBox3D, PyCameraInfo,
-    PyClock, PyCmdVel, PyCompressedImage, PyContactInfo,
-    PyCostMap, PyDetection3D, PyDetectionMsg, PyDiagnosticReport,
-    PyDiagnosticStatus, PyDiagnosticValue, PyDifferentialDriveCommand, PyEmergencyStop,
-    PyFluidPressure, PyForceCommand, PyGoalResult, PyHapticFeedback, PyHeartbeat,
-    PyIlluminance, PyImpedanceParameters, PyImu, PyJointCommand, PyJointState,
-    PyJoystickInput, PyKeyboardInput, PyLandmark3D, PyLandmarkArray,
-    PyLandmarkMsg, PyLaserScan, PyMagneticField, PyMotorCommand,
-    PyNavGoal, PyNavPath, PyNavSatFix, PyNodeHeartbeat, PyOccupancyGrid, PyOdometry, PyPathPlan,
-    PyPidConfig, PyPlaneArray, PyPlaneDetection, PyPoint3, PyPointField, PyPose2D, PyPose3D,
-    PyPoseStamped, PyPoseWithCovariance, PyQuaternion, PyRangeSensor,
-    PyRegionOfInterest, PyResourceUsage, PySafetyStatus, PySegmentationMask, PyServoCommand,
-    PyStereoInfo, PyTemperature, PyTimeReference,
-    PyTrackedObjectMsg, PyTrackingHeader, PyTrajectoryPoint, PyTransformStamped,
+    PyAccel, PyAccelStamped, PyAudioFrame, PyBatteryState, PyBoundingBox2DMsg, PyBoundingBox3D,
+    PyCameraInfo, PyClock, PyCmdVel, PyCompressedImage, PyContactInfo, PyCostMap, PyDetection3D,
+    PyDetectionMsg, PyDiagnosticReport, PyDiagnosticStatus, PyDiagnosticValue,
+    PyDifferentialDriveCommand, PyEmergencyStop, PyFluidPressure, PyForceCommand, PyGoalResult,
+    PyHapticFeedback, PyHeartbeat, PyIlluminance, PyImpedanceParameters, PyImu, PyJointCommand,
+    PyJointState, PyJoystickInput, PyKeyboardInput, PyLandmark3D, PyLandmarkArray, PyLandmarkMsg,
+    PyLaserScan, PyMagneticField, PyMotorCommand, PyNavGoal, PyNavPath, PyNavSatFix,
+    PyNodeHeartbeat, PyOccupancyGrid, PyOdometry, PyPathPlan, PyPidConfig, PyPlaneArray,
+    PyPlaneDetection, PyPoint3, PyPointField, PyPose2D, PyPose3D, PyPoseStamped,
+    PyPoseWithCovariance, PyQuaternion, PyRangeSensor, PyRegionOfInterest, PyResourceUsage,
+    PySafetyStatus, PySegmentationMask, PyServoCommand, PyStereoInfo, PyTemperature,
+    PyTimeReference, PyTrackedObjectMsg, PyTrackingHeader, PyTrajectoryPoint, PyTransformStamped,
     PyTwist, PyTwistWithCovariance, PyVector3, PyVelocityObstacle, PyVelocityObstacles, PyWaypoint,
     PyWrenchStamped,
 };

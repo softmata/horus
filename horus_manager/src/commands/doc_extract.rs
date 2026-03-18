@@ -375,10 +375,7 @@ pub enum Relationship {
         topic: String,
     },
     /// service client in X calls service Y
-    CallsService {
-        caller: String,
-        service: String,
-    },
+    CallsService { caller: String, service: String },
 }
 
 // ─── Message Graph ──────────────────────────────────────────────────────────
@@ -522,13 +519,7 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
             let fields: Vec<String> = msg
                 .fields
                 .iter()
-                .map(|f| {
-                    format!(
-                        "{}: {}",
-                        f.name,
-                        f.type_str.as_deref().unwrap_or("?")
-                    )
-                })
+                .map(|f| format!("{}: {}", f.name, f.type_str.as_deref().unwrap_or("?")))
                 .collect();
             let _ = writeln!(out, "  {} {{ {} }}", msg.name, fields.join(", "));
         }
@@ -602,13 +593,7 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
                     let fields: Vec<String> = s
                         .fields
                         .iter()
-                        .map(|f| {
-                            format!(
-                                "{}: {}",
-                                f.name,
-                                f.type_str.as_deref().unwrap_or("?")
-                            )
-                        })
+                        .map(|f| format!("{}: {}", f.name, f.type_str.as_deref().unwrap_or("?")))
                         .collect();
                     let _ = writeln!(
                         out,
@@ -624,8 +609,7 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
                     }
                 }
                 SymbolDoc::Enum(e) => {
-                    let variants: Vec<&str> =
-                        e.variants.iter().map(|v| v.name.as_str()).collect();
+                    let variants: Vec<&str> = e.variants.iter().map(|v| v.name.as_str()).collect();
                     let _ = writeln!(
                         out,
                         "  {dep_marker}enum {} {{ {} }}",
@@ -634,11 +618,8 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
                     );
                 }
                 SymbolDoc::Trait(t) => {
-                    let methods: Vec<&str> = t
-                        .required_methods
-                        .iter()
-                        .map(|m| m.name.as_str())
-                        .collect();
+                    let methods: Vec<&str> =
+                        t.required_methods.iter().map(|m| m.name.as_str()).collect();
                     let _ = writeln!(
                         out,
                         "  {dep_marker}trait {} {{ {} }}",
@@ -647,11 +628,7 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
                     );
                 }
                 SymbolDoc::TypeAlias(t) => {
-                    let _ = writeln!(
-                        out,
-                        "  {dep_marker}type {} = {}",
-                        t.name, t.target_type
-                    );
+                    let _ = writeln!(out, "  {dep_marker}type {} = {}", t.name, t.target_type);
                 }
                 SymbolDoc::Constant(c) => {
                     let val = c.value.as_deref().unwrap_or("...");
@@ -679,11 +656,7 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
 /// Format ProjectDoc as markdown suitable for LLM context.
 pub fn format_markdown(doc: &ProjectDoc) -> String {
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "# {} v{} — API Reference\n",
-        doc.project, doc.version
-    );
+    let _ = writeln!(out, "# {} v{} — API Reference\n", doc.project, doc.version);
     let _ = writeln!(
         out,
         "**{} symbols** across {} files, **{:.0}% documented**\n",
@@ -751,16 +724,17 @@ pub fn format_coverage(doc: &ProjectDoc) -> String {
     );
 
     // Horus-specific
-    if doc.stats.horus_nodes > 0
-        || doc.stats.horus_messages > 0
-        || doc.stats.horus_services > 0
-    {
+    if doc.stats.horus_nodes > 0 || doc.stats.horus_messages > 0 || doc.stats.horus_services > 0 {
         let _ = writeln!(out, "\n  Horus-specific:");
         let _ = writeln!(out, "    Nodes: {}", doc.stats.horus_nodes);
         let _ = writeln!(out, "    Messages: {}", doc.stats.horus_messages);
         let _ = writeln!(out, "    Services: {}", doc.stats.horus_services);
         let _ = writeln!(out, "    Actions: {}", doc.stats.horus_actions);
-        let _ = writeln!(out, "    Topics: {} discovered", doc.stats.topics_discovered);
+        let _ = writeln!(
+            out,
+            "    Topics: {} discovered",
+            doc.stats.topics_discovered
+        );
     }
 
     // Undocumented
@@ -868,8 +842,12 @@ pub fn run_extract(config: ExtractConfig) -> Result<()> {
     if let Some(ref baseline_path) = config.diff {
         let baseline_json = std::fs::read_to_string(baseline_path)
             .with_context(|| format!("Failed to read baseline {}", baseline_path.display()))?;
-        let baseline: ProjectDoc = serde_json::from_str(&baseline_json)
-            .with_context(|| format!("Failed to parse baseline JSON from {}", baseline_path.display()))?;
+        let baseline: ProjectDoc = serde_json::from_str(&baseline_json).with_context(|| {
+            format!(
+                "Failed to parse baseline JSON from {}",
+                baseline_path.display()
+            )
+        })?;
         let current = extract_project(&project_dir, &config)?;
         let diff = crate::commands::doc_extract_diff::compute_diff(&baseline, &current);
         let output = if config.json {
@@ -879,10 +857,7 @@ pub fn run_extract(config: ExtractConfig) -> Result<()> {
         };
         write_output(&output, &config)?;
         if diff.breaking_changes > 0 {
-            eprintln!(
-                "{} breaking API changes detected",
-                diff.breaking_changes
-            );
+            eprintln!("{} breaking API changes detected", diff.breaking_changes);
             std::process::exit(1);
         }
         return Ok(());
@@ -897,9 +872,7 @@ pub fn run_extract(config: ExtractConfig) -> Result<()> {
         if let Some(threshold) = config.fail_under {
             let coverage_pct = (doc.stats.documentation_coverage * 100.0) as u32;
             if coverage_pct < threshold {
-                eprintln!(
-                    "Documentation coverage {coverage_pct}% is below threshold {threshold}%"
-                );
+                eprintln!("Documentation coverage {coverage_pct}% is below threshold {threshold}%");
                 std::process::exit(1);
             }
         }
@@ -968,9 +941,7 @@ pub fn extract_project(project_dir: &Path, config: &ExtractConfig) -> Result<Pro
                             }
                         }
                     }
-                    "h" | "hpp" | "hxx"
-                        if lang_filter.is_none() || lang_filter == Some("cpp") =>
-                    {
+                    "h" | "hpp" | "hxx" if lang_filter.is_none() || lang_filter == Some("cpp") => {
                         match super::doc_extract_cpp::extract_cpp_file(path, config.all) {
                             Ok(result) => {
                                 modules.push(result.module);
@@ -1402,7 +1373,10 @@ mod tests {
             examples: vec![],
         });
         let json = serde_json::to_string(&sym).unwrap();
-        assert!(json.contains("\"kind\":\"function\""), "should have tagged kind: {json}");
+        assert!(
+            json.contains("\"kind\":\"function\""),
+            "should have tagged kind: {json}"
+        );
     }
 
     #[test]
@@ -1476,7 +1450,10 @@ mod tests {
     fn test_format_brief_deprecated_marker() {
         let doc = sample_project_doc();
         let brief = format_brief(&doc);
-        assert!(brief.contains("⚠ struct Config"), "deprecated should have ⚠ marker: {brief}");
+        assert!(
+            brief.contains("⚠ struct Config"),
+            "deprecated should have ⚠ marker: {brief}"
+        );
     }
 
     #[test]
@@ -1491,7 +1468,10 @@ mod tests {
     fn test_format_coverage_undocumented_list() {
         let doc = sample_project_doc();
         let cov = format_coverage(&doc);
-        assert!(cov.contains("Config"), "undocumented Config should be listed");
+        assert!(
+            cov.contains("Config"),
+            "undocumented Config should be listed"
+        );
     }
 
     #[test]
@@ -1658,7 +1638,10 @@ mod tests {
             project: "test".to_string(),
             version: "0.1.0".to_string(),
             languages: vec![],
-            module_tree: ModuleTree { name: "root".to_string(), children: vec![] },
+            module_tree: ModuleTree {
+                name: "root".to_string(),
+                children: vec![],
+            },
             modules: vec![ModuleDoc {
                 path: PathBuf::from("src/lib.rs"),
                 language: "rust".to_string(),
@@ -1668,18 +1651,33 @@ mod tests {
                     SymbolDoc::Struct(StructDoc {
                         name: "MyNode".to_string(),
                         visibility: Visibility::Public,
-                        location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
-                        doc: None, deprecated: None, generic_params: vec![],
-                        fields: vec![], methods: vec![],
+                        location: SourceLocation {
+                            file: PathBuf::from("src/lib.rs"),
+                            line: 1,
+                            end_line: None,
+                        },
+                        doc: None,
+                        deprecated: None,
+                        generic_params: vec![],
+                        fields: vec![],
+                        methods: vec![],
                         trait_impls: vec!["Node".to_string()],
-                        derives: vec![], examples: vec![],
+                        derives: vec![],
+                        examples: vec![],
                     }),
                     SymbolDoc::Trait(TraitDoc {
                         name: "Node".to_string(),
                         visibility: Visibility::Public,
-                        location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 10, end_line: None },
-                        doc: None, deprecated: None, generic_params: vec![],
-                        required_methods: vec![], provided_methods: vec![],
+                        location: SourceLocation {
+                            file: PathBuf::from("src/lib.rs"),
+                            line: 10,
+                            end_line: None,
+                        },
+                        doc: None,
+                        deprecated: None,
+                        generic_params: vec![],
+                        required_methods: vec![],
+                        provided_methods: vec![],
                         implementors: vec![],
                     }),
                 ],
@@ -1688,14 +1686,29 @@ mod tests {
             message_graph: None,
             entry_points: vec![],
             todos: vec![],
-            stats: DocStats { total_files: 1, total_symbols: 2, documented_symbols: 0, deprecated_symbols: 0, documentation_coverage: 0.0, horus_nodes: 0, horus_messages: 0, horus_services: 0, horus_actions: 0, topics_discovered: 0, todos: 0, fixmes: 0 },
+            stats: DocStats {
+                total_files: 1,
+                total_symbols: 2,
+                documented_symbols: 0,
+                deprecated_symbols: 0,
+                documentation_coverage: 0.0,
+                horus_nodes: 0,
+                horus_messages: 0,
+                horus_services: 0,
+                horus_actions: 0,
+                topics_discovered: 0,
+                todos: 0,
+                fixmes: 0,
+            },
         };
 
         cross_reference_pass(&mut doc);
 
         // Relationship should be created
         assert!(!doc.relationships.is_empty());
-        assert!(matches!(&doc.relationships[0], Relationship::Implements { implementor, trait_name, .. } if implementor == "MyNode" && trait_name == "Node"));
+        assert!(
+            matches!(&doc.relationships[0], Relationship::Implements { implementor, trait_name, .. } if implementor == "MyNode" && trait_name == "Node")
+        );
 
         // TraitDoc.implementors should be populated
         if let SymbolDoc::Trait(t) = &doc.modules[0].symbols[1] {
@@ -1713,9 +1726,14 @@ mod tests {
                 name: "SensorNode".to_string(),
                 file: PathBuf::from("src/sensor.rs"),
                 details: Some(EntryPointDetails {
-                    publishes: vec![TopicInfo { name: "temperature".to_string(), message_type: "TempReading".to_string(), direction: "pub".to_string() }],
+                    publishes: vec![TopicInfo {
+                        name: "temperature".to_string(),
+                        message_type: "TempReading".to_string(),
+                        direction: "pub".to_string(),
+                    }],
                     subscribes: vec![],
-                    tick_rate: None, execution_class: None,
+                    tick_rate: None,
+                    execution_class: None,
                 }),
             },
             EntryPoint {
@@ -1724,8 +1742,13 @@ mod tests {
                 file: PathBuf::from("src/monitor.rs"),
                 details: Some(EntryPointDetails {
                     publishes: vec![],
-                    subscribes: vec![TopicInfo { name: "temperature".to_string(), message_type: "TempReading".to_string(), direction: "sub".to_string() }],
-                    tick_rate: None, execution_class: None,
+                    subscribes: vec![TopicInfo {
+                        name: "temperature".to_string(),
+                        message_type: "TempReading".to_string(),
+                        direction: "sub".to_string(),
+                    }],
+                    tick_rate: None,
+                    execution_class: None,
                 }),
             },
         ];
@@ -1751,23 +1774,38 @@ mod tests {
     fn test_format_markdown_contains_project_header() {
         let doc = sample_project_doc();
         let md = format_markdown(&doc);
-        assert!(md.contains("# test-project v0.1.0"), "markdown should have project header");
-        assert!(md.contains("API Reference"), "markdown should have API Reference label");
+        assert!(
+            md.contains("# test-project v0.1.0"),
+            "markdown should have project header"
+        );
+        assert!(
+            md.contains("API Reference"),
+            "markdown should have API Reference label"
+        );
     }
 
     #[test]
     fn test_format_markdown_includes_doc_comments() {
         let doc = sample_project_doc();
         let md = format_markdown(&doc);
-        assert!(md.contains("Greet someone."), "markdown should include doc comments from symbols");
+        assert!(
+            md.contains("Greet someone."),
+            "markdown should include doc comments from symbols"
+        );
     }
 
     #[test]
     fn test_format_markdown_shows_deprecated() {
         let doc = sample_project_doc();
         let md = format_markdown(&doc);
-        assert!(md.contains("Deprecated"), "markdown should flag deprecated symbols");
-        assert!(md.contains("use ConfigV2 instead"), "markdown should show deprecation message");
+        assert!(
+            md.contains("Deprecated"),
+            "markdown should flag deprecated symbols"
+        );
+        assert!(
+            md.contains("use ConfigV2 instead"),
+            "markdown should show deprecation message"
+        );
     }
 
     // ── format_output selection tests ───────────────────────────────
@@ -1776,36 +1814,72 @@ mod tests {
     fn test_format_output_selects_html() {
         let doc = sample_project_doc();
         let config = ExtractConfig {
-            json: false, md: false, html: true, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: true,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let output = format_output(&doc, &config);
-        assert!(output.contains("<!DOCTYPE html>"), "html flag should produce HTML output");
+        assert!(
+            output.contains("<!DOCTYPE html>"),
+            "html flag should produce HTML output"
+        );
     }
 
     #[test]
     fn test_format_output_selects_md() {
         let doc = sample_project_doc();
         let config = ExtractConfig {
-            json: false, md: true, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: true,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let output = format_output(&doc, &config);
-        assert!(output.contains("API Reference"), "md flag should produce markdown output");
+        assert!(
+            output.contains("API Reference"),
+            "md flag should produce markdown output"
+        );
     }
 
     #[test]
     fn test_format_output_default_is_brief() {
         let doc = sample_project_doc();
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let output = format_output(&doc, &config);
-        assert!(output.starts_with("# test-project"), "default should be brief format");
+        assert!(
+            output.starts_with("# test-project"),
+            "default should be brief format"
+        );
     }
 
     // ── write_output tests ──────────────────────────────────────────
@@ -1815,9 +1889,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("api.json");
         let config = ExtractConfig {
-            json: true, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: Some(out_path.clone()), watch: false, diff: None, fail_under: None,
+            json: true,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: Some(out_path.clone()),
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let doc = sample_project_doc();
         let output_str = format_output(&doc, &config);
@@ -1825,7 +1908,10 @@ mod tests {
 
         assert!(out_path.exists(), "output file should be created");
         let content = std::fs::read_to_string(&out_path).unwrap();
-        assert!(content.contains("test-project"), "file should contain project data");
+        assert!(
+            content.contains("test-project"),
+            "file should contain project data"
+        );
         // Verify it's valid JSON
         let _: serde_json::Value = serde_json::from_str(&content).expect("should be valid JSON");
     }
@@ -1835,9 +1921,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("nested/dir/api.json");
         let config = ExtractConfig {
-            json: true, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: Some(out_path.clone()), watch: false, diff: None, fail_under: None,
+            json: true,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: Some(out_path.clone()),
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         write_output("{}", &config).unwrap();
         assert!(out_path.exists(), "should create nested directories");
@@ -1848,7 +1943,9 @@ mod tests {
     #[test]
     fn test_is_source_file_event_rs() {
         let event = notify::Event {
-            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)),
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
             paths: vec![std::path::PathBuf::from("src/main.rs")],
             attrs: Default::default(),
         };
@@ -1858,7 +1955,9 @@ mod tests {
     #[test]
     fn test_is_source_file_event_py() {
         let event = notify::Event {
-            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)),
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
             paths: vec![std::path::PathBuf::from("src/main.py")],
             attrs: Default::default(),
         };
@@ -1868,7 +1967,9 @@ mod tests {
     #[test]
     fn test_is_source_file_event_hpp() {
         let event = notify::Event {
-            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)),
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
             paths: vec![std::path::PathBuf::from("include/robot.hpp")],
             attrs: Default::default(),
         };
@@ -1878,21 +1979,31 @@ mod tests {
     #[test]
     fn test_is_source_file_event_non_source() {
         let event = notify::Event {
-            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)),
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
             paths: vec![std::path::PathBuf::from(".gitignore")],
             attrs: Default::default(),
         };
-        assert!(!is_source_file_event(&event), ".gitignore should not be a source file");
+        assert!(
+            !is_source_file_event(&event),
+            ".gitignore should not be a source file"
+        );
     }
 
     #[test]
     fn test_is_source_file_event_toml() {
         let event = notify::Event {
-            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)),
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
             paths: vec![std::path::PathBuf::from("horus.toml")],
             attrs: Default::default(),
         };
-        assert!(is_source_file_event(&event), "toml files should trigger rebuild");
+        assert!(
+            is_source_file_event(&event),
+            "toml files should trigger rebuild"
+        );
     }
 
     // ── write_output_atomic tests ───────────────────────────────────
@@ -1902,15 +2013,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("output.txt");
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: Some(out_path.clone()), watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: Some(out_path.clone()),
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         write_output_atomic("test content", &config).unwrap();
         assert!(out_path.exists());
         assert_eq!(std::fs::read_to_string(&out_path).unwrap(), "test content");
         // .tmp should not remain
-        assert!(!dir.path().join("output.tmp").exists(), "tmp file should be cleaned up");
+        assert!(
+            !dir.path().join("output.tmp").exists(),
+            "tmp file should be cleaned up"
+        );
     }
 
     // ── compute_stats edge cases ────────────────────────────────────
@@ -1920,7 +2043,10 @@ mod tests {
         let stats = compute_stats(&[], &[], &[]);
         assert_eq!(stats.total_files, 0);
         assert_eq!(stats.total_symbols, 0);
-        assert_eq!(stats.documentation_coverage, 1.0, "empty project = 100% coverage");
+        assert_eq!(
+            stats.documentation_coverage, 1.0,
+            "empty project = 100% coverage"
+        );
     }
 
     #[test]
@@ -1933,18 +2059,37 @@ mod tests {
             symbols: vec![
                 SymbolDoc::HorusMessage(HorusMessageDoc {
                     name: "Msg".to_string(),
-                    location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
-                    doc: None, deprecated: None, fields: vec![],
+                    location: SourceLocation {
+                        file: PathBuf::from("src/lib.rs"),
+                        line: 1,
+                        end_line: None,
+                    },
+                    doc: None,
+                    deprecated: None,
+                    fields: vec![],
                 }),
                 SymbolDoc::HorusService(HorusServiceDoc {
                     name: "Svc".to_string(),
-                    location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 5, end_line: None },
-                    doc: None, request_fields: vec![], response_fields: vec![],
+                    location: SourceLocation {
+                        file: PathBuf::from("src/lib.rs"),
+                        line: 5,
+                        end_line: None,
+                    },
+                    doc: None,
+                    request_fields: vec![],
+                    response_fields: vec![],
                 }),
                 SymbolDoc::HorusAction(HorusActionDoc {
                     name: "Act".to_string(),
-                    location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 10, end_line: None },
-                    doc: None, goal_fields: vec![], feedback_fields: vec![], result_fields: vec![],
+                    location: SourceLocation {
+                        file: PathBuf::from("src/lib.rs"),
+                        line: 10,
+                        end_line: None,
+                    },
+                    doc: None,
+                    goal_fields: vec![],
+                    feedback_fields: vec![],
+                    result_fields: vec![],
                 }),
             ],
         }];
@@ -1962,17 +2107,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
         std::fs::create_dir_all(&src_dir).unwrap();
-        std::fs::write(src_dir.join("lib.rs"), "/// A helper.\npub fn helper() -> u32 { 42 }").unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            "/// A helper.\npub fn helper() -> u32 { 42 }",
+        )
+        .unwrap();
 
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let doc = extract_project(dir.path(), &config).unwrap();
 
         // Verify extraction found the function
-        assert!(!doc.modules.is_empty(), "should extract at least one module");
+        assert!(
+            !doc.modules.is_empty(),
+            "should extract at least one module"
+        );
         let total_symbols: usize = doc.modules.iter().map(|m| m.symbols.len()).sum();
         assert!(total_symbols > 0, "should extract at least one symbol");
 
@@ -1991,9 +2152,18 @@ mod tests {
         std::fs::write(src_dir.join("lib.rs"), "pub struct Foo;").unwrap();
 
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let doc = extract_project(dir.path(), &config).unwrap();
 
@@ -2013,13 +2183,25 @@ mod tests {
         std::fs::write(src_dir.join("lib.rs"), "pub fn stable() {}").unwrap();
 
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let doc = extract_project(dir.path(), &config).unwrap();
         let diff = crate::commands::doc_extract_diff::compute_diff(&doc, &doc);
-        assert_eq!(diff.breaking_changes, 0, "self-diff should have no breaking changes");
+        assert_eq!(
+            diff.breaking_changes, 0,
+            "self-diff should have no breaking changes"
+        );
         assert!(diff.added.is_empty());
         assert!(diff.removed.is_empty());
         assert!(diff.changed.is_empty());
@@ -2030,9 +2212,18 @@ mod tests {
     #[test]
     fn test_extract_project_nonexistent_dir() {
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         // Should succeed with empty result (no src/ dir)
         let dir = tempfile::tempdir().unwrap();
@@ -2044,10 +2235,20 @@ mod tests {
     #[test]
     fn test_write_output_invalid_path() {
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: Some(PathBuf::from("/nonexistent/deeply/nested/impossible/path/file.json")),
-            watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: Some(PathBuf::from(
+                "/nonexistent/deeply/nested/impossible/path/file.json",
+            )),
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         let result = write_output("test", &config);
         assert!(result.is_err(), "writing to impossible path should fail");

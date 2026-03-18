@@ -18,11 +18,11 @@
 
 mod monitor_tests;
 
+use horus_core::core::DurationExt;
 use monitor_tests::builders;
 use monitor_tests::helpers::{assert_json_ok, get_request};
 use monitor_tests::shm_fixtures::TestShmGuard;
 use tower::ServiceExt;
-use horus_core::core::DurationExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Helper: Get generated HTML from index handler

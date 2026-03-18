@@ -530,12 +530,7 @@ impl TopicHeader {
                 // Exactly one thread wins per slot.
                 let claimed = p
                     .active
-                    .compare_exchange(
-                        active_val,
-                        2,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
+                    .compare_exchange(active_val, 2, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok();
 
                 if claimed {
@@ -831,8 +826,7 @@ pub fn read_latest_slot_bytes(
     // Read topic_kind (byte 48 in cache line 1) and messages_total (offset 56).
     // SAFETY: mmap is validated to be at least TOPIC_HEADER_SIZE (640) bytes.
     let topic_kind = unsafe { std::ptr::read_unaligned(base.add(48)) };
-    let messages_total =
-        unsafe { std::ptr::read_unaligned(base.add(56) as *const u64) };
+    let messages_total = unsafe { std::ptr::read_unaligned(base.add(56) as *const u64) };
 
     Some(TopicSlotRead {
         payload,
@@ -920,10 +914,8 @@ pub fn read_topic_header_info(path: &std::path::Path) -> Option<TopicHeaderInfo>
         let is_pod_raw = std::ptr::read_unaligned(base.add(20));
         let topic_kind = std::ptr::read_unaligned(base.add(48));
         let messages_total = std::ptr::read_unaligned(base.add(56) as *const u64);
-        let publisher_count =
-            (*(base.add(192) as *const AtomicU32)).load(Ordering::Relaxed);
-        let subscriber_count =
-            (*(base.add(196) as *const AtomicU32)).load(Ordering::Relaxed);
+        let publisher_count = (*(base.add(192) as *const AtomicU32)).load(Ordering::Relaxed);
+        let subscriber_count = (*(base.add(196) as *const AtomicU32)).load(Ordering::Relaxed);
 
         // type_name at offset 216, 32 bytes
         let name_bytes = std::slice::from_raw_parts(base.add(216), 32);
@@ -978,7 +970,15 @@ mod tests {
 
     fn make_header(type_size: u32, type_align: u32, is_pod: bool, capacity: u32) -> TopicHeader {
         let mut h = TopicHeader::zeroed();
-        h.init(type_size, type_align, is_pod, capacity, type_size.max(16), "TestType", TopicKind::Data as u8);
+        h.init(
+            type_size,
+            type_align,
+            is_pod,
+            capacity,
+            type_size.max(16),
+            "TestType",
+            TopicKind::Data as u8,
+        );
         h
     }
 
@@ -1783,7 +1783,15 @@ mod tests {
     fn init_type_name_with_colons() {
         // Simulates a full Rust path like "horus_library::messages::Imu"
         let mut h = TopicHeader::zeroed();
-        h.init(8, 8, true, 16, 16, "horus_library::messages::Imu", TopicKind::Data as u8);
+        h.init(
+            8,
+            8,
+            true,
+            16,
+            16,
+            "horus_library::messages::Imu",
+            TopicKind::Data as u8,
+        );
         assert_eq!(h.type_name_str(), "horus_library::messages::Imu");
     }
 
@@ -1881,10 +1889,8 @@ mod tests {
     fn read_topic_header_info_roundtrip() {
         use memmap2::MmapMut;
 
-        let path = std::env::temp_dir().join(format!(
-            "horus_hdr_info_test_{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("horus_hdr_info_test_{}.bin", std::process::id()));
 
         // Write a valid header to temp file
         {
@@ -1897,21 +1903,16 @@ mod tests {
                 .expect("create temp file");
             file.set_len(TOPIC_HEADER_SIZE as u64)
                 .expect("set file size");
-            let mut mmap =
-                unsafe { MmapMut::map_mut(&file).expect("mmap") };
-            let header =
-                unsafe { &mut *(mmap.as_mut_ptr() as *mut TopicHeader) };
+            let mut mmap = unsafe { MmapMut::map_mut(&file).expect("mmap") };
+            let header = unsafe { &mut *(mmap.as_mut_ptr() as *mut TopicHeader) };
             *header = TopicHeader::zeroed();
             header.init(4, 4, true, 16, 16, "LaserScan", TopicKind::Data as u8);
-            header
-                .messages_total
-                .store(12345, Ordering::Relaxed);
+            header.messages_total.store(12345, Ordering::Relaxed);
             mmap.flush().expect("flush");
         }
 
         // Read back via read_topic_header_info
-        let info =
-            read_topic_header_info(&path).expect("should read valid header");
+        let info = read_topic_header_info(&path).expect("should read valid header");
         assert_eq!(info.type_name, "LaserScan");
         assert_eq!(info.messages_total, 12345);
         assert_eq!(info.topic_kind, TopicKind::Data as u8);
@@ -1923,10 +1924,8 @@ mod tests {
 
     #[test]
     fn read_topic_header_info_invalid_magic() {
-        let path = std::env::temp_dir().join(format!(
-            "horus_hdr_bad_magic_{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("horus_hdr_bad_magic_{}.bin", std::process::id()));
 
         // Write garbage
         std::fs::write(&path, &[0u8; 640]).expect("write garbage file");
@@ -1940,10 +1939,7 @@ mod tests {
 
     #[test]
     fn read_topic_header_info_file_too_small() {
-        let path = std::env::temp_dir().join(format!(
-            "horus_hdr_small_{}.bin",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("horus_hdr_small_{}.bin", std::process::id()));
 
         std::fs::write(&path, &[0u8; 100]).expect("write small file");
         assert!(
@@ -1956,6 +1952,8 @@ mod tests {
 
     #[test]
     fn read_topic_header_info_nonexistent() {
-        assert!(read_topic_header_info(std::path::Path::new("/tmp/horus_nonexistent_42")).is_none());
+        assert!(
+            read_topic_header_info(std::path::Path::new("/tmp/horus_nonexistent_42")).is_none()
+        );
     }
 }

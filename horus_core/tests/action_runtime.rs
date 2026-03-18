@@ -76,10 +76,7 @@ fn test_action_full_goal_lifecycle() {
 
     // Create client and send goal
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(
-        RtNavGoal { target: 42.0 },
-        Duration::from_secs(5),
-    );
+    let result = client.send_goal_and_wait(RtNavGoal { target: 42.0 }, Duration::from_secs(5));
 
     // Stop server
     running.store(false, Ordering::Relaxed);
@@ -120,10 +117,7 @@ fn test_action_server_rejects_goal() {
     std::thread::sleep(Duration::from_millis(100));
 
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(
-        RtNavGoal { target: -999.0 },
-        Duration::from_secs(3),
-    );
+    let result = client.send_goal_and_wait(RtNavGoal { target: -999.0 }, Duration::from_secs(3));
 
     running.store(false, Ordering::Relaxed);
     server_thread.join().unwrap();
@@ -166,10 +160,7 @@ fn test_action_server_aborts_goal() {
     std::thread::sleep(Duration::from_millis(100));
 
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(
-        RtNavGoal { target: 10.0 },
-        Duration::from_secs(3),
-    );
+    let result = client.send_goal_and_wait(RtNavGoal { target: 10.0 }, Duration::from_secs(3));
 
     running.store(false, Ordering::Relaxed);
     server_thread.join().unwrap();
@@ -340,10 +331,8 @@ fn test_action_multiple_sequential_goals() {
 
     // Send 3 goals sequentially
     for i in 0..3 {
-        let result = client.send_goal_and_wait(
-            RtNavGoal { target: i as f64 },
-            Duration::from_secs(3),
-        );
+        let result =
+            client.send_goal_and_wait(RtNavGoal { target: i as f64 }, Duration::from_secs(3));
         assert!(result.is_ok(), "Goal {} should succeed: {:?}", i, result);
     }
 

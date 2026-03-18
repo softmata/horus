@@ -23,12 +23,12 @@ use horus_benchmarks::{
     detect_platform, set_cpu_affinity, write_json_report, BenchmarkConfig, BenchmarkReport,
     BenchmarkResult, DeterminismMetrics, Statistics, ThroughputMetrics,
 };
+use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
-use horus_core::core::DurationExt;
 
 const MEASUREMENT_DURATION_SECS: u64 = 5;
 const WARMUP_DURATION_SECS: u64 = 1;

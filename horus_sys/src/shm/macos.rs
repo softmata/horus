@@ -99,8 +99,7 @@ impl ShmRegion {
                 } else {
                     // Lost re-create race — open their copy
                     // SAFETY: c_name is a valid null-terminated CString
-                    let retry_fd =
-                        unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
+                    let retry_fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
                     if retry_fd < 0 {
                         anyhow::bail!(
                             "Failed to open/create shm '{}' after zombie cleanup: {}",
@@ -110,10 +109,7 @@ impl ShmRegion {
                     }
                     if wait_for_shm_init(retry_fd, size).is_err() {
                         unsafe { libc::close(retry_fd) };
-                        anyhow::bail!(
-                            "shm '{}' not fully initialized after all retries",
-                            shm_name
-                        );
+                        anyhow::bail!("shm '{}' not fully initialized after all retries", shm_name);
                     }
                     (retry_fd, false)
                 }
@@ -140,10 +136,7 @@ impl ShmRegion {
                 }
                 if wait_for_shm_init(fd, size).is_err() {
                     unsafe { libc::close(fd) };
-                    anyhow::bail!(
-                        "shm '{}' not fully initialized after all retries",
-                        shm_name
-                    );
+                    anyhow::bail!("shm '{}' not fully initialized after all retries", shm_name);
                 }
                 (fd, false)
             } else {

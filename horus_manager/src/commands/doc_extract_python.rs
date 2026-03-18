@@ -37,8 +37,12 @@ pub fn extract_python_file(path: &Path) -> Result<PythonExtractionResult> {
         );
     }
 
-    let raw: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("Failed to parse JSON from python extractor for {}", path.display()))?;
+    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).with_context(|| {
+        format!(
+            "Failed to parse JSON from python extractor for {}",
+            path.display()
+        )
+    })?;
 
     parse_python_output(&raw, path)
 }
@@ -70,7 +74,11 @@ fn parse_python_output(raw: &serde_json::Value, path: &Path) -> Result<PythonExt
 
     let symbols: Vec<SymbolDoc> = raw["symbols"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| parse_python_symbol(v, path)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| parse_python_symbol(v, path))
+                .collect()
+        })
         .unwrap_or_default();
 
     let todos: Vec<TodoItem> = raw["todos"]
@@ -123,7 +131,11 @@ fn parse_python_symbol(v: &serde_json::Value, path: &Path) -> Option<SymbolDoc> 
                 generic_params: vec![],
                 examples: v["examples"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default(),
             }))
         }
@@ -158,12 +170,20 @@ fn parse_python_symbol(v: &serde_json::Value, path: &Path) -> Option<SymbolDoc> 
 
             let trait_impls: Vec<String> = v["trait_impls"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let derives: Vec<String> = v["derives"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             Some(SymbolDoc::Struct(StructDoc {
@@ -179,7 +199,11 @@ fn parse_python_symbol(v: &serde_json::Value, path: &Path) -> Option<SymbolDoc> 
                 derives,
                 examples: v["examples"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default(),
             }))
         }
@@ -251,7 +275,12 @@ mod tests {
     #[test]
     fn test_extract_function_with_types() {
         let result = extract_from_python("def greet(name: str) -> str:\n    \"\"\"Say hello.\"\"\"\n    return f\"hello {name}\"");
-        let fns: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Function(_))).collect();
+        let fns: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Function(_)))
+            .collect();
         assert_eq!(fns.len(), 1);
         if let SymbolDoc::Function(f) = &fns[0] {
             assert_eq!(f.name, "greet");
@@ -275,8 +304,15 @@ mod tests {
 
     #[test]
     fn test_extract_class() {
-        let result = extract_from_python("class Robot:\n    \"\"\"A robot.\"\"\"\n    def move(self):\n        pass");
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let result = extract_from_python(
+            "class Robot:\n    \"\"\"A robot.\"\"\"\n    def move(self):\n        pass",
+        );
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert_eq!(classes.len(), 1);
         if let SymbolDoc::Struct(s) = &classes[0] {
             assert_eq!(s.name, "Robot");
@@ -296,7 +332,12 @@ mod tests {
     #[test]
     fn test_extract_dataclass() {
         let result = extract_from_python("from dataclasses import dataclass\n\n@dataclass\nclass Point:\n    x: float\n    y: float");
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert!(!classes.is_empty());
         if let SymbolDoc::Struct(s) = &classes[0] {
             assert_eq!(s.name, "Point");
@@ -308,20 +349,31 @@ mod tests {
 
     #[test]
     fn test_extract_module_doc() {
-        let result = extract_from_python("\"\"\"This is the module doc.\"\"\"\n\ndef f():\n    pass");
-        assert_eq!(result.module.module_doc.as_deref(), Some("This is the module doc."));
+        let result =
+            extract_from_python("\"\"\"This is the module doc.\"\"\"\n\ndef f():\n    pass");
+        assert_eq!(
+            result.module.module_doc.as_deref(),
+            Some("This is the module doc.")
+        );
     }
 
     #[test]
     fn test_extract_constant() {
         let result = extract_from_python("MAX_SPEED = 100\nPI = 3.14");
-        let consts: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Constant(_))).collect();
+        let consts: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Constant(_)))
+            .collect();
         assert_eq!(consts.len(), 2);
     }
 
     #[test]
     fn test_extract_default_args() {
-        let result = extract_from_python("def configure(speed: float = 1.0, verbose: bool = False):\n    pass");
+        let result = extract_from_python(
+            "def configure(speed: float = 1.0, verbose: bool = False):\n    pass",
+        );
         if let SymbolDoc::Function(f) = &result.module.symbols[0] {
             assert_eq!(f.params.len(), 2);
             assert!(f.params[0].default_value.is_some());
@@ -330,7 +382,8 @@ mod tests {
 
     #[test]
     fn test_extract_imports() {
-        let result = extract_from_python("import os\nfrom pathlib import Path\n\ndef f():\n    pass");
+        let result =
+            extract_from_python("import os\nfrom pathlib import Path\n\ndef f():\n    pass");
         assert!(result.module.imports.len() >= 2);
     }
 
@@ -359,7 +412,11 @@ mod tests {
         let result = extract_from_python("def _internal():\n    pass\n\ndef public():\n    pass");
         // Both should be extracted (visibility marked)
         assert_eq!(result.module.symbols.len(), 2);
-        let private = result.module.symbols.iter().find(|s| s.name() == "_internal");
+        let private = result
+            .module
+            .symbols
+            .iter()
+            .find(|s| s.name() == "_internal");
         assert!(private.is_some());
     }
 
@@ -388,9 +445,17 @@ mod tests {
             "__all__ = [\"public_fn\"]\ndef public_fn():\n    pass\ndef hidden_fn():\n    pass",
         );
         let names: Vec<&str> = result.module.symbols.iter().map(|s| s.name()).collect();
-        assert!(names.contains(&"public_fn"), "public_fn should be present: {:?}", names);
+        assert!(
+            names.contains(&"public_fn"),
+            "public_fn should be present: {:?}",
+            names
+        );
         // hidden_fn should be filtered out by __all__
-        assert!(!names.contains(&"hidden_fn"), "hidden_fn should be filtered by __all__: {:?}", names);
+        assert!(
+            !names.contains(&"hidden_fn"),
+            "hidden_fn should be filtered by __all__: {:?}",
+            names
+        );
     }
 
     #[test]
@@ -398,11 +463,20 @@ mod tests {
         let result = extract_from_python(
             "class Cfg:\n    @property\n    def name(self) -> str:\n        return \"x\"",
         );
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert_eq!(classes.len(), 1);
         if let SymbolDoc::Struct(s) = &classes[0] {
             let method_names: Vec<&str> = s.methods.iter().map(|m| m.name.as_str()).collect();
-            assert!(method_names.contains(&"name"), "property 'name' should be captured as method: {:?}", method_names);
+            assert!(
+                method_names.contains(&"name"),
+                "property 'name' should be captured as method: {:?}",
+                method_names
+            );
         }
     }
 
@@ -411,11 +485,20 @@ mod tests {
         let result = extract_from_python(
             "class Factory:\n    @staticmethod\n    def create() -> 'Factory':\n        return Factory()",
         );
-        let classes: Vec<_> = result.module.symbols.iter().filter(|s| matches!(s, SymbolDoc::Struct(_))).collect();
+        let classes: Vec<_> = result
+            .module
+            .symbols
+            .iter()
+            .filter(|s| matches!(s, SymbolDoc::Struct(_)))
+            .collect();
         assert_eq!(classes.len(), 1);
         if let SymbolDoc::Struct(s) = &classes[0] {
             let method_names: Vec<&str> = s.methods.iter().map(|m| m.name.as_str()).collect();
-            assert!(method_names.contains(&"create"), "staticmethod 'create' should be captured: {:?}", method_names);
+            assert!(
+                method_names.contains(&"create"),
+                "staticmethod 'create' should be captured: {:?}",
+                method_names
+            );
         }
     }
 
@@ -430,8 +513,10 @@ mod tests {
             Err(_) => {} // expected: extraction failed gracefully
             Ok(r) => {
                 // also acceptable: parser returned empty/partial results
-                assert!(r.module.symbols.is_empty() || !r.module.symbols.is_empty(),
-                    "should not panic on syntax errors");
+                assert!(
+                    r.module.symbols.is_empty() || !r.module.symbols.is_empty(),
+                    "should not panic on syntax errors"
+                );
             }
         }
     }
@@ -470,9 +555,21 @@ MAX_SENSORS = 16
         );
 
         // Check symbol types are present
-        let has_class = result.module.symbols.iter().any(|s| matches!(s, SymbolDoc::Struct(_)));
-        let has_fn = result.module.symbols.iter().any(|s| matches!(s, SymbolDoc::Function(_)));
-        let has_const = result.module.symbols.iter().any(|s| matches!(s, SymbolDoc::Constant(_)));
+        let has_class = result
+            .module
+            .symbols
+            .iter()
+            .any(|s| matches!(s, SymbolDoc::Struct(_)));
+        let has_fn = result
+            .module
+            .symbols
+            .iter()
+            .any(|s| matches!(s, SymbolDoc::Function(_)));
+        let has_const = result
+            .module
+            .symbols
+            .iter()
+            .any(|s| matches!(s, SymbolDoc::Constant(_)));
         assert!(has_class, "should extract the SensorReader class");
         assert!(has_fn, "should extract the calibrate function");
         assert!(has_const, "should extract the MAX_SENSORS constant");
@@ -483,18 +580,25 @@ MAX_SENSORS = 16
             "should capture the module docstring"
         );
         assert!(
-            result.module.module_doc.as_ref().unwrap().contains("Sensor utilities"),
-            "module_doc should contain 'Sensor utilities', got: {:?}", result.module.module_doc
+            result
+                .module
+                .module_doc
+                .as_ref()
+                .unwrap()
+                .contains("Sensor utilities"),
+            "module_doc should contain 'Sensor utilities', got: {:?}",
+            result.module.module_doc
         );
 
         // TODO captured
+        assert!(!result.todos.is_empty(), "should capture the TODO comment");
         assert!(
-            !result.todos.is_empty(),
-            "should capture the TODO comment"
-        );
-        assert!(
-            result.todos.iter().any(|t| t.text.contains("async") || t.text.contains("polling")),
-            "TODO text should mention async/polling, got: {:?}", result.todos
+            result
+                .todos
+                .iter()
+                .any(|t| t.text.contains("async") || t.text.contains("polling")),
+            "TODO text should mention async/polling, got: {:?}",
+            result.todos
         );
     }
 
@@ -512,9 +616,16 @@ MAX_SENSORS = 16
         let file = dir.path().join("empty.py");
         std::fs::write(&file, "").unwrap();
         let result = extract_python_file(&file);
-        assert!(result.is_ok(), "empty .py file should succeed, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "empty .py file should succeed, got: {:?}",
+            result.err()
+        );
         let r = result.unwrap();
-        assert!(r.module.symbols.is_empty(), "empty file should produce no symbols");
+        assert!(
+            r.module.symbols.is_empty(),
+            "empty file should produce no symbols"
+        );
         assert!(r.todos.is_empty(), "empty file should produce no TODOs");
     }
 }

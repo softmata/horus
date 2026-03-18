@@ -26,13 +26,13 @@
 //! - **macOS**: Near-full (Mach threads, shm_open, IOKit)
 //! - **Windows**: Near-full (REALTIME_PRIORITY, CreateFileMapping, WMI)
 
-pub mod shm;
-pub mod rt;
-pub mod process;
-pub mod fs;
-pub mod time;
-pub mod discover;
-pub mod terminal;
 pub mod device;
+pub mod discover;
+pub mod fs;
 pub mod platform;
+pub mod process;
+pub mod rt;
+pub mod shm;
 pub mod sync;
+pub mod terminal;
+pub mod time;

@@ -125,13 +125,13 @@ macro_rules! register_driver {
             static __register_driver: extern "C" fn() = {
                 extern "C" fn __init() {
                     $crate::drivers::registry::register(
-                        stringify!($name),
-                        |params: &$crate::drivers::DriverParams|
-                            -> $crate::error::HorusResult<Box<dyn $crate::core::Node>> {
-                            let node = $factory(params)?;
-                            Ok(Box::new(node))
-                        },
-                    );
+                                stringify!($name),
+                                |params: &$crate::drivers::DriverParams|
+                                    -> $crate::error::HorusResult<Box<dyn $crate::core::Node>> {
+                                    let node = $factory(params)?;
+                                    Ok(Box::new(node))
+                                },
+                            );
                 }
                 __init
             };
@@ -185,12 +185,8 @@ mod tests {
 
     #[test]
     fn register_overwrites() {
-        register("Overwrite", |_| {
-            Ok(Box::new(TestStubNode { value: 1 }))
-        });
-        register("Overwrite", |_| {
-            Ok(Box::new(TestStubNode { value: 2 }))
-        });
+        register("Overwrite", |_| Ok(Box::new(TestStubNode { value: 1 })));
+        register("Overwrite", |_| Ok(Box::new(TestStubNode { value: 2 })));
 
         // Second registration wins
         let factory = lookup("Overwrite").unwrap();
@@ -214,9 +210,7 @@ mod tests {
 
     #[test]
     fn list_includes_registered() {
-        register("ListTest", |_| {
-            Ok(Box::new(TestStubNode { value: 0 }))
-        });
+        register("ListTest", |_| Ok(Box::new(TestStubNode { value: 0 })));
 
         let names = list_registered();
         assert!(names.contains(&"ListTest".to_string()));

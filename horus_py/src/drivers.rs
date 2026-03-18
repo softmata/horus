@@ -136,10 +136,7 @@ impl PyHardwareSet {
             .inner
             .params(name)
             .ok_or_else(|| {
-                PyKeyError::new_err(format!(
-                    "driver '{}' not found in [drivers] config",
-                    name
-                ))
+                PyKeyError::new_err(format!("driver '{}' not found in [drivers] config", name))
             })?
             .clone();
 
@@ -203,10 +200,7 @@ impl PyHardwareSet {
             .inner
             .params(name)
             .ok_or_else(|| {
-                PyKeyError::new_err(format!(
-                    "driver '{}' not found in [drivers] config",
-                    name
-                ))
+                PyKeyError::new_err(format!("driver '{}' not found in [drivers] config", name))
             })?
             .clone();
 

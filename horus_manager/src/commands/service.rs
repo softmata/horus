@@ -6,8 +6,8 @@
 use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use colored::*;
-use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::core::DurationExt;
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 
 // ─── Service discovery helpers ────────────────────────────────────────────────
 
@@ -391,10 +391,22 @@ mod tests {
         // A complete service must have both request and response
         assert!(svc.has_request && svc.has_response);
         // With participants on both sides
-        assert!(svc.request_publishers > 0, "service needs request publishers");
-        assert!(svc.request_subscribers > 0, "service needs request subscribers");
-        assert!(svc.response_publishers > 0, "service needs response publishers");
-        assert!(svc.response_subscribers > 0, "service needs response subscribers");
+        assert!(
+            svc.request_publishers > 0,
+            "service needs request publishers"
+        );
+        assert!(
+            svc.request_subscribers > 0,
+            "service needs request subscribers"
+        );
+        assert!(
+            svc.response_publishers > 0,
+            "service needs response publishers"
+        );
+        assert!(
+            svc.response_subscribers > 0,
+            "service needs response subscribers"
+        );
 
         // Clone preserves all fields
         let cloned = svc.clone();
@@ -404,7 +416,10 @@ mod tests {
 
         // Debug contains service name
         let debug = format!("{:?}", svc);
-        assert!(debug.contains("add_two_ints"), "Debug should contain service name");
+        assert!(
+            debug.contains("add_two_ints"),
+            "Debug should contain service name"
+        );
     }
 
     #[test]
@@ -421,8 +436,14 @@ mod tests {
         assert!(svc.has_request);
         assert!(!svc.has_response);
         // Partial service: has request topic but no response topic
-        assert_eq!(svc.response_publishers, 0, "no response means no response publishers");
-        assert_eq!(svc.response_subscribers, 0, "no response means no response subscribers");
+        assert_eq!(
+            svc.response_publishers, 0,
+            "no response means no response publishers"
+        );
+        assert_eq!(
+            svc.response_subscribers, 0,
+            "no response means no response subscribers"
+        );
         // Even request_subscribers is 0 -- nobody listening
         assert_eq!(svc.request_subscribers, 0);
     }
@@ -561,7 +582,11 @@ mod tests {
         let result = call_service("test_svc", "not valid json", 1.0);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("Invalid request JSON"), "Should mention invalid JSON, got: {}", err);
+        assert!(
+            err.contains("Invalid request JSON"),
+            "Should mention invalid JSON, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -569,7 +594,11 @@ mod tests {
         let result = call_service("test_svc", "{\"a\": 1,}", 1.0);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("Invalid request JSON"), "Should reject trailing comma, got: {}", err);
+        assert!(
+            err.contains("Invalid request JSON"),
+            "Should reject trailing comma, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -577,7 +606,11 @@ mod tests {
         let result = call_service("test_svc", "", 1.0);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("Invalid request JSON"), "Should reject empty string, got: {}", err);
+        assert!(
+            err.contains("Invalid request JSON"),
+            "Should reject empty string, got: {}",
+            err
+        );
     }
 
     // ── Battle tests: service name matching logic ─────────────────────────
@@ -592,7 +625,11 @@ mod tests {
         let found = services.iter().find(|s| {
             s.name == name
                 || s.name.ends_with(&format!("/{}", name))
-                || s.name.rsplit('/').next().map(|base| base == name).unwrap_or(false)
+                || s.name
+                    .rsplit('/')
+                    .next()
+                    .map(|base| base == name)
+                    .unwrap_or(false)
         });
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "add_two_ints");
@@ -600,14 +637,16 @@ mod tests {
 
     #[test]
     fn service_name_matching_by_suffix() {
-        let services = vec![
-            make_test_service("robot/arm/move"),
-        ];
+        let services = vec![make_test_service("robot/arm/move")];
         let name = "move";
         let found = services.iter().find(|s| {
             s.name == name
                 || s.name.ends_with(&format!("/{}", name))
-                || s.name.rsplit('/').next().map(|base| base == name).unwrap_or(false)
+                || s.name
+                    .rsplit('/')
+                    .next()
+                    .map(|base| base == name)
+                    .unwrap_or(false)
         });
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "robot/arm/move");
@@ -615,14 +654,16 @@ mod tests {
 
     #[test]
     fn service_name_matching_no_match() {
-        let services = vec![
-            make_test_service("robot/arm/move"),
-        ];
+        let services = vec![make_test_service("robot/arm/move")];
         let name = "nonexistent_service";
         let found = services.iter().find(|s| {
             s.name == name
                 || s.name.ends_with(&format!("/{}", name))
-                || s.name.rsplit('/').next().map(|base| base == name).unwrap_or(false)
+                || s.name
+                    .rsplit('/')
+                    .next()
+                    .map(|base| base == name)
+                    .unwrap_or(false)
         });
         assert!(found.is_none());
     }
@@ -661,10 +702,7 @@ mod tests {
 
     #[test]
     fn find_filter_empty_matches_all() {
-        let services = vec![
-            make_test_service("svc_a"),
-            make_test_service("svc_b"),
-        ];
+        let services = vec![make_test_service("svc_a"), make_test_service("svc_b")];
         let filter = "";
         let matched: Vec<_> = services
             .iter()
@@ -675,9 +713,7 @@ mod tests {
 
     #[test]
     fn find_filter_no_match_returns_empty() {
-        let services = vec![
-            make_test_service("svc_a"),
-        ];
+        let services = vec![make_test_service("svc_a")];
         let filter = "zzz_nonexistent";
         let matched: Vec<_> = services
             .iter()

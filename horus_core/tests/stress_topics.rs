@@ -123,7 +123,11 @@ fn stress_100_concurrent_topics_sustained() {
     }
 
     assert_eq!(pub_panics, 0, "{} publisher thread(s) panicked", pub_panics);
-    assert_eq!(sub_panics, 0, "{} subscriber thread(s) panicked", sub_panics);
+    assert_eq!(
+        sub_panics, 0,
+        "{} subscriber thread(s) panicked",
+        sub_panics
+    );
 
     let sent = total_sent.load(Ordering::Relaxed);
     let recv = total_recv.load(Ordering::Relaxed);

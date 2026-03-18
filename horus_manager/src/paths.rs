@@ -145,7 +145,10 @@ mod tests {
 
     #[test]
     fn test_auth_config_path_file_name() {
-        assert_eq!(auth_config_path().unwrap().file_name().unwrap(), "auth.json");
+        assert_eq!(
+            auth_config_path().unwrap().file_name().unwrap(),
+            "auth.json"
+        );
     }
 
     #[test]
@@ -237,7 +240,8 @@ mod tests {
             assert!(
                 p.starts_with(&home),
                 "{:?} should start with home dir {:?}",
-                p, home
+                p,
+                home
             );
         }
     }

@@ -1195,10 +1195,8 @@ impl RegistryClient {
         target: crate::workspace::InstallTarget,
     ) -> Result<String> {
         use std::process::Command;
-        let spinner = progress::download_spinner(&format!(
-            "Installing {} from crates.io...",
-            package_name
-        ));
+        let spinner =
+            progress::download_spinner(&format!("Installing {} from crates.io...", package_name));
 
         // Check if cargo is available
         if Command::new("cargo").arg("--version").output().is_err() {
@@ -1310,10 +1308,7 @@ impl RegistryClient {
                 // If cargo add fails because it's not a lib (binary-only crate),
                 // fall through to cargo install
                 if !stderr.contains("doesn't have a library") {
-                    finish_error(
-                        &spinner,
-                        &format!("cargo add failed for {}", package_name),
-                    );
+                    finish_error(&spinner, &format!("cargo add failed for {}", package_name));
                     return Err(anyhow!("cargo add failed:\n{}", stderr));
                 }
                 // Fall through to binary install below
@@ -1325,13 +1320,11 @@ impl RegistryClient {
                         doc.get("dependencies")
                             .and_then(|deps| deps.get(package_name))
                             .and_then(|dep| {
-                                dep.as_str()
-                                    .map(|s| s.to_string())
-                                    .or_else(|| {
-                                        dep.get("version")
-                                            .and_then(|v| v.as_str())
-                                            .map(|s| s.to_string())
-                                    })
+                                dep.as_str().map(|s| s.to_string()).or_else(|| {
+                                    dep.get("version")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string())
+                                })
                             })
                             .unwrap_or_else(|| version_str.to_string())
                     } else {
@@ -1344,8 +1337,7 @@ impl RegistryClient {
                 // Write tracking JSON
                 let tracking_dir = ws_path.join(".horus/packages");
                 fs::create_dir_all(&tracking_dir)?;
-                let tracking_path =
-                    tracking_dir.join(format!("{}.crates-io.json", package_name));
+                let tracking_path = tracking_dir.join(format!("{}.crates-io.json", package_name));
                 let tracking = serde_json::json!({
                     "name": package_name,
                     "version": actual_version,

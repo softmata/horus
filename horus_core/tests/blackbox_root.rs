@@ -31,16 +31,30 @@ fn test_blackbox_record_and_retrieve() {
 #[test]
 fn test_blackbox_multiple_events() {
     let mut bb = BlackBox::new(1);
-    bb.record(BlackBoxEvent::SchedulerStart { name: "s".into(), node_count: 2, config: "".into() });
-    bb.record(BlackBoxEvent::NodeAdded { name: "n1".into(), order: 0 });
-    bb.record(BlackBoxEvent::SchedulerStop { reason: "done".into(), total_ticks: 100 });
+    bb.record(BlackBoxEvent::SchedulerStart {
+        name: "s".into(),
+        node_count: 2,
+        config: "".into(),
+    });
+    bb.record(BlackBoxEvent::NodeAdded {
+        name: "n1".into(),
+        order: 0,
+    });
+    bb.record(BlackBoxEvent::SchedulerStop {
+        reason: "done".into(),
+        total_ticks: 100,
+    });
     assert_eq!(bb.len(), 3);
 }
 
 #[test]
 fn test_blackbox_clear() {
     let mut bb = BlackBox::new(1);
-    bb.record(BlackBoxEvent::SchedulerStart { name: "s".into(), node_count: 0, config: "".into() });
+    bb.record(BlackBoxEvent::SchedulerStart {
+        name: "s".into(),
+        node_count: 0,
+        config: "".into(),
+    });
     bb.clear();
     assert!(bb.is_empty());
 }
@@ -49,9 +63,19 @@ fn test_blackbox_clear() {
 fn test_blackbox_save_load_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();
     let mut bb = BlackBox::new(1).with_path(tmp.path().to_path_buf());
-    bb.record(BlackBoxEvent::SchedulerStart { name: "rt".into(), node_count: 1, config: "".into() });
-    bb.record(BlackBoxEvent::NodeAdded { name: "node1".into(), order: 0 });
-    bb.record(BlackBoxEvent::SchedulerStop { reason: "test".into(), total_ticks: 50 });
+    bb.record(BlackBoxEvent::SchedulerStart {
+        name: "rt".into(),
+        node_count: 1,
+        config: "".into(),
+    });
+    bb.record(BlackBoxEvent::NodeAdded {
+        name: "node1".into(),
+        order: 0,
+    });
+    bb.record(BlackBoxEvent::SchedulerStop {
+        reason: "test".into(),
+        total_ticks: 50,
+    });
     bb.save().expect("save should succeed");
 
     let mut bb2 = BlackBox::new(1).with_path(tmp.path().to_path_buf());
@@ -62,13 +86,32 @@ fn test_blackbox_save_load_roundtrip() {
 #[test]
 fn test_blackbox_anomalies_filter() {
     let mut bb = BlackBox::new(1);
-    bb.record(BlackBoxEvent::SchedulerStart { name: "s".into(), node_count: 1, config: "".into() });
-    bb.record(BlackBoxEvent::NodeError { name: "n".into(), error: "oops".into(), severity: 2 });
-    bb.record(BlackBoxEvent::DeadlineMiss { name: "n".into(), deadline_us: 1000, actual_us: 5000 });
-    bb.record(BlackBoxEvent::SchedulerStop { reason: "done".into(), total_ticks: 10 });
+    bb.record(BlackBoxEvent::SchedulerStart {
+        name: "s".into(),
+        node_count: 1,
+        config: "".into(),
+    });
+    bb.record(BlackBoxEvent::NodeError {
+        name: "n".into(),
+        error: "oops".into(),
+        severity: 2,
+    });
+    bb.record(BlackBoxEvent::DeadlineMiss {
+        name: "n".into(),
+        deadline_us: 1000,
+        actual_us: 5000,
+    });
+    bb.record(BlackBoxEvent::SchedulerStop {
+        reason: "done".into(),
+        total_ticks: 10,
+    });
 
     let anomalies = bb.anomalies();
-    assert!(anomalies.len() >= 2, "should have NodeError + DeadlineMiss, got {}", anomalies.len());
+    assert!(
+        anomalies.len() >= 2,
+        "should have NodeError + DeadlineMiss, got {}",
+        anomalies.len()
+    );
 }
 
 #[test]
@@ -77,7 +120,11 @@ fn test_blackbox_wal_flush_no_panic() {
     let mut bb = BlackBox::new(1)
         .with_path(tmp.path().to_path_buf())
         .with_wal_flush_interval(2);
-    bb.record(BlackBoxEvent::SchedulerStart { name: "wal".into(), node_count: 0, config: "".into() });
+    bb.record(BlackBoxEvent::SchedulerStart {
+        name: "wal".into(),
+        node_count: 0,
+        config: "".into(),
+    });
     bb.flush_wal();
 }
 

@@ -55,7 +55,11 @@ impl FrameRegistry {
     /// - Logs a warning at 80% utilization
     /// - Auto-grows the logical limit (up to the core's physical capacity) instead
     ///   of returning an error when `max_frames` is reached
-    pub fn with_overflow(core: Arc<TransformFrameCore>, max_frames: usize, enable_overflow: bool) -> Self {
+    pub fn with_overflow(
+        core: Arc<TransformFrameCore>,
+        max_frames: usize,
+        enable_overflow: bool,
+    ) -> Self {
         let physical = core.physical_capacity();
         let initial_capacity = if enable_overflow {
             physical

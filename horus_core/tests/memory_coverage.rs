@@ -66,7 +66,11 @@ fn image_fill_wrong_bpp_is_noop() {
     let mut img = Image::new(2, 2, ImageEncoding::Rgb8).expect("alloc");
     img.fill(&[1, 2]); // Wrong length — should be no-op.
     let px = img.pixel(0, 0).unwrap();
-    assert_eq!(px, &[0, 0, 0], "fill with wrong bpp should leave data unchanged");
+    assert_eq!(
+        px,
+        &[0, 0, 0],
+        "fill with wrong bpp should leave data unchanged"
+    );
 }
 
 // ============================================================
@@ -204,7 +208,11 @@ fn tensor_sanitize_clamps_invalid_dtype() {
     unsafe { *dtype_ptr = 200 }; // Invalid discriminant
     t.sanitize_from_shm();
     // from_raw falls back to F32 for invalid discriminants
-    assert_eq!(t.dtype, TensorDtype::F32, "invalid dtype should fall back to F32");
+    assert_eq!(
+        t.dtype,
+        TensorDtype::F32,
+        "invalid dtype should fall back to F32"
+    );
 }
 
 #[test]
@@ -378,7 +386,9 @@ fn tensor_pool_open_existing() {
 
     // Open the same pool from another handle
     let pool2 = TensorPool::open(pool_id).expect("open existing pool");
-    let data2 = pool2.data_slice(&tensor).expect("data access via opened pool");
+    let data2 = pool2
+        .data_slice(&tensor)
+        .expect("data access via opened pool");
     let val = f32::from_le_bytes([data2[0], data2[1], data2[2], data2[3]]);
     assert!(
         (val - 42.0).abs() < 1e-9,

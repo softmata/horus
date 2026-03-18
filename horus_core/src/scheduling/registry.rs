@@ -10,7 +10,7 @@ use crate::memory::platform::shm_scheduler_dir;
 use memmap2::MmapMut;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 /// Magic number for registry file validation.
@@ -179,20 +179,13 @@ impl SchedulerRegistry {
     }
 
     /// Register a node and return its slot index.
-    pub fn register_node(
-        &self,
-        name: &str,
-        order: u8,
-        rate_hz: f64,
-        execution_class: u8,
-    ) -> usize {
+    pub fn register_node(&self, name: &str, order: u8, rate_hz: f64, execution_class: u8) -> usize {
         let mut guard = self.mmap.lock().unwrap();
         let base = guard.as_mut_ptr();
 
         // SAFETY: mmap covers REGISTRY_FILE_SIZE bytes.
-        let count = unsafe {
-            (*(base.add(12) as *const AtomicU32)).load(Ordering::Acquire)
-        } as usize;
+        let count =
+            unsafe { (*(base.add(12) as *const AtomicU32)).load(Ordering::Acquire) } as usize;
 
         if count >= MAX_REGISTRY_NODES {
             return count.min(MAX_REGISTRY_NODES - 1);
@@ -311,9 +304,8 @@ impl SchedulerRegistry {
             return None;
         }
 
-        let node_count = unsafe {
-            (*(base.add(12) as *const AtomicU32)).load(Ordering::Acquire)
-        } as usize;
+        let node_count =
+            unsafe { (*(base.add(12) as *const AtomicU32)).load(Ordering::Acquire) } as usize;
         let node_count = node_count.min(MAX_REGISTRY_NODES);
 
         let mut slots = Vec::with_capacity(node_count);
@@ -342,24 +334,16 @@ impl SchedulerRegistry {
                 let health = (*(slot.add(49) as *const AtomicU8)).load(Ordering::Relaxed);
                 let execution_class = *slot.add(50);
                 let order = *slot.add(51);
-                let rate_hz_x100 =
-                    (*(slot.add(52) as *const AtomicU32)).load(Ordering::Relaxed);
+                let rate_hz_x100 = (*(slot.add(52) as *const AtomicU32)).load(Ordering::Relaxed);
 
-                let tick_count =
-                    (*(slot.add(64) as *const AtomicU64)).load(Ordering::Relaxed);
-                let error_count =
-                    (*(slot.add(72) as *const AtomicU32)).load(Ordering::Relaxed);
-                let budget_misses =
-                    (*(slot.add(76) as *const AtomicU32)).load(Ordering::Relaxed);
-                let deadline_misses =
-                    (*(slot.add(80) as *const AtomicU32)).load(Ordering::Relaxed);
+                let tick_count = (*(slot.add(64) as *const AtomicU64)).load(Ordering::Relaxed);
+                let error_count = (*(slot.add(72) as *const AtomicU32)).load(Ordering::Relaxed);
+                let budget_misses = (*(slot.add(76) as *const AtomicU32)).load(Ordering::Relaxed);
+                let deadline_misses = (*(slot.add(80) as *const AtomicU32)).load(Ordering::Relaxed);
 
-                let last_tick_ns =
-                    (*(slot.add(128) as *const AtomicU64)).load(Ordering::Relaxed);
-                let avg_tick_ns =
-                    (*(slot.add(136) as *const AtomicU64)).load(Ordering::Relaxed);
-                let max_tick_ns =
-                    (*(slot.add(144) as *const AtomicU64)).load(Ordering::Relaxed);
+                let last_tick_ns = (*(slot.add(128) as *const AtomicU64)).load(Ordering::Relaxed);
+                let avg_tick_ns = (*(slot.add(136) as *const AtomicU64)).load(Ordering::Relaxed);
+                let max_tick_ns = (*(slot.add(144) as *const AtomicU64)).load(Ordering::Relaxed);
 
                 slots.push(NodeSlotSnapshot {
                     name,
@@ -464,8 +448,7 @@ mod tests {
     fn open_empty_registry_readable() {
         let name = test_name("empty");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        let slots = SchedulerRegistry::read_all_slots(&name)
-            .expect("should read valid header");
+        let slots = SchedulerRegistry::read_all_slots(&name).expect("should read valid header");
         assert!(slots.is_empty(), "no nodes registered yet");
         reg.remove().expect("cleanup");
     }
@@ -477,8 +460,7 @@ mod tests {
         let idx = reg.register_node("motor_ctrl", 0, 100.0, 0);
         assert_eq!(idx, 0, "first node should get slot 0");
 
-        let slots = SchedulerRegistry::read_all_slots(&name)
-            .expect("read");
+        let slots = SchedulerRegistry::read_all_slots(&name).expect("read");
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].name, "motor_ctrl");
         assert_eq!(slots[0].order, 0);
@@ -530,15 +512,14 @@ mod tests {
         let idx = reg.register_node("sensor", 1, 200.0, 1);
 
         reg.update_node(
-            idx,
-            2,          // health: Unhealthy
-            5000,       // tick_count
-            3,          // error_count
-            2,          // budget_misses
-            1,          // deadline_misses
-            1_200_000,  // last_tick_ns
-            1_100_000,  // avg_tick_ns
-            2_000_000,  // max_tick_ns
+            idx, 2,         // health: Unhealthy
+            5000,      // tick_count
+            3,         // error_count
+            2,         // budget_misses
+            1,         // deadline_misses
+            1_200_000, // last_tick_ns
+            1_100_000, // avg_tick_ns
+            2_000_000, // max_tick_ns
         );
 
         let slots = SchedulerRegistry::read_all_slots(&name).expect("read");
@@ -619,17 +600,14 @@ mod tests {
     #[test]
     fn read_nonexistent_returns_none() {
         assert!(
-            SchedulerRegistry::read_all_slots("totally_nonexistent_scheduler_name_12345")
-                .is_none()
+            SchedulerRegistry::read_all_slots("totally_nonexistent_scheduler_name_12345").is_none()
         );
     }
 
     #[test]
     fn read_invalid_magic_returns_none() {
-        let path = std::env::temp_dir().join(format!(
-            "horus_reg_bad_magic_{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("horus_reg_bad_magic_{}.bin", std::process::id()));
         std::fs::write(&path, &[0u8; REGISTRY_FILE_SIZE]).expect("write");
         assert!(
             SchedulerRegistry::read_all_slots_from_path(&path).is_none(),
@@ -654,8 +632,7 @@ mod tests {
 
         // Read via separate path (simulates external tool opening the file)
         let path = shm_scheduler_dir().join(&name);
-        let slots = SchedulerRegistry::read_all_slots_from_path(&path)
-            .expect("external read");
+        let slots = SchedulerRegistry::read_all_slots_from_path(&path).expect("external read");
 
         assert_eq!(slots.len(), 2);
         assert_eq!(slots[0].name, "motor");
@@ -681,12 +658,12 @@ mod tests {
         reg2.register_node("node_b", 0, 60.0, 0);
 
         let all = SchedulerRegistry::read_all_registries();
-        let found_a = all.iter().any(|(n, slots)| {
-            n == &name1 && slots.len() == 1 && slots[0].name == "node_a"
-        });
-        let found_b = all.iter().any(|(n, slots)| {
-            n == &name2 && slots.len() == 1 && slots[0].name == "node_b"
-        });
+        let found_a = all
+            .iter()
+            .any(|(n, slots)| n == &name1 && slots.len() == 1 && slots[0].name == "node_a");
+        let found_b = all
+            .iter()
+            .any(|(n, slots)| n == &name2 && slots.len() == 1 && slots[0].name == "node_b");
 
         assert!(found_a, "should find registry '{}'", name1);
         assert!(found_b, "should find registry '{}'", name2);

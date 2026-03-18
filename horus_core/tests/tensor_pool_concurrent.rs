@@ -65,7 +65,8 @@ fn test_concurrent_alloc_release_no_panic() {
     }
 
     for h in handles {
-        h.join().expect("Thread panicked during concurrent alloc/release");
+        h.join()
+            .expect("Thread panicked during concurrent alloc/release");
     }
 
     let completed = total_ops.load(Ordering::SeqCst);
@@ -197,9 +198,7 @@ fn test_data_integrity_after_write() {
     let pool_id = 9740 + (std::process::id() % 100) as u32;
     let pool = TensorPool::new(pool_id, small_pool_config()).unwrap();
 
-    let tensor = pool
-        .alloc(&[1, 4], TensorDtype::U8, Device::cpu())
-        .unwrap();
+    let tensor = pool.alloc(&[1, 4], TensorDtype::U8, Device::cpu()).unwrap();
 
     // Write pattern
     {

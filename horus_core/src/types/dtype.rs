@@ -227,9 +227,19 @@ mod tests {
         ];
         for dtype in all_dtypes {
             let sz = dtype.element_size();
-            assert!(sz.is_power_of_two(), "{:?} element_size {} is not power of 2", dtype, sz);
+            assert!(
+                sz.is_power_of_two(),
+                "{:?} element_size {} is not power of 2",
+                dtype,
+                sz
+            );
             // size_bytes() must be an alias for element_size()
-            assert_eq!(dtype.size_bytes(), sz, "size_bytes() != element_size() for {:?}", dtype);
+            assert_eq!(
+                dtype.size_bytes(),
+                sz,
+                "size_bytes() != element_size() for {:?}",
+                dtype
+            );
         }
 
         // Spot-check specific sizes
@@ -242,10 +252,22 @@ mod tests {
         assert_eq!(TensorDtype::Bool.element_size(), 1);
 
         // Signed/unsigned pairs must have the same size
-        assert_eq!(TensorDtype::I8.element_size(), TensorDtype::U8.element_size());
-        assert_eq!(TensorDtype::I16.element_size(), TensorDtype::U16.element_size());
-        assert_eq!(TensorDtype::I32.element_size(), TensorDtype::U32.element_size());
-        assert_eq!(TensorDtype::I64.element_size(), TensorDtype::U64.element_size());
+        assert_eq!(
+            TensorDtype::I8.element_size(),
+            TensorDtype::U8.element_size()
+        );
+        assert_eq!(
+            TensorDtype::I16.element_size(),
+            TensorDtype::U16.element_size()
+        );
+        assert_eq!(
+            TensorDtype::I32.element_size(),
+            TensorDtype::U32.element_size()
+        );
+        assert_eq!(
+            TensorDtype::I64.element_size(),
+            TensorDtype::U64.element_size()
+        );
     }
 
     #[test]
@@ -358,10 +380,18 @@ mod tests {
     fn test_dtype_dlpack_bits_match_element_size() {
         // DLPack bits field must equal element_size * 8 for all types
         let all_dtypes = [
-            TensorDtype::F32, TensorDtype::F64, TensorDtype::F16,
-            TensorDtype::BF16, TensorDtype::I8, TensorDtype::I16,
-            TensorDtype::I32, TensorDtype::I64, TensorDtype::U8,
-            TensorDtype::U16, TensorDtype::U32, TensorDtype::U64,
+            TensorDtype::F32,
+            TensorDtype::F64,
+            TensorDtype::F16,
+            TensorDtype::BF16,
+            TensorDtype::I8,
+            TensorDtype::I16,
+            TensorDtype::I32,
+            TensorDtype::I64,
+            TensorDtype::U8,
+            TensorDtype::U16,
+            TensorDtype::U32,
+            TensorDtype::U64,
             TensorDtype::Bool,
         ];
         for dtype in all_dtypes {

@@ -21,9 +21,18 @@ const TH32CS_SNAPPROCESS: u32 = 0x00000002;
 const MAX_PATH: usize = 260;
 
 extern "system" {
-    fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut std::ffi::c_void;
+    fn OpenProcess(
+        dwDesiredAccess: u32,
+        bInheritHandle: i32,
+        dwProcessId: u32,
+    ) -> *mut std::ffi::c_void;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
-    fn QueryFullProcessImageNameW(hProcess: *mut std::ffi::c_void, dwFlags: u32, lpExeName: *mut u16, lpdwSize: *mut u32) -> i32;
+    fn QueryFullProcessImageNameW(
+        hProcess: *mut std::ffi::c_void,
+        dwFlags: u32,
+        lpExeName: *mut u16,
+        lpdwSize: *mut u32,
+    ) -> i32;
     fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> *mut std::ffi::c_void;
     fn Process32First(hSnapshot: *mut std::ffi::c_void, lppe: *mut ProcessEntry32) -> i32;
     fn Process32Next(hSnapshot: *mut std::ffi::c_void, lppe: *mut ProcessEntry32) -> i32;
@@ -48,7 +57,10 @@ pub fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
 
     if handle.is_null() {
-        return Ok(ProcessInfo { pid, ..Default::default() });
+        return Ok(ProcessInfo {
+            pid,
+            ..Default::default()
+        });
     }
 
     let cmdline = get_cmdline(pid).unwrap_or_default();
@@ -196,9 +208,8 @@ fn calculate_cpu_usage(pid: u32, handle: *mut std::ffi::c_void) -> f32 {
     let mut user = Filetime { low: 0, high: 0 };
 
     // SAFETY: handle is valid; all Filetime output pointers are initialized.
-    let result = unsafe {
-        GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
-    };
+    let result =
+        unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
 
     if result == 0 {
         return 0.0;
@@ -259,9 +270,8 @@ fn get_start_time(handle: *mut std::ffi::c_void) -> Option<String> {
     let mut user = Filetime { low: 0, high: 0 };
 
     // SAFETY: handle is valid; all Filetime output pointers are initialized.
-    let result = unsafe {
-        GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
-    };
+    let result =
+        unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
 
     if result == 0 {
         return None;

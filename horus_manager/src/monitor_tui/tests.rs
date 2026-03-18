@@ -1659,14 +1659,24 @@ fn test_tui_and_web_use_same_discovery_backend() {
     let mut dashboard = TuiDashboard::new();
 
     // Nodes and topics start empty before first update
-    assert!(dashboard.nodes.is_empty(), "nodes should be empty before update");
-    assert!(dashboard.topics.is_empty(), "topics should be empty before update");
+    assert!(
+        dashboard.nodes.is_empty(),
+        "nodes should be empty before update"
+    );
+    assert!(
+        dashboard.topics.is_empty(),
+        "topics should be empty before update"
+    );
 
     // update_data() calls the same get_active_nodes()/get_active_topics()
     // backend that web handlers use. It should always succeed (Ok), even
     // when no horus runtime is running — it just returns empty vecs.
     let result = dashboard.update_data();
-    assert!(result.is_ok(), "update_data should succeed even with no runtime: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "update_data should succeed even with no runtime: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -1841,7 +1851,11 @@ fn make_populated_dashboard() -> TuiDashboard {
             cpu_usage: 2.3,
             memory_usage: 8 * 1024 * 1024,
             publishers: vec![],
-            subscribers: vec!["scan".to_string(), "odom".to_string(), "cmd_vel".to_string()],
+            subscribers: vec![
+                "scan".to_string(),
+                "odom".to_string(),
+                "cmd_vel".to_string(),
+            ],
         },
     ];
     dashboard.topics = vec![
@@ -2107,7 +2121,11 @@ fn snapshot_nodes_100_items() {
             cpu_usage: (i as f32) * 0.8,
             memory_usage: (i as u64) * 512 * 1024,
             publishers: vec![format!("topic_{}", i)],
-            subscribers: if i > 0 { vec![format!("topic_{}", i - 1)] } else { vec![] },
+            subscribers: if i > 0 {
+                vec![format!("topic_{}", i - 1)]
+            } else {
+                vec![]
+            },
         })
         .collect();
     let buffer = render_dashboard(&mut dashboard, 120, 40);
@@ -2118,18 +2136,16 @@ fn snapshot_nodes_100_items() {
 fn snapshot_nodes_long_names() {
     let mut dashboard = TuiDashboard::new();
     dashboard.active_tab = Tab::Nodes;
-    dashboard.nodes = vec![
-        NodeStatus {
-            name: "very_long_robot_sensor_driver_node_name_that_should_truncate".to_string(),
-            status: "running".to_string(),
-            priority: 0,
-            process_id: 9999,
-            cpu_usage: 99.9,
-            memory_usage: 4 * 1024 * 1024 * 1024,
-            publishers: vec!["extremely_long_topic_name_for_sensor_data_output".to_string()],
-            subscribers: vec!["another_very_long_topic_name_for_command_input".to_string()],
-        },
-    ];
+    dashboard.nodes = vec![NodeStatus {
+        name: "very_long_robot_sensor_driver_node_name_that_should_truncate".to_string(),
+        status: "running".to_string(),
+        priority: 0,
+        process_id: 9999,
+        cpu_usage: 99.9,
+        memory_usage: 4 * 1024 * 1024 * 1024,
+        publishers: vec!["extremely_long_topic_name_for_sensor_data_output".to_string()],
+        subscribers: vec!["another_very_long_topic_name_for_command_input".to_string()],
+    }];
     let buffer = render_dashboard(&mut dashboard, 120, 40);
     insta::assert_snapshot!(render_to_string(&buffer));
 }
@@ -2169,7 +2185,13 @@ fn snapshot_topics_mixed_active_idle() {
             subscribers: 5,
             rate: 1000.0,
             publisher_nodes: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            subscriber_nodes: vec!["d".to_string(), "e".to_string(), "f".to_string(), "g".to_string(), "h".to_string()],
+            subscriber_nodes: vec![
+                "d".to_string(),
+                "e".to_string(),
+                "f".to_string(),
+                "g".to_string(),
+                "h".to_string(),
+            ],
             status: crate::discovery::TopicStatus::Active,
         },
         TopicInfo {

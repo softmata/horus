@@ -64,13 +64,11 @@ pub fn load() -> HorusResult<HardwareSet> {
 /// ```
 pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<HardwareSet> {
     let path = path.as_ref();
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        ConfigError::Other(format!("failed to read {}: {}", path.display(), e))
-    })?;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| ConfigError::Other(format!("failed to read {}: {}", path.display(), e)))?;
 
-    let table: toml::Value = toml::from_str(&content).map_err(|e| {
-        ConfigError::Other(format!("failed to parse {}: {}", path.display(), e))
-    })?;
+    let table: toml::Value = toml::from_str(&content)
+        .map_err(|e| ConfigError::Other(format!("failed to parse {}: {}", path.display(), e)))?;
 
     let drivers_table = table
         .get("drivers")
@@ -83,9 +81,8 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<HardwareSet> {
 
 /// Search upward from current directory for `horus.toml`.
 fn find_manifest() -> HorusResult<std::path::PathBuf> {
-    let mut current = std::env::current_dir().map_err(|e| {
-        ConfigError::Other(format!("failed to get current directory: {}", e))
-    })?;
+    let mut current = std::env::current_dir()
+        .map_err(|e| ConfigError::Other(format!("failed to get current directory: {}", e)))?;
 
     for _ in 0..10 {
         let candidate = current.join("horus.toml");

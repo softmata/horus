@@ -810,11 +810,7 @@ mod tests {
         std::env::set_current_dir(temp.path()).unwrap();
 
         // Search for something that matches no known plugin
-        let result = run_search_with_category(
-            "zzz_nonexistent_zzz".to_string(),
-            None,
-            false,
-        );
+        let result = run_search_with_category("zzz_nonexistent_zzz".to_string(), None, false);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -829,11 +825,8 @@ mod tests {
         std::env::set_current_dir(temp.path()).unwrap();
 
         // Known plugins include "horus-rplidar" in Lidar category
-        let result = run_search_with_category(
-            "rplidar".to_string(),
-            Some("lidar".to_string()),
-            false,
-        );
+        let result =
+            run_search_with_category("rplidar".to_string(), Some("lidar".to_string()), false);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -848,11 +841,8 @@ mod tests {
         std::env::set_current_dir(temp.path()).unwrap();
 
         // Search for rplidar but in camera category — should find nothing
-        let result = run_search_with_category(
-            "rplidar".to_string(),
-            Some("camera".to_string()),
-            false,
-        );
+        let result =
+            run_search_with_category("rplidar".to_string(), Some("camera".to_string()), false);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -886,11 +876,7 @@ mod tests {
         std::env::set_current_dir(temp.path()).unwrap();
 
         // JSON output path
-        let result = run_search_with_category(
-            "realsense".to_string(),
-            None,
-            true,
-        );
+        let result = run_search_with_category("realsense".to_string(), None, true);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -904,11 +890,8 @@ mod tests {
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp.path()).unwrap();
 
-        let result = run_search_with_category(
-            "realsense".to_string(),
-            Some("camera".to_string()),
-            true,
-        );
+        let result =
+            run_search_with_category("realsense".to_string(), Some("camera".to_string()), true);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -923,11 +906,7 @@ mod tests {
         std::env::set_current_dir(temp.path()).unwrap();
 
         // "pointcloud" is a feature of horus-realsense
-        let result = run_search_with_category(
-            "pointcloud".to_string(),
-            None,
-            false,
-        );
+        let result = run_search_with_category("pointcloud".to_string(), None, false);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -942,11 +921,7 @@ mod tests {
         std::env::set_current_dir(temp.path()).unwrap();
 
         // Uppercase query should still match lowercase plugin names
-        let result = run_search_with_category(
-            "RPLIDAR".to_string(),
-            None,
-            false,
-        );
+        let result = run_search_with_category("RPLIDAR".to_string(), None, false);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -982,11 +957,7 @@ test-feature = []
 
         std::env::set_current_dir(temp.path()).unwrap();
 
-        let result = run_search_with_category(
-            "test-local".to_string(),
-            None,
-            false,
-        );
+        let result = run_search_with_category("test-local".to_string(), None, false);
         assert!(result.is_ok());
 
         std::env::set_current_dir(&prev).unwrap();
@@ -1118,7 +1089,8 @@ test-feature = []
             let msg = format!("{:?}", e);
             assert!(
                 msg.contains("not found") || msg.contains("unreachable") || msg.contains("network"),
-                "unexpected error: {:?}", e
+                "unexpected error: {:?}",
+                e
             );
         }
 
@@ -1139,7 +1111,8 @@ test-feature = []
             let msg = format!("{:?}", e);
             assert!(
                 msg.contains("not found") || msg.contains("unreachable") || msg.contains("network"),
-                "unexpected error: {:?}", e
+                "unexpected error: {:?}",
+                e
             );
         }
 
@@ -1384,9 +1357,25 @@ version = "2.0.0"
     fn test_parse_category_mixed_case() {
         // All inputs are lowercased internally
         let cases = vec![
-            "Camera", "CAMERA", "cAmErA", "Lidar", "LIDAR", "IMU", "Imu",
-            "MOTOR", "Motor", "SERVO", "BUS", "GPS", "FORCE_TORQUE",
-            "ForCeTorQue", "FORCE-TORQUE", "SIMULATION", "SIM", "CLI", "OTHER",
+            "Camera",
+            "CAMERA",
+            "cAmErA",
+            "Lidar",
+            "LIDAR",
+            "IMU",
+            "Imu",
+            "MOTOR",
+            "Motor",
+            "SERVO",
+            "BUS",
+            "GPS",
+            "FORCE_TORQUE",
+            "ForCeTorQue",
+            "FORCE-TORQUE",
+            "SIMULATION",
+            "SIM",
+            "CLI",
+            "OTHER",
         ];
 
         for input in cases {

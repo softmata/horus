@@ -46,7 +46,9 @@ pub fn format_html(doc: &ProjectDoc) -> String {
 // ─── HTML Sections ──────────────────────────────────────────────────────────
 
 fn write_head(html: &mut String, doc: &ProjectDoc) {
-    let _ = write!(html, r#"<!DOCTYPE html>
+    let _ = write!(
+        html,
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -57,11 +59,16 @@ fn write_head(html: &mut String, doc: &ProjectDoc) {
 </style>
 </head>
 <body>
-"#, escape_html(&doc.project), escape_html(&doc.version));
+"#,
+        escape_html(&doc.project),
+        escape_html(&doc.version)
+    );
 }
 
 fn write_header(html: &mut String, doc: &ProjectDoc) {
-    let langs: Vec<String> = doc.languages.iter()
+    let langs: Vec<String> = doc
+        .languages
+        .iter()
         .map(|l| format!(r#"<span class="badge">{}</span>"#, escape_html(l)))
         .collect();
 
@@ -73,34 +80,54 @@ fn write_header(html: &mut String, doc: &ProjectDoc) {
         "badge badge-red"
     };
 
-    let _ = write!(html, r#"<header>
+    let _ = write!(
+        html,
+        r#"<header>
 <h1>{} <small>v{}</small></h1>
 <div class="badges">
 {} <span class="{}">{:.0}% documented</span>
 <span class="badge">{} symbols</span>
-"#, escape_html(&doc.project), escape_html(&doc.version),
-        langs.join(" "), coverage_class,
+"#,
+        escape_html(&doc.project),
+        escape_html(&doc.version),
+        langs.join(" "),
+        coverage_class,
         doc.stats.documentation_coverage * 100.0,
-        doc.stats.total_symbols);
+        doc.stats.total_symbols
+    );
 
     if doc.stats.horus_nodes > 0 {
-        let _ = write!(html, r#"<span class="badge">{} nodes</span>"#, doc.stats.horus_nodes);
+        let _ = write!(
+            html,
+            r#"<span class="badge">{} nodes</span>"#,
+            doc.stats.horus_nodes
+        );
     }
     if doc.stats.horus_messages > 0 {
-        let _ = write!(html, r#"<span class="badge">{} messages</span>"#, doc.stats.horus_messages);
+        let _ = write!(
+            html,
+            r#"<span class="badge">{} messages</span>"#,
+            doc.stats.horus_messages
+        );
     }
     if doc.stats.topics_discovered > 0 {
-        let _ = write!(html, r#"<span class="badge">{} topics</span>"#, doc.stats.topics_discovered);
+        let _ = write!(
+            html,
+            r#"<span class="badge">{} topics</span>"#,
+            doc.stats.topics_discovered
+        );
     }
 
     html.push_str("</div>\n</header>\n");
 }
 
 fn write_search_bar(html: &mut String) {
-    html.push_str(r#"<div class="search-container">
+    html.push_str(
+        r#"<div class="search-container">
 <input type="text" id="search" placeholder="Search symbols..." autocomplete="off">
 </div>
-"#);
+"#,
+    );
 }
 
 fn write_topic_graph_svg(html: &mut String, graph: &MessageGraph) {
@@ -111,16 +138,24 @@ fn write_topic_graph_svg(html: &mut String, graph: &MessageGraph) {
     let width = (node_count.max(1) * 180).max(400);
     let height = 120 + graph.topics.len() * 40;
 
-    let _ = write!(html, r#"<svg viewBox="0 0 {width} {height}" class="topic-graph">"#);
+    let _ = write!(
+        html,
+        r#"<svg viewBox="0 0 {width} {height}" class="topic-graph">"#
+    );
 
     // Draw nodes
     for (i, node) in graph.nodes.iter().enumerate() {
         let x = 20 + i * 170;
-        let _ = write!(html,
-            r#"<rect x="{x}" y="10" width="150" height="40" rx="8" class="graph-node"/>"#);
-        let _ = write!(html,
+        let _ = write!(
+            html,
+            r#"<rect x="{x}" y="10" width="150" height="40" rx="8" class="graph-node"/>"#
+        );
+        let _ = write!(
+            html,
             r#"<text x="{}" y="35" class="graph-label">{}</text>"#,
-            x + 75, escape_html(node));
+            x + 75,
+            escape_html(node)
+        );
     }
 
     // Draw topics as labeled arrows
@@ -129,19 +164,27 @@ fn write_topic_graph_svg(html: &mut String, graph: &MessageGraph) {
         let label = format!("{}: {}", topic.name, topic.message_type);
         let pubs = topic.publishers.join(", ");
         let subs = topic.subscribers.join(", ");
-        let _ = write!(html,
+        let _ = write!(
+            html,
             r#"<text x="20" y="{y}" class="graph-topic">{} → {}</text>"#,
-            escape_html(&pubs), escape_html(&subs));
-        let _ = write!(html,
+            escape_html(&pubs),
+            escape_html(&subs)
+        );
+        let _ = write!(
+            html,
             r#"<text x="20" y="{}" class="graph-topic-label">{}</text>"#,
-            y + 14, escape_html(&label));
+            y + 14,
+            escape_html(&label)
+        );
     }
 
     html.push_str("</svg>\n</section>\n");
 }
 
 fn write_messages_section(html: &mut String, doc: &ProjectDoc) {
-    let messages: Vec<&HorusMessageDoc> = doc.modules.iter()
+    let messages: Vec<&HorusMessageDoc> = doc
+        .modules
+        .iter()
         .flat_map(|m| m.symbols.iter())
         .filter_map(|s| match s {
             SymbolDoc::HorusMessage(m) => Some(m),
@@ -149,19 +192,28 @@ fn write_messages_section(html: &mut String, doc: &ProjectDoc) {
         })
         .collect();
 
-    if messages.is_empty() { return; }
+    if messages.is_empty() {
+        return;
+    }
 
     html.push_str("<section>\n<h2>Message Types</h2>\n<div class=\"cards\">\n");
     for msg in &messages {
-        let _ = write!(html, "<div class=\"card symbol\">\n<h3>{}</h3>\n", escape_html(&msg.name));
+        let _ = write!(
+            html,
+            "<div class=\"card symbol\">\n<h3>{}</h3>\n",
+            escape_html(&msg.name)
+        );
         if let Some(ref d) = msg.doc {
             let _ = write!(html, "<p>{}</p>\n", escape_html(d));
         }
         html.push_str("<table>\n");
         for field in &msg.fields {
-            let _ = write!(html, "<tr><td><code>{}</code></td><td><code>{}</code></td></tr>\n",
+            let _ = write!(
+                html,
+                "<tr><td><code>{}</code></td><td><code>{}</code></td></tr>\n",
                 escape_html(&field.name),
-                escape_html(field.type_str.as_deref().unwrap_or("?")));
+                escape_html(field.type_str.as_deref().unwrap_or("?"))
+            );
         }
         html.push_str("</table>\n</div>\n");
     }
@@ -169,15 +221,23 @@ fn write_messages_section(html: &mut String, doc: &ProjectDoc) {
 }
 
 fn write_nodes_section(html: &mut String, doc: &ProjectDoc) {
-    let nodes: Vec<&EntryPoint> = doc.entry_points.iter()
+    let nodes: Vec<&EntryPoint> = doc
+        .entry_points
+        .iter()
         .filter(|e| e.kind == EntryPointKind::HorusNode)
         .collect();
 
-    if nodes.is_empty() { return; }
+    if nodes.is_empty() {
+        return;
+    }
 
     html.push_str("<section>\n<h2>Nodes</h2>\n<div class=\"cards\">\n");
     for node in &nodes {
-        let _ = write!(html, "<div class=\"card symbol\">\n<h3>{}</h3>\n", escape_html(&node.name));
+        let _ = write!(
+            html,
+            "<div class=\"card symbol\">\n<h3>{}</h3>\n",
+            escape_html(&node.name)
+        );
         if let Some(ref details) = node.details {
             if let Some(ref rate) = details.tick_rate {
                 let _ = write!(html, "<span class=\"badge\">{rate}</span>\n");
@@ -185,16 +245,24 @@ fn write_nodes_section(html: &mut String, doc: &ProjectDoc) {
             if !details.publishes.is_empty() {
                 html.push_str("<div class=\"topics\">\n");
                 for t in &details.publishes {
-                    let _ = write!(html, "<div>pub → <code>{}: {}</code></div>\n",
-                        escape_html(&t.name), escape_html(&t.message_type));
+                    let _ = write!(
+                        html,
+                        "<div>pub → <code>{}: {}</code></div>\n",
+                        escape_html(&t.name),
+                        escape_html(&t.message_type)
+                    );
                 }
                 html.push_str("</div>\n");
             }
             if !details.subscribes.is_empty() {
                 html.push_str("<div class=\"topics\">\n");
                 for t in &details.subscribes {
-                    let _ = write!(html, "<div>sub ← <code>{}: {}</code></div>\n",
-                        escape_html(&t.name), escape_html(&t.message_type));
+                    let _ = write!(
+                        html,
+                        "<div>sub ← <code>{}: {}</code></div>\n",
+                        escape_html(&t.name),
+                        escape_html(&t.message_type)
+                    );
                 }
                 html.push_str("</div>\n");
             }
@@ -209,21 +277,36 @@ fn write_api_reference(html: &mut String, doc: &ProjectDoc) {
 
     for module in &doc.modules {
         let path_str = module.path.display().to_string();
-        let _ = write!(html, "<details class=\"collapsible\">\n<summary>{}", escape_html(&path_str));
+        let _ = write!(
+            html,
+            "<details class=\"collapsible\">\n<summary>{}",
+            escape_html(&path_str)
+        );
         if let Some(ref mdoc) = module.module_doc {
             let _ = write!(html, " — <em>{}</em>", escape_html(mdoc));
         }
-        let _ = write!(html, " <span class=\"count\">({})</span></summary>\n",
-            module.symbols.len());
+        let _ = write!(
+            html,
+            " <span class=\"count\">({})</span></summary>\n",
+            module.symbols.len()
+        );
 
         html.push_str("<div class=\"symbols\">\n");
         for sym in &module.symbols {
-            let dep_class = if sym.deprecated().is_some() { " deprecated" } else { "" };
+            let dep_class = if sym.deprecated().is_some() {
+                " deprecated"
+            } else {
+                ""
+            };
             let _ = write!(html, "<div class=\"symbol{dep_class}\">\n");
 
             match sym {
                 SymbolDoc::Function(f) => {
-                    let _ = write!(html, "<code class=\"sig\">{}</code>\n", escape_html(&f.signature));
+                    let _ = write!(
+                        html,
+                        "<code class=\"sig\">{}</code>\n",
+                        escape_html(&f.signature)
+                    );
                     if let Some(ref d) = f.doc {
                         let _ = write!(html, "<p class=\"doc\">{}</p>\n", escape_html(d));
                     }
@@ -238,26 +321,42 @@ fn write_api_reference(html: &mut String, doc: &ProjectDoc) {
                         let _ = write!(html, "<p class=\"doc\">{}</p>\n", escape_html(d));
                     }
                     for m in &s.methods {
-                        let _ = write!(html, "<div class=\"method\"><code>{}</code></div>\n",
-                            escape_html(&m.signature));
+                        let _ = write!(
+                            html,
+                            "<div class=\"method\"><code>{}</code></div>\n",
+                            escape_html(&m.signature)
+                        );
                     }
                 }
                 SymbolDoc::Enum(e) => {
                     let variants: Vec<&str> = e.variants.iter().map(|v| v.name.as_str()).collect();
-                    let _ = write!(html, "<strong>enum {}</strong> {{ {} }}\n",
-                        escape_html(&e.name), escape_html(&variants.join(", ")));
+                    let _ = write!(
+                        html,
+                        "<strong>enum {}</strong> {{ {} }}\n",
+                        escape_html(&e.name),
+                        escape_html(&variants.join(", "))
+                    );
                 }
                 SymbolDoc::Trait(t) => {
                     let _ = write!(html, "<strong>trait {}</strong>\n", escape_html(&t.name));
                 }
                 SymbolDoc::TypeAlias(t) => {
-                    let _ = write!(html, "<code>type {} = {}</code>\n",
-                        escape_html(&t.name), escape_html(&t.target_type));
+                    let _ = write!(
+                        html,
+                        "<code>type {} = {}</code>\n",
+                        escape_html(&t.name),
+                        escape_html(&t.target_type)
+                    );
                 }
                 SymbolDoc::Constant(c) => {
                     let val = c.value.as_deref().unwrap_or("...");
-                    let _ = write!(html, "<code>const {}: {} = {}</code>\n",
-                        escape_html(&c.name), escape_html(&c.type_str), escape_html(val));
+                    let _ = write!(
+                        html,
+                        "<code>const {}: {} = {}</code>\n",
+                        escape_html(&c.name),
+                        escape_html(&c.type_str),
+                        escape_html(val)
+                    );
                 }
                 _ => {
                     let _ = write!(html, "<strong>{}</strong>\n", escape_html(sym.name()));
@@ -265,8 +364,11 @@ fn write_api_reference(html: &mut String, doc: &ProjectDoc) {
             }
 
             if let Some(dep) = sym.deprecated() {
-                let _ = write!(html, "<div class=\"deprecated-note\">\u{26a0} Deprecated: {}</div>\n",
-                    escape_html(dep));
+                let _ = write!(
+                    html,
+                    "<div class=\"deprecated-note\">\u{26a0} Deprecated: {}</div>\n",
+                    escape_html(dep)
+                );
             }
 
             html.push_str("</div>\n");
@@ -279,13 +381,25 @@ fn write_api_reference(html: &mut String, doc: &ProjectDoc) {
 
 fn write_coverage_table(html: &mut String, doc: &ProjectDoc) {
     html.push_str("<section>\n<h2>Documentation Coverage</h2>\n");
-    html.push_str("<table class=\"coverage\">\n<tr><th>File</th><th>Documented</th><th>Coverage</th></tr>\n");
+    html.push_str(
+        "<table class=\"coverage\">\n<tr><th>File</th><th>Documented</th><th>Coverage</th></tr>\n",
+    );
 
     for module in &doc.modules {
         let total = module.symbols.len();
         let documented = module.symbols.iter().filter(|s| s.doc().is_some()).count();
-        let pct = if total > 0 { documented as f32 / total as f32 * 100.0 } else { 100.0 };
-        let color = if pct >= 80.0 { "green" } else if pct >= 50.0 { "orange" } else { "red" };
+        let pct = if total > 0 {
+            documented as f32 / total as f32 * 100.0
+        } else {
+            100.0
+        };
+        let color = if pct >= 80.0 {
+            "green"
+        } else if pct >= 50.0 {
+            "orange"
+        } else {
+            "red"
+        };
 
         let _ = write!(html, "<tr><td>{}</td><td>{}/{}</td><td><span style=\"color:{color}\">{:.0}%</span></td></tr>\n",
             escape_html(&module.path.display().to_string()), documented, total, pct);
@@ -299,7 +413,9 @@ fn write_coverage_table(html: &mut String, doc: &ProjectDoc) {
 }
 
 fn write_todos_section(html: &mut String, doc: &ProjectDoc) {
-    if doc.todos.is_empty() { return; }
+    if doc.todos.is_empty() {
+        return;
+    }
 
     html.push_str("<section>\n<h2>TODOs &amp; FIXMEs</h2>\n<table>\n<tr><th>Kind</th><th>File</th><th>Line</th><th>Text</th></tr>\n");
     for todo in &doc.todos {
@@ -309,10 +425,13 @@ fn write_todos_section(html: &mut String, doc: &ProjectDoc) {
             TodoKind::Hack => "HACK",
             TodoKind::Safety => "SAFETY",
         };
-        let _ = write!(html, "<tr><td>{kind_str}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+        let _ = write!(
+            html,
+            "<tr><td>{kind_str}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
             escape_html(&todo.location.file.display().to_string()),
             todo.location.line,
-            escape_html(&todo.text));
+            escape_html(&todo.text)
+        );
     }
     html.push_str("</table>\n</section>\n");
 }
@@ -409,27 +528,32 @@ mod tests {
             project: "test-project".to_string(),
             version: "0.1.0".to_string(),
             languages: vec!["rust".to_string()],
-            module_tree: ModuleTree { name: "root".to_string(), children: vec![] },
+            module_tree: ModuleTree {
+                name: "root".to_string(),
+                children: vec![],
+            },
             modules: vec![ModuleDoc {
                 path: PathBuf::from("src/lib.rs"),
                 language: "rust".to_string(),
                 module_doc: Some("Test module.".to_string()),
                 imports: vec![],
-                symbols: vec![
-                    SymbolDoc::Function(FunctionDoc {
-                        name: "hello".to_string(),
-                        visibility: Visibility::Public,
-                        location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 1, end_line: None },
-                        signature: "pub fn hello() -> String".to_string(),
-                        doc: Some("Say hello.".to_string()),
-                        deprecated: None,
-                        params: vec![],
-                        returns: Some("String".to_string()),
-                        is_async: false,
-                        generic_params: vec![],
-                        examples: vec![],
-                    }),
-                ],
+                symbols: vec![SymbolDoc::Function(FunctionDoc {
+                    name: "hello".to_string(),
+                    visibility: Visibility::Public,
+                    location: SourceLocation {
+                        file: PathBuf::from("src/lib.rs"),
+                        line: 1,
+                        end_line: None,
+                    },
+                    signature: "pub fn hello() -> String".to_string(),
+                    doc: Some("Say hello.".to_string()),
+                    deprecated: None,
+                    params: vec![],
+                    returns: Some("String".to_string()),
+                    is_async: false,
+                    generic_params: vec![],
+                    examples: vec![],
+                })],
             }],
             relationships: vec![],
             message_graph: None,
@@ -437,12 +561,25 @@ mod tests {
             todos: vec![TodoItem {
                 kind: TodoKind::Todo,
                 text: "fix this".to_string(),
-                location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 42, end_line: None },
+                location: SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 42,
+                    end_line: None,
+                },
             }],
             stats: DocStats {
-                total_files: 1, total_symbols: 1, documented_symbols: 1, deprecated_symbols: 0,
-                documentation_coverage: 1.0, horus_nodes: 0, horus_messages: 0, horus_services: 0,
-                horus_actions: 0, topics_discovered: 0, todos: 1, fixmes: 0,
+                total_files: 1,
+                total_symbols: 1,
+                documented_symbols: 1,
+                deprecated_symbols: 0,
+                documentation_coverage: 1.0,
+                horus_nodes: 0,
+                horus_messages: 0,
+                horus_services: 0,
+                horus_actions: 0,
+                topics_discovered: 0,
+                todos: 1,
+                fixmes: 0,
             },
         }
     }
@@ -460,7 +597,10 @@ mod tests {
     fn test_html_self_contained() {
         let html = format_html(&sample_doc());
         assert!(!html.contains("http://"), "should not contain http:// URLs");
-        assert!(!html.contains("https://"), "should not contain https:// URLs");
+        assert!(
+            !html.contains("https://"),
+            "should not contain https:// URLs"
+        );
     }
 
     #[test]
@@ -524,16 +664,28 @@ mod tests {
             project: "empty".to_string(),
             version: "0.0.0".to_string(),
             languages: vec![],
-            module_tree: ModuleTree { name: "root".to_string(), children: vec![] },
+            module_tree: ModuleTree {
+                name: "root".to_string(),
+                children: vec![],
+            },
             modules: vec![],
             relationships: vec![],
             message_graph: None,
             entry_points: vec![],
             todos: vec![],
             stats: DocStats {
-                total_files: 0, total_symbols: 0, documented_symbols: 0, deprecated_symbols: 0,
-                documentation_coverage: 1.0, horus_nodes: 0, horus_messages: 0, horus_services: 0,
-                horus_actions: 0, topics_discovered: 0, todos: 0, fixmes: 0,
+                total_files: 0,
+                total_symbols: 0,
+                documented_symbols: 0,
+                deprecated_symbols: 0,
+                documentation_coverage: 1.0,
+                horus_nodes: 0,
+                horus_messages: 0,
+                horus_services: 0,
+                horus_actions: 0,
+                topics_discovered: 0,
+                todos: 0,
+                fixmes: 0,
             },
         };
         let html = format_html(&doc);
@@ -546,7 +698,10 @@ mod tests {
         let mut doc = sample_doc();
         doc.project = "test<script>alert(1)</script>".to_string();
         let html = format_html(&doc);
-        assert!(!html.contains("<script>alert(1)</script>"), "should escape HTML");
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "should escape HTML"
+        );
         assert!(html.contains("&lt;script&gt;"));
     }
 
@@ -576,47 +731,83 @@ mod tests {
     #[test]
     fn test_html_size_reasonable() {
         let html = format_html(&sample_doc());
-        assert!(html.len() < 50_000, "simple project HTML should be < 50KB, got {} bytes", html.len());
+        assert!(
+            html.len() < 50_000,
+            "simple project HTML should be < 50KB, got {} bytes",
+            html.len()
+        );
     }
 
     #[test]
     fn test_html_deprecated_rendering() {
         let mut doc = sample_doc();
-        doc.modules[0].symbols.push(SymbolDoc::Function(FunctionDoc {
-            name: "old_api".to_string(),
-            visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 10, end_line: None },
-            signature: "pub fn old_api()".to_string(),
-            doc: None,
-            deprecated: Some("use new_api instead".to_string()),
-            params: vec![],
-            returns: None,
-            is_async: false,
-            generic_params: vec![],
-            examples: vec![],
-        }));
+        doc.modules[0]
+            .symbols
+            .push(SymbolDoc::Function(FunctionDoc {
+                name: "old_api".to_string(),
+                visibility: Visibility::Public,
+                location: SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 10,
+                    end_line: None,
+                },
+                signature: "pub fn old_api()".to_string(),
+                doc: None,
+                deprecated: Some("use new_api instead".to_string()),
+                params: vec![],
+                returns: None,
+                is_async: false,
+                generic_params: vec![],
+                examples: vec![],
+            }));
         let html = format_html(&doc);
-        assert!(html.contains("deprecated"), "should contain 'deprecated' class");
-        assert!(html.contains("\u{26a0}"), "should contain warning symbol for deprecated");
-        assert!(html.contains("use new_api instead"), "should render deprecation message");
+        assert!(
+            html.contains("deprecated"),
+            "should contain 'deprecated' class"
+        );
+        assert!(
+            html.contains("\u{26a0}"),
+            "should contain warning symbol for deprecated"
+        );
+        assert!(
+            html.contains("use new_api instead"),
+            "should render deprecation message"
+        );
     }
 
     #[test]
     fn test_html_message_section() {
         let mut doc = sample_doc();
-        doc.modules[0].symbols.push(SymbolDoc::HorusMessage(HorusMessageDoc {
-            name: "CmdVel".to_string(),
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 20, end_line: None },
-            doc: Some("Velocity command.".to_string()),
-            deprecated: None,
-            fields: vec![
-                FieldDoc { name: "linear".to_string(), type_str: Some("Vec3".to_string()), doc: None },
-                FieldDoc { name: "angular".to_string(), type_str: Some("Vec3".to_string()), doc: None },
-            ],
-        }));
+        doc.modules[0]
+            .symbols
+            .push(SymbolDoc::HorusMessage(HorusMessageDoc {
+                name: "CmdVel".to_string(),
+                location: SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 20,
+                    end_line: None,
+                },
+                doc: Some("Velocity command.".to_string()),
+                deprecated: None,
+                fields: vec![
+                    FieldDoc {
+                        name: "linear".to_string(),
+                        type_str: Some("Vec3".to_string()),
+                        doc: None,
+                    },
+                    FieldDoc {
+                        name: "angular".to_string(),
+                        type_str: Some("Vec3".to_string()),
+                        doc: None,
+                    },
+                ],
+            }));
         doc.stats.horus_messages = 1;
         let html = format_html(&doc);
-        assert!(html.contains("Message Types"), "should contain 'Message Types' heading");
+        assert!(
+            html.contains("Message Types"),
+            "should contain 'Message Types' heading"
+        );
         assert!(html.contains("CmdVel"), "should render message name");
         assert!(html.contains("linear"), "should render message fields");
     }
@@ -629,7 +820,11 @@ mod tests {
             name: "MotorController".to_string(),
             file: PathBuf::from("src/motor.rs"),
             details: Some(EntryPointDetails {
-                publishes: vec![TopicInfo { name: "motor_status".to_string(), message_type: "MotorStatus".to_string(), direction: "publish".to_string() }],
+                publishes: vec![TopicInfo {
+                    name: "motor_status".to_string(),
+                    message_type: "MotorStatus".to_string(),
+                    direction: "publish".to_string(),
+                }],
                 subscribes: vec![],
                 tick_rate: Some("100 Hz".to_string()),
                 execution_class: None,
@@ -639,7 +834,10 @@ mod tests {
         let html = format_html(&doc);
         assert!(html.contains("Nodes"), "should contain 'Nodes' heading");
         assert!(html.contains("MotorController"), "should render node name");
-        assert!(html.contains("motor_status"), "should render published topic");
+        assert!(
+            html.contains("motor_status"),
+            "should render published topic"
+        );
     }
 
     #[test]
@@ -648,30 +846,46 @@ mod tests {
         doc.modules[0].symbols.push(SymbolDoc::Struct(StructDoc {
             name: "Robot".to_string(),
             visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 30, end_line: None },
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 30,
+                end_line: None,
+            },
             doc: Some("A robot.".to_string()),
             deprecated: None,
             generic_params: vec![],
-            fields: vec![
-                FieldDoc { name: "name".to_string(), type_str: Some("String".to_string()), doc: None },
-            ],
-            methods: vec![
-                FunctionDoc {
-                    name: "move_to".to_string(),
-                    visibility: Visibility::Public,
-                    location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 35, end_line: None },
-                    signature: "pub fn move_to(&mut self, x: f64, y: f64)".to_string(),
-                    doc: None, deprecated: None, params: vec![],
-                    returns: None, is_async: false, generic_params: vec![], examples: vec![],
+            fields: vec![FieldDoc {
+                name: "name".to_string(),
+                type_str: Some("String".to_string()),
+                doc: None,
+            }],
+            methods: vec![FunctionDoc {
+                name: "move_to".to_string(),
+                visibility: Visibility::Public,
+                location: SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 35,
+                    end_line: None,
                 },
-            ],
+                signature: "pub fn move_to(&mut self, x: f64, y: f64)".to_string(),
+                doc: None,
+                deprecated: None,
+                params: vec![],
+                returns: None,
+                is_async: false,
+                generic_params: vec![],
+                examples: vec![],
+            }],
             trait_impls: vec![],
             derives: vec![],
             examples: vec![],
         }));
         let html = format_html(&doc);
         assert!(html.contains("struct Robot"), "should render struct name");
-        assert!(html.contains("pub fn move_to"), "should render method signature in HTML");
+        assert!(
+            html.contains("pub fn move_to"),
+            "should render method signature in HTML"
+        );
     }
 
     // ─── Level 2: Integration Tests ─────────────────────────────────────────
@@ -681,16 +895,30 @@ mod tests {
         let mut doc = sample_doc();
 
         // Add a message type
-        doc.modules[0].symbols.push(SymbolDoc::HorusMessage(HorusMessageDoc {
-            name: "Odometry".to_string(),
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 50, end_line: None },
-            doc: Some("Odometry message.".to_string()),
-            deprecated: None,
-            fields: vec![
-                FieldDoc { name: "x".to_string(), type_str: Some("f64".to_string()), doc: None },
-                FieldDoc { name: "y".to_string(), type_str: Some("f64".to_string()), doc: None },
-            ],
-        }));
+        doc.modules[0]
+            .symbols
+            .push(SymbolDoc::HorusMessage(HorusMessageDoc {
+                name: "Odometry".to_string(),
+                location: SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 50,
+                    end_line: None,
+                },
+                doc: Some("Odometry message.".to_string()),
+                deprecated: None,
+                fields: vec![
+                    FieldDoc {
+                        name: "x".to_string(),
+                        type_str: Some("f64".to_string()),
+                        doc: None,
+                    },
+                    FieldDoc {
+                        name: "y".to_string(),
+                        type_str: Some("f64".to_string()),
+                        doc: None,
+                    },
+                ],
+            }));
         doc.stats.horus_messages = 1;
 
         // Add a node
@@ -719,50 +947,82 @@ mod tests {
         doc.modules[0].symbols.push(SymbolDoc::Struct(StructDoc {
             name: "Config".to_string(),
             visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 60, end_line: None },
-            doc: None, deprecated: None, generic_params: vec![],
-            fields: vec![
-                FieldDoc { name: "rate".to_string(), type_str: Some("f64".to_string()), doc: None },
-            ],
-            methods: vec![], trait_impls: vec![], derives: vec![], examples: vec![],
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 60,
+                end_line: None,
+            },
+            doc: None,
+            deprecated: None,
+            generic_params: vec![],
+            fields: vec![FieldDoc {
+                name: "rate".to_string(),
+                type_str: Some("f64".to_string()),
+                doc: None,
+            }],
+            methods: vec![],
+            trait_impls: vec![],
+            derives: vec![],
+            examples: vec![],
         }));
 
         // Add an enum
         doc.modules[0].symbols.push(SymbolDoc::Enum(EnumDoc {
             name: "DriveMode".to_string(),
             visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 70, end_line: None },
-            doc: None, deprecated: None,
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 70,
+                end_line: None,
+            },
+            doc: None,
+            deprecated: None,
             variants: vec![
-                VariantDoc { name: "Manual".to_string(), doc: None, fields: vec![] },
-                VariantDoc { name: "Auto".to_string(), doc: None, fields: vec![] },
+                VariantDoc {
+                    name: "Manual".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+                VariantDoc {
+                    name: "Auto".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
             ],
             methods: vec![],
         }));
 
         // Add a deprecated function
-        doc.modules[0].symbols.push(SymbolDoc::Function(FunctionDoc {
-            name: "old_drive".to_string(),
-            visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 80, end_line: None },
-            signature: "pub fn old_drive()".to_string(),
-            doc: None,
-            deprecated: Some("use new_drive instead".to_string()),
-            params: vec![], returns: None, is_async: false, generic_params: vec![], examples: vec![],
-        }));
+        doc.modules[0]
+            .symbols
+            .push(SymbolDoc::Function(FunctionDoc {
+                name: "old_drive".to_string(),
+                visibility: Visibility::Public,
+                location: SourceLocation {
+                    file: PathBuf::from("src/lib.rs"),
+                    line: 80,
+                    end_line: None,
+                },
+                signature: "pub fn old_drive()".to_string(),
+                doc: None,
+                deprecated: Some("use new_drive instead".to_string()),
+                params: vec![],
+                returns: None,
+                is_async: false,
+                generic_params: vec![],
+                examples: vec![],
+            }));
         doc.stats.deprecated_symbols = 1;
 
         // Add a topic graph with SVG
         doc.message_graph = Some(MessageGraph {
             nodes: vec!["NavigationNode".to_string(), "MotorDriver".to_string()],
-            topics: vec![
-                MessageGraphTopic {
-                    name: "cmd_vel".to_string(),
-                    message_type: "CmdVel".to_string(),
-                    publishers: vec!["NavigationNode".to_string()],
-                    subscribers: vec!["MotorDriver".to_string()],
-                },
-            ],
+            topics: vec![MessageGraphTopic {
+                name: "cmd_vel".to_string(),
+                message_type: "CmdVel".to_string(),
+                publishers: vec!["NavigationNode".to_string()],
+                subscribers: vec!["MotorDriver".to_string()],
+            }],
         });
         doc.stats.topics_discovered = 1;
 
@@ -770,25 +1030,44 @@ mod tests {
         doc.todos.push(TodoItem {
             kind: TodoKind::Fixme,
             text: "handle timeout".to_string(),
-            location: SourceLocation { file: PathBuf::from("src/nav.rs"), line: 99, end_line: None },
+            location: SourceLocation {
+                file: PathBuf::from("src/nav.rs"),
+                line: 99,
+                end_line: None,
+            },
         });
         doc.stats.fixmes = 1;
 
         let html = format_html(&doc);
 
         // Verify all major sections present
-        assert!(html.contains("Message Types"), "should have Message Types section");
+        assert!(
+            html.contains("Message Types"),
+            "should have Message Types section"
+        );
         assert!(html.contains("Nodes"), "should have Nodes section");
-        assert!(html.contains("API Reference"), "should have API Reference section");
-        assert!(html.contains("Documentation Coverage"), "should have Coverage section");
+        assert!(
+            html.contains("API Reference"),
+            "should have API Reference section"
+        );
+        assert!(
+            html.contains("Documentation Coverage"),
+            "should have Coverage section"
+        );
         assert!(html.contains("TODOs"), "should have TODOs section");
 
         // SVG for topic graph
         assert!(html.contains("<svg"), "should have SVG for topic graph");
 
         // Deprecated markers
-        assert!(html.contains("deprecated"), "should have deprecated markers");
-        assert!(html.contains("use new_drive instead"), "should render deprecation message");
+        assert!(
+            html.contains("deprecated"),
+            "should have deprecated markers"
+        );
+        assert!(
+            html.contains("use new_drive instead"),
+            "should render deprecation message"
+        );
 
         // Verify content from each category
         assert!(html.contains("Odometry"), "should render message name");
@@ -811,10 +1090,19 @@ mod tests {
                 symbols: vec![SymbolDoc::Function(FunctionDoc {
                     name: "alpha_fn".to_string(),
                     visibility: Visibility::Public,
-                    location: SourceLocation { file: PathBuf::from("src/alpha.rs"), line: 1, end_line: None },
+                    location: SourceLocation {
+                        file: PathBuf::from("src/alpha.rs"),
+                        line: 1,
+                        end_line: None,
+                    },
                     signature: "pub fn alpha_fn()".to_string(),
-                    doc: None, deprecated: None, params: vec![],
-                    returns: None, is_async: false, generic_params: vec![], examples: vec![],
+                    doc: None,
+                    deprecated: None,
+                    params: vec![],
+                    returns: None,
+                    is_async: false,
+                    generic_params: vec![],
+                    examples: vec![],
                 })],
             },
             ModuleDoc {
@@ -825,10 +1113,19 @@ mod tests {
                 symbols: vec![SymbolDoc::Function(FunctionDoc {
                     name: "beta_fn".to_string(),
                     visibility: Visibility::Public,
-                    location: SourceLocation { file: PathBuf::from("src/beta.rs"), line: 1, end_line: None },
+                    location: SourceLocation {
+                        file: PathBuf::from("src/beta.rs"),
+                        line: 1,
+                        end_line: None,
+                    },
                     signature: "pub fn beta_fn()".to_string(),
-                    doc: None, deprecated: None, params: vec![],
-                    returns: None, is_async: false, generic_params: vec![], examples: vec![],
+                    doc: None,
+                    deprecated: None,
+                    params: vec![],
+                    returns: None,
+                    is_async: false,
+                    generic_params: vec![],
+                    examples: vec![],
                 })],
             },
             ModuleDoc {
@@ -839,10 +1136,19 @@ mod tests {
                 symbols: vec![SymbolDoc::Function(FunctionDoc {
                     name: "gamma_fn".to_string(),
                     visibility: Visibility::Public,
-                    location: SourceLocation { file: PathBuf::from("src/gamma.rs"), line: 1, end_line: None },
+                    location: SourceLocation {
+                        file: PathBuf::from("src/gamma.rs"),
+                        line: 1,
+                        end_line: None,
+                    },
                     signature: "pub fn gamma_fn()".to_string(),
-                    doc: None, deprecated: None, params: vec![],
-                    returns: None, is_async: false, generic_params: vec![], examples: vec![],
+                    doc: None,
+                    deprecated: None,
+                    params: vec![],
+                    returns: None,
+                    is_async: false,
+                    generic_params: vec![],
+                    examples: vec![],
                 })],
             },
         ];
@@ -853,12 +1159,24 @@ mod tests {
 
         // Count <details class="collapsible"> occurrences — one per module
         let details_count = html.matches("<details class=\"collapsible\">").count();
-        assert_eq!(details_count, 3, "should have 3 <details> sections, one per module, got {details_count}");
+        assert_eq!(
+            details_count, 3,
+            "should have 3 <details> sections, one per module, got {details_count}"
+        );
 
         // Each module path should appear
-        assert!(html.contains("src/alpha.rs"), "should contain alpha module path");
-        assert!(html.contains("src/beta.rs"), "should contain beta module path");
-        assert!(html.contains("src/gamma.rs"), "should contain gamma module path");
+        assert!(
+            html.contains("src/alpha.rs"),
+            "should contain alpha module path"
+        );
+        assert!(
+            html.contains("src/beta.rs"),
+            "should contain beta module path"
+        );
+        assert!(
+            html.contains("src/gamma.rs"),
+            "should contain gamma module path"
+        );
     }
 
     #[test]
@@ -867,14 +1185,34 @@ mod tests {
         doc.modules[0].symbols.push(SymbolDoc::Enum(EnumDoc {
             name: "Direction".to_string(),
             visibility: Visibility::Public,
-            location: SourceLocation { file: PathBuf::from("src/lib.rs"), line: 40, end_line: None },
+            location: SourceLocation {
+                file: PathBuf::from("src/lib.rs"),
+                line: 40,
+                end_line: None,
+            },
             doc: None,
             deprecated: None,
             variants: vec![
-                VariantDoc { name: "North".to_string(), doc: None, fields: vec![] },
-                VariantDoc { name: "South".to_string(), doc: None, fields: vec![] },
-                VariantDoc { name: "East".to_string(), doc: None, fields: vec![] },
-                VariantDoc { name: "West".to_string(), doc: None, fields: vec![] },
+                VariantDoc {
+                    name: "North".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+                VariantDoc {
+                    name: "South".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+                VariantDoc {
+                    name: "East".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
+                VariantDoc {
+                    name: "West".to_string(),
+                    doc: None,
+                    fields: vec![],
+                },
             ],
             methods: vec![],
         }));
@@ -882,7 +1220,10 @@ mod tests {
         let html = format_html(&doc);
 
         // Enum name rendered
-        assert!(html.contains("enum Direction"), "should render enum name 'Direction'");
+        assert!(
+            html.contains("enum Direction"),
+            "should render enum name 'Direction'"
+        );
         // All variant names present
         assert!(html.contains("North"), "should render variant 'North'");
         assert!(html.contains("South"), "should render variant 'South'");

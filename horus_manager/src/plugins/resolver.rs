@@ -484,11 +484,17 @@ mod tests {
         // Both global and project entries are present
         assert_eq!(nav_plugins.len(), 2);
         // The global one should be marked as overridden
-        let global_nav = nav_plugins.iter().find(|p| p.scope == PluginScope::Global).unwrap();
+        let global_nav = nav_plugins
+            .iter()
+            .find(|p| p.scope == PluginScope::Global)
+            .unwrap();
         assert!(global_nav.is_overridden);
         assert_eq!(global_nav.entry.version, "1.0.0");
         // The project one is the active override
-        let project_nav = nav_plugins.iter().find(|p| p.scope == PluginScope::Project).unwrap();
+        let project_nav = nav_plugins
+            .iter()
+            .find(|p| p.scope == PluginScope::Project)
+            .unwrap();
         assert!(!project_nav.is_overridden);
         assert_eq!(project_nav.entry.version, "2.0.0");
     }
@@ -531,8 +537,14 @@ mod tests {
 
     #[test]
     fn test_verification_status_variants() {
-        assert_ne!(VerificationStatus::Valid, VerificationStatus::ChecksumMismatch);
+        assert_ne!(
+            VerificationStatus::Valid,
+            VerificationStatus::ChecksumMismatch
+        );
         assert_ne!(VerificationStatus::Valid, VerificationStatus::Error);
-        assert_ne!(VerificationStatus::ChecksumMismatch, VerificationStatus::Error);
+        assert_ne!(
+            VerificationStatus::ChecksumMismatch,
+            VerificationStatus::Error
+        );
     }
 }

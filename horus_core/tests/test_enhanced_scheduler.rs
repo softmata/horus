@@ -256,9 +256,7 @@ fn test_skip_policy_protection() {
         .build();
 
     // Run for 1 second
-    scheduler
-        .run_for(1_u64.secs())
-        .expect("Scheduler failed");
+    scheduler.run_for(1_u64.secs()).expect("Scheduler failed");
 
     // The node should have attempted and failed multiple times, with the scheduler
     // recovering from each panic (catch_unwind) rather than crashing.

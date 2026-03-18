@@ -254,4 +254,3 @@ pub async fn graph_handler() -> impl IntoResponse {
     )
         .into_response()
 }
-

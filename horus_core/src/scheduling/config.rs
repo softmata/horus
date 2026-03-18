@@ -193,32 +193,22 @@ mod tests {
     }
 
     fn arb_realtime_config() -> impl Strategy<Value = RealTimeConfig> {
-        (
-            0u64..60_000,
-            1u64..10_000,
-            any::<bool>(),
-            any::<bool>(),
+        (0u64..60_000, 1u64..10_000, any::<bool>(), any::<bool>()).prop_map(
+            |(timeout, max_miss, memlock, rt_class)| RealTimeConfig {
+                watchdog_timeout_ms: timeout,
+                max_deadline_misses: max_miss,
+                memory_locking: memlock,
+                rt_scheduling_class: rt_class,
+            },
         )
-            .prop_map(
-                |(timeout, max_miss, memlock, rt_class)| {
-                    RealTimeConfig {
-                        watchdog_timeout_ms: timeout,
-                        max_deadline_misses: max_miss,
-                        memory_locking: memlock,
-                        rt_scheduling_class: rt_class,
-                    }
-                },
-            )
     }
 
     fn arb_monitoring_config() -> impl Strategy<Value = MonitoringConfig> {
-        (0usize..1024, any::<bool>()).prop_map(
-            |(bb_size, verbose)| MonitoringConfig {
-                black_box_size_mb: bb_size,
-                telemetry_endpoint: None,
-                verbose,
-            },
-        )
+        (0usize..1024, any::<bool>()).prop_map(|(bb_size, verbose)| MonitoringConfig {
+            black_box_size_mb: bb_size,
+            telemetry_endpoint: None,
+            verbose,
+        })
     }
 
     fn arb_recording_config() -> impl Strategy<Value = RecordingConfigYaml> {
@@ -466,7 +456,10 @@ mod tests {
     #[test]
     fn monitoring_config_zero_blackbox_means_disabled() {
         let config = SchedulerConfig::default();
-        assert_eq!(config.monitoring.black_box_size_mb, 0, "Default blackbox should be disabled (0 MB)");
+        assert_eq!(
+            config.monitoring.black_box_size_mb, 0,
+            "Default blackbox should be disabled (0 MB)"
+        );
     }
 
     #[test]
@@ -513,7 +506,10 @@ mod tests {
         assert_eq!(cores.len(), sorted.len(), "CPU cores should be unique");
         // Default should have None
         let default_res = SchedulerConfig::default().resources;
-        assert!(default_res.cpu_cores.is_none(), "Default should not pin CPUs");
+        assert!(
+            default_res.cpu_cores.is_none(),
+            "Default should not pin CPUs"
+        );
     }
 
     #[test]
@@ -567,7 +563,10 @@ mod tests {
         assert_eq!(config.session_name.as_deref(), Some("test_session_001"));
         // Default should have no session name
         let default_config = RecordingConfigYaml::default();
-        assert!(default_config.session_name.is_none(), "Default should have no session name");
+        assert!(
+            default_config.session_name.is_none(),
+            "Default should have no session name"
+        );
     }
 
     #[test]

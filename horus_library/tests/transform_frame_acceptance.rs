@@ -18,7 +18,7 @@
 //! both return T such that `T * p_source = p_destination`.
 
 use horus_core::error::HorusError;
-use horus_library::transform_frame::{TransformFrame, Transform};
+use horus_library::transform_frame::{Transform, TransformFrame};
 
 const EPSILON: f64 = 1e-10;
 const FRAC_1_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;

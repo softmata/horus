@@ -498,7 +498,7 @@ impl NavSatFix {
 
         let a = ((delta_lat / 2.0).sin().powi(2)
             + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2))
-            .clamp(0.0, 1.0);
+        .clamp(0.0, 1.0);
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
         EARTH_RADIUS * c

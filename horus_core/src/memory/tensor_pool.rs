@@ -1895,12 +1895,7 @@ mod tests {
 
         // alloc_with_timeout should block until the helper releases the slot.
         let t0 = Instant::now();
-        let result = pool.alloc_with_timeout(
-            &[64],
-            TensorDtype::U8,
-            Device::cpu(),
-            200_u64.ms(),
-        );
+        let result = pool.alloc_with_timeout(&[64], TensorDtype::U8, Device::cpu(), 200_u64.ms());
         let elapsed = t0.elapsed();
 
         assert!(
@@ -1942,12 +1937,7 @@ mod tests {
             .expect("initial alloc failed");
 
         // Nobody releases the slot — expect Timeout.
-        let result = pool.alloc_with_timeout(
-            &[64],
-            TensorDtype::U8,
-            Device::cpu(),
-            80_u64.ms(),
-        );
+        let result = pool.alloc_with_timeout(&[64], TensorDtype::U8, Device::cpu(), 80_u64.ms());
 
         assert!(
             matches!(result, Err(HorusError::Timeout(_))),

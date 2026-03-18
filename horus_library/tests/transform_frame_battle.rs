@@ -16,12 +16,14 @@ fn test_8_writers_16_readers_no_corruption() {
 
     tf.register_frame("world", None).unwrap();
     for i in 0..8 {
-        tf.register_frame(&format!("sensor_{}", i), Some("world")).unwrap();
+        tf.register_frame(&format!("sensor_{}", i), Some("world"))
+            .unwrap();
         tf.update_transform(
             &format!("sensor_{}", i),
             &Transform::from_translation([i as f64, 0.0, 0.0]),
             0,
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     let running = Arc::new(AtomicBool::new(true));
@@ -59,7 +61,7 @@ fn test_8_writers_16_readers_no_corruption() {
                         corruptions.fetch_add(1, Ordering::Relaxed);
                     }
                     let q = result.rotation;
-                    let norm = (q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]).sqrt();
+                    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
                     if (norm - 1.0).abs() > 0.1 {
                         corruptions.fetch_add(1, Ordering::Relaxed);
                     }
@@ -70,7 +72,9 @@ fn test_8_writers_16_readers_no_corruption() {
 
     std::thread::sleep(Duration::from_millis(500));
     running.store(false, Ordering::SeqCst);
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
 
     let total = total_reads.load(Ordering::SeqCst);
     let corrupt = corruptions.load(Ordering::SeqCst);
@@ -98,7 +102,8 @@ fn test_memory_stable_after_cycles() {
     // Tree still works
     let fresh = tf.register_frame("fresh", Some("world"));
     assert!(fresh.is_ok(), "Registration after 500 cycles: {:?}", fresh);
-    tf.update_transform("fresh", &Transform::from_translation([42.0, 0.0, 0.0]), 1).unwrap();
+    tf.update_transform("fresh", &Transform::from_translation([42.0, 0.0, 0.0]), 1)
+        .unwrap();
     let result = tf.tf("fresh", "world");
     assert!(result.is_ok(), "Query after 500 cycles should work");
 }
@@ -114,12 +119,14 @@ fn test_deep_chain_500_bounded_time() {
 
     tf.register_frame("d0", None).unwrap();
     for i in 1..=500 {
-        tf.register_frame(&format!("d{}", i), Some(&format!("d{}", i - 1))).unwrap();
+        tf.register_frame(&format!("d{}", i), Some(&format!("d{}", i - 1)))
+            .unwrap();
         tf.update_transform(
             &format!("d{}", i),
             &Transform::from_translation([0.001, 0.0, 0.0]),
             i as u64,
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     let start = Instant::now();
@@ -127,12 +134,20 @@ fn test_deep_chain_500_bounded_time() {
     let elapsed = start.elapsed();
 
     assert!(result.is_ok(), "Should resolve 500-deep chain");
-    assert!(elapsed < Duration::from_millis(50), "Resolution took {:?}", elapsed);
+    assert!(
+        elapsed < Duration::from_millis(50),
+        "Resolution took {:?}",
+        elapsed
+    );
 
     if let Ok(xform) = result {
         let expected = 500.0 * 0.001;
-        assert!((xform.translation[0] - expected).abs() < 0.01,
-            "Expected x≈{}, got {}", expected, xform.translation[0]);
+        assert!(
+            (xform.translation[0] - expected).abs() < 0.01,
+            "Expected x≈{}, got {}",
+            expected,
+            xform.translation[0]
+        );
     }
 }
 
@@ -155,7 +170,9 @@ fn test_concurrent_registration() {
             }
         }));
     }
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
 
     let count = tf.frame_count();
     assert!(count >= 50, "Should register many frames, got {}", count);

@@ -22,11 +22,7 @@ pub async fn docs_handler() -> impl IntoResponse {
                 "error": format!("{}", e),
                 "message": "Failed to extract documentation"
             });
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error),
-            )
-                .into_response()
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response()
         }
     }
 }
@@ -117,9 +113,18 @@ mod tests {
     #[test]
     fn test_default_extract_config() {
         let config = ExtractConfig {
-            json: false, md: false, html: false, brief: false, full: false,
-            all: false, lang: None, coverage: false,
-            output: None, watch: false, diff: None, fail_under: None,
+            json: false,
+            md: false,
+            html: false,
+            brief: false,
+            full: false,
+            all: false,
+            lang: None,
+            coverage: false,
+            output: None,
+            watch: false,
+            diff: None,
+            fail_under: None,
         };
         assert!(!config.json);
         assert!(!config.all);

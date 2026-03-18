@@ -17,11 +17,17 @@ struct TickCounter {
     tick_count: Arc<AtomicU64>,
 }
 impl Node for TickCounter {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
-    fn tick(&mut self) { self.tick_count.fetch_add(1, Ordering::SeqCst); }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+    fn tick(&mut self) {
+        self.tick_count.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
-fn pid() -> u32 { std::process::id() }
+fn pid() -> u32 {
+    std::process::id()
+}
 
 // ============================================================================
 // run_for exits within tolerance
@@ -31,7 +37,10 @@ fn pid() -> u32 { std::process::id() }
 fn test_run_for_exits_within_tolerance() {
     cleanup_stale_shm();
     let ticks = Arc::new(AtomicU64::new(0));
-    let node = TickCounter { name: format!("rf_{}", pid()), tick_count: ticks.clone() };
+    let node = TickCounter {
+        name: format!("rf_{}", pid()),
+        tick_count: ticks.clone(),
+    };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
     sched.add(node).order(0).build().unwrap();
@@ -64,9 +73,18 @@ fn test_priority_ordering_preserved() {
     let second_ticks = Arc::new(AtomicU64::new(0));
     let third_ticks = Arc::new(AtomicU64::new(0));
 
-    let n1 = TickCounter { name: format!("prio0_{}", pid()), tick_count: first_ticks.clone() };
-    let n2 = TickCounter { name: format!("prio1_{}", pid()), tick_count: second_ticks.clone() };
-    let n3 = TickCounter { name: format!("prio2_{}", pid()), tick_count: third_ticks.clone() };
+    let n1 = TickCounter {
+        name: format!("prio0_{}", pid()),
+        tick_count: first_ticks.clone(),
+    };
+    let n2 = TickCounter {
+        name: format!("prio1_{}", pid()),
+        tick_count: second_ticks.clone(),
+    };
+    let n3 = TickCounter {
+        name: format!("prio2_{}", pid()),
+        tick_count: third_ticks.clone(),
+    };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
     sched.add(n1).order(0).build().unwrap();
@@ -86,7 +104,9 @@ fn test_priority_ordering_preserved() {
     assert!(
         (t1 as i64 - t2 as i64).unsigned_abs() <= t1.max(1) / 2,
         "BestEffort nodes should tick at similar rates: {} vs {} vs {}",
-        t1, t2, t3
+        t1,
+        t2,
+        t3
     );
 }
 
@@ -98,7 +118,10 @@ fn test_priority_ordering_preserved() {
 fn test_set_node_rate() {
     cleanup_stale_shm();
     let ticks = Arc::new(AtomicU64::new(0));
-    let node = TickCounter { name: format!("setrate_{}", pid()), tick_count: ticks.clone() };
+    let node = TickCounter {
+        name: format!("setrate_{}", pid()),
+        tick_count: ticks.clone(),
+    };
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
     sched.add(node).rate(100_u64.hz()).order(0).build().unwrap();

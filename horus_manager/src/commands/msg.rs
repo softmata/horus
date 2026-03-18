@@ -767,26 +767,17 @@ pub struct B {
 
     #[test]
     fn extract_struct_name_with_lifetime() {
-        assert_eq!(
-            extract_struct_name("pub struct Ref<'a> {"),
-            Some("Ref")
-        );
+        assert_eq!(extract_struct_name("pub struct Ref<'a> {"), Some("Ref"));
     }
 
     #[test]
     fn extract_struct_name_with_multiple_generics() {
-        assert_eq!(
-            extract_struct_name("pub struct Map<K, V> {"),
-            Some("Map")
-        );
+        assert_eq!(extract_struct_name("pub struct Map<K, V> {"), Some("Map"));
     }
 
     #[test]
     fn extract_struct_name_trailing_space() {
-        assert_eq!(
-            extract_struct_name("pub struct Point  {"),
-            Some("Point")
-        );
+        assert_eq!(extract_struct_name("pub struct Point  {"), Some("Point"));
     }
 
     #[test]
@@ -837,10 +828,7 @@ pub struct B {
     #[test]
     fn parse_field_nested_generic() {
         let result = parse_field("pub data: Vec<Option<f64>>,");
-        assert_eq!(
-            result,
-            Some(("data".into(), "Vec<Option<f64>>".into()))
-        );
+        assert_eq!(result, Some(("data".into(), "Vec<Option<f64>>".into())));
     }
 
     #[test]
@@ -1062,11 +1050,7 @@ pub struct Config {
     #[test]
     fn parse_messages_preserves_source_file() {
         let source = "pub struct Foo { pub x: i32, }\n";
-        let messages = parse_messages_from_source(
-            source,
-            "test",
-            "/some/path/test.rs".into(),
-        );
+        let messages = parse_messages_from_source(source, "test", "/some/path/test.rs".into());
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].source_file, "/some/path/test.rs");
     }
@@ -1074,8 +1058,7 @@ pub struct Config {
     #[test]
     fn parse_messages_preserves_module() {
         let source = "pub struct Bar { pub y: u8, }\n";
-        let messages =
-            parse_messages_from_source(source, "sensors", "sensors.rs".into());
+        let messages = parse_messages_from_source(source, "sensors", "sensors.rs".into());
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].module, "sensors");
     }
@@ -1127,10 +1110,7 @@ pub struct Complex {
             "HashMap<String, Vec<f64>>"
         );
         assert_eq!(messages[0].fields[2].field_type, "Option<String>");
-        assert_eq!(
-            messages[0].fields[3].field_type,
-            "Vec<Option<(f64, f64)>>"
-        );
+        assert_eq!(messages[0].fields[3].field_type, "Vec<Option<(f64, f64)>>");
     }
 
     #[test]
@@ -1573,7 +1553,10 @@ pub struct Range {
     fn discover_messages_error_when_no_dir_found() {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Point to a nonexistent directory
-        std::env::set_var("HORUS_SOURCE_DIR", "/tmp/definitely_does_not_exist_horus_test");
+        std::env::set_var(
+            "HORUS_SOURCE_DIR",
+            "/tmp/definitely_does_not_exist_horus_test",
+        );
         // Also clear HORUS_SOURCE to avoid fallback
         let prev_source = std::env::var("HORUS_SOURCE").ok();
         std::env::remove_var("HORUS_SOURCE");
@@ -1725,7 +1708,10 @@ pub struct Range {
         let result = show_message("twist", false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok(), "show_message('twist') should match case-insensitively");
+        assert!(
+            result.is_ok(),
+            "show_message('twist') should match case-insensitively"
+        );
         drop(tmp);
     }
 
@@ -1738,7 +1724,10 @@ pub struct Range {
         let result = show_message("control::Twist", false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok(), "show_message('control::Twist') should succeed");
+        assert!(
+            result.is_ok(),
+            "show_message('control::Twist') should succeed"
+        );
         drop(tmp);
     }
 
@@ -1751,7 +1740,10 @@ pub struct Range {
         let result = show_message("NonExistent", false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_err(), "show_message for unknown type should error");
+        assert!(
+            result.is_err(),
+            "show_message for unknown type should error"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("NonExistent"),
@@ -1769,7 +1761,10 @@ pub struct Range {
         let result = show_message("Imu", true);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok(), "show_message('Imu', json=true) should succeed");
+        assert!(
+            result.is_ok(),
+            "show_message('Imu', json=true) should succeed"
+        );
         drop(tmp);
     }
 
@@ -1780,11 +1775,7 @@ pub struct Range {
         let msgs_dir = tmp.path().join("horus_library").join("messages");
         fs::create_dir_all(&msgs_dir).unwrap();
 
-        fs::write(
-            msgs_dir.join("empty.rs"),
-            "pub struct EmptyMsg {}\n",
-        )
-        .unwrap();
+        fs::write(msgs_dir.join("empty.rs"), "pub struct EmptyMsg {}\n").unwrap();
 
         std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
         let result = show_message("EmptyMsg", false);
@@ -1842,7 +1833,10 @@ pub struct Range {
         let result = message_hash("twist", false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok(), "message_hash should match case-insensitively");
+        assert!(
+            result.is_ok(),
+            "message_hash should match case-insensitively"
+        );
         drop(tmp);
     }
 

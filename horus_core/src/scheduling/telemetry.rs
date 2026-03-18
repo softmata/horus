@@ -5,6 +5,7 @@
 //! - HTTP endpoint
 //! - UDP broadcast
 
+use crate::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -13,8 +14,6 @@ use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::core::DurationExt;
-
 
 /// Telemetry metric types
 #[derive(Debug, Clone, Serialize, Deserialize)]

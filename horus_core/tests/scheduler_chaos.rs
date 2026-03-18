@@ -15,7 +15,9 @@ use std::time::Duration;
 mod common;
 use common::cleanup_stale_shm;
 
-fn pid() -> u32 { std::process::id() }
+fn pid() -> u32 {
+    std::process::id()
+}
 
 // ---------------------------------------------------------------------------
 // Node types for chaos testing
@@ -26,8 +28,12 @@ struct Counter {
     ticks: Arc<AtomicU64>,
 }
 impl Node for Counter {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
-    fn tick(&mut self) { self.ticks.fetch_add(1, Ordering::SeqCst); }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+    fn tick(&mut self) {
+        self.ticks.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 struct PanicNode {
@@ -36,7 +42,9 @@ struct PanicNode {
     panic_at: u64,
 }
 impl Node for PanicNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
     fn tick(&mut self) {
         let t = self.ticks.fetch_add(1, Ordering::SeqCst);
         if t >= self.panic_at {
@@ -51,7 +59,9 @@ struct HeavyAllocNode {
     alloc_bytes: usize,
 }
 impl Node for HeavyAllocNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
     fn tick(&mut self) {
         self.ticks.fetch_add(1, Ordering::SeqCst);
         // Allocate and touch memory to create pressure
@@ -74,37 +84,56 @@ fn test_50_mixed_nodes_all_classes() {
     // 15 RT nodes
     for i in 0..15 {
         let t = total_ticks.clone();
-        sched.add(Counter {
-            name: format!("chaos_rt_{}_{}", i, pid()),
-            ticks: t,
-        }).rate(100_u64.hz()).order(i as u32).build().unwrap();
+        sched
+            .add(Counter {
+                name: format!("chaos_rt_{}_{}", i, pid()),
+                ticks: t,
+            })
+            .rate(100_u64.hz())
+            .order(i as u32)
+            .build()
+            .unwrap();
     }
 
     // 15 Compute nodes
     for i in 0..15 {
         let t = total_ticks.clone();
-        sched.add(Counter {
-            name: format!("chaos_compute_{}_{}", i, pid()),
-            ticks: t,
-        }).compute().order(50 + i as u32).build().unwrap();
+        sched
+            .add(Counter {
+                name: format!("chaos_compute_{}_{}", i, pid()),
+                ticks: t,
+            })
+            .compute()
+            .order(50 + i as u32)
+            .build()
+            .unwrap();
     }
 
     // 10 AsyncIo nodes
     for i in 0..10 {
         let t = total_ticks.clone();
-        sched.add(Counter {
-            name: format!("chaos_async_{}_{}", i, pid()),
-            ticks: t,
-        }).async_io().order(100 + i as u32).build().unwrap();
+        sched
+            .add(Counter {
+                name: format!("chaos_async_{}_{}", i, pid()),
+                ticks: t,
+            })
+            .async_io()
+            .order(100 + i as u32)
+            .build()
+            .unwrap();
     }
 
     // 10 BestEffort nodes
     for i in 0..10 {
         let t = total_ticks.clone();
-        sched.add(Counter {
-            name: format!("chaos_be_{}_{}", i, pid()),
-            ticks: t,
-        }).order(150 + i as u32).build().unwrap();
+        sched
+            .add(Counter {
+                name: format!("chaos_be_{}_{}", i, pid()),
+                ticks: t,
+            })
+            .order(150 + i as u32)
+            .build()
+            .unwrap();
     }
 
     // Run for 1 second
@@ -134,10 +163,14 @@ fn test_rapid_start_stop_10_cycles() {
 
         for i in 0..5 {
             let t = ticks.clone();
-            sched.add(Counter {
-                name: format!("cycle{}_node{}_{}", cycle, i, pid()),
-                ticks: t,
-            }).order(i as u32).build().unwrap();
+            sched
+                .add(Counter {
+                    name: format!("cycle{}_node{}_{}", cycle, i, pid()),
+                    ticks: t,
+                })
+                .order(i as u32)
+                .build()
+                .unwrap();
         }
 
         sched.run_for(Duration::from_millis(50)).unwrap();
@@ -168,24 +201,29 @@ fn test_simultaneous_panics_with_ignore_policy() {
     // 5 panicking nodes — Ignore policy means they keep trying
     for i in 0..5 {
         let t = panic_ticks.clone();
-        sched.add(PanicNode {
-            name: format!("chaos_panic_{}_{}", i, pid()),
-            ticks: t,
-            panic_at: 1, // Panic on second tick
-        })
-        .order(i as u32)
-        .failure_policy(FailurePolicy::Ignore)
-        .build()
-        .unwrap();
+        sched
+            .add(PanicNode {
+                name: format!("chaos_panic_{}_{}", i, pid()),
+                ticks: t,
+                panic_at: 1, // Panic on second tick
+            })
+            .order(i as u32)
+            .failure_policy(FailurePolicy::Ignore)
+            .build()
+            .unwrap();
     }
 
     // 5 healthy nodes — should keep ticking despite panic siblings
     for i in 0..5 {
         let t = healthy_ticks.clone();
-        sched.add(Counter {
-            name: format!("chaos_healthy_{}_{}", i, pid()),
-            ticks: t,
-        }).order(50 + i as u32).build().unwrap();
+        sched
+            .add(Counter {
+                name: format!("chaos_healthy_{}_{}", i, pid()),
+                ticks: t,
+            })
+            .order(50 + i as u32)
+            .build()
+            .unwrap();
     }
 
     sched.run_for(Duration::from_millis(500)).unwrap();
@@ -209,11 +247,15 @@ fn test_memory_pressure_large_allocs() {
     let ticks = Arc::new(AtomicU64::new(0));
     let mut sched = Scheduler::new().tick_rate(50_u64.hz());
 
-    sched.add(HeavyAllocNode {
-        name: format!("chaos_alloc_{}", pid()),
-        ticks: ticks.clone(),
-        alloc_bytes: 1_000_000, // 1MB per tick
-    }).order(0).build().unwrap();
+    sched
+        .add(HeavyAllocNode {
+            name: format!("chaos_alloc_{}", pid()),
+            ticks: ticks.clone(),
+            alloc_bytes: 1_000_000, // 1MB per tick
+        })
+        .order(0)
+        .build()
+        .unwrap();
 
     sched.run_for(Duration::from_millis(500)).unwrap();
 
@@ -238,21 +280,26 @@ fn test_mixed_failure_policies() {
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
 
     // One Fatal panic node — should stop scheduler
-    sched.add(PanicNode {
-        name: format!("chaos_fatal_{}", pid()),
-        ticks: Arc::new(AtomicU64::new(0)),
-        panic_at: 5, // Panic after 5 ticks
-    })
-    .order(0)
-    .failure_policy(FailurePolicy::Fatal)
-    .build()
-    .unwrap();
+    sched
+        .add(PanicNode {
+            name: format!("chaos_fatal_{}", pid()),
+            ticks: Arc::new(AtomicU64::new(0)),
+            panic_at: 5, // Panic after 5 ticks
+        })
+        .order(0)
+        .failure_policy(FailurePolicy::Fatal)
+        .build()
+        .unwrap();
 
     // Healthy node — should tick until Fatal stops everything
-    sched.add(Counter {
-        name: format!("chaos_healthy_fatal_{}", pid()),
-        ticks: healthy_ticks.clone(),
-    }).order(50).build().unwrap();
+    sched
+        .add(Counter {
+            name: format!("chaos_healthy_fatal_{}", pid()),
+            ticks: healthy_ticks.clone(),
+        })
+        .order(50)
+        .build()
+        .unwrap();
 
     let start = std::time::Instant::now();
     let result = sched.run_for(Duration::from_millis(500));

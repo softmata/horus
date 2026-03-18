@@ -17,6 +17,7 @@ use colored::*;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use horus_core::core::DurationExt;
 use reqwest::blocking::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use tar::Builder;
-use horus_core::core::DurationExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Package {
@@ -411,10 +411,7 @@ mod dispatch_tests {
 
     #[test]
     fn url_encode_scoped_name() {
-        assert_eq!(
-            url_encode_package_name("@org/package"),
-            "%40org%2Fpackage"
-        );
+        assert_eq!(url_encode_package_name("@org/package"), "%40org%2Fpackage");
     }
 
     // ── package_name_to_path ────────────────────────────────────────────

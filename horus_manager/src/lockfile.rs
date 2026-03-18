@@ -211,11 +211,9 @@ impl HorusLockfile {
             });
         }
         // Keep sorted for deterministic output
-        self.packages.sort_by(|a, b| {
-            a.source.cmp(&b.source).then_with(|| a.name.cmp(&b.name))
-        });
+        self.packages
+            .sort_by(|a, b| a.source.cmp(&b.source).then_with(|| a.name.cmp(&b.name)));
     }
-
 }
 
 #[cfg(test)]
@@ -286,7 +284,12 @@ mod tests {
     fn lockfile_roundtrip() {
         let mut lock = HorusLockfile::new();
         lock.config_hash = Some("deadbeef".to_string());
-        lock.pin("serde", "1.0.215", "crates.io", Some("sha256:abc".to_string()));
+        lock.pin(
+            "serde",
+            "1.0.215",
+            "crates.io",
+            Some("sha256:abc".to_string()),
+        );
         lock.pin("numpy", "1.26.4", "pypi", None);
         lock.pin("rplidar", "1.2.0", "registry", None);
 
@@ -388,7 +391,12 @@ mod tests {
     fn pin_update_existing() {
         let mut lock = HorusLockfile::new();
         lock.pin("serde", "1.0.0", "crates.io", None);
-        lock.pin("serde", "1.0.215", "crates.io", Some("sha256:xyz".to_string()));
+        lock.pin(
+            "serde",
+            "1.0.215",
+            "crates.io",
+            Some("sha256:xyz".to_string()),
+        );
 
         assert_eq!(lock.packages.len(), 1);
         assert_eq!(lock.packages[0].version, "1.0.215");
@@ -460,8 +468,16 @@ mod tests {
         lock.pin("serde", "1.0.0", "crates.io", None);
 
         lock.merge_pins(&[
-            ("serde".to_string(), "1.0.215".to_string(), "crates.io".to_string()),
-            ("numpy".to_string(), "1.26.4".to_string(), "pypi".to_string()),
+            (
+                "serde".to_string(),
+                "1.0.215".to_string(),
+                "crates.io".to_string(),
+            ),
+            (
+                "numpy".to_string(),
+                "1.26.4".to_string(),
+                "pypi".to_string(),
+            ),
         ]);
 
         assert_eq!(lock.packages.len(), 2);
@@ -481,7 +497,12 @@ mod tests {
             cmake: None,
         });
         lock.features = vec!["cuda".to_string(), "monitor".to_string()];
-        lock.pin("serde", "1.0.215", "crates.io", Some("sha256:abc".to_string()));
+        lock.pin(
+            "serde",
+            "1.0.215",
+            "crates.io",
+            Some("sha256:abc".to_string()),
+        );
         lock.system_deps = vec![SystemLock {
             name: "opencv".to_string(),
             version: "4.8.1".to_string(),
@@ -496,14 +517,23 @@ mod tests {
         let deserialized: HorusLockfile = toml::from_str(&serialized).unwrap();
 
         assert_eq!(deserialized.version, 4);
-        assert_eq!(deserialized.toolchain.as_ref().unwrap().rust, Some("1.78.0".to_string()));
-        assert_eq!(deserialized.toolchain.as_ref().unwrap().python, Some("3.12.3".to_string()));
+        assert_eq!(
+            deserialized.toolchain.as_ref().unwrap().rust,
+            Some("1.78.0".to_string())
+        );
+        assert_eq!(
+            deserialized.toolchain.as_ref().unwrap().python,
+            Some("3.12.3".to_string())
+        );
         assert_eq!(deserialized.toolchain.as_ref().unwrap().cmake, None);
         assert_eq!(deserialized.features, vec!["cuda", "monitor"]);
         assert_eq!(deserialized.packages.len(), 1);
         assert_eq!(deserialized.system_deps.len(), 1);
         assert_eq!(deserialized.system_deps[0].name, "opencv");
-        assert_eq!(deserialized.system_deps[0].apt, Some("libopencv-dev".to_string()));
+        assert_eq!(
+            deserialized.system_deps[0].apt,
+            Some("libopencv-dev".to_string())
+        );
         assert_eq!(deserialized.system_deps[0].brew, Some("opencv".to_string()));
     }
 
@@ -556,11 +586,17 @@ source = "crates.io"
         let loaded = HorusLockfile::load_from(&path).unwrap();
 
         assert_eq!(loaded.version, 4);
-        assert_eq!(loaded.toolchain.as_ref().unwrap().rust, Some("1.78.0".to_string()));
+        assert_eq!(
+            loaded.toolchain.as_ref().unwrap().rust,
+            Some("1.78.0".to_string())
+        );
         assert_eq!(loaded.features, vec!["monitor"]);
         assert_eq!(loaded.system_deps.len(), 1);
         assert_eq!(loaded.system_deps[0].name, "libudev");
-        assert_eq!(loaded.system_deps[0].pacman, Some("systemd-libs".to_string()));
+        assert_eq!(
+            loaded.system_deps[0].pacman,
+            Some("systemd-libs".to_string())
+        );
         assert_eq!(loaded.packages.len(), 1);
     }
 

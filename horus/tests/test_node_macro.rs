@@ -92,8 +92,14 @@ fn test_node_pub_sub_topics_functional() {
     let mut node = SensorFusionNode::new();
 
     // No data yet — recv returns None
-    assert!(node.imu_input.recv().is_none(), "imu_input should be empty before any send");
-    assert!(node.gps_input.recv().is_none(), "gps_input should be empty before any send");
+    assert!(
+        node.imu_input.recv().is_none(),
+        "imu_input should be empty before any send"
+    );
+    assert!(
+        node.gps_input.recv().is_none(),
+        "gps_input should be empty before any send"
+    );
 
     // Tick with no data should not panic and should not publish
     node.tick();
@@ -106,7 +112,11 @@ fn test_node_pub_sub_topics_functional() {
 
     // Verify fused_output received the value published by tick
     let fused = node.fused_output.recv();
-    assert_eq!(fused, Some(42.0), "fused_output should contain the value forwarded from imu_input");
+    assert_eq!(
+        fused,
+        Some(42.0),
+        "fused_output should contain the value forwarded from imu_input"
+    );
 }
 
 // ============================================================================
@@ -290,11 +300,7 @@ fn test_node_rate_via_builder() {
 fn test_node_without_rate() {
     // A node added without .rate() runs in best-effort mode
     let mut scheduler = Scheduler::new();
-    scheduler
-        .add(MinimalNode::new())
-        .order(0)
-        .build()
-        .unwrap();
+    scheduler.add(MinimalNode::new()).order(0).build().unwrap();
 
     // Best-effort node executes successfully via tick_once
     scheduler.tick_once().unwrap();

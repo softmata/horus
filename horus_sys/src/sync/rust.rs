@@ -29,7 +29,10 @@ pub fn ensure_rust(edition: Option<&str>) -> anyhow::Result<DepStatus> {
     }
 
     // Don't auto-install Rust — too invasive. Report what to do.
-    log::warn!("Rust not found. Install via: {}", status.install_cmd.as_deref().unwrap_or("rustup"));
+    log::warn!(
+        "Rust not found. Install via: {}",
+        status.install_cmd.as_deref().unwrap_or("rustup")
+    );
     Ok(status)
 }
 

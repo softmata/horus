@@ -17,7 +17,13 @@ use std::ffi::c_void;
 // Multi-dtype roundtrips
 // ============================================================================
 
-fn roundtrip_dtype(data: &[u8], shape: &[i64], strides: &[i64], dtype: TensorDtype, elem_size: usize) {
+fn roundtrip_dtype(
+    data: &[u8],
+    shape: &[i64],
+    strides: &[i64],
+    dtype: TensorDtype,
+    elem_size: usize,
+) {
     let managed = to_dlpack(
         data.as_ptr() as *mut c_void,
         shape,
@@ -36,7 +42,10 @@ fn roundtrip_f32() {
     let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
     roundtrip_dtype(
         unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 16) },
-        &[4], &[1], TensorDtype::F32, 4,
+        &[4],
+        &[1],
+        TensorDtype::F32,
+        4,
     );
 }
 
@@ -45,7 +54,10 @@ fn roundtrip_f64() {
     let data: Vec<f64> = vec![1.0, 2.0, 3.0];
     roundtrip_dtype(
         unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 24) },
-        &[3], &[1], TensorDtype::F64, 8,
+        &[3],
+        &[1],
+        TensorDtype::F64,
+        8,
     );
 }
 
@@ -54,7 +66,10 @@ fn roundtrip_i32() {
     let data: Vec<i32> = vec![10, 20, 30, 40, 50, 60];
     roundtrip_dtype(
         unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 24) },
-        &[2, 3], &[3, 1], TensorDtype::I32, 4,
+        &[2, 3],
+        &[3, 1],
+        TensorDtype::I32,
+        4,
     );
 }
 
@@ -69,7 +84,10 @@ fn roundtrip_i8() {
     let data: Vec<i8> = vec![-128, 0, 127, 1];
     roundtrip_dtype(
         unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 4) },
-        &[4], &[1], TensorDtype::I8, 1,
+        &[4],
+        &[1],
+        TensorDtype::I8,
+        1,
     );
 }
 
@@ -78,7 +96,10 @@ fn roundtrip_i64() {
     let data: Vec<i64> = vec![i64::MIN, 0, i64::MAX];
     roundtrip_dtype(
         unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, 24) },
-        &[3], &[1], TensorDtype::I64, 8,
+        &[3],
+        &[1],
+        TensorDtype::I64,
+        8,
     );
 }
 
@@ -140,8 +161,8 @@ fn roundtrip_scalar_tensor() {
     let data: Vec<f32> = vec![42.0];
     let managed = to_dlpack(
         data.as_ptr() as *mut c_void,
-        &[],     // 0-dim
-        &[],     // no strides
+        &[], // 0-dim
+        &[], // no strides
         TensorDtype::F32,
         Device::cpu(),
     );
@@ -316,7 +337,10 @@ fn from_dlpack_unsupported_device_returns_error() {
     let managed = DLManagedTensor {
         dl_tensor: DLTensor {
             data: data.as_ptr() as *mut c_void,
-            device: DLDevice { device_type: 999, device_id: 0 }, // unknown device
+            device: DLDevice {
+                device_type: 999,
+                device_id: 0,
+            }, // unknown device
             ndim: 1,
             dtype: DLDataType::F32,
             shape: &mut shape,
@@ -329,7 +353,11 @@ fn from_dlpack_unsupported_device_returns_error() {
     let result = unsafe { from_dlpack(&managed) };
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("device") || err_msg.contains("Unsupported"), "Error: {}", err_msg);
+    assert!(
+        err_msg.contains("device") || err_msg.contains("Unsupported"),
+        "Error: {}",
+        err_msg
+    );
 }
 
 #[test]

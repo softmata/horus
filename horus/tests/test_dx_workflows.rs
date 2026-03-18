@@ -210,7 +210,11 @@ fn node_builder_uses_build() {
 fn prelude_exports_rt_types() {
     // Verify Miss enum variants are accessible and default is Warn
     let policy = Miss::Warn;
-    assert_eq!(policy, Miss::default(), "Miss::Warn should be the default variant");
+    assert_eq!(
+        policy,
+        Miss::default(),
+        "Miss::Warn should be the default variant"
+    );
     assert_ne!(policy, Miss::Skip);
     assert_ne!(policy, Miss::SafeMode);
     assert_ne!(policy, Miss::Stop);

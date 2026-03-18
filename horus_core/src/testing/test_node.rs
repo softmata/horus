@@ -30,12 +30,12 @@
 //!     .build();
 //! ```
 
+use crate::core::DurationExt;
 use crate::core::Node;
 use crate::error::HorusResult;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::core::DurationExt;
 
 /// Behavior for the `init()` lifecycle method.
 #[derive(Debug, Clone)]

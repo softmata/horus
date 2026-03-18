@@ -238,8 +238,7 @@ mod tests {
 
     #[test]
     fn frame_id_roundtrip() {
-        let frame = AudioFrame::mono(16000, &[0.0])
-            .with_frame_id("mic_left");
+        let frame = AudioFrame::mono(16000, &[0.0]).with_frame_id("mic_left");
         assert_eq!(frame.frame_id_str(), "mic_left");
     }
 

@@ -13,7 +13,10 @@ use std::time::Duration;
 #[test]
 fn test_current_process_is_alive() {
     let handle = ProcessHandle::from_pid(std::process::id());
-    assert!(handle.is_alive(), "current process must be alive on all platforms");
+    assert!(
+        handle.is_alive(),
+        "current process must be alive on all platforms"
+    );
 }
 
 #[test]

@@ -43,8 +43,7 @@ async fn handle_websocket(socket: WebSocket) {
     ));
 
     // Track the log buffer write index so we only send new entries each tick.
-    let mut last_log_idx =
-        horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
+    let mut last_log_idx = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
 
     loop {
         interval.tick().await;
@@ -99,9 +98,7 @@ async fn handle_websocket(socket: WebSocket) {
                 let (nodes, edges) = crate::graph::discover_graph_data();
                 (nodes, edges)
             }),
-            tokio::task::spawn_blocking(move || {
-                collect_new_logs(current_log_idx)
-            })
+            tokio::task::spawn_blocking(move || { collect_new_logs(current_log_idx) })
         );
 
         // Unwrap results

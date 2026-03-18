@@ -55,10 +55,10 @@ pub fn emit_diagnostics(diagnostics: &[Diagnostic]) {
 // Re-export from horus_sys::platform for backward compatibility.
 // All platform detection, package suggestions, and directory management
 // live in horus_sys. These re-exports preserve the existing API surface.
-pub use horus_sys::platform::Distro;
 pub use horus_sys::platform::detect_distro;
-pub use horus_sys::platform::suggest_install;
 pub use horus_sys::platform::suggest_dev_install;
+pub use horus_sys::platform::suggest_install;
+pub use horus_sys::platform::Distro;
 
 /// Suggest a build-essential / base-devel install command.
 fn suggest_build_essential() -> String {
@@ -133,8 +133,14 @@ pub fn error_code_info(code: &str) -> Option<(&'static str, &'static str)> {
         "H010" => Some(("pip-not-found", "Python package not found on PyPI")),
         "H011" => Some(("pip-version-conflict", "Python dependency version conflict")),
         "H012" => Some(("pip-build-wheel", "Failed to build Python package wheel")),
-        "H013" => Some(("pip-externally-managed", "System Python is externally managed")),
-        "H014" => Some(("pip-permission-denied", "Permission denied during pip install")),
+        "H013" => Some((
+            "pip-externally-managed",
+            "System Python is externally managed",
+        )),
+        "H014" => Some((
+            "pip-permission-denied",
+            "Permission denied during pip install",
+        )),
         // ── CMake errors ────────────────────────────────
         "H020" => Some(("cmake-missing-package", "CMake package not found")),
         "H021" => Some(("cmake-find-failed", "CMake could not find dependency")),
@@ -187,8 +193,8 @@ impl Diagnostic {
         hint: impl Into<String>,
     ) -> Self {
         let code = code.into();
-        let docs_url = error_code_info(&code)
-            .map(|(slug, _)| format!("https://horus.dev/errors/{}", slug));
+        let docs_url =
+            error_code_info(&code).map(|(slug, _)| format!("https://horus.dev/errors/{}", slug));
         Self {
             tool: tool.into(),
             code,
@@ -246,9 +252,10 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
     }
 
     // Version not found
-    if let Some(crate_name) =
-        extract_pattern(stderr, r"failed to select a version for the requirement `([^`]+)`")
-    {
+    if let Some(crate_name) = extract_pattern(
+        stderr,
+        r"failed to select a version for the requirement `([^`]+)`",
+    ) {
         diagnostics.push(
             Diagnostic::new(
                 "cargo",
@@ -320,7 +327,11 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
 
     // OpenSSL missing (very common)
     if stderr.contains("openssl") && stderr.contains("Could not find directory") {
-        let fix_cmd = format!("{} && {}", suggest_dev_install("ssl"), suggest_install("pkg-config"));
+        let fix_cmd = format!(
+            "{} && {}",
+            suggest_dev_install("ssl"),
+            suggest_install("pkg-config")
+        );
         diagnostics.push(
             Diagnostic::new(
                 "cargo",
@@ -375,10 +386,9 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
     }
 
     // E0599: no method found
-    if let Some(method) = extract_pattern(
-        stderr,
-        r"error\[E0599\]: no method named `([^`]+)` found",
-    ) {
+    if let Some(method) =
+        extract_pattern(stderr, r"error\[E0599\]: no method named `([^`]+)` found")
+    {
         diagnostics.push(Diagnostic::new(
             "cargo",
             "H031",
@@ -427,7 +437,8 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
     }
 
     // Feature conflict
-    if stderr.contains("feature") && stderr.contains("required by") && stderr.contains("built with") {
+    if stderr.contains("feature") && stderr.contains("required by") && stderr.contains("built with")
+    {
         diagnostics.push(Diagnostic::new(
             "cargo",
             "H034",
@@ -440,7 +451,8 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
     }
 
     // Edition mismatch
-    if stderr.contains("edition") && (stderr.contains("is required") || stderr.contains("requires")) {
+    if stderr.contains("edition") && (stderr.contains("is required") || stderr.contains("requires"))
+    {
         diagnostics.push(Diagnostic::new(
             "cargo",
             "H035",
@@ -453,7 +465,9 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
     }
 
     // Duplicate dependency
-    if stderr.contains("two packages named") || (stderr.contains("multiple") && stderr.contains("found in this workspace")) {
+    if stderr.contains("two packages named")
+        || (stderr.contains("multiple") && stderr.contains("found in this workspace"))
+    {
         diagnostics.push(Diagnostic::new(
             "cargo",
             "H036",
@@ -494,9 +508,7 @@ pub fn pip_error_hint(stderr: &str) -> Vec<Diagnostic> {
 
     // Package not found
     if stderr.contains("No matching distribution found for") {
-        if let Some(pkg) =
-            extract_pattern(stderr, r"No matching distribution found for ([^\s]+)")
-        {
+        if let Some(pkg) = extract_pattern(stderr, r"No matching distribution found for ([^\s]+)") {
             diagnostics.push(
                 Diagnostic::new(
                     "pip",
@@ -541,11 +553,20 @@ pub fn pip_error_hint(stderr: &str) -> Vec<Diagnostic> {
                     format!(
                         "Failed to build '{}'. This package likely needs C/C++ build tools:\n  {}",
                         pkg.cyan(),
-                        format!("{} && {}", suggest_build_essential(), suggest_install("python3-dev")).green()
+                        format!(
+                            "{} && {}",
+                            suggest_build_essential(),
+                            suggest_install("python3-dev")
+                        )
+                        .green()
                     ),
                 )
                 .with_fix(Fix::Command {
-                    command: format!("{} && {}", suggest_build_essential(), suggest_install("python3-dev")),
+                    command: format!(
+                        "{} && {}",
+                        suggest_build_essential(),
+                        suggest_install("python3-dev")
+                    ),
                 }),
             );
         }
@@ -635,7 +656,10 @@ pub fn cmake_error_hint(stderr: &str) -> Vec<Diagnostic> {
                 "cmake",
                 "H022",
                 "No C++ compiler found",
-                format!("No C++ compiler found. Install with:\n  {}", fix_cmd.green()),
+                format!(
+                    "No C++ compiler found. Install with:\n  {}",
+                    fix_cmd.green()
+                ),
             )
             .with_fix(Fix::Command { command: fix_cmd }),
         );
@@ -663,7 +687,10 @@ pub fn cmake_error_hint(stderr: &str) -> Vec<Diagnostic> {
                 "cmake",
                 "H024",
                 "cmake is not installed",
-                format!("cmake is not installed. Install with:\n  {}", fix_cmd.green()),
+                format!(
+                    "cmake is not installed. Install with:\n  {}",
+                    fix_cmd.green()
+                ),
             )
             .with_fix(Fix::Command { command: fix_cmd }),
         );
@@ -671,9 +698,7 @@ pub fn cmake_error_hint(stderr: &str) -> Vec<Diagnostic> {
 
     // CMakeLists.txt syntax error or missing include
     if stderr.contains("CMake Error at") {
-        if let Some(detail) =
-            extract_pattern(stderr, r"CMake Error at [^:]+:\d+ \(([^)]+)\)")
-        {
+        if let Some(detail) = extract_pattern(stderr, r"CMake Error at [^:]+:\d+ \(([^)]+)\)") {
             diagnostics.push(Diagnostic::new(
                 "cmake",
                 "H025",
@@ -696,8 +721,7 @@ pub fn python_error_hint(stderr: &str) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // ModuleNotFoundError
-    if let Some(module) =
-        extract_pattern(stderr, r"ModuleNotFoundError: No module named '([^']+)'")
+    if let Some(module) = extract_pattern(stderr, r"ModuleNotFoundError: No module named '([^']+)'")
     {
         let base_module = module.split('.').next().unwrap_or(&module).to_string();
         let mut diag = Diagnostic::new(
@@ -718,9 +742,7 @@ pub fn python_error_hint(stderr: &str) -> Vec<Diagnostic> {
     }
 
     // ImportError
-    if let Some(name) =
-        extract_pattern(stderr, r"ImportError: cannot import name '([^']+)'")
-    {
+    if let Some(name) = extract_pattern(stderr, r"ImportError: cannot import name '([^']+)'") {
         diagnostics.push(Diagnostic::new(
             "python",
             "H041",
@@ -869,21 +891,82 @@ pub fn exit_code_hint(tool: &str, code: i32) -> Vec<Diagnostic> {
 
 /// Common Rust crates for "did you mean?" suggestions.
 const COMMON_CRATES: &[&str] = &[
-    "tokio", "serde", "serde_json", "reqwest", "clap", "anyhow", "thiserror",
-    "tracing", "tracing-subscriber", "hyper", "axum", "actix-web", "diesel",
-    "sqlx", "rand", "chrono", "regex", "log", "env_logger", "futures",
-    "async-trait", "bytes", "nalgebra", "rapier3d", "bevy", "wgpu", "winit",
-    "image", "horus", "horus_core", "horus_library", "rclrs", "prost", "tonic",
-    "toml", "yaml-rust", "csv", "rayon", "crossbeam", "dashmap", "parking_lot",
+    "tokio",
+    "serde",
+    "serde_json",
+    "reqwest",
+    "clap",
+    "anyhow",
+    "thiserror",
+    "tracing",
+    "tracing-subscriber",
+    "hyper",
+    "axum",
+    "actix-web",
+    "diesel",
+    "sqlx",
+    "rand",
+    "chrono",
+    "regex",
+    "log",
+    "env_logger",
+    "futures",
+    "async-trait",
+    "bytes",
+    "nalgebra",
+    "rapier3d",
+    "bevy",
+    "wgpu",
+    "winit",
+    "image",
+    "horus",
+    "horus_core",
+    "horus_library",
+    "rclrs",
+    "prost",
+    "tonic",
+    "toml",
+    "yaml-rust",
+    "csv",
+    "rayon",
+    "crossbeam",
+    "dashmap",
+    "parking_lot",
 ];
 
 /// Common Python packages for "did you mean?" suggestions.
 const COMMON_PYTHON_PACKAGES: &[&str] = &[
-    "numpy", "pandas", "scipy", "matplotlib", "opencv-python", "torch",
-    "tensorflow", "scikit-learn", "pillow", "requests", "flask", "fastapi",
-    "horus", "horus-py", "rclpy", "pyyaml", "toml", "pytest", "black",
-    "ruff", "mypy", "uvicorn", "pydantic", "httpx", "aiohttp", "boto3",
-    "django", "celery", "redis", "psycopg2", "sqlalchemy",
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "opencv-python",
+    "torch",
+    "tensorflow",
+    "scikit-learn",
+    "pillow",
+    "requests",
+    "flask",
+    "fastapi",
+    "horus",
+    "horus-py",
+    "rclpy",
+    "pyyaml",
+    "toml",
+    "pytest",
+    "black",
+    "ruff",
+    "mypy",
+    "uvicorn",
+    "pydantic",
+    "httpx",
+    "aiohttp",
+    "boto3",
+    "django",
+    "celery",
+    "redis",
+    "psycopg2",
+    "sqlalchemy",
 ];
 
 /// Compute Levenshtein edit distance between two strings.
@@ -987,10 +1070,7 @@ pub fn preflight_check(language: &str) -> Vec<Diagnostic> {
                         "preflight",
                         "H061",
                         "Python interpreter not found",
-                        format!(
-                            "Python 3 not found. Install with:\n  {}",
-                            fix_cmd.as_str()
-                        ),
+                        format!("Python 3 not found. Install with:\n  {}", fix_cmd.as_str()),
                     )
                     .with_fix(Fix::Command { command: fix_cmd }),
                 );
@@ -1152,10 +1232,9 @@ mod tests {
 
     #[test]
     fn diagnostic_with_fix() {
-        let d = Diagnostic::new("cargo", "H001", "msg", "hint")
-            .with_fix(Fix::Command {
-                command: "horus add tokio".into(),
-            });
+        let d = Diagnostic::new("cargo", "H001", "msg", "hint").with_fix(Fix::Command {
+            command: "horus add tokio".into(),
+        });
         assert!(d.fix.is_some());
         match d.fix.as_ref().unwrap() {
             Fix::Command { command } => assert_eq!(command, "horus add tokio"),
@@ -1171,10 +1250,11 @@ mod tests {
 
     #[test]
     fn diagnostic_to_json_has_all_fields() {
-        let d = Diagnostic::new("cargo", "H001", "Crate not found", "Try horus add")
-            .with_fix(Fix::Command {
+        let d = Diagnostic::new("cargo", "H001", "Crate not found", "Try horus add").with_fix(
+            Fix::Command {
                 command: "horus add tokio".into(),
-            });
+            },
+        );
         let json = d.to_json();
         assert_eq!(json["tool"], "cargo");
         assert_eq!(json["code"], "H001");
@@ -1210,13 +1290,10 @@ mod tests {
     #[test]
     fn error_code_catalog_covers_all_defined_codes() {
         let codes = [
-            "H001", "H002", "H003", "H004", "H005", "H006", "H007",
-            "H010", "H011", "H012", "H013", "H014",
-            "H020", "H021", "H022", "H023", "H024", "H025",
-            "H030", "H031", "H032", "H033", "H034", "H035", "H036", "H037",
-            "H040", "H041", "H042", "H043", "H044", "H045", "H046",
-            "H050", "H051", "H052", "H053", "H054", "H055",
-            "H060", "H061", "H062", "H063", "H064",
+            "H001", "H002", "H003", "H004", "H005", "H006", "H007", "H010", "H011", "H012", "H013",
+            "H014", "H020", "H021", "H022", "H023", "H024", "H025", "H030", "H031", "H032", "H033",
+            "H034", "H035", "H036", "H037", "H040", "H041", "H042", "H043", "H044", "H045", "H046",
+            "H050", "H051", "H052", "H053", "H054", "H055", "H060", "H061", "H062", "H063", "H064",
         ];
         for code in &codes {
             assert!(
@@ -1230,13 +1307,10 @@ mod tests {
     #[test]
     fn error_code_no_duplicates() {
         let codes = [
-            "H001", "H002", "H003", "H004", "H005", "H006", "H007",
-            "H010", "H011", "H012", "H013", "H014",
-            "H020", "H021", "H022", "H023", "H024", "H025",
-            "H030", "H031", "H032", "H033", "H034", "H035", "H036", "H037",
-            "H040", "H041", "H042", "H043", "H044", "H045", "H046",
-            "H050", "H051", "H052", "H053", "H054", "H055",
-            "H060", "H061", "H062", "H063", "H064",
+            "H001", "H002", "H003", "H004", "H005", "H006", "H007", "H010", "H011", "H012", "H013",
+            "H014", "H020", "H021", "H022", "H023", "H024", "H025", "H030", "H031", "H032", "H033",
+            "H034", "H035", "H036", "H037", "H040", "H041", "H042", "H043", "H044", "H045", "H046",
+            "H050", "H051", "H052", "H053", "H054", "H055", "H060", "H061", "H062", "H063", "H064",
         ];
         let mut slugs: Vec<&str> = codes
             .iter()
@@ -1245,7 +1319,11 @@ mod tests {
         let original_len = slugs.len();
         slugs.sort();
         slugs.dedup();
-        assert_eq!(slugs.len(), original_len, "duplicate slugs found in error code catalog");
+        assert_eq!(
+            slugs.len(),
+            original_len,
+            "duplicate slugs found in error code catalog"
+        );
     }
 
     #[test]
@@ -1269,7 +1347,15 @@ mod tests {
         // Should return some variant, not panic
         assert!(matches!(
             d,
-            Distro::Ubuntu | Distro::Debian | Distro::Fedora | Distro::Arch | Distro::NixOS | Distro::Alpine | Distro::MacOS | Distro::Windows | Distro::Unknown
+            Distro::Ubuntu
+                | Distro::Debian
+                | Distro::Fedora
+                | Distro::Arch
+                | Distro::NixOS
+                | Distro::Alpine
+                | Distro::MacOS
+                | Distro::Windows
+                | Distro::Unknown
         ));
     }
 
@@ -1313,8 +1399,9 @@ mod tests {
     #[test]
     fn emit_diagnostic_does_not_panic_json_mode() {
         set_json_diagnostics(true);
-        let d = Diagnostic::new("cargo", "H001", "test", "test hint")
-            .with_fix(Fix::Command { command: "horus add foo".into() });
+        let d = Diagnostic::new("cargo", "H001", "test", "test hint").with_fix(Fix::Command {
+            command: "horus add foo".into(),
+        });
         emit_diagnostic(&d); // just verify no panic
         set_json_diagnostics(false); // reset
     }
@@ -1333,8 +1420,7 @@ mod tests {
 
     #[test]
     fn cargo_version_mismatch() {
-        let stderr =
-            "error: failed to select a version for the requirement `tokio = \"^99.0\"`";
+        let stderr = "error: failed to select a version for the requirement `tokio = \"^99.0\"`";
         let diags = cargo_error_hint(stderr);
         assert!(!diags.is_empty());
         assert_eq!(diags[0].code, "H002");
@@ -1387,7 +1473,10 @@ mod tests {
         let stderr = "error[E0433]: failed to resolve: use of undeclared crate or module `tokio`";
         let diags = cargo_error_hint(stderr);
         assert!(!diags.is_empty());
-        assert_eq!(diags.iter().find(|d| d.code == "H030").unwrap().code, "H030");
+        assert_eq!(
+            diags.iter().find(|d| d.code == "H030").unwrap().code,
+            "H030"
+        );
         assert!(diags.iter().any(|d| d.message.contains("tokio")));
     }
 
@@ -1484,8 +1573,7 @@ mod tests {
 
     #[test]
     fn pip_permission_denied() {
-        let stderr =
-            "ERROR: Could not install packages due to an OSError: Permission denied (pip)";
+        let stderr = "ERROR: Could not install packages due to an OSError: Permission denied (pip)";
         let diags = pip_error_hint(stderr);
         assert!(!diags.is_empty());
         assert_eq!(diags[0].code, "H014");
@@ -1561,7 +1649,9 @@ mod tests {
     fn python_keyboard_interrupt() {
         let stderr = "KeyboardInterrupt";
         let diags = python_error_hint(stderr);
-        assert!(diags.iter().any(|d| d.code == "H046" && d.severity == Severity::Info));
+        assert!(diags
+            .iter()
+            .any(|d| d.code == "H046" && d.severity == Severity::Info));
     }
 
     #[test]
@@ -1623,7 +1713,10 @@ mod tests {
 
     #[test]
     fn fuzzy_match_finds_numpy() {
-        assert_eq!(fuzzy_match("nump", COMMON_PYTHON_PACKAGES, 2), Some("numpy"));
+        assert_eq!(
+            fuzzy_match("nump", COMMON_PYTHON_PACKAGES, 2),
+            Some("numpy")
+        );
     }
 
     #[test]
@@ -1750,7 +1843,8 @@ mod tests {
 
     #[test]
     fn cmake_config_error() {
-        let stderr = "CMake Error at CMakeLists.txt:5 (include):\n  include could not find requested file";
+        let stderr =
+            "CMake Error at CMakeLists.txt:5 (include):\n  include could not find requested file";
         let diags = cmake_error_hint(stderr);
         assert!(!diags.is_empty());
         assert_eq!(diags[0].code, "H025");

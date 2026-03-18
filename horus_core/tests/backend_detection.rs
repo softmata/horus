@@ -103,16 +103,34 @@ fn test_same_thread_pod_read_latest() {
     let name = unique("st_latest");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
 
-    topic.send(PodPoint { x: 1.0, y: 0.0, z: 0.0, w: 0.0 });
-    topic.send(PodPoint { x: 2.0, y: 0.0, z: 0.0, w: 0.0 });
-    topic.send(PodPoint { x: 3.0, y: 0.0, z: 0.0, w: 0.0 });
+    topic.send(PodPoint {
+        x: 1.0,
+        y: 0.0,
+        z: 0.0,
+        w: 0.0,
+    });
+    topic.send(PodPoint {
+        x: 2.0,
+        y: 0.0,
+        z: 0.0,
+        w: 0.0,
+    });
+    topic.send(PodPoint {
+        x: 3.0,
+        y: 0.0,
+        z: 0.0,
+        w: 0.0,
+    });
 
     // read_latest should return the most recent without consuming
     let latest = topic.read_latest();
     assert!(latest.is_some(), "read_latest should return Some");
     // After read_latest, recv should still return messages (read_latest doesn't consume)
     let first = topic.recv();
-    assert!(first.is_some(), "recv should still return messages after read_latest");
+    assert!(
+        first.is_some(),
+        "recv should still return messages after read_latest"
+    );
 }
 
 // ============================================================================
@@ -339,11 +357,7 @@ fn test_cross_thread_mpmc() {
     }
 
     let total = total_received.load(Ordering::SeqCst);
-    assert!(
-        total > 0,
-        "MPMC should deliver messages, got {}",
-        total
-    );
+    assert!(total > 0, "MPMC should deliver messages, got {}", total);
 }
 
 // ============================================================================
@@ -382,7 +396,12 @@ fn test_pod_struct_send_recv() {
     cleanup_stale_shm();
     let name = unique("pod_struct");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
-    let msg = PodPoint { x: 1.5, y: 2.5, z: 3.5, w: 4.5 };
+    let msg = PodPoint {
+        x: 1.5,
+        y: 2.5,
+        z: 3.5,
+        w: 4.5,
+    };
     topic.send(msg);
     assert_eq!(topic.recv(), Some(msg));
 }

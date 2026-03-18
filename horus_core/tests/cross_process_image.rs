@@ -11,9 +11,9 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use horus_core::communication::topic::Topic;
+use horus_core::core::DurationExt;
 use horus_core::memory::Image;
 use horus_core::types::ImageEncoding;
-use horus_core::core::DurationExt;
 
 /// Env var that marks a child process invocation.
 const CHILD_ENV: &str = "HORUS_IMAGE_IPC_CHILD";

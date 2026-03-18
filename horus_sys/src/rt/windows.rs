@@ -66,5 +66,8 @@ pub(super) fn lock_memory() -> anyhow::Result<()> {
 
 fn get_windows_version() -> String {
     // Read from registry or use GetVersionEx
-    format!("Windows (build {})", std::env::var("OS").unwrap_or_default())
+    format!(
+        "Windows (build {})",
+        std::env::var("OS").unwrap_or_default()
+    )
 }

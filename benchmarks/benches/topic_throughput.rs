@@ -7,9 +7,9 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use horus::prelude::*;
+use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use horus_core::core::DurationExt;
 
 /// Small payload for high-frequency messaging
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

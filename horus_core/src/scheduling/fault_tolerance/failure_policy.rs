@@ -348,13 +348,9 @@ impl FailureHandler {
     /// Get statistics for monitoring/status output.
     pub fn stats(&self) -> FailureHandlerStats {
         match &self.state {
-            FailureHandlerState::Fatal => FailureHandlerStats::new(
-                "Fatal".to_string(),
-                "armed".to_string(),
-                0,
-                0,
-                false,
-            ),
+            FailureHandlerState::Fatal => {
+                FailureHandlerStats::new("Fatal".to_string(), "armed".to_string(), 0, 0, false)
+            }
             FailureHandlerState::Restart {
                 restart_count,
                 max_restarts,
@@ -398,13 +394,9 @@ impl FailureHandler {
                     is_suppressed,
                 )
             }
-            FailureHandlerState::Ignore => FailureHandlerStats::new(
-                "Ignore".to_string(),
-                "active".to_string(),
-                0,
-                0,
-                false,
-            ),
+            FailureHandlerState::Ignore => {
+                FailureHandlerStats::new("Ignore".to_string(), "active".to_string(), 0, 0, false)
+            }
         }
     }
 
@@ -460,8 +452,7 @@ mod tests {
 
     #[test]
     fn test_restart_policy_with_backoff() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
         assert!(handler.should_allow());
 
         // First failure: restart with 10ms backoff
@@ -487,8 +478,7 @@ mod tests {
 
     #[test]
     fn test_skip_policy_skips_after_threshold() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::skip(3, 100_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::skip(3, 100_u64.ms()));
         assert!(handler.should_allow());
 
         // Record failures up to threshold
@@ -513,8 +503,7 @@ mod tests {
 
     #[test]
     fn test_restart_success_clears_backoff() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(5, 10_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 10_u64.ms()));
 
         // Fail once, enter backoff
         handler.record_failure();
@@ -543,8 +532,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
         handler.record_failure();
         handler.record_failure();
 
@@ -561,8 +549,7 @@ mod tests {
     /// hammering a disconnected device.
     #[test]
     fn restart_exponential_backoff_increases() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(5, 10_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 10_u64.ms()));
 
         // Failure 1: 10ms backoff (10 * 2^0)
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
@@ -602,8 +589,7 @@ mod tests {
     /// recovers, logging resumes.
     #[test]
     fn skip_policy_full_cycle() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::skip(2, 50_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::skip(2, 50_u64.ms()));
 
         // Normal operation
         assert!(handler.should_allow());
@@ -636,8 +622,7 @@ mod tests {
     /// on the 4th failure the scheduler stops to prevent damage.
     #[test]
     fn restart_exhaustion_escalates_to_fatal() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(3, 5_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 5_u64.ms()));
 
         for i in 0..3 {
             let action = handler.record_failure();
@@ -660,15 +645,13 @@ mod tests {
     #[test]
     fn stats_report_suppression_correctly() {
         // Restart handler in backoff is suppressed
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(5, 100_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 100_u64.ms()));
         handler.record_failure();
         let stats = handler.stats();
         assert!(stats.is_suppressed, "Should be suppressed during backoff");
 
         // Skip handler suppressed after threshold
-        let mut handler =
-            FailureHandler::new(FailurePolicy::skip(1, 5_u64.secs()));
+        let mut handler = FailureHandler::new(FailurePolicy::skip(1, 5_u64.secs()));
         handler.record_failure(); // exceeds threshold (max_failures=1)
         let stats = handler.stats();
         assert!(
@@ -702,8 +685,7 @@ mod tests {
     /// Fatal severity always stops, even with Restart policy.
     #[test]
     fn severity_fatal_overrides_restart_policy() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(5, 100_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 100_u64.ms()));
         assert_eq!(
             handler.record_failure_with_severity(Severity::Fatal),
             FailureAction::StopScheduler,
@@ -727,8 +709,7 @@ mod tests {
     /// Transient severity with Restart policy follows normal record_failure().
     #[test]
     fn severity_transient_follows_restart_policy() {
-        let mut handler =
-            FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
+        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 10_u64.ms()));
         assert_eq!(
             handler.record_failure_with_severity(Severity::Transient),
             FailureAction::RestartNode,

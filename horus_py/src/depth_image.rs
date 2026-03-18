@@ -53,11 +53,14 @@ impl PyDepthImage {
     #[pyo3(signature = (height, width, dtype="float32"))]
     fn new(height: u32, width: u32, dtype: &str) -> PyResult<Self> {
         let dt = parse_depth_dtype(dtype)?;
-        let depth = DepthImage::new(width, height, dt)
-            .map_err(|e| PyRuntimeError::new_err(format!(
+        let depth = DepthImage::new(width, height, dt).map_err(|e| {
+            PyRuntimeError::new_err(format!(
                 "Failed to create DepthImage: {}. Common causes: dimensions must be > 0, \
                  unsupported dtype (valid: float32, float64, uint16), \
-                 or insufficient shared memory (check: df -h /dev/shm)", e)))?;
+                 or insufficient shared memory (check: df -h /dev/shm)",
+                e
+            ))
+        })?;
         Ok(Self { inner: depth })
     }
 
@@ -76,10 +79,12 @@ impl PyDepthImage {
             )));
         }
 
-        let height = u32::try_from(shape_tuple[0])
-            .map_err(|_| PyValueError::new_err(format!("Height {} exceeds u32::MAX", shape_tuple[0])))?;
-        let width = u32::try_from(shape_tuple[1])
-            .map_err(|_| PyValueError::new_err(format!("Width {} exceeds u32::MAX", shape_tuple[1])))?;
+        let height = u32::try_from(shape_tuple[0]).map_err(|_| {
+            PyValueError::new_err(format!("Height {} exceeds u32::MAX", shape_tuple[0]))
+        })?;
+        let width = u32::try_from(shape_tuple[1]).map_err(|_| {
+            PyValueError::new_err(format!("Width {} exceeds u32::MAX", shape_tuple[1]))
+        })?;
         let np = py.import("numpy")?;
 
         // Handle float64 by converting to float32
@@ -92,11 +97,14 @@ impl PyDepthImage {
             (dt, contiguous)
         };
 
-        let depth = DepthImage::new(width, height, dt)
-            .map_err(|e| PyRuntimeError::new_err(format!(
+        let depth = DepthImage::new(width, height, dt).map_err(|e| {
+            PyRuntimeError::new_err(format!(
                 "Failed to create DepthImage: {}. Common causes: dimensions must be > 0, \
                  unsupported dtype (valid: float32, float64, uint16), \
-                 or insufficient shared memory (check: df -h /dev/shm)", e)))?;
+                 or insufficient shared memory (check: df -h /dev/shm)",
+                e
+            ))
+        })?;
 
         let contiguous = np.call_method1("ascontiguousarray", (&array_to_use,))?;
         let bytes_obj = contiguous.call_method0("tobytes")?;

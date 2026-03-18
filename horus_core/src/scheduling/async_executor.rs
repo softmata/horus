@@ -382,12 +382,7 @@ mod tests {
         let nodes = vec![make_async_node("async_1", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = AsyncExecutor::start(
-            nodes,
-            running.clone(),
-            5_u64.ms(),
-            test_monitors(),
-        );
+        let executor = AsyncExecutor::start(nodes, running.clone(), 5_u64.ms(), test_monitors());
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -411,12 +406,7 @@ mod tests {
         let running = Arc::new(AtomicBool::new(true));
 
         let start = Instant::now();
-        let executor = AsyncExecutor::start(
-            nodes,
-            running.clone(),
-            5_u64.ms(),
-            test_monitors(),
-        );
+        let executor = AsyncExecutor::start(nodes, running.clone(), 5_u64.ms(), test_monitors());
 
         std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -446,12 +436,8 @@ mod tests {
         node.rate_hz = Some(10.0); // 10 Hz
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = AsyncExecutor::start(
-            vec![node],
-            running.clone(),
-            5_u64.ms(),
-            test_monitors(),
-        );
+        let executor =
+            AsyncExecutor::start(vec![node], running.clone(), 5_u64.ms(), test_monitors());
 
         std::thread::sleep(250_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -472,12 +458,7 @@ mod tests {
         let nodes = vec![make_async_node("async_stop", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = AsyncExecutor::start(
-            nodes,
-            running.clone(),
-            5_u64.ms(),
-            test_monitors(),
-        );
+        let executor = AsyncExecutor::start(nodes, running.clone(), 5_u64.ms(), test_monitors());
 
         std::thread::sleep(20_u64.ms());
         running.store(false, Ordering::SeqCst);

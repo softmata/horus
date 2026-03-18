@@ -1537,10 +1537,7 @@ serde = { version = "1.0", features = ["derive"], source = "crates.io" }
         let reloaded: HorusManifest = toml::from_str(&serialized).unwrap();
         assert_eq!(reloaded.dependencies.len(), 2);
         assert!(reloaded.dependencies["serde"].is_crates_io());
-        assert_eq!(
-            reloaded.dependencies["serde"].features(),
-            &["derive"]
-        );
+        assert_eq!(reloaded.dependencies["serde"].features(), &["derive"]);
     }
 
     // ── Battle-testing: edge cases & robustness ──────────────────────
@@ -1715,7 +1712,9 @@ version = "0.1.0"
 
     #[test]
     fn battle_validate_rejects_name_with_special_chars() {
-        for name in &["my!robot", "my#robot", "my$robot", "my%robot", "my+robot", "my=robot"] {
+        for name in &[
+            "my!robot", "my#robot", "my$robot", "my%robot", "my+robot", "my=robot",
+        ] {
             let toml_str = format!(
                 r#"
 [package]
@@ -1907,8 +1906,7 @@ version = "0.1.0"
         fs::write(parent_dir.join(HORUS_TOML), toml_content).unwrap();
 
         // Search from nested child
-        let (manifest, found_dir) =
-            HorusManifest::find_and_load_from(child_dir).unwrap();
+        let (manifest, found_dir) = HorusManifest::find_and_load_from(child_dir).unwrap();
         assert_eq!(manifest.package.name, "found-in-parent");
         assert_eq!(found_dir, parent_dir);
     }
@@ -2096,7 +2094,10 @@ sys-dep = { source = "system" }
             },
             drivers: {
                 let mut d = BTreeMap::new();
-                d.insert("camera".to_string(), DriverValue::Backend("opencv".to_string()));
+                d.insert(
+                    "camera".to_string(),
+                    DriverValue::Backend("opencv".to_string()),
+                );
                 d.insert("gps".to_string(), DriverValue::Enabled(true));
                 d
             },
@@ -2468,7 +2469,10 @@ port = "/dev/ttyUSB0"
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
         assert_eq!(manifest.drivers.len(), 3);
         assert!(matches!(manifest.drivers["camera"], DriverValue::Backend(ref s) if s == "opencv"));
-        assert!(matches!(manifest.drivers["gps"], DriverValue::Enabled(true)));
+        assert!(matches!(
+            manifest.drivers["gps"],
+            DriverValue::Enabled(true)
+        ));
         assert!(matches!(manifest.drivers["arm"], DriverValue::Config(_)));
     }
 

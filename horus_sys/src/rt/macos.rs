@@ -35,15 +35,14 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
     // SAFETY: timebase is a valid POD struct
     unsafe { mach2::mach_time::mach_timebase_info(&mut timebase) };
 
-    let nanos_to_abs = |ns: u32| -> u32 {
-        (ns as u64 * timebase.denom as u64 / timebase.numer as u64) as u32
-    };
+    let nanos_to_abs =
+        |ns: u32| -> u32 { (ns as u64 * timebase.denom as u64 / timebase.numer as u64) as u32 };
 
     // Time constraint policy: period=10ms, computation=5ms, constraint=10ms
     // These values give the thread high-priority real-time scheduling
-    let period = nanos_to_abs(10_000_000);      // 10ms period
-    let computation = nanos_to_abs(5_000_000);  // 5ms max computation per period
-    let constraint = nanos_to_abs(10_000_000);  // 10ms hard deadline
+    let period = nanos_to_abs(10_000_000); // 10ms period
+    let computation = nanos_to_abs(5_000_000); // 5ms max computation per period
+    let constraint = nanos_to_abs(10_000_000); // 10ms hard deadline
 
     // SAFETY: mach_thread_self() returns a valid thread port;
     // thread_policy_set with THREAD_TIME_CONSTRAINT_POLICY is a safe Mach call
@@ -67,7 +66,8 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
 
     // thread_policy_set(thread, THREAD_TIME_CONSTRAINT_POLICY, &policy, count)
     const THREAD_TIME_CONSTRAINT_POLICY: u32 = 2;
-    let count = (std::mem::size_of::<ThreadTimeConstraintPolicy>() / std::mem::size_of::<i32>()) as u32;
+    let count =
+        (std::mem::size_of::<ThreadTimeConstraintPolicy>() / std::mem::size_of::<i32>()) as u32;
 
     // Note: Full THREAD_TIME_CONSTRAINT_POLICY implementation requires mach_thread_self()
     // + thread_policy_set() which mach2 may not wrap. For now, treat as best-effort.

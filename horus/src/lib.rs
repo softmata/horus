@@ -250,18 +250,16 @@ pub mod prelude {
 
     // === Transform Frame (coordinate transforms) ===
     pub use horus_library::transform_frame::{
-        timestamp_now, FrameBuilder, FrameInfo, TransformFrame, TransformFrameConfig,
-        TransformFrameStats, Transform, TransformQuery, TransformQueryFrom,
+        timestamp_now, FrameBuilder, FrameInfo, Transform, TransformFrame, TransformFrameConfig,
+        TransformFrameStats, TransformQuery, TransformQueryFrom,
     };
 
     // === Message types (all standard robotics messages) ===
     // Includes: CmdVel, Imu, Odometry, LaserScan, Image, GenericMessage, and 60+ more.
-    pub use horus_core::types::{
-        Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB,
-    };
     /// Internal tensor dtype — prefer `PointCloud::from_xyz()`, `DepthImage::meters()` etc.
     #[doc(hidden)]
     pub use horus_core::types::TensorDtype;
+    pub use horus_core::types::{Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB};
     pub use horus_library::messages::*;
 
     // === Actions ===

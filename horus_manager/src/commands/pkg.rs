@@ -830,8 +830,10 @@ pub fn run_install(
     } else {
         // Smart resolution: detect whether it's a crates.io, PyPI, or registry package
         use crate::source_resolver::PackageSourceResolver;
-        let ctx = crate::dispatch::detect_context(&std::env::current_dir()
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?);
+        let ctx = crate::dispatch::detect_context(
+            &std::env::current_dir()
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?,
+        );
         let resolver = PackageSourceResolver::new(&ctx.languages);
         let resolved = resolver.resolve(&package);
         resolved.source
@@ -957,9 +959,7 @@ pub fn run_install(
             let feats = features.unwrap_or_default();
             if feats.is_empty() {
                 // Simple form: rplidar = "1.2.0"
-                dep_value = DependencyValue::Simple(
-                    ver.clone().unwrap_or_else(|| "*".to_string()),
-                );
+                dep_value = DependencyValue::Simple(ver.clone().unwrap_or_else(|| "*".to_string()));
             } else {
                 dep_value = DependencyValue::Detailed(DetailedDependency {
                     version: ver.clone().or_else(|| Some("*".to_string())),
@@ -980,7 +980,11 @@ pub fn run_install(
     }
 
     // Insert into the appropriate section
-    let section_name = if dev { "dev-dependencies" } else { "dependencies" };
+    let section_name = if dev {
+        "dev-dependencies"
+    } else {
+        "dependencies"
+    };
     let deps_map = if dev {
         &mut manifest.dev_dependencies
     } else {
@@ -1114,11 +1118,7 @@ pub fn run_install(
 }
 
 /// Install a package globally (no horus.toml involved).
-fn run_install_global(
-    package: &str,
-    ver: Option<&str>,
-    target: Option<String>,
-) -> HorusResult<()> {
+fn run_install_global(package: &str, ver: Option<&str>, target: Option<String>) -> HorusResult<()> {
     let install_target = if let Some(target_name) = target {
         let registry = workspace::WorkspaceRegistry::load()
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -1144,9 +1144,7 @@ fn run_install_global(
         workspace::InstallTarget::Local(p) => Some(p.clone()),
         workspace::InstallTarget::Global => None,
     };
-    if let Some(pkg_dir) =
-        resolve_installed_package_dir(package, &installed_version, is_global)
-    {
+    if let Some(pkg_dir) = resolve_installed_package_dir(package, &installed_version, is_global) {
         match register_plugin_after_install(
             &pkg_dir,
             PluginSource::Registry,
@@ -1866,9 +1864,14 @@ pub fn run_yank(package: String, version: String, reason: Option<String>) -> Hor
         version.yellow()
     );
     let client = registry::RegistryClient::new();
-    client.yank(&package, &version, reason.as_deref())
+    client
+        .yank(&package, &version, reason.as_deref())
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-    println!("  {} v{} yanked — hidden from new installs", package.green(), version.green());
+    println!(
+        "  {} v{} yanked — hidden from new installs",
+        package.green(),
+        version.green()
+    );
     if let Some(r) = &reason {
         println!("  Reason: {}", r.dimmed());
     }
@@ -1883,9 +1886,14 @@ pub fn run_unyank(package: String, version: String) -> HorusResult<()> {
         version.yellow()
     );
     let client = registry::RegistryClient::new();
-    client.unyank(&package, &version)
+    client
+        .unyank(&package, &version)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-    println!("  {} v{} restored — available for install again", package.green(), version.green());
+    println!(
+        "  {} v{} restored — available for install again",
+        package.green(),
+        version.green()
+    );
     Ok(())
 }
 
@@ -1896,7 +1904,8 @@ pub fn run_deprecate(package: String, message: Option<String>) -> HorusResult<()
         package.yellow(),
     );
     let client = registry::RegistryClient::new();
-    client.deprecate(&package, message.as_deref())
+    client
+        .deprecate(&package, message.as_deref())
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     println!("  {} is now deprecated", package.green());
     if let Some(msg) = &message {
@@ -1907,7 +1916,8 @@ pub fn run_deprecate(package: String, message: Option<String>) -> HorusResult<()
 
 pub fn run_undeprecate(package: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
-    client.undeprecate(&package)
+    client
+        .undeprecate(&package)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     println!("  {} deprecation removed", package.green());
     Ok(())
@@ -1915,16 +1925,27 @@ pub fn run_undeprecate(package: String) -> HorusResult<()> {
 
 pub fn run_owner_list(package: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
-    let owners = client.list_owners(&package)
+    let owners = client
+        .list_owners(&package)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-    println!("{} Owners of {}:", cli_output::ICON_INFO.cyan(), package.yellow());
+    println!(
+        "{} Owners of {}:",
+        cli_output::ICON_INFO.cyan(),
+        package.yellow()
+    );
     if owners.is_empty() {
         println!("  (no owners found)");
     } else {
         for owner in &owners {
-            let username = owner.get("username").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let role = owner.get("role").and_then(|v| v.as_str()).unwrap_or("owner");
+            let username = owner
+                .get("username")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let role = owner
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("owner");
             println!("  {} ({})", username.green(), role.dimmed());
         }
     }
@@ -1933,7 +1954,8 @@ pub fn run_owner_list(package: String) -> HorusResult<()> {
 
 pub fn run_owner_add(package: String, user: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
-    client.add_owner(&package, &user)
+    client
+        .add_owner(&package, &user)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     println!("  {} added as owner of {}", user.green(), package.yellow());
     Ok(())
@@ -1941,31 +1963,49 @@ pub fn run_owner_add(package: String, user: String) -> HorusResult<()> {
 
 pub fn run_owner_remove(package: String, user: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
-    client.remove_owner(&package, &user)
+    client
+        .remove_owner(&package, &user)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-    println!("  {} removed from owners of {}", user.green(), package.yellow());
+    println!(
+        "  {} removed from owners of {}",
+        user.green(),
+        package.yellow()
+    );
     Ok(())
 }
 
 pub fn run_owner_transfer(package: String, target: String, org: bool) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
     if org {
-        client.transfer_to_org(&package, &target)
+        client
+            .transfer_to_org(&package, &target)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        println!("  {} transferred to org {}", package.green(), target.yellow());
+        println!(
+            "  {} transferred to org {}",
+            package.green(),
+            target.yellow()
+        );
     } else {
-        let result = client.transfer_to_user(&package, &target)
+        let result = client
+            .transfer_to_user(&package, &target)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        let msg = result.get("message").and_then(|v| v.as_str()).unwrap_or("Transfer request sent");
+        let msg = result
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Transfer request sent");
         println!("  {}", msg.green());
-        println!("  {} must accept the transfer before ownership changes", target.yellow());
+        println!(
+            "  {} must accept the transfer before ownership changes",
+            target.yellow()
+        );
     }
     Ok(())
 }
 
 pub fn run_owner_pending() -> HorusResult<()> {
     let client = registry::RegistryClient::new();
-    let transfers = client.pending_transfers()
+    let transfers = client
+        .pending_transfers()
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if transfers.is_empty() {
@@ -1973,11 +2013,20 @@ pub fn run_owner_pending() -> HorusResult<()> {
         return Ok(());
     }
 
-    println!("{} Pending ownership transfers:", cli_output::ICON_INFO.cyan());
+    println!(
+        "{} Pending ownership transfers:",
+        cli_output::ICON_INFO.cyan()
+    );
     for t in &transfers {
         let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-        let pkg = t.get("package_name").and_then(|v| v.as_str()).unwrap_or("?");
-        let from = t.get("from_username").and_then(|v| v.as_str()).unwrap_or("?");
+        let pkg = t
+            .get("package_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let from = t
+            .get("from_username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         println!("  {} — {} from {}", id.dimmed(), pkg.yellow(), from.green());
     }
     println!("\n  Accept: horus owner accept <id>");
@@ -1987,7 +2036,8 @@ pub fn run_owner_pending() -> HorusResult<()> {
 
 pub fn run_owner_accept(id: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
-    client.accept_transfer(&id)
+    client
+        .accept_transfer(&id)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     println!("  Transfer {} accepted — you are now the owner", id.green());
     Ok(())
@@ -1995,7 +2045,8 @@ pub fn run_owner_accept(id: String) -> HorusResult<()> {
 
 pub fn run_owner_reject(id: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
-    client.reject_transfer(&id)
+    client
+        .reject_transfer(&id)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     println!("  Transfer {} rejected", id.green());
     Ok(())
@@ -2042,8 +2093,10 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
         use crate::manifest::{DepSource, DependencyValue, DetailedDependency};
         use crate::source_resolver::{Confidence, PackageSourceResolver};
 
-        let ctx = crate::dispatch::detect_context(&std::env::current_dir()
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?);
+        let ctx = crate::dispatch::detect_context(
+            &std::env::current_dir()
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?,
+        );
         let resolver = PackageSourceResolver::new(&ctx.languages);
         let resolved = resolver.resolve_with_network(&name);
 
@@ -2144,9 +2197,21 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
                 .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
             let sections: Vec<&str> = [
-                if removed_from_deps { Some("[dependencies]") } else { None },
-                if removed_from_dev { Some("[dev-dependencies]") } else { None },
-                if removed_from_drivers { Some("[drivers]") } else { None },
+                if removed_from_deps {
+                    Some("[dependencies]")
+                } else {
+                    None
+                },
+                if removed_from_dev {
+                    Some("[dev-dependencies]")
+                } else {
+                    None
+                },
+                if removed_from_drivers {
+                    Some("[drivers]")
+                } else {
+                    None
+                },
             ]
             .into_iter()
             .flatten()
@@ -2303,7 +2368,10 @@ platforms = ["linux-x86_64", "linux-aarch64"]
         assert_eq!(meta.compatibility.horus_min, "0.5.0");
         assert_eq!(meta.compatibility.horus_max, "1.0.0");
         assert_eq!(meta.compatibility.platforms.len(), 2);
-        assert!(meta.compatibility.platforms.contains(&"linux-x86_64".to_string()));
+        assert!(meta
+            .compatibility
+            .platforms
+            .contains(&"linux-x86_64".to_string()));
     }
 
     #[test]
@@ -2966,11 +3034,7 @@ version = "1.5.0"
         fs::create_dir_all(&entry_path).unwrap();
 
         // Create metadata.json inside the package directory
-        fs::write(
-            entry_path.join("metadata.json"),
-            r#"{"version": "1.0.0"}"#,
-        )
-        .unwrap();
+        fs::write(entry_path.join("metadata.json"), r#"{"version": "1.0.0"}"#).unwrap();
 
         let printed = print_package_info(packages_dir, "reg-pkg", &entry_path);
         assert!(printed);
@@ -3049,8 +3113,7 @@ other-dep = "2.0.0"
         remove_from_horus_toml("rplidar");
 
         // Verify rplidar was removed
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("rplidar"));
         assert!(manifest.dependencies.contains_key("other-dep"));
 
@@ -3075,8 +3138,7 @@ test-helper = "1.0.0"
 
         remove_from_horus_toml("test-helper");
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dev_dependencies.contains_key("test-helper"));
 
         std::env::set_current_dir(original_dir).unwrap();
@@ -3101,8 +3163,7 @@ existing = "1.0.0"
         // Should not panic when removing a package that doesn't exist
         remove_from_horus_toml("nonexistent");
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("existing"));
 
         std::env::set_current_dir(original_dir).unwrap();
@@ -3147,9 +3208,7 @@ existing = "1.0.0"
                 checksum: None,
             },
         ];
-        lockfile
-            .save_to(std::path::Path::new(HORUS_LOCK))
-            .unwrap();
+        lockfile.save_to(std::path::Path::new(HORUS_LOCK)).unwrap();
 
         remove_from_horus_lock("remove-me");
 
@@ -3189,9 +3248,7 @@ existing = "1.0.0"
             source: "registry".to_string(),
             checksum: None,
         }];
-        lockfile
-            .save_to(std::path::Path::new(HORUS_LOCK))
-            .unwrap();
+        lockfile.save_to(std::path::Path::new(HORUS_LOCK)).unwrap();
 
         remove_from_horus_lock("nonexistent");
 
@@ -3493,8 +3550,7 @@ existing = "1.0.0"
         assert!(result.is_ok(), "run_install failed: {:?}", result.err());
 
         // Verify the dependency was added to horus.toml
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("local-dep"));
 
         std::env::set_current_dir(original_dir).unwrap();
@@ -3529,8 +3585,7 @@ existing = "1.0.0"
 
         assert!(result.is_ok(), "run_install failed: {:?}", result.err());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         // Git dep name derived from URL: "my-pkg" (strips .git suffix)
         assert!(
             manifest.dependencies.contains_key("my-pkg"),
@@ -3571,8 +3626,7 @@ existing = "1.0.0"
         );
         assert!(result.is_ok(), "run_install failed: {:?}", result.err());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
             manifest.dev_dependencies.contains_key("test-util"),
             "Expected 'test-util' in dev-deps"
@@ -3609,8 +3663,7 @@ existing = "1.0.0"
         );
         assert!(result.is_ok(), "run_install failed: {:?}", result.err());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("serde"));
 
         std::env::set_current_dir(original_dir).unwrap();
@@ -3664,19 +3717,10 @@ my-pkg = "1.0.0"
         .unwrap();
 
         // Re-install with path source replaces the existing entry
-        let result = run_install(
-            "./my-pkg".to_string(),
-            None,
-            false,
-            None,
-            None,
-            None,
-            false,
-        );
+        let result = run_install("./my-pkg".to_string(), None, false, None, None, None, false);
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("my-pkg"));
 
         std::env::set_current_dir(original_dir).unwrap();
@@ -3698,9 +3742,7 @@ my-pkg = "1.0.0"
         ];
 
         for (input, expected_is_path) in test_cases {
-            let is_path = input.contains('/')
-                || input.starts_with('.')
-                || input.starts_with('~');
+            let is_path = input.contains('/') || input.starts_with('.') || input.starts_with('~');
             assert_eq!(
                 is_path, expected_is_path,
                 "Path detection for '{}': expected {}, got {}",
@@ -3775,8 +3817,7 @@ version = "0.1.0""#,
 
     #[test]
     fn test_parse_plugin_toml_cli_extension_not_bool() {
-        let metadata: toml::Value =
-            toml::from_str(r#"cli_extension = "yes""#).unwrap();
+        let metadata: toml::Value = toml::from_str(r#"cli_extension = "yes""#).unwrap();
         let toml: toml::Table = toml::from_str(
             r#"[package]
 name = "test"
@@ -3791,8 +3832,7 @@ version = "0.1.0""#,
 
     #[test]
     fn test_parse_plugin_toml_missing_command_name() {
-        let metadata: toml::Value =
-            toml::from_str(r#"cli_extension = true"#).unwrap();
+        let metadata: toml::Value = toml::from_str(r#"cli_extension = true"#).unwrap();
         let toml: toml::Table = toml::from_str(
             r#"[package]
 name = "test"
@@ -4052,8 +4092,7 @@ name = "minimal"
         );
         // This will fail at physical installation (RegistryClient), but
         // the manifest should have been written.
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("rplidar"));
 
         std::env::set_current_dir(original_dir).unwrap();
@@ -4074,12 +4113,16 @@ name = "minimal"
         )
         .unwrap();
 
-        let result = run_add("my-sensor".to_string(), Some("1.2.0".to_string()), false, false);
+        let result = run_add(
+            "my-sensor".to_string(),
+            Some("1.2.0".to_string()),
+            false,
+            false,
+        );
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok(), "run_add should succeed: {:?}", result);
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("my-sensor"));
         assert_eq!(manifest.dependencies["my-sensor"].version(), Some("1.2.0"));
     }
@@ -4101,15 +4144,18 @@ name = "minimal"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("rplidar"));
         // Version auto-fetch queries PyPI/crates.io for latest version.
         // Falls back to "*" only when network is unavailable.
         let ver = manifest.dependencies["rplidar"].version();
         assert!(ver.is_some(), "version should be set");
         let v = ver.unwrap();
-        assert!(v == "*" || v.contains('.'), "expected semver or wildcard fallback, got: {}", v);
+        assert!(
+            v == "*" || v.contains('.'),
+            "expected semver or wildcard fallback, got: {}",
+            v
+        );
     }
 
     #[test]
@@ -4125,14 +4171,21 @@ name = "minimal"
         )
         .unwrap();
 
-        let result = run_add("camera".to_string(), Some("opencv".to_string()), true, false);
+        let result = run_add(
+            "camera".to_string(),
+            Some("opencv".to_string()),
+            true,
+            false,
+        );
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.drivers.contains_key("camera"));
-        assert!(!manifest.dependencies.contains_key("camera"), "driver should not appear in deps");
+        assert!(
+            !manifest.dependencies.contains_key("camera"),
+            "driver should not appear in deps"
+        );
     }
 
     #[test]
@@ -4153,8 +4206,7 @@ name = "minimal"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.drivers.contains_key("gps"));
     }
 
@@ -4171,12 +4223,16 @@ name = "minimal"
         )
         .unwrap();
 
-        let result = run_add("my-sensor".to_string(), Some("2.0.0".to_string()), false, false);
+        let result = run_add(
+            "my-sensor".to_string(),
+            Some("2.0.0".to_string()),
+            false,
+            false,
+        );
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["my-sensor"].version(), Some("2.0.0"));
     }
 
@@ -4212,10 +4268,15 @@ name = "minimal"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(!manifest.dependencies.contains_key("my-sensor"), "dep should be removed");
-        assert!(manifest.dependencies.contains_key("other-lib"), "other dep should remain");
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            !manifest.dependencies.contains_key("my-sensor"),
+            "dep should be removed"
+        );
+        assert!(
+            manifest.dependencies.contains_key("other-lib"),
+            "other dep should remain"
+        );
     }
 
     #[test]
@@ -4235,8 +4296,7 @@ name = "minimal"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dev_dependencies.contains_key("criterion"));
     }
 
@@ -4257,10 +4317,12 @@ name = "minimal"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.drivers.contains_key("camera"));
-        assert!(manifest.drivers.contains_key("lidar"), "lidar driver should remain");
+        assert!(
+            manifest.drivers.contains_key("lidar"),
+            "lidar driver should remain"
+        );
     }
 
     #[test]
@@ -4314,18 +4376,31 @@ name = "minimal"
 
         // Pre-generate .horus/Cargo.toml
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        let cargo_path = crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
+        let cargo_path =
+            crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
-        assert!(cargo_content.contains("serde"), "serde should be in Cargo.toml before removal");
-        assert!(cargo_content.contains("tokio"), "tokio should be in Cargo.toml before removal");
+        assert!(
+            cargo_content.contains("serde"),
+            "serde should be in Cargo.toml before removal"
+        );
+        assert!(
+            cargo_content.contains("tokio"),
+            "tokio should be in Cargo.toml before removal"
+        );
 
         // Remove serde — should regenerate .horus/Cargo.toml without serde
         run_remove_dep("serde".to_string()).unwrap();
         std::env::set_current_dir(&original_dir).unwrap();
 
         let cargo_after = fs::read_to_string(&cargo_path).unwrap();
-        assert!(!cargo_after.contains("serde"), "serde should be gone from Cargo.toml after removal");
-        assert!(cargo_after.contains("tokio"), "tokio should remain in Cargo.toml");
+        assert!(
+            !cargo_after.contains("serde"),
+            "serde should be gone from Cargo.toml after removal"
+        );
+        assert!(
+            cargo_after.contains("tokio"),
+            "tokio should remain in Cargo.toml"
+        );
     }
 
     #[test]
@@ -4348,18 +4423,31 @@ name = "minimal"
 
         // Pre-generate .horus/pyproject.toml
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        let pyproj_path = crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
+        let pyproj_path =
+            crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
         let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
-        assert!(pyproj_content.contains("numpy"), "numpy should be in pyproject.toml before removal");
-        assert!(pyproj_content.contains("requests"), "requests should be in pyproject.toml before removal");
+        assert!(
+            pyproj_content.contains("numpy"),
+            "numpy should be in pyproject.toml before removal"
+        );
+        assert!(
+            pyproj_content.contains("requests"),
+            "requests should be in pyproject.toml before removal"
+        );
 
         // Remove numpy — should regenerate .horus/pyproject.toml without numpy
         run_remove_dep("numpy".to_string()).unwrap();
         std::env::set_current_dir(&original_dir).unwrap();
 
         let pyproj_after = fs::read_to_string(&pyproj_path).unwrap();
-        assert!(!pyproj_after.contains("numpy"), "numpy should be gone from pyproject.toml after removal");
-        assert!(pyproj_after.contains("requests"), "requests should remain in pyproject.toml");
+        assert!(
+            !pyproj_after.contains("numpy"),
+            "numpy should be gone from pyproject.toml after removal"
+        );
+        assert!(
+            pyproj_after.contains("requests"),
+            "requests should remain in pyproject.toml"
+        );
     }
 
     // ── Battle-testing: full add → remove lifecycle via horus.toml ───────
@@ -4378,32 +4466,43 @@ name = "minimal"
         .unwrap();
 
         // Add a dependency
-        run_add("motor-ctrl".to_string(), Some("1.0.0".to_string()), false, false).unwrap();
+        run_add(
+            "motor-ctrl".to_string(),
+            Some("1.0.0".to_string()),
+            false,
+            false,
+        )
+        .unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("motor-ctrl"));
 
         // Add a driver
-        run_add("lidar".to_string(), Some("rplidar-a2".to_string()), true, false).unwrap();
+        run_add(
+            "lidar".to_string(),
+            Some("rplidar-a2".to_string()),
+            true,
+            false,
+        )
+        .unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.drivers.contains_key("lidar"));
 
         // Remove the dependency
         run_remove_dep("motor-ctrl".to_string()).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("motor-ctrl"));
-        assert!(manifest.drivers.contains_key("lidar"), "driver should survive dep removal");
+        assert!(
+            manifest.drivers.contains_key("lidar"),
+            "driver should survive dep removal"
+        );
 
         // Remove the driver
         run_remove_dep("lidar".to_string()).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.drivers.contains_key("lidar"));
 
         std::env::set_current_dir(&original_dir).unwrap();
@@ -4435,16 +4534,14 @@ name = "minimal"
             false,
         );
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("serde"));
         assert!(manifest.dependencies["serde"].is_crates_io());
 
         // Remove it
         run_remove_dep("serde".to_string()).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("serde"));
 
         std::env::set_current_dir(&original_dir).unwrap();
@@ -4528,10 +4625,19 @@ name = "minimal"
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
 
         // Rust dep should appear in Cargo.toml
-        assert!(cargo_content.contains("serde"), "Rust dep should be in generated Cargo.toml");
-        assert!(cargo_content.contains("derive"), "features should be preserved");
+        assert!(
+            cargo_content.contains("serde"),
+            "Rust dep should be in generated Cargo.toml"
+        );
+        assert!(
+            cargo_content.contains("derive"),
+            "features should be preserved"
+        );
         // PyPI dep should NOT appear in Cargo.toml
-        assert!(!cargo_content.contains("numpy"), "Python dep should not be in Cargo.toml");
+        assert!(
+            !cargo_content.contains("numpy"),
+            "Python dep should not be in Cargo.toml"
+        );
     }
 
     #[test]
@@ -4608,9 +4714,15 @@ name = "minimal"
         let content = fs::read_to_string(&pyproject_path).unwrap();
 
         // PyPI dep should appear
-        assert!(content.contains("numpy>=1.24"), "Python dep should be in pyproject.toml");
+        assert!(
+            content.contains("numpy>=1.24"),
+            "Python dep should be in pyproject.toml"
+        );
         // Rust dep should NOT appear
-        assert!(!content.contains("serde"), "Rust dep should not be in pyproject.toml");
+        assert!(
+            !content.contains("serde"),
+            "Rust dep should not be in pyproject.toml"
+        );
     }
 
     // ── Battle-testing: mixed deps in horus.toml ─────────────────────────
@@ -4678,8 +4790,14 @@ lidar = "rplidar-a2"
         fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
 
         let mut drivers = BTreeMap::new();
-        drivers.insert("camera".to_string(), DriverValue::Backend("opencv".to_string()));
-        drivers.insert("lidar".to_string(), DriverValue::Backend("rplidar-a2".to_string()));
+        drivers.insert(
+            "camera".to_string(),
+            DriverValue::Backend("opencv".to_string()),
+        );
+        drivers.insert(
+            "lidar".to_string(),
+            DriverValue::Backend("rplidar-a2".to_string()),
+        );
 
         let manifest = HorusManifest {
             package: PackageInfo {
@@ -4744,14 +4862,16 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok(), "system install failed: {:?}", result.err());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("libopencv-dev"));
         assert_eq!(
             manifest.dependencies["libopencv-dev"].effective_source(),
             crate::manifest::DepSource::System
         );
-        assert_eq!(manifest.dependencies["libopencv-dev"].version(), Some("4.5"));
+        assert_eq!(
+            manifest.dependencies["libopencv-dev"].version(),
+            Some("4.5")
+        );
     }
 
     #[test]
@@ -4779,8 +4899,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("curl"));
         assert_eq!(manifest.dependencies["curl"].version(), Some("*"));
     }
@@ -4810,10 +4929,13 @@ lidar = "rplidar-a2"
             true, // dev
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok(), "dev crates.io install failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "dev crates.io install failed: {:?}",
+            result.err()
+        );
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
             manifest.dev_dependencies.contains_key("criterion"),
             "criterion should be in dev-dependencies"
@@ -4850,8 +4972,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("pytest"));
         assert!(manifest.dev_dependencies["pytest"].is_pypi());
         assert_eq!(manifest.dev_dependencies["pytest"].version(), Some(">=7.0"));
@@ -4882,8 +5003,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("valgrind"));
         assert!(!manifest.dependencies.contains_key("valgrind"));
     }
@@ -4921,10 +5041,13 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok(), "path+features install failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "path+features install failed: {:?}",
+            result.err()
+        );
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("sensor-lib"));
         let feats = manifest.dependencies["sensor-lib"].features();
         assert_eq!(feats.len(), 2);
@@ -4958,8 +5081,7 @@ lidar = "rplidar-a2"
         // Registry install writes manifest first, then tries physical install which may fail
         // but manifest should be written
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("horus-nav"));
         let feats = manifest.dependencies["horus-nav"].features();
         assert_eq!(feats.len(), 2);
@@ -4991,8 +5113,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("torch"));
         assert!(manifest.dependencies["torch"].is_pypi());
         let feats = manifest.dependencies["torch"].features();
@@ -5024,8 +5145,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("tokio"));
         assert!(!manifest.dependencies.contains_key("tokio"));
         let feats = manifest.dev_dependencies["tokio"].features();
@@ -5061,8 +5181,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["serde"].version(), Some("^1.0"));
     }
 
@@ -5091,8 +5210,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["tokio"].version(), Some("~1.25"));
     }
 
@@ -5121,9 +5239,11 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert_eq!(manifest.dependencies["numpy"].version(), Some(">=1.24,<2.0"));
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert_eq!(
+            manifest.dependencies["numpy"].version(),
+            Some(">=1.24,<2.0")
+        );
     }
 
     #[test]
@@ -5151,8 +5271,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["rapier3d"].version(), Some("=0.22.0"));
     }
 
@@ -5241,8 +5360,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
 
         // Verify all deps are present in the manifest
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
 
         assert_eq!(manifest.dependencies.len(), 4, "should have 4 regular deps");
         assert!(manifest.dependencies.contains_key("serde"));
@@ -5281,9 +5399,11 @@ lidar = "rplidar-a2"
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(manifest.dependencies.is_empty(), "all deps should be removed");
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies.is_empty(),
+            "all deps should be removed"
+        );
         assert!(manifest.drivers.is_empty(), "all drivers should be removed");
         // Package info should survive
         assert_eq!(manifest.package.name, "strip-bot");
@@ -5317,8 +5437,7 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["serde"].version(), Some("1.0"));
 
         // Upgrade to v2
@@ -5335,8 +5454,7 @@ lidar = "rplidar-a2"
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["serde"].version(), Some("2.0"));
         assert_eq!(manifest.dependencies.len(), 1, "should not duplicate");
     }
@@ -5368,8 +5486,7 @@ lidar = "rplidar-a2"
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies["my-lib"].is_crates_io());
         assert_eq!(manifest.dependencies["my-lib"].version(), Some("2.0"));
     }
@@ -5394,10 +5511,15 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(!manifest.dependencies.contains_key("camera"), "removed from deps");
-        assert!(!manifest.drivers.contains_key("camera"), "removed from drivers");
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            !manifest.dependencies.contains_key("camera"),
+            "removed from deps"
+        );
+        assert!(
+            !manifest.drivers.contains_key("camera"),
+            "removed from drivers"
+        );
     }
 
     #[test]
@@ -5418,8 +5540,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("tokio"));
         assert!(!manifest.dev_dependencies.contains_key("tokio"));
     }
@@ -5451,8 +5572,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok(), "git install failed: {:?}", result.err());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("robot-lib"));
         assert_eq!(
             manifest.dependencies["robot-lib"].effective_source(),
@@ -5506,8 +5626,7 @@ lidar = "rplidar-a2"
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("sensor-fusion"));
         let feats = manifest.dependencies["sensor-fusion"].features();
         assert_eq!(feats.len(), 2);
@@ -5614,7 +5733,13 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         .unwrap();
 
         // Use run_add for one dep
-        run_add("motor-ctrl".to_string(), Some("1.0".to_string()), false, false).unwrap();
+        run_add(
+            "motor-ctrl".to_string(),
+            Some("1.0".to_string()),
+            false,
+            false,
+        )
+        .unwrap();
 
         // Use run_install for another
         run_install(
@@ -5633,8 +5758,7 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 2);
         assert!(manifest.dependencies.contains_key("motor-ctrl"));
         assert!(manifest.dependencies.contains_key("serde"));
@@ -5659,10 +5783,11 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         // Add dep via run_add — smart resolver detects serde as crates.io
         run_add("serde".to_string(), Some("1.0".to_string()), false, false).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(manifest.dependencies["serde"].is_crates_io(),
-            "smart resolver should detect serde as crates.io");
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies["serde"].is_crates_io(),
+            "smart resolver should detect serde as crates.io"
+        );
 
         // Overwrite with crates.io source via run_install
         run_install(
@@ -5678,11 +5803,12 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 1, "should not duplicate");
         assert!(manifest.dependencies["serde"].is_crates_io());
-        assert!(manifest.dependencies["serde"].features().contains(&"derive".to_string()));
+        assert!(manifest.dependencies["serde"]
+            .features()
+            .contains(&"derive".to_string()));
     }
 
     // ── Stress test: many deps ──────────────────────────────────────────
@@ -5713,13 +5839,16 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 20);
 
         for i in 0..20 {
             let name = format!("dep-{}", i);
-            assert!(manifest.dependencies.contains_key(&name), "missing {}", name);
+            assert!(
+                manifest.dependencies.contains_key(&name),
+                "missing {}",
+                name
+            );
             assert_eq!(
                 manifest.dependencies[&name].version(),
                 Some(format!("{}.0.0", i + 1).as_str())
@@ -5744,8 +5873,7 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
 
         // Remove one by one and verify remaining
         run_remove_dep("beta".to_string()).unwrap();
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 3);
         assert!(!manifest.dependencies.contains_key("beta"));
         assert!(manifest.dependencies.contains_key("alpha"));
@@ -5753,19 +5881,16 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         assert!(manifest.dependencies.contains_key("delta"));
 
         run_remove_dep("delta".to_string()).unwrap();
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 2);
 
         run_remove_dep("alpha".to_string()).unwrap();
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 1);
         assert!(manifest.dependencies.contains_key("gamma"));
 
         run_remove_dep("gamma".to_string()).unwrap();
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.is_empty());
 
         std::env::set_current_dir(&original_dir).unwrap();
@@ -5798,8 +5923,7 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         );
         // Registry install may fail at physical install, but manifest should be written
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("rplidar"));
         assert!(manifest.dependencies["rplidar"].is_registry());
 
@@ -5839,8 +5963,7 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies["my-lib"].is_path());
     }
 
@@ -5852,15 +5975,7 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // No horus.toml => will fail, but we just test detection
-        let result = run_install(
-            "~/my-pkg".to_string(),
-            None,
-            false,
-            None,
-            None,
-            None,
-            false,
-        );
+        let result = run_install("~/my-pkg".to_string(), None, false, None, None, None, false);
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_err());
         // Error should be about horus.toml not about source detection
@@ -5919,8 +6034,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("camera"));
         assert!(!manifest.dev_dependencies.contains_key("camera"));
         assert!(!manifest.drivers.contains_key("camera"));
@@ -5953,14 +6067,12 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         )
         .unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("serde"));
 
         // Remove
         run_remove_dep("serde".to_string()).unwrap();
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("serde"));
 
         // Reinstall with different config
@@ -5977,8 +6089,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("serde"));
         assert_eq!(manifest.dependencies["serde"].version(), Some("2.0"));
         let feats = manifest.dependencies["serde"].features();
@@ -6014,8 +6125,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("mock-hw"));
         assert!(!manifest.dependencies.contains_key("mock-hw"));
     }
@@ -6047,9 +6157,10 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(manifest.dependencies.contains_key("my-long-hyphenated-package-name"));
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(manifest
+            .dependencies
+            .contains_key("my-long-hyphenated-package-name"));
     }
 
     #[test]
@@ -6077,8 +6188,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("horus_library"));
     }
 
@@ -6098,18 +6208,28 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         .unwrap();
 
         // Add multiple drivers
-        run_add("camera".to_string(), Some("opencv".to_string()), true, false).unwrap();
-        run_add("lidar".to_string(), Some("rplidar-a2".to_string()), true, false).unwrap();
+        run_add(
+            "camera".to_string(),
+            Some("opencv".to_string()),
+            true,
+            false,
+        )
+        .unwrap();
+        run_add(
+            "lidar".to_string(),
+            Some("rplidar-a2".to_string()),
+            true,
+            false,
+        )
+        .unwrap();
         run_add("imu".to_string(), None, true, false).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.drivers.len(), 3);
 
         // Remove one driver
         run_remove_dep("lidar".to_string()).unwrap();
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.drivers.len(), 2);
         assert!(!manifest.drivers.contains_key("lidar"));
         assert!(manifest.drivers.contains_key("camera"));
@@ -6118,8 +6238,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         // Remove all drivers
         run_remove_dep("camera".to_string()).unwrap();
         run_remove_dep("imu".to_string()).unwrap();
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.drivers.is_empty());
 
         std::env::set_current_dir(&original_dir).unwrap();
@@ -6152,10 +6271,11 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         // Registry with no features => Simple form
-        assert!(matches!(manifest.dependencies["rplidar"], crate::manifest::DependencyValue::Simple(ref v) if v == "1.2.0"));
+        assert!(
+            matches!(manifest.dependencies["rplidar"], crate::manifest::DependencyValue::Simple(ref v) if v == "1.2.0")
+        );
     }
 
     #[test]
@@ -6183,11 +6303,15 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
         std::env::set_current_dir(&original_dir).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         // Registry with features => Detailed form
-        assert!(matches!(manifest.dependencies["rplidar"], crate::manifest::DependencyValue::Detailed(_)));
-        assert!(manifest.dependencies["rplidar"].features().contains(&"sdk".to_string()));
+        assert!(matches!(
+            manifest.dependencies["rplidar"],
+            crate::manifest::DependencyValue::Detailed(_)
+        ));
+        assert!(manifest.dependencies["rplidar"]
+            .features()
+            .contains(&"sdk".to_string()));
     }
 
     // ── remove_from_horus_toml helper: removes from both deps and dev ───
@@ -6213,8 +6337,7 @@ serde = { version = "1.0", source = "crates.io" }
 
         remove_from_horus_toml("serde");
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("serde"));
         assert!(!manifest.dev_dependencies.contains_key("serde"));
 
@@ -6255,8 +6378,7 @@ serde = { version = "1.0", source = "crates.io" }
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         let stored_feats = manifest.dependencies["serde"].features();
         assert_eq!(stored_feats.len(), 4);
         for f in &features {
@@ -6292,8 +6414,7 @@ serde = { version = "1.0", source = "crates.io" }
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_ok());
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("log"));
         assert_eq!(manifest.dependencies["log"].version(), Some("*"));
     }
@@ -6314,8 +6435,20 @@ serde = { version = "1.0", source = "crates.io" }
         .unwrap();
 
         // Phase 1: Add deps via different methods
-        run_add("motor-ctrl".to_string(), Some("1.0".to_string()), false, false).unwrap();
-        run_add("camera".to_string(), Some("opencv".to_string()), true, false).unwrap();
+        run_add(
+            "motor-ctrl".to_string(),
+            Some("1.0".to_string()),
+            false,
+            false,
+        )
+        .unwrap();
+        run_add(
+            "camera".to_string(),
+            Some("opencv".to_string()),
+            true,
+            false,
+        )
+        .unwrap();
         run_install(
             "serde".to_string(),
             Some("1.0".to_string()),
@@ -6345,8 +6478,7 @@ serde = { version = "1.0", source = "crates.io" }
         )
         .unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 3);
         assert_eq!(manifest.drivers.len(), 1);
 
@@ -6362,17 +6494,19 @@ serde = { version = "1.0", source = "crates.io" }
         )
         .unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["serde"].version(), Some("2.0"));
-        assert_eq!(manifest.dependencies.len(), 3, "count should not change on upgrade");
+        assert_eq!(
+            manifest.dependencies.len(),
+            3,
+            "count should not change on upgrade"
+        );
 
         // Phase 3: Remove some deps
         run_remove_dep("motor-ctrl".to_string()).unwrap();
         run_remove_dep("camera".to_string()).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 2);
         assert!(manifest.drivers.is_empty());
 
@@ -6388,8 +6522,7 @@ serde = { version = "1.0", source = "crates.io" }
         )
         .unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dev_dependencies.len(), 1);
 
         // Phase 5: Remove everything
@@ -6397,8 +6530,7 @@ serde = { version = "1.0", source = "crates.io" }
         run_remove_dep("sensor-lib".to_string()).unwrap();
         run_remove_dep("criterion".to_string()).unwrap();
 
-        let manifest =
-            HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.is_empty());
         assert!(manifest.dev_dependencies.is_empty());
         assert!(manifest.drivers.is_empty());
@@ -6448,7 +6580,13 @@ serde = { version = "1.0", source = "crates.io" }
         // Not in well-known lists, not on crates.io/PyPI. In Rust-only project,
         // static fallback guesses crates.io (Low confidence), network check finds
         // nothing, so the static guess is kept.
-        run_add("xyzzy-robot-widget-99".to_string(), Some("0.1.0".to_string()), false, false).unwrap();
+        run_add(
+            "xyzzy-robot-widget-99".to_string(),
+            Some("0.1.0".to_string()),
+            false,
+            false,
+        )
+        .unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
@@ -6458,22 +6596,38 @@ serde = { version = "1.0", source = "crates.io" }
         assert_eq!(manifest.dependencies.len(), 3);
 
         // Step 5: Verify .horus/Cargo.toml is generated with correct sources
-        let cargo_path = crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
+        let cargo_path =
+            crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
-        assert!(cargo_content.contains("serde"), "serde should be in Cargo.toml");
-        assert!(cargo_content.contains("tokio"), "tokio should be in Cargo.toml");
+        assert!(
+            cargo_content.contains("serde"),
+            "serde should be in Cargo.toml"
+        );
+        assert!(
+            cargo_content.contains("tokio"),
+            "tokio should be in Cargo.toml"
+        );
 
         // Step 6: `horus remove serde` — should update horus.toml and regenerate build files
         run_remove_dep("serde".to_string()).unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(!manifest.dependencies.contains_key("serde"), "serde removed from manifest");
+        assert!(
+            !manifest.dependencies.contains_key("serde"),
+            "serde removed from manifest"
+        );
         assert_eq!(manifest.dependencies.len(), 2);
 
         // Verify .horus/Cargo.toml was regenerated without serde
         let cargo_after = fs::read_to_string(&cargo_path).unwrap();
-        assert!(!cargo_after.contains("serde"), "serde gone from generated Cargo.toml");
-        assert!(cargo_after.contains("tokio"), "tokio still in generated Cargo.toml");
+        assert!(
+            !cargo_after.contains("serde"),
+            "serde gone from generated Cargo.toml"
+        );
+        assert!(
+            cargo_after.contains("tokio"),
+            "tokio still in generated Cargo.toml"
+        );
 
         std::env::set_current_dir(&original_dir).unwrap();
     }
@@ -6496,7 +6650,13 @@ serde = { version = "1.0", source = "crates.io" }
         fs::write(temp_dir.path().join("src/main.py"), "print('hello')\n").unwrap();
 
         // Step 2: `horus add numpy` — user doesn't know about pip, system auto-detects
-        run_add("numpy".to_string(), Some(">=1.24".to_string()), false, false).unwrap();
+        run_add(
+            "numpy".to_string(),
+            Some(">=1.24".to_string()),
+            false,
+            false,
+        )
+        .unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
@@ -6528,18 +6688,30 @@ serde = { version = "1.0", source = "crates.io" }
             crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
         let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
         assert!(pyproj_content.contains("numpy"), "numpy in pyproject.toml");
-        assert!(pyproj_content.contains("requests"), "requests in pyproject.toml");
+        assert!(
+            pyproj_content.contains("requests"),
+            "requests in pyproject.toml"
+        );
 
         // Step 6: `horus remove numpy` — regenerate build files
         run_remove_dep("numpy".to_string()).unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(!manifest.dependencies.contains_key("numpy"), "numpy removed");
+        assert!(
+            !manifest.dependencies.contains_key("numpy"),
+            "numpy removed"
+        );
         assert_eq!(manifest.dependencies.len(), 2);
 
         let pyproj_after = fs::read_to_string(&pyproj_path).unwrap();
-        assert!(!pyproj_after.contains("numpy"), "numpy gone from pyproject.toml");
-        assert!(pyproj_after.contains("requests"), "requests still in pyproject.toml");
+        assert!(
+            !pyproj_after.contains("numpy"),
+            "numpy gone from pyproject.toml"
+        );
+        assert!(
+            pyproj_after.contains("requests"),
+            "requests still in pyproject.toml"
+        );
 
         std::env::set_current_dir(&original_dir).unwrap();
     }
@@ -6571,11 +6743,23 @@ serde = { version = "1.0", source = "crates.io" }
         run_add("torch".to_string(), None, false, false).unwrap();
 
         // Step 4: Add unknown dep — should default to registry in mixed context
-        run_add("horus-nav".to_string(), Some("0.3.0".to_string()), false, false).unwrap();
+        run_add(
+            "horus-nav".to_string(),
+            Some("0.3.0".to_string()),
+            false,
+            false,
+        )
+        .unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        assert!(manifest.dependencies["serde"].is_crates_io(), "serde → crates.io");
-        assert!(manifest.dependencies["nalgebra"].is_crates_io(), "nalgebra → crates.io");
+        assert!(
+            manifest.dependencies["serde"].is_crates_io(),
+            "serde → crates.io"
+        );
+        assert!(
+            manifest.dependencies["nalgebra"].is_crates_io(),
+            "nalgebra → crates.io"
+        );
         assert!(manifest.dependencies["numpy"].is_pypi(), "numpy → pypi");
         assert!(manifest.dependencies["torch"].is_pypi(), "torch → pypi");
         assert!(
@@ -6585,7 +6769,8 @@ serde = { version = "1.0", source = "crates.io" }
         assert_eq!(manifest.dependencies.len(), 5);
 
         // Step 5: Verify both build files are generated correctly
-        let cargo_path = crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
+        let cargo_path =
+            crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
         assert!(cargo_content.contains("serde"), "serde in Cargo.toml");
         assert!(cargo_content.contains("nalgebra"), "nalgebra in Cargo.toml");
@@ -6599,8 +6784,14 @@ serde = { version = "1.0", source = "crates.io" }
         assert!(pyproj_content.contains("numpy"), "numpy in pyproject.toml");
         assert!(pyproj_content.contains("torch"), "torch in pyproject.toml");
         // Crates.io deps should NOT appear in pyproject.toml
-        assert!(!pyproj_content.contains("serde"), "serde NOT in pyproject.toml");
-        assert!(!pyproj_content.contains("nalgebra"), "nalgebra NOT in pyproject.toml");
+        assert!(
+            !pyproj_content.contains("serde"),
+            "serde NOT in pyproject.toml"
+        );
+        assert!(
+            !pyproj_content.contains("nalgebra"),
+            "nalgebra NOT in pyproject.toml"
+        );
 
         // Step 6: Remove one from each ecosystem
         run_remove_dep("serde".to_string()).unwrap();
@@ -6614,11 +6805,20 @@ serde = { version = "1.0", source = "crates.io" }
         // Verify both build files regenerated correctly
         let cargo_after = fs::read_to_string(&cargo_path).unwrap();
         assert!(!cargo_after.contains("serde"), "serde gone from Cargo.toml");
-        assert!(cargo_after.contains("nalgebra"), "nalgebra still in Cargo.toml");
+        assert!(
+            cargo_after.contains("nalgebra"),
+            "nalgebra still in Cargo.toml"
+        );
 
         let pyproj_after = fs::read_to_string(&pyproj_path).unwrap();
-        assert!(!pyproj_after.contains("numpy"), "numpy gone from pyproject.toml");
-        assert!(pyproj_after.contains("torch"), "torch still in pyproject.toml");
+        assert!(
+            !pyproj_after.contains("numpy"),
+            "numpy gone from pyproject.toml"
+        );
+        assert!(
+            pyproj_after.contains("torch"),
+            "torch still in pyproject.toml"
+        );
 
         std::env::set_current_dir(&original_dir).unwrap();
     }
@@ -6632,8 +6832,14 @@ serde = { version = "1.0", source = "crates.io" }
         let stderr = "error: no matching package named `nonexistent-robot-crate` found\nlocation searched: crates.io";
         let diags = cargo_error_hint(stderr);
         assert!(!diags.is_empty(), "should detect missing crate pattern");
-        assert!(diags[0].message.contains("nonexistent-robot-crate"), "hint names the crate");
-        assert!(diags[0].hint.contains("horus add"), "hint suggests horus add");
+        assert!(
+            diags[0].message.contains("nonexistent-robot-crate"),
+            "hint names the crate"
+        );
+        assert!(
+            diags[0].hint.contains("horus add"),
+            "hint suggests horus add"
+        );
 
         let formatted = format_diagnostic(&diags[0]);
         assert!(formatted.contains("horus"), "diagnostic has horus prefix");
@@ -6644,8 +6850,14 @@ serde = { version = "1.0", source = "crates.io" }
         let stderr = "error: could not compile\nnote: ld: cannot find -lssl";
         let diags = cargo_error_hint(stderr);
         assert!(!diags.is_empty(), "should detect linker error");
-        assert!(diags[0].hint.contains("ssl"), "hint names the missing library");
-        assert!(diags[0].hint.contains("apt install"), "hint suggests apt install");
+        assert!(
+            diags[0].hint.contains("ssl"),
+            "hint names the missing library"
+        );
+        assert!(
+            diags[0].hint.contains("apt install"),
+            "hint suggests apt install"
+        );
 
         // ── Cargo: OpenSSL missing ───────────────────────────────────────
         let stderr = "Could not find directory of OpenSSL installation\nopenssl headers missing";
@@ -6655,16 +6867,23 @@ serde = { version = "1.0", source = "crates.io" }
 
         // ── Cargo: no hint for unknown error ─────────────────────────────
         let stderr = "error[E0308]: mismatched types";
-        assert!(cargo_error_hint(stderr).is_empty(), "no hint for type errors");
+        assert!(
+            cargo_error_hint(stderr).is_empty(),
+            "no hint for type errors"
+        );
 
         // ── Pip: package not found ───────────────────────────────────────
         let stderr = "ERROR: No matching distribution found for nonexistent-robot-lib";
         let diags = pip_error_hint(stderr);
         assert!(!diags.is_empty(), "should detect pip not-found pattern");
-        assert!(diags[0].message.contains("nonexistent-robot-lib"), "hint names the package");
+        assert!(
+            diags[0].message.contains("nonexistent-robot-lib"),
+            "hint names the package"
+        );
 
         // ── Pip: externally managed environment ──────────────────────────
-        let stderr = "error: externally-managed-environment\nThis environment is externally managed";
+        let stderr =
+            "error: externally-managed-environment\nThis environment is externally managed";
         let diags = pip_error_hint(stderr);
         assert!(!diags.is_empty(), "should detect externally-managed");
         assert!(diags[0].hint.contains("venv"), "suggests venv");
@@ -6673,8 +6892,14 @@ serde = { version = "1.0", source = "crates.io" }
         let stderr = "ERROR: Failed building wheel for opencv-python-headless";
         let diags = pip_error_hint(stderr);
         assert!(!diags.is_empty(), "should detect build wheel failure");
-        assert!(diags[0].message.contains("opencv-python-headless"), "names the failing package");
-        assert!(diags[0].hint.contains("build-essential"), "suggests build tools");
+        assert!(
+            diags[0].message.contains("opencv-python-headless"),
+            "names the failing package"
+        );
+        assert!(
+            diags[0].hint.contains("build-essential"),
+            "suggests build tools"
+        );
 
         // ── Pip: version conflict ────────────────────────────────────────
         let stderr = "ERROR: ResolutionImpossible: cannot satisfy requirements";
@@ -6684,7 +6909,10 @@ serde = { version = "1.0", source = "crates.io" }
 
         // ── Pip: no hint for unknown error ───────────────────────────────
         let stderr = "SyntaxError: invalid syntax";
-        assert!(pip_error_hint(stderr).is_empty(), "no hint for syntax errors");
+        assert!(
+            pip_error_hint(stderr).is_empty(),
+            "no hint for syntax errors"
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════

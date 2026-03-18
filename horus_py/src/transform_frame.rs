@@ -4,7 +4,9 @@
 
 use crate::errors::to_py_err;
 use horus_core::core::DurationExt;
-use horus_library::transform_frame::{timestamp_now, TransformFrame, TransformFrameConfig, Transform};
+use horus_library::transform_frame::{
+    timestamp_now, Transform, TransformFrame, TransformFrameConfig,
+};
 use pyo3::prelude::*;
 
 /// Python wrapper for Transform
@@ -540,9 +542,7 @@ impl PyTransformFrame {
 
         // Import concurrent.futures
         let cf = py.import("concurrent.futures")?;
-        let executor = cf
-            .getattr("ThreadPoolExecutor")?
-            .call1((1,))?;
+        let executor = cf.getattr("ThreadPoolExecutor")?.call1((1,))?;
 
         let tf_clone = PyTransformFrame { inner };
 

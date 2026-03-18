@@ -319,7 +319,15 @@ mod tests {
     fn budget_remaining_inside_tick() {
         let clock = SimClock::new();
         let start = clock.now();
-        set_tick_context("test", 1, &clock, 1_u64.ms(), 1_u64.ms(), start, Some(800_u64.us()));
+        set_tick_context(
+            "test",
+            1,
+            &clock,
+            1_u64.ms(),
+            1_u64.ms(),
+            start,
+            Some(800_u64.us()),
+        );
 
         assert_eq!(budget_remaining(), 800_u64.us());
         clock.advance(300_u64.us());

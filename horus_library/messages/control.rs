@@ -131,7 +131,11 @@ impl DifferentialDriveCommand {
 
     /// Create from linear and angular velocities
     pub fn from_twist(linear: f64, angular: f64, wheel_base: f64, wheel_radius: f64) -> Self {
-        let safe_radius = if wheel_radius.abs() < 1e-9 { 1e-9 } else { wheel_radius };
+        let safe_radius = if wheel_radius.abs() < 1e-9 {
+            1e-9
+        } else {
+            wheel_radius
+        };
         let left = (linear - angular * wheel_base / 2.0) / safe_radius;
         let right = (linear + angular * wheel_base / 2.0) / safe_radius;
         Self::new(left, right)

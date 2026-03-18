@@ -7,8 +7,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use horus::prelude::*;
-use serde::{Deserialize, Serialize};
 use horus_core::core::DurationExt;
+use serde::{Deserialize, Serialize};
 
 /// Small message (16 bytes) - typical sensor reading
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

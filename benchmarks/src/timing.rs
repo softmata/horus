@@ -5,8 +5,8 @@
 //! - Cycle-to-nanosecond conversion with calibration
 //! - Fallback timing for non-x86 platforms
 
-use std::time::Instant;
 use horus_core::core::DurationExt;
+use std::time::Instant;
 
 /// Read Time Stamp Counter (RDTSC) for cycle-accurate timing
 ///

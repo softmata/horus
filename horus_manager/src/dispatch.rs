@@ -340,7 +340,11 @@ fn detect_python_tools(tools: &mut BTreeMap<(String, String), ResolvedTool>) {
                 (lang.to_string(), Operation::Test.to_string()),
                 ResolvedTool {
                     bin: py,
-                    default_args: vec!["-m".to_string(), "unittest".to_string(), "discover".to_string()],
+                    default_args: vec![
+                        "-m".to_string(),
+                        "unittest".to_string(),
+                        "discover".to_string(),
+                    ],
                     language: lang,
                     label: label.clone(),
                 },
@@ -756,7 +760,11 @@ mod tests {
         // tool_version may return None if the tool isn't on PATH even
         // though `which` finds it (different PATH resolution).
         if let Some(version) = tool_version("cargo") {
-            assert!(version.contains("cargo"), "Version string should contain 'cargo': {}", version);
+            assert!(
+                version.contains("cargo"),
+                "Version string should contain 'cargo': {}",
+                version
+            );
         }
         // Nonexistent tool always returns None
         assert!(tool_version("this_tool_definitely_does_not_exist_xyz").is_none());
@@ -804,9 +812,15 @@ mod tests {
         let ctx = detect_context(dir.path());
         let tc = detect_toolchain(&ctx);
 
-        let tool = tc.get(Language::Rust, Operation::Build).expect("Build tool must exist for Rust");
+        let tool = tc
+            .get(Language::Rust, Operation::Build)
+            .expect("Build tool must exist for Rust");
         assert_eq!(tool.bin, "cargo", "Build should use cargo");
-        assert_eq!(tool.default_args, vec!["build"], "Build args should be ['build']");
+        assert_eq!(
+            tool.default_args,
+            vec!["build"],
+            "Build args should be ['build']"
+        );
         assert_eq!(tool.language, Language::Rust);
         assert_eq!(tool.label, "[rust]");
     }
@@ -821,9 +835,15 @@ mod tests {
         let ctx = detect_context(dir.path());
         let tc = detect_toolchain(&ctx);
 
-        let tool = tc.get(Language::Rust, Operation::Test).expect("Test tool must exist for Rust");
+        let tool = tc
+            .get(Language::Rust, Operation::Test)
+            .expect("Test tool must exist for Rust");
         assert_eq!(tool.bin, "cargo", "Test should use cargo");
-        assert_eq!(tool.default_args, vec!["test"], "Test args should be ['test']");
+        assert_eq!(
+            tool.default_args,
+            vec!["test"],
+            "Test args should be ['test']"
+        );
         assert_eq!(tool.language, Language::Rust);
     }
 
@@ -837,7 +857,9 @@ mod tests {
         let ctx = detect_context(dir.path());
         let tc = detect_toolchain(&ctx);
 
-        let tool = tc.get(Language::Rust, Operation::Fmt).expect("Fmt tool must exist for Rust");
+        let tool = tc
+            .get(Language::Rust, Operation::Fmt)
+            .expect("Fmt tool must exist for Rust");
         assert_eq!(tool.bin, "cargo", "Fmt should use cargo");
         assert_eq!(tool.default_args, vec!["fmt"], "Fmt args should be ['fmt']");
     }
@@ -852,7 +874,9 @@ mod tests {
         let ctx = detect_context(dir.path());
         let tc = detect_toolchain(&ctx);
 
-        let tool = tc.get(Language::Rust, Operation::Lint).expect("Lint tool must exist for Rust");
+        let tool = tc
+            .get(Language::Rust, Operation::Lint)
+            .expect("Lint tool must exist for Rust");
         assert_eq!(tool.bin, "cargo", "Lint should use cargo");
         assert_eq!(
             tool.default_args,
@@ -871,7 +895,9 @@ mod tests {
         let ctx = detect_context(dir.path());
         let tc = detect_toolchain(&ctx);
 
-        let tool = tc.get(Language::Rust, Operation::Doc).expect("Doc tool must exist for Rust");
+        let tool = tc
+            .get(Language::Rust, Operation::Doc)
+            .expect("Doc tool must exist for Rust");
         assert_eq!(tool.bin, "cargo");
         assert_eq!(tool.default_args, vec!["doc", "--no-deps"]);
     }
@@ -886,7 +912,9 @@ mod tests {
         let ctx = detect_context(dir.path());
         let tc = detect_toolchain(&ctx);
 
-        let tool = tc.get(Language::Rust, Operation::Bench).expect("Bench tool must exist for Rust");
+        let tool = tc
+            .get(Language::Rust, Operation::Bench)
+            .expect("Bench tool must exist for Rust");
         assert_eq!(tool.bin, "cargo");
         assert_eq!(tool.default_args, vec!["bench"]);
     }
@@ -901,7 +929,9 @@ mod tests {
         let ctx = detect_context(dir.path());
         let tc = detect_toolchain(&ctx);
 
-        let tool = tc.get(Language::Rust, Operation::Check).expect("Check tool must exist for Rust");
+        let tool = tc
+            .get(Language::Rust, Operation::Check)
+            .expect("Check tool must exist for Rust");
         assert_eq!(tool.bin, "cargo");
         assert_eq!(tool.default_args, vec!["check"]);
     }
@@ -916,7 +946,13 @@ mod tests {
         let tc = detect_toolchain(&ctx);
 
         // All operations should return empty tools list
-        for op in [Operation::Fmt, Operation::Lint, Operation::Test, Operation::Build, Operation::Doc] {
+        for op in [
+            Operation::Fmt,
+            Operation::Lint,
+            Operation::Test,
+            Operation::Build,
+            Operation::Doc,
+        ] {
             let tools = tc.tools_for(op);
             assert!(
                 tools.is_empty(),
@@ -934,7 +970,10 @@ mod tests {
         let tc = detect_toolchain(&ctx);
 
         let result = dispatch_operation(&ctx, &tc, Operation::Build, &[]);
-        assert!(result.is_err(), "dispatch_operation should error when no tools are available");
+        assert!(
+            result.is_err(),
+            "dispatch_operation should error when no tools are available"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("No tools available for 'build'"),
@@ -1026,7 +1065,11 @@ mod tests {
     #[test]
     fn detect_cpp_from_cmake() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\n").unwrap();
+        fs::write(
+            dir.path().join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.16)\n",
+        )
+        .unwrap();
         let ctx = detect_context(dir.path());
         assert!(ctx.languages.contains(&Language::Cpp));
     }
@@ -1034,7 +1077,11 @@ mod tests {
     #[test]
     fn detect_ros2_from_package_xml() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("package.xml"), "<package format=\"3\"></package>\n").unwrap();
+        fs::write(
+            dir.path().join("package.xml"),
+            "<package format=\"3\"></package>\n",
+        )
+        .unwrap();
         let ctx = detect_context(dir.path());
         assert!(ctx.languages.contains(&Language::Ros2));
     }
@@ -1057,8 +1104,15 @@ mod tests {
     #[test]
     fn all_succeeded_empty_results() {
         let results: Vec<DispatchResult> = vec![];
-        assert!(all_succeeded(&results), "Empty results should be considered all succeeded");
-        assert_eq!(worst_exit_code(&results), 0, "Empty results should have exit code 0");
+        assert!(
+            all_succeeded(&results),
+            "Empty results should be considered all succeeded"
+        );
+        assert_eq!(
+            worst_exit_code(&results),
+            0,
+            "Empty results should have exit code 0"
+        );
     }
 
     #[test]
@@ -1142,7 +1196,11 @@ mod tests {
         // All should be cargo
         for op in &operations {
             let tool = tc.get(Language::Rust, *op).unwrap();
-            assert_eq!(tool.bin, "cargo", "All Rust tools should use cargo, but {:?} uses {}", op, tool.bin);
+            assert_eq!(
+                tool.bin, "cargo",
+                "All Rust tools should use cargo, but {:?} uses {}",
+                op, tool.bin
+            );
         }
     }
 
@@ -1163,7 +1221,11 @@ mod tests {
     #[test]
     fn detect_python_from_setup_py() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("setup.py"), "from setuptools import setup\nsetup()\n").unwrap();
+        fs::write(
+            dir.path().join("setup.py"),
+            "from setuptools import setup\nsetup()\n",
+        )
+        .unwrap();
         let ctx = detect_context(dir.path());
         assert!(ctx.has_python(), "setup.py should detect Python");
     }
@@ -1203,9 +1265,15 @@ mod tests {
             label: "[rust]".to_string(),
         };
         let debug = format!("{:?}", tool);
-        assert!(debug.contains("cargo"), "Debug output should contain bin name");
+        assert!(
+            debug.contains("cargo"),
+            "Debug output should contain bin name"
+        );
         assert!(debug.contains("build"), "Debug output should contain args");
-        assert!(debug.contains("Rust"), "Debug output should contain language");
+        assert!(
+            debug.contains("Rust"),
+            "Debug output should contain language"
+        );
     }
 
     // ── Battle tests: ProjectContext edge cases ──────────────────────────
@@ -1215,7 +1283,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
         let ctx = detect_context(dir.path());
-        assert!(!ctx.is_mixed(), "Single-language project should not be mixed");
+        assert!(
+            !ctx.is_mixed(),
+            "Single-language project should not be mixed"
+        );
         assert_eq!(ctx.languages.len(), 1);
     }
 

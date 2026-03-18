@@ -15,8 +15,8 @@ use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
 use monitor_tests::helpers::{assert_json_ok, get_request};
 
-use tower::ServiceExt;
 use horus_core::core::DurationExt;
+use tower::ServiceExt;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  STATUS HANDLER  (GET /api/status)
@@ -159,7 +159,10 @@ async fn status_version_matches_cargo() {
     let resp = app.oneshot(get_request("/api/status")).await.unwrap();
     let json = assert_json_ok(resp).await;
 
-    assert_eq!(json["version"], "0.1.9", "version should match horus.toml / Cargo.toml");
+    assert_eq!(
+        json["version"], "0.1.9",
+        "version should match horus.toml / Cargo.toml"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

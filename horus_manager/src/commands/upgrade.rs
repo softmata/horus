@@ -113,10 +113,7 @@ fn check_plugin_version(name: &str) -> Option<String> {
         .ok()?;
 
     let encoded = name.replace('@', "%40").replace('/', "%2F");
-    let url = format!(
-        "https://horusrobotics.dev/api/packages/{}/latest",
-        encoded
-    );
+    let url = format!("https://horusrobotics.dev/api/packages/{}/latest", encoded);
 
     let resp = client.get(&url).send().ok()?;
     if !resp.status().is_success() {
@@ -199,11 +196,7 @@ fn check_plugin_updates() {
                 );
             }
             None => {
-                println!(
-                    "    {} {} could not check version",
-                    "?".dimmed(),
-                    cmd_name
-                );
+                println!("    {} {} could not check version", "?".dimmed(), cmd_name);
             }
         }
     }
@@ -239,12 +232,7 @@ fn upgrade_plugins() {
                         );
                     }
                     Err(e) => {
-                        println!(
-                            "    {} Failed to upgrade {}: {}",
-                            "!".yellow(),
-                            cmd_name,
-                            e
-                        );
+                        println!("    {} Failed to upgrade {}: {}", "!".yellow(), cmd_name, e);
                     }
                 }
             }
@@ -269,19 +257,18 @@ fn upgrade_plugins() {
 
 /// Reinstall a plugin at a specific version using the registry client.
 fn reinstall_plugin(package_name: &str, version: &str, global: bool) -> Result<()> {
-    use crate::{registry, workspace};
     use crate::plugins::PluginSource;
+    use crate::{registry, workspace};
 
     let install_target = if global {
         workspace::InstallTarget::Global
     } else {
-        workspace::InstallTarget::Local(
-            std::env::current_dir()?,
-        )
+        workspace::InstallTarget::Local(std::env::current_dir()?)
     };
 
     let client = registry::RegistryClient::new();
-    let installed_version = client.install_to_target(package_name, Some(version), install_target)?;
+    let installed_version =
+        client.install_to_target(package_name, Some(version), install_target)?;
 
     // Re-register the plugin after reinstall
     if let Some(pkg_dir) =

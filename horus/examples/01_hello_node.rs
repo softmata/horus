@@ -8,7 +8,6 @@
 
 use horus::prelude::*;
 
-
 /// A minimal node that prints "Hello" each tick.
 struct HelloNode {
     count: u32,

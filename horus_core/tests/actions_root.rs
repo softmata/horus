@@ -107,10 +107,7 @@ fn test_goal_request_new() {
 
 #[test]
 fn test_goal_request_with_priority() {
-    let req = GoalRequest::with_priority(
-        NavigateGoal { x: 0.0, y: 0.0 },
-        GoalPriority::HIGH,
-    );
+    let req = GoalRequest::with_priority(NavigateGoal { x: 0.0, y: 0.0 }, GoalPriority::HIGH);
     assert_eq!(req.priority, GoalPriority::HIGH);
 }
 
@@ -130,7 +127,12 @@ fn test_action_result_variants() {
 #[test]
 fn test_action_feedback_new() {
     let gid = GoalId::new();
-    let fb = ActionFeedback::new(gid, NavigateFeedback { distance_remaining: 5.0 });
+    let fb = ActionFeedback::new(
+        gid,
+        NavigateFeedback {
+            distance_remaining: 5.0,
+        },
+    );
     assert_eq!(fb.feedback.distance_remaining, 5.0);
 }
 
@@ -230,12 +232,22 @@ fn test_action_client_builder_static() {
 fn test_action_error_variants() {
     let timeout = ActionError::GoalTimeout;
     let timeout_str = format!("{}", timeout);
-    assert!(!timeout_str.is_empty(), "GoalTimeout should have display text");
+    assert!(
+        !timeout_str.is_empty(),
+        "GoalTimeout should have display text"
+    );
 
     let rejected = ActionError::GoalRejected("too far".into());
     let rejected_str = format!("{}", rejected);
-    assert!(!rejected_str.is_empty(), "GoalRejected should have display text");
-    assert!(rejected_str.contains("too far"), "should contain reason: {}", rejected_str);
+    assert!(
+        !rejected_str.is_empty(),
+        "GoalRejected should have display text"
+    );
+    assert!(
+        rejected_str.contains("too far"),
+        "should contain reason: {}",
+        rejected_str
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

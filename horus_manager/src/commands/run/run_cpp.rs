@@ -56,8 +56,7 @@ pub(crate) fn build_cpp(
     ensure_system_deps(project_dir)?;
 
     let build_type = if release { "Release" } else { "Debug" };
-    let verbose = std::env::var("HORUS_VERBOSE").is_ok()
-        || log::log_enabled!(log::Level::Debug);
+    let verbose = std::env::var("HORUS_VERBOSE").is_ok() || log::log_enabled!(log::Level::Debug);
 
     // ── Configure ────────────────────────────────────────────────────────
     eprintln!(
@@ -93,10 +92,7 @@ pub(crate) fn build_cpp(
                     cli_output::ICON_INFO.cyan(),
                     tc_spec.yellow()
                 );
-                configure_cmd.arg(format!(
-                    "-DCMAKE_TOOLCHAIN_FILE={}",
-                    tc_path.display()
-                ));
+                configure_cmd.arg(format!("-DCMAKE_TOOLCHAIN_FILE={}", tc_path.display()));
             }
             Ok(None) => {
                 // Native/x86_64 — no toolchain file needed
@@ -112,7 +108,10 @@ pub(crate) fn build_cpp(
             .status()
             .context("Failed to run cmake.\n  Install with: sudo apt install cmake\n  Verify with: cmake --version")?;
         if !status.success() {
-            bail!("cmake configure failed (exit code {})", status.code().unwrap_or(1));
+            bail!(
+                "cmake configure failed (exit code {})",
+                status.code().unwrap_or(1)
+            );
         }
     } else {
         let output = configure_cmd
@@ -132,10 +131,7 @@ pub(crate) fn build_cpp(
     }
 
     // ── Build ────────────────────────────────────────────────────────────
-    eprintln!(
-        "{} cmake build...",
-        cli_output::ICON_INFO.cyan()
-    );
+    eprintln!("{} cmake build...", cli_output::ICON_INFO.cyan());
 
     let mut build_cmd = Command::new("cmake");
     build_cmd.arg("--build").arg(&build_dir);
@@ -144,11 +140,12 @@ pub(crate) fn build_cpp(
     }
 
     if verbose {
-        let status = build_cmd
-            .status()
-            .context("Failed to run cmake --build")?;
+        let status = build_cmd.status().context("Failed to run cmake --build")?;
         if !status.success() {
-            bail!("cmake build failed (exit code {})", status.code().unwrap_or(1));
+            bail!(
+                "cmake build failed (exit code {})",
+                status.code().unwrap_or(1)
+            );
         }
     } else {
         let output = build_cmd
@@ -336,8 +333,7 @@ fn ensure_system_deps(project_dir: &Path) -> Result<()> {
         let is_cpp = match dep {
             crate::manifest::DependencyValue::Detailed(d) => {
                 d.lang.as_deref() == Some("cpp")
-                    || d.source.as_ref()
-                        == Some(&crate::manifest::DepSource::System)
+                    || d.source.as_ref() == Some(&crate::manifest::DepSource::System)
                     || d.cmake_package.is_some()
             }
             crate::manifest::DependencyValue::Simple(_) => {
@@ -441,14 +437,9 @@ mod tests {
             cpp: None,
             hooks: Default::default(),
         };
-        manifest
-            .save_to(&dir.path().join(HORUS_TOML))
-            .unwrap();
+        manifest.save_to(&dir.path().join(HORUS_TOML)).unwrap();
 
-        assert_eq!(
-            load_project_name(dir.path()).unwrap(),
-            "test-robot"
-        );
+        assert_eq!(load_project_name(dir.path()).unwrap(), "test-robot");
     }
 
     #[test]
@@ -503,16 +494,15 @@ mod tests {
         let project_dir = tempfile::tempdir().unwrap();
 
         // Create compile_commands.json in build dir
-        fs::write(
-            build_dir.path().join("compile_commands.json"),
-            "[]",
-        )
-        .unwrap();
+        fs::write(build_dir.path().join("compile_commands.json"), "[]").unwrap();
 
         symlink_compile_commands(build_dir.path(), project_dir.path());
 
         let link = project_dir.path().join("compile_commands.json");
-        assert!(link.exists(), "compile_commands.json should exist in project root");
+        assert!(
+            link.exists(),
+            "compile_commands.json should exist in project root"
+        );
     }
 
     #[test]
@@ -520,7 +510,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = generate_cmake_if_needed(dir.path());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No CMakeLists.txt or horus.toml"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No CMakeLists.txt or horus.toml"));
     }
 
     #[test]
@@ -551,9 +544,7 @@ mod tests {
             cpp: None,
             hooks: Default::default(),
         };
-        manifest
-            .save_to(&dir.path().join(HORUS_TOML))
-            .unwrap();
+        manifest.save_to(&dir.path().join(HORUS_TOML)).unwrap();
 
         generate_cmake_if_needed(dir.path()).unwrap();
 
@@ -611,7 +602,10 @@ mod tests {
         fs::write(dir.path().join("CMakeCache.txt"), "# cache").unwrap();
 
         let result = find_cpp_binary(dir.path(), "nonexistent");
-        assert!(result.is_err(), "should not find cmake internal files as binary");
+        assert!(
+            result.is_err(),
+            "should not find cmake internal files as binary"
+        );
     }
 
     #[test]
@@ -687,7 +681,10 @@ mod tests {
         symlink_compile_commands(build_dir.path(), project_dir.path());
 
         let link = project_dir.path().join("compile_commands.json");
-        assert!(!link.exists(), "should not create link when source doesn't exist");
+        assert!(
+            !link.exists(),
+            "should not create link when source doesn't exist"
+        );
     }
 
     #[test]
@@ -812,9 +809,18 @@ mod tests {
         generate_cmake_if_needed(dir.path()).unwrap();
 
         let content = fs::read_to_string(dir.path().join(".horus/CMakeLists.txt")).unwrap();
-        assert!(content.contains("find_package(Eigen3 REQUIRED)"), "should have eigen find_package");
-        assert!(content.contains("Eigen3::Eigen"), "should have eigen target");
-        assert!(content.contains("CMAKE_CXX_STANDARD 20"), "should have c++20 standard");
+        assert!(
+            content.contains("find_package(Eigen3 REQUIRED)"),
+            "should have eigen find_package"
+        );
+        assert!(
+            content.contains("Eigen3::Eigen"),
+            "should have eigen target"
+        );
+        assert!(
+            content.contains("CMAKE_CXX_STANDARD 20"),
+            "should have c++20 standard"
+        );
     }
 
     #[test]
@@ -849,14 +855,19 @@ mod tests {
         generate_cmake_if_needed(dir.path()).unwrap();
 
         let content = fs::read_to_string(dir.path().join(".horus/CMakeLists.txt")).unwrap();
-        assert!(content.contains("CMAKE_CXX_STANDARD 17"), "default should be c++17");
+        assert!(
+            content.contains("CMAKE_CXX_STANDARD 17"),
+            "default should be c++17"
+        );
     }
 
     // ── Battle tests: is_executable ──────────────────────────────────────
 
     #[test]
     fn battle_is_executable_nonexistent_file() {
-        assert!(!is_executable(Path::new("/tmp/definitely_nonexistent_binary_xyz")));
+        assert!(!is_executable(Path::new(
+            "/tmp/definitely_nonexistent_binary_xyz"
+        )));
     }
 
     #[test]
@@ -924,10 +935,7 @@ mod tests {
         }
 
         let result = find_cpp_binary(dir.path(), "my-project");
-        assert!(
-            result.is_err(),
-            "should fail when no files are executable"
-        );
+        assert!(result.is_err(), "should fail when no files are executable");
     }
 
     #[test]
@@ -944,10 +952,7 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .to_string();
-        assert_eq!(
-            name, expected,
-            "fallback should use directory name"
-        );
+        assert_eq!(name, expected, "fallback should use directory name");
     }
 
     #[test]
@@ -985,7 +990,10 @@ mod tests {
         }
 
         let result = find_cpp_binary(dir.path(), "my-robot");
-        assert!(result.is_ok(), "should find the one executable among 100 files");
+        assert!(
+            result.is_ok(),
+            "should find the one executable among 100 files"
+        );
         assert_eq!(result.unwrap().file_name().unwrap(), "my_robot");
     }
 
@@ -1007,7 +1015,10 @@ mod tests {
         let result = find_cpp_binary(dir.path(), "v2.0.1");
         // find_cpp_binary replaces hyphens only, so "v2.0.1" stays "v2.0.1"
         // It should find this via exact match or fallback scan
-        assert!(result.is_ok(), "should find binary with dots in name via scan");
+        assert!(
+            result.is_ok(),
+            "should find binary with dots in name via scan"
+        );
     }
 
     // ── SLAM Cycle 5: Final gap tests ───────────────────────────────────
@@ -1015,10 +1026,7 @@ mod tests {
     #[test]
     fn error_execute_cpp_binary_nonexistent_path() {
         // execute_cpp_binary should return an error for a nonexistent binary
-        let result = execute_cpp_binary(
-            Path::new("/tmp/horus_nonexistent_binary_xyz_99999"),
-            &[],
-        );
+        let result = execute_cpp_binary(Path::new("/tmp/horus_nonexistent_binary_xyz_99999"), &[]);
         assert!(result.is_err(), "should fail for nonexistent binary");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1035,7 +1043,10 @@ mod tests {
             Path::new("/tmp/horus_nonexistent_binary_xyz_99999"),
             &["--help".to_string(), "--verbose".to_string()],
         );
-        assert!(result.is_err(), "should fail for nonexistent binary even with args");
+        assert!(
+            result.is_err(),
+            "should fail for nonexistent binary even with args"
+        );
     }
 
     #[test]
@@ -1043,7 +1054,10 @@ mod tests {
         // Unicode project name should not panic — just fail to find
         let dir = tempfile::tempdir().unwrap();
         let result = find_cpp_binary(dir.path(), "robot-\u{1F916}");
-        assert!(result.is_err(), "unicode project name should not find anything in empty dir");
+        assert!(
+            result.is_err(),
+            "unicode project name should not find anything in empty dir"
+        );
     }
 
     #[test]
@@ -1052,7 +1066,10 @@ mod tests {
         let result = load_project_name(Path::new("/"));
         assert!(result.is_err(), "root path has no file_name component");
         assert!(
-            result.unwrap_err().to_string().contains("Cannot determine project name"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Cannot determine project name"),
             "should mention cannot determine project name"
         );
     }
@@ -1072,7 +1089,10 @@ mod tests {
 
         // Final link should still be valid
         let link = project_dir.path().join("compile_commands.json");
-        assert!(link.exists(), "compile_commands.json should exist after 50 symlinks");
+        assert!(
+            link.exists(),
+            "compile_commands.json should exist after 50 symlinks"
+        );
         let content = fs::read_to_string(&link).unwrap();
         assert_eq!(content, "[]", "symlinked content should match source");
     }

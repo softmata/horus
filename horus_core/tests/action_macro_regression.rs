@@ -54,7 +54,11 @@ action! {
 
 #[test]
 fn test_3_result_fields() {
-    let r = BehTestNavResult { success: true, final_x: 10.0, final_y: 20.0 };
+    let r = BehTestNavResult {
+        success: true,
+        final_x: 10.0,
+        final_y: 20.0,
+    };
     assert!(r.success);
     assert_eq!(r.final_x, 10.0);
     assert_eq!(r.final_y, 20.0);
@@ -62,13 +66,24 @@ fn test_3_result_fields() {
 
 #[test]
 fn test_6_result_fields() {
-    let r = BigActionResult { ok: true, x: 1.0, y: 2.0, z: 3.0, w: 4.0, elapsed: 5.0 };
+    let r = BigActionResult {
+        ok: true,
+        x: 1.0,
+        y: 2.0,
+        z: 3.0,
+        w: 4.0,
+        elapsed: 5.0,
+    };
     assert!(r.ok);
 }
 
 #[test]
 fn test_log_summary_3_fields() {
-    let r = BehTestNavResult { success: true, final_x: 10.0, final_y: 20.0 };
+    let r = BehTestNavResult {
+        success: true,
+        final_x: 10.0,
+        final_y: 20.0,
+    };
     let summary = r.log_summary();
     assert!(summary.contains("success"));
     assert!(summary.contains("final_x"));
@@ -77,7 +92,14 @@ fn test_log_summary_3_fields() {
 
 #[test]
 fn test_log_summary_6_fields() {
-    let r = BigActionResult { ok: true, x: 1.0, y: 2.0, z: 3.0, w: 4.0, elapsed: 5.0 };
+    let r = BigActionResult {
+        ok: true,
+        x: 1.0,
+        y: 2.0,
+        z: 3.0,
+        w: 4.0,
+        elapsed: 5.0,
+    };
     let summary = r.log_summary();
     assert!(summary.contains("ok"));
     assert!(summary.contains("elapsed"));
@@ -85,7 +107,12 @@ fn test_log_summary_6_fields() {
 
 #[test]
 fn test_4_goal_fields() {
-    let g = BigActionGoal { a: 1.0, b: 2.0, c: 3.0, d: 4.0 };
+    let g = BigActionGoal {
+        a: 1.0,
+        b: 2.0,
+        c: 3.0,
+        d: 4.0,
+    };
     let summary = g.log_summary();
     assert!(summary.contains("a="));
     assert!(summary.contains("d="));

@@ -139,11 +139,7 @@ fn test_rt_isolation_under_compute_load() {
     let (slow_node, compute_count) = SlowComputeNode::new("heavy_compute", 50);
 
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
-    scheduler
-        .add(rt_node)
-        .order(0)
-        .rate(1000_u64.hz())
-        .build();
+    scheduler.add(rt_node).order(0).rate(1000_u64.hz()).build();
     scheduler
         .add(slow_node)
         .order(5)
@@ -245,11 +241,7 @@ fn test_mixed_rt_and_compute_nodes() {
     let (compute_node, compute_count) = CounterNode::new("mixed_compute");
 
     let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
-    scheduler
-        .add(rt_node)
-        .order(0)
-        .rate(500_u64.hz())
-        .build();
+    scheduler.add(rt_node).order(0).rate(500_u64.hz()).build();
     scheduler.add(compute_node).order(5).build();
 
     scheduler.run_for(100_u64.ms()).unwrap();
@@ -325,16 +317,8 @@ fn test_full_system_rt_and_compute_groups() {
     let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
 
     // RT nodes
-    scheduler
-        .add(rt_fast)
-        .order(0)
-        .rate(500_u64.hz())
-        .build();
-    scheduler
-        .add(rt_slow)
-        .order(1)
-        .rate(100_u64.hz())
-        .build();
+    scheduler.add(rt_fast).order(0).rate(500_u64.hz()).build();
+    scheduler.add(rt_slow).order(1).rate(100_u64.hz()).build();
 
     // Compute nodes
     scheduler.add(compute_a).order(10).build();
@@ -490,11 +474,7 @@ fn test_event_node_alongside_rt_and_besteffort() {
     let (evt_node, evt_count) = CounterNode::new("mixed_evt_node");
 
     let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
-    scheduler
-        .add(rt_node)
-        .order(0)
-        .rate(200_u64.hz())
-        .build();
+    scheduler.add(rt_node).order(0).rate(200_u64.hz()).build();
     scheduler.add(be_node).order(5).build();
     scheduler.add(evt_node).order(10).on("sensor_data").build();
 
@@ -628,11 +608,7 @@ fn test_async_io_isolation_from_rt_and_compute() {
     let (async_node, async_count) = BlockingIoNode::new("iso_async_slow", 200);
 
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
-    scheduler
-        .add(rt_node)
-        .order(0)
-        .rate(1000_u64.hz())
-        .build();
+    scheduler.add(rt_node).order(0).rate(1000_u64.hz()).build();
     scheduler.add(compute_node).order(5).build();
     scheduler
         .add(async_node)
@@ -766,11 +742,7 @@ fn test_all_execution_groups_simultaneously() {
     let (event_node, event_count) = CounterNode::new("all_event");
 
     let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
-    scheduler
-        .add(rt_node)
-        .order(0)
-        .rate(500_u64.hz())
-        .build();
+    scheduler.add(rt_node).order(0).rate(500_u64.hz()).build();
     scheduler.add(compute_node).order(5).build();
     scheduler
         .add(async_node)
@@ -833,11 +805,7 @@ fn test_clean_shutdown_all_groups() {
     let (compute_node, compute_count) = CounterNode::new("shutdown_compute");
 
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
-    scheduler
-        .add(rt_node)
-        .order(0)
-        .rate(100_u64.hz())
-        .build();
+    scheduler.add(rt_node).order(0).rate(100_u64.hz()).build();
     scheduler.add(compute_node).order(5).build();
 
     // run_for triggers clean shutdown at the end
@@ -880,11 +848,7 @@ fn test_multi_rate_rt_timing_accuracy() {
         .order(1)
         .rate(100_u64.hz())
         .build();
-    scheduler
-        .add(node_10hz)
-        .order(2)
-        .rate(10_u64.hz())
-        .build();
+    scheduler.add(node_10hz).order(2).rate(10_u64.hz()).build();
 
     // Run for 500ms — enough for statistical significance
     scheduler.run_for(500_u64.ms()).unwrap();

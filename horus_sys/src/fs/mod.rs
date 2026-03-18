@@ -27,18 +27,36 @@ pub fn symlink(src: &Path, dst: &Path) -> anyhow::Result<()> {
 
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(src, dst)
-            .map_err(|e| anyhow::anyhow!("Failed to create symlink {} -> {}: {}", dst.display(), src.display(), e))?;
+        std::os::unix::fs::symlink(src, dst).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create symlink {} -> {}: {}",
+                dst.display(),
+                src.display(),
+                e
+            )
+        })?;
     }
 
     #[cfg(windows)]
     {
         if src.is_dir() {
-            std::os::windows::fs::symlink_dir(src, dst)
-                .map_err(|e| anyhow::anyhow!("Failed to create dir symlink {} -> {}: {}", dst.display(), src.display(), e))?;
+            std::os::windows::fs::symlink_dir(src, dst).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create dir symlink {} -> {}: {}",
+                    dst.display(),
+                    src.display(),
+                    e
+                )
+            })?;
         } else {
-            std::os::windows::fs::symlink_file(src, dst)
-                .map_err(|e| anyhow::anyhow!("Failed to create file symlink {} -> {}: {}", dst.display(), src.display(), e))?;
+            std::os::windows::fs::symlink_file(src, dst).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create file symlink {} -> {}: {}",
+                    dst.display(),
+                    src.display(),
+                    e
+                )
+            })?;
         }
     }
 
@@ -108,9 +126,7 @@ impl FileLock {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
-            use windows_sys::Win32::Storage::FileSystem::{
-                LockFileEx, LOCKFILE_EXCLUSIVE_LOCK,
-            };
+            use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
             let mut overlapped = unsafe { std::mem::zeroed() };
             let ret = unsafe {
                 LockFileEx(
@@ -178,8 +194,7 @@ impl FileLock {
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
-            let ret =
-                unsafe { libc::flock(cloned.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            let ret = unsafe { libc::flock(cloned.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
             if ret != 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
@@ -228,13 +243,7 @@ impl Drop for FileLock {
             use std::os::windows::io::AsRawHandle;
             use windows_sys::Win32::Storage::FileSystem::UnlockFile;
             unsafe {
-                UnlockFile(
-                    self.file.as_raw_handle(),
-                    0,
-                    0,
-                    u32::MAX,
-                    u32::MAX,
-                );
+                UnlockFile(self.file.as_raw_handle(), 0, 0, u32::MAX, u32::MAX);
             }
         }
     }
@@ -529,7 +538,9 @@ mod tests {
 
     #[test]
     fn is_executable_nonexistent_returns_false() {
-        assert!(!is_executable(std::path::Path::new("/nonexistent/path/xyz")));
+        assert!(!is_executable(std::path::Path::new(
+            "/nonexistent/path/xyz"
+        )));
     }
 
     #[cfg(unix)]
@@ -595,7 +606,8 @@ mod tests {
 
     #[test]
     fn file_lock_shared_allows_multiple() {
-        let tmp = std::env::temp_dir().join(format!("horus_sys_shared_lock_{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("horus_sys_shared_lock_{}", std::process::id()));
         let file1 = std::fs::File::create(&tmp).unwrap();
         let file2 = std::fs::File::open(&tmp).unwrap();
         let _lock1 = FileLock::shared(&file1).unwrap();

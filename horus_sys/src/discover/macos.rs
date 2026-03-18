@@ -39,12 +39,7 @@ const KP_PROC_PID_OFFSET: usize = 24; // offsetof(kinfo_proc, kp_proc.p_pid)
 
 /// List all PIDs via sysctl(KERN_PROC_ALL).
 pub fn list_pids() -> Vec<u32> {
-    let mut mib: [i32; 4] = [
-        libc::CTL_KERN,
-        libc::KERN_PROC,
-        libc::KERN_PROC_ALL,
-        0,
-    ];
+    let mut mib: [i32; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL, 0];
 
     let mut size: usize = 0;
 
@@ -235,8 +230,13 @@ fn get_cwd(pid: u32) -> Option<String> {
     }
 
     let path_bytes = &info.pvi_cdir.vip_path;
-    let end = path_bytes.iter().position(|&b| b == 0).unwrap_or(path_bytes.len());
-    std::str::from_utf8(&path_bytes[..end]).ok().map(|s| s.to_string())
+    let end = path_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(path_bytes.len());
+    std::str::from_utf8(&path_bytes[..end])
+        .ok()
+        .map(|s| s.to_string())
 }
 
 fn get_memory(pid: u32) -> Option<u64> {

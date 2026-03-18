@@ -135,7 +135,10 @@ fn panic_hook_subprocess_helper() {
         } else {
             "unknown panic payload".to_string()
         };
-        let thread_name = std::thread::current().name().unwrap_or("unknown").to_string();
+        let thread_name = std::thread::current()
+            .name()
+            .unwrap_or("unknown")
+            .to_string();
         let report = format!(
             "=== HORUS Crash Report ===\n\
              Scheduler: test\n\

@@ -10,6 +10,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
+use horus_core::core::DurationExt;
 use horus_core::core::LogType;
 use horus_core::memory::shm_topics_dir;
 use ratatui::{
@@ -22,7 +23,6 @@ use ratatui::{
 };
 use std::io::stdout;
 use std::time::Instant;
-use horus_core::core::DurationExt;
 
 // Import the monitoring structs and functions
 #[derive(Debug, Clone)]
@@ -340,8 +340,7 @@ impl TuiDashboard {
         loop {
             // Update data if not paused (250ms refresh for real-time feel)
             if !self.paused
-                && self.last_update.elapsed()
-                    > crate::config::TUI_REFRESH_INTERVAL_MS.ms()
+                && self.last_update.elapsed() > crate::config::TUI_REFRESH_INTERVAL_MS.ms()
             {
                 self.update_data()?;
                 self.last_update = Instant::now();

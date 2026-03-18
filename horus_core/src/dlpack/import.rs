@@ -136,7 +136,8 @@ pub unsafe fn from_dlpack(
             }
             strides.push((x as u64).checked_mul(elem_size).ok_or_else(|| {
                 DLPackImportError::InvalidTensor(format!(
-                    "stride[{}] byte conversion overflows u64", i
+                    "stride[{}] byte conversion overflows u64",
+                    i
                 ))
             })?);
         }
@@ -147,12 +148,10 @@ pub unsafe fn from_dlpack(
     let num_elements: u64 = shape
         .iter()
         .try_fold(1u64, |acc, &dim| acc.checked_mul(dim))
-        .ok_or_else(|| {
-            DLPackImportError::InvalidTensor("shape product overflows u64".into())
-        })?;
-    let size_bytes = num_elements.checked_mul(dtype.size_bytes() as u64).ok_or_else(|| {
-        DLPackImportError::InvalidTensor("size_bytes overflows u64".into())
-    })?;
+        .ok_or_else(|| DLPackImportError::InvalidTensor("shape product overflows u64".into()))?;
+    let size_bytes = num_elements
+        .checked_mul(dtype.size_bytes() as u64)
+        .ok_or_else(|| DLPackImportError::InvalidTensor("size_bytes overflows u64".into()))?;
 
     // Compute actual data pointer (checked to detect wraparound from adversarial byte_offset)
     let data_ptr = (tensor.data as usize)

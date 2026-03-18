@@ -717,10 +717,7 @@ fn hlog_once_deduplication() {
     }
 
     let all = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.get_all();
-    let once_entries: Vec<_> = all
-        .iter()
-        .filter(|e| e.message == marker)
-        .collect();
+    let once_entries: Vec<_> = all.iter().filter(|e| e.message == marker).collect();
 
     assert_eq!(
         once_entries.len(),
@@ -975,10 +972,18 @@ fn python_hlog_all_levels_roundtrip() {
 
     assert_eq!(py_entries.len(), 4, "all 4 levels must round-trip");
 
-    assert!(py_entries.iter().any(|e| e.log_type == LogType::Info && e.message.ends_with("_info")));
-    assert!(py_entries.iter().any(|e| e.log_type == LogType::Warning && e.message.ends_with("_warn")));
-    assert!(py_entries.iter().any(|e| e.log_type == LogType::Error && e.message.ends_with("_error")));
-    assert!(py_entries.iter().any(|e| e.log_type == LogType::Debug && e.message.ends_with("_debug")));
+    assert!(py_entries
+        .iter()
+        .any(|e| e.log_type == LogType::Info && e.message.ends_with("_info")));
+    assert!(py_entries
+        .iter()
+        .any(|e| e.log_type == LogType::Warning && e.message.ends_with("_warn")));
+    assert!(py_entries
+        .iter()
+        .any(|e| e.log_type == LogType::Error && e.message.ends_with("_error")));
+    assert!(py_entries
+        .iter()
+        .any(|e| e.log_type == LogType::Debug && e.message.ends_with("_debug")));
 
     // All should be attributed to py_node
     for e in &py_entries {
@@ -1097,7 +1102,11 @@ fn crash_recovery_single_orphaned_slot() {
 
     // The orphaned slot should now have an even seqlock (reclaimed)
     let seq = buf.read_slot_seqlock(5);
-    assert!(seq & 1 == 0, "orphaned seqlock should be reset to even, got {}", seq);
+    assert!(
+        seq & 1 == 0,
+        "orphaned seqlock should be reset to even, got {}",
+        seq
+    );
 
     let _ = std::fs::remove_file(path);
 }
@@ -1594,7 +1603,9 @@ fn tui_for_topic_filter() {
 
     let image_logs = buf.for_topic("/image_raw");
     assert_eq!(image_logs.len(), 2);
-    assert!(image_logs.iter().all(|e| e.topic.as_deref() == Some("/image_raw")));
+    assert!(image_logs
+        .iter()
+        .all(|e| e.topic.as_deref() == Some("/image_raw")));
 
     let pc_logs = buf.for_topic("/pointcloud");
     assert_eq!(pc_logs.len(), 1);
@@ -1651,8 +1662,14 @@ fn tui_delta_tailing_via_write_idx() {
     let new_count = (current_idx - last_idx) as usize;
     assert_eq!(new_count, 3);
     let all = buf.get_all();
-    let delta1: Vec<&LogEntry> = all.iter().rev().take(new_count).collect::<Vec<_>>()
-        .into_iter().rev().collect();
+    let delta1: Vec<&LogEntry> = all
+        .iter()
+        .rev()
+        .take(new_count)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     assert_eq!(delta1.len(), 3);
     last_idx = current_idx;
 
@@ -1665,8 +1682,14 @@ fn tui_delta_tailing_via_write_idx() {
     let new_count = (current_idx - last_idx) as usize;
     assert_eq!(new_count, 2);
     let all = buf.get_all();
-    let delta2: Vec<&LogEntry> = all.iter().rev().take(new_count).collect::<Vec<_>>()
-        .into_iter().rev().collect();
+    let delta2: Vec<&LogEntry> = all
+        .iter()
+        .rev()
+        .take(new_count)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     assert_eq!(delta2.len(), 2);
     assert_eq!(delta2[0].message, "waypoint_4");
     assert_eq!(delta2[1].message, "waypoint_5");
@@ -1703,9 +1726,7 @@ fn tui_delta_tail_across_wrap() {
 
     // All 3 target entries should be readable
     let all = buf.get_all();
-    let target_entries: Vec<&LogEntry> = all.iter()
-        .filter(|e| e.node_name == "target")
-        .collect();
+    let target_entries: Vec<&LogEntry> = all.iter().filter(|e| e.node_name == "target").collect();
     assert_eq!(target_entries.len(), 3);
 
     let _ = std::fs::remove_file(path);
@@ -2338,24 +2359,14 @@ fn soak_30s_20_writers_4_readers() {
     for h in writer_handles {
         h.join().unwrap();
     }
-    let total_reader_iters: u64 = reader_handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .sum();
+    let total_reader_iters: u64 = reader_handles.into_iter().map(|h| h.join().unwrap()).sum();
 
     let writes = total_writes.load(Ordering::Relaxed);
     let torn = torn_reads.load(Ordering::Relaxed);
 
     // ── Assertions ───────────────────────────────────────────────────────
-    assert!(
-        writes > 0,
-        "writers must have produced entries"
-    );
-    assert_eq!(
-        buf.write_idx(),
-        writes,
-        "write_idx must match total writes"
-    );
+    assert!(writes > 0, "writers must have produced entries");
+    assert_eq!(buf.write_idx(), writes, "write_idx must match total writes");
     assert_eq!(
         torn, 0,
         "zero torn reads expected, got {} torn in {} reader iterations",
@@ -2526,7 +2537,10 @@ fn corruption_all_0xff_no_panic() {
     // Slot 0 should be skipped (0xFF is not valid bincode for LogEntry).
     // Slot 1 ("after") should still be readable.
     let after = all.iter().find(|e| e.node_name == "after");
-    assert!(after.is_some(), "'after' entry must survive corruption of slot 0");
+    assert!(
+        after.is_some(),
+        "'after' entry must survive corruption of slot 0"
+    );
 
     let _ = std::fs::remove_file(path);
 }
@@ -2571,17 +2585,18 @@ fn corruption_mixed_patterns() {
 /// mmap file resilience: 0-byte pre-existing file should be re-initialized.
 #[test]
 fn mmap_zero_byte_file_reinit() {
-    let path = std::env::temp_dir().join(format!(
-        "horus_mmap_zerobyte_{}.bin",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("horus_mmap_zerobyte_{}.bin", std::process::id()));
     // Create a 0-byte file.
     std::fs::write(&path, b"").unwrap();
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
 
     // new_at_path should reinitialize (set_len to full size).
     let buf = SharedLogBuffer::new_at_path(&path).unwrap();
-    assert_eq!(buf.write_idx(), 0, "fresh buffer from 0-byte file must start at 0");
+    assert_eq!(
+        buf.write_idx(),
+        0,
+        "fresh buffer from 0-byte file must start at 0"
+    );
     let all = buf.get_all();
     assert!(all.is_empty(), "fresh buffer must be empty");
 
@@ -2596,10 +2611,8 @@ fn mmap_zero_byte_file_reinit() {
 /// push() and get_all() must not panic.
 #[test]
 fn mmap_garbage_header_no_panic() {
-    let path = std::env::temp_dir().join(format!(
-        "horus_mmap_garbage_hdr_{}.bin",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("horus_mmap_garbage_hdr_{}.bin", std::process::id()));
     let _ = std::fs::remove_file(&path);
 
     // Create a properly-sized file filled with garbage.

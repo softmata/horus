@@ -171,10 +171,7 @@ impl DependencyGraph {
 
     /// Remove an edge.  Returns `true` if the edge existed.
     pub fn remove_edge(&mut self, from: &str, to: &str) -> bool {
-        let removed = self
-            .edges
-            .get_mut(from)
-            .map_or(false, |s| s.remove(to));
+        let removed = self.edges.get_mut(from).map_or(false, |s| s.remove(to));
         if removed {
             if let Some(preds) = self.reverse_edges.get_mut(to) {
                 preds.remove(from);
@@ -201,9 +198,7 @@ impl DependencyGraph {
 
     /// In-degree of a node (number of incoming edges).
     pub fn in_degree(&self, node: &str) -> usize {
-        self.reverse_edges
-            .get(node)
-            .map_or(0, |s| s.len())
+        self.reverse_edges.get(node).map_or(0, |s| s.len())
     }
 
     /// All transitive predecessors (ancestors) of `node`, via BFS.

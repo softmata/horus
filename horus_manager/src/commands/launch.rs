@@ -3,12 +3,12 @@
 //! Launches multiple HORUS nodes from a configuration file.
 
 use colored::*;
+use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use horus_core::core::DurationExt;
 
 /// Node configuration in a launch file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -796,9 +796,15 @@ nodes:
             result.err()
         );
         // Verify the YAML file still exists and was not modified
-        assert!(path.exists(), "launch file should not be deleted by dry run");
+        assert!(
+            path.exists(),
+            "launch file should not be deleted by dry run"
+        );
         let content = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "nodes: []", "launch file should not be modified by dry run");
+        assert_eq!(
+            content, "nodes: []",
+            "launch file should not be modified by dry run"
+        );
     }
 
     #[test]
@@ -1068,7 +1074,11 @@ another: "hello"
                 (Some(ns), None) | (None, Some(ns)) => format!("{}/{}", ns, name),
                 (None, None) => name.to_string(),
             };
-            assert_eq!(full, expected, "global={:?} local={:?} name={}", global, local, name);
+            assert_eq!(
+                full, expected,
+                "global={:?} local={:?} name={}",
+                global, local, name
+            );
         }
     }
 
@@ -1109,7 +1119,11 @@ nodes:
 "#;
         std::fs::write(&path, yaml).unwrap();
         let result = run_launch(&path, true, Some("/override".to_string()), 5);
-        assert!(result.is_ok(), "namespace override dry run should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "namespace override dry run should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1130,7 +1144,11 @@ nodes:
 "#;
         std::fs::write(&path, yaml).unwrap();
         let result = list_launch_nodes(&path);
-        assert!(result.is_ok(), "listing valid launch file should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "listing valid launch file should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1163,7 +1181,11 @@ nodes:
         assert_eq!(config.nodes.len(), 3);
         assert_eq!(config.namespace.as_deref(), Some("/fleet"));
         // Two nodes named "planner" in different namespaces
-        let planners: Vec<_> = config.nodes.iter().filter(|n| n.name == "planner").collect();
+        let planners: Vec<_> = config
+            .nodes
+            .iter()
+            .filter(|n| n.name == "planner")
+            .collect();
         assert_eq!(planners.len(), 2);
         assert_eq!(planners[0].namespace.as_deref(), Some("/robot1"));
         assert_eq!(planners[1].namespace.as_deref(), Some("/robot2"));

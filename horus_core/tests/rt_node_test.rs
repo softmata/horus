@@ -163,9 +163,18 @@ fn test_rt_node_basic() {
 
     scheduler.run_for(100_u64.ms()).unwrap();
 
-    assert!(motor_ticks.load(Ordering::SeqCst) > 0, "Motor control node should have ticked");
-    assert!(fusion_ticks.load(Ordering::SeqCst) > 0, "Sensor fusion node should have ticked");
-    assert!(logger_ticks.load(Ordering::SeqCst) > 0, "Logger node should have ticked");
+    assert!(
+        motor_ticks.load(Ordering::SeqCst) > 0,
+        "Motor control node should have ticked"
+    );
+    assert!(
+        fusion_ticks.load(Ordering::SeqCst) > 0,
+        "Sensor fusion node should have ticked"
+    );
+    assert!(
+        logger_ticks.load(Ordering::SeqCst) > 0,
+        "Logger node should have ticked"
+    );
 }
 
 #[test]
@@ -185,10 +194,7 @@ fn test_rt_node_priority_ordering() {
     log_node.logs_written = logger.clone();
 
     let mut scheduler = Scheduler::new();
-    scheduler
-        .add(log_node)
-        .order(10)
-        .build(); // Low priority
+    scheduler.add(log_node).order(10).build(); // Low priority
     scheduler
         .add(sensor_node)
         .order(1)
@@ -215,7 +221,8 @@ fn test_rt_node_priority_ordering() {
     assert!(
         motor_count >= sensor_count,
         "Motor ({}, 50μs) should tick >= sensor ({}, 100μs) due to lower exec time",
-        motor_count, sensor_count
+        motor_count,
+        sensor_count
     );
 }
 
@@ -239,5 +246,8 @@ fn test_rt_node_with_safety_critical_config() {
     let sensor_count = sensor_ticks.load(Ordering::SeqCst);
 
     assert!(motor_count > 0, "Critical motor should have ticked at 1kHz");
-    assert!(sensor_count > 0, "Critical sensor should have ticked at 1kHz");
+    assert!(
+        sensor_count > 0,
+        "Critical sensor should have ticked at 1kHz"
+    );
 }

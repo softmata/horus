@@ -282,7 +282,10 @@ mod tests {
         assert_eq!(cloned, cuda3);
         // Debug output must contain identifying information
         let dbg = format!("{:?}", cuda3);
-        assert!(dbg.contains("device_type"), "Debug must show device_type field");
+        assert!(
+            dbg.contains("device_type"),
+            "Debug must show device_type field"
+        );
         assert!(dbg.contains("device_id"), "Debug must show device_id field");
     }
 

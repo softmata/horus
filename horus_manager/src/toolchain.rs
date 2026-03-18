@@ -119,10 +119,7 @@ pub fn resolve_toolchain(spec: &str) -> Result<Option<ToolchainResolution>> {
     // Try to parse as a known architecture
     match TargetArch::from_str(spec) {
         Some(arch) => match arch.cmake_toolchain() {
-            Some(content) => Ok(Some(ToolchainResolution::Embedded {
-                arch,
-                content,
-            })),
+            Some(content) => Ok(Some(ToolchainResolution::Embedded { arch, content })),
             None => Ok(None), // native/x86_64 — no toolchain needed
         },
         None => bail!(
@@ -173,10 +170,7 @@ mod tests {
         for alias in &["armv7", "arm", "pi3", "pi2"] {
             let arch = TargetArch::from_str(alias);
             assert!(arch.is_some(), "should parse '{}'", alias);
-            assert_eq!(
-                arch.unwrap().rust_target(),
-                "armv7-unknown-linux-gnueabihf"
-            );
+            assert_eq!(arch.unwrap().rust_target(), "armv7-unknown-linux-gnueabihf");
         }
     }
 
@@ -341,7 +335,10 @@ mod tests {
 
         let tc_path = result.unwrap();
         assert!(tc_path.exists());
-        assert_eq!(tc_path, dir.path().join(".horus/toolchains/toolchain.cmake"));
+        assert_eq!(
+            tc_path,
+            dir.path().join(".horus/toolchains/toolchain.cmake")
+        );
 
         let content = fs::read_to_string(&tc_path).unwrap();
         assert!(content.contains("aarch64-linux-gnu-g++"));

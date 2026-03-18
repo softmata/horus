@@ -1,12 +1,12 @@
 use anyhow::Result;
 use colored::*;
+use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read as _, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use horus_core::core::DurationExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AuthConfig {
@@ -162,9 +162,7 @@ fn wait_for_oauth_callback(
 
     // Read the HTTP request
     let mut buf = [0u8; 4096];
-    stream
-        .set_read_timeout(Some(5_u64.secs()))
-        .ok();
+    stream.set_read_timeout(Some(5_u64.secs())).ok();
     let n = stream
         .read(&mut buf)
         .map_err(|e| format!("Failed to read request: {}", e))?;
@@ -665,7 +663,10 @@ mod tests {
             github_username: None,
         };
         assert!(config.api_key.starts_with("horus_key_"));
-        assert!(config.api_key.len() > "horus_key_".len(), "token must have content after prefix");
+        assert!(
+            config.api_key.len() > "horus_key_".len(),
+            "token must have content after prefix"
+        );
     }
 
     #[test]
@@ -912,10 +913,7 @@ mod tests {
 
     #[test]
     fn extract_query_param_single_char_key_and_value() {
-        assert_eq!(
-            extract_query_param("/cb?a=b", "a"),
-            Some("b".to_string())
-        );
+        assert_eq!(extract_query_param("/cb?a=b", "a"), Some("b".to_string()));
     }
 
     #[test]
@@ -1071,11 +1069,7 @@ mod tests {
         let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        let result = save_auth_config(
-            "horus_key_nouser",
-            "https://registry.example.com",
-            None,
-        );
+        let result = save_auth_config("horus_key_nouser", "https://registry.example.com", None);
         assert!(result.is_ok());
 
         let config = load_auth_config().unwrap();
@@ -1098,8 +1092,7 @@ mod tests {
         let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        save_auth_config("horus_key_disk", "https://example.com", Some("alice"))
-            .unwrap();
+        save_auth_config("horus_key_disk", "https://example.com", Some("alice")).unwrap();
 
         // Read the raw file and verify it's valid JSON
         let config_path = horus_dir.join("auth.json");
@@ -1127,14 +1120,12 @@ mod tests {
         fs::create_dir_all(&horus_dir).unwrap();
 
         // Write first config
-        save_auth_config("horus_key_first", "https://first.com", Some("user1"))
-            .unwrap();
+        save_auth_config("horus_key_first", "https://first.com", Some("user1")).unwrap();
         let config1 = load_auth_config().unwrap();
         assert_eq!(config1.api_key, "horus_key_first");
 
         // Overwrite with second config
-        save_auth_config("horus_key_second", "https://second.com", Some("user2"))
-            .unwrap();
+        save_auth_config("horus_key_second", "https://second.com", Some("user2")).unwrap();
         let config2 = load_auth_config().unwrap();
         assert_eq!(config2.api_key, "horus_key_second");
         assert_eq!(config2.registry_url, "https://second.com");
@@ -1385,8 +1376,7 @@ mod tests {
 
         let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
-        save_auth_config("horus_key_logout", "https://example.com", Some("bob"))
-            .unwrap();
+        save_auth_config("horus_key_logout", "https://example.com", Some("bob")).unwrap();
 
         let config_path = horus_dir.join("auth.json");
         assert!(config_path.exists(), "auth.json should exist before logout");
@@ -1436,8 +1426,7 @@ mod tests {
 
         let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
-        save_auth_config("horus_key_then_logout", "https://example.com", None)
-            .unwrap();
+        save_auth_config("horus_key_then_logout", "https://example.com", None).unwrap();
 
         // Verify load works before logout
         assert!(load_auth_config().is_ok());
@@ -1463,13 +1452,13 @@ mod tests {
 
         // Almost-valid prefixes
         let near_misses = [
-            "horus_key",      // missing trailing underscore
-            "horus-key_",     // wrong separator
-            "Horus_key_",     // wrong case
-            "HORUS_KEY_",     // all caps
-            "horus_Key_",     // mixed case
-            " horus_key_",    // leading space
-            "horus_key_ ",    // value starts with space (prefix still matches but...)
+            "horus_key",   // missing trailing underscore
+            "horus-key_",  // wrong separator
+            "Horus_key_",  // wrong case
+            "HORUS_KEY_",  // all caps
+            "horus_Key_",  // mixed case
+            " horus_key_", // leading space
+            "horus_key_ ", // value starts with space (prefix still matches but...)
         ];
         for token in &near_misses {
             // Only the last one starts_with "horus_key_" — rest should not
@@ -1548,8 +1537,7 @@ mod tests {
         let horus_dir = tmp.path().join(".config/horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        save_auth_config("horus_key_local", "http://localhost:3000", Some("dev"))
-            .unwrap();
+        save_auth_config("horus_key_local", "http://localhost:3000", Some("dev")).unwrap();
 
         let config = load_auth_config().unwrap();
         assert_eq!(config.registry_url, "http://localhost:3000");
@@ -1697,8 +1685,7 @@ mod tests {
         fs::create_dir_all(&horus_dir).unwrap();
 
         // Step 1: save
-        save_auth_config("horus_key_cycle", "https://cycle.test", Some("cyclist"))
-            .unwrap();
+        save_auth_config("horus_key_cycle", "https://cycle.test", Some("cyclist")).unwrap();
 
         // Step 2: verify load
         let config = load_auth_config().unwrap();
@@ -1712,8 +1699,7 @@ mod tests {
         assert!(load_auth_config().is_err());
 
         // Step 5: re-save with different user
-        save_auth_config("horus_key_cycle2", "https://cycle2.test", Some("cyclist2"))
-            .unwrap();
+        save_auth_config("horus_key_cycle2", "https://cycle2.test", Some("cyclist2")).unwrap();
 
         // Step 6: verify new config
         let config2 = load_auth_config().unwrap();

@@ -29,8 +29,8 @@ use std::time::{Duration, Instant};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::communication::Topic;
-use crate::error::{HorusResult, RetryConfig};
 use crate::core::DurationExt;
+use crate::error::{HorusResult, RetryConfig};
 use crate::services::types::{
     Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
 };
@@ -260,8 +260,8 @@ where
             if resp.request_id == self.request_id {
                 return if resp.ok {
                     Ok(Some(resp.payload.ok_or(ServiceError::ServiceFailed(
-                            "server returned ok=true but no payload".to_string(),
-                        ))?))
+                        "server returned ok=true but no payload".to_string(),
+                    ))?))
                 } else {
                     Err(ServiceError::ServiceFailed(
                         resp.error.unwrap_or_else(|| "unknown error".to_string()),

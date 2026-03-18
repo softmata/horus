@@ -58,8 +58,14 @@ fn test_add_crates_io_explicit() {
     assert_no_panic(&output, "add crates.io");
     assert!(output.status.success(), "add serde should succeed");
     let toml = read_toml(&proj);
-    assert!(toml.contains("[dependencies.serde]"), "should have serde section");
-    assert!(toml.contains("source = \"crates.io\""), "source should be crates.io");
+    assert!(
+        toml.contains("[dependencies.serde]"),
+        "should have serde section"
+    );
+    assert!(
+        toml.contains("source = \"crates.io\""),
+        "source should be crates.io"
+    );
 }
 
 #[test]
@@ -74,7 +80,10 @@ fn test_add_crates_io_at_version() {
     assert_no_panic(&output, "add tokio@1.0");
     assert!(output.status.success());
     let toml = read_toml(&proj);
-    assert!(toml.contains("version = \"1.0\""), "should pin version to 1.0");
+    assert!(
+        toml.contains("version = \"1.0\""),
+        "should pin version to 1.0"
+    );
 }
 
 #[test]
@@ -82,7 +91,14 @@ fn test_add_crates_io_with_features() {
     let tmp = TempDir::new().unwrap();
     let proj = new_rust_project(&tmp, "cio3");
     let output = horus_cmd()
-        .args(["add", "serde", "--source", "crates.io", "--features", "derive"])
+        .args([
+            "add",
+            "serde",
+            "--source",
+            "crates.io",
+            "--features",
+            "derive",
+        ])
         .current_dir(&proj)
         .output()
         .unwrap();
@@ -131,7 +147,10 @@ fn test_add_pypi_in_python_project() {
     assert_no_panic(&output, "add pypi");
     assert!(output.status.success());
     let toml = read_toml(&proj);
-    assert!(toml.contains("[dependencies.numpy]"), "should have numpy section");
+    assert!(
+        toml.contains("[dependencies.numpy]"),
+        "should have numpy section"
+    );
     assert!(toml.contains("source = \"pypi\""), "source should be pypi");
 }
 
@@ -165,7 +184,10 @@ fn test_add_pypi_in_rust_project_with_override() {
     assert_no_panic(&output, "add pypi to rust project");
     assert!(output.status.success());
     let toml = read_toml(&proj);
-    assert!(toml.contains("source = \"pypi\""), "source override should work");
+    assert!(
+        toml.contains("source = \"pypi\""),
+        "source override should work"
+    );
 }
 
 // ============================================================================
@@ -227,7 +249,10 @@ fn test_add_path_dep_nonexistent() {
         .output()
         .unwrap();
     assert_no_panic(&output, "add nonexistent path dep");
-    assert!(!output.status.success(), "path dep to nonexistent dir should fail");
+    assert!(
+        !output.status.success(),
+        "path dep to nonexistent dir should fail"
+    );
 }
 
 // ============================================================================
@@ -239,7 +264,12 @@ fn test_add_git_dep() {
     let tmp = TempDir::new().unwrap();
     let proj = new_rust_project(&tmp, "git1");
     let output = horus_cmd()
-        .args(["add", "https://github.com/example/repo.git", "--source", "git"])
+        .args([
+            "add",
+            "https://github.com/example/repo.git",
+            "--source",
+            "git",
+        ])
         .current_dir(&proj)
         .output()
         .unwrap();
@@ -327,10 +357,7 @@ fn test_add_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.trim().is_empty() {
         // JSON may be on the last line after human-readable output
-        let last_json_line = stdout
-            .lines()
-            .rev()
-            .find(|l| l.starts_with('{'));
+        let last_json_line = stdout.lines().rev().find(|l| l.starts_with('{'));
         if let Some(json_line) = last_json_line {
             let parsed: Result<serde_json::Value, _> = serde_json::from_str(json_line);
             assert!(
@@ -355,7 +382,10 @@ fn test_remove_crates_io_dep() {
         .current_dir(&proj)
         .output()
         .unwrap();
-    assert!(read_toml(&proj).contains("serde"), "serde should be present after add");
+    assert!(
+        read_toml(&proj).contains("serde"),
+        "serde should be present after add"
+    );
 
     let output = horus_cmd()
         .args(["remove", "serde"])
@@ -379,7 +409,10 @@ fn test_remove_pypi_dep() {
         .current_dir(&proj)
         .output()
         .unwrap();
-    assert!(read_toml(&proj).contains("numpy"), "numpy should be present");
+    assert!(
+        read_toml(&proj).contains("numpy"),
+        "numpy should be present"
+    );
 
     let output = horus_cmd()
         .args(["remove", "numpy"])
@@ -543,7 +576,11 @@ fn test_remove_then_build_regenerates() {
         .unwrap();
 
     // Build with serde
-    horus_cmd().arg("build").current_dir(&proj).output().unwrap();
+    horus_cmd()
+        .arg("build")
+        .current_dir(&proj)
+        .output()
+        .unwrap();
 
     // Remove serde
     horus_cmd()
@@ -553,7 +590,11 @@ fn test_remove_then_build_regenerates() {
         .unwrap();
 
     // Build again
-    horus_cmd().arg("build").current_dir(&proj).output().unwrap();
+    horus_cmd()
+        .arg("build")
+        .current_dir(&proj)
+        .output()
+        .unwrap();
 
     // .horus/Cargo.toml should no longer mention serde
     let cargo_toml = proj.join(".horus/Cargo.toml");

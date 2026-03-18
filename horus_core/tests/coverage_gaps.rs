@@ -11,9 +11,7 @@ mod tests {
     use horus_core::core::TopicMetadata;
     use horus_core::error::RetryConfig;
     use horus_core::service;
-    use horus_core::services::{
-        ServiceClient, ServiceError, ServiceServerBuilder,
-    };
+    use horus_core::services::{ServiceClient, ServiceError, ServiceServerBuilder};
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Section 1: NodePresence accessor tests (via JSON deserialization)
@@ -228,10 +226,7 @@ mod tests {
         std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<CgResilientBasic>::new().unwrap();
-        let resp = client.call_resilient(
-            CgResilientBasicRequest { a: 10, b: 20 },
-            2_u64.secs(),
-        );
+        let resp = client.call_resilient(CgResilientBasicRequest { a: 10, b: 20 }, 2_u64.secs());
 
         assert!(resp.is_ok(), "call_resilient should succeed: {:?}", resp);
         assert_eq!(resp.unwrap().sum, 30);
@@ -255,7 +250,11 @@ mod tests {
             config,
         );
 
-        assert!(resp.is_ok(), "call_resilient_with should succeed: {:?}", resp);
+        assert!(
+            resp.is_ok(),
+            "call_resilient_with should succeed: {:?}",
+            resp
+        );
         assert_eq!(resp.unwrap().sum, 15);
     }
 
@@ -265,11 +264,7 @@ mod tests {
         // after retrying. Use short timeout + minimal retries to keep fast.
         let config = RetryConfig::new(1, 5_u64.ms());
         let mut client = ServiceClient::<CgResilientTimeout>::new().unwrap();
-        let result = client.call_resilient_with(
-            CgResilientTimeoutRequest {},
-            30_u64.ms(),
-            config,
-        );
+        let result = client.call_resilient_with(CgResilientTimeoutRequest {}, 30_u64.ms(), config);
 
         assert!(
             matches!(result, Err(ServiceError::Timeout)),
@@ -335,10 +330,7 @@ mod tests {
         std::thread::sleep(20_u64.ms());
 
         let mut client = ServiceClient::<CgResilientRetry>::new().unwrap();
-        let resp = client.call_resilient(
-            CgResilientRetryRequest { a: 100, b: 200 },
-            2_u64.secs(),
-        );
+        let resp = client.call_resilient(CgResilientRetryRequest { a: 100, b: 200 }, 2_u64.secs());
 
         assert!(resp.is_ok());
         assert_eq!(resp.unwrap().sum, 300);

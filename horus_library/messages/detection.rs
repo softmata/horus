@@ -98,7 +98,10 @@ impl BoundingBox2D {
 
 impl LogSummary for BoundingBox2D {
     fn log_summary(&self) -> String {
-        format!("BBox2D({:.1},{:.1} {:.1}x{:.1})", self.x, self.y, self.width, self.height)
+        format!(
+            "BBox2D({:.1},{:.1} {:.1}x{:.1})",
+            self.x, self.y, self.width, self.height
+        )
     }
 }
 
@@ -176,7 +179,10 @@ impl BoundingBox3D {
 
 impl LogSummary for BoundingBox3D {
     fn log_summary(&self) -> String {
-        format!("BBox3D(c={:.1},{:.1},{:.1} {:.1}x{:.1}x{:.1})", self.cx, self.cy, self.cz, self.length, self.width, self.height)
+        format!(
+            "BBox3D(c={:.1},{:.1},{:.1} {:.1}x{:.1}x{:.1})",
+            self.cx, self.cy, self.cz, self.length, self.width, self.height
+        )
     }
 }
 
@@ -252,7 +258,10 @@ impl Detection {
 
 impl LogSummary for Detection {
     fn log_summary(&self) -> String {
-        format!("Det(cls={}, conf={:.2}, bbox={:.0},{:.0})", self.class_id, self.confidence, self.bbox.x, self.bbox.y)
+        format!(
+            "Det(cls={}, conf={:.2}, bbox={:.0},{:.0})",
+            self.class_id, self.confidence, self.bbox.x, self.bbox.y
+        )
     }
 }
 

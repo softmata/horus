@@ -255,7 +255,9 @@ impl NodeRegistration {
             };
             log::warn!(
                 "node '{}': .{}() overridden by .{}() — only the last execution class applies",
-                self.node.name(), old_class, new_class
+                self.node.name(),
+                old_class,
+                new_class
             );
         }
     }
@@ -589,7 +591,8 @@ impl NodeRegistration {
                 log::warn!(
                     "node '{}': .core({}) has no effect — only RT nodes get pinned threads. \
                      Add .rate() or .budget() to make this node RT, or remove .core().",
-                    node_name, cpu
+                    node_name,
+                    cpu
                 );
             }
         }
@@ -600,7 +603,8 @@ impl NodeRegistration {
                 "node '{}': .on_miss({:?}) has no effect without a deadline — \
                  add .rate() or .deadline() to enable deadline enforcement, \
                  or remove .on_miss().",
-                node_name, self.miss_policy
+                node_name,
+                self.miss_policy
             );
         }
 
@@ -900,8 +904,14 @@ mod tests {
         let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz());
         reg.finalize();
         assert!(reg.is_rt);
-        assert!(reg.tick_budget.is_some(), "budget should be auto-derived from rate");
-        assert!(reg.deadline.is_some(), "deadline should be auto-derived from rate");
+        assert!(
+            reg.tick_budget.is_some(),
+            "budget should be auto-derived from rate"
+        );
+        assert!(
+            reg.deadline.is_some(),
+            "deadline should be auto-derived from rate"
+        );
     }
 
     // ── .budget() / .deadline() explicit override ──
@@ -945,8 +955,7 @@ mod tests {
 
     #[test]
     fn test_budget_without_rate_enables_rt() {
-        let mut reg = NodeRegistration::new(stub("n"))
-            .budget(500.us());
+        let mut reg = NodeRegistration::new(stub("n")).budget(500.us());
         reg.finalize();
         assert!(reg.is_rt);
         assert_eq!(reg.execution_class, ExecutionClass::Rt);
@@ -955,8 +964,7 @@ mod tests {
 
     #[test]
     fn test_deadline_without_rate_enables_rt() {
-        let mut reg = NodeRegistration::new(stub("n"))
-            .deadline(1.ms());
+        let mut reg = NodeRegistration::new(stub("n")).deadline(1.ms());
         reg.finalize();
         assert!(reg.is_rt);
         assert_eq!(reg.execution_class, ExecutionClass::Rt);
@@ -965,9 +973,7 @@ mod tests {
 
     #[test]
     fn test_budget_on_compute_node_rejected() {
-        let mut reg = NodeRegistration::new(stub("n"))
-            .compute()
-            .budget(500.us());
+        let mut reg = NodeRegistration::new(stub("n")).compute().budget(500.us());
         let result = reg.validate();
         assert!(result.is_err(), "budget on compute node should be rejected");
     }
@@ -992,8 +998,8 @@ mod tests {
 
     #[test]
     fn test_failure_policy_restart() {
-        let reg = NodeRegistration::new(stub("n"))
-            .failure_policy(FailurePolicy::restart(3, 50_u64.ms()));
+        let reg =
+            NodeRegistration::new(stub("n")).failure_policy(FailurePolicy::restart(3, 50_u64.ms()));
         assert!(matches!(
             reg.failure_policy,
             Some(FailurePolicy::Restart {
@@ -1005,8 +1011,8 @@ mod tests {
 
     #[test]
     fn test_failure_policy_skip() {
-        let reg = NodeRegistration::new(stub("n"))
-            .failure_policy(FailurePolicy::skip(5, 200_u64.ms()));
+        let reg =
+            NodeRegistration::new(stub("n")).failure_policy(FailurePolicy::skip(5, 200_u64.ms()));
         assert!(matches!(
             reg.failure_policy,
             Some(FailurePolicy::Skip {
@@ -1267,7 +1273,9 @@ mod tests {
     /// The scheduler may use rate as a minimum check interval.
     #[test]
     fn conflict_event_with_rate_both_stored() {
-        let reg = NodeRegistration::new(stub("n")).on("sensor").rate(100_u64.hz());
+        let reg = NodeRegistration::new(stub("n"))
+            .on("sensor")
+            .rate(100_u64.hz());
         assert_eq!(
             reg.execution_class,
             ExecutionClass::Event("sensor".to_string()),
@@ -1279,7 +1287,9 @@ mod tests {
     /// .rate(100_u64.hz()).on("topic") — same result, order doesn't matter.
     #[test]
     fn conflict_rate_then_event_both_stored() {
-        let reg = NodeRegistration::new(stub("n")).rate(100_u64.hz()).on("sensor");
+        let reg = NodeRegistration::new(stub("n"))
+            .rate(100_u64.hz())
+            .on("sensor");
         assert_eq!(
             reg.execution_class,
             ExecutionClass::Event("sensor".to_string())
@@ -1293,7 +1303,9 @@ mod tests {
     /// After finalize, is_rt is true but class is Compute — validation rejects this.
     #[test]
     fn conflict_rate_then_compute_finalize_rejects() {
-        let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz()).compute();
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(100_u64.hz())
+            .compute();
         // compute() overrides execution_class before finalize — finalize sees Compute, skips RT
         reg.finalize();
         assert_eq!(reg.execution_class, ExecutionClass::Compute);
@@ -1303,7 +1315,9 @@ mod tests {
     #[test]
     fn validate_event_with_rate_ok() {
         // Event + rate_hz is valid (rate used as minimum poll interval)
-        let mut reg = NodeRegistration::new(stub("n")).on("sensor").rate(100_u64.hz());
+        let mut reg = NodeRegistration::new(stub("n"))
+            .on("sensor")
+            .rate(100_u64.hz());
         reg.validate().unwrap();
     }
 
@@ -1426,7 +1440,9 @@ mod tests {
 
     #[test]
     fn priority_on_rt_builds_ok_no_warning() {
-        let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz()).priority(90);
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(100_u64.hz())
+            .priority(90);
         reg.validate().unwrap(); // RT node — no warning expected
     }
 
@@ -1454,7 +1470,9 @@ mod tests {
 
     #[test]
     fn on_miss_stop_without_deadline_builds_ok() {
-        let mut reg = NodeRegistration::new(stub("n")).compute().on_miss(Miss::Stop);
+        let mut reg = NodeRegistration::new(stub("n"))
+            .compute()
+            .on_miss(Miss::Stop);
         reg.validate().unwrap(); // Warning only
     }
 
@@ -1474,13 +1492,17 @@ mod tests {
     #[test]
     fn on_miss_skip_with_rate_no_warning() {
         // .rate() auto-derives deadline — on_miss is valid
-        let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz()).on_miss(Miss::Skip);
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(100_u64.hz())
+            .on_miss(Miss::Skip);
         reg.validate().unwrap();
     }
 
     #[test]
     fn on_miss_with_explicit_deadline_no_warning() {
-        let mut reg = NodeRegistration::new(stub("n")).deadline(1.ms()).on_miss(Miss::SafeMode);
+        let mut reg = NodeRegistration::new(stub("n"))
+            .deadline(1.ms())
+            .on_miss(Miss::SafeMode);
         reg.validate().unwrap();
     }
 
@@ -1491,7 +1513,11 @@ mod tests {
         let mut reg = NodeRegistration::new(stub("n")).on("");
         let err = reg.validate().unwrap_err();
         let msg = format!("{}", err);
-        assert!(msg.contains("must not be empty"), "error should mention empty topic: {}", msg);
+        assert!(
+            msg.contains("must not be empty"),
+            "error should mention empty topic: {}",
+            msg
+        );
     }
 
     #[test]

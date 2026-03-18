@@ -27,11 +27,11 @@ use horus_benchmarks::{
     BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics, Statistics,
     ThroughputMetrics,
 };
+use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::process::{Command, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use horus_core::core::DurationExt;
 
 const DEFAULT_ITERATIONS: usize = 50_000;
 const DEFAULT_WARMUP: usize = 5_000;

@@ -35,7 +35,10 @@ fn test_detect_is_cached() {
     let info1 = platform::detect();
     let info2 = platform::detect();
     // Same pointer — OnceLock returns &'static
-    assert!(std::ptr::eq(info1, info2), "detect() should return cached value");
+    assert!(
+        std::ptr::eq(info1, info2),
+        "detect() should return cached value"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -87,7 +90,10 @@ fn test_standard_dirs_are_distinct() {
 #[test]
 fn test_disk_available_mb_returns_some() {
     let result = platform::disk_available_mb(&std::env::temp_dir());
-    assert!(result.is_some(), "temp_dir should have measurable space on all platforms");
+    assert!(
+        result.is_some(),
+        "temp_dir should have measurable space on all platforms"
+    );
 }
 
 #[test]
@@ -149,7 +155,10 @@ fn test_suggest_install_contains_package_name() {
 #[test]
 fn test_suggest_build_tools_nonempty() {
     let cmd = platform::suggest_build_tools();
-    assert!(!cmd.is_empty(), "build tools suggestion should be non-empty");
+    assert!(
+        !cmd.is_empty(),
+        "build tools suggestion should be non-empty"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

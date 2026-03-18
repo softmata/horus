@@ -23,10 +23,7 @@ pub fn run_bench(filter: Option<String>, extra_args: Vec<String>) -> Result<()> 
     let tools = toolchain.tools_for(Operation::Bench);
 
     if tools.is_empty() {
-        eprintln!(
-            "{} No benchmark tools found.",
-            "warn:".yellow(),
-        );
+        eprintln!("{} No benchmark tools found.", "warn:".yellow(),);
         return Ok(());
     }
 

@@ -528,7 +528,11 @@ mod tests {
         let result = list_nodes(false, false, Some("".to_string()));
         assert!(result.is_err(), "empty string category should be rejected");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Unknown category"), "error should mention unknown category: {}", err);
+        assert!(
+            err.contains("Unknown category"),
+            "error should mention unknown category: {}",
+            err
+        );
     }
 
     #[test]
@@ -550,7 +554,11 @@ mod tests {
         let result = list_nodes(false, false, Some("\u{1F600}".to_string()));
         assert!(result.is_err(), "unicode emoji category should be rejected");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Unknown category"), "error should mention unknown category: {}", err);
+        assert!(
+            err.contains("Unknown category"),
+            "error should mention unknown category: {}",
+            err
+        );
     }
 
     #[test]
@@ -565,7 +573,10 @@ mod tests {
         let result = list_nodes(false, false, Some("42".to_string()));
         assert!(result.is_err(), "numeric category should be rejected");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("42"), "error should echo back the bad category");
+        assert!(
+            err.contains("42"),
+            "error should echo back the bad category"
+        );
     }
 
     // ── Battle tests: node info ──────────────────────────────────────────
@@ -587,15 +598,26 @@ mod tests {
         let result = node_info("");
         assert!(result.is_err(), "info on empty name should fail");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("not found"), "error should say not found: {}", err);
+        assert!(
+            err.contains("not found"),
+            "error should say not found: {}",
+            err
+        );
     }
 
     #[test]
     fn node_info_unicode_name_returns_error() {
         let result = node_info("\u{1F916}_robot_node");
-        assert!(result.is_err(), "info on unicode name should fail (no such node)");
+        assert!(
+            result.is_err(),
+            "info on unicode name should fail (no such node)"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("not found"), "error should say not found: {}", err);
+        assert!(
+            err.contains("not found"),
+            "error should say not found: {}",
+            err
+        );
     }
 
     #[test]
@@ -619,7 +641,11 @@ mod tests {
         let result = kill_node("nonexistent_node_xyz", false);
         assert!(result.is_err(), "killing nonexistent node should fail");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("not found"), "error should say not found: {}", err);
+        assert!(
+            err.contains("not found"),
+            "error should say not found: {}",
+            err
+        );
     }
 
     #[test]
@@ -631,7 +657,10 @@ mod tests {
     #[test]
     fn kill_node_force_nonexistent_returns_error() {
         let result = kill_node("ghost_node", true);
-        assert!(result.is_err(), "force-killing nonexistent node should still fail");
+        assert!(
+            result.is_err(),
+            "force-killing nonexistent node should still fail"
+        );
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "error: {}", err);
     }
@@ -671,7 +700,10 @@ mod tests {
     #[test]
     fn pause_node_unicode_name_returns_error() {
         let result = pause_node("\u{00E9}l\u{00E8}ve_node");
-        assert!(result.is_err(), "pausing unicode node should fail (not found)");
+        assert!(
+            result.is_err(),
+            "pausing unicode node should fail (not found)"
+        );
     }
 
     // ── Battle tests: resume node ────────────────────────────────────────
@@ -701,7 +733,11 @@ mod tests {
     fn truncate_name_zero_max() {
         // max_len of 0: should return empty or very short
         let result = truncate_name("hello", 0);
-        assert!(result.len() <= 3, "zero max should produce minimal output: '{}'", result);
+        assert!(
+            result.len() <= 3,
+            "zero max should produce minimal output: '{}'",
+            result
+        );
     }
 
     #[test]
@@ -709,7 +745,11 @@ mod tests {
         // Multi-byte chars: should not panic on char boundary issues
         let name = "\u{1F916}\u{1F916}\u{1F916}\u{1F916}\u{1F916}"; // 5 robot emojis (4 bytes each)
         let result = truncate_name(name, 10);
-        assert!(result.len() <= 13, "truncated unicode should fit: len={}", result.len());
+        assert!(
+            result.len() <= 13,
+            "truncated unicode should fit: len={}",
+            result.len()
+        );
         // Should not panic — that's the main assertion
     }
 

@@ -7,10 +7,10 @@
 use crate::cli_output;
 use colored::*;
 use horus_core::core::log_buffer::{LogEntry, LogType, GLOBAL_LOG_BUFFER};
+use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_logs_path;
 use std::time::SystemTime;
-use horus_core::core::DurationExt;
 
 // ─── Log level for filtering ──────────────────────────────────────────────────
 
@@ -419,18 +419,38 @@ mod tests {
     #[test]
     fn parse_since_invalid_format() {
         let err1 = parse_since(Some("5x")).unwrap_err().to_string();
-        assert!(err1.contains("Invalid time format"), "should mention invalid format: {}", err1);
-        assert!(err1.contains("5x"), "should include the invalid input: {}", err1);
+        assert!(
+            err1.contains("Invalid time format"),
+            "should mention invalid format: {}",
+            err1
+        );
+        assert!(
+            err1.contains("5x"),
+            "should include the invalid input: {}",
+            err1
+        );
 
         let err2 = parse_since(Some("abc")).unwrap_err().to_string();
-        assert!(err2.contains("Invalid"), "should indicate invalidity: {}", err2);
+        assert!(
+            err2.contains("Invalid"),
+            "should indicate invalidity: {}",
+            err2
+        );
     }
 
     #[test]
     fn parse_since_invalid_number() {
         let err = parse_since(Some("abcs")).unwrap_err().to_string();
-        assert!(err.contains("Invalid number"), "should mention invalid number: {}", err);
-        assert!(err.contains("abcs"), "should include the invalid input: {}", err);
+        assert!(
+            err.contains("Invalid number"),
+            "should mention invalid number: {}",
+            err
+        );
+        assert!(
+            err.contains("abcs"),
+            "should include the invalid input: {}",
+            err
+        );
     }
 
     #[test]
@@ -485,7 +505,12 @@ mod tests {
         ];
         for i in 0..levels.len() {
             for j in (i + 1)..levels.len() {
-                assert!(levels[i] < levels[j], "{:?} should be < {:?}", levels[i], levels[j]);
+                assert!(
+                    levels[i] < levels[j],
+                    "{:?} should be < {:?}",
+                    levels[i],
+                    levels[j]
+                );
             }
         }
         // Equality
@@ -516,7 +541,10 @@ mod tests {
     fn log_level_from_log_type_pub_sub_are_trace() {
         // Verify IPC events map to lowest severity
         assert_eq!(LogLevel::from_log_type(&LogType::Publish), LogLevel::Trace);
-        assert_eq!(LogLevel::from_log_type(&LogType::Subscribe), LogLevel::Trace);
+        assert_eq!(
+            LogLevel::from_log_type(&LogType::Subscribe),
+            LogLevel::Trace
+        );
         // Both should be below Info
         assert!(LogLevel::from_log_type(&LogType::Publish) < LogLevel::Info);
     }
@@ -541,7 +569,11 @@ mod tests {
     #[test]
     fn parse_since_negative_number_fails() {
         let err = parse_since(Some("-5s")).unwrap_err().to_string();
-        assert!(err.contains("Invalid number"), "negative should fail: {}", err);
+        assert!(
+            err.contains("Invalid number"),
+            "negative should fail: {}",
+            err
+        );
     }
 
     #[test]
@@ -553,13 +585,21 @@ mod tests {
     #[test]
     fn parse_since_empty_unit_fails() {
         let err = parse_since(Some("5")).unwrap_err().to_string();
-        assert!(err.contains("Invalid time format"), "missing unit should fail: {}", err);
+        assert!(
+            err.contains("Invalid time format"),
+            "missing unit should fail: {}",
+            err
+        );
     }
 
     #[test]
     fn parse_since_only_unit_fails() {
         let err = parse_since(Some("s")).unwrap_err().to_string();
-        assert!(err.contains("Invalid number"), "only-unit should fail: {}", err);
+        assert!(
+            err.contains("Invalid number"),
+            "only-unit should fail: {}",
+            err
+        );
     }
 
     // ── Battle tests: parse_entry_time edge cases ─────────────────────────

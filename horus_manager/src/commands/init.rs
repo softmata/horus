@@ -53,7 +53,11 @@ mod tests {
         let result = run_init(Some("test_workspace".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok(), "run_init should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "run_init should succeed: {:?}",
+            result.err()
+        );
 
         // .horus/ directory should be created
         assert!(
@@ -116,16 +120,15 @@ mod tests {
         let result = run_init(None);
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok(), "run_init(None) should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "run_init(None) should succeed: {:?}",
+            result.err()
+        );
 
         // horus.toml should exist with the tempdir's folder name
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
-        let dir_name = tmp
-            .path()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let dir_name = tmp.path().file_name().unwrap().to_str().unwrap();
         assert!(
             content.contains(&format!("name = \"{}\"", dir_name)),
             "Should use directory name '{}', got: {}",
@@ -215,10 +218,7 @@ mod tests {
             marker.exists(),
             "Pre-existing files in .horus/ should be preserved"
         );
-        assert_eq!(
-            fs::read_to_string(&marker).unwrap(),
-            "existing content"
-        );
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "existing content");
     }
 
     // ========================================================================
@@ -406,11 +406,13 @@ mod tests {
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
 
         // Should be parseable as TOML
-        let parsed: toml::Value = toml::from_str(&content)
-            .expect("horus.toml should be valid TOML");
+        let parsed: toml::Value =
+            toml::from_str(&content).expect("horus.toml should be valid TOML");
 
         // Should have package.name and package.version
-        let package = parsed.get("package").expect("Should have [package] section");
+        let package = parsed
+            .get("package")
+            .expect("Should have [package] section");
         assert_eq!(
             package.get("name").and_then(|v| v.as_str()),
             Some("toml_valid_ws"),

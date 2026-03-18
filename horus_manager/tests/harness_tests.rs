@@ -7,9 +7,9 @@ mod harness;
 
 use harness::{HorusTestRuntime, TestNodeConfig};
 
+use horus_core::core::DurationExt;
 use horus_core::NodePresence;
 use std::fs;
-use horus_core::core::DurationExt;
 
 // ── Harness self-tests ──────────────────────────────────────────────────────
 

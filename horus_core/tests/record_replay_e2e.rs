@@ -153,8 +153,7 @@ fn test_diff_detects_divergence() {
     for tick in 0..20u64 {
         // Run 1: normal
         run1.add_snapshot(
-            NodeTickSnapshot::new(tick)
-                .with_output("cmd", (tick * 10).to_le_bytes().to_vec()),
+            NodeTickSnapshot::new(tick).with_output("cmd", (tick * 10).to_le_bytes().to_vec()),
         );
 
         // Run 2: diverges at tick 10
@@ -184,14 +183,8 @@ fn test_diff_identical_recordings() {
 
     for tick in 0..30u64 {
         let data = (tick * 7).to_le_bytes().to_vec();
-        run1.add_snapshot(
-            NodeTickSnapshot::new(tick)
-                .with_output("imu", data.clone()),
-        );
-        run2.add_snapshot(
-            NodeTickSnapshot::new(tick)
-                .with_output("imu", data),
-        );
+        run1.add_snapshot(NodeTickSnapshot::new(tick).with_output("imu", data.clone()));
+        run2.add_snapshot(NodeTickSnapshot::new(tick).with_output("imu", data));
     }
 
     let diffs = diff_recordings(&run1, &run2);
@@ -243,9 +236,7 @@ fn test_deterministic_scheduler_recording_reproducible() {
 
     // Run 1
     let ticks1 = Arc::new(AtomicU64::new(0));
-    let mut sched1 = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut sched1 = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
     sched1
         .add(DeterministicCounter {
             name: format!("det_rec1_{}", std::process::id()),
@@ -261,9 +252,7 @@ fn test_deterministic_scheduler_recording_reproducible() {
 
     // Run 2 (same config)
     let ticks2 = Arc::new(AtomicU64::new(0));
-    let mut sched2 = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut sched2 = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
     sched2
         .add(DeterministicCounter {
             name: format!("det_rec2_{}", std::process::id()),

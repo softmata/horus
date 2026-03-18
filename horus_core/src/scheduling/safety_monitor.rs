@@ -170,8 +170,14 @@ impl TickTimingRing {
         }
 
         let samples = &self.durations[..n];
-        let min = *samples.iter().min().unwrap();
-        let max = *samples.iter().max().unwrap();
+        let min = *samples
+            .iter()
+            .min()
+            .expect("samples non-empty: checked n > 0 above");
+        let max = *samples
+            .iter()
+            .max()
+            .expect("samples non-empty: checked n > 0 above");
         let sum: u64 = samples.iter().sum();
         let avg = sum / n as u64;
 
@@ -386,7 +392,11 @@ impl BudgetEnforcer {
     ///
     /// This is the real enforcement: tracks per-node timing history,
     /// computes overrun severity, and updates the ring buffer.
-    pub(crate) fn check_budget(&mut self, node: &str, actual: Duration) -> Result<(), BudgetViolation> {
+    pub(crate) fn check_budget(
+        &mut self,
+        node: &str,
+        actual: Duration,
+    ) -> Result<(), BudgetViolation> {
         let state = self
             .node_timing
             .entry(node.to_string())
@@ -394,7 +404,8 @@ impl BudgetEnforcer {
 
         if let Some(mut violation) = state.record_tick(actual) {
             self.overruns.fetch_add(1, Ordering::SeqCst);
-            violation = BudgetViolation::new(node.to_string(), violation.budget(), violation.actual());
+            violation =
+                BudgetViolation::new(node.to_string(), violation.budget(), violation.actual());
             return Err(violation);
         }
         Ok(())
@@ -570,10 +581,7 @@ impl SafetyMonitor {
     /// - `Critical` (3x timeout): trigger safety response for critical nodes
     ///
     /// The buffer is reused across ticks (caller-owned).
-    pub(crate) fn check_watchdogs_graduated(
-        &self,
-        results: &mut Vec<(String, WatchdogSeverity)>,
-    ) {
+    pub(crate) fn check_watchdogs_graduated(&self, results: &mut Vec<(String, WatchdogSeverity)>) {
         results.clear();
         for (name, watchdog) in self.watchdogs.read().iter() {
             let severity = watchdog.check_graduated();
@@ -583,7 +591,10 @@ impl SafetyMonitor {
         }
 
         // For critical nodes at Critical severity: trigger emergency stop
-        if results.iter().any(|(_, s)| *s == WatchdogSeverity::Critical) {
+        if results
+            .iter()
+            .any(|(_, s)| *s == WatchdogSeverity::Critical)
+        {
             let critical: Vec<String> = self.critical_nodes.read().clone();
             for (name, severity) in results.iter() {
                 if *severity == WatchdogSeverity::Critical && critical.contains(name) {
@@ -609,12 +620,17 @@ impl SafetyMonitor {
             .check_budget(node_name, execution_time);
 
         if let Err(ref violation) = result {
-            let is_critical = self.critical_nodes.read().contains(&violation.node_name().to_string());
+            let is_critical = self
+                .critical_nodes
+                .read()
+                .contains(&violation.node_name().to_string());
             if is_critical {
                 self.budget_enforcer.lock().mark_critical_overrun();
                 self.trigger_emergency_stop(format!(
                     "Critical node {} exceeded tick budget: {:?} > {:?}",
-                    violation.node_name(), violation.actual(), violation.budget()
+                    violation.node_name(),
+                    violation.actual(),
+                    violation.budget()
                 ));
             }
         }
@@ -674,9 +690,7 @@ impl SafetyMonitor {
     ) -> DegradationAction {
         let policy = &self.degradation_policy;
         let mut states = self.degradation_states.lock();
-        let state = states
-            .entry(node_name.to_string())
-            .or_default();
+        let state = states.entry(node_name.to_string()).or_default();
 
         if consecutive_misses >= policy.isolate_after && state.stage != DegradationStage::Isolated {
             state.stage = DegradationStage::Isolated;
@@ -696,8 +710,7 @@ impl SafetyMonitor {
                 node: node_name.to_string(),
                 new_rate_hz: new_rate,
             }
-        } else if consecutive_misses >= policy.warn_after
-            && state.stage == DegradationStage::Normal
+        } else if consecutive_misses >= policy.warn_after && state.stage == DegradationStage::Normal
         {
             state.stage = DegradationStage::Warned;
             DegradationAction::Warn(node_name.to_string())
@@ -1137,7 +1150,9 @@ mod tests {
 
         // fast_node should be Warning (1x-2x), slow_node should not appear (Ok)
         assert!(
-            results.iter().any(|(n, s)| n == "fast_node" && *s == WatchdogSeverity::Warning),
+            results
+                .iter()
+                .any(|(n, s)| n == "fast_node" && *s == WatchdogSeverity::Warning),
             "fast_node should be at Warning severity; got {:?}",
             results
         );
@@ -1174,10 +1189,10 @@ mod tests {
 
         let monitor = SafetyMonitor::new(100);
         // Register a watchdog but NOT as critical
-        monitor.watchdogs.write().insert(
-            "noncritical".to_string(),
-            Watchdog::new(10_u64.ms()),
-        );
+        monitor
+            .watchdogs
+            .write()
+            .insert("noncritical".to_string(), Watchdog::new(10_u64.ms()));
 
         thread::sleep(35_u64.ms());
 
@@ -1185,7 +1200,9 @@ mod tests {
         monitor.check_watchdogs_graduated(&mut results);
 
         assert!(!monitor.is_emergency_stop());
-        assert!(results.iter().any(|(n, s)| n == "noncritical" && *s == WatchdogSeverity::Critical));
+        assert!(results
+            .iter()
+            .any(|(n, s)| n == "noncritical" && *s == WatchdogSeverity::Critical));
     }
 
     /// Buffer is reused across calls (cleared at entry).
@@ -1233,7 +1250,11 @@ mod tests {
         let stats = ring.stats();
         assert_eq!(stats.min_us, 1);
         assert_eq!(stats.max_us, 100);
-        assert!(stats.p99_us >= 99, "p99 should be >= 99, got {}", stats.p99_us);
+        assert!(
+            stats.p99_us >= 99,
+            "p99 should be >= 99, got {}",
+            stats.p99_us
+        );
     }
 
     /// NodeTimingState tracks overruns correctly.
@@ -1376,7 +1397,10 @@ mod tests {
         );
 
         // Stage should be back to Normal
-        assert_eq!(monitor.degradation_stage("sensor"), DegradationStage::Normal);
+        assert_eq!(
+            monitor.degradation_stage("sensor"),
+            DegradationStage::Normal
+        );
     }
 
     #[test]
@@ -1418,7 +1442,7 @@ mod tests {
 
         let _ = monitor.evaluate_degradation("node", 1, None); // warn
         let action = monitor.evaluate_degradation("node", 2, None); // reduce
-        // Should use 100.0 / 2 = 50.0 as fallback
+                                                                    // Should use 100.0 / 2 = 50.0 as fallback
         assert_eq!(
             action,
             DegradationAction::ReduceRate {

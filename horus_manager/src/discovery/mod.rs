@@ -31,6 +31,7 @@
 pub(crate) mod nodes;
 pub(crate) mod topics;
 
+use horus_core::core::DurationExt;
 use horus_core::core::HealthStatus;
 #[allow(unused_imports)] // used by discovery/tests.rs for SHM presence mocking
 use horus_core::core::NodePresence;
@@ -39,7 +40,6 @@ use horus_core::memory::shm_topics_dir;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use horus_core::core::DurationExt;
 
 // Data structures for comprehensive monitoring
 #[derive(Debug, Clone)]

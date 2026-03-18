@@ -165,18 +165,38 @@ fn three_node_pipeline_data_flows_end_to_end() {
         .build();
 
     let result = scheduler.run_for(300_u64.ms());
-    assert!(result.is_ok(), "Pipeline should run without error: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Pipeline should run without error: {:?}",
+        result.err()
+    );
 
     let s = sensor_count.load(Ordering::SeqCst);
     let p = processor_count.load(Ordering::SeqCst);
     let r = controller_received.load(Ordering::SeqCst);
     let v = controller_latest.load(Ordering::SeqCst);
 
-    assert!(s > 5, "Sensor should have published at least 5 values, got {s}");
-    assert!(p > 0, "Processor should have processed at least 1 value, got {p}");
-    assert!(r > 0, "Controller should have received at least 1 value, got {r}");
-    assert!(v > 0, "Controller latest value should be non-zero (doubled sensor output), got {v}");
-    assert_eq!(v % 2, 0, "Controller value should be even (doubled), got {v}");
+    assert!(
+        s > 5,
+        "Sensor should have published at least 5 values, got {s}"
+    );
+    assert!(
+        p > 0,
+        "Processor should have processed at least 1 value, got {p}"
+    );
+    assert!(
+        r > 0,
+        "Controller should have received at least 1 value, got {r}"
+    );
+    assert!(
+        v > 0,
+        "Controller latest value should be non-zero (doubled sensor output), got {v}"
+    );
+    assert_eq!(
+        v % 2,
+        0,
+        "Controller value should be even (doubled), got {v}"
+    );
 }
 
 #[test]
@@ -221,7 +241,10 @@ fn pipeline_ordering_ensures_sensor_before_processor() {
 
     assert!(s > 0, "Sensor should have ticked, got {s}");
     // With correct ordering, processor should process sensor's data within same tick
-    assert!(p > 0, "Processor should have processed data from sensor, got {p}");
+    assert!(
+        p > 0,
+        "Processor should have processed data from sensor, got {p}"
+    );
 }
 
 #[test]
@@ -272,7 +295,11 @@ fn tick_once_processes_pipeline_synchronously() {
 
     // Single tick — all three nodes process in order
     let result = scheduler.tick_once();
-    assert!(result.is_ok(), "tick_once should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "tick_once should succeed: {:?}",
+        result.err()
+    );
 
     let s = sensor_count.load(Ordering::SeqCst);
     assert_eq!(s, 1, "Sensor should tick exactly once");
@@ -305,7 +332,11 @@ fn pipeline_with_watchdog_completes() {
         .build();
 
     let result = scheduler.run_for(300_u64.ms());
-    assert!(result.is_ok(), "Pipeline with watchdog should complete: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Pipeline with watchdog should complete: {:?}",
+        result.err()
+    );
 
     let s = sensor_count.load(Ordering::SeqCst);
     assert!(s > 5, "Sensor should have ticked multiple times, got {s}");

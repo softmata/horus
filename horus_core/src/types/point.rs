@@ -161,7 +161,10 @@ mod tests {
         // packed: alignment must be 1 (no padding)
         assert_eq!(std::mem::align_of::<PointXYZ>(), 1);
         // Exactly 3 * f32 with no gaps
-        assert_eq!(std::mem::size_of::<PointXYZ>(), 3 * std::mem::size_of::<f32>());
+        assert_eq!(
+            std::mem::size_of::<PointXYZ>(),
+            3 * std::mem::size_of::<f32>()
+        );
     }
 
     #[test]
@@ -178,7 +181,10 @@ mod tests {
         assert_eq!(std::mem::size_of::<PointXYZI>(), 16);
         assert_eq!(std::mem::align_of::<PointXYZI>(), 4);
         // Exactly 4 * f32 with no padding
-        assert_eq!(std::mem::size_of::<PointXYZI>(), 4 * std::mem::size_of::<f32>());
+        assert_eq!(
+            std::mem::size_of::<PointXYZI>(),
+            4 * std::mem::size_of::<f32>()
+        );
         assert!(std::mem::size_of::<PointXYZI>().is_power_of_two());
     }
 
@@ -256,7 +262,8 @@ mod tests {
         let rgb_bytes = bytemuck::bytes_of(&rgb);
         assert_eq!(rgb_bytes.len(), 16);
         let rgb_rec: PointXYZRGB = *bytemuck::from_bytes::<PointXYZRGB>(rgb_bytes);
-        let (rr_x, rr_r, rr_g, rr_b, rr_a) = (rgb_rec.x, rgb_rec.r, rgb_rec.g, rgb_rec.b, rgb_rec.a);
+        let (rr_x, rr_r, rr_g, rr_b, rr_a) =
+            (rgb_rec.x, rgb_rec.r, rgb_rec.g, rgb_rec.b, rgb_rec.a);
         assert_eq!(rr_x, 4.0);
         assert_eq!(rr_r, 128);
         assert_eq!(rr_g, 64);

@@ -10,9 +10,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::manifest::{
-    DepSource, DependencyValue, DetailedDependency, HorusManifest, HORUS_TOML,
-};
+use crate::manifest::{DepSource, DependencyValue, DetailedDependency, HorusManifest, HORUS_TOML};
 
 /// Run `horus migrate`.
 ///
@@ -24,10 +22,7 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
     // Check if horus.toml exists
     let has_horus_toml = cwd.join(HORUS_TOML).exists();
     if !has_horus_toml {
-        anyhow::bail!(
-            "No horus.toml found. Run {} first.",
-            "horus init".cyan()
-        );
+        anyhow::bail!("No horus.toml found. Run {} first.", "horus init".cyan());
     }
 
     let (mut manifest, _) = HorusManifest::find_and_load()?;
@@ -131,12 +126,18 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
 
     // ── Report ───────────────────────────────────────────────────────────
     if changes.is_empty() {
-        println!("{} Nothing to migrate. Project is already in unified format.", "✓".green());
+        println!(
+            "{} Nothing to migrate. Project is already in unified format.",
+            "✓".green()
+        );
         return Ok(());
     }
 
     if dry_run {
-        println!("{}", "Dry run — these changes would be made:".yellow().bold());
+        println!(
+            "{}",
+            "Dry run — these changes would be made:".yellow().bold()
+        );
     } else {
         println!("{}", "Migrating project:".bold());
     }
@@ -150,7 +151,10 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
         manifest.save_to(&cwd.join(HORUS_TOML))?;
         println!();
         println!("{} Migration complete. Old files backed up.", "✓".green());
-        println!("  Run {} to verify the project builds.", "horus build".cyan());
+        println!(
+            "  Run {} to verify the project builds.",
+            "horus build".cyan()
+        );
     }
 
     Ok(())
@@ -203,10 +207,7 @@ fn extract_cargo_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> 
 }
 
 fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
-    let version = t
-        .get("version")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
     let features: Vec<String> = t
         .get("features")
         .and_then(|v| v.as_array())
@@ -216,10 +217,7 @@ fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
                 .collect()
         })
         .unwrap_or_default();
-    let optional = t
-        .get("optional")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let optional = t.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
     let path = t.get("path").and_then(|v| v.as_str()).map(String::from);
     let git = t.get("git").and_then(|v| v.as_str()).map(String::from);
     let branch = t.get("branch").and_then(|v| v.as_str()).map(String::from);
@@ -249,10 +247,7 @@ fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
 }
 
 fn parse_cargo_table_dep(t: &toml_edit::Table) -> DependencyValue {
-    let version = t
-        .get("version")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
     let features: Vec<String> = t
         .get("features")
         .and_then(|v| v.as_array())
@@ -262,10 +257,7 @@ fn parse_cargo_table_dep(t: &toml_edit::Table) -> DependencyValue {
                 .collect()
         })
         .unwrap_or_default();
-    let optional = t
-        .get("optional")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let optional = t.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
     let path = t.get("path").and_then(|v| v.as_str()).map(String::from);
     let git = t.get("git").and_then(|v| v.as_str()).map(String::from);
     let branch = t.get("branch").and_then(|v| v.as_str()).map(String::from);
@@ -841,7 +833,10 @@ serde = "1.0"
         assert!(tmp.path().join("Cargo.toml").exists());
         // horus.toml should NOT have deps added
         let horus = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
-        assert!(!horus.contains("serde"), "Dry run should not modify horus.toml");
+        assert!(
+            !horus.contains("serde"),
+            "Dry run should not modify horus.toml"
+        );
         // No backup dir
         assert!(!tmp.path().join(".horus/backup").exists());
     }
@@ -882,8 +877,14 @@ tokio = "1.35"
         assert!(tmp.path().join(".horus/backup/Cargo.toml").exists());
         // horus.toml should now contain imported deps
         let horus = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
-        assert!(horus.contains("serde"), "horus.toml should contain serde dep");
-        assert!(horus.contains("tokio"), "horus.toml should contain tokio dep");
+        assert!(
+            horus.contains("serde"),
+            "horus.toml should contain serde dep"
+        );
+        assert!(
+            horus.contains("tokio"),
+            "horus.toml should contain tokio dep"
+        );
     }
 
     #[test]
@@ -916,8 +917,14 @@ dependencies = ["numpy>=1.24", "requests"]
         assert!(!tmp.path().join("pyproject.toml").exists());
         assert!(tmp.path().join(".horus/backup/pyproject.toml").exists());
         let horus = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
-        assert!(horus.contains("numpy"), "horus.toml should contain numpy dep");
-        assert!(horus.contains("requests"), "horus.toml should contain requests dep");
+        assert!(
+            horus.contains("numpy"),
+            "horus.toml should contain numpy dep"
+        );
+        assert!(
+            horus.contains("requests"),
+            "horus.toml should contain requests dep"
+        );
     }
 
     #[test]

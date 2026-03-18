@@ -17,7 +17,12 @@ use common::cleanup_stale_shm;
 
 fn unique(prefix: &str) -> String {
     static CTR: AtomicU64 = AtomicU64::new(0);
-    format!("{}_{}_{}",prefix, std::process::id(), CTR.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        CTR.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -33,7 +38,9 @@ struct SensorNode {
 }
 
 impl Node for SensorNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
 
     fn init(&mut self) -> HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
@@ -67,7 +74,9 @@ struct ControllerNode {
 }
 
 impl Node for ControllerNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
 
     fn init(&mut self) -> HorusResult<()> {
         self.sub_topic = Some(Topic::new(&self.sub_topic_name)?);
@@ -98,7 +107,9 @@ struct ActuatorNode {
 }
 
 impl Node for ActuatorNode {
-    fn name(&self) -> &'static str { Box::leak(self.name.clone().into_boxed_str()) }
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
 
     fn init(&mut self) -> HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
@@ -164,7 +175,11 @@ fn test_full_pipeline_lifecycle() {
 
     // Verify lifecycle
     assert_eq!(sensor_init.load(Ordering::SeqCst), 1, "init() called once");
-    assert_eq!(sensor_shutdown.load(Ordering::SeqCst), 1, "shutdown() called once");
+    assert_eq!(
+        sensor_shutdown.load(Ordering::SeqCst),
+        1,
+        "shutdown() called once"
+    );
 
     // Verify data flow
     let st = sensor_ticks.load(Ordering::SeqCst);
@@ -204,5 +219,8 @@ fn test_topic_survives_full_lifecycle() {
 
     assert_eq!(init_ok.load(Ordering::SeqCst), 1);
     assert_eq!(shutdown_ok.load(Ordering::SeqCst), 1);
-    assert!(ticks.load(Ordering::SeqCst) > 1, "Should tick multiple times");
+    assert!(
+        ticks.load(Ordering::SeqCst) > 1,
+        "Should tick multiple times"
+    );
 }

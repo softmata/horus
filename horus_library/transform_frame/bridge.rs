@@ -56,12 +56,12 @@
 //! | Bandwidth (50 frames @ 50Hz) | ~470 KB/s   | ~600 KB/s             |
 
 use super::messages::TransformStamped;
+use horus_core::core::DurationExt;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use horus_core::core::DurationExt;
 use std::time::{Duration, Instant};
 
 /// Default multicast group for TF bridge
@@ -210,7 +210,11 @@ impl TFBridgePublisher {
     }
 
     /// Publish a batch of transforms to the network
-    pub fn publish(&self, transforms: &[TransformStamped], is_static: bool) -> std::io::Result<usize> {
+    pub fn publish(
+        &self,
+        transforms: &[TransformStamped],
+        is_static: bool,
+    ) -> std::io::Result<usize> {
         if transforms.is_empty() {
             return Ok(0);
         }
@@ -370,9 +374,8 @@ impl TFBridgeSubscriber {
         let receive_time = Instant::now();
 
         // Parse header
-        let header: TFBridgeHeader = unsafe {
-            std::ptr::read_unaligned(self.recv_buf.as_ptr() as *const TFBridgeHeader)
-        };
+        let header: TFBridgeHeader =
+            unsafe { std::ptr::read_unaligned(self.recv_buf.as_ptr() as *const TFBridgeHeader) };
 
         // Validate magic
         if header.magic != MAGIC {
@@ -431,15 +434,15 @@ impl TFBridgeSubscriber {
 
         let mut transforms = Vec::with_capacity(count);
         for _ in 0..count {
-            let tf: TransformStamped = *horus_core::bytemuck::from_bytes(
-                &self.recv_buf[offset..offset + tf_size],
-            );
+            let tf: TransformStamped =
+                *horus_core::bytemuck::from_bytes(&self.recv_buf[offset..offset + tf_size]);
             transforms.push(tf);
             offset += tf_size;
         }
 
         // Track sequence for loss detection
-        self.source_sequences.insert(header.source_id, header.sequence);
+        self.source_sequences
+            .insert(header.source_id, header.sequence);
 
         Ok(Some(TFBridgePacket {
             source_id: header.source_id,
@@ -460,7 +463,6 @@ impl TFBridgeSubscriber {
         self.socket.set_nonblocking(true)?;
         result
     }
-
 }
 
 /// Apply namespace prefix to transforms
@@ -555,10 +557,7 @@ impl TFTreeMerger {
     /// Check if a transform from a given source should be accepted
     ///
     /// Returns the accepted transforms (with conflicts filtered per policy)
-    pub fn filter_incoming(
-        &mut self,
-        packet: &TFBridgePacket,
-    ) -> Vec<TransformStamped> {
+    pub fn filter_incoming(&mut self, packet: &TFBridgePacket) -> Vec<TransformStamped> {
         let mut accepted = Vec::with_capacity(packet.transforms.len());
 
         for tf in &packet.transforms {
@@ -633,7 +632,10 @@ impl TFBridgeHandle {
 
     /// Check if bridge is still running
     pub fn is_running(&self) -> bool {
-        self.thread.as_ref().map(|t| !t.is_finished()).unwrap_or(false)
+        self.thread
+            .as_ref()
+            .map(|t| !t.is_finished())
+            .unwrap_or(false)
     }
 }
 

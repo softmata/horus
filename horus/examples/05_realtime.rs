@@ -9,7 +9,6 @@
 
 use horus::prelude::*;
 
-
 message! {
     /// Motor command
     MotorCmd {

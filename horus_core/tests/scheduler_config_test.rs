@@ -164,7 +164,9 @@ fn test_space_robot_config() {
 #[test]
 fn test_custom_exotic_robot_config() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::new().watchdog(500_u64.ms()).tick_rate(500_u64.hz());
+    let mut scheduler = Scheduler::new()
+        .watchdog(500_u64.ms())
+        .tick_rate(500_u64.hz());
 
     let (bio_node, bio_ticks) = TestNode::new("bio_sensor");
     let (quantum_node, quantum_ticks) = TestNode::new("quantum_controller");
@@ -213,7 +215,12 @@ fn test_execution_classes() {
         let (compute_node, compute_ticks) = TestNode::new("compute_node");
         let (main_node, main_ticks) = TestNode::new("main_node");
 
-        scheduler.add(compute_node).order(0).compute().build().unwrap();
+        scheduler
+            .add(compute_node)
+            .order(0)
+            .compute()
+            .build()
+            .unwrap();
         scheduler.add(main_node).order(1).build().unwrap();
 
         scheduler.run_for(50_u64.ms()).unwrap();
@@ -309,13 +316,25 @@ fn test_high_performance_optimizer_nodes() {
 #[test]
 fn test_deploy_preset() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::new().watchdog(500_u64.ms()).tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new()
+        .watchdog(500_u64.ms())
+        .tick_rate(100_u64.hz());
 
     let (motor_node, motor_ticks) = TestNode::new("motor");
     let (sensor_node, sensor_ticks) = TestNode::new("sensor");
 
-    scheduler.add(motor_node).order(0).rate(100_u64.hz()).build().unwrap();
-    scheduler.add(sensor_node).order(1).rate(50_u64.hz()).build().unwrap();
+    scheduler
+        .add(motor_node)
+        .order(0)
+        .rate(100_u64.hz())
+        .build()
+        .unwrap();
+    scheduler
+        .add(sensor_node)
+        .order(1)
+        .rate(50_u64.hz())
+        .build()
+        .unwrap();
 
     scheduler.run_for(100_u64.ms()).unwrap();
 
@@ -334,7 +353,6 @@ fn test_deploy_preset() {
         sensor_count
     );
 }
-
 
 #[test]
 fn test_hard_rt_preset() {
@@ -358,11 +376,7 @@ fn test_hard_rt_preset() {
 
         let (rt_node, rt_ticks) = TestNode::new("rt_node");
 
-        scheduler
-            .add(rt_node)
-            .order(0)
-            .build()
-            .unwrap();
+        scheduler.add(rt_node).order(0).build().unwrap();
 
         scheduler.run_for(50_u64.ms()).unwrap();
 
@@ -381,11 +395,7 @@ fn test_hard_rt_preset() {
 
         let (rt_node, rt_ticks) = TestNode::new("rt_node");
 
-        scheduler
-            .add(rt_node)
-            .order(0)
-            .build()
-            .unwrap();
+        scheduler.add(rt_node).order(0).build().unwrap();
 
         scheduler.run_for(50_u64.ms()).unwrap();
 
@@ -454,8 +464,18 @@ fn test_node_rate_via_builder_only() {
     let (node_c, c_ticks) = TestNode::new("node_c");
 
     // Rate set via builder, not via Node::rate_hz()
-    scheduler.add(node_a).order(0).rate(50_u64.hz()).build().unwrap();
-    scheduler.add(node_b).order(1).rate(25_u64.hz()).build().unwrap();
+    scheduler
+        .add(node_a)
+        .order(0)
+        .rate(50_u64.hz())
+        .build()
+        .unwrap();
+    scheduler
+        .add(node_b)
+        .order(1)
+        .rate(25_u64.hz())
+        .build()
+        .unwrap();
     scheduler.add(node_c).order(2).build().unwrap(); // Uses global rate
 
     scheduler.run_for(100_u64.ms()).unwrap();

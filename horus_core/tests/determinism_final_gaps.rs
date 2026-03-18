@@ -36,15 +36,23 @@ fn record_then_replay_end_to_end() {
             outputs: Arc<Mutex<Vec<u64>>>,
         }
         impl Node for RecordedNode {
-            fn name(&self) -> &str { "recorded" }
+            fn name(&self) -> &str {
+                "recorded"
+            }
             fn tick(&mut self) {
                 let tick = horus_core::core::tick_context::ctx_tick();
                 self.outputs.lock().unwrap().push(tick);
             }
         }
 
-        scheduler.add(RecordedNode { outputs: outputs.clone() })
-            .order(0).rate(100_u64.hz()).build().unwrap();
+        scheduler
+            .add(RecordedNode {
+                outputs: outputs.clone(),
+            })
+            .order(0)
+            .rate(100_u64.hz())
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             scheduler.tick_once().unwrap();
@@ -79,15 +87,23 @@ fn record_then_replay_end_to_end() {
             outputs: Arc<Mutex<Vec<u64>>>,
         }
         impl Node for RecordedNode2 {
-            fn name(&self) -> &str { "recorded" }
+            fn name(&self) -> &str {
+                "recorded"
+            }
             fn tick(&mut self) {
                 let tick = horus_core::core::tick_context::ctx_tick();
                 self.outputs.lock().unwrap().push(tick);
             }
         }
 
-        scheduler.add(RecordedNode2 { outputs: outputs2.clone() })
-            .order(0).rate(100_u64.hz()).build().unwrap();
+        scheduler
+            .add(RecordedNode2 {
+                outputs: outputs2.clone(),
+            })
+            .order(0)
+            .rate(100_u64.hz())
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             scheduler.tick_once().unwrap();
@@ -95,8 +111,10 @@ fn record_then_replay_end_to_end() {
     }
 
     let recorded_ticks2 = outputs2.lock().unwrap().clone();
-    assert_eq!(recorded_ticks, recorded_ticks2,
-        "Two recording sessions must produce identical tick sequences");
+    assert_eq!(
+        recorded_ticks, recorded_ticks2,
+        "Two recording sessions must produce identical tick sequences"
+    );
 }
 
 // ─── Gap 2: Topic injection reaching a live subscriber ─────────────────────
@@ -116,7 +134,9 @@ fn topic_send_recv_between_nodes_in_same_scheduler() {
     }
 
     impl Node for Producer {
-        fn name(&self) -> &str { "producer" }
+        fn name(&self) -> &str {
+            "producer"
+        }
         fn publishers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
                 topic_name: "test_data".into(),
@@ -135,7 +155,9 @@ fn topic_send_recv_between_nodes_in_same_scheduler() {
     }
 
     impl Node for Consumer {
-        fn name(&self) -> &str { "consumer" }
+        fn name(&self) -> &str {
+            "consumer"
+        }
         fn subscribers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
                 topic_name: "test_data".into(),
@@ -149,7 +171,8 @@ fn topic_send_recv_between_nodes_in_same_scheduler() {
         }
     }
 
-    let topic_name = format!("test_data_{}",
+    let topic_name = format!(
+        "test_data_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -159,9 +182,7 @@ fn topic_send_recv_between_nodes_in_same_scheduler() {
     let producer_topic: Topic<u64> = Topic::new(&topic_name).unwrap();
     let consumer_topic: Topic<u64> = Topic::new(&topic_name).unwrap();
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     scheduler
         .add(Producer {
@@ -210,7 +231,9 @@ fn topic_data_flows_in_dependency_order() {
     }
 
     impl Node for SequenceProducer {
-        fn name(&self) -> &str { "seq_producer" }
+        fn name(&self) -> &str {
+            "seq_producer"
+        }
         fn publishers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
                 topic_name: "sequence".into(),
@@ -230,7 +253,9 @@ fn topic_data_flows_in_dependency_order() {
     }
 
     impl Node for SequenceConsumer {
-        fn name(&self) -> &str { "seq_consumer" }
+        fn name(&self) -> &str {
+            "seq_consumer"
+        }
         fn subscribers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
                 topic_name: "sequence".into(),
@@ -247,16 +272,15 @@ fn topic_data_flows_in_dependency_order() {
         }
     }
 
-    let topic_name = format!("sequence_{}",
+    let topic_name = format!(
+        "sequence_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     );
 
-    let mut scheduler = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     scheduler
         .add(SequenceProducer {
@@ -286,7 +310,11 @@ fn topic_data_flows_in_dependency_order() {
     // (producer ticks before consumer due to dependency ordering)
     assert!(!results.is_empty(), "Consumer should have received data");
     for (i, &fresh) in results.iter().enumerate() {
-        assert!(fresh, "Tick {}: consumer should see fresh data (producer ran first)", i);
+        assert!(
+            fresh,
+            "Tick {}: consumer should see fresh data (producer ran first)",
+            i
+        );
     }
 }
 
@@ -305,7 +333,9 @@ fn safety_monitor_active_in_deterministic_mode() {
     }
 
     impl Node for BudgetNode {
-        fn name(&self) -> &str { "budget_node" }
+        fn name(&self) -> &str {
+            "budget_node"
+        }
         fn tick(&mut self) {
             self.count.fetch_add(1, Ordering::Relaxed);
         }
@@ -317,7 +347,9 @@ fn safety_monitor_active_in_deterministic_mode() {
         .watchdog(500_u64.ms());
 
     scheduler
-        .add(BudgetNode { count: count.clone() })
+        .add(BudgetNode {
+            count: count.clone(),
+        })
         .order(0)
         .rate(100_u64.hz())
         .build()
@@ -340,7 +372,9 @@ fn watchdog_with_per_node_timeout_in_deterministic() {
     }
 
     impl Node for QuickNode {
-        fn name(&self) -> &str { "quick_node" }
+        fn name(&self) -> &str {
+            "quick_node"
+        }
         fn tick(&mut self) {
             self.count.fetch_add(1, Ordering::Relaxed);
         }
@@ -352,7 +386,9 @@ fn watchdog_with_per_node_timeout_in_deterministic() {
         .watchdog(1_u64.secs()); // global 1s
 
     scheduler
-        .add(QuickNode { count: count.clone() })
+        .add(QuickNode {
+            count: count.clone(),
+        })
         .order(0)
         .rate(100_u64.hz())
         .watchdog(10_u64.ms()) // per-node 10ms
@@ -377,7 +413,9 @@ fn deterministic_mode_with_blackbox() {
     }
 
     impl Node for SimpleNode {
-        fn name(&self) -> &str { "blackbox_test" }
+        fn name(&self) -> &str {
+            "blackbox_test"
+        }
         fn tick(&mut self) {
             self.count.fetch_add(1, Ordering::Relaxed);
         }
@@ -389,7 +427,9 @@ fn deterministic_mode_with_blackbox() {
         .blackbox(1); // 1MB flight recorder
 
     scheduler
-        .add(SimpleNode { count: count.clone() })
+        .add(SimpleNode {
+            count: count.clone(),
+        })
         .order(0)
         .rate(100_u64.hz())
         .build()
