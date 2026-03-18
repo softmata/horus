@@ -14,6 +14,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 WORKDIR /horus
 COPY . .
 
-RUN cargo build --no-default-features -p horus_core -p horus_library -p horus_sys
+RUN cargo build --no-default-features --release -p horus_core -p horus_library -p horus_sys -p horus_manager
 
 CMD ["cargo", "test", "--no-default-features", "-p", "horus_sys", "--", "--test-threads=1"]
