@@ -97,16 +97,16 @@ pub use diagnostics::{
 };
 
 // Vision
-pub use vision::{CameraInfo, CompressedImage, RegionOfInterest};
+pub use vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
 
 // Navigation
-pub use navigation::{CostMap, NavGoal, NavPath, OccupancyGrid, PathPlan};
+pub use navigation::{CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan};
 
 // Force
-pub use force::{ForceCommand, ImpedanceParameters, WrenchStamped};
+pub use force::{ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, WrenchStamped};
 
 // Perception
-pub use perception::PlaneDetection;
+pub use perception::{PlaneArray, PlaneDetection, PointField};
 
 // Perception types (zero-copy IPC)
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
