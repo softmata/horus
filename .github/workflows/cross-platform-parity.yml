@@ -240,6 +240,16 @@ jobs:
         run: cargo run --no-default-features -p horus_manager -- check .
         continue-on-error: true
 
+      - name: Run acceptance tests (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: bash tests/docker/acceptance_linux_macos.sh
+        continue-on-error: true
+
+      - name: Run acceptance tests (Windows)
+        if: runner.os == 'Windows'
+        run: powershell -ExecutionPolicy Bypass -File tests/docker/acceptance_windows.ps1
+        continue-on-error: true
+
   # ─── Gate ──────────────────────────────────────────────────────────────
 
   parity-success:
