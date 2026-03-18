@@ -1,7 +1,0 @@
-[package]
-name = "tests"
-version = "0.1.9"
-language = "rust"
-
-[dependencies]
-horus_core = "*"
