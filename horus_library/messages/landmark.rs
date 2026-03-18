@@ -4,6 +4,7 @@
 //! These are fixed-size types suitable for shared memory transport.
 
 use bytemuck::{Pod, Zeroable};
+use horus_core::core::LogSummary;
 use serde::{Deserialize, Serialize};
 
 /// 2D landmark/keypoint
@@ -55,6 +56,12 @@ impl Landmark {
         let dx = self.x - other.x;
         let dy = self.y - other.y;
         (dx * dx + dy * dy).sqrt()
+    }
+}
+
+impl LogSummary for Landmark {
+    fn log_summary(&self) -> String {
+        format!("Landmark(idx={}, {:.1},{:.1} vis={:.2})", self.index, self.x, self.y, self.visibility)
     }
 }
 
@@ -122,6 +129,15 @@ impl Landmark3D {
         let dy = self.y - other.y;
         let dz = self.z - other.z;
         (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+}
+
+impl LogSummary for Landmark3D {
+    fn log_summary(&self) -> String {
+        let (x, y, z) = (self.x, self.y, self.z);
+        let vis = self.visibility;
+        let idx = self.index;
+        format!("Landmark3D(idx={}, {:.1},{:.1},{:.1} vis={:.2})", idx, x, y, z, vis)
     }
 }
 
@@ -222,6 +238,12 @@ impl LandmarkArray {
             std::mem::size_of::<Landmark3D>()
         };
         (self.num_landmarks as usize) * landmark_size
+    }
+}
+
+impl LogSummary for LandmarkArray {
+    fn log_summary(&self) -> String {
+        format!("LandmarkArray(n={}, {}D, conf={:.2})", self.num_landmarks, self.dimension, self.confidence)
     }
 }
 

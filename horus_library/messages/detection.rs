@@ -4,6 +4,7 @@
 //! like YOLO, SSD, etc. Suitable for shared memory transport.
 
 use bytemuck::{Pod, Zeroable};
+use horus_core::core::LogSummary;
 use serde::{Deserialize, Serialize};
 
 /// Generate `class_name()` and `set_class_name()` methods for types
@@ -95,6 +96,12 @@ impl BoundingBox2D {
     }
 }
 
+impl LogSummary for BoundingBox2D {
+    fn log_summary(&self) -> String {
+        format!("BBox2D({:.1},{:.1} {:.1}x{:.1})", self.x, self.y, self.width, self.height)
+    }
+}
+
 /// 3D bounding box (center + dimensions + rotation)///
 /// Uses Euler angles (roll/pitch/yaw) instead of Quaternion for Pod compatibility.
 ///
@@ -164,6 +171,12 @@ impl BoundingBox3D {
     /// Get volume
     pub fn volume(&self) -> f32 {
         self.length * self.width * self.height
+    }
+}
+
+impl LogSummary for BoundingBox3D {
+    fn log_summary(&self) -> String {
+        format!("BBox3D(c={:.1},{:.1},{:.1} {:.1}x{:.1}x{:.1})", self.cx, self.cy, self.cz, self.length, self.width, self.height)
     }
 }
 
@@ -237,6 +250,12 @@ impl Detection {
     }
 }
 
+impl LogSummary for Detection {
+    fn log_summary(&self) -> String {
+        format!("Det(cls={}, conf={:.2}, bbox={:.0},{:.0})", self.class_id, self.confidence, self.bbox.x, self.bbox.y)
+    }
+}
+
 /// 3D object detection result///
 /// For 3D object detection from point clouds or depth-aware models.
 ///
@@ -297,6 +316,12 @@ impl Detection3D {
         self.velocity_y = vy;
         self.velocity_z = vz;
         self
+    }
+}
+
+impl LogSummary for Detection3D {
+    fn log_summary(&self) -> String {
+        format!("Det3D(cls={}, conf={:.2})", self.class_id, self.confidence)
     }
 }
 

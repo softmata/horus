@@ -4,6 +4,7 @@
 //! These are fixed-size types suitable for shared memory transport.
 
 use bytemuck::{Pod, Zeroable};
+use horus_core::core::LogSummary;
 use serde::{Deserialize, Serialize};
 
 use crate::messages::detection::BoundingBox2D;
@@ -159,6 +160,12 @@ impl TrackedObject {
     }
 }
 
+impl LogSummary for TrackedObject {
+    fn log_summary(&self) -> String {
+        format!("Tracked(id={}, cls={}, conf={:.2}, age={})", self.track_id, self.class_id, self.confidence, self.age)
+    }
+}
+
 /// Tracking array header
 ///
 /// Header for an array of tracked objects.
@@ -200,6 +207,12 @@ impl TrackingHeader {
     /// Calculate data size
     pub fn data_size(&self) -> usize {
         (self.num_tracks as usize) * std::mem::size_of::<TrackedObject>()
+    }
+}
+
+impl LogSummary for TrackingHeader {
+    fn log_summary(&self) -> String {
+        format!("TrackingHdr(tracks={}, active={}, frame={})", self.num_tracks, self.active_tracks, self.frame_id)
     }
 }
 
