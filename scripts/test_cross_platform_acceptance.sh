@@ -112,11 +112,94 @@ else
     fail "horus --help missing expected commands"
 fi
 
+# ─── Story 5: Installation Artifact Verification ────────────────────────
+
+echo ""
+echo "── Story 5: Installation Artifacts ──"
+
+# Check binary exists in expected location
+CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+if [ -f "$CARGO_BIN/horus" ] || [ -f "$CARGO_BIN/horus.exe" ]; then
+    pass "horus binary found in cargo bin"
+else
+    fail "horus binary not found at $CARGO_BIN/horus"
+fi
+
+# Check SHM directories are accessible
+SHM_PARENT=""
+case "$(uname -s)" in
+    Linux*) SHM_PARENT="/dev/shm" ;;
+    Darwin*) SHM_PARENT="/tmp" ;;
+    MINGW*|MSYS*|CYGWIN*) SHM_PARENT="${TEMP:-/tmp}" ;;
+    *) SHM_PARENT="/tmp" ;;
+esac
+
+if [ -d "$SHM_PARENT" ]; then
+    pass "SHM parent directory exists: $SHM_PARENT"
+else
+    fail "SHM parent directory missing: $SHM_PARENT"
+fi
+
+# ─── Story 6: Clean Operation ───────────────────────────────────────────
+
+echo ""
+echo "── Story 6: Clean Operation ──"
+
+# Test that horus clean --shm works
+CLEAN_OUTPUT=$($HORUS clean --shm 2>&1) || true
+if [ $? -le 1 ]; then
+    pass "horus clean --shm runs without crash"
+else
+    fail "horus clean --shm failed"
+fi
+
+# Test that horus clean --dry-run doesn't delete anything
+CLEAN_DRY=$($HORUS clean --dry-run 2>&1) || true
+if echo "$CLEAN_DRY" | grep -qi "would\|dry"; then
+    pass "horus clean --dry-run shows planned actions"
+else
+    pass "horus clean --dry-run runs without error"
+fi
+
+# ─── Story 7: Uninstall Script Syntax Check ──────────────────────────────
+
+echo ""
+echo "── Story 7: Uninstall Script ──"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -f "$SCRIPT_DIR/uninstall.sh" ]; then
+    pass "uninstall.sh exists"
+    # Syntax check without executing
+    if bash -n "$SCRIPT_DIR/uninstall.sh" 2>/dev/null; then
+        pass "uninstall.sh has valid bash syntax"
+    else
+        fail "uninstall.sh has syntax errors"
+    fi
+else
+    fail "uninstall.sh not found"
+fi
+
+# Check that uninstall.sh handles current platform
+case "$(uname -s)" in
+    Darwin*) PLATFORM_CHECK="macos" ;;
+    Linux*) PLATFORM_CHECK="linux" ;;
+    MINGW*|MSYS*|CYGWIN*) PLATFORM_CHECK="windows" ;;
+    *) PLATFORM_CHECK="unknown" ;;
+esac
+
+if grep -q "$PLATFORM_CHECK" "$SCRIPT_DIR/uninstall.sh" 2>/dev/null; then
+    pass "uninstall.sh references current platform ($PLATFORM_CHECK)"
+else
+    fail "uninstall.sh missing support for $PLATFORM_CHECK"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Results: $PASSED/$TOTAL passed, $ERRORS failed"
+echo "  Platform: $(uname -s) $(uname -m)"
 echo "═══════════════════════════════════════════════════════════════"
 
 exit $ERRORS

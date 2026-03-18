@@ -120,12 +120,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Check
-        run: cargo check --workspace
-        continue-on-error: true  # Windows may have platform-specific issues
+        run: cargo check --workspace --no-default-features
 
       - name: Build (lib only)
-        run: cargo build --workspace --lib
-        continue-on-error: true
+        run: cargo build --workspace --lib --no-default-features
 
   # Linux ARM64 Cross-Compilation
   linux-arm64:
@@ -257,9 +255,9 @@ jobs:
             FAILURES="$FAILURES MSRV"
           fi
 
-          # Windows is informational (has continue-on-error)
+          # Windows is now a hard gate (no longer continue-on-error)
           if [[ "${{ needs.windows.result }}" != "success" ]]; then
-            echo "Windows build has issues (informational): ${{ needs.windows.result }}"
+            FAILURES="$FAILURES Windows"
           fi
 
           if [[ -n "$FAILURES" ]]; then

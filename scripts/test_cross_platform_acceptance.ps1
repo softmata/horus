@@ -71,11 +71,56 @@ else { Fail "horus --help missing expected commands" }
 
 if (Test-Path $TmpDir) { Remove-Item -Recurse -Force $TmpDir }
 
+# ─── Story 5: Installation Artifact Verification ────────────────────────
+
+Write-Host ""
+Write-Host "── Story 5: Installation Artifacts ──"
+
+$CargoBin = if ($env:CARGO_HOME) { "$env:CARGO_HOME\bin" } else { "$env:USERPROFILE\.cargo\bin" }
+if (Test-Path "$CargoBin\horus.exe") { Pass "horus.exe found in cargo bin" }
+else { Fail "horus.exe not found at $CargoBin\horus.exe" }
+
+# SHM directory accessible
+if (Test-Path $env:TEMP) { Pass "SHM parent directory exists: $env:TEMP" }
+else { Fail "TEMP directory missing" }
+
+# ─── Story 6: Uninstall Script ──────────────────────────────────────────
+
+Write-Host ""
+Write-Host "── Story 6: Uninstall Script ──"
+
+$ScriptRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$UninstallPs1 = Join-Path $ScriptRoot "uninstall.ps1"
+
+if (Test-Path $UninstallPs1) { Pass "uninstall.ps1 exists" }
+else { Fail "uninstall.ps1 not found" }
+
+$UninstallSh = Join-Path $ScriptRoot "uninstall.sh"
+if (Test-Path $UninstallSh) { Pass "uninstall.sh exists" }
+else { Fail "uninstall.sh not found" }
+
+# Check uninstall.ps1 references Windows paths
+if (Get-Content $UninstallPs1 -Raw | Select-String -Pattern "APPDATA|LOCALAPPDATA" -Quiet) {
+    Pass "uninstall.ps1 handles Windows AppData paths"
+} else {
+    Fail "uninstall.ps1 missing Windows-specific paths"
+}
+
+# ─── Story 7: Clean Operation ───────────────────────────────────────────
+
+Write-Host ""
+Write-Host "── Story 7: Clean Operation ──"
+
+$cleanResult = cargo run --no-default-features -p horus_manager -- clean --dry-run 2>&1
+if ($LASTEXITCODE -le 1) { Pass "horus clean --dry-run runs without crash" }
+else { Fail "horus clean --dry-run failed" }
+
 # ─── Summary ──────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "═══════════════════════════════════════════════════════════════"
 Write-Host "  Results: $Passed/$Total passed, $Errors failed"
+Write-Host "  Platform: Windows PowerShell"
 Write-Host "═══════════════════════════════════════════════════════════════"
 
 exit $Errors

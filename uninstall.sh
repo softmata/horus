@@ -1,6 +1,7 @@
 #!/bin/bash
-# HORUS Uninstallation Script v2.6.0
+# HORUS Uninstallation Script v2.7.0
 # Complete removal of HORUS CLI, libraries, binaries, cache, and artifacts
+# Cross-platform: Linux, macOS, Windows (Git Bash/MSYS2)
 # Matches install.sh v2.6.0
 
 set -e  # Exit on error
@@ -111,13 +112,48 @@ complete_uninstall_progress() {
     printf "\r  ${STATUS_OK} [█████████████████████████] 100%% Uninstall completed in ${elapsed}s    \n"
 }
 
-# Determine installation paths
+# Detect OS for platform-specific paths
+detect_platform() {
+    case "$(uname -s)" in
+        Darwin*) echo "macos" ;;
+        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+        Linux*)
+            if grep -qE "(Microsoft|WSL)" /proc/version 2>/dev/null; then
+                echo "wsl"
+            else
+                echo "linux"
+            fi
+            ;;
+        FreeBSD*|OpenBSD*|NetBSD*) echo "bsd" ;;
+        *) echo "linux" ;;
+    esac
+}
+PLATFORM="$(detect_platform)"
+
+# Determine installation paths (platform-aware)
 INSTALL_DIR="$HOME/.cargo/bin"
 HORUS_DIR="$HOME/.horus"
 CACHE_DIR="$HORUS_DIR/cache"
 TARGET_DIR="$HORUS_DIR/target"
 SHM_PARENT="$(get_shm_parent_dir)"
 SHM_GLOB="$(get_shm_glob)"
+
+# Platform-specific config directories
+case "$PLATFORM" in
+    macos)
+        HORUS_APP_SUPPORT="$HOME/Library/Application Support/horus"
+        HORUS_CACHES="$HOME/Library/Caches/horus"
+        BINARY_NAME="horus"
+        ;;
+    windows)
+        HORUS_APPDATA="${APPDATA:-$HOME/AppData/Roaming}/horus"
+        HORUS_LOCALAPPDATA="${LOCALAPPDATA:-$HOME/AppData/Local}/horus"
+        BINARY_NAME="horus.exe"
+        ;;
+    *)
+        BINARY_NAME="horus"
+        ;;
+esac
 
 # ============================================================================
 # PROFILE DETECTION
@@ -188,7 +224,7 @@ FISH_COMPLETION_PATHS=(
 
 echo ""
 echo -e "${BLUE}============================================${NC}"
-echo -e "${WHITE}   HORUS Uninstallation Script v2.6.0${NC}"
+echo -e "${WHITE}   HORUS Uninstallation Script v2.7.0${NC}"
 echo -e "${BLUE}============================================${NC}"
 echo ""
 echo -e "  ${CYAN}Install Profile:${NC} ${INSTALL_PROFILE}"
@@ -321,8 +357,8 @@ echo ""
 REMOVED=0
 SKIPPED=0
 
-# Initialize progress tracking (5 main steps)
-init_uninstall_progress 5
+# Initialize progress tracking (6 main steps)
+init_uninstall_progress 6
 
 #=====================================
 # 1. Remove binaries
@@ -331,11 +367,14 @@ update_uninstall_progress "Removing binaries"
 echo ""
 
 for bin in "${BINARIES[@]}"; do
-    if [ -f "$INSTALL_DIR/$bin" ]; then
-        rm -f "$INSTALL_DIR/$bin"
-        echo -e "  ${GREEN}[+]${NC} Removed $bin"
-        REMOVED=$((REMOVED + 1))
-    fi
+    # Try both with and without .exe extension (Windows compat)
+    for ext in "" ".exe"; do
+        if [ -f "$INSTALL_DIR/${bin}${ext}" ]; then
+            rm -f "$INSTALL_DIR/${bin}${ext}"
+            echo -e "  ${GREEN}[+]${NC} Removed ${bin}${ext}"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
 done
 
 #=====================================
@@ -419,7 +458,91 @@ else
 fi
 
 #=====================================
-# 5. Optional: Clean Cargo cache
+# 5. Platform-specific cleanup
+#=====================================
+update_uninstall_progress "Platform cleanup"
+echo ""
+
+# macOS: clean Application Support and Caches
+if [ "$PLATFORM" = "macos" ]; then
+    if [ -d "$HORUS_APP_SUPPORT" ]; then
+        rm -rf "$HORUS_APP_SUPPORT"
+        echo -e "  ${GREEN}[+]${NC} Removed macOS Application Support data"
+        REMOVED=$((REMOVED + 1))
+    fi
+    if [ -d "$HORUS_CACHES" ]; then
+        rm -rf "$HORUS_CACHES"
+        echo -e "  ${GREEN}[+]${NC} Removed macOS Caches"
+        REMOVED=$((REMOVED + 1))
+    fi
+fi
+
+# Windows: clean AppData directories
+if [ "$PLATFORM" = "windows" ]; then
+    if [ -d "$HORUS_APPDATA" ]; then
+        rm -rf "$HORUS_APPDATA"
+        echo -e "  ${GREEN}[+]${NC} Removed Windows AppData/Roaming/horus"
+        REMOVED=$((REMOVED + 1))
+    fi
+    if [ -d "$HORUS_LOCALAPPDATA" ]; then
+        rm -rf "$HORUS_LOCALAPPDATA"
+        echo -e "  ${GREEN}[+]${NC} Removed Windows AppData/Local/horus"
+        REMOVED=$((REMOVED + 1))
+    fi
+fi
+
+# Python: uninstall horus-robotics wheel
+if command -v pip3 &> /dev/null || command -v pip &> /dev/null; then
+    PIP_CMD="pip3"
+    command -v pip3 &> /dev/null || PIP_CMD="pip"
+    if $PIP_CMD show horus-robotics &> /dev/null 2>&1; then
+        echo ""
+        read -p "$(echo -e "  ${YELLOW}?${NC}") Uninstall Python package horus-robotics? [Y/n]: " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            $PIP_CMD uninstall -y horus-robotics 2>/dev/null || true
+            echo -e "  ${GREEN}[+]${NC} Uninstalled Python horus-robotics"
+            REMOVED=$((REMOVED + 1))
+        fi
+    fi
+fi
+
+# Linux: remove RT scheduling configuration
+if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+    RT_CLEANED=false
+    if [ -f "/etc/security/limits.d/99-horus-realtime.conf" ]; then
+        echo ""
+        read -p "$(echo -e "  ${YELLOW}?${NC}") Remove RT scheduling config (requires sudo)? [Y/n]: " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            sudo rm -f /etc/security/limits.d/99-horus-realtime.conf 2>/dev/null && RT_CLEANED=true
+            sudo rm -f /etc/sysctl.d/99-horus-realtime.conf 2>/dev/null
+            if [ -f "/etc/systemd/system/horus-performance-governor.service" ]; then
+                sudo systemctl disable horus-performance-governor.service 2>/dev/null || true
+                sudo rm -f /etc/systemd/system/horus-performance-governor.service 2>/dev/null
+            fi
+            [ "$RT_CLEANED" = true ] && echo -e "  ${GREEN}[+]${NC} Removed RT scheduling configuration"
+            REMOVED=$((REMOVED + 1))
+        fi
+    fi
+fi
+
+# Shell profiles: remove horus completion eval lines
+for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
+    if [ -f "$profile" ] && grep -q "horus completion" "$profile" 2>/dev/null; then
+        # Create backup before modifying
+        cp "$profile" "${profile}.horus-backup" 2>/dev/null
+        # Remove lines containing horus completion
+        sed -i.bak '/horus completion/d' "$profile" 2>/dev/null || \
+            sed -i '' '/horus completion/d' "$profile" 2>/dev/null  # macOS sed
+        rm -f "${profile}.bak" 2>/dev/null
+        echo -e "  ${GREEN}[+]${NC} Cleaned horus completion from $(basename $profile)"
+        REMOVED=$((REMOVED + 1))
+    fi
+done
+
+#=====================================
+# 6. Optional: Clean Cargo cache
 #=====================================
 update_uninstall_progress "Optional cleanup"
 echo ""
@@ -473,5 +596,6 @@ echo -e "${GREEN}${STATUS_OK} HORUS has been uninstalled. Goodbye!${NC}"
 echo ""
 echo -e "${CYAN}Notes:${NC}"
 echo -e "  - Project-local .horus/ directories were NOT removed"
+echo -e "  - System packages (libssl-dev, etc.) were NOT removed (may be used by other projects)"
 echo -e "  - To reinstall: ${CYAN}./install.sh${NC}"
 echo ""
