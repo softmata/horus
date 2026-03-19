@@ -69,6 +69,9 @@ pub mod audio;
 // Application-specific messages
 pub mod cmd_vel;
 
+// softmata-core compatibility (From impls for cross-project IPC)
+pub mod compat;
+
 // Re-export all message types for convenience
 // Geometry
 pub use geometry::{

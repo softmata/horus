@@ -4520,6 +4520,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde_arrays"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4838,12 +4847,12 @@ dependencies = [
 
 [[package]]
 name = "softmata-core"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0cfa4ee01d717f12153931b4dcae2b3b028da4dd8cddc0cbf763b3f8f608bb2"
+version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "nalgebra",
  "serde",
+ "serde-big-array",
 ]
 
 [[package]]

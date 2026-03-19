@@ -21,7 +21,7 @@ path = "lib.rs"
 [dependencies]
 horus_core = { path = "../horus_core" }
 horus_macros = { path = "../horus_macros" }
-softmata-core = { version = "0.1.1" }
+softmata-core = { version = "0.1.0", path = "../../softmata-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bytemuck = { workspace = true }
