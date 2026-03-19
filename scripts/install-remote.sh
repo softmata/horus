@@ -162,7 +162,11 @@ if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
         echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_RC"
         echo -e "${GREEN}[3/3]${NC} Added ${INSTALL_DIR} to PATH in $(basename $SHELL_RC)"
     fi
+    export PATH="${INSTALL_DIR}:$PATH"
 fi
+
+# Shell integration (cargo/pip/cmake proxy)
+horus env --init 2>/dev/null || true
 
 echo ""
 echo -e "${GREEN}  Installation complete!${NC}"

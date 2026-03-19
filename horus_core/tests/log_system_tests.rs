@@ -2704,3 +2704,101 @@ fn write_idx_large_values_arithmetic() {
 
     let _ = std::fs::remove_file(path);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Log throughput benchmarks
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_log_push_throughput_single_thread() {
+    use horus_core::core::log_buffer::publish_log;
+
+    let count = 10_000u64;
+    let start = std::time::Instant::now();
+    for i in 0..count {
+        publish_log(make_entry("bench_node", i, "throughput_single_thread"));
+    }
+    let elapsed = start.elapsed();
+    let entries_per_sec = count as f64 / elapsed.as_secs_f64();
+
+    eprintln!(
+        "Single-thread log throughput: {:.0} entries/sec ({count} entries in {:?})",
+        entries_per_sec, elapsed
+    );
+
+    assert!(
+        entries_per_sec > 10_000.0,
+        "Single-thread should push >10k entries/sec, got {:.0}",
+        entries_per_sec
+    );
+}
+
+#[test]
+fn test_log_push_throughput_8_threads() {
+    use horus_core::core::log_buffer::publish_log;
+
+    let per_thread = 1_000u64;
+    let num_threads = 8usize;
+    let barrier = Arc::new(std::sync::Barrier::new(num_threads));
+
+    let start = std::time::Instant::now();
+    let handles: Vec<_> = (0..num_threads)
+        .map(|t| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for i in 0..per_thread {
+                    publish_log(make_entry(
+                        &format!("bench_t{t}"),
+                        i,
+                        "throughput_8_threads",
+                    ));
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+    let elapsed = start.elapsed();
+    let total = per_thread * num_threads as u64;
+    let entries_per_sec = total as f64 / elapsed.as_secs_f64();
+
+    eprintln!(
+        "8-thread log throughput: {:.0} entries/sec ({total} entries in {:?})",
+        entries_per_sec, elapsed
+    );
+
+    assert!(
+        entries_per_sec > 5_000.0,
+        "8-thread should push >5k entries/sec aggregate, got {:.0}",
+        entries_per_sec
+    );
+}
+
+#[test]
+fn test_log_push_p99_latency() {
+    use horus_core::core::log_buffer::publish_log;
+
+    let count = 1_000usize;
+    let mut durations = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let t0 = std::time::Instant::now();
+        publish_log(make_entry("bench_p99", i as u64, "latency_test"));
+        durations.push(t0.elapsed());
+    }
+
+    durations.sort();
+    let p50 = durations[count / 2];
+    let p99 = durations[count * 99 / 100];
+
+    eprintln!("Log push latency: p50={:?}, p99={:?}", p50, p99);
+
+    assert!(
+        p99.as_millis() < 1,
+        "p99 push latency should be < 1ms, got {:?}",
+        p99
+    );
+}

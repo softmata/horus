@@ -32,6 +32,10 @@ pub enum LogType {
 
 const MAX_LOG_ENTRIES: usize = 5000;
 
+/// Capacity for the dedicated error ring buffer.
+/// At typical error rates (1-10 errors/hour), 500 slots = days of retention.
+const ERROR_BUFFER_ENTRIES: usize = 500;
+
 /// Total bytes per slot, including the 8-byte seqlock field.
 const SLOT_SIZE: usize = 512;
 
@@ -154,21 +158,37 @@ fn truncate_field(s: &mut String, max: usize) {
 /// with a writer from another process.
 pub struct SharedLogBuffer {
     mmap: Mutex<MmapMut>,
+    /// Ring buffer capacity (number of log entry slots).
+    capacity: usize,
 }
 
 impl SharedLogBuffer {
     pub fn new() -> crate::error::HorusResult<Self> {
         // Logs are intentionally global (not session-isolated) so monitor can see all logs
         let path = shm_logs_path();
-        Self::open_at(&path)
+        Self::open_at_with_capacity(&path, MAX_LOG_ENTRIES)
+    }
+
+    /// Create the dedicated error log buffer (smaller, separate SHM path).
+    pub fn new_error_buffer() -> crate::error::HorusResult<Self> {
+        use crate::memory::shm_error_logs_path;
+        let path = shm_error_logs_path();
+        Self::open_at_with_capacity(&path, ERROR_BUFFER_ENTRIES)
     }
 
     fn open_at(path: &std::path::Path) -> crate::error::HorusResult<Self> {
+        Self::open_at_with_capacity(path, MAX_LOG_ENTRIES)
+    }
+
+    fn open_at_with_capacity(
+        path: &std::path::Path,
+        capacity: usize,
+    ) -> crate::error::HorusResult<Self> {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
 
-        let total_size = HEADER_SIZE + (MAX_LOG_ENTRIES * SLOT_SIZE);
+        let total_size = HEADER_SIZE + (capacity * SLOT_SIZE);
 
         let file = OpenOptions::new()
             .read(true)
@@ -178,7 +198,10 @@ impl SharedLogBuffer {
             .open(path)?;
 
         let metadata = file.metadata()?;
-        if metadata.len() == 0 {
+        if metadata.len() == 0 || metadata.len() != total_size as u64 {
+            // New file or capacity changed (e.g., main buffer at 5000 vs error buffer at 500).
+            // Resize to match expected capacity. Existing data from a different-capacity run
+            // would be at wrong slot positions, so truncating is correct.
             file.set_len(total_size as u64)?;
         }
 
@@ -193,6 +216,7 @@ impl SharedLogBuffer {
 
         Ok(Self {
             mmap: Mutex::new(mmap),
+            capacity,
         })
     }
 
@@ -253,7 +277,7 @@ impl SharedLogBuffer {
         // SAFETY: base points to the start of the mmap (page-aligned, >= HEADER_SIZE bytes).
         // The AtomicU64 at offset 0 is 8-byte aligned. MutexGuard keeps mmap alive.
         let claimed_idx = unsafe { claim_slot(base) };
-        let slot_idx = (claimed_idx as usize) % MAX_LOG_ENTRIES;
+        let slot_idx = (claimed_idx as usize) % self.capacity;
         let slot_off = HEADER_SIZE + slot_idx * SLOT_SIZE;
 
         // ── Step 2: Mark slot as write-in-progress (odd seq) ─────────────────
@@ -303,15 +327,15 @@ impl SharedLogBuffer {
         let write_idx = unsafe { load_write_idx(base) } as usize;
 
         let mut logs = Vec::new();
-        let num_entries = write_idx.min(MAX_LOG_ENTRIES);
-        let start_idx = if write_idx > MAX_LOG_ENTRIES {
-            write_idx % MAX_LOG_ENTRIES
+        let num_entries = write_idx.min(self.capacity);
+        let start_idx = if write_idx > self.capacity {
+            write_idx % self.capacity
         } else {
             0
         };
 
         for i in 0..num_entries {
-            let slot_idx = (start_idx + i) % MAX_LOG_ENTRIES;
+            let slot_idx = (start_idx + i) % self.capacity;
 
             // SAFETY: slot_idx < MAX_LOG_ENTRIES; mmap covers the full buffer.
             let seq = unsafe { load_slot_seq(base, slot_idx) };
@@ -385,10 +409,23 @@ impl SharedLogBuffer {
 lazy_static::lazy_static! {
     pub static ref GLOBAL_LOG_BUFFER: SharedLogBuffer = SharedLogBuffer::new()
         .expect("FATAL: Failed to initialize global log buffer - cannot continue");
+
+    /// Dedicated error ring buffer — Error/Warning entries persist here even when
+    /// the main buffer is flooded by sensor pub/sub traffic. 500 slots = days of
+    /// retention at typical error rates.
+    pub static ref GLOBAL_ERROR_BUFFER: SharedLogBuffer = SharedLogBuffer::new_error_buffer()
+        .expect("FATAL: Failed to initialize error log buffer - cannot continue");
 }
 
-/// Publish a log entry to shared memory ring buffer
+/// Publish a log entry to shared memory ring buffer.
+///
+/// Error and Warning entries are dual-written to both the main buffer and the
+/// dedicated error buffer for persistent retention. Info/Debug/Publish/Subscribe
+/// entries go to the main buffer only (zero overhead on the hot sensor path).
 pub fn publish_log(entry: LogEntry) {
+    if matches!(entry.log_type, LogType::Error | LogType::Warning) {
+        GLOBAL_ERROR_BUFFER.push(entry.clone());
+    }
     GLOBAL_LOG_BUFFER.push(entry);
 }
 

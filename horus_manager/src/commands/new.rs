@@ -1,7 +1,10 @@
-use crate::manifest::{HorusManifest, PackageInfo, HORUS_TOML};
+use crate::manifest::{
+    DependencyValue, HorusManifest, PackageInfo, TargetType, WorkspaceConfig, HORUS_TOML,
+};
 use crate::{cli_output, version};
 use anyhow::{Context, Result};
 use colored::*;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -11,6 +14,8 @@ pub fn create_new_project(
     path: Option<PathBuf>,
     language: String,
     use_macro: bool,
+    workspace: bool,
+    lib: bool,
 ) -> Result<()> {
     // Validate project name before doing anything
     validate_project_name(&name)?;
@@ -18,10 +23,17 @@ pub fn create_new_project(
     // Check version compatibility before creating project
     version::check_and_prompt_update()?;
 
-    cli_output::info(&format!(
-        "Creating new HORUS project '{}'",
-        name.green().bold()
-    ));
+    if workspace {
+        cli_output::info(&format!(
+            "Creating new HORUS workspace '{}'",
+            name.green().bold()
+        ));
+    } else {
+        cli_output::info(&format!(
+            "Creating new HORUS project '{}'",
+            name.green().bold()
+        ));
+    }
 
     // Determine project path
     let project_path = if let Some(p) = path {
@@ -53,29 +65,86 @@ pub fn create_new_project(
     // Create project directory
     fs::create_dir_all(&project_path).context("Failed to create project directory")?;
 
-    // Create .horus/ directory structure
-    create_horus_directory(&project_path)?;
+    if workspace {
+        // ── Workspace mode ──────────────────────────────────────────
+        // Create root .horus/ directory
+        create_horus_directory(&project_path)?;
 
-    // Create .gitignore in project root
-    create_gitignore(&project_path, &language)?;
+        // Create .gitignore in workspace root
+        create_gitignore(&project_path, &language)?;
 
-    // Generate horus.toml (deps added later via `horus add`)
-    create_horus_toml(&project_path, &name, &description, &author)?;
+        // Create root horus.toml with [workspace] config
+        create_workspace_horus_toml(&project_path, &name)?;
 
-    // Generate main source file based on language
-    // Note: native build files (Cargo.toml, pyproject.toml) are generated
-    // automatically from horus.toml by the build pipeline (cargo_gen/pyproject_gen).
-    match language.as_str() {
-        "rust" => {
-            create_main_rs(&project_path, use_macro)?;
+        // Create crates/ directory and the first member
+        let member_dir = project_path.join("crates").join(&name);
+        fs::create_dir_all(&member_dir).context("Failed to create member directory")?;
+
+        // Create the member's horus.toml with proper PackageInfo
+        create_horus_toml_with_target(
+            &member_dir,
+            &name,
+            &description,
+            &author,
+            TargetType::Bin,
+        )?;
+
+        // Create the member's src/main.rs
+        match language.as_str() {
+            "rust" => {
+                create_main_rs(&member_dir, use_macro)?;
+            }
+            "python" => {
+                create_main_py(&member_dir)?;
+            }
+            "cpp" => {
+                create_cpp_project(&member_dir, &name)?;
+            }
+            other => anyhow::bail!("Unsupported language: {}", other),
         }
-        "python" => {
-            create_main_py(&project_path)?;
+    } else {
+        // ── Single-package mode ─────────────────────────────────────
+        // Create .horus/ directory structure
+        create_horus_directory(&project_path)?;
+
+        // Create .gitignore in project root
+        create_gitignore(&project_path, &language)?;
+
+        // Determine target type
+        let target_type = if lib {
+            TargetType::Lib
+        } else {
+            TargetType::default()
+        };
+
+        // Generate horus.toml (deps added later via `horus add`)
+        create_horus_toml_with_target(
+            &project_path,
+            &name,
+            &description,
+            &author,
+            target_type,
+        )?;
+
+        // Generate main source file based on language
+        // Note: native build files (Cargo.toml, pyproject.toml) are generated
+        // automatically from horus.toml by the build pipeline (cargo_gen/pyproject_gen).
+        if lib && language == "rust" {
+            create_lib_rs(&project_path, &name)?;
+        } else {
+            match language.as_str() {
+                "rust" => {
+                    create_main_rs(&project_path, use_macro)?;
+                }
+                "python" => {
+                    create_main_py(&project_path)?;
+                }
+                "cpp" => {
+                    create_cpp_project(&project_path, &name)?;
+                }
+                other => anyhow::bail!("Unsupported language: {}", other),
+            }
         }
-        "cpp" => {
-            create_cpp_project(&project_path, &name)?;
-        }
-        other => anyhow::bail!("Unsupported language: {}", other),
     }
 
     // Register workspace in ~/.horus/workspaces.json
@@ -236,6 +305,7 @@ compile_commands.json
     Ok(())
 }
 
+#[cfg(test)]
 fn create_horus_toml(
     project_path: &Path,
     name: &str,
@@ -255,6 +325,7 @@ fn create_horus_toml(
             categories: Vec::new(),
             standard: None,
             rust_edition: None,
+            target_type: TargetType::default(),
         },
         dependencies: Default::default(),
         dev_dependencies: Default::default(),
@@ -264,10 +335,102 @@ fn create_horus_toml(
         enable: Vec::new(),
         cpp: None,
         hooks: Default::default(),
+        workspace: None,
     };
 
     manifest.save_to(&project_path.join(HORUS_TOML))?;
 
+    Ok(())
+}
+
+/// Create a horus.toml with a specific `TargetType`.
+fn create_horus_toml_with_target(
+    project_path: &Path,
+    name: &str,
+    description: &str,
+    author: &str,
+    target_type: TargetType,
+) -> Result<()> {
+    let manifest = HorusManifest {
+        package: PackageInfo {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            description: Some(description.to_string()),
+            authors: vec![author.to_string()],
+            license: Some("Apache-2.0".to_string()),
+            edition: "1".to_string(),
+            repository: None,
+            package_type: None,
+            categories: Vec::new(),
+            standard: None,
+            rust_edition: None,
+            target_type,
+        },
+        dependencies: Default::default(),
+        dev_dependencies: Default::default(),
+        drivers: Default::default(),
+        scripts: Default::default(),
+        ignore: Default::default(),
+        enable: Vec::new(),
+        cpp: None,
+        hooks: Default::default(),
+        workspace: None,
+    };
+
+    manifest.save_to(&project_path.join(HORUS_TOML))?;
+
+    Ok(())
+}
+
+/// Create a workspace-root horus.toml with `[workspace]` configuration.
+fn create_workspace_horus_toml(project_path: &Path, name: &str) -> Result<()> {
+    let mut ws_deps = BTreeMap::new();
+    ws_deps.insert(
+        "horus_library".to_string(),
+        DependencyValue::Simple("0.1.9".to_string()),
+    );
+
+    let manifest = HorusManifest {
+        package: PackageInfo {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            description: Some("A HORUS robotics workspace".to_string()),
+            authors: Vec::new(),
+            license: None,
+            edition: "1".to_string(),
+            repository: None,
+            package_type: None,
+            categories: Vec::new(),
+            standard: None,
+            rust_edition: None,
+            target_type: TargetType::default(),
+        },
+        dependencies: Default::default(),
+        dev_dependencies: Default::default(),
+        drivers: Default::default(),
+        scripts: Default::default(),
+        ignore: Default::default(),
+        enable: Vec::new(),
+        cpp: None,
+        hooks: Default::default(),
+        workspace: Some(WorkspaceConfig {
+            members: vec!["crates/*".to_string()],
+            exclude: Vec::new(),
+            dependencies: ws_deps,
+        }),
+    };
+
+    manifest.save_to(&project_path.join(HORUS_TOML))?;
+
+    Ok(())
+}
+
+/// Create a minimal lib.rs for library crates.
+fn create_lib_rs(project_path: &Path, name: &str) -> Result<()> {
+    let content = format!("//! {} library crate\n", name);
+    let src_dir = project_path.join("src");
+    fs::create_dir_all(&src_dir)?;
+    fs::write(src_dir.join("lib.rs"), content)?;
     Ok(())
 }
 
@@ -673,6 +836,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -691,6 +856,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -708,6 +875,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("cannot be empty"));
@@ -720,6 +889,8 @@ mod tests {
             "test_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "java".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap_err();
@@ -735,6 +906,8 @@ mod tests {
             "rust_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -758,6 +931,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -778,6 +953,8 @@ mod tests {
             "rust_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -807,6 +984,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -830,6 +1009,8 @@ mod tests {
             "py_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "python".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -859,6 +1040,8 @@ mod tests {
             "valid_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -904,6 +1087,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -911,7 +1096,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate .horus/Cargo.toml from the manifest
-        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
 
         assert!(cargo_path.exists());
         let content = fs::read_to_string(&cargo_path).unwrap();
@@ -958,6 +1143,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -965,7 +1152,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate .horus/pyproject.toml from the manifest
-        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let (pyproj_path, _) = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
 
         assert!(pyproj_path.exists());
         let content = fs::read_to_string(&pyproj_path).unwrap();
@@ -1034,6 +1221,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1042,6 +1231,8 @@ mod tests {
             "dup_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         );
 
@@ -1063,6 +1254,8 @@ mod tests {
             "clean_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -1137,6 +1330,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             true,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1171,6 +1366,8 @@ mod tests {
             "plain_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -1277,6 +1474,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1305,6 +1504,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1330,6 +1531,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1337,7 +1540,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate with no explicit source_files (should auto-detect main.rs)
-        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
         // Should have exactly one [[bin]] entry
@@ -1360,6 +1563,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1368,7 +1573,7 @@ mod tests {
 
         // Pass main.rs explicitly
         let main_rs = project.join("src/main.rs");
-        let cargo_path =
+        let (cargo_path, _) =
             crate::cargo_gen::generate(&manifest, &project, &[main_rs], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
@@ -1386,6 +1591,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1393,7 +1600,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
 
         // Generate without dev deps
-        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let (pyproj_path, _) = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
 
         assert!(
@@ -1541,6 +1748,8 @@ mod tests {
             Some(nested.clone()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1582,6 +1791,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             true, // macro flag — should be ignored for python
+            false,
+            false,
         )
         .unwrap();
 
@@ -1827,6 +2038,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1834,6 +2047,8 @@ mod tests {
             "bot_beta".to_string(),
             Some(dir.path().to_path_buf()),
             "python".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -1869,6 +2084,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1883,6 +2100,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             true, // switch to macro this time
+            false,
+            false,
         )
         .unwrap();
 
@@ -1910,6 +2129,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -1921,6 +2142,8 @@ mod tests {
             "switch_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "python".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -1947,12 +2170,14 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
         let project = dir.path().join("ws_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
         // Workspace isolation: [workspace] with empty members
@@ -1972,12 +2197,14 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
         let project = dir.path().join("path_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let content = fs::read_to_string(&cargo_path).unwrap();
 
         // [[bin]] path should point back to main.rs in project root
@@ -1998,12 +2225,14 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
         let project = dir.path().join("pep621_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let (pyproj_path, _) = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
 
         assert!(
@@ -2031,12 +2260,14 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
         let project = dir.path().join(name);
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let (pyproj_path, _) = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
 
         let expected = format!("name = \"{}\"", name);
@@ -2061,6 +2292,8 @@ mod tests {
                         name.clone(),
                         Some(dir.path().to_path_buf()),
                         if i % 2 == 0 { "rust" } else { "python" }.to_string(),
+                        false,
+                        false,
                         false,
                     )
                     .unwrap();
@@ -2089,6 +2322,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2113,6 +2348,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2133,6 +2370,8 @@ mod tests {
             "type_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -2162,6 +2401,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2185,6 +2426,8 @@ mod tests {
             "repo_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -2226,6 +2469,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2236,7 +2481,7 @@ mod tests {
         assert_eq!(manifest.package.name, name);
 
         // Cargo.toml also uses the hyphenated name
-        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
         assert!(
             cargo_content.contains(&format!("name = \"{}\"", name)),
@@ -2255,6 +2500,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2262,7 +2509,7 @@ mod tests {
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.package.name, name);
 
-        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let (pyproj_path, _) = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
         let content = fs::read_to_string(&pyproj_path).unwrap();
         assert!(
             content.contains(&format!("name = \"{}\"", name)),
@@ -2280,12 +2527,14 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
         let project = dir.path().join("loc_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let cargo_path = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
+        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, &project, &[], false).unwrap();
 
         // Cargo.toml should be in .horus/, not project root
         assert!(
@@ -2308,12 +2557,14 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
         let project = dir.path().join("py_loc_test");
         let manifest = HorusManifest::load_from(&project.join(HORUS_TOML)).unwrap();
-        let pyproj_path = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
+        let (pyproj_path, _) = crate::pyproject_gen::generate(&manifest, &project, false).unwrap();
 
         assert!(
             pyproj_path.starts_with(project.join(".horus")),
@@ -2334,6 +2585,8 @@ mod tests {
             "tree_bot".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();
@@ -2373,6 +2626,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "python".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2409,6 +2664,8 @@ mod tests {
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
             false,
+            false,
+            false,
         )
         .unwrap();
 
@@ -2432,6 +2689,8 @@ mod tests {
             "a".to_string(),
             Some(dir.path().to_path_buf()),
             "rust".to_string(),
+            false,
+            false,
             false,
         )
         .unwrap();

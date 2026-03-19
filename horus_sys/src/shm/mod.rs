@@ -147,6 +147,14 @@ pub fn shm_logs_path() -> PathBuf {
     shm_base_dir().join("logs")
 }
 
+/// Error logs shared memory path (namespaced).
+///
+/// Separate persistent buffer for Error/Warning entries that survives
+/// sensor pub/sub volume flooding. Lives alongside the main log buffer.
+pub fn shm_error_logs_path() -> PathBuf {
+    shm_base_dir().join("error_logs")
+}
+
 /// Returns true if the platform has native shared memory support (/dev/shm on Linux).
 pub fn has_native_shm() -> bool {
     #[cfg(target_os = "linux")]

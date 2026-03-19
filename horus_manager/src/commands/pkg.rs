@@ -792,11 +792,14 @@ fn read_package_name_from_path(path: &Path) -> Result<String> {
         })
 }
 
-/// Install a package from registry or local path
-pub fn run_install(
+/// Add a dependency to horus.toml and optionally fetch it.
+///
+/// This is the `horus add` implementation for non-driver dependencies.
+/// Writes to [dependencies] (or [dev-dependencies] with `dev=true`),
+/// then triggers physical installation for registry packages.
+pub fn run_add_dep(
     package: String,
     ver: Option<String>,
-    global: bool,
     target: Option<String>,
     source: Option<String>,
     features: Option<Vec<String>>,
@@ -838,11 +841,6 @@ pub fn run_install(
         let resolved = resolver.resolve(&package);
         resolved.source
     };
-
-    // For global installs, skip horus.toml and install directly
-    if global {
-        return run_install_global(&package, ver.as_deref(), target);
-    }
 
     // ── Write to horus.toml ──────────────────────────────────────────────
     let manifest_path = Path::new(HORUS_TOML);
@@ -893,6 +891,7 @@ pub fn run_install(
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             });
         }
         DepSource::Git => {
@@ -916,6 +915,7 @@ pub fn run_install(
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             });
         }
         DepSource::CratesIo | DepSource::PyPI | DepSource::System => {
@@ -936,6 +936,7 @@ pub fn run_install(
                     apt: None,
                     cmake_package: None,
                     lang: None,
+                    workspace: false,
                 });
             } else {
                 dep_value = DependencyValue::Detailed(DetailedDependency {
@@ -951,6 +952,7 @@ pub fn run_install(
                     apt: None,
                     cmake_package: None,
                     lang: None,
+                    workspace: false,
                 });
             }
         }
@@ -974,6 +976,7 @@ pub fn run_install(
                     lang: None,
                     tag: None,
                     rev: None,
+                    workspace: false,
                 });
             }
         }
@@ -1117,8 +1120,11 @@ pub fn run_install(
     Ok(())
 }
 
-/// Install a package globally (no horus.toml involved).
-fn run_install_global(package: &str, ver: Option<&str>, target: Option<String>) -> HorusResult<()> {
+/// Install a standalone package/plugin from the registry (like `cargo install`).
+///
+/// Does NOT modify horus.toml. Downloads to ~/.horus/cache/ and registers
+/// any CLI plugins found in the package.
+pub fn run_install_standalone(package: &str, ver: Option<&str>, target: Option<String>) -> HorusResult<()> {
     let install_target = if let Some(target_name) = target {
         let registry = workspace::WorkspaceRegistry::load()
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2127,6 +2133,7 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool) -
                     apt: None,
                     cmake_package: None,
                     lang: None,
+                    workspace: false,
                 })
             }
             _ => {
@@ -2232,13 +2239,13 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
             let mut regenerated = Vec::new();
 
             if ctx.languages.contains(&crate::manifest::Language::Rust) {
-                if let Ok(path) = crate::cargo_gen::generate(&manifest, &project_dir, &[], false) {
+                if let Ok((path, _)) = crate::cargo_gen::generate(&manifest, &project_dir, &[], false) {
                     regenerated.push(path.display().to_string());
                 }
             }
 
             if ctx.languages.contains(&crate::manifest::Language::Python) {
-                if let Ok(path) = crate::pyproject_gen::generate(&manifest, &project_dir, false) {
+                if let Ok((path, _)) = crate::pyproject_gen::generate(&manifest, &project_dir, false) {
                     regenerated.push(path.display().to_string());
                 }
             }
@@ -3314,10 +3321,9 @@ existing = "1.0.0"
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // No horus.toml => error, but the source detection itself works
-        let result = run_install(
+        let result = run_add_dep(
             "./local/pkg".to_string(),
             None,
-            false,
             None,
             None,
             None,
@@ -3342,10 +3348,9 @@ existing = "1.0.0"
         let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "https://github.com/user/repo.git".to_string(),
             None,
-            false,
             None,
             None,
             None,
@@ -3365,10 +3370,9 @@ existing = "1.0.0"
         let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "some-pkg".to_string(),
             None,
-            false,
             None,
             Some("invalid-source".to_string()),
             None,
@@ -3391,10 +3395,9 @@ existing = "1.0.0"
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["crates.io", "crates", "cargo"] {
-            let result = run_install(
+            let result = run_add_dep(
                 "serde".to_string(),
                 None,
-                false,
                 None,
                 Some(alias.to_string()),
                 None,
@@ -3421,10 +3424,9 @@ existing = "1.0.0"
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["pypi", "pip", "python"] {
-            let result = run_install(
+            let result = run_add_dep(
                 "numpy".to_string(),
                 None,
-                false,
                 None,
                 Some(alias.to_string()),
                 None,
@@ -3446,10 +3448,9 @@ existing = "1.0.0"
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["system", "apt", "brew"] {
-            let result = run_install(
+            let result = run_add_dep(
                 "curl".to_string(),
                 None,
-                false,
                 None,
                 Some(alias.to_string()),
                 None,
@@ -3469,10 +3470,9 @@ existing = "1.0.0"
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         for alias in &["registry", "horus"] {
-            let result = run_install(
+            let result = run_add_dep(
                 "some-pkg".to_string(),
                 None,
-                false,
                 None,
                 Some(alias.to_string()),
                 None,
@@ -3498,10 +3498,9 @@ existing = "1.0.0"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "./nonexistent/path".to_string(),
             None,
-            false,
             None,
             None,
             None,
@@ -3537,10 +3536,9 @@ existing = "1.0.0"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "./local-dep".to_string(),
             None,
-            false,
             None,
             None,
             None,
@@ -3570,10 +3568,9 @@ existing = "1.0.0"
         .unwrap();
 
         // Must use --source git because URL contains '/' which triggers is_path detection
-        let result = run_install(
+        let result = run_add_dep(
             "https://github.com/user/my-pkg.git".to_string(),
             None,
-            false,
             None,
             Some("git".to_string()),
             None,
@@ -3615,10 +3612,9 @@ existing = "1.0.0"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "./test-util".to_string(),
             None,
-            false,
             None,
             None,
             None,
@@ -3652,10 +3648,9 @@ existing = "1.0.0"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "serde".to_string(),
             Some("1.0.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string()]),
@@ -3676,10 +3671,9 @@ existing = "1.0.0"
         let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "some-pkg".to_string(),
             None,
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -3717,7 +3711,7 @@ my-pkg = "1.0.0"
         .unwrap();
 
         // Re-install with path source replaces the existing entry
-        let result = run_install("./my-pkg".to_string(), None, false, None, None, None, false);
+        let result = run_add_dep("./my-pkg".to_string(), None, None, None, None, false);
         assert!(result.is_ok());
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
@@ -4081,10 +4075,9 @@ name = "minimal"
         .unwrap();
 
         // Registry source with no version and no features => Simple("*")
-        let _result = run_install(
+        let _result = run_add_dep(
             "rplidar".to_string(),
             None,
-            false,
             None,
             Some("registry".to_string()),
             None,
@@ -4376,7 +4369,7 @@ name = "minimal"
 
         // Pre-generate .horus/Cargo.toml
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        let cargo_path =
+        let (cargo_path, _) =
             crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
         assert!(
@@ -4423,7 +4416,7 @@ name = "minimal"
 
         // Pre-generate .horus/pyproject.toml
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
-        let pyproj_path =
+        let (pyproj_path, _) =
             crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
         let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
         assert!(
@@ -4524,10 +4517,9 @@ name = "minimal"
         .unwrap();
 
         // Install a crates.io dep
-        let _result = run_install(
+        let _result = run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string()]),
@@ -4573,6 +4565,7 @@ name = "minimal"
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
         deps.insert(
@@ -4590,6 +4583,7 @@ name = "minimal"
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
 
@@ -4606,7 +4600,9 @@ name = "minimal"
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
@@ -4621,7 +4617,7 @@ name = "minimal"
         let horus_path = dir.path().join(HORUS_TOML);
         manifest.save_to(&horus_path).unwrap();
 
-        let cargo_path = crate::cargo_gen::generate(&manifest, dir.path(), &[], false).unwrap();
+        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
 
         // Rust dep should appear in Cargo.toml
@@ -4663,6 +4659,7 @@ name = "minimal"
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
         deps.insert(
@@ -4680,6 +4677,7 @@ name = "minimal"
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
 
@@ -4696,7 +4694,9 @@ name = "minimal"
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
@@ -4710,7 +4710,7 @@ name = "minimal"
         let horus_path = dir.path().join(HORUS_TOML);
         manifest.save_to(&horus_path).unwrap();
 
-        let pyproject_path = crate::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
+        let (pyproject_path, _) = crate::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(&pyproject_path).unwrap();
 
         // PyPI dep should appear
@@ -4812,7 +4812,9 @@ lidar = "rplidar-a2"
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers,
@@ -4850,10 +4852,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "libopencv-dev".to_string(),
             Some("4.5".to_string()),
-            false,
             None,
             Some("system".to_string()),
             None,
@@ -4887,10 +4888,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "curl".to_string(),
             None,
-            false,
             None,
             Some("apt".to_string()),
             None,
@@ -4919,10 +4919,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "criterion".to_string(),
             Some("0.5".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -4960,10 +4959,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "pytest".to_string(),
             Some(">=7.0".to_string()),
-            false,
             None,
             Some("pypi".to_string()),
             None,
@@ -4991,10 +4989,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "valgrind".to_string(),
             None,
-            false,
             None,
             Some("system".to_string()),
             None,
@@ -5031,10 +5028,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "./sensor-lib".to_string(),
             None,
-            false,
             None,
             None,
             Some(vec!["lidar".to_string(), "imu".to_string()]),
@@ -5068,10 +5064,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let _result = run_install(
+        let _result = run_add_dep(
             "horus-nav".to_string(),
             Some("2.0".to_string()),
-            false,
             None,
             Some("registry".to_string()),
             Some(vec!["slam".to_string(), "path-planning".to_string()]),
@@ -5101,10 +5096,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "torch".to_string(),
             Some("2.0".to_string()),
-            false,
             None,
             Some("pip".to_string()),
             Some(vec!["cuda".to_string()]),
@@ -5133,10 +5127,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "tokio".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["full".to_string(), "test-util".to_string()]),
@@ -5169,10 +5162,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "serde".to_string(),
             Some("^1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -5198,10 +5190,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "tokio".to_string(),
             Some("~1.25".to_string()),
-            false,
             None,
             Some("cargo".to_string()),
             None,
@@ -5227,10 +5218,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "numpy".to_string(),
             Some(">=1.24,<2.0".to_string()),
-            false,
             None,
             Some("pypi".to_string()),
             None,
@@ -5259,10 +5249,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "rapier3d".to_string(),
             Some("=0.22.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -5291,10 +5280,9 @@ lidar = "rplidar-a2"
         .unwrap();
 
         // Install 1: crates.io dep
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string()]),
@@ -5303,10 +5291,9 @@ lidar = "rplidar-a2"
         .unwrap();
 
         // Install 2: pypi dep
-        run_install(
+        run_add_dep(
             "numpy".to_string(),
             Some(">=1.24".to_string()),
-            false,
             None,
             Some("pypi".to_string()),
             None,
@@ -5315,10 +5302,9 @@ lidar = "rplidar-a2"
         .unwrap();
 
         // Install 3: system dep
-        run_install(
+        run_add_dep(
             "libssl-dev".to_string(),
             None,
-            false,
             None,
             Some("system".to_string()),
             None,
@@ -5327,10 +5313,9 @@ lidar = "rplidar-a2"
         .unwrap();
 
         // Install 4: dev dep
-        run_install(
+        run_add_dep(
             "criterion".to_string(),
             Some("0.5".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -5346,10 +5331,9 @@ lidar = "rplidar-a2"
             "[package]\nname = \"motor-lib\"\nversion = \"0.2.0\"\n",
         )
         .unwrap();
-        run_install(
+        run_add_dep(
             "./motor-lib".to_string(),
             None,
-            false,
             None,
             None,
             None,
@@ -5426,10 +5410,9 @@ lidar = "rplidar-a2"
         .unwrap();
 
         // Install v1
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -5441,10 +5424,9 @@ lidar = "rplidar-a2"
         assert_eq!(manifest.dependencies["serde"].version(), Some("1.0"));
 
         // Upgrade to v2
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("2.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -5473,10 +5455,9 @@ lidar = "rplidar-a2"
         .unwrap();
 
         // Overwrite with crates.io source
-        run_install(
+        run_add_dep(
             "my-lib".to_string(),
             Some("2.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -5560,10 +5541,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "https://github.com/org/robot-lib.git".to_string(),
             None,
-            false,
             None,
             Some("git".to_string()),
             None,
@@ -5614,10 +5594,9 @@ lidar = "rplidar-a2"
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "https://github.com/org/sensor-fusion.git".to_string(),
             None,
-            false,
             None,
             Some("git".to_string()),
             Some(vec!["kalman".to_string(), "ekf".to_string()]),
@@ -5742,10 +5721,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         .unwrap();
 
         // Use run_install for another
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string()]),
@@ -5790,10 +5768,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         );
 
         // Overwrite with crates.io source via run_install
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string()]),
@@ -5912,10 +5889,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         .unwrap();
 
         // Simple name without source flag => registry
-        let _result = run_install(
+        let _result = run_add_dep(
             "rplidar".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             None, // no source flag
             None,
@@ -5951,10 +5927,9 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "./my-lib".to_string(),
             None,
-            false,
             None,
             None, // auto-detect path
             None,
@@ -5975,7 +5950,7 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // No horus.toml => will fail, but we just test detection
-        let result = run_install("~/my-pkg".to_string(), None, false, None, None, None, false);
+        let result = run_add_dep("~/my-pkg".to_string(), None, None, None, None, false);
         std::env::set_current_dir(&original_dir).unwrap();
         assert!(result.is_err());
         // Error should be about horus.toml not about source detection
@@ -6056,10 +6031,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         .unwrap();
 
         // Install
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string()]),
@@ -6076,10 +6050,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         assert!(!manifest.dependencies.contains_key("serde"));
 
         // Reinstall with different config
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("2.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string(), "rc".to_string()]),
@@ -6113,10 +6086,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "https://github.com/test/mock-hw.git".to_string(),
             None,
-            false,
             None,
             Some("git".to_string()),
             None,
@@ -6145,10 +6117,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "my-long-hyphenated-package-name".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -6176,10 +6147,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         )
         .unwrap();
 
-        let result = run_install(
+        let result = run_add_dep(
             "horus_library".to_string(),
             Some("0.1.9".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -6259,10 +6229,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         )
         .unwrap();
 
-        let _result = run_install(
+        let _result = run_add_dep(
             "rplidar".to_string(),
             Some("1.2.0".to_string()),
-            false,
             None,
             Some("registry".to_string()),
             None,
@@ -6291,10 +6260,9 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
         )
         .unwrap();
 
-        let _result = run_install(
+        let _result = run_add_dep(
             "rplidar".to_string(),
             Some("1.2.0".to_string()),
-            false,
             None,
             Some("registry".to_string()),
             Some(vec!["sdk".to_string()]),
@@ -6366,10 +6334,9 @@ serde = { version = "1.0", source = "crates.io" }
             "unstable".to_string(),
         ];
 
-        let result = run_install(
+        let result = run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(features.clone()),
@@ -6402,10 +6369,9 @@ serde = { version = "1.0", source = "crates.io" }
         .unwrap();
 
         // Empty features vec, no version => should produce simple form for crates.io
-        let result = run_install(
+        let result = run_add_dep(
             "log".to_string(),
             None,
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec![]),
@@ -6449,10 +6415,9 @@ serde = { version = "1.0", source = "crates.io" }
             false,
         )
         .unwrap();
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("1.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string()]),
@@ -6467,10 +6432,9 @@ serde = { version = "1.0", source = "crates.io" }
             "[package]\nname = \"sensor-lib\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        run_install(
+        run_add_dep(
             "./sensor-lib".to_string(),
             None,
-            false,
             None,
             None,
             None,
@@ -6483,10 +6447,9 @@ serde = { version = "1.0", source = "crates.io" }
         assert_eq!(manifest.drivers.len(), 1);
 
         // Phase 2: Upgrade serde
-        run_install(
+        run_add_dep(
             "serde".to_string(),
             Some("2.0".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             Some(vec!["derive".to_string(), "rc".to_string()]),
@@ -6511,10 +6474,9 @@ serde = { version = "1.0", source = "crates.io" }
         assert!(manifest.drivers.is_empty());
 
         // Phase 4: Add dev dep
-        run_install(
+        run_add_dep(
             "criterion".to_string(),
             Some("0.5".to_string()),
-            false,
             None,
             Some("crates.io".to_string()),
             None,
@@ -6596,7 +6558,7 @@ serde = { version = "1.0", source = "crates.io" }
         assert_eq!(manifest.dependencies.len(), 3);
 
         // Step 5: Verify .horus/Cargo.toml is generated with correct sources
-        let cargo_path =
+        let (cargo_path, _) =
             crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
         assert!(
@@ -6684,7 +6646,7 @@ serde = { version = "1.0", source = "crates.io" }
         assert_eq!(manifest.dependencies.len(), 3);
 
         // Step 5: Verify .horus/pyproject.toml is generated correctly
-        let pyproj_path =
+        let (pyproj_path, _) =
             crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
         let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
         assert!(pyproj_content.contains("numpy"), "numpy in pyproject.toml");
@@ -6769,7 +6731,7 @@ serde = { version = "1.0", source = "crates.io" }
         assert_eq!(manifest.dependencies.len(), 5);
 
         // Step 5: Verify both build files are generated correctly
-        let cargo_path =
+        let (cargo_path, _) =
             crate::cargo_gen::generate(&manifest, temp_dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
         assert!(cargo_content.contains("serde"), "serde in Cargo.toml");
@@ -6778,7 +6740,7 @@ serde = { version = "1.0", source = "crates.io" }
         assert!(!cargo_content.contains("numpy"), "numpy NOT in Cargo.toml");
         assert!(!cargo_content.contains("torch"), "torch NOT in Cargo.toml");
 
-        let pyproj_path =
+        let (pyproj_path, _) =
             crate::pyproject_gen::generate(&manifest, temp_dir.path(), false).unwrap();
         let pyproj_content = fs::read_to_string(&pyproj_path).unwrap();
         assert!(pyproj_content.contains("numpy"), "numpy in pyproject.toml");

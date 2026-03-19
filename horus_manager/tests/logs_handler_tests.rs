@@ -760,3 +760,292 @@ async fn log_entry_preserves_timing_fields() {
         "tick_number must be preserved"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  13. Concurrent read DURING write — handler returns valid JSON under contention
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn concurrent_read_during_active_writes_returns_valid_json() {
+    let node = uid("rw_contention");
+    let base_msg = uid("rw_msg");
+
+    // Spawn 4 writer threads that inject continuously
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let handles: Vec<_> = (0..4)
+        .map(|thread_idx| {
+            let n = node.clone();
+            let m = base_msg.clone();
+            let r = running.clone();
+            std::thread::spawn(move || {
+                let mut i = 0u64;
+                while r.load(std::sync::atomic::Ordering::Relaxed) {
+                    push_log(
+                        &n,
+                        LogType::Info,
+                        None,
+                        &format!("{}_t{}_{}", m, thread_idx, i),
+                        i,
+                    );
+                    i += 1;
+                }
+            })
+        })
+        .collect();
+
+    // Read multiple times while writes are happening
+    for _ in 0..3 {
+        let app = builders::test_router();
+        let resp = app
+            .oneshot(get_request(&format!("/api/logs/node/{}", node)))
+            .await
+            .unwrap();
+        let json = assert_json_ok(resp).await;
+        assert!(json["logs"].is_array(), "must return valid JSON under contention");
+    }
+
+    // Stop writers
+    running.store(false, std::sync::atomic::Ordering::Relaxed);
+    for h in handles {
+        h.join().expect("writer thread must not panic");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  14. Buffer overflow — 6000+ entries, handler returns valid JSON with latest
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn buffer_overflow_handler_returns_valid_json_with_latest() {
+    let node = uid("overflow_node");
+    let base_msg = uid("overflow_msg");
+
+    // Inject 6000 entries (exceeds ring buffer capacity of 5000)
+    for i in 0..6000u64 {
+        push_log(
+            &node,
+            LogType::Info,
+            None,
+            &format!("{}_{}", base_msg, i),
+            i,
+        );
+    }
+
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request(&format!("/api/logs/node/{}", node)))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    let logs = json["logs"].as_array().expect("logs must be an array");
+
+    // Handler must return valid JSON even after overflow
+    assert!(!logs.is_empty(), "should have entries after overflow");
+
+    // Latest entry (5999) should be present
+    let has_latest = logs
+        .iter()
+        .any(|e| {
+            e["message"]
+                .as_str()
+                .map(|m| m.contains(&format!("{}_{}", base_msg, 5999)))
+                .unwrap_or(false)
+        });
+    assert!(has_latest, "latest entry (5999) should survive ring buffer overflow");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  15. Topic prefix edge cases
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn logs_topic_double_prefix_strips_only_first() {
+    // Topic "horus_horus_sensor" should strip to "horus_sensor", NOT "sensor"
+    let inner_topic = format!("horus_{}", uid("double_prefix"));
+    let request_topic = format!("horus_{}", inner_topic);
+    let msg = uid("double_prefix_msg");
+    let node = uid("double_prefix_node");
+
+    // Store with inner_topic (horus_<uid>)
+    push_log(&node, LogType::Publish, Some(&inner_topic), &msg, 80);
+
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request(&format!("/api/logs/topic/{}", request_topic)))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    let logs = json["logs"].as_array().expect("logs must be an array");
+
+    // Should find the entry because strip_prefix("horus_") on "horus_horus_<uid>"
+    // produces "horus_<uid>" which matches inner_topic
+    let found = logs
+        .iter()
+        .any(|e| e["message"].as_str().unwrap_or("").contains(&msg));
+    assert!(
+        found,
+        "double-prefix topic should strip only first horus_ and find matching entry"
+    );
+}
+
+#[tokio::test]
+async fn logs_topic_just_horus_prefix() {
+    // Topic name is exactly "horus_" — strip_prefix returns ""
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/logs/topic/horus_"))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    assert!(json["logs"].is_array(), "must return valid JSON for edge case topic");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  16. High volume single node
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn high_volume_single_node_all_entries_readable() {
+    let node = uid("highvol_node");
+    let base_msg = uid("highvol_msg");
+
+    // Inject 500 entries for one node
+    for i in 0..500u64 {
+        push_log(&node, LogType::Info, None, &format!("{}_{}", base_msg, i), i);
+    }
+
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request(&format!("/api/logs/node/{}", node)))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    let logs = json["logs"].as_array().expect("logs must be an array");
+
+    let our_logs: Vec<_> = logs
+        .iter()
+        .filter(|e| {
+            e["message"]
+                .as_str()
+                .map(|m| m.contains(&base_msg))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    assert!(
+        our_logs.len() >= 400,
+        "at least 400 of 500 entries should be readable (ring may have older entries from other tests), got {}",
+        our_logs.len()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  17. All LogType variants have correct string representation in JSON
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn all_log_types_correct_json_string_representation() {
+    let node = uid("logtype_json_node");
+
+    let variants = [
+        (LogType::Publish, "Publish"),
+        (LogType::Subscribe, "Subscribe"),
+        (LogType::Info, "Info"),
+        (LogType::Warning, "Warning"),
+        (LogType::Error, "Error"),
+        (LogType::Debug, "Debug"),
+    ];
+
+    for (i, (lt, expected_str)) in variants.iter().enumerate() {
+        let msg = format!("{}_variant_{}", uid("lt_json"), expected_str);
+        push_log(&node, lt.clone(), None, &msg, 400 + i as u64);
+    }
+
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request(&format!("/api/logs/node/{}", node)))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    let logs = json["logs"].as_array().expect("logs must be an array");
+
+    // Count how many of our log types survived in the buffer
+    // (parallel tests may evict some entries from the shared 5000-slot ring)
+    let mut found_count = 0;
+    for (_, expected_str) in &variants {
+        let found = logs.iter().any(|e| {
+            e["node_name"].as_str() == Some(node.as_str())
+                && e["log_type"].as_str() == Some(expected_str)
+        });
+        if found {
+            found_count += 1;
+        }
+    }
+    assert!(
+        found_count >= 3,
+        "at least 3 of 6 LogType variants must survive in buffer (parallel tests may evict), found {}",
+        found_count
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  18. Error logs endpoint — /api/logs/errors
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn logs_errors_endpoint_returns_error_buffer() {
+    let node = uid("errlog_endpoint");
+    let error_msg = uid("errlog_error_msg");
+    let info_msg = uid("errlog_info_msg");
+
+    // Push via GLOBAL_LOG_BUFFER (dual-write routes Error to error buffer)
+    use horus_core::core::log_buffer::publish_log;
+    publish_log(CoreLogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        tick_number: 0,
+        node_name: node.clone(),
+        log_type: LogType::Error,
+        topic: None,
+        message: error_msg.clone(),
+        tick_us: 0,
+        ipc_ns: 0,
+    });
+    publish_log(CoreLogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        tick_number: 1,
+        node_name: node.clone(),
+        log_type: LogType::Info,
+        topic: None,
+        message: info_msg.clone(),
+        tick_us: 0,
+        ipc_ns: 0,
+    });
+
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/logs/errors"))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+
+    assert!(
+        json["error_logs"].is_array(),
+        "response must have 'error_logs' array"
+    );
+    let logs = json["error_logs"].as_array().unwrap();
+
+    // Error entry should be present
+    let has_error = logs
+        .iter()
+        .any(|e| e["message"].as_str().unwrap_or("").contains(&error_msg));
+    assert!(has_error, "Error entry must appear in /api/logs/errors");
+
+    // Info entry should NOT be present (error buffer only has Error/Warning)
+    let has_info = logs
+        .iter()
+        .any(|e| e["message"].as_str().unwrap_or("").contains(&info_msg));
+    assert!(
+        !has_info,
+        "Info entry must NOT appear in /api/logs/errors"
+    );
+}

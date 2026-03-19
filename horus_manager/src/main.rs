@@ -90,6 +90,9 @@ Publishing & Deploy:
   deploy            Deploy project to a remote robot
   auth              Authentication (login, api-key, signing-key)
 
+Native Tools:
+  env               Set up shell integration (cargo/pip/cmake proxy)
+
 {options}
 {after-help}")]
 #[command(after_help = "\
@@ -148,6 +151,12 @@ enum Commands {
         /// Use Rust with macros
         #[arg(short = 'm', long = "macro", conflicts_with_all = ["python", "cpp"])]
         use_macro: bool,
+        /// Create as a workspace with multiple crates
+        #[arg(short = 'w', long = "workspace")]
+        workspace: bool,
+        /// Create as a library crate (instead of binary)
+        #[arg(short = 'l', long = "lib")]
+        lib: bool,
     },
 
     /// Run a HORUS project or file(s)
@@ -194,6 +203,10 @@ enum Commands {
         /// Skip [hooks] execution
         #[arg(long = "no-hooks")]
         no_hooks: bool,
+
+        /// Run a specific workspace member by name
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
     },
 
     /// Build the HORUS project without running
@@ -230,6 +243,10 @@ enum Commands {
         /// Skip [hooks] execution
         #[arg(long = "no-hooks")]
         no_hooks: bool,
+
+        /// Build a specific workspace member by name
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
     },
 
     /// Generate or verify horus.lock (pins all dependency versions)
@@ -746,6 +763,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long = "json")]
         json: bool,
+
+        /// Install missing toolchains and system dependencies
+        #[arg(long = "fix")]
+        fix: bool,
     },
 
     /// Manage the horus CLI itself
@@ -763,8 +784,9 @@ enum Commands {
         check_only: bool,
     },
 
-    /// Synchronize development environment (toolchains, system dependencies)
-    Sync {
+    /// DEPRECATED: Use `horus doctor --fix` instead
+    #[command(name = "sync", hide = true)]
+    DeprecatedSync {
         /// Check only — don't install anything
         #[arg(long = "check")]
         check: bool,
@@ -930,6 +952,62 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+
+    // ── Native Tool Proxies ─────────────────────────────────────────────
+    /// Transparent cargo proxy — delegates to real cargo with horus.toml sync
+    #[command(name = "cargo", hide = true)]
+    Cargo {
+        /// Arguments passed to cargo
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Transparent pip proxy — delegates to real pip with horus.toml sync
+    #[command(name = "pip", hide = true)]
+    Pip {
+        /// Arguments passed to pip
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Transparent cmake proxy — delegates to real cmake with horus.toml sync
+    #[command(name = "cmake", hide = true)]
+    Cmake {
+        /// Arguments passed to cmake
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Transparent conan proxy — delegates to real conan with horus.toml sync
+    #[command(name = "conan", hide = true)]
+    Conan {
+        /// Arguments passed to conan
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Transparent vcpkg proxy — delegates to real vcpkg with horus.toml sync
+    #[command(name = "vcpkg", hide = true)]
+    Vcpkg {
+        /// Arguments passed to vcpkg
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Manage shell integration for native tool support (cargo, pip, cmake)
+    Env {
+        /// Write shell integration files and add to shell RC
+        #[arg(long)]
+        init: bool,
+
+        /// Remove shell integration from shell RC files
+        #[arg(long)]
+        uninstall: bool,
+    },
+
+    /// Internal: check if cwd is a horus project (exit code only)
+    #[command(name = "_is-project", hide = true)]
+    IsProject,
 }
 
 #[derive(Subcommand)]
@@ -1723,6 +1801,32 @@ fn parse_override(s: &str) -> Result<(String, String, String), String> {
     ))
 }
 
+/// Set up HORUS runtime environment variables before spawning child processes.
+///
+/// Called from both Run and Build commands to avoid duplicate env setup blocks.
+fn setup_horus_env(
+    drivers: &Option<Vec<String>>,
+    enable: &Option<Vec<String>>,
+    record: &Option<String>,
+) {
+    // SAFETY: These set_var calls run in single-threaded main() before
+    // any child processes or threads are spawned.
+    if let Some(ref driver_list) = drivers {
+        std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
+    }
+    if let Some(ref enable_list) = enable {
+        std::env::set_var("HORUS_ENABLE", enable_list.join(","));
+    }
+    if let Some(ref session_name) = record {
+        std::env::set_var("HORUS_RECORD_SESSION", session_name);
+        println!(
+            "{} Recording enabled: session '{}'",
+            horus_manager::cli_output::ICON_INFO.yellow().bold(),
+            session_name
+        );
+    }
+}
+
 /// Parse "name@version" syntax, returning (name, version). Errors if no version.
 fn parse_name_version(input: &str, action: &str) -> Result<(String, String), HorusError> {
     match input.find('@') {
@@ -1734,6 +1838,14 @@ fn parse_name_version(input: &str, action: &str) -> Result<(String, String), Hor
             "Version required. Use: horus {} name@version",
             action
         )))),
+    }
+}
+
+/// Split "name@version" syntax. If no `@`, returns (name, fallback).
+fn split_name_version(input: String, fallback: Option<String>) -> (String, Option<String>) {
+    match input.find('@') {
+        Some(idx) => (input[..idx].to_string(), Some(input[idx + 1..].to_string())),
+        None => (input, fallback),
     }
 }
 
@@ -1870,6 +1982,8 @@ fn run_command(command: Commands) -> HorusResult<()> {
             rust,
             cpp,
             use_macro,
+            workspace,
+            lib,
         } => {
             let language = if python {
                 "python"
@@ -1877,11 +1991,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 "cpp"
             } else if rust || use_macro {
                 "rust"
+            } else if workspace {
+                "rust" // Default workspace language
             } else {
                 "" // Will use interactive prompt
             };
 
-            commands::new::create_new_project(name, path, language.to_string(), use_macro)
+            commands::new::create_new_project(name, path, language.to_string(), use_macro, workspace, lib)
                 .map_err(HorusError::from)
         }
 
@@ -1896,29 +2012,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
             args,
             record,
             no_hooks,
+            package,
         } => {
             // Enable JSON diagnostics mode globally (read by error_wrapper::emit_diagnostic)
             if json_diagnostics {
                 horus_manager::error_wrapper::set_json_diagnostics(true);
             }
 
-            // SAFETY: These set_var calls run in single-threaded main() before
-            // any child processes or threads are spawned. They configure env vars
-            // that child processes inherit via process environment.
-            if let Some(ref driver_list) = drivers {
-                std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
-            }
-            if let Some(ref enable_list) = enable {
-                std::env::set_var("HORUS_ENABLE", enable_list.join(","));
-            }
-            if let Some(ref session_name) = record {
-                std::env::set_var("HORUS_RECORD_SESSION", session_name);
-                println!(
-                    "{} Recording enabled: session '{}'",
-                    horus_manager::cli_output::ICON_INFO.yellow().bold(),
-                    session_name
-                );
-            }
+            setup_horus_env(&drivers, &enable, &record);
 
             if !no_hooks {
                 if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(
@@ -1932,7 +2033,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
 
             // Build and run
-            let result = commands::run::execute_run(files, args, release, clean);
+            let result = commands::run::execute_run(files, args, release, clean, package);
             if json {
                 match &result {
                     Ok(()) => {
@@ -1956,19 +2057,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
             json,
             json_diagnostics,
             no_hooks,
+            package,
         } => {
             // Enable JSON diagnostics mode globally
             if json_diagnostics {
                 horus_manager::error_wrapper::set_json_diagnostics(true);
             }
 
-            // SAFETY: Single-threaded main() context, before any child processes.
-            if let Some(ref driver_list) = drivers {
-                std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
-            }
-            if let Some(ref enable_list) = enable {
-                std::env::set_var("HORUS_ENABLE", enable_list.join(","));
-            }
+            setup_horus_env(&drivers, &enable, &None);
 
             if !no_hooks {
                 if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(
@@ -1982,7 +2078,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
 
             // Build only - compile but don't execute
-            let result = commands::run::execute_build_only(files, release, clean);
+            let result = commands::run::execute_build_only(files, release, clean, package);
             if json {
                 match &result {
                     Ok(()) => {
@@ -2085,14 +2181,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
             health,
         } => {
             if health {
-                return commands::doctor::run_doctor(false, json).map_err(HorusError::from);
+                return commands::doctor::run_doctor(false, json, false).map_err(HorusError::from);
             }
             let has_manifest = path
                 .as_ref()
                 .map(|p| p.join("horus.toml").exists())
                 .unwrap_or_else(|| std::path::Path::new("horus.toml").exists());
             if !has_manifest && path.is_none() {
-                return commands::doctor::run_doctor(false, json).map_err(HorusError::from);
+                return commands::doctor::run_doctor(false, json, false).map_err(HorusError::from);
             }
             if full {
                 commands::check::run_check_full(path, json)
@@ -2116,13 +2212,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             json,
             no_hooks,
         } => {
-            // SAFETY: Single-threaded main() context, before any child processes.
-            if let Some(ref driver_list) = drivers {
-                std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
-            }
-            if let Some(ref enable_list) = enable {
-                std::env::set_var("HORUS_ENABLE", enable_list.join(","));
-            }
+            setup_horus_env(&drivers, &enable, &None);
 
             let hooks_manifest = if !no_hooks {
                 horus_manager::manifest::HorusManifest::load_from(std::path::Path::new(
@@ -2418,18 +2508,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
             driver,
             json,
         } => {
-            let (pkg_name, pkg_ver) = match name.find('@') {
-                Some(idx) => (name[..idx].to_string(), Some(name[idx + 1..].to_string())),
-                None => (name, ver),
-            };
+            let (pkg_name, pkg_ver) = split_name_version(name, ver);
 
             let result = if driver {
                 commands::pkg::run_add(pkg_name.clone(), pkg_ver.clone(), true, false)
             } else {
-                commands::pkg::run_install(
+                commands::pkg::run_add_dep(
                     pkg_name.clone(),
                     pkg_ver.clone(),
-                    false,
                     None,
                     source,
                     features,
@@ -2459,23 +2545,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
             target,
             json,
         } => {
-            let (pkg_name, pkg_ver) = match name.find('@') {
-                Some(idx) => (name[..idx].to_string(), Some(name[idx + 1..].to_string())),
-                None => (name, ver),
-            };
+            let (pkg_name, pkg_ver) = split_name_version(name, ver);
 
             let result = if plugin {
                 let local = target.is_some();
                 commands::plugin::run_install(pkg_name.clone(), pkg_ver.clone(), local)
             } else {
-                commands::pkg::run_install(
-                    pkg_name.clone(),
-                    pkg_ver.clone(),
-                    true,
+                commands::pkg::run_install_standalone(
+                    &pkg_name,
+                    pkg_ver.as_deref(),
                     target,
-                    None,
-                    None,
-                    false,
                 )
             };
             if json {
@@ -2806,8 +2885,8 @@ fn run_command(command: Commands) -> HorusResult<()> {
         },
 
         // ── Maintenance commands ────────────────────────────────────────
-        Commands::Doctor { verbose, json } => {
-            commands::doctor::run_doctor(verbose, json).map_err(HorusError::from)
+        Commands::Doctor { verbose, json, fix } => {
+            commands::doctor::run_doctor(verbose, json, fix).map_err(HorusError::from)
         }
 
         Commands::Self_ { command } => match command {
@@ -2827,7 +2906,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
             Ok(())
         }
 
-        Commands::Sync { check } => commands::sync::run_sync(check).map_err(HorusError::from),
+        Commands::DeprecatedSync { check } => {
+            eprintln!(
+                "{} `horus sync` is deprecated. Use `horus doctor{}` instead.",
+                "WARNING:".yellow().bold(),
+                if check { "" } else { " --fix" }
+            );
+            commands::doctor::run_doctor(false, false, !check).map_err(HorusError::from)
+        }
 
         Commands::Config { command } => match command {
             ConfigCommands::Get { key } => {
@@ -2856,6 +2942,44 @@ fn run_command(command: Commands) -> HorusResult<()> {
             let bin_name = cmd.get_name().to_string();
             generate(shell, &mut cmd, bin_name, &mut io::stdout());
             Ok(())
+        }
+
+        // ── Native tool proxies ─────────────────────────────────────────
+        Commands::Cargo { args } => {
+            let code = commands::proxy::run_cargo_proxy(args).map_err(HorusError::from)?;
+            std::process::exit(code);
+        }
+        Commands::Pip { args } => {
+            let code = commands::proxy::run_pip_proxy(args).map_err(HorusError::from)?;
+            std::process::exit(code);
+        }
+        Commands::Cmake { args } => {
+            let code = commands::proxy::run_cmake_proxy(args).map_err(HorusError::from)?;
+            std::process::exit(code);
+        }
+        Commands::Conan { args } => {
+            let code = commands::proxy::run_conan_proxy(args).map_err(HorusError::from)?;
+            std::process::exit(code);
+        }
+        Commands::Vcpkg { args } => {
+            let code = commands::proxy::run_vcpkg_proxy(args).map_err(HorusError::from)?;
+            std::process::exit(code);
+        }
+        Commands::Env { init, uninstall } => {
+            if uninstall {
+                commands::env::run_env_uninstall().map_err(HorusError::from)
+            } else if init {
+                commands::env::run_env_init().map_err(HorusError::from)
+            } else {
+                commands::env::run_env_print().map_err(HorusError::from)
+            }
+        }
+        Commands::IsProject => {
+            if commands::proxy::run_is_project() {
+                Ok(())
+            } else {
+                std::process::exit(1);
+            }
         }
     }
 }

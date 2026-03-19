@@ -41,6 +41,12 @@ pub fn make_test_node(name: &str, health: HealthStatus, cpu: f32, memory: u64) -
         actual_rate_hz: 30,
         publishers: vec![],
         subscribers: vec![],
+        live_tick_count: None,
+        live_health: None,
+        live_avg_tick_ns: None,
+        live_max_tick_ns: None,
+        live_budget_misses: None,
+        live_deadline_misses: None,
     }
 }
 
@@ -113,6 +119,8 @@ pub fn make_test_topic(
             "5m ago".to_string()
         },
         is_system: false,
+        messages_total: 0,
+        topic_kind: 0,
     }
 }
 

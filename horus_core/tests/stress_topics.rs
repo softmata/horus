@@ -618,3 +618,181 @@ fn stress_ring_buffer_saturation() {
         );
     }
 }
+
+// ============================================================================
+// Test: 200 concurrent topics — all created and messaged without error
+// ============================================================================
+
+#[test]
+fn test_200_concurrent_topics() {
+    // Create 200 topics, send 5 messages each, verify no crash
+    let mut topics: Vec<Topic<u64>> = Vec::new();
+    for i in 0..200 {
+        let name = unique(&format!("chaos200_{}", i));
+        let t: Topic<u64> = Topic::new(&name).unwrap();
+        topics.push(t);
+    }
+
+    // Send 5 messages on each
+    for (i, topic) in topics.iter().enumerate() {
+        for j in 0..5u64 {
+            topic.send(i as u64 * 1000 + j);
+        }
+    }
+
+    // Receive from each — verify at least some data
+    let mut total_received = 0u64;
+    for topic in &topics {
+        while topic.recv().is_some() {
+            total_received += 1;
+        }
+    }
+
+    assert!(
+        total_received >= 100,
+        "Should receive at least 100 of 1000 messages across 200 topics, got {}",
+        total_received
+    );
+}
+
+// ============================================================================
+// Test: Message integrity — 10K messages with checksum verification
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[repr(C)]
+struct ChecksumMsg {
+    seq: u64,
+    data: [u8; 32],
+    checksum: u64,
+}
+
+// SAFETY: ChecksumMsg is #[repr(C)], all fields are primitive, no heap pointers
+unsafe impl bytemuck::Pod for ChecksumMsg {}
+unsafe impl bytemuck::Zeroable for ChecksumMsg {}
+unsafe impl horus_core::communication::PodMessage for ChecksumMsg {}
+
+impl ChecksumMsg {
+    fn new(seq: u64) -> Self {
+        let mut data = [0u8; 32];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = ((seq + i as u64) % 256) as u8;
+        }
+        let checksum = data.iter().map(|&b| b as u64).sum::<u64>() ^ seq;
+        Self {
+            seq,
+            data,
+            checksum,
+        }
+    }
+
+    fn verify(&self) -> bool {
+        let expected = self.data.iter().map(|&b| b as u64).sum::<u64>() ^ self.seq;
+        self.checksum == expected
+    }
+}
+
+#[test]
+fn test_10k_messages_integrity() {
+    let topic_name = unique("integrity_10k");
+    let pub_topic: Topic<ChecksumMsg> = Topic::new(&topic_name).unwrap();
+    let sub_topic: Topic<ChecksumMsg> = Topic::new(&topic_name).unwrap();
+
+    let corrupted = Arc::new(AtomicU64::new(0));
+    let received = Arc::new(AtomicU64::new(0));
+    let c = corrupted.clone();
+    let r = received.clone();
+
+    let done = Arc::new(AtomicBool::new(false));
+    let d = done.clone();
+
+    // Receiver thread
+    let recv_handle = test_spawn(move || {
+        while !d.load(Ordering::Relaxed) {
+            while let Some(msg) = sub_topic.recv() {
+                r.fetch_add(1, Ordering::SeqCst);
+                if !msg.verify() {
+                    c.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        // Drain remaining
+        while let Some(msg) = sub_topic.recv() {
+            r.fetch_add(1, Ordering::SeqCst);
+            if !msg.verify() {
+                c.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+
+    // Send 10K messages
+    for i in 0..10_000u64 {
+        pub_topic.send(ChecksumMsg::new(i));
+        if i % 1000 == 0 {
+            std::thread::yield_now(); // Let receiver drain
+        }
+    }
+
+    std::thread::sleep(Duration::from_millis(200));
+    done.store(true, Ordering::Relaxed);
+    recv_handle.join().unwrap();
+
+    let total_received = received.load(Ordering::SeqCst);
+    let total_corrupted = corrupted.load(Ordering::SeqCst);
+
+    assert_eq!(
+        total_corrupted, 0,
+        "Zero corrupted messages allowed in 10K stream (got {} corrupt out of {} received)",
+        total_corrupted, total_received
+    );
+    // Ring buffer may not hold all 10K — but received should be > 0
+    assert!(
+        total_received > 0,
+        "Should receive at least some messages, got 0"
+    );
+}
+
+// ============================================================================
+// Test: Rapid topic creation/destruction during active pub/sub — no crash
+// ============================================================================
+
+#[test]
+fn test_topic_lifecycle_during_pubsub() {
+    let done = Arc::new(AtomicBool::new(false));
+    let d = done.clone();
+
+    // Background thread: continuously creates and destroys topics
+    let lifecycle_thread = test_spawn(move || {
+        let mut cycle = 0u64;
+        while !d.load(Ordering::Relaxed) {
+            let name = unique(&format!("lifecycle_{}", cycle));
+            let topic: Topic<u64> = Topic::new(&name).unwrap();
+            topic.send(cycle);
+            let _ = topic.recv();
+            drop(topic);
+            cycle += 1;
+        }
+        cycle
+    });
+
+    // Main thread: stable topic with active pub/sub
+    let stable_name = unique("stable_lifecycle");
+    let pub_topic: Topic<u64> = Topic::new(&stable_name).unwrap();
+    let sub_topic: Topic<u64> = Topic::new(&stable_name).unwrap();
+
+    for i in 0..100u64 {
+        pub_topic.send(i);
+        let _ = sub_topic.recv();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    done.store(true, Ordering::Relaxed);
+    let cycles = lifecycle_thread.join().unwrap();
+
+    assert!(
+        cycles >= 10,
+        "Lifecycle thread should complete at least 10 create/destroy cycles, got {}",
+        cycles
+    );
+}

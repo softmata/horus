@@ -3055,4 +3055,122 @@ mod tests {
             elapsed.as_millis()
         );
     }
+
+    // ---- Battle tests: debugger breakpoint flow ----
+
+    #[test]
+    fn test_debugger_multiple_breakpoints_hit_in_order() {
+        let rec = make_test_recording(20);
+        let replayer = NodeReplayer::from_recording(rec);
+        let mut dbg = ReplayDebugger::new(replayer);
+
+        let bp1 = dbg.add_breakpoint(BreakpointCondition::AtTick(5));
+        let bp2 = dbg.add_breakpoint(BreakpointCondition::AtTick(15));
+
+        // First continue: should stop at tick 5
+        dbg.continue_execution();
+        assert_eq!(dbg.current_tick(), 5, "should stop at first breakpoint");
+        assert_eq!(
+            dbg.breakpoints().iter().find(|b| b.id == bp1).unwrap().hit_count,
+            1,
+            "bp1 should be hit once"
+        );
+
+        // Second continue: should stop at tick 15
+        dbg.continue_execution();
+        assert_eq!(dbg.current_tick(), 15, "should stop at second breakpoint");
+        assert_eq!(
+            dbg.breakpoints().iter().find(|b| b.id == bp2).unwrap().hit_count,
+            1,
+            "bp2 should be hit once"
+        );
+    }
+
+    #[test]
+    fn test_debugger_continue_past_disabled_breakpoint() {
+        let rec = make_test_recording(10);
+        let replayer = NodeReplayer::from_recording(rec);
+        let mut dbg = ReplayDebugger::new(replayer);
+
+        let bp1 = dbg.add_breakpoint(BreakpointCondition::AtTick(3));
+        let _bp2 = dbg.add_breakpoint(BreakpointCondition::AtTick(7));
+
+        // Hit first breakpoint
+        dbg.continue_execution();
+        assert_eq!(dbg.current_tick(), 3);
+
+        // Disable first breakpoint and continue — should hit second
+        dbg.set_breakpoint_enabled(bp1, false);
+        dbg.continue_execution();
+        assert_eq!(dbg.current_tick(), 7, "should skip disabled bp and hit bp2");
+    }
+
+    #[test]
+    fn test_debugger_step_then_continue_to_breakpoint() {
+        let rec = make_test_recording(10);
+        let replayer = NodeReplayer::from_recording(rec);
+        let mut dbg = ReplayDebugger::new(replayer);
+
+        dbg.add_breakpoint(BreakpointCondition::AtTick(5));
+
+        // Manual step twice
+        dbg.step_forward(); // tick 1
+        dbg.step_forward(); // tick 2
+        assert_eq!(dbg.current_tick(), 2);
+
+        // Now continue — should hit breakpoint at tick 5
+        dbg.continue_execution();
+        assert_eq!(dbg.current_tick(), 5, "continue from tick 2 should hit bp at 5");
+    }
+
+    #[test]
+    fn test_debugger_events_contain_breakpoint_hit() {
+        let rec = make_test_recording(10);
+        let replayer = NodeReplayer::from_recording(rec);
+        let mut dbg = ReplayDebugger::new(replayer);
+
+        dbg.add_breakpoint(BreakpointCondition::AtTick(3));
+        dbg.continue_execution();
+
+        let events = dbg.recent_events(20);
+        assert!(
+            !events.is_empty(),
+            "events should contain entries after breakpoint hit"
+        );
+        // Verify at least one event mentions the breakpoint or tick
+        let event_strs: Vec<String> = events.iter().map(|e| format!("{:?}", e)).collect();
+        let has_breakpoint_event = event_strs.iter().any(|s| {
+            s.contains("Breakpoint") || s.contains("breakpoint") || s.contains("Hit")
+        });
+        assert!(
+            has_breakpoint_event,
+            "events should contain breakpoint hit event. Events: {:?}",
+            event_strs
+        );
+    }
+
+    #[test]
+    fn test_debugger_evaluate_watches_at_tick() {
+        let rec = make_test_recording(10);
+        let replayer = NodeReplayer::from_recording(rec);
+        let mut dbg = ReplayDebugger::new(replayer);
+
+        // Add watch on "motor" output
+        dbg.add_watch(WatchExpression::output("w1", "Motor Output", "motor"));
+
+        // Step to tick 3
+        dbg.seek(3);
+        assert_eq!(dbg.current_tick(), 3);
+
+        let values = dbg.evaluate_watches();
+        assert!(
+            !values.is_empty(),
+            "watch should have a value at tick 3"
+        );
+        let v = &values[0];
+        assert_eq!(v.expression_id, "w1");
+        assert_eq!(v.tick, 3);
+        // motor output at tick 3 = vec![(3*2) as u8; 8] = vec![6; 8]
+        assert_eq!(v.raw_bytes, vec![6u8; 8], "motor output at tick 3 should be [6; 8]");
+    }
 }

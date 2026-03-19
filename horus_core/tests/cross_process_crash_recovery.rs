@@ -253,3 +253,188 @@ fn test_parent_consumer_child_producer_crash() {
 
     // Parent didn't crash — success!
 }
+
+// ============================================================================
+// Test: 3 producers, kill one mid-stream, others continue delivering
+// ============================================================================
+
+#[test]
+fn test_multi_producer_kill_one_others_continue() {
+    if is_child() {
+        child_producer_crash();
+        return;
+    }
+
+    cleanup_stale_shm();
+    let topic_name = unique("crash_multi_prod");
+
+    // Parent is consumer
+    let t: Topic<u64> = Topic::new(&topic_name).unwrap();
+
+    // Spawn 3 producers: first crashes after 20 msgs, others send 50 normally
+    let mut crash_child = spawn_child(
+        "test_multi_producer_kill_one_others_continue",
+        &topic_name,
+        20,
+        "crash",
+    );
+    let mut normal1 = spawn_child(
+        "test_multi_producer_kill_one_others_continue",
+        &topic_name,
+        50,
+        "normal",
+    );
+    let mut normal2 = spawn_child(
+        "test_multi_producer_kill_one_others_continue",
+        &topic_name,
+        50,
+        "normal",
+    );
+
+    // Wait for crash child to die
+    let crash_status = crash_child.wait().unwrap();
+    assert!(
+        !crash_status.success(),
+        "Crash child should exit with non-zero"
+    );
+
+    // Wait for normal producers to finish
+    let s1 = normal1.wait().unwrap();
+    let s2 = normal2.wait().unwrap();
+    assert!(s1.success(), "Normal producer 1 should succeed: {:?}", s1);
+    assert!(s2.success(), "Normal producer 2 should succeed: {:?}", s2);
+
+    // Parent reads everything — no corruption allowed
+    let mut received = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        match t.recv() {
+            Some(SENTINEL) => {} // Skip sentinels
+            Some(v) => received.push(v),
+            None => std::thread::yield_now(),
+        }
+    }
+
+    // All values should be in valid range [1..50]
+    for &v in &received {
+        assert!(
+            v >= 1 && v <= 50,
+            "Received corrupt value {} after multi-producer crash",
+            v
+        );
+    }
+}
+
+// ============================================================================
+// Test: 10K messages integrity across processes with checksum
+// ============================================================================
+
+#[test]
+fn test_cross_process_high_volume_integrity() {
+    if is_child() {
+        child_producer_crash();
+        return;
+    }
+
+    cleanup_stale_shm();
+    let topic_name = unique("crash_hv_int");
+
+    // Parent as consumer
+    let t: Topic<u64> = Topic::new(&topic_name).unwrap();
+
+    // Spawn producer sending 1000 messages normally (with sentinel)
+    let mut producer = spawn_child(
+        "test_cross_process_high_volume_integrity",
+        &topic_name,
+        1000,
+        "normal",
+    );
+
+    // Read while producer is running
+    let mut received = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match t.recv() {
+            Some(SENTINEL) => break,
+            Some(v) => received.push(v),
+            None => std::thread::yield_now(),
+        }
+    }
+
+    let _ = producer.wait();
+
+    // Verify all received values are in valid range [1..1000]
+    let mut corrupted = 0u64;
+    for &v in &received {
+        if v < 1 || v > 1000 {
+            corrupted += 1;
+        }
+    }
+
+    assert_eq!(
+        corrupted, 0,
+        "Zero corruption in {} cross-process messages",
+        received.len()
+    );
+    assert!(
+        received.len() > 10,
+        "Should receive >10 of 1000 messages, got {}",
+        received.len()
+    );
+}
+
+// ============================================================================
+// Test: Producer crash then new producer reuses same topic cleanly
+// ============================================================================
+
+#[test]
+fn test_crash_then_new_producer_clean_data() {
+    if is_child() {
+        child_producer_crash();
+        return;
+    }
+
+    cleanup_stale_shm();
+    let topic_name = unique("crash_then_new");
+
+    // Phase 1: Crash producer sends 30 then crashes
+    let mut crash_prod = spawn_child(
+        "test_crash_then_new_producer_clean_data",
+        &topic_name,
+        30,
+        "crash",
+    );
+    let _ = crash_prod.wait();
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Phase 2: Parent creates topic, new child producer sends 50 normally
+    let t: Topic<u64> = Topic::new(&topic_name).unwrap();
+
+    let mut new_prod = spawn_child(
+        "test_crash_then_new_producer_clean_data",
+        &topic_name,
+        50,
+        "normal",
+    );
+    let new_status = new_prod.wait().unwrap();
+    assert!(
+        new_status.success(),
+        "New producer after crash should succeed"
+    );
+
+    // Read from parent — should see clean data from new producer
+    let mut received = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        match t.recv() {
+            Some(SENTINEL) => break,
+            Some(v) if v >= 1 && v <= 50 => received.push(v),
+            Some(v) => panic!("Corrupt value from new producer: {}", v),
+            None => std::thread::yield_now(),
+        }
+    }
+
+    // New producer's data should be clean
+    // (may also see stale data from crashed producer — that's OK as long as it's valid)
+}

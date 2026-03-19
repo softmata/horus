@@ -155,8 +155,15 @@ pub fn detect_languages_or_error(project_dir: &Path) -> Result<Vec<Language>> {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HorusManifest {
-    /// `[package]` -- project metadata.
+    /// `[package]` -- project metadata. Required for single-package projects.
+    /// For virtual workspaces (only `[workspace]`), this defaults to empty.
+    #[serde(default)]
     pub package: PackageInfo,
+
+    /// `[workspace]` -- multi-crate workspace configuration (optional).
+    /// When present, this manifest is a workspace root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceConfig>,
 
     /// `[dependencies]` -- project dependencies (all sources).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -305,6 +312,67 @@ pub struct PackageInfo {
     /// Rust edition override (e.g., `"2021"`). Used by cargo_gen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rust_edition: Option<String>,
+
+    /// Crate target type: "bin" (default), "lib", or "both".
+    #[serde(
+        default,
+        skip_serializing_if = "TargetType::is_default",
+        rename = "type"
+    )]
+    pub target_type: TargetType,
+}
+
+impl Default for PackageInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: "0.0.0".to_string(),
+            description: None,
+            authors: vec![],
+            license: None,
+            edition: default_edition(),
+            repository: None,
+            package_type: None,
+            categories: vec![],
+            standard: None,
+            rust_edition: None,
+            target_type: TargetType::default(),
+        }
+    }
+}
+
+/// Crate target type.
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetType {
+    #[default]
+    Bin,
+    Lib,
+    Both,
+}
+
+impl TargetType {
+    fn is_default(&self) -> bool {
+        *self == Self::Bin
+    }
+}
+
+/// Multi-crate workspace configuration under `[workspace]`.
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    /// Glob patterns for workspace members (e.g., `["crates/*"]`).
+    #[serde(default)]
+    pub members: Vec<String>,
+
+    /// Glob patterns to exclude from membership.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+
+    /// Shared dependencies inherited by members via `workspace = true`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependencies: BTreeMap<String, DependencyValue>,
 }
 
 fn default_edition() -> String {
@@ -457,10 +525,34 @@ pub struct DetailedDependency {
     /// Language this dependency belongs to (e.g., `"cpp"`, `"rust"`, `"python"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+
+    /// Inherit version/source/features from `[workspace.dependencies]`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub workspace: bool,
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+impl Default for DetailedDependency {
+    fn default() -> Self {
+        Self {
+            version: None,
+            source: None,
+            features: vec![],
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
+            workspace: false,
+        }
+    }
 }
 
 impl DetailedDependency {
@@ -737,8 +829,33 @@ impl HorusManifest {
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
 
+        // Virtual workspace: skip package validation, validate workspace config
+        if self.is_virtual_workspace() {
+            let ws = self.workspace.as_ref().unwrap();
+            if ws.members.is_empty() {
+                errors.push("Workspace has no members".to_string());
+            }
+            if !errors.is_empty() {
+                let msg = errors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| format!("  {}. {}", i + 1, e))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Err(anyhow!("Manifest validation failed:\n{}", msg));
+            }
+            return Ok(warnings);
+        }
+
+        // No workspace and no package name → invalid
+        if self.package.name.is_empty() && self.workspace.is_none() {
+            errors.push("Missing [package] section with a name".to_string());
+        }
+
         // Name validation
-        if self.package.name.len() < 2 || self.package.name.len() > 64 {
+        if !self.package.name.is_empty()
+            && (self.package.name.len() < 2 || self.package.name.len() > 64)
+        {
             errors.push(format!(
                 "Package name '{}' must be 2-64 characters",
                 self.package.name
@@ -799,6 +916,113 @@ impl HorusManifest {
 
         Ok(warnings)
     }
+
+    // ── Workspace helpers ──────────────────────────────────────────────────
+
+    /// Whether this manifest represents a workspace (virtual or root-package).
+    pub fn is_workspace(&self) -> bool {
+        self.workspace.is_some()
+    }
+
+    /// Whether this is a virtual workspace (has `[workspace]` but no `[package]` name).
+    pub fn is_virtual_workspace(&self) -> bool {
+        self.workspace.is_some() && self.package.name.is_empty()
+    }
+}
+
+// ─── Workspace resolution ───────────────────────────────────────────────────
+
+/// Expand workspace member glob patterns and load each member's `horus.toml`.
+///
+/// Returns `(relative_path, member_manifest)` pairs.
+pub fn resolve_workspace_members(
+    workspace: &WorkspaceConfig,
+    project_dir: &Path,
+) -> Result<Vec<(PathBuf, HorusManifest)>> {
+    let mut members = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for pattern in &workspace.members {
+        let full_pattern = project_dir.join(pattern);
+        let pattern_str = full_pattern.to_string_lossy().to_string();
+
+        for entry in glob::glob(&pattern_str)
+            .with_context(|| format!("Invalid glob pattern: {}", pattern))?
+        {
+            let entry = entry?;
+            if !entry.is_dir() {
+                continue;
+            }
+
+            let member_toml = entry.join(HORUS_TOML);
+            if !member_toml.exists() {
+                continue;
+            }
+
+            let relative = entry
+                .strip_prefix(project_dir)
+                .unwrap_or(&entry)
+                .to_path_buf();
+            let rel_str = relative.to_string_lossy().to_string();
+
+            // Check exclude patterns
+            let excluded = workspace.exclude.iter().any(|exc| {
+                glob::Pattern::new(exc)
+                    .map(|p| p.matches(&rel_str))
+                    .unwrap_or(false)
+            });
+            if excluded {
+                continue;
+            }
+
+            if seen.insert(entry.clone()) {
+                let manifest = HorusManifest::load_from(&member_toml)?;
+                members.push((relative, manifest));
+            }
+        }
+    }
+
+    Ok(members)
+}
+
+/// Resolve a `workspace = true` dependency from `[workspace.dependencies]`.
+///
+/// Merges member-specific features on top of the workspace dep.
+pub fn resolve_workspace_dep(
+    name: &str,
+    member_dep: &DetailedDependency,
+    workspace_deps: &BTreeMap<String, DependencyValue>,
+) -> Result<DependencyValue> {
+    let ws_dep = workspace_deps.get(name).ok_or_else(|| {
+        anyhow!(
+            "Dependency '{}' uses `workspace = true` but not found in [workspace.dependencies]",
+            name
+        )
+    })?;
+
+    if member_dep.features.is_empty() {
+        return Ok(ws_dep.clone());
+    }
+
+    // Merge member features on top of workspace features
+    let mut resolved = ws_dep.clone();
+    match &mut resolved {
+        DependencyValue::Simple(v) => {
+            resolved = DependencyValue::Detailed(DetailedDependency {
+                version: Some(v.clone()),
+                features: member_dep.features.clone(),
+                ..DetailedDependency::default()
+            });
+        }
+        DependencyValue::Detailed(d) => {
+            for f in &member_dep.features {
+                if !d.features.contains(f) {
+                    d.features.push(f.clone());
+                }
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 // ─── Schema generation ──────────────────────────────────────────────────────
@@ -963,7 +1187,9 @@ version = "not-semver"
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers: {
@@ -1006,7 +1232,9 @@ version = "not-semver"
                 categories: vec!["robotics".into()],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers: {
@@ -1227,6 +1455,7 @@ test-hw = "cargo test --features hardware"
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         assert_eq!(dep.effective_source(), DepSource::Path);
 
@@ -1244,6 +1473,7 @@ test-hw = "cargo test --features hardware"
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         assert_eq!(dep.effective_source(), DepSource::Git);
 
@@ -1261,6 +1491,7 @@ test-hw = "cargo test --features hardware"
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         assert_eq!(dep.effective_source(), DepSource::CratesIo);
 
@@ -1348,6 +1579,7 @@ version = "0.1.0"
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         assert_eq!(dep.version(), Some("1.0"));
         assert_eq!(dep.features().len(), 2);
@@ -1373,6 +1605,7 @@ version = "0.1.0"
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         assert!(dep.version().is_none());
         assert_eq!(dep.effective_source(), DepSource::System);
@@ -1449,7 +1682,9 @@ version = "0.1.0"
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
@@ -2011,7 +2246,9 @@ sys-dep = { source = "system" }
                 categories: vec!["planning".to_string(), "ml".to_string()],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: {
                 let mut deps = BTreeMap::new();
                 deps.insert(
@@ -2033,6 +2270,7 @@ sys-dep = { source = "system" }
                         apt: None,
                         cmake_package: None,
                         lang: None,
+                        workspace: false,
                     }),
                 );
                 deps.insert(
@@ -2050,6 +2288,7 @@ sys-dep = { source = "system" }
                         apt: None,
                         cmake_package: None,
                         lang: None,
+                        workspace: false,
                     }),
                 );
                 deps.insert(
@@ -2067,6 +2306,7 @@ sys-dep = { source = "system" }
                         apt: None,
                         cmake_package: None,
                         lang: None,
+                        workspace: false,
                     }),
                 );
                 deps
@@ -2088,6 +2328,7 @@ sys-dep = { source = "system" }
                         apt: None,
                         cmake_package: None,
                         lang: None,
+                        workspace: false,
                     }),
                 );
                 dd
@@ -2192,7 +2433,9 @@ sys-dep = { source = "system" }
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
@@ -2638,6 +2881,732 @@ version = "not-semver"
             msg.contains("2.") || msg.contains("3."),
             "Should have multiple numbered errors: {}",
             msg
+        );
+    }
+
+    // ── Workspace TOML parsing ───────────────────────────────────────
+
+    /// 1. Parse a virtual workspace (only [workspace], no [package]).
+    #[test]
+    fn workspace_parse_virtual_workspace() {
+        let toml_str = r#"
+[workspace]
+members = ["crates/*"]
+exclude = ["crates/experimental"]
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.is_workspace());
+        assert!(manifest.is_virtual_workspace());
+        let ws = manifest.workspace.as_ref().unwrap();
+        assert_eq!(ws.members, vec!["crates/*"]);
+        assert_eq!(ws.exclude, vec!["crates/experimental"]);
+        // Virtual workspace has no package name (defaults to empty)
+        assert!(manifest.package.name.is_empty());
+    }
+
+    /// 2. Parse a root package with workspace (both [package] and [workspace]).
+    #[test]
+    fn workspace_parse_root_package_with_workspace() {
+        let toml_str = r#"
+[package]
+name = "my-robot"
+version = "0.1.0"
+
+[workspace]
+members = ["crates/*"]
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.is_workspace());
+        assert!(!manifest.is_virtual_workspace());
+        assert_eq!(manifest.package.name, "my-robot");
+        assert_eq!(manifest.package.version, "0.1.0");
+        let ws = manifest.workspace.as_ref().unwrap();
+        assert_eq!(ws.members, vec!["crates/*"]);
+    }
+
+    /// 3. Parse [workspace.dependencies] section with Simple and Detailed deps.
+    #[test]
+    fn workspace_parse_workspace_dependencies() {
+        let toml_str = r#"
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+serde = { version = "1.0", source = "crates.io", features = ["derive"] }
+tokio = "1.35"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.is_workspace());
+        let ws = manifest.workspace.as_ref().unwrap();
+        assert_eq!(ws.dependencies.len(), 2);
+
+        // serde is Detailed with features
+        match &ws.dependencies["serde"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.version.as_deref(), Some("1.0"));
+                assert_eq!(d.source, Some(DepSource::CratesIo));
+                assert_eq!(d.features, vec!["derive"]);
+            }
+            _ => panic!("expected Detailed for serde"),
+        }
+
+        // tokio is Simple
+        match &ws.dependencies["tokio"] {
+            DependencyValue::Simple(v) => assert_eq!(v, "1.35"),
+            _ => panic!("expected Simple for tokio"),
+        }
+    }
+
+    /// 4. Parse a member manifest with workspace = true dep.
+    #[test]
+    fn workspace_parse_member_with_workspace_dep() {
+        let toml_str = r#"
+[package]
+name = "my-messages"
+version = "0.1.0"
+type = "lib"
+
+[dependencies]
+serde = { workspace = true }
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.package.name, "my-messages");
+        assert_eq!(manifest.package.target_type, TargetType::Lib);
+
+        match &manifest.dependencies["serde"] {
+            DependencyValue::Detailed(d) => {
+                assert!(d.workspace, "serde should have workspace = true");
+                assert!(
+                    d.version.is_none(),
+                    "workspace dep should have no local version"
+                );
+            }
+            _ => panic!("expected Detailed for serde"),
+        }
+    }
+
+    /// 5. All TargetType values parse correctly; default is Bin.
+    #[test]
+    fn workspace_parse_target_type_variants() {
+        // type = "lib"
+        let toml_str = r#"
+[package]
+name = "my-lib"
+version = "0.1.0"
+type = "lib"
+"#;
+        let m: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(m.package.target_type, TargetType::Lib);
+
+        // type = "bin"
+        let toml_str = r#"
+[package]
+name = "my-bin"
+version = "0.1.0"
+type = "bin"
+"#;
+        let m: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(m.package.target_type, TargetType::Bin);
+
+        // type = "both"
+        let toml_str = r#"
+[package]
+name = "my-both"
+version = "0.1.0"
+type = "both"
+"#;
+        let m: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(m.package.target_type, TargetType::Both);
+
+        // No type → Bin (default)
+        let toml_str = r#"
+[package]
+name = "my-default"
+version = "0.1.0"
+"#;
+        let m: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(m.package.target_type, TargetType::Bin);
+    }
+
+    /// 6. No [workspace] section means single-package project.
+    #[test]
+    fn workspace_absent_means_single_package() {
+        let toml_str = r#"
+[package]
+name = "solo-bot"
+version = "0.1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(!manifest.is_workspace());
+        assert!(!manifest.is_virtual_workspace());
+        assert!(manifest.workspace.is_none());
+    }
+
+    // ── Backward compatibility ───────────────────────────────────────
+
+    /// 7. A full existing-style manifest with all sections parses; workspace is None.
+    #[test]
+    fn workspace_backward_compat_existing_manifest() {
+        let toml_str = r#"
+enable = ["cuda"]
+
+[package]
+name = "compat-bot"
+version = "1.0.0"
+description = "Full backward compat test"
+authors = ["Alice <alice@example.com>"]
+license = "MIT"
+edition = "1"
+package-type = "node"
+categories = ["robotics"]
+
+[dependencies]
+serde = { version = "1.0", source = "crates.io", features = ["derive"] }
+horus_library = "0.1.9"
+
+[dev-dependencies]
+criterion = { version = "0.5", source = "crates.io" }
+
+[drivers]
+camera = "opencv"
+lidar = true
+
+[scripts]
+sim = "horus sim start"
+deploy = "horus deploy"
+
+[ignore]
+files = ["*.bak"]
+directories = ["tmp/"]
+packages = ["debugpy"]
+
+[hooks]
+pre_run = ["fmt"]
+pre_build = ["lint"]
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(
+            manifest.workspace.is_none(),
+            "workspace should be None for existing-style manifest"
+        );
+        assert_eq!(manifest.package.name, "compat-bot");
+        assert_eq!(manifest.dependencies.len(), 2);
+        assert_eq!(manifest.dev_dependencies.len(), 1);
+        assert_eq!(manifest.drivers.len(), 2);
+        assert_eq!(manifest.scripts.len(), 2);
+        assert_eq!(manifest.ignore.files, vec!["*.bak"]);
+        assert_eq!(manifest.ignore.directories, vec!["tmp/"]);
+        assert_eq!(manifest.ignore.packages, vec!["debugpy"]);
+        assert_eq!(manifest.hooks.pre_run, vec!["fmt"]);
+        assert_eq!(manifest.hooks.pre_build, vec!["lint"]);
+        assert_eq!(manifest.enable, vec!["cuda"]);
+    }
+
+    /// 8. Parse → serialize → re-parse roundtrip: all fields match, no [workspace] appears.
+    #[test]
+    fn workspace_backward_compat_roundtrip() {
+        let toml_str = r#"
+[package]
+name = "roundtrip-compat"
+version = "2.0.0"
+description = "Roundtrip test"
+
+[dependencies]
+serde = { version = "1.0", source = "crates.io" }
+
+[dev-dependencies]
+criterion = { version = "0.5", source = "crates.io" }
+
+[drivers]
+camera = "opencv"
+
+[scripts]
+build = "cargo build"
+
+[ignore]
+files = ["*.tmp"]
+"#;
+        let original: HorusManifest = toml::from_str(toml_str).unwrap();
+        let serialized = toml::to_string_pretty(&original).unwrap();
+
+        // [workspace] must NOT appear in serialized output
+        assert!(
+            !serialized.contains("[workspace]"),
+            "Serialized output should not contain [workspace]: {}",
+            serialized
+        );
+
+        let reparsed: HorusManifest = toml::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.package.name, original.package.name);
+        assert_eq!(reparsed.package.version, original.package.version);
+        assert_eq!(
+            reparsed.package.description, original.package.description
+        );
+        assert_eq!(reparsed.dependencies.len(), original.dependencies.len());
+        assert_eq!(
+            reparsed.dev_dependencies.len(),
+            original.dev_dependencies.len()
+        );
+        assert_eq!(reparsed.drivers.len(), original.drivers.len());
+        assert_eq!(reparsed.scripts.len(), original.scripts.len());
+        assert_eq!(reparsed.ignore.files, original.ignore.files);
+        assert!(reparsed.workspace.is_none());
+    }
+
+    // ── Workspace validation ─────────────────────────────────────────
+
+    /// 9. Virtual workspace with members validates OK.
+    #[test]
+    fn workspace_validate_virtual_ok() {
+        let toml_str = r#"
+[workspace]
+members = ["crates/*"]
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        let warnings = manifest.validate().unwrap();
+        assert!(warnings.is_empty());
+    }
+
+    /// 10. Virtual workspace with empty members fails validation.
+    #[test]
+    fn workspace_validate_virtual_no_members_fails() {
+        let toml_str = r#"
+[workspace]
+members = []
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        let err = manifest.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("no members"),
+            "Error should mention no members: {}",
+            msg
+        );
+    }
+
+    /// 11. Empty manifest (no [package], no [workspace]) fails validation.
+    #[test]
+    fn workspace_validate_no_package_no_workspace_fails() {
+        // A completely empty TOML still creates a default HorusManifest
+        // with empty package name and no workspace.
+        let toml_str = "";
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert!(!manifest.is_workspace());
+        assert!(manifest.package.name.is_empty());
+        let err = manifest.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("Missing") || msg.contains("package"),
+            "Error should mention missing package: {}",
+            msg
+        );
+    }
+
+    // ── resolve_workspace_members ────────────────────────────────────
+
+    /// 12. Resolve members from glob pattern, skipping dirs without horus.toml.
+    #[test]
+    fn workspace_resolve_members_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Root workspace manifest
+        let ws_toml = r#"
+[workspace]
+members = ["crates/*"]
+"#;
+        fs::write(root.join(HORUS_TOML), ws_toml).unwrap();
+
+        // Member: messages
+        let messages_dir = root.join("crates").join("messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+        fs::write(
+            messages_dir.join(HORUS_TOML),
+            r#"
+[package]
+name = "messages"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        // Member: driver
+        let driver_dir = root.join("crates").join("driver");
+        fs::create_dir_all(&driver_dir).unwrap();
+        fs::write(
+            driver_dir.join(HORUS_TOML),
+            r#"
+[package]
+name = "driver"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        // Dir with no horus.toml — should be skipped
+        let notoml_dir = root.join("crates").join("notoml");
+        fs::create_dir_all(&notoml_dir).unwrap();
+
+        let ws_manifest: HorusManifest = toml::from_str(ws_toml).unwrap();
+        let ws = ws_manifest.workspace.as_ref().unwrap();
+        let members = resolve_workspace_members(ws, root).unwrap();
+
+        assert_eq!(members.len(), 2, "Should find 2 members, got {:?}", members);
+        let names: Vec<&str> = members.iter().map(|(_, m)| m.package.name.as_str()).collect();
+        assert!(names.contains(&"messages"), "Missing 'messages' in {:?}", names);
+        assert!(names.contains(&"driver"), "Missing 'driver' in {:?}", names);
+    }
+
+    /// 13. Exclude pattern filters out matching members.
+    #[test]
+    fn workspace_resolve_members_exclude() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Member: messages
+        let messages_dir = root.join("crates").join("messages");
+        fs::create_dir_all(&messages_dir).unwrap();
+        fs::write(
+            messages_dir.join(HORUS_TOML),
+            r#"
+[package]
+name = "messages"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        // Member: driver (will be excluded)
+        let driver_dir = root.join("crates").join("driver");
+        fs::create_dir_all(&driver_dir).unwrap();
+        fs::write(
+            driver_dir.join(HORUS_TOML),
+            r#"
+[package]
+name = "driver"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let ws = WorkspaceConfig {
+            members: vec!["crates/*".to_string()],
+            exclude: vec!["crates/driver".to_string()],
+            dependencies: BTreeMap::new(),
+        };
+
+        let members = resolve_workspace_members(&ws, root).unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].1.package.name, "messages");
+    }
+
+    /// 14. No matching directories returns empty vec.
+    #[test]
+    fn workspace_resolve_members_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        let ws = WorkspaceConfig {
+            members: vec!["crates/*".to_string()],
+            exclude: vec![],
+            dependencies: BTreeMap::new(),
+        };
+
+        let members = resolve_workspace_members(&ws, root).unwrap();
+        assert!(members.is_empty());
+    }
+
+    // ── resolve_workspace_dep ────────────────────────────────────────
+
+    /// 15. Simple workspace dep resolves to version string.
+    #[test]
+    fn workspace_resolve_dep_simple() {
+        let mut ws_deps = BTreeMap::new();
+        ws_deps.insert(
+            "tokio".to_string(),
+            DependencyValue::Simple("1.35".to_string()),
+        );
+
+        let member_dep = DetailedDependency {
+            workspace: true,
+            ..DetailedDependency::default()
+        };
+
+        let resolved = resolve_workspace_dep("tokio", &member_dep, &ws_deps).unwrap();
+        assert_eq!(resolved.version(), Some("1.35"));
+    }
+
+    /// 16. Workspace dep with features merges member-specific features on top.
+    #[test]
+    fn workspace_resolve_dep_with_features() {
+        let mut ws_deps = BTreeMap::new();
+        ws_deps.insert(
+            "serde".to_string(),
+            DependencyValue::Detailed(DetailedDependency {
+                version: Some("1.0".to_string()),
+                source: Some(DepSource::CratesIo),
+                features: vec!["derive".to_string()],
+                ..DetailedDependency::default()
+            }),
+        );
+
+        let member_dep = DetailedDependency {
+            workspace: true,
+            features: vec!["alloc".to_string()],
+            ..DetailedDependency::default()
+        };
+
+        let resolved = resolve_workspace_dep("serde", &member_dep, &ws_deps).unwrap();
+        match resolved {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.version.as_deref(), Some("1.0"));
+                assert_eq!(d.source, Some(DepSource::CratesIo));
+                assert!(
+                    d.features.contains(&"derive".to_string()),
+                    "Should contain workspace feature 'derive': {:?}",
+                    d.features
+                );
+                assert!(
+                    d.features.contains(&"alloc".to_string()),
+                    "Should contain member feature 'alloc': {:?}",
+                    d.features
+                );
+            }
+            _ => panic!("expected Detailed resolved dep"),
+        }
+    }
+
+    /// 17. Requesting a nonexistent workspace dep returns Err.
+    #[test]
+    fn workspace_resolve_dep_missing_fails() {
+        let ws_deps = BTreeMap::new();
+        let member_dep = DetailedDependency {
+            workspace: true,
+            ..DetailedDependency::default()
+        };
+
+        let result = resolve_workspace_dep("nonexistent", &member_dep, &ws_deps);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("nonexistent") && msg.contains("workspace"),
+            "Error should mention dep name and workspace: {}",
+            msg
+        );
+    }
+
+    // ── Workspace battle tests ───────────────────────────────────────
+
+    /// 18. Full workspace manifest roundtrip: create, serialize, re-parse, verify.
+    #[test]
+    fn battle_workspace_toml_full_roundtrip() {
+        let manifest = HorusManifest {
+            package: PackageInfo {
+                name: "ws-root".to_string(),
+                version: "1.0.0".to_string(),
+                description: Some("Workspace root".to_string()),
+                authors: vec!["Dev <dev@example.com>".to_string()],
+                license: Some("MIT".to_string()),
+                edition: "1".to_string(),
+                repository: Some("https://github.com/org/ws".to_string()),
+                package_type: Some(PackageType::App),
+                categories: vec!["robotics".to_string()],
+                standard: None,
+                rust_edition: None,
+                target_type: TargetType::Lib,
+            },
+            workspace: Some(WorkspaceConfig {
+                members: vec!["crates/*".to_string(), "tools/*".to_string()],
+                exclude: vec!["crates/experimental".to_string()],
+                dependencies: {
+                    let mut deps = BTreeMap::new();
+                    deps.insert(
+                        "serde".to_string(),
+                        DependencyValue::Detailed(DetailedDependency {
+                            version: Some("1.0".to_string()),
+                            source: Some(DepSource::CratesIo),
+                            features: vec!["derive".to_string()],
+                            ..DetailedDependency::default()
+                        }),
+                    );
+                    deps.insert(
+                        "tokio".to_string(),
+                        DependencyValue::Simple("1.35".to_string()),
+                    );
+                    deps
+                },
+            }),
+            dependencies: {
+                let mut deps = BTreeMap::new();
+                deps.insert(
+                    "horus_library".to_string(),
+                    DependencyValue::Simple("0.1.9".to_string()),
+                );
+                deps
+            },
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: {
+                let mut s = BTreeMap::new();
+                s.insert("build-all".to_string(), "cargo build --workspace".to_string());
+                s
+            },
+            ignore: IgnoreConfig::default(),
+            enable: vec!["cuda".to_string()],
+            cpp: None,
+            hooks: Default::default(),
+        };
+
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+        let reparsed: HorusManifest = toml::from_str(&serialized).unwrap();
+
+        // Package fields
+        assert_eq!(reparsed.package.name, "ws-root");
+        assert_eq!(reparsed.package.version, "1.0.0");
+        assert_eq!(
+            reparsed.package.description.as_deref(),
+            Some("Workspace root")
+        );
+        assert_eq!(reparsed.package.target_type, TargetType::Lib);
+
+        // Workspace config
+        assert!(reparsed.is_workspace());
+        assert!(!reparsed.is_virtual_workspace());
+        let ws = reparsed.workspace.as_ref().unwrap();
+        assert_eq!(ws.members, vec!["crates/*", "tools/*"]);
+        assert_eq!(ws.exclude, vec!["crates/experimental"]);
+        assert_eq!(ws.dependencies.len(), 2);
+
+        // Workspace deps
+        match &ws.dependencies["serde"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.version.as_deref(), Some("1.0"));
+                assert_eq!(d.features, vec!["derive"]);
+            }
+            _ => panic!("expected Detailed serde"),
+        }
+        match &ws.dependencies["tokio"] {
+            DependencyValue::Simple(v) => assert_eq!(v, "1.35"),
+            _ => panic!("expected Simple tokio"),
+        }
+
+        // Root deps
+        assert_eq!(reparsed.dependencies.len(), 1);
+        assert!(reparsed.dependencies["horus_library"].is_registry());
+
+        // Scripts
+        assert_eq!(reparsed.scripts.len(), 1);
+        assert_eq!(reparsed.scripts["build-all"], "cargo build --workspace");
+
+        // Enable
+        assert_eq!(reparsed.enable, vec!["cuda"]);
+    }
+
+    /// 19. TargetType::Bin (default) is omitted in serialization; Lib and Both appear.
+    #[test]
+    fn battle_target_type_default_omitted_in_serialization() {
+        // Bin (default) should be omitted
+        let manifest_bin = HorusManifest {
+            package: PackageInfo {
+                name: "tt-bin".to_string(),
+                version: "0.1.0".to_string(),
+                target_type: TargetType::Bin,
+                ..PackageInfo::default()
+            },
+            workspace: None,
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
+        };
+        let ser_bin = toml::to_string_pretty(&manifest_bin).unwrap();
+        assert!(
+            !ser_bin.contains("type"),
+            "Default Bin target_type should be omitted: {}",
+            ser_bin
+        );
+
+        // Lib should appear
+        let manifest_lib = HorusManifest {
+            package: PackageInfo {
+                name: "tt-lib".to_string(),
+                version: "0.1.0".to_string(),
+                target_type: TargetType::Lib,
+                ..PackageInfo::default()
+            },
+            workspace: None,
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
+        };
+        let ser_lib = toml::to_string_pretty(&manifest_lib).unwrap();
+        assert!(
+            ser_lib.contains("type = \"lib\""),
+            "Lib target_type should appear in serialized output: {}",
+            ser_lib
+        );
+
+        // Both should appear
+        let manifest_both = HorusManifest {
+            package: PackageInfo {
+                name: "tt-both".to_string(),
+                version: "0.1.0".to_string(),
+                target_type: TargetType::Both,
+                ..PackageInfo::default()
+            },
+            workspace: None,
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
+        };
+        let ser_both = toml::to_string_pretty(&manifest_both).unwrap();
+        assert!(
+            ser_both.contains("type = \"both\""),
+            "Both target_type should appear in serialized output: {}",
+            ser_both
+        );
+    }
+
+    /// 20. DetailedDependency with workspace: false should omit "workspace" in serialized output.
+    #[test]
+    fn battle_workspace_dep_bool_false_omitted() {
+        let dep = DetailedDependency {
+            version: Some("1.0".to_string()),
+            source: Some(DepSource::CratesIo),
+            workspace: false,
+            ..DetailedDependency::default()
+        };
+        let serialized = toml::to_string_pretty(&dep).unwrap();
+        assert!(
+            !serialized.contains("workspace"),
+            "workspace = false should be omitted (skip_serializing_if = is_false): {}",
+            serialized
+        );
+
+        // workspace = true should appear
+        let dep_ws = DetailedDependency {
+            workspace: true,
+            ..DetailedDependency::default()
+        };
+        let serialized_ws = toml::to_string_pretty(&dep_ws).unwrap();
+        assert!(
+            serialized_ws.contains("workspace = true"),
+            "workspace = true should appear in serialized output: {}",
+            serialized_ws
         );
     }
 }

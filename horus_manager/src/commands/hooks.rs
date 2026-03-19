@@ -46,7 +46,7 @@ pub fn run_hooks(phase: &str, manifest: &HorusManifest) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{HooksConfig, HorusManifest, IgnoreConfig, PackageInfo};
+    use crate::manifest::{HooksConfig, HorusManifest, IgnoreConfig, PackageInfo, TargetType};
     use std::collections::BTreeMap;
 
     fn empty_manifest() -> HorusManifest {
@@ -63,7 +63,9 @@ mod tests {
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),

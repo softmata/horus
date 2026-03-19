@@ -35,7 +35,7 @@ use horus_library::messages::diagnostics::{
     ResourceUsage, SafetyStatus,
 };
 use horus_library::messages::force::{
-    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, WrenchStamped,
+    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray, WrenchStamped,
 };
 use horus_library::messages::geometry::{
     Accel, AccelStamped, Point3, Pose2D, Pose3D, PoseStamped, PoseWithCovariance, Quaternion,
@@ -75,10 +75,10 @@ use crate::messages::{
     PyNodeHeartbeat, PyOccupancyGrid, PyOdometry, PyPathPlan, PyPidConfig, PyPlaneArray,
     PyPlaneDetection, PyPoint3, PyPointField, PyPose2D, PyPose3D, PyPoseStamped,
     PyPoseWithCovariance, PyQuaternion, PyRangeSensor, PyRegionOfInterest, PyResourceUsage,
-    PySafetyStatus, PySegmentationMask, PyServoCommand, PyStereoInfo, PyTemperature,
-    PyTimeReference, PyTrackedObjectMsg, PyTrackingHeader, PyTrajectoryPoint, PyTransformStamped,
-    PyTwist, PyTwistWithCovariance, PyVector3, PyVelocityObstacle, PyVelocityObstacles, PyWaypoint,
-    PyWrenchStamped,
+    PySafetyStatus, PySegmentationMask, PyServoCommand, PyStereoInfo, PyTactileArray,
+    PyTemperature, PyTimeReference, PyTrackedObjectMsg, PyTrackingHeader, PyTrajectoryPoint,
+    PyTransformStamped, PyTwist, PyTwistWithCovariance, PyVector3, PyVelocityObstacle,
+    PyVelocityObstacles, PyWaypoint, PyWrenchStamped,
 };
 use crate::pointcloud::PyPointCloud;
 
@@ -206,6 +206,7 @@ enum TopicType {
     // Force types (additional Pod)
     ImpedanceParameters(Arc<RwLock<Topic<ImpedanceParameters>>>),
     HapticFeedback(Arc<RwLock<Topic<HapticFeedback>>>),
+    TactileArray(Arc<RwLock<Topic<TactileArray>>>),
     // Diagnostics types (additional Pod)
     DiagnosticValue(Arc<RwLock<Topic<DiagnosticValue>>>),
     DiagnosticReport(Arc<RwLock<Topic<DiagnosticReport>>>),
@@ -295,6 +296,7 @@ macro_rules! topic_dispatch {
             TopicType::StereoInfo($t) => $body,
             TopicType::ImpedanceParameters($t) => $body,
             TopicType::HapticFeedback($t) => $body,
+            TopicType::TactileArray($t) => $body,
             TopicType::DiagnosticValue($t) => $body,
             TopicType::DiagnosticReport($t) => $body,
             TopicType::NodeHeartbeat($t) => $body,
@@ -673,6 +675,10 @@ impl PyTopic {
             "HapticFeedback" => {
                 let topic = create_topic::<HapticFeedback>(&effective_endpoint, cap)?;
                 TopicType::HapticFeedback(Arc::new(RwLock::new(topic)))
+            }
+            "TactileArray" => {
+                let topic = create_topic::<TactileArray>(&effective_endpoint, cap)?;
+                TopicType::TactileArray(Arc::new(RwLock::new(topic)))
             }
             // Diagnostics types (additional)
             "DiagnosticValue" => {
@@ -2087,6 +2093,29 @@ impl PyTopic {
             }
             TopicType::HapticFeedback(topic) => {
                 let msg = message.extract::<PyRef<PyHapticFeedback>>(py)?.inner;
+                let topic_ref = topic.clone();
+                let log_msg = {
+                    use horus::core::LogSummary;
+                    msg.log_summary()
+                };
+                let success = py.detach(|| {
+                    topic_ref.write().expect("topic lock poisoned").send(msg);
+                    true
+                });
+                if node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                success
+            }
+            TopicType::TactileArray(topic) => {
+                let msg = message.extract::<PyRef<PyTactileArray>>(py)?.inner.clone();
                 let topic_ref = topic.clone();
                 let log_msg = {
                     use horus::core::LogSummary;
@@ -3797,6 +3826,28 @@ impl PyTopic {
                     Ok(None)
                 }
             }
+            TopicType::TactileArray(topic) => {
+                let topic_ref = topic.clone();
+                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
+                if let Some(msg) = msg_opt {
+                    if node.is_some() {
+                        use horus::core::LogSummary;
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
+                            msg.log_summary(),
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
+                    }
+                    Ok(Some(
+                        Py::new(py, PyTactileArray { inner: msg })?.into_any(),
+                    ))
+                } else {
+                    Ok(None)
+                }
+            }
             // Diagnostics types (additional Pod)
             TopicType::DiagnosticValue(topic) => {
                 let topic_ref = topic.clone();
@@ -4296,6 +4347,9 @@ impl PyTopic {
             TopicType::HapticFeedback(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
+            TopicType::TactileArray(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             // Diagnostics types (additional)
             TopicType::DiagnosticValue(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
@@ -4425,6 +4479,7 @@ impl PyTopic {
                 // Force types (additional)
                 TopicType::ImpedanceParameters(t) => read_lock(t)?.metrics(),
                 TopicType::HapticFeedback(t) => read_lock(t)?.metrics(),
+                TopicType::TactileArray(t) => read_lock(t)?.metrics(),
                 // Diagnostics types (additional)
                 TopicType::DiagnosticValue(t) => read_lock(t)?.metrics(),
                 TopicType::DiagnosticReport(t) => read_lock(t)?.metrics(),
@@ -4616,7 +4671,7 @@ impl PyTopic {
             TopicType::Image(_) | TopicType::PointCloud(_) | TopicType::DepthImage(_)
             | TopicType::OccupancyGrid(_) | TopicType::CostMap(_)
             | TopicType::CompressedImage(_) | TopicType::PlaneArray(_)
-            | TopicType::Generic(_) => {
+            | TopicType::TactileArray(_) | TopicType::Generic(_) => {
                 Err(PyRuntimeError::new_err(
                     "read_latest() not supported for this type (requires fixed-size POD). Use recv() instead."
                 ))

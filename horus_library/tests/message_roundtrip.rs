@@ -284,7 +284,50 @@ fn roundtrip_force_command() {
 fn roundtrip_impedance_parameters() {
     json_roundtrip(&ImpedanceParameters::default(), "ImpedanceParameters");
 }
-// ContactInfo and HapticFeedback not exported from messages::* — skip
+#[test]
+fn roundtrip_contact_info() {
+    json_roundtrip(&ContactInfo::default(), "ContactInfo");
+}
+#[test]
+fn roundtrip_haptic_feedback() {
+    json_roundtrip(&HapticFeedback::default(), "HapticFeedback");
+}
+
+// Navigation (previously missing)
+#[test]
+fn roundtrip_goal_result() {
+    json_roundtrip(&GoalResult::default(), "GoalResult");
+}
+#[test]
+fn roundtrip_cost_map() {
+    json_roundtrip(&CostMap::default(), "CostMap");
+}
+#[test]
+fn roundtrip_path_plan() {
+    json_roundtrip(&PathPlan::default(), "PathPlan");
+}
+#[test]
+fn roundtrip_waypoint() {
+    json_roundtrip(&Waypoint::default(), "Waypoint");
+}
+#[test]
+fn roundtrip_velocity_obstacle() {
+    json_roundtrip(&VelocityObstacle::default(), "VelocityObstacle");
+}
+#[test]
+fn roundtrip_velocity_obstacles() {
+    json_roundtrip(&VelocityObstacles::default(), "VelocityObstacles");
+}
+
+// Perception (previously missing)
+#[test]
+fn roundtrip_landmark_array() {
+    json_roundtrip(&LandmarkArray::default(), "LandmarkArray");
+}
+#[test]
+fn roundtrip_plane_array() {
+    json_roundtrip(&PlaneArray::default(), "PlaneArray");
+}
 
 // Input — use button constructor
 #[test]
@@ -333,4 +376,143 @@ fn roundtrip_pose2d_negative() {
     pose.y = -200.0;
     pose.theta = -std::f64::consts::PI;
     json_roundtrip(&pose, "Pose2D::negative");
+}
+
+// ============================================================================
+// SimSync roundtrip tests
+// ============================================================================
+
+#[test]
+fn roundtrip_simsync_waiting() {
+    let s = SimSync::waiting(42, 1_000_000_000, 1_000_000);
+    let json = serde_json::to_string(&s).unwrap();
+    let back: SimSync = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.step, 42);
+    assert_eq!(back.sim_time_ns, 1_000_000_000);
+    assert_eq!(back.dt_ns, 1_000_000);
+    assert_eq!(back.state, SimSync::WAITING);
+}
+
+#[test]
+fn roundtrip_simsync_done() {
+    let s = SimSync::done(99);
+    let json = serde_json::to_string(&s).unwrap();
+    let back: SimSync = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.step, 99);
+    assert_eq!(back.state, SimSync::DONE);
+}
+
+#[test]
+fn roundtrip_simsync_default() {
+    let s = SimSync::default();
+    json_roundtrip(&s, "SimSync::default");
+    assert_eq!(s.state, SimSync::IDLE);
+}
+
+// ============================================================================
+// RateRequest roundtrip tests
+// ============================================================================
+
+#[test]
+fn roundtrip_rate_request_normal() {
+    let rr = RateRequest::new("imu", 100.0, 50.0, 200.0);
+    let json = serde_json::to_string(&rr).unwrap();
+    let back: RateRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.topic(), "imu");
+    assert!((back.desired_hz - 100.0).abs() < f64::EPSILON);
+    assert!((back.min_hz - 50.0).abs() < f64::EPSILON);
+    assert!((back.max_hz - 200.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn roundtrip_rate_request_truncated_topic() {
+    let long_name = "a".repeat(100);
+    let rr = RateRequest::new(&long_name, 1.0, 0.5, 2.0);
+    let json = serde_json::to_string(&rr).unwrap();
+    let back: RateRequest = serde_json::from_str(&json).unwrap();
+    // Topic truncated to 31 chars
+    assert!(back.topic().len() <= 31);
+    assert_eq!(back.topic(), &"a".repeat(31));
+}
+
+#[test]
+fn roundtrip_rate_request_with_requester() {
+    let rr = RateRequest::new("cmd_vel", 30.0, 10.0, 60.0).with_requester(42);
+    let json = serde_json::to_string(&rr).unwrap();
+    let back: RateRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.requester_id, 42);
+    assert_eq!(back.topic(), "cmd_vel");
+}
+
+// ============================================================================
+// TactileArray roundtrip tests
+// ============================================================================
+
+#[test]
+fn roundtrip_tactile_array_populated() {
+    let mut ta = TactileArray::new(4, 4);
+    ta.set_force(0, 0, 1.5);
+    ta.set_force(1, 2, 3.7);
+    ta.set_force(3, 3, 0.1);
+    ta.total_force = [5.3, 0.0, 0.0];
+    ta.center_of_pressure = [0.5, 0.5];
+    ta.in_contact = true;
+    ta.physical_size = [0.04, 0.04];
+    ta.timestamp_ns = 12345;
+
+    let json = serde_json::to_string(&ta).unwrap();
+    let back: TactileArray = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.rows, 4);
+    assert_eq!(back.cols, 4);
+    assert_eq!(back.get_force(0, 0), Some(1.5));
+    assert_eq!(back.get_force(1, 2), Some(3.7));
+    assert_eq!(back.get_force(3, 3), Some(0.1));
+    assert!(back.in_contact);
+    assert_eq!(back.timestamp_ns, 12345);
+}
+
+#[test]
+fn roundtrip_tactile_array_empty() {
+    let ta = TactileArray::default();
+    json_roundtrip(&ta, "TactileArray::default");
+}
+
+#[test]
+fn roundtrip_tactile_array_single_cell() {
+    let mut ta = TactileArray::new(1, 1);
+    ta.set_force(0, 0, 99.9);
+    let json = serde_json::to_string(&ta).unwrap();
+    let back: TactileArray = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.forces.len(), 1);
+    assert!((back.forces[0] - 99.9).abs() < 0.01);
+}
+
+// ============================================================================
+// NaN/Inf handling for new types
+// ============================================================================
+
+#[test]
+fn roundtrip_rate_request_nan_desired_hz() {
+    let rr = RateRequest::new("test", f64::NAN, 0.0, f64::INFINITY);
+    // JSON serialization of NaN/Inf produces null — verify no panic
+    let json = serde_json::to_string(&rr);
+    // serde_json may return error for NaN (depends on config) — either is acceptable
+    if let Ok(json_str) = json {
+        // If it serialized, deserialization may fail — that's OK
+        let _back: Result<RateRequest, _> = serde_json::from_str(&json_str);
+    }
+    // Main assertion: no panic
+}
+
+#[test]
+fn roundtrip_tactile_array_nan_force() {
+    let mut ta = TactileArray::new(2, 2);
+    ta.set_force(0, 0, f32::NAN);
+    ta.total_force = [f32::NAN, 0.0, 0.0];
+    // serde_json serializes NaN as null — this will fail deserialize
+    let json = serde_json::to_string(&ta);
+    if let Ok(json_str) = json {
+        let _back: Result<TactileArray, _> = serde_json::from_str(&json_str);
+    }
+    // Main assertion: no panic
 }

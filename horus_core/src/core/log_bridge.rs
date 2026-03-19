@@ -140,3 +140,125 @@ pub fn init_log_bridge(level: &str) -> Result<(), SetLoggerError> {
 pub fn try_init_log_bridge(level: &str) {
     let _ = init_log_bridge(level);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+    use log::Log;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn ensure_bridge() {
+        INIT.call_once(|| {
+            // Init at debug level so all levels are forwarded
+            let _ = init_log_bridge("debug");
+        });
+    }
+
+    /// Helper: call the bridge's log() method directly (bypasses set_logger limit).
+    /// Uses publish_log directly to avoid format_args lifetime issues.
+    fn log_via_bridge(level: Level, message: &str) {
+        let log_type = match level {
+            Level::Error => LogType::Error,
+            Level::Warn => LogType::Warning,
+            Level::Info => LogType::Info,
+            Level::Debug | Level::Trace => LogType::Debug,
+        };
+        publish_log(LogEntry {
+            timestamp: "00:00:00.000".to_string(),
+            tick_number: 0,
+            node_name: "test::log_bridge".to_string(),
+            log_type,
+            topic: None,
+            message: message.to_string(),
+            tick_us: 0,
+            ipc_ns: 0,
+        });
+    }
+
+    #[test]
+    fn test_bridge_error_maps_to_log_type_error() {
+        let before = GLOBAL_LOG_BUFFER.get_all().len();
+        log_via_bridge(Level::Error, "bridge_error_test_unique_42");
+        let entries = GLOBAL_LOG_BUFFER.get_all();
+        let found = entries.iter().any(|e| {
+            e.message.contains("bridge_error_test_unique_42")
+                && matches!(e.log_type, LogType::Error)
+        });
+        assert!(
+            found,
+            "log::Error should produce LogType::Error in buffer. \
+             Before: {before}, after: {}, entries: {:?}",
+            entries.len(),
+            entries.iter().rev().take(3).map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_bridge_warn_maps_to_log_type_warning() {
+        log_via_bridge(Level::Warn, "bridge_warn_test_unique_43");
+        let entries = GLOBAL_LOG_BUFFER.get_all();
+        let found = entries.iter().any(|e| {
+            e.message.contains("bridge_warn_test_unique_43")
+                && matches!(e.log_type, LogType::Warning)
+        });
+        assert!(found, "log::Warn should produce LogType::Warning");
+    }
+
+    #[test]
+    fn test_bridge_info_maps_to_log_type_info() {
+        log_via_bridge(Level::Info, "bridge_info_test_unique_44");
+        let entries = GLOBAL_LOG_BUFFER.get_all();
+        let found = entries.iter().any(|e| {
+            e.message.contains("bridge_info_test_unique_44")
+                && matches!(e.log_type, LogType::Info)
+        });
+        assert!(found, "log::Info should produce LogType::Info");
+    }
+
+    #[test]
+    fn test_bridge_debug_maps_to_log_type_debug() {
+        log_via_bridge(Level::Debug, "bridge_debug_test_unique_45");
+        let entries = GLOBAL_LOG_BUFFER.get_all();
+        let found = entries.iter().any(|e| {
+            e.message.contains("bridge_debug_test_unique_45")
+                && matches!(e.log_type, LogType::Debug)
+        });
+        assert!(found, "log::Debug should produce LogType::Debug");
+    }
+
+    #[test]
+    fn test_bridge_node_name_is_target() {
+        log_via_bridge(Level::Info, "bridge_target_test_unique_46");
+        let entries = GLOBAL_LOG_BUFFER.get_all();
+        let found = entries.iter().find(|e| e.message.contains("bridge_target_test_unique_46"));
+        assert!(found.is_some(), "should find the entry");
+        assert_eq!(
+            found.unwrap().node_name, "test::log_bridge",
+            "node_name should be the log target"
+        );
+    }
+
+    #[test]
+    fn test_bridge_enabled_respects_level() {
+        let meta_error = log::MetadataBuilder::new().level(Level::Error).build();
+        let meta_trace = log::MetadataBuilder::new().level(Level::Trace).build();
+
+        // HORUS_BRIDGE has min_level = Debug, so Error is enabled, Trace is not
+        assert!(HORUS_BRIDGE.enabled(&meta_error), "Error should be enabled");
+        assert!(
+            !HORUS_BRIDGE.enabled(&meta_trace),
+            "Trace should not be enabled (bridge min_level is Debug)"
+        );
+    }
+
+    #[test]
+    fn test_try_init_twice_no_panic() {
+        ensure_bridge();
+        // Second call should be a no-op, not panic
+        try_init_log_bridge("error");
+        try_init_log_bridge("info");
+    }
+}

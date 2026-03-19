@@ -5,8 +5,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bool) -> Result<()> {
     eprintln!(
@@ -46,24 +44,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         cmd.env("PYTHONPATH", &python_path);
         cmd.args(args);
 
-        // Spawn child process so we can handle Ctrl+C
-        let mut child = cmd.spawn()?;
-        let child_id = child.id();
-
-        // Setup Ctrl+C handler
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-        ctrlc::set_handler(move || {
-            println!("{}", "\nCtrl+C received, stopping Python process...".red());
-            r.store(false, Ordering::SeqCst);
-            // Send SIGINT to child process (cross-platform via horus_sys)
-            let _ = horus_sys::process::ProcessHandle::from_pid(child_id)
-                .signal(horus_sys::process::Signal::Interrupt);
-        })
-        .ok();
-
-        // Wait for child to complete
-        let status = child.wait()?;
+        // Spawn child process with Ctrl+C forwarding
+        let child = cmd.spawn()?;
+        let status = super::spawn_with_ctrlc(child, "Python")?;
 
         // Cleanup wrapper script
         fs::remove_file(wrapper_script).ok();
@@ -88,24 +71,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         cmd.env("PYTHONPATH", &python_path);
         cmd.args(args);
 
-        // Spawn child process so we can handle Ctrl+C
-        let mut child = cmd.spawn()?;
-        let child_id = child.id();
-
-        // Setup Ctrl+C handler
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-        ctrlc::set_handler(move || {
-            println!("{}", "\nCtrl+C received, stopping Python process...".red());
-            r.store(false, Ordering::SeqCst);
-            // Send SIGINT to child process (cross-platform via horus_sys)
-            let _ = horus_sys::process::ProcessHandle::from_pid(child_id)
-                .signal(horus_sys::process::Signal::Interrupt);
-        })
-        .ok();
-
-        // Wait for child to complete
-        let status = child.wait()?;
+        // Spawn child process with Ctrl+C forwarding
+        let child = cmd.spawn()?;
+        let status = super::spawn_with_ctrlc(child, "Python")?;
 
         // Propagate the child's exit code as an error
         if !status.success() {

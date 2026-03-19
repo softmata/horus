@@ -1,11 +1,27 @@
 # HORUS Python Benchmarks
 
-## Run
+## Quick Run
 
 ```bash
 cd horus_py
 maturin develop --no-default-features  # build extension
 PYTHONPATH=. python3 benchmarks/bench_python.py
+```
+
+## Extended Benchmark
+
+Sustained runs with full percentile distributions, FFI overhead attribution, and CSV/JSON output:
+
+```bash
+# Quick validation (2s per test)
+python3 benchmarks/research_bench_python.py --duration 2
+
+# Full run (10s per test, CSV + JSON output)
+python3 benchmarks/research_bench_python.py --duration 10 --csv results.csv --json results.json
+
+# Reports: p50/p95/p99/p999/max for each test
+# Produces: FFI overhead table (Rust baseline vs Python)
+# Detects: GC pauses via per-second tick count analysis
 ```
 
 ## Results (Python 3.12, Linux x86_64, WSL2)

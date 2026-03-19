@@ -148,6 +148,7 @@ try:
         # Force types (additional)
         ImpedanceParameters as _RustImpedanceParameters,
         HapticFeedback as _RustHapticFeedback,
+        TactileArray as _RustTactileArray,
         # Diagnostics types (additional)
         DiagnosticValue as _RustDiagnosticValue,
         DiagnosticReport as _RustDiagnosticReport,
@@ -1164,9 +1165,6 @@ try:
         # Input messages
         JoystickInput,
         KeyboardInput,
-        # I/O messages
-        DigitalIO,
-        AnalogIO,
     )
     _has_messages = True
 except ImportError:
@@ -1237,6 +1235,7 @@ except ImportError:
         StereoInfo = _RustStereoInfo
         ImpedanceParameters = _RustImpedanceParameters
         HapticFeedback = _RustHapticFeedback
+        TactileArray = _RustTactileArray
         DiagnosticValue = _RustDiagnosticValue
         DiagnosticReport = _RustDiagnosticReport
         NodeHeartbeat = _RustNodeHeartbeat
@@ -1387,6 +1386,7 @@ if _has_messages:
         # Force types (additional)
         "ImpedanceParameters",
         "HapticFeedback",
+        "TactileArray",
         # Diagnostics types (additional)
         "DiagnosticValue",
         "DiagnosticReport",
@@ -1401,7 +1401,4 @@ if _has_messages:
         "CostMap",
         # Audio
         "AudioFrame",
-        # I/O messages
-        "DigitalIO",
-        "AnalogIO",
     ])

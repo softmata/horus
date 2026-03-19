@@ -6,10 +6,12 @@
 
 use crate::cli_output;
 use colored::*;
-use horus_core::core::log_buffer::{LogEntry, LogType, GLOBAL_LOG_BUFFER};
+use horus_core::core::log_buffer::{
+    LogEntry, LogType, SharedLogBuffer, GLOBAL_ERROR_BUFFER, GLOBAL_LOG_BUFFER,
+};
 use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
-use horus_core::memory::shm_logs_path;
+use horus_core::memory::{shm_error_logs_path, shm_logs_path};
 use std::time::SystemTime;
 
 // ─── Log level for filtering ──────────────────────────────────────────────────
@@ -192,8 +194,14 @@ pub fn view_logs(
     }
     println!();
 
-    // Drain the ring buffer and apply filters
-    let all = GLOBAL_LOG_BUFFER.get_all();
+    // Read from the error buffer when filtering for error/warning level (longer retention).
+    // Otherwise read from the main buffer (all log types, shorter retention).
+    let use_error_buffer = min_level >= LogLevel::Warn;
+    let all = if use_error_buffer {
+        GLOBAL_ERROR_BUFFER.get_all()
+    } else {
+        GLOBAL_LOG_BUFFER.get_all()
+    };
 
     if all.is_empty() {
         println!("{}", "No log entries found.".yellow());
@@ -271,6 +279,7 @@ pub fn view_logs(
 /// Tail mode: poll the ring buffer, printing only new entries as they arrive.
 ///
 /// Tracks the SHM `write_idx` counter so already-displayed entries are skipped.
+/// When `min_level >= Warn`, reads from the persistent error buffer instead.
 fn follow_logs(node_filter: Option<&str>, min_level: LogLevel) -> HorusResult<()> {
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = running.clone();
@@ -279,13 +288,21 @@ fn follow_logs(node_filter: Option<&str>, min_level: LogLevel) -> HorusResult<()
     })
     .ok();
 
+    // Select buffer: error buffer for error/warn level, main buffer otherwise
+    let use_error_buffer = min_level >= LogLevel::Warn;
+    let buffer: &SharedLogBuffer = if use_error_buffer {
+        &GLOBAL_ERROR_BUFFER
+    } else {
+        &GLOBAL_LOG_BUFFER
+    };
+
     // Snapshot the current write_idx so we only show *new* entries.
-    let mut last_seen_idx = GLOBAL_LOG_BUFFER.write_idx();
+    let mut last_seen_idx = buffer.write_idx();
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(100_u64.ms());
 
-        let current_idx = GLOBAL_LOG_BUFFER.write_idx();
+        let current_idx = buffer.write_idx();
         if current_idx == last_seen_idx {
             continue;
         }
@@ -294,7 +311,7 @@ fn follow_logs(node_filter: Option<&str>, min_level: LogLevel) -> HorusResult<()
         // write_idx is monotonically increasing (u64), so subtraction is safe.
         // Cap to the buffer's returned length to handle cases where more
         // entries arrived than the ring buffer can hold (older ones are lost).
-        let all = GLOBAL_LOG_BUFFER.get_all();
+        let all = buffer.get_all();
         let new_count = (current_idx.wrapping_sub(last_seen_idx) as usize).min(all.len());
         let start = all.len().saturating_sub(new_count);
 
@@ -328,15 +345,25 @@ fn follow_logs(node_filter: Option<&str>, min_level: LogLevel) -> HorusResult<()
 /// inode (the mapping is not invalidated); those entries will not appear in
 /// subsequent `horus log` invocations.
 pub fn clear_logs(_all: bool) -> HorusResult<()> {
-    let log_path = shm_logs_path();
+    let mut cleared = false;
 
-    if log_path.exists() {
-        println!(
-            "{} Clearing log ring buffer at {}...",
-            cli_output::ICON_INFO.cyan(),
-            log_path.display()
-        );
-        std::fs::remove_file(&log_path).map_err(HorusError::Io)?;
+    for (label, path) in [
+        ("log ring buffer", shm_logs_path()),
+        ("error log buffer", shm_error_logs_path()),
+    ] {
+        if path.exists() {
+            println!(
+                "{} Clearing {} at {}...",
+                cli_output::ICON_INFO.cyan(),
+                label,
+                path.display()
+            );
+            std::fs::remove_file(&path).map_err(HorusError::Io)?;
+            cleared = true;
+        }
+    }
+
+    if cleared {
         println!("{} Logs cleared.", cli_output::ICON_SUCCESS.green());
     } else {
         println!("{}", "No log buffer found to clear.".dimmed());

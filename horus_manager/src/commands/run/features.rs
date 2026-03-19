@@ -354,7 +354,7 @@ fn load_manifest() -> Option<HorusManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{IgnoreConfig, PackageInfo};
+    use crate::manifest::{IgnoreConfig, PackageInfo, TargetType};
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -373,7 +373,9 @@ mod tests {
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),

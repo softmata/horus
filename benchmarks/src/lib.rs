@@ -1,6 +1,6 @@
 //! # HORUS Benchmark Suite
 //!
-//! A rigorous, industry-grade benchmark suite for the HORUS robotics framework.
+//! Benchmark suite for the HORUS robotics framework.
 //!
 //! ## Architecture
 //!

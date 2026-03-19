@@ -3,7 +3,6 @@
 //! Removes build caches, shared memory, and other temporary files.
 
 use crate::cli_output;
-use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::{list_all_horus_namespaces, shm_namespace, NamespaceInfo};
@@ -449,43 +448,18 @@ fn find_pycache_dirs(root: &Path) -> Vec<std::path::PathBuf> {
     result
 }
 
-/// Get total size of directory recursively
+use crate::fs_utils;
+
 fn get_dir_size(path: &Path) -> u64 {
-    let mut size = 0;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Ok(meta) = path.metadata() {
-                    size += meta.len();
-                }
-            } else if path.is_dir() {
-                size += get_dir_size(&path);
-            }
-        }
-    }
-    size
+    fs_utils::dir_size(path)
 }
 
-/// Count files in directory recursively
 fn count_files(path: &Path) -> usize {
-    let mut count = 0;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                count += 1;
-            } else if path.is_dir() {
-                count += count_files(&path);
-            }
-        }
-    }
-    count
+    fs_utils::count_files(path)
 }
 
-/// Format byte size for display
 fn format_size(bytes: u64) -> String {
-    format_bytes(bytes)
+    fs_utils::format_bytes(bytes)
 }
 
 #[cfg(test)]

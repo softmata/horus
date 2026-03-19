@@ -21,7 +21,8 @@ use horus_manager::{
         debug_session_delete_handler, debug_session_get_handler, debug_sessions_list_handler,
         debug_snapshot_handler, debug_step_backward_handler, debug_step_forward_handler,
         debug_watches_values_handler, graph_handler, index_handler, login_handler, logout_handler,
-        logs_all_handler, logs_node_handler, logs_topic_handler, network_handler, nodes_handler,
+        logs_all_handler, logs_errors_handler, logs_node_handler, logs_topic_handler,
+        nodes_handler,
         packages_environments_handler, packages_install_handler, packages_publish_handler,
         packages_registry_handler, packages_uninstall_handler, params_delete_handler,
         params_export_handler, params_get_handler, params_import_handler, params_list_handler,
@@ -121,8 +122,8 @@ pub fn test_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/nodes", get(nodes_handler))
         .route("/api/topics", get(topics_handler))
         .route("/api/graph", get(graph_handler))
-        .route("/api/network", get(network_handler))
         .route("/api/logs/all", get(logs_all_handler))
+        .route("/api/logs/errors", get(logs_errors_handler))
         .route("/api/logs/node/:name", get(logs_node_handler))
         .route("/api/logs/topic/:name", get(logs_topic_handler))
         .route("/api/packages/registry", get(packages_registry_handler))

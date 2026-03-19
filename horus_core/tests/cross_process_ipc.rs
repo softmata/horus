@@ -51,7 +51,10 @@ fn child_recv_pod() {
         }
     }
 
-    // Validate data integrity in child
+    // Validate data integrity in child.
+    // Filter out value 0 — the parent sends send(0) to trigger producer role
+    // before sending the real messages 1..=expected_count.
+    let received: Vec<u64> = received.into_iter().filter(|&v| v != 0).collect();
     for &v in &received {
         assert!(
             v >= 1 && v <= expected_count as u64,

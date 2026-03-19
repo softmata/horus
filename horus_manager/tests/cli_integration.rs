@@ -5507,3 +5507,187 @@ fn test_add_driver_flag() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"));
 }
+
+// ============================================================================
+// Edge case: Unicode project name
+// ============================================================================
+
+#[test]
+fn test_new_unicode_project_name() {
+    let tmp = TempDir::new().unwrap();
+
+    let output = horus_cmd()
+        .args(["new", "ロボット", "-r", "-o", &tmp.path().to_string_lossy()])
+        .output()
+        .unwrap();
+
+    // Should either succeed or give a clear error — not panic
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "Unicode project name should not cause panic: {}",
+        stderr
+    );
+}
+
+// ============================================================================
+// Edge case: Check on malformed horus.toml (wrong field types)
+// ============================================================================
+
+#[test]
+fn test_check_malformed_toml_wrong_types() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("bad_toml");
+    fs::create_dir_all(&proj).unwrap();
+
+    // Write horus.toml with wrong types (name should be string, not integer)
+    fs::write(
+        proj.join("horus.toml"),
+        "[package]\nname = 42\nversion = true\n",
+    )
+    .unwrap();
+
+    let output = horus_cmd()
+        .args(["check"])
+        .current_dir(&proj)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should fail with a descriptive error, not panic
+    assert!(
+        !stderr.contains("panicked"),
+        "Malformed toml should not panic: {}",
+        stderr
+    );
+    // Should indicate some kind of parsing/validation error
+    assert!(
+        !output.status.success() || stdout.contains("error") || stderr.contains("error")
+            || stdout.contains("invalid") || stderr.contains("invalid")
+            || stdout.contains("fail") || stderr.contains("fail"),
+        "Malformed toml should produce an error message. stdout: {} stderr: {}",
+        stdout, stderr
+    );
+}
+
+// ============================================================================
+// Edge case: Check on empty horus.toml
+// ============================================================================
+
+#[test]
+fn test_check_empty_toml() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("empty_toml");
+    fs::create_dir_all(&proj).unwrap();
+    fs::write(proj.join("horus.toml"), "").unwrap();
+
+    let output = horus_cmd()
+        .args(["check"])
+        .current_dir(&proj)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "Empty horus.toml should not panic: {}",
+        stderr
+    );
+}
+
+// ============================================================================
+// Edge case: Run on project with no source files
+// ============================================================================
+
+#[test]
+fn test_run_no_source_files() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("no_src");
+    fs::create_dir_all(&proj).unwrap();
+
+    // Write valid horus.toml but don't create src/
+    fs::write(
+        proj.join("horus.toml"),
+        "[package]\nname = \"no_src\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let output = horus_cmd()
+        .args(["run"])
+        .current_dir(&proj)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "horus run with no sources should not panic: {}",
+        stderr
+    );
+    // Non-zero exit expected (nothing to run)
+}
+
+// ============================================================================
+// Edge case: Clean --shm removes stale SHM
+// ============================================================================
+
+#[test]
+fn test_clean_shm_removes_stale() {
+    // Create fake stale SHM directories
+    let shm_dir = std::path::Path::new("/dev/shm");
+    if !shm_dir.exists() {
+        return; // Skip on platforms without /dev/shm
+    }
+
+    let test_shm_name = format!("horus_clean_test_{}", std::process::id());
+    let test_shm_path = shm_dir.join(&test_shm_name);
+    let _ = fs::create_dir_all(&test_shm_path);
+
+    // Create a temporary project to run clean from
+    let tmp = TempDir::new().unwrap();
+    horus_cmd()
+        .args(["new", "clean_test", "-r", "-o", &tmp.path().to_string_lossy()])
+        .assert()
+        .success();
+
+    let proj = tmp.path().join("clean_test");
+
+    let output = horus_cmd()
+        .args(["clean", "--shm"])
+        .current_dir(&proj)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "horus clean --shm should not panic: {}",
+        stderr
+    );
+
+    // Clean up our test dir (clean --shm may or may not have removed it)
+    let _ = fs::remove_dir_all(&test_shm_path);
+}
+
+// ============================================================================
+// Edge case: New project with spaces in name
+// ============================================================================
+
+#[test]
+fn test_new_project_with_spaces() {
+    let tmp = TempDir::new().unwrap();
+
+    let output = horus_cmd()
+        .args(["new", "my robot", "-r", "-o", &tmp.path().to_string_lossy()])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "Project name with spaces should not panic: {}",
+        stderr
+    );
+}

@@ -187,7 +187,7 @@ impl TimeReference {
 }
 
 // Register Pod types for zero-copy IPC
-crate::messages::impl_pod_message!(Clock, TimeReference);
+crate::messages::impl_pod_message!(Clock, TimeReference, SimSync, RateRequest);
 
 #[cfg(test)]
 mod tests {
@@ -317,5 +317,207 @@ mod tests {
         assert!(size_of::<Illuminance>() <= 128);
         assert!(size_of::<Clock>() <= 128);
         assert!(size_of::<TimeReference>() <= 128);
+        assert!(size_of::<SimSync>() <= 128);
+        assert!(size_of::<RateRequest>() <= 128);
+    }
+
+    // ── SimSync Tests ──
+
+    #[test]
+    fn test_simsync_waiting() {
+        let s = SimSync::waiting(42, 1_000_000_000, 1_000_000);
+        assert_eq!(s.step, 42);
+        assert_eq!(s.sim_time_ns, 1_000_000_000);
+        assert_eq!(s.dt_ns, 1_000_000);
+        assert_eq!(s.state, SimSync::WAITING);
+    }
+
+    #[test]
+    fn test_simsync_done() {
+        let s = SimSync::done(42);
+        assert_eq!(s.step, 42);
+        assert_eq!(s.state, SimSync::DONE);
+    }
+
+    #[test]
+    fn test_simsync_default_is_idle() {
+        let s = SimSync::default();
+        assert_eq!(s.state, SimSync::IDLE);
+        assert_eq!(s.step, 0);
+    }
+
+    // ── RateRequest Tests ──
+
+    #[test]
+    fn test_rate_request_new() {
+        let rr = RateRequest::new("imu", 100.0, 50.0, 200.0);
+        assert_eq!(rr.topic(), "imu");
+        assert!((rr.desired_hz - 100.0).abs() < f64::EPSILON);
+        assert!((rr.min_hz - 50.0).abs() < f64::EPSILON);
+        assert!((rr.max_hz - 200.0).abs() < f64::EPSILON);
+        assert_eq!(rr.requester_id, 0);
+        assert!(rr.timestamp_ns > 0);
+    }
+
+    #[test]
+    fn test_rate_request_with_requester() {
+        let rr = RateRequest::new("cmd_vel", 30.0, 10.0, 60.0).with_requester(99);
+        assert_eq!(rr.requester_id, 99);
+        assert_eq!(rr.topic(), "cmd_vel");
+    }
+
+    #[test]
+    fn test_rate_request_topic_truncation() {
+        let long_name = "a".repeat(100);
+        let rr = RateRequest::new(&long_name, 1.0, 1.0, 1.0);
+        assert!(rr.topic().len() <= 31);
+    }
+}
+
+/// Simulation synchronization message for deterministic co-simulation.
+///
+/// Enables lockstep mode between a simulator (e.g., horus-sim3d) and a
+/// controller. The protocol:
+///
+/// 1. Simulator publishes `SimSync { step: N, state: WAITING }` on `sim_sync`
+/// 2. Controller reads sensors, computes, publishes commands
+/// 3. Controller publishes `SimSync { step: N, state: DONE }` on `sim_sync_ack`
+/// 4. Simulator advances physics to step N+1
+///
+/// Without lockstep (default): both run asynchronously at their own rates.
+/// With lockstep: deterministic, reproducible simulation at the cost of throughput.
+///
+/// # Topics
+///
+/// - `sim_sync` — published by simulator, read by controller
+/// - `sim_sync_ack` — published by controller, read by simulator
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus::prelude::*;
+/// use horus_library::messages::SimSync;
+///
+/// // Controller side: wait for sim step, process, acknowledge
+/// let sync_sub: Topic<SimSync> = Topic::new("sim_sync")?;
+/// let sync_pub: Topic<SimSync> = Topic::new("sim_sync_ack")?;
+///
+/// if let Some(sync) = sync_sub.recv() {
+///     if sync.state == SimSync::WAITING {
+///         // Read sensors, compute, send commands...
+///         sync_pub.send(SimSync::done(sync.step));
+///     }
+/// }
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct SimSync {
+    /// Simulation step number (monotonically increasing)
+    pub step: u64,
+    /// Simulation time in nanoseconds at this step
+    pub sim_time_ns: u64,
+    /// Physics timestep in nanoseconds (e.g., 1_000_000 for 1ms)
+    pub dt_ns: u64,
+    /// State: 0 = IDLE, 1 = WAITING (sim waiting for controller), 2 = DONE (controller done)
+    pub state: u8,
+    /// Padding for alignment
+    pub _pad: [u8; 7],
+}
+
+impl SimSync {
+    /// State: simulator is idle (lockstep not enabled)
+    pub const IDLE: u8 = 0;
+    /// State: simulator is waiting for controller to finish this step
+    pub const WAITING: u8 = 1;
+    /// State: controller has finished processing this step
+    pub const DONE: u8 = 2;
+
+    /// Create a "waiting" sync message (published by simulator)
+    pub fn waiting(step: u64, sim_time_ns: u64, dt_ns: u64) -> Self {
+        Self {
+            step,
+            sim_time_ns,
+            dt_ns,
+            state: Self::WAITING,
+            _pad: [0; 7],
+        }
+    }
+
+    /// Create a "done" sync message (published by controller)
+    pub fn done(step: u64) -> Self {
+        Self {
+            step,
+            state: Self::DONE,
+            ..Default::default()
+        }
+    }
+}
+
+/// Rate negotiation request for dynamic rate adjustment.
+///
+/// Allows nodes to request a different publish/subscribe rate for a topic.
+/// The scheduler or a rate-manager node can arbitrate between competing
+/// requests and set the actual rate.
+///
+/// # Topics
+///
+/// - `rate_request` — published by any node wanting a rate change
+/// - `rate_response` — published by scheduler/arbitrator with the granted rate
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus::prelude::*;
+/// use horus_library::messages::RateRequest;
+///
+/// // Node requests 100Hz for the "imu" topic
+/// let rate_pub: Topic<RateRequest> = Topic::new("rate_request")?;
+/// rate_pub.send(RateRequest::new("imu", 100.0, 50.0, 200.0));
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct RateRequest {
+    /// Topic name being negotiated (null-terminated, max 31 chars)
+    pub topic_name: [u8; 32],
+    /// Desired rate in Hz
+    pub desired_hz: f64,
+    /// Minimum acceptable rate in Hz
+    pub min_hz: f64,
+    /// Maximum acceptable rate in Hz
+    pub max_hz: f64,
+    /// ID of the requesting node/process
+    pub requester_id: u64,
+    /// Timestamp in nanoseconds
+    pub timestamp_ns: u64,
+}
+
+impl RateRequest {
+    /// Create a new rate request.
+    pub fn new(topic: &str, desired_hz: f64, min_hz: f64, max_hz: f64) -> Self {
+        let mut topic_name = [0u8; 32];
+        let bytes = topic.as_bytes();
+        let len = bytes.len().min(31);
+        topic_name[..len].copy_from_slice(&bytes[..len]);
+
+        Self {
+            topic_name,
+            desired_hz,
+            min_hz,
+            max_hz,
+            requester_id: 0,
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    /// Get the topic name as a string.
+    pub fn topic(&self) -> &str {
+        let len = self.topic_name.iter().position(|&b| b == 0).unwrap_or(32);
+        std::str::from_utf8(&self.topic_name[..len]).unwrap_or("")
+    }
+
+    /// Set the requester ID.
+    pub fn with_requester(mut self, id: u64) -> Self {
+        self.requester_id = id;
+        self
     }
 }

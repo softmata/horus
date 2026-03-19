@@ -32,7 +32,7 @@ pub fn generate(
     manifest: &HorusManifest,
     project_dir: &Path,
     include_dev: bool,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, String)> {
     let horus_dir = project_dir.join(HORUS_DIR);
     fs::create_dir_all(&horus_dir).context("Failed to create .horus directory")?;
 
@@ -112,7 +112,7 @@ pub fn generate(
     fs::write(&pyproject_path, &pyproject)
         .with_context(|| format!("Failed to write {}", pyproject_path.display()))?;
 
-    Ok(pyproject_path)
+    Ok((pyproject_path, pyproject))
 }
 
 /// Collect Python dependency strings from a manifest dependency map.
@@ -248,7 +248,9 @@ mod tests {
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
@@ -267,7 +269,8 @@ mod tests {
         let result = generate(&manifest, dir.path(), false);
         assert!(result.is_ok());
 
-        let content = fs::read_to_string(result.unwrap()).unwrap();
+        let (path, _) = result.unwrap();
+        let content = fs::read_to_string(path).unwrap();
         assert!(content.contains("name = \"test-project\""));
         assert!(content.contains("version = \"0.1.0\""));
         assert!(content.contains("requires-python = \">=3.10\""));
@@ -295,6 +298,7 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
         deps.insert(
@@ -312,11 +316,12 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("\"numpy>=1.24\""));
@@ -343,6 +348,7 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
         deps.insert(
@@ -360,11 +366,12 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(!content.contains("serde"));
@@ -391,11 +398,12 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("my-lib @ git+https://github.com/org/my-lib@main"));
@@ -421,6 +429,7 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
 
@@ -428,12 +437,12 @@ mod tests {
         manifest.dev_dependencies = dev_deps;
 
         // Without include_dev
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(&result).unwrap();
         assert!(!content.contains("[project.optional-dependencies]"));
 
         // With include_dev
-        let result = generate(&manifest, dir.path(), true).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), true).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(content.contains("[project.optional-dependencies]"));
         assert!(content.contains("\"pytest>=7.0\""));
@@ -459,11 +468,12 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("\"uvicorn>=0.20[standard]\""));
@@ -502,6 +512,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         })
     }
 
@@ -519,6 +530,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         })
     }
 
@@ -541,6 +553,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         })
     }
 
@@ -558,6 +571,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         })
     }
 
@@ -572,7 +586,7 @@ mod tests {
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -598,7 +612,7 @@ mod tests {
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -619,7 +633,7 @@ mod tests {
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -641,7 +655,7 @@ mod tests {
         deps.insert("requests".into(), pypi_dep(Some("2.31.0"), &[]));
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -682,7 +696,7 @@ mod tests {
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -718,6 +732,7 @@ mod tests {
                 apt: None,
                 cmake_package: None,
                 lang: None,
+                workspace: false,
             }),
         );
         deps.insert("numpy".into(), pypi_dep(Some(">=1.24"), &[]));
@@ -727,7 +742,7 @@ mod tests {
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         // Python deps present
@@ -753,7 +768,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
         // Default test_manifest has authors = ["Test Author"]
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("authors = ["), "authors section missing");
@@ -774,7 +789,7 @@ mod tests {
             "Charlie".to_string(),
         ];
 
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("name = \"Alice\""), "Alice missing");
@@ -788,7 +803,7 @@ mod tests {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.authors = vec![];
 
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -808,7 +823,7 @@ mod tests {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.dev_dependencies = dev_deps;
 
-        let result = generate(&manifest, dir.path(), true).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), true).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -834,7 +849,7 @@ mod tests {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.dev_dependencies = dev_deps;
 
-        let result = generate(&manifest, dir.path(), true).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), true).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         // dev_deps is non-empty BUT after filtering, no Python deps → no section
@@ -849,7 +864,7 @@ mod tests {
     fn battle_header_always_generated() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -862,7 +877,7 @@ mod tests {
     fn battle_build_system_always_present() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("[build-system]"), "build-system missing");
@@ -881,7 +896,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
         // Default test_manifest has description = Some("A test project")
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -897,7 +912,7 @@ mod tests {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.description = None;
 
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -931,6 +946,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         // Should produce just the name with no version specifier
         assert_eq!(format_pypi_dep("my-pkg", &dep), "my-pkg");
@@ -952,6 +968,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         let result = format_pypi_dep("httpx", &dep);
         assert_eq!(result, "httpx>=2.0[async,http2]");
@@ -961,7 +978,7 @@ mod tests {
     fn battle_tool_configs_always_present() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -987,7 +1004,7 @@ mod tests {
     fn battle_requires_python_always_present() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(
@@ -1000,7 +1017,7 @@ mod tests {
     fn battle_empty_deps_produces_empty_array() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(

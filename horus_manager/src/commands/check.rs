@@ -733,30 +733,14 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     if !languages.is_empty() {
         let mut all_available = true;
         for lang in &languages {
-            let toolchain_available = match lang {
-                Language::Rust => std::process::Command::new("rustc")
-                    .arg("--version")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false),
-                Language::Python => std::process::Command::new("python3")
-                    .arg("--version")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false),
-                Language::Cpp => std::process::Command::new("cmake")
-                    .arg("--version")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false),
-                Language::Ros2 => std::process::Command::new("ros2")
-                    .arg("--help")
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false),
+            let tool_name = match lang {
+                Language::Rust => "rustc",
+                Language::Python => "python3",
+                Language::Cpp => "cmake",
+                Language::Ros2 => "ros2",
             };
 
-            if !toolchain_available {
+            if crate::dispatch::tool_version(tool_name).is_none() {
                 all_available = false;
                 errors.push(format!(
                     "Required toolchain for '{:?}' not found in PATH",

@@ -28,6 +28,33 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// Spawn a child process with Ctrl+C forwarding.
+///
+/// Sets up a ctrlc handler that sends SIGINT to the child process,
+/// waits for exit, and returns the status. Shared by run_python, run_cpp, etc.
+pub(super) fn spawn_with_ctrlc(
+    mut child: std::process::Child,
+    lang_label: &str,
+) -> Result<std::process::ExitStatus> {
+    let child_id = child.id();
+    let _running = Arc::new(AtomicBool::new(true));
+    let r = _running.clone();
+    let label = lang_label.to_string();
+    ctrlc::set_handler(move || {
+        eprintln!(
+            "{}",
+            format!("\nCtrl+C received, stopping {} process...", label).red()
+        );
+        r.store(false, Ordering::SeqCst);
+        let _ = horus_sys::process::ProcessHandle::from_pid(child_id)
+            .signal(horus_sys::process::Signal::Interrupt);
+    })
+    .ok();
+
+    let status = child.wait()?;
+    Ok(status)
+}
+
 #[derive(Debug, Clone)]
 enum ExecutionTarget {
     File(PathBuf),
@@ -41,6 +68,7 @@ pub fn execute_run(
     args: Vec<String>,
     release: bool,
     clean: bool,
+    package: Option<String>,
 ) -> Result<()> {
     // Verify lockfile system deps and toolchain before running
     crate::system_deps::verify_lockfile_before_build();
@@ -110,6 +138,18 @@ pub fn execute_run(
         mode.yellow()
     ));
 
+    // Workspace detection: if horus.toml has [workspace], use workspace build path
+    if files.is_empty() {
+        let manifest_path = Path::new(HORUS_TOML);
+        if manifest_path.exists() {
+            if let Ok(manifest) = HorusManifest::load_from(manifest_path) {
+                if manifest.is_workspace() {
+                    return execute_workspace(manifest, args, release, clean, package);
+                }
+            }
+        }
+    }
+
     // Step 1: Resolve target(s) - file(s), directory, or pattern
     let execution_targets = if files.is_empty() {
         vec![ExecutionTarget::File(auto_detect_main_file()?)]
@@ -134,6 +174,66 @@ pub fn execute_run(
             }
             ExecutionTarget::Multiple(file_paths) => {
                 execute_multiple_files(file_paths, args.clone(), release, clean)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute a workspace project using cargo with the generated workspace Cargo.toml.
+fn execute_workspace(
+    manifest: HorusManifest,
+    args: Vec<String>,
+    release: bool,
+    _clean: bool,
+    package: Option<String>,
+) -> Result<()> {
+    let project_dir = std::env::current_dir()?;
+
+    // Generate workspace Cargo.toml + per-member Cargo.toml files
+    cli_output::info("Generating workspace build files...");
+    let (cargo_path, _) =
+        crate::cargo_gen::generate_for_manifest(&manifest, &project_dir, &[], false)?;
+
+    // Build with cargo
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("build");
+    cmd.arg("--manifest-path").arg(&cargo_path);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    // Target specific member or all
+    if let Some(ref member) = package {
+        cmd.arg("-p").arg(member);
+        cli_output::info(&format!("Building workspace member: {}", member));
+    } else {
+        cmd.arg("--workspace");
+        cli_output::info("Building all workspace members...");
+    }
+
+    let status = cmd.status()?;
+    if !status.success() {
+        return Err(anyhow!("Workspace build failed"));
+    }
+
+    // If a specific package was requested, run it
+    if let Some(ref member) = package {
+        let profile = if release { "release" } else { "debug" };
+        let binary = project_dir
+            .join(".horus/target")
+            .join(profile)
+            .join(member);
+        if binary.exists() {
+            cli_output::success(&format!("Running {}", member));
+            let status = std::process::Command::new(&binary)
+                .args(&args)
+                .status()?;
+            if !status.success() {
+                let code = status.code().unwrap_or(1);
+                return Err(anyhow!("Process exited with code {}", code));
             }
         }
     }

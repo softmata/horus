@@ -3363,13 +3363,17 @@ fn shm_serde_oversized_data_rejected() {
             let got = t.try_recv();
             assert_eq!(got, Some("hello".to_string()));
 
-            // Oversized string should be rejected
+            // Oversized string: try_send through serde path triggers auto-grow,
+            // returns Err (auto-grow happened but try_send returns Err to let
+            // the retry loop re-enter with updated dispatch). For cross-process
+            // Topics, send() retries successfully after grow — verified by the
+            // large_message_cross_process integration test.
             let oversized = "X".repeat(41); // bincode: 8 + 41 = 49 bytes > 48
             let result = t.try_send(oversized.clone());
+            // try_send returns Err after auto-grow (retry needed)
             assert!(
                 result.is_err(),
-                "Oversized string ({} chars) should be rejected by serde bounds check",
-                oversized.len()
+                "try_send should return Err after auto-grow (retry handles success)"
             );
 
             // Exact boundary: 40 chars → 8 + 40 = 48 bytes = max_data_len
@@ -3402,10 +3406,344 @@ fn shm_serde_oversized_mp_rejected() {
 
             let oversized = "Z".repeat(41);
             let result = t.try_send(oversized);
-            assert!(result.is_err(), "MP serde: oversized should be rejected");
+            // try_send returns Err after auto-grow (retry handles success)
+            assert!(
+                result.is_err(),
+                "MP try_send should return Err after auto-grow (retry handles success)"
+            );
         }
         other => eprintln!("MpmcShm unavailable: {:?}", other),
     }
+}
+
+// ---- Auto-grow slot size tests ----
+//
+// The auto-grow mechanism extends the SHM region when a serialized message
+// exceeds the current slot_size. These tests verify the unsafe mmap growth,
+// pointer re-derivation, cross-process coordination, and data integrity.
+
+#[test]
+fn auto_grow_sp_serde_try_send_triggers_grow() {
+    // try_send on the SHM serde path triggers auto_grow_slot_size and returns Err
+    // (the caller retries with the updated dispatch fn after grow).
+    let name = unique("auto_grow_sp");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("init".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            // 41 chars → bincode 49 bytes > max_data_len 48
+            let result = t.try_send("A".repeat(41));
+            assert!(result.is_err(), "try_send should Err after auto-grow");
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_mp_serde_try_send_triggers_grow() {
+    let name = unique("auto_grow_mp");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("init".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::MpmcShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            let result = t.try_send("B".repeat(41));
+            assert!(result.is_err(), "MP try_send should Err after auto-grow");
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_increases_slot_size_in_header() {
+    // Verify the SHM header's slot_size field is updated after auto-grow.
+    let name = unique("auto_grow_header");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("x".to_string());
+    let _ = t.recv();
+
+    let old_slot_size = t.header().slot_size;
+    assert_eq!(old_slot_size, 64, "Initial slot_size should be 64");
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            // Trigger auto-grow: 100-char string → ~108 bytes serialized > 48 max
+            let _ = t.try_send("C".repeat(100));
+            let new_slot_size = t.header().slot_size;
+            assert!(
+                new_slot_size > old_slot_size,
+                "slot_size should have grown: {} → {}",
+                old_slot_size,
+                new_slot_size
+            );
+            // New slot_size should be a power of 2 and accommodate 108 bytes + 16 overhead
+            assert!(
+                new_slot_size.is_power_of_two(),
+                "New slot_size {} should be power of 2",
+                new_slot_size
+            );
+            assert!(
+                (new_slot_size as usize) >= 108 + 16,
+                "New slot_size {} should fit 108+16 byte message",
+                new_slot_size
+            );
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_shm_region_len_increases() {
+    // Verify the SHM region's backing storage actually grew (not just header).
+    let name = unique("auto_grow_region");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("x".to_string());
+    let _ = t.recv();
+
+    let old_len = t.storage.len();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            let _ = t.try_send("D".repeat(200)); // 208 bytes → definitely needs grow
+            let new_len = t.storage.len();
+            assert!(
+                new_len > old_len,
+                "SHM region should have grown: {} → {}",
+                old_len,
+                new_len
+            );
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_multiple_grows() {
+    // Verify multiple successive grows work without corruption.
+    // After each grow, migrate_to_optimal switches to intra-process mode.
+    // We force back to SpscShm before each oversized send to test the SHM path.
+    let name = unique("auto_grow_multi");
+    let t: RingTopic<Vec<u8>> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send(vec![1u8]);
+    let _ = t.recv();
+
+    // First grow: 64B slot → need ~100 bytes
+    let _ = t.force_migrate(BackendMode::SpscShm);
+    trigger_shm_dispatch(&name);
+    let _ = t.try_send(vec![0xAA; 80]);
+    let slot_after_1 = t.header().slot_size;
+    assert!(slot_after_1 > 64, "First grow should increase slot_size");
+
+    // Second grow: need ~500 bytes (force back to SHM first)
+    let _ = t.force_migrate(BackendMode::SpscShm);
+    trigger_shm_dispatch(&name);
+    let _ = t.try_send(vec![0xBB; 480]);
+    let slot_after_2 = t.header().slot_size;
+    assert!(
+        slot_after_2 > slot_after_1,
+        "Second grow should increase further: {} → {}",
+        slot_after_1,
+        slot_after_2
+    );
+
+    // Third grow: need ~2KB (force back to SHM first)
+    let _ = t.force_migrate(BackendMode::SpscShm);
+    trigger_shm_dispatch(&name);
+    let _ = t.try_send(vec![0xCC; 2000]);
+    let slot_after_3 = t.header().slot_size;
+    assert!(
+        slot_after_3 > slot_after_2,
+        "Third grow should increase further: {} → {}",
+        slot_after_2,
+        slot_after_3
+    );
+}
+
+#[test]
+fn auto_grow_small_messages_still_work_after_grow() {
+    // After growing, small messages should still send and receive correctly.
+    let name = unique("auto_grow_small_after");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("init".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+
+            // Trigger grow
+            let _ = t.try_send("E".repeat(100));
+
+            // Force back to SpscShm with new slot_size
+            trigger_shm_dispatch(&name);
+
+            // Small messages should still work
+            assert!(t.try_send("hi".to_string()).is_ok(), "Small send after grow");
+            let got = t.try_recv();
+            assert_eq!(got, Some("hi".to_string()), "Small recv after grow");
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_boundary_exact_fit() {
+    // Message that exactly fills the slot (serialized = max_data_len) should NOT trigger grow.
+    let name = unique("auto_grow_exact");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("x".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            let old_slot = t.header().slot_size;
+
+            // 40 chars → bincode 48 bytes = max_data_len (64 - 16). Exact fit.
+            let result = t.try_send("F".repeat(40));
+            assert!(result.is_ok(), "Exact-fit message should succeed without grow");
+            assert_eq!(
+                t.header().slot_size, old_slot,
+                "Slot size should NOT change for exact-fit message"
+            );
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_one_byte_over() {
+    // Message that is 1 byte over the limit should trigger grow.
+    let name = unique("auto_grow_1over");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("x".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            let old_slot = t.header().slot_size;
+
+            // 41 chars → bincode 49 bytes > max_data_len 48. One byte over.
+            let _ = t.try_send("G".repeat(41));
+            assert!(
+                t.header().slot_size > old_slot,
+                "One-byte-over should trigger grow"
+            );
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_migration_epoch_incremented() {
+    // Auto-grow should increment the migration epoch so other processes detect the change.
+    let name = unique("auto_grow_epoch");
+    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
+    t.send("x".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            let old_epoch = t.header().migration_epoch.load(Ordering::Relaxed);
+
+            let _ = t.try_send("H".repeat(100));
+            let new_epoch = t.header().migration_epoch.load(Ordering::Relaxed);
+            assert!(
+                new_epoch > old_epoch,
+                "Migration epoch should increment after grow: {} → {}",
+                old_epoch,
+                new_epoch
+            );
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_vec_u8_large_payload() {
+    // Vec<u8> with payload larger than DEFAULT_SLOT_SIZE (8KB).
+    // This is the primary use case: LaserScan, PointCloud, image metadata.
+    let name = unique("auto_grow_vec_large");
+    let t: RingTopic<Vec<u8>> = RingTopic::new(&name).expect("create");
+    // Initialize with small message
+    t.send(vec![1u8; 8]);
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            let old_slot = t.header().slot_size;
+
+            // 16KB payload → needs grow from 8KB default
+            let _ = t.try_send(vec![0xAB; 16384]);
+            let new_slot = t.header().slot_size;
+            assert!(
+                new_slot > old_slot,
+                "16KB Vec<u8> should trigger grow from 8KB: {} → {}",
+                old_slot,
+                new_slot
+            );
+            assert!(
+                (new_slot as usize) >= 16384 + 16,
+                "New slot {} should fit 16KB + overhead",
+                new_slot
+            );
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn auto_grow_cross_thread_no_crash() {
+    // Verify that auto-grow doesn't cause crashes or data corruption when
+    // another thread holds a Topic on the same name. Same-process Topics
+    // use intra-process rings (no SHM serde path), so the grow is exercised
+    // via force_migrate. The real cross-process test is large_message_cross_process
+    // in the integration test suite.
+    let name = unique("auto_grow_cross_thread");
+
+    let name2 = name.clone();
+    let running = Arc::new(AtomicBool::new(true));
+    let running2 = running.clone();
+
+    let handle = std::thread::spawn(move || {
+        let t2: RingTopic<Vec<u8>> = RingTopic::new(&name2).expect("create in thread");
+        let mut count = 0u64;
+        while running2.load(Ordering::Relaxed) {
+            t2.send(vec![0u8; 16]);
+            if t2.recv().is_some() {
+                count += 1;
+            }
+            std::thread::yield_now();
+        }
+        count
+    });
+
+    // Give thread time to start
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Grow the SHM from the main thread — the other thread should not crash
+    let t1: RingTopic<Vec<u8>> = RingTopic::new(&name).expect("create main");
+    let _ = t1.force_migrate(BackendMode::SpscShm);
+    trigger_shm_dispatch(&name);
+    // Trigger grow: 16KB payload exceeds 8KB default slot
+    let _ = t1.try_send(vec![0xFFu8; 16384]);
+
+    // Let the other thread run a bit after grow
+    std::thread::sleep(Duration::from_millis(100));
+    running.store(false, Ordering::Relaxed);
+
+    let count = handle.join().expect("thread should not crash during grow");
+    assert!(count > 0, "Thread should have processed messages without crash");
 }
 
 // ---- DC→SHM pointer restoration (regression test for cached_data_ptr bug) ----

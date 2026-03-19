@@ -642,7 +642,18 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     let slot_offset = index * slot_size;
     let max_data_len = slot_size.saturating_sub(16);
     if bytes.len() > max_data_len {
-        return Err(msg); // Serialized data too large for slot
+        // Auto-grow: extend the SHM region with larger slots.
+        // Return Err after growing so the retry loop re-enters with updated
+        // dispatch function and fresh slot layout.
+        if !topic.auto_grow_slot_size(bytes.len()) {
+            log::warn!(
+                "Topic: serialized message ({} bytes) exceeds slot limit ({} bytes). \
+                 Auto-grow failed. Use Topic::with_capacity(name, cap, Some(slot_size)).",
+                bytes.len(),
+                max_data_len,
+            );
+        }
+        return Err(msg);
     }
     // SAFETY: cached_data_ptr + slot_offset points to a valid slot within the SHM data
     // region. slot_offset < capacity * slot_size (index < capacity via mask). The slot
@@ -701,7 +712,15 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
 
     let max_data_len = slot_size.saturating_sub(16);
     if bytes.len() > max_data_len {
-        return Err(msg); // Serialized data too large for slot
+        if !topic.auto_grow_slot_size(bytes.len()) {
+            log::warn!(
+                "Topic: serialized message ({} bytes) exceeds slot limit ({} bytes). \
+                 Auto-grow failed. Use Topic::with_capacity(name, cap, Some(slot_size)).",
+                bytes.len(),
+                max_data_len,
+            );
+        }
+        return Err(msg);
     }
 
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);

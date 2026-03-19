@@ -8,7 +8,7 @@
 //! ## Methodology
 //!
 //! Tests MPMC backends with varying thread counts to produce
-//! scalability curves suitable for research publications.
+//! scalability curves for node and topic count.
 //!
 //! ## Running
 //!

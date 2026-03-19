@@ -39,6 +39,30 @@ name = "dds_comparison_benchmark"
 path = "src/bin/dds_comparison_benchmark.rs"
 
 [[bin]]
+name = "raw_baselines"
+path = "src/bin/raw_baselines.rs"
+
+[[bin]]
+name = "research_latency"
+path = "src/bin/research_latency.rs"
+
+[[bin]]
+name = "research_throughput"
+path = "src/bin/research_throughput.rs"
+
+[[bin]]
+name = "research_jitter"
+path = "src/bin/research_jitter.rs"
+
+[[bin]]
+name = "research_scalability"
+path = "src/bin/research_scalability.rs"
+
+[[bin]]
+name = "competitor_comparison"
+path = "src/bin/competitor_comparison.rs"
+
+[[bin]]
 name = "all_paths_latency"
 path = "src/bin/all_paths_latency.rs"
 
@@ -52,6 +76,8 @@ serde_json = "1.0"
 serde_arrays = "0.1"
 anyhow = "1.0"
 libc = "0.2"
+zenoh = { version = "1.0", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 rand = "0.8"
 chrono = { workspace = true }
 num_cpus = "1.16"
@@ -65,6 +91,8 @@ flume = "0.11"
 default = []
 # Enable actual DDS middleware comparisons (requires CycloneDDS/FastDDS installed)
 dds = []
+# Enable Zenoh comparison (requires zenoh crate)
+zenoh = ["dep:zenoh", "dep:tokio"]
 
 # =============================================================================
 # CRITERION BENCHMARKS

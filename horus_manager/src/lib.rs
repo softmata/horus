@@ -12,6 +12,8 @@ pub mod dependency_resolver;
 pub mod discovery;
 pub mod dispatch;
 pub mod error_wrapper;
+pub mod fingerprint;
+pub mod fs_utils;
 pub mod graph;
 pub mod lockfile;
 pub mod manifest;
@@ -19,6 +21,7 @@ pub mod manifest;
 pub mod monitor;
 #[cfg(feature = "monitor")]
 pub mod monitor_tui;
+pub mod native_sync;
 pub mod node_detector;
 pub mod paths;
 pub mod plugins;

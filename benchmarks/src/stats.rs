@@ -1,4 +1,4 @@
-//! Statistical analysis functions for rigorous benchmarking.
+//! Statistical analysis functions for benchmarking.
 //!
 //! Provides:
 //! - Bootstrap confidence intervals

@@ -10,8 +10,12 @@ mod monitor_tests;
 
 use harness::{HorusTestRuntime, TestNodeConfig};
 use monitor_tests::builders;
-use monitor_tests::helpers::{assert_json_ok, get_request};
+use monitor_tests::helpers::{
+    assert_json_error, assert_json_ok, delete_request, get_request, post_json_request,
+    post_json_request_authed,
+};
 
+use axum::http::StatusCode;
 use horus_core::core::DurationExt;
 use tower::ServiceExt;
 
@@ -915,4 +919,371 @@ async fn e2e_log_entry_fields_preserved() {
     // Verify topic field
     let topic = e["topic"].as_str();
     assert_eq!(topic, Some("imu_data"), "topic must be preserved");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Phase 14: Params, Blackbox, Recordings, Auth endpoint battle tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// --- Params CRUD ---
+
+#[tokio::test]
+async fn e2e_params_list_empty() {
+    let app = builders::test_router();
+    let resp = app.oneshot(get_request("/api/params")).await.unwrap();
+    let json = assert_json_ok(resp).await;
+    assert!(
+        json["params"].is_array(),
+        "params must be an array, got: {json}"
+    );
+}
+
+#[tokio::test]
+async fn e2e_params_set_and_get() {
+    let state = builders::test_app_state();
+    state.params.set("test_key", "42");
+
+    let app = builders::test_router_with_state(state);
+    let resp = app
+        .oneshot(get_request("/api/params/test_key"))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    assert_eq!(
+        json["value"].as_str(),
+        Some("42"),
+        "param value should be '42'"
+    );
+}
+
+#[tokio::test]
+async fn e2e_params_set_via_post() {
+    let state = builders::test_app_state();
+    let app = builders::test_router_with_state(state.clone());
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/params/new_key",
+            r#"{"value": "hello"}"#,
+        ))
+        .await
+        .unwrap();
+    let _json = assert_json_ok(resp).await;
+
+    assert_eq!(state.params.get::<String>("new_key"), Some("hello".to_string()));
+}
+
+#[tokio::test]
+async fn e2e_params_delete() {
+    let state = builders::test_app_state();
+    state.params.set("del_key", "to_delete");
+
+    let app = builders::test_router_with_state(state.clone());
+    let resp = app
+        .oneshot(delete_request("/api/params/del_key"))
+        .await
+        .unwrap();
+    let _json = assert_json_ok(resp).await;
+
+    assert_eq!(
+        state.params.get::<String>("del_key"),
+        None,
+        "deleted param should be gone"
+    );
+}
+
+#[tokio::test]
+async fn e2e_params_get_nonexistent() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/params/nonexistent_key_xyz"))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+// --- Blackbox ---
+
+#[tokio::test]
+async fn e2e_blackbox_list_returns_json() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/blackbox"))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    assert!(
+        json["events"].is_array(),
+        "blackbox events must be an array"
+    );
+}
+
+#[tokio::test]
+async fn e2e_blackbox_anomalies_returns_json() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/blackbox/anomalies"))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    assert!(
+        json["anomalies"].is_array(),
+        "anomalies must be an array"
+    );
+}
+
+#[tokio::test]
+async fn e2e_blackbox_clear_succeeds() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(delete_request("/api/blackbox"))
+        .await
+        .unwrap();
+    let _json = assert_json_ok(resp).await;
+}
+
+// --- Recordings ---
+
+#[tokio::test]
+async fn e2e_recordings_list_returns_json() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/recordings"))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    assert!(
+        json["recordings"].is_array(),
+        "recordings must be an array"
+    );
+}
+
+#[tokio::test]
+async fn e2e_recordings_info_nonexistent() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/recordings/nonexistent_session_xyz"))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+// --- Auth ---
+
+#[tokio::test]
+async fn e2e_auth_login_success() {
+    let state = builders::test_app_state_with_auth();
+    let app = builders::test_router_with_state(state);
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/login",
+            &format!(r#"{{"password":"{}"}}"#, builders::TEST_PASSWORD),
+        ))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    assert!(
+        json["session_token"].is_string(),
+        "login must return session_token"
+    );
+    assert!(
+        json["csrf_token"].is_string(),
+        "login must return csrf_token"
+    );
+}
+
+#[tokio::test]
+async fn e2e_auth_login_wrong_password() {
+    let state = builders::test_app_state_with_auth();
+    let app = builders::test_router_with_state(state);
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/login",
+            r#"{"password":"wrong_password_12345"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn e2e_auth_logout_succeeds() {
+    let state = builders::test_app_state_with_auth();
+    let app = builders::test_router_with_state(state.clone());
+
+    // Login first
+    let (session, csrf) = builders::login(&app).await;
+
+    // Logout with session token in body
+    let app2 = builders::test_router_with_state(state);
+    let resp = app2
+        .oneshot(post_json_request_authed(
+            "/api/logout",
+            &format!(r#"{{"session_token":"{}"}}"#, session),
+            &session,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    let _json = assert_json_ok(resp).await;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Phase 15: Debug session endpoint battle tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn e2e_debug_sessions_list_empty() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/debug/sessions"))
+        .await
+        .unwrap();
+    let json = assert_json_ok(resp).await;
+    assert!(json["sessions"].is_array(), "sessions must be an array");
+}
+
+#[tokio::test]
+async fn e2e_debug_create_session_recording_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions",
+            r#"{"recording_session":"nonexistent","recording_file":"test.bin"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_create_session_path_traversal_rejected() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions",
+            r#"{"recording_session":"../etc","recording_file":"passwd"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::BAD_REQUEST).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_get_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/debug/sessions/nonexistent_id_xyz"))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_delete_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(delete_request("/api/debug/sessions/nonexistent_id_xyz"))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_add_breakpoint_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions/nonexistent/breakpoints",
+            r#"{"breakpoint_type":"at_tick","tick":100}"#,
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_add_watch_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions/nonexistent/watches",
+            r#"{"id":"w1","name":"test","topic":"imu","watch_type":"raw"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_step_forward_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions/nonexistent/step-forward",
+            "{}",
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_seek_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions/nonexistent/seek",
+            r#"{"tick":50}"#,
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_continue_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions/nonexistent/continue",
+            "{}",
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_pause_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(post_json_request(
+            "/api/debug/sessions/nonexistent/pause",
+            "{}",
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_snapshot_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request("/api/debug/sessions/nonexistent/snapshot"))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
+}
+
+#[tokio::test]
+async fn e2e_debug_watches_values_session_not_found() {
+    let app = builders::test_router();
+    let resp = app
+        .oneshot(get_request(
+            "/api/debug/sessions/nonexistent/watches/values",
+        ))
+        .await
+        .unwrap();
+    assert_json_error(resp, StatusCode::NOT_FOUND).await;
 }

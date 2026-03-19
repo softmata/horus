@@ -1110,4 +1110,113 @@ mod tests {
         let result = action_info(&long_name);
         let _ = result;
     }
+
+    // ── Integration: discover_actions with real SHM topics ───────────────
+
+    /// Create a real SHM Topic and return it (keeps the SHM file alive).
+    fn create_shm_topic(name: &str) -> horus_core::communication::Topic<u8> {
+        horus_core::communication::Topic::new(name).expect("create SHM topic")
+    }
+
+    /// Wait for the discovery cache to expire so fresh SHM scans happen.
+    fn wait_cache_expire() {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
+    #[test]
+    fn discover_actions_finds_action_from_shm_topics() {
+        // Create SHM topics mimicking an action server
+        let _goal = create_shm_topic("test_discover_nav.goal");
+        let _result = create_shm_topic("test_discover_nav.result");
+        let _feedback = create_shm_topic("test_discover_nav.feedback");
+        let _status = create_shm_topic("test_discover_nav.status");
+        let _cancel = create_shm_topic("test_discover_nav.cancel");
+
+        wait_cache_expire();
+        let actions = discover_actions().unwrap_or_default();
+        let found = actions
+            .iter()
+            .find(|a| a.name.contains("test_discover_nav"));
+
+        assert!(
+            found.is_some(),
+            "should discover action from 5 SHM topics. Found: {:?}",
+            actions.iter().map(|a| &a.name).collect::<Vec<_>>()
+        );
+
+        if let Some(action) = found {
+            assert!(action.has_goal, "should have .goal topic");
+            assert!(action.has_result, "should have .result topic");
+            assert!(action.has_feedback, "should have .feedback topic");
+            assert!(action.has_status, "should have .status topic");
+            assert!(action.has_cancel, "should have .cancel topic");
+        }
+    }
+
+    #[test]
+    fn discover_actions_partial_only_goal() {
+        let _goal = create_shm_topic("test_partial_act.goal");
+
+        wait_cache_expire();
+        let actions = discover_actions().unwrap_or_default();
+        let found = actions
+            .iter()
+            .find(|a| a.name.contains("test_partial_act"));
+
+        assert!(
+            found.is_some(),
+            "should discover partial action with only .goal"
+        );
+        if let Some(action) = found {
+            assert!(action.has_goal);
+            assert!(!action.has_result);
+        }
+    }
+
+    #[test]
+    fn discover_actions_excludes_service_topics() {
+        // Create topics that look like BOTH an action and a service
+        let _goal = create_shm_topic("test_svc_excl.goal");
+        let _result = create_shm_topic("test_svc_excl.result");
+        let _request = create_shm_topic("test_svc_excl.request");
+        let _response = create_shm_topic("test_svc_excl.response");
+
+        wait_cache_expire();
+        let actions = discover_actions().unwrap_or_default();
+        let found = actions
+            .iter()
+            .find(|a| a.name.contains("test_svc_excl"));
+
+        assert!(
+            found.is_none(),
+            "should exclude topics that also have .request/.response (service)"
+        );
+    }
+
+    #[test]
+    fn discover_actions_empty_shm_returns_empty() {
+        // Just verify no panic — may find actions from other tests in same process
+        let actions = discover_actions();
+        assert!(actions.is_ok(), "discover_actions should not error");
+    }
+
+    #[test]
+    fn discover_actions_multiple_actions() {
+        let _g1 = create_shm_topic("test_multi_a.goal");
+        let _r1 = create_shm_topic("test_multi_a.result");
+        let _g2 = create_shm_topic("test_multi_b.goal");
+        let _r2 = create_shm_topic("test_multi_b.result");
+
+        wait_cache_expire();
+        let actions = discover_actions().unwrap_or_default();
+        let found_a = actions
+            .iter()
+            .any(|a| a.name.contains("test_multi_a"));
+        let found_b = actions
+            .iter()
+            .any(|a| a.name.contains("test_multi_b"));
+
+        assert!(found_a, "should find test_multi_a action");
+        assert!(found_b, "should find test_multi_b action");
+    }
 }

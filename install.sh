@@ -17,7 +17,6 @@ set -e
 # --- Config ---
 REPO="softmata/horus"
 BRANCH="release"
-BINARY_NAME="horus"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -126,6 +125,11 @@ install_rust() {
 OS=$(detect_os)
 ARCH=$(detect_arch)
 INSTALL_DIR=$(find_install_dir)
+if [ "$OS" = "windows" ]; then
+    BINARY_NAME="horus.exe"
+else
+    BINARY_NAME="horus"
+fi
 
 echo ""
 echo -e "${CYAN}  ╦ ╦╔═╗╦═╗╦ ╦╔═╗${NC}"
@@ -152,17 +156,26 @@ fi
 
 # --- Step 1: Try pre-built binary from GitHub Releases ---
 ASSET_NAME="horus-${OS}-${ARCH}"
-RELEASE_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}.tar.gz"
+if [ "$OS" = "windows" ]; then
+    ASSET_EXT="zip"
+else
+    ASSET_EXT="tar.gz"
+fi
+RELEASE_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}.${ASSET_EXT}"
 
 echo -e "${CYAN}[1/3]${NC} Downloading horus..."
 
 TMPDIR=$(mktemp -d)
-HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.tar.gz" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
+HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
 
-if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.tar.gz" ]; then
+if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
     # Extract and install pre-built binary
-    tar xzf "${TMPDIR}/${ASSET_NAME}.tar.gz" -C "$TMPDIR"
-    chmod +x "${TMPDIR}/${BINARY_NAME}"
+    if [ "$OS" = "windows" ]; then
+        unzip -q "${TMPDIR}/${ASSET_NAME}.zip" -d "$TMPDIR"
+    else
+        tar xzf "${TMPDIR}/${ASSET_NAME}.tar.gz" -C "$TMPDIR"
+    fi
+    chmod +x "${TMPDIR}/${BINARY_NAME}" 2>/dev/null || true
     mv "${TMPDIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
     rm -rf "$TMPDIR"
     echo -e "${GREEN}[1/3]${NC} Downloaded pre-built binary"
@@ -196,8 +209,8 @@ else
     cargo build --release -p horus_manager --no-default-features 2>&1 | tail -5
 
     # Install the binary
-    if [ -f "target/release/horus" ]; then
-        cp "target/release/horus" "${INSTALL_DIR}/${BINARY_NAME}"
+    if [ -f "target/release/${BINARY_NAME}" ]; then
+        cp "target/release/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
         chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
         echo -e "${GREEN}[1/3]${NC} Built and installed from source"
     else
@@ -246,6 +259,9 @@ else
     fi
     export PATH="${INSTALL_DIR}:$PATH"
 fi
+
+# --- Shell integration (cargo/pip/cmake proxy) ---
+horus env --init 2>/dev/null || true
 
 # --- Done ---
 echo ""

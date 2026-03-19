@@ -25,7 +25,7 @@ pub struct ShmRegion {
 
 impl ShmRegion {
     /// Create or open a shared memory region.
-    pub fn new(name: &str, size: usize) -> Result<Self> {
+    pub fn new(name: &str, mut size: usize) -> Result<Self> {
         anyhow::ensure!(size > 0, "SHM region size must be > 0");
         anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
         let horus_shm_dir = super::shm_topics_dir();
@@ -78,8 +78,13 @@ impl ShmRegion {
                     .open(&path)
                     .with_context(|| format!("Failed to open existing SHM: {}", path.display()))?;
                 let metadata = file.metadata()?;
-                if metadata.len() < size as u64 {
+                let actual_len = metadata.len() as usize;
+                if actual_len < size {
                     file.set_len(size as u64)?;
+                } else if actual_len > size {
+                    // File was grown by another process (auto-grow for large messages).
+                    // Map at the larger size so we can access all slots.
+                    size = actual_len;
                 }
                 (file, false)
             }
@@ -157,6 +162,54 @@ impl ShmRegion {
     #[inline]
     pub fn backing_path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// Grow the shared memory region to `new_size` bytes.
+    ///
+    /// Extends the backing file and creates a new mmap with the larger size.
+    /// The old mmap is dropped and replaced. After this call, `as_ptr()` may
+    /// return a different address — all cached pointers must be re-derived.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no other thread is concurrently reading from
+    /// or writing to the memory region via raw pointers derived from `as_ptr()`.
+    /// In the Topic system, this is guaranteed by the single-thread ownership
+    /// contract and the migration lock.
+    pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        anyhow::ensure!(
+            new_size > self.size,
+            "grow_unchecked: new_size ({}) must be > current size ({})",
+            new_size,
+            self.size
+        );
+
+        // Extend the backing file
+        self._file.set_len(new_size as u64).with_context(|| {
+            format!(
+                "Failed to grow SHM file to {} bytes: {}",
+                new_size,
+                self.path.display()
+            )
+        })?;
+
+        // Create a new mmap with the larger size.
+        // The old mmap is dropped when we overwrite the field.
+        let new_mmap = MmapOptions::new()
+            .len(new_size)
+            .map_mut(&self._file)
+            .with_context(|| {
+                format!(
+                    "Failed to remap SHM at new size {}: {}",
+                    new_size,
+                    self.path.display()
+                )
+            })?;
+
+        self.mmap = new_mmap;
+        self.size = new_size;
+
+        Ok(())
     }
 }
 

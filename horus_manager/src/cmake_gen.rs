@@ -224,7 +224,7 @@ pub fn generate(
     manifest: &HorusManifest,
     project_dir: &Path,
     include_dev: bool,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, String)> {
     let horus_dir = project_dir.join(HORUS_DIR);
     fs::create_dir_all(&horus_dir).context("Failed to create .horus directory")?;
 
@@ -412,7 +412,7 @@ pub fn generate(
     fs::write(&cmake_path, &cmake)
         .with_context(|| format!("Failed to write {}", cmake_path.display()))?;
 
-    Ok(cmake_path)
+    Ok((cmake_path, cmake))
 }
 
 /// Collect resolved C++ dependencies from a manifest dependency map.
@@ -479,7 +479,9 @@ mod tests {
                 package_type: None,
                 categories: vec![],
                 standard: None,
+                target_type: TargetType::default(),
             },
+            workspace: None,
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
@@ -505,6 +507,7 @@ mod tests {
             apt: Some(apt.to_string()),
             cmake_package: Some(cmake_pkg.to_string()),
             lang: Some("cpp".to_string()),
+            workspace: false,
         })
     }
 
@@ -522,6 +525,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: Some("cpp".to_string()),
+            workspace: false,
         })
     }
 
@@ -539,6 +543,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         })
     }
 
@@ -556,6 +561,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         })
     }
 
@@ -568,7 +574,8 @@ mod tests {
         let result = generate(&manifest, dir.path(), false);
         assert!(result.is_ok());
 
-        let content = fs::read_to_string(result.unwrap()).unwrap();
+        let (path, _) = result.unwrap();
+        let content = fs::read_to_string(path).unwrap();
         assert!(content.contains("cmake_minimum_required(VERSION 3.20)"));
         assert!(content.contains("project(my_robot VERSION 0.1.0 LANGUAGES CXX)"));
         assert!(content.contains("set(CMAKE_CXX_STANDARD 17)"));
@@ -583,7 +590,7 @@ mod tests {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.standard = Some("c++20".to_string());
 
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(content.contains("set(CMAKE_CXX_STANDARD 20)"));
     }
@@ -594,7 +601,7 @@ mod tests {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.standard = Some("c++23".to_string());
 
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(content.contains("set(CMAKE_CXX_STANDARD 23)"));
     }
@@ -608,7 +615,7 @@ mod tests {
         deps.insert("eigen".to_string(), cpp_known_dep("eigen"));
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("find_package(Eigen3 REQUIRED)"));
@@ -625,7 +632,7 @@ mod tests {
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("find_package(MyMathLib REQUIRED)"));
@@ -641,7 +648,7 @@ mod tests {
         deps.insert("eigen".to_string(), cpp_known_dep("eigen"));
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("Eigen3"), "eigen should be present");
@@ -661,7 +668,7 @@ mod tests {
         deps.insert("spdlog".to_string(), cpp_known_dep("spdlog"));
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("find_package(Eigen3 REQUIRED)"));
@@ -683,7 +690,7 @@ mod tests {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.dev_dependencies = dev_deps;
 
-        let result = generate(&manifest, dir.path(), true).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), true).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(content.contains("enable_testing()"));
@@ -699,7 +706,7 @@ mod tests {
         // No tests/ directory
 
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         assert!(!content.contains("enable_testing()"));
@@ -717,7 +724,7 @@ mod tests {
             toolchain: None,
         });
 
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(content.contains("set(CMAKE_CXX_COMPILER clang++)"));
     }
@@ -735,7 +742,7 @@ mod tests {
             toolchain: None,
         });
 
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(content.contains("set(BUILD_SHARED_LIBS ON)"));
         assert!(content.contains("set(CMAKE_POSITION_INDEPENDENT_CODE ON)"));
@@ -803,6 +810,7 @@ mod tests {
             apt: Some("custom-eigen-dev".to_string()),
             cmake_package: None,
             lang: Some("cpp".to_string()),
+            workspace: false,
         });
         assert_eq!(
             apt_package_for("eigen", &dep),
@@ -831,6 +839,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: Some("cpp".to_string()),
+            workspace: false,
         });
         assert!(is_cpp_dep("unknown-lib", &dep));
     }
@@ -849,7 +858,7 @@ mod tests {
     fn header_always_generated() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(content.starts_with("# Generated by horus from horus.toml"));
     }
@@ -871,7 +880,7 @@ mod tests {
     fn include_directories_present() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(content.contains(
             "target_include_directories(my_robot PRIVATE ${CMAKE_SOURCE_DIR}/../include)"
@@ -886,7 +895,7 @@ mod tests {
         assert!(!dir.path().join(".horus").exists());
 
         let manifest = test_manifest(BTreeMap::new());
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         assert!(dir.path().join(".horus").is_dir());
         assert!(dir.path().join(".horus/CMakeLists.txt").is_file());
@@ -897,10 +906,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
 
-        let path1 = generate(&manifest, dir.path(), false).unwrap();
+        let (path1, _) = generate(&manifest, dir.path(), false).unwrap();
         let content1 = fs::read_to_string(&path1).unwrap();
 
-        let path2 = generate(&manifest, dir.path(), false).unwrap();
+        let (path2, _) = generate(&manifest, dir.path(), false).unwrap();
         let content2 = fs::read_to_string(&path2).unwrap();
 
         assert_eq!(
@@ -930,7 +939,7 @@ mod tests {
         }
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         // All should have find_package
@@ -957,7 +966,7 @@ mod tests {
         deps.insert("fmt".to_string(), cpp_known_dep("fmt"));
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         // C++ deps present
@@ -974,7 +983,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("tests")).unwrap();
 
         let manifest = test_manifest(BTreeMap::new());
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         // Should have enable_testing but NOT GTest-specific stuff
@@ -995,7 +1004,7 @@ mod tests {
         manifest.dev_dependencies = dev_deps;
 
         // Without include_dev — gtest NOT in find_package
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(
             !content.contains("find_package(GTest"),
@@ -1003,7 +1012,7 @@ mod tests {
         );
 
         // With include_dev — gtest IN find_package
-        let result = generate(&manifest, dir.path(), true).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), true).unwrap();
         let content = fs::read_to_string(result).unwrap();
         assert!(
             content.contains("find_package(GTest REQUIRED)"),
@@ -1036,6 +1045,7 @@ mod tests {
             apt: Some("libcustom-dev".to_string()),
             cmake_package: Some("CustomLib".to_string()),
             lang: Some("cpp".to_string()),
+            workspace: false,
         });
 
         let resolved = resolve_cpp_dep("custom-lib", &dep);
@@ -1059,6 +1069,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         assert!(!is_cpp_dep("numpy", &dep));
     }
@@ -1078,6 +1089,7 @@ mod tests {
             apt: None,
             cmake_package: Some("MyLib".to_string()),
             lang: None,
+            workspace: false,
         });
         assert!(
             is_cpp_dep("mylib", &dep),
@@ -1176,7 +1188,7 @@ mod tests {
 
         for deps in configs {
             let manifest = test_manifest(deps);
-            let path = generate(&manifest, dir.path(), false).unwrap();
+            let (path, _) = generate(&manifest, dir.path(), false).unwrap();
             let content = fs::read_to_string(path).unwrap();
             assert!(
                 content.starts_with("# Generated by horus"),
@@ -1190,7 +1202,7 @@ mod tests {
         // Property: for ANY valid HorusManifest with no deps, generate() output contains NO find_package lines
         let dir = tempfile::tempdir().unwrap();
         let manifest = test_manifest(BTreeMap::new());
-        let path = generate(&manifest, dir.path(), false).unwrap();
+        let (path, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(path).unwrap();
         assert!(
             !content.contains("find_package"),
@@ -1260,7 +1272,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.name = "".to_string();
-        let path = generate(&manifest, dir.path(), false).unwrap();
+        let (path, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(path).unwrap();
         // Should still produce valid cmake (project name is sanitized to empty, but cmake is generated)
         assert!(content.contains("# Generated by horus"));
@@ -1273,7 +1285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.name = "a".repeat(150);
-        let path = generate(&manifest, dir.path(), false).unwrap();
+        let (path, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(path).unwrap();
         let sanitized = sanitize_cmake_name(&"a".repeat(150));
         assert!(
@@ -1333,6 +1345,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         // "random-git-lib" is not in the known deps table and has no apt field
         assert_eq!(
@@ -1358,6 +1371,7 @@ mod tests {
             apt: None,
             cmake_package: None,
             lang: None,
+            workspace: false,
         });
         assert!(
             resolve_cpp_dep("numpy", &dep).is_none(),
@@ -1378,7 +1392,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.name = "r\u{00f6}bot-\u{00fc}nit".to_string();
-        let path = generate(&manifest, dir.path(), false).unwrap();
+        let (path, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(path).unwrap();
         // Unicode chars should be replaced by underscores
         let sanitized = sanitize_cmake_name("r\u{00f6}bot-\u{00fc}nit");
@@ -1416,12 +1430,13 @@ mod tests {
                     apt: Some(format!("lib{}-dev", i)),
                     cmake_package: Some(format!("Lib{}", i)),
                     lang: Some("cpp".to_string()),
+                    workspace: false,
                 }),
             );
         }
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         // All 50 deps should have find_package lines
@@ -1446,7 +1461,7 @@ mod tests {
 
         let mut last_content = String::new();
         for i in 0..100 {
-            let path = generate(&manifest, dir.path(), false).unwrap();
+            let (path, _) = generate(&manifest, dir.path(), false).unwrap();
             let content = fs::read_to_string(&path).unwrap();
             if i > 0 {
                 assert_eq!(
@@ -1480,11 +1495,12 @@ mod tests {
                 apt: Some("libspecial-dev".to_string()),
                 cmake_package: Some("MySpecialLib".to_string()),
                 lang: Some("cpp".to_string()),
+                workspace: false,
             }),
         );
 
         let manifest = test_manifest(deps);
-        let result = generate(&manifest, dir.path(), false).unwrap();
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(result).unwrap();
 
         // The cmake_package is used directly for find_package
@@ -1571,7 +1587,7 @@ mod tests {
         if let Some(std) = standard {
             manifest.package.standard = Some(std.to_string());
         }
-        generate(&manifest, dir, false).unwrap();
+        let _ = generate(&manifest, dir, false).unwrap();
     }
 
     // ── Risk 1: Does cmake actually accept our generated CMakeLists.txt? ──
@@ -1668,7 +1684,7 @@ int main() {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.name = "cpp20-test".to_string();
         manifest.package.standard = Some("c++20".to_string());
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         let configure = cmake_configure(dir.path());
         assert!(
@@ -1730,7 +1746,7 @@ int main() {
         let mut manifest = test_manifest(deps);
         manifest.package.name = "eigen-test".to_string();
         manifest.package.standard = Some("c++17".to_string());
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         let configure = cmake_configure(dir.path());
         let stderr = String::from_utf8_lossy(&configure.stderr);
@@ -1787,7 +1803,7 @@ int main() {
         deps.insert("fmt".to_string(), cpp_known_dep("fmt"));
         let mut manifest = test_manifest(deps);
         manifest.package.name = "fmt-test".to_string();
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         let configure = cmake_configure(dir.path());
         assert!(
@@ -1835,7 +1851,7 @@ int main() {
         let mut manifest = test_manifest(deps);
         manifest.package.name = "multi-dep-test".to_string();
         manifest.package.standard = Some("c++17".to_string());
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         let configure = cmake_configure(dir.path());
         assert!(
@@ -1888,7 +1904,7 @@ TEST(BasicTest, OnePlusOne) {
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.name = "gtest-test".to_string();
         manifest.dev_dependencies = dev_deps;
-        generate(&manifest, dir.path(), true).unwrap();
+        let _ = generate(&manifest, dir.path(), true).unwrap();
 
         let configure = cmake_configure(dir.path());
         assert!(
@@ -2000,7 +2016,7 @@ TEST(BasicTest, OnePlusOne) {
             cmake_args: vec![],
             toolchain: None,
         });
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         let configure = cmake_configure(dir.path());
         assert!(
@@ -2032,7 +2048,7 @@ TEST(BasicTest, OnePlusOne) {
             cmake_args: vec!["set(MY_CUSTOM_VAR \"hello\")".to_string()],
             toolchain: None,
         });
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         // Verify the custom arg is in the CMakeLists.txt
         let content = fs::read_to_string(dir.path().join(".horus/CMakeLists.txt")).unwrap();
@@ -2062,7 +2078,7 @@ TEST(BasicTest, OnePlusOne) {
 
         let mut manifest = test_manifest(BTreeMap::new());
         manifest.package.name = "release-test".to_string();
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         let build_dir = dir.path().join(".horus/cpp-build");
         fs::create_dir_all(&build_dir).unwrap();
@@ -2111,7 +2127,7 @@ TEST(BasicTest, OnePlusOne) {
         fs::create_dir_all(dir.path().join("include")).unwrap();
 
         let manifest = test_manifest(BTreeMap::new());
-        generate(&manifest, dir.path(), false).unwrap();
+        let _ = generate(&manifest, dir.path(), false).unwrap();
 
         // After fix: cmake should configure successfully but warn about no sources
         let configure = cmake_configure(dir.path());

@@ -1,0 +1,7 @@
+HORUS Research Benchmark Report
+========================================
+
+Generated files:
+  comparison.csv                                  267 bytes
+  comparison_bar.pdf                           16,322 bytes
+  comparison_table.tex                            324 bytes

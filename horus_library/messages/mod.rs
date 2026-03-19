@@ -83,7 +83,7 @@ pub use sensor::{
 };
 
 // Clock & Time
-pub use clock::{Clock, TimeReference, SOURCE_REPLAY, SOURCE_SIM, SOURCE_WALL};
+pub use clock::{Clock, RateRequest, SimSync, TimeReference, SOURCE_REPLAY, SOURCE_SIM, SOURCE_WALL};
 
 // Control
 pub use control::{
@@ -100,10 +100,15 @@ pub use diagnostics::{
 pub use vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
 
 // Navigation
-pub use navigation::{CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan};
+pub use navigation::{
+    CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
+    VelocityObstacles, Waypoint,
+};
 
 // Force
-pub use force::{ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, WrenchStamped};
+pub use force::{
+    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray, WrenchStamped,
+};
 
 // Perception
 pub use perception::{PlaneArray, PlaneDetection, PointField};

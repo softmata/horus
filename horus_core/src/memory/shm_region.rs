@@ -53,6 +53,25 @@ impl ShmRegion {
     pub fn is_owner(&self) -> bool {
         self.0.is_owner()
     }
+
+    /// Grow the shared memory region to `new_size` bytes.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure no concurrent readers/writers to the raw memory.
+    /// The caller must also ensure unique access to this ShmRegion (e.g., by
+    /// guaranteeing single-thread ownership). This is needed because the method
+    /// takes `&self` for Arc compatibility but internally mutates via raw pointer.
+    #[allow(invalid_reference_casting)] // Single-thread contract: caller guarantees exclusive access
+    pub unsafe fn grow_unchecked(&self, new_size: usize) -> HorusResult<()> {
+        // SAFETY: caller guarantees exclusive access. We need &mut for grow_unchecked
+        // but have &self (through Arc). The Topic single-thread contract ensures safety.
+        let ptr = &self.0 as *const horus_sys::shm::ShmRegion as *mut horus_sys::shm::ShmRegion;
+        let inner = &mut *ptr;
+        inner
+            .grow_unchecked(new_size)
+            .map_err(|e| crate::error::HorusError::Memory(e.to_string().into()))
+    }
 }
 
 // Thread safety — delegates to horus_sys::shm::ShmRegion which is Send + Sync

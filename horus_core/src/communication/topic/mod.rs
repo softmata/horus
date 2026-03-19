@@ -737,6 +737,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
         };
 
+        // Late-join fix: if the ring has wrapped since no consumer was reading,
+        // advance tail to skip overwritten slots. Without this, a new consumer
+        // sees ready_flag != expected_seq and permanently returns None because
+        // the publisher overwrote old slots with newer sequence numbers.
+        if !is_producer {
+            let head = local.local_head;
+            let tail = local.local_tail;
+            let cap = local.cached_capacity;
+            if cap > 0 && head.wrapping_sub(tail) > cap {
+                let new_tail = head.wrapping_sub(cap);
+                local.local_tail = new_tail;
+                // Advance the shared tail so the producer doesn't see the ring as full.
+                // fetch_max is safe with concurrent consumers (never moves tail backward).
+                header.tail.fetch_max(new_tail, Ordering::Release);
+            }
+        }
+
         self.check_migration();
         self.initialize_backend();
 
@@ -1037,7 +1054,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // Co-located layout: sizeof(T) + 8 <= 64, slot_size == 64
         // Seq and data share a cache line → single inter-core transfer
         // for non-SPSC recv paths (MpscShm, SpmcShm, MpmcShm, PodShm).
-        let colo = is_pod && mem::size_of::<T>() + 8 <= 64;
+        // Disabled for cross-process SHM: when a topic transitions from
+        // DirectChannel to SHM (on second participant), the dispatch must
+        // be consistent across migration boundaries.
+        let colo = is_pod && mem::size_of::<T>() + 8 <= 64 && !mode.is_cross_process();
         let local = self.local();
         let role = local.role;
 
@@ -1476,6 +1496,86 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         unsafe { (*self.recv_fn.get())(self) }
     }
 
+    /// Auto-grow the SHM slot size when a serialized message exceeds the current limit.
+    ///
+    /// Grows the backing file, remaps the mmap, updates the header's slot_size,
+    /// and triggers a migration so all processes pick up the new layout.
+    /// Called from the serde send paths when `bytes.len() > max_data_len`.
+    ///
+    /// Returns `true` if the grow succeeded and the caller should retry the send.
+    #[cold]
+    #[inline(never)]
+    fn auto_grow_slot_size(&self, needed_bytes: usize) -> bool {
+        let local = self.local();
+        let old_slot_size = local.slot_size;
+        // New slot_size: needed_bytes + 16 (overhead) + 25% headroom, rounded up to next power of 2
+        let min_slot = needed_bytes + 16 + (needed_bytes / 4);
+        let new_slot_size = min_slot.next_power_of_two().max(old_slot_size * 2);
+
+        let capacity = local.cached_capacity as usize;
+        if capacity == 0 {
+            return false;
+        }
+
+        let seq_array_size = capacity * std::mem::size_of::<u64>();
+        let new_data_size = capacity * new_slot_size;
+        let new_total = Self::HEADER_SIZE + seq_array_size + new_data_size;
+
+        // Grow the backing SHM file and remap.
+        // SAFETY: single-thread ownership — no concurrent readers/writers on the raw
+        // pointer at this point (we're in the send path, post-serialization, pre-write).
+        if unsafe { self.storage.grow_unchecked(new_total) }.is_err() {
+            log::warn!(
+                "Topic '{}': failed to grow SHM from {} to {} bytes for slot_size {}",
+                self.name,
+                self.storage.len(),
+                new_total,
+                new_slot_size,
+            );
+            return false;
+        }
+
+        // After grow, the mmap may be at a new address. Update header_ptr
+        // and all cached pointers BEFORE accessing the header.
+        // SAFETY: single-thread ownership — no concurrent access to these fields.
+        // We write through a raw pointer because header_ptr is not behind UnsafeCell.
+        let new_header_ptr = self.storage.as_ptr() as *const TopicHeader;
+        unsafe {
+            let field_ptr = std::ptr::addr_of!(self.header_ptr) as *mut *const TopicHeader;
+            std::ptr::write(field_ptr, new_header_ptr);
+        }
+
+        // Update the header with the new slot_size.
+        // SAFETY: header_ptr now points into the grown ShmRegion.
+        unsafe {
+            let header_mut = &mut *(new_header_ptr as *mut TopicHeader);
+            header_mut.slot_size = new_slot_size as u32;
+        }
+        let header = unsafe { &*new_header_ptr };
+
+        // Trigger migration so all processes re-sync (picks up new slot_size + pointers).
+        let migrator = crate::communication::topic::migration::BackendMigrator::new(header);
+        let _ = migrator.migrate_to_optimal();
+
+        // Re-sync local state from the updated header.
+        Self::sync_local(local, header, false);
+
+        // Re-derive ALL cached pointers from the (possibly moved) mmap.
+        local.cached_header_ptr = new_header_ptr;
+        local.cached_seq_ptr =
+            unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_data_ptr =
+            unsafe { self.storage.as_ptr().add(Self::data_region_offset(capacity)) as *mut u8 };
+
+        self.initialize_backend();
+
+        log::info!(
+            "Topic '{}': auto-grew slot_size {} → {} bytes ({} total SHM)",
+            self.name, old_slot_size, new_slot_size, new_total,
+        );
+        true
+    }
+
     /// Periodic migration check — reads migration_epoch from SHM header.
     ///
     /// Uses `self.header_ptr` (stable pointer to the SHM TopicHeader) instead
@@ -1547,6 +1647,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let actual_epoch = header.migration_epoch.load(Ordering::Acquire);
         local.cached_epoch = actual_epoch;
         Self::sync_local(local, header, true);
+
+        // If slot_size grew (auto-grow from another process), grow our mmap to match.
+        let new_slot_size = local.slot_size;
+        let capacity = local.cached_capacity as usize;
+        if capacity > 0 && new_slot_size > 0 {
+            let needed_total =
+                Self::HEADER_SIZE + capacity * std::mem::size_of::<u64>() + capacity * new_slot_size;
+            if needed_total > self.storage.len() {
+                // SAFETY: single-thread ownership, no concurrent reads on the mmap.
+                if unsafe { self.storage.grow_unchecked(needed_total) }.is_ok() {
+                    // Update header_ptr to point into the (possibly moved) new mmap.
+                    let new_header_ptr = self.storage.as_ptr() as *const TopicHeader;
+                    unsafe {
+                        let field_ptr =
+                            std::ptr::addr_of!(self.header_ptr) as *mut *const TopicHeader;
+                        std::ptr::write(field_ptr, new_header_ptr);
+                    }
+                    local.cached_header_ptr = new_header_ptr;
+                    local.cached_seq_ptr =
+                        unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+                    local.cached_data_ptr = unsafe {
+                        self.storage
+                            .as_ptr()
+                            .add(Self::data_region_offset(capacity)) as *mut u8
+                    };
+                }
+            }
+        }
+
         self.initialize_backend();
 
         // Re-sync head/tail from SHM after initialize_backend.
@@ -1691,11 +1820,27 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Retry loop for send_lossy — outlined to keep the fast path tight.
+    ///
+    /// The retry is designed for TRANSIENT failures (ring buffer momentarily
+    /// full). For PERMANENT failures (oversized serde messages that will never
+    /// fit in the slot), the serde send functions already log a warning before
+    /// returning Err, so we limit retries to avoid burning CPU on a message
+    /// that can never succeed.
     #[cold]
     #[inline(never)]
     fn send_lossy_retry(&self, mut msg: T) {
-        const SPIN_ITERS: u32 = 256;
-        const YIELD_ITERS: u32 = 8;
+        // First retry immediately — handles the common "buffer was full for
+        // a microsecond" case without any spin overhead.
+        match self.try_send(msg) {
+            Ok(()) => return,
+            Err(returned) => msg = returned,
+        }
+
+        // If the second attempt also failed, spin briefly. For oversized
+        // messages this is wasteful (~50μs), but the warning log in the serde
+        // path fires on every attempt so the user sees it.
+        const SPIN_ITERS: u32 = 64;
+        const YIELD_ITERS: u32 = 4;
 
         for _ in 0..SPIN_ITERS {
             std::hint::spin_loop();

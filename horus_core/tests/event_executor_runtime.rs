@@ -323,3 +323,158 @@ fn test_event_node_with_rt_node() {
         rt_final
     );
 }
+
+// ============================================================================
+// Test: Event node sustained notifications over 2 seconds — stable tick growth
+// ============================================================================
+
+#[test]
+fn test_event_sustained_2_seconds() {
+    cleanup_stale_shm();
+
+    let topic_name = unique_topic("evt_sustained");
+    let event_ticks = Arc::new(AtomicU64::new(0));
+
+    let event_node = EventCounter {
+        name: format!("evt_sust_{}", std::process::id()),
+        tick_count: event_ticks.clone(),
+        topic_name: topic_name.clone(),
+    };
+
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+    let tn = topic_name.clone();
+
+    let sched_thread = std::thread::spawn(move || {
+        let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+        sched.add(event_node).order(0).on(&tn).build().unwrap();
+        while running_clone.load(Ordering::Relaxed) {
+            let _ = sched.tick_once();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Send notifications at 50Hz for 2 seconds = 100 notifications
+    for _ in 0..100 {
+        horus_core::core::NodeInfo::notify_event(&topic_name);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    std::thread::sleep(Duration::from_millis(200));
+    running.store(false, Ordering::Relaxed);
+    sched_thread.join().unwrap();
+
+    let ticks = event_ticks.load(Ordering::SeqCst);
+    // At 50Hz for 2s, expect ~100 notifications → at least 20 ticks (generous margin)
+    assert!(
+        ticks >= 10,
+        "Sustained event notifications should produce steady ticks, got {}",
+        ticks
+    );
+}
+
+// ============================================================================
+// Test: Multiple event nodes on different topics — independent notification
+// ============================================================================
+
+#[test]
+fn test_multiple_event_nodes_independent() {
+    cleanup_stale_shm();
+
+    let topic_a = unique_topic("evt_multi_a");
+    let topic_b = unique_topic("evt_multi_b");
+    let ticks_a = Arc::new(AtomicU64::new(0));
+    let ticks_b = Arc::new(AtomicU64::new(0));
+
+    let node_a = EventCounter {
+        name: format!("evt_a_{}", std::process::id()),
+        tick_count: ticks_a.clone(),
+        topic_name: topic_a.clone(),
+    };
+    let node_b = EventCounter {
+        name: format!("evt_b_{}", std::process::id()),
+        tick_count: ticks_b.clone(),
+        topic_name: topic_b.clone(),
+    };
+
+    let ta = topic_a.clone();
+    let tb = topic_b.clone();
+    let tn_for_notify = topic_a.clone();
+
+    // Use run_for() — tick_once() bypasses EventExecutor and ticks all nodes
+    let sched_thread = std::thread::spawn(move || {
+        let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+        sched.add(node_a).order(0).on(&ta).build().unwrap();
+        sched.add(node_b).order(1).on(&tb).build().unwrap();
+        let _ = sched.run_for(Duration::from_secs(1));
+    });
+
+    // Wait for event watchers to start
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Only notify topic_a, NOT topic_b
+    for _ in 0..10 {
+        horus_core::core::NodeInfo::notify_event(&tn_for_notify);
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    sched_thread.join().unwrap();
+
+    let a_final = ticks_a.load(Ordering::SeqCst);
+    let b_final = ticks_b.load(Ordering::SeqCst);
+
+    assert!(
+        a_final >= 1,
+        "Node A should tick from notifications, got {}",
+        a_final
+    );
+    assert_eq!(
+        b_final, 0,
+        "Node B should NOT tick (different topic, no notifications), got {}",
+        b_final
+    );
+}
+
+// ============================================================================
+// Test: Event node watcher cleanup — scheduler drop completes without hang
+// ============================================================================
+
+#[test]
+fn test_event_watcher_cleanup_on_drop() {
+    cleanup_stale_shm();
+
+    let topic_name = unique_topic("evt_cleanup");
+    let event_ticks = Arc::new(AtomicU64::new(0));
+
+    let event_node = EventCounter {
+        name: format!("evt_cleanup_{}", std::process::id()),
+        tick_count: event_ticks.clone(),
+        topic_name: topic_name.clone(),
+    };
+
+    // Create scheduler, add event node, run briefly, then DROP
+    let start = std::time::Instant::now();
+    {
+        let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+        sched
+            .add(event_node)
+            .order(0)
+            .on(&topic_name)
+            .build()
+            .unwrap();
+
+        // Run for 200ms — event watcher thread spawns
+        let _ = sched.run_for(Duration::from_millis(200));
+        // sched dropped here — should join watcher threads cleanly
+    }
+    let drop_elapsed = start.elapsed();
+
+    // Drop should complete quickly (watcher thread joined)
+    assert!(
+        drop_elapsed < Duration::from_secs(5),
+        "Scheduler drop should join event threads quickly, took {:?}",
+        drop_elapsed
+    );
+}

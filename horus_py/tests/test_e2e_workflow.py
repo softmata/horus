@@ -159,3 +159,299 @@ class TestNodeCreation:
         horus.run(a, b, s, duration=0.5)
 
         assert len(received) > 0, "Subscriber should receive from at least one publisher"
+
+
+class TestTypedTopicsAndErrorHandling:
+    """Tests for typed topic communication and error propagation."""
+
+    def test_typed_imu_roundtrip(self):
+        """Imu typed message sent and received with correct field values."""
+        received_imus = []
+
+        def publisher(node):
+            node.send("imu", horus.Imu(0.1, 0.2, 9.81, 0.01, 0.02, 0.03))
+
+        def subscriber(node):
+            msg = node.recv("imu")
+            if msg is not None:
+                received_imus.append(msg)
+
+        pub = horus.Node(
+            name="e2e_imu_pub",
+            tick=publisher,
+            rate=30,
+            pubs=[horus.Imu],
+        )
+        sub = horus.Node(
+            name="e2e_imu_sub",
+            tick=subscriber,
+            rate=30,
+            subs=[horus.Imu],
+        )
+        horus.run(pub, sub, duration=0.5)
+
+        assert len(received_imus) > 0, "Should receive Imu messages"
+        imu = received_imus[0]
+        assert abs(imu.accel_x - 0.1) < 0.01
+        assert abs(imu.accel_y - 0.2) < 0.01
+        assert abs(imu.accel_z - 9.81) < 0.01
+        assert abs(imu.gyro_x - 0.01) < 0.001
+        assert abs(imu.gyro_y - 0.02) < 0.001
+        assert abs(imu.gyro_z - 0.03) < 0.001
+
+    def test_node_exception_doesnt_crash_scheduler(self):
+        """Exception in tick() is caught — scheduler completes without crash."""
+        tick_count = [0]
+
+        def exploding_tick(node):
+            tick_count[0] += 1
+            if tick_count[0] == 3:
+                raise ValueError("Intentional test error at tick 3")
+
+        node = horus.Node(name="e2e_explode", tick=exploding_tick, rate=30)
+        # Scheduler should complete normally despite the exception
+        horus.run(node, duration=0.5)
+
+        # Node continued ticking after the exception
+        assert tick_count[0] > 3, (
+            f"Node should continue ticking after exception, got {tick_count[0]} ticks"
+        )
+
+    def test_send_wrong_type_raises_typeerror(self):
+        """Sending wrong type to a typed topic raises TypeError, not segfault."""
+        errors = []
+
+        def wrong_type_tick(node):
+            try:
+                node.send("cmd_vel", "not_a_cmdvel")
+            except TypeError as e:
+                errors.append(str(e))
+
+        node = horus.Node(
+            name="e2e_wrong_type",
+            tick=wrong_type_tick,
+            rate=30,
+            pubs=[horus.CmdVel],
+        )
+        horus.run(node, duration=0.3)
+
+        assert len(errors) > 0, "Should raise TypeError for wrong type"
+        assert "CmdVel" in errors[0], f"Error should mention CmdVel, got: {errors[0]}"
+
+    def test_send_none_to_typed_topic_raises_typeerror(self):
+        """Sending None to a typed topic raises TypeError, not segfault."""
+        errors = []
+
+        def none_tick(node):
+            try:
+                node.send("cmd_vel", None)
+            except TypeError as e:
+                errors.append(str(e))
+
+        node = horus.Node(
+            name="e2e_none_typed",
+            tick=none_tick,
+            rate=30,
+            pubs=[horus.CmdVel],
+        )
+        horus.run(node, duration=0.3)
+
+        assert len(errors) > 0, "Should raise TypeError for None on typed topic"
+
+    def test_3_node_typed_pipeline_imu_to_cmdvel(self):
+        """Imu sensor → filter → CmdVel controller pipeline with typed topics."""
+        control_cmds = []
+
+        def sensor_tick(node):
+            node.send("imu", horus.Imu(0.0, 0.0, 9.81, 0.0, 0.0, 0.1))
+
+        def filter_tick(node):
+            msg = node.recv("imu")
+            if msg is not None:
+                # Convert gyro_z to angular velocity command
+                node.send("cmd_vel", horus.CmdVel(1.0, msg.gyro_z * 10.0))
+
+        def control_tick(node):
+            msg = node.recv("cmd_vel")
+            if msg is not None:
+                control_cmds.append(msg)
+
+        sensor = horus.Node(
+            name="e2e_typed_sensor",
+            tick=sensor_tick,
+            rate=30,
+            order=0,
+            pubs=[horus.Imu],
+        )
+        filt = horus.Node(
+            name="e2e_typed_filter",
+            tick=filter_tick,
+            rate=30,
+            order=1,
+            subs=[horus.Imu],
+            pubs=[horus.CmdVel],
+        )
+        ctrl = horus.Node(
+            name="e2e_typed_ctrl",
+            tick=control_tick,
+            rate=30,
+            order=2,
+            subs=[horus.CmdVel],
+        )
+        horus.run(sensor, filt, ctrl, duration=0.5)
+
+        assert len(control_cmds) > 0, "Controller should receive CmdVel from pipeline"
+        cmd = control_cmds[0]
+        assert abs(cmd.linear - 1.0) < 0.01, f"linear should be 1.0, got {cmd.linear}"
+        assert abs(cmd.angular - 1.0) < 0.01, f"angular should be 0.1*10=1.0, got {cmd.angular}"
+
+
+class TestLogging:
+    """Tests for node logging through scheduler and context guard."""
+
+    def test_log_info_in_tick_completes(self):
+        """node.log_info() inside tick doesn't crash scheduler."""
+        log_count = [0]
+
+        def tick(node):
+            node.log_info(f"tick {log_count[0]}")
+            log_count[0] += 1
+
+        node = horus.Node(name="e2e_log_info", tick=tick, rate=30)
+        horus.run(node, duration=0.3)
+
+        assert log_count[0] > 1, f"tick should be called multiple times, got {log_count[0]}"
+
+    def test_all_log_levels_in_tick(self):
+        """All 4 log methods work without crash in a single tick."""
+        tick_count = [0]
+
+        def tick(node):
+            node.log_info("info message")
+            node.log_warning("warning message")
+            node.log_error("error message")
+            node.log_debug("debug message")
+            tick_count[0] += 1
+
+        node = horus.Node(name="e2e_log_levels", tick=tick, rate=30)
+        horus.run(node, duration=0.3)
+
+        assert tick_count[0] > 1, "all 4 log levels should work without crash"
+
+    def test_log_outside_scheduler_warns(self):
+        """Logging outside scheduler emits RuntimeWarning."""
+        node = horus.Node(name="e2e_log_outside", tick=lambda n: None, rate=10)
+        with pytest.warns(RuntimeWarning, match="outside scheduler"):
+            node.log_info("should warn")
+
+    def test_log_warning_outside_scheduler_warns(self):
+        """log_warning outside scheduler also emits RuntimeWarning."""
+        node = horus.Node(name="e2e_logwarn_outside", tick=lambda n: None, rate=10)
+        with pytest.warns(RuntimeWarning, match="outside scheduler"):
+            node.log_warning("should warn")
+
+    def test_log_special_characters(self):
+        """Unicode, quotes, newlines in log messages don't crash."""
+        msgs_logged = [0]
+
+        def tick(node):
+            node.log_info("héllo wörld")
+            node.log_info('msg with "quotes" and \t tabs')
+            node.log_info("line1\nline2")
+            node.log_warning("emoji test")
+            msgs_logged[0] += 4
+
+        node = horus.Node(name="e2e_log_special", tick=tick, rate=30)
+        horus.run(node, duration=0.3)
+
+        assert msgs_logged[0] > 0, "special character logging should not crash"
+
+    def test_log_empty_string(self):
+        """Empty log message doesn't crash."""
+        tick_count = [0]
+
+        def tick(node):
+            node.log_info("")
+            node.log_warning("")
+            node.log_error("")
+            node.log_debug("")
+            tick_count[0] += 1
+
+        node = horus.Node(name="e2e_log_empty", tick=tick, rate=30)
+        horus.run(node, duration=0.3)
+
+        assert tick_count[0] > 1, "empty string logging should not crash"
+
+    def test_multi_node_logging_concurrent(self):
+        """3 nodes all logging simultaneously, scheduler completes."""
+        counts = {"a": [0], "b": [0], "c": [0]}
+
+        def tick_a(node):
+            node.log_info(f"node_a tick {counts['a'][0]}")
+            counts["a"][0] += 1
+
+        def tick_b(node):
+            node.log_warning(f"node_b tick {counts['b'][0]}")
+            counts["b"][0] += 1
+
+        def tick_c(node):
+            node.log_error(f"node_c tick {counts['c'][0]}")
+            counts["c"][0] += 1
+
+        a = horus.Node(name="e2e_log_a", tick=tick_a, rate=30)
+        b = horus.Node(name="e2e_log_b", tick=tick_b, rate=30)
+        c = horus.Node(name="e2e_log_c", tick=tick_c, rate=30)
+        horus.run(a, b, c, duration=0.5)
+
+        assert counts["a"][0] > 1, "node_a should tick multiple times"
+        assert counts["b"][0] > 1, "node_b should tick multiple times"
+        assert counts["c"][0] > 1, "node_c should tick multiple times"
+
+    def test_log_error_through_scheduler_for_error_buffer(self):
+        """node.log_error() through scheduler exercises the PyO3→Rust→publish_log→error_buffer path."""
+        error_count = [0]
+
+        def tick(node):
+            node.log_error(f"critical failure #{error_count[0]}")
+            error_count[0] += 1
+
+        node = horus.Node(name="e2e_log_errbuf", tick=tick, rate=30)
+        horus.run(node, duration=0.3)
+
+        assert error_count[0] > 1, (
+            f"node should log multiple errors, got {error_count[0]}. "
+            "This exercises the full path: Python log_error → PyO3 → hlog!(error) → "
+            "publish_log → GLOBAL_ERROR_BUFFER dual-write."
+        )
+
+
+class TestRecording:
+    """Tests for recording flag through Python scheduler."""
+
+    def test_scheduler_recording_flag_accepted(self):
+        """Scheduler(recording=True) is accepted and completes without crash."""
+        tick_count = [0]
+
+        def tick(node):
+            tick_count[0] += 1
+
+        node = horus.Node(name="e2e_rec_flag", tick=tick, rate=30)
+        sched = horus.Scheduler(recording=True)
+        sched.add(node)
+        sched.run(duration=0.2)
+
+        assert tick_count[0] > 1, "scheduler with recording=True should tick normally"
+
+    def test_scheduler_recording_false_also_works(self):
+        """Scheduler(recording=False) is the default and works."""
+        tick_count = [0]
+
+        def tick(node):
+            tick_count[0] += 1
+
+        node = horus.Node(name="e2e_rec_false", tick=tick, rate=30)
+        sched = horus.Scheduler(recording=False)
+        sched.add(node)
+        sched.run(duration=0.2)
+
+        assert tick_count[0] > 1, "scheduler with recording=False should tick normally"

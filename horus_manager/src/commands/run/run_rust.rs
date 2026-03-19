@@ -1,6 +1,6 @@
 use crate::cli_output;
 use crate::config::CARGO_TOML;
-use crate::manifest::{DriverValue, HorusManifest, IgnoreConfig, PackageInfo, HORUS_TOML};
+use crate::manifest::{DriverValue, HorusManifest, IgnoreConfig, PackageInfo, TargetType, HORUS_TOML};
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
 use colored::*;
@@ -78,6 +78,7 @@ fn default_manifest() -> HorusManifest {
             categories: vec![],
             standard: None,
             rust_edition: None,
+            target_type: TargetType::default(),
         },
         dependencies: BTreeMap::new(),
         dev_dependencies: BTreeMap::new(),
@@ -87,10 +88,16 @@ fn default_manifest() -> HorusManifest {
         enable: vec![],
         cpp: None,
         hooks: Default::default(),
+        workspace: None,
     }
 }
 
-pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Result<()> {
+pub fn execute_build_only(
+    files: Vec<PathBuf>,
+    release: bool,
+    clean: bool,
+    package: Option<String>,
+) -> Result<()> {
     // Verify lockfile system deps and toolchain before building
     crate::system_deps::verify_lockfile_before_build();
 
@@ -98,6 +105,44 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
     if clean {
         println!("{} Cleaning build cache...", cli_output::ICON_INFO.cyan());
         clean_build_cache()?;
+    }
+
+    // Workspace detection: if horus.toml has [workspace], use workspace build
+    if files.is_empty() {
+        let manifest_path = std::path::Path::new(HORUS_TOML);
+        if manifest_path.exists() {
+            if let Ok(manifest) =
+                crate::manifest::HorusManifest::load_from(manifest_path)
+            {
+                if manifest.is_workspace() {
+                    let project_dir = std::env::current_dir()?;
+                    cli_output::info("Generating workspace build files...");
+                    let (cargo_path, _) = crate::cargo_gen::generate_for_manifest(
+                        &manifest,
+                        &project_dir,
+                        &[],
+                        false,
+                    )?;
+
+                    let mut cmd = std::process::Command::new("cargo");
+                    cmd.arg("build").arg("--manifest-path").arg(&cargo_path);
+                    if release {
+                        cmd.arg("--release");
+                    }
+                    if let Some(ref member) = package {
+                        cmd.arg("-p").arg(member);
+                    } else {
+                        cmd.arg("--workspace");
+                    }
+                    let status = cmd.status()?;
+                    if !status.success() {
+                        return Err(anyhow::anyhow!("Workspace build failed"));
+                    }
+                    cli_output::success("Workspace build complete");
+                    return Ok(());
+                }
+            }
+        }
     }
 
     let mode = if release { "release" } else { "debug" };
@@ -1431,7 +1476,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![f1, f2], false, false);
+        let result = execute_build_only(vec![f1, f2], false, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1452,7 +1497,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![py_file], false, false);
+        let result = execute_build_only(vec![py_file], false, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1473,7 +1518,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![file], false, false);
+        let result = execute_build_only(vec![file], false, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1494,7 +1539,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![py_file], false, true);
+        let result = execute_build_only(vec![py_file], false, true, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1511,7 +1556,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![], false, false);
+        let result = execute_build_only(vec![], false, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1527,7 +1572,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![], false, false);
+        let result = execute_build_only(vec![], false, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1548,7 +1593,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![py_file], true, false);
+        let result = execute_build_only(vec![py_file], true, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1564,7 +1609,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![fake], false, false);
+        let result = execute_build_only(vec![fake], false, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
@@ -1580,7 +1625,7 @@ version = "0.1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         env::set_current_dir(tmp.path()).unwrap();
-        let result = execute_build_only(vec![py_file], false, false);
+        let result = execute_build_only(vec![py_file], false, false, None);
         env::set_current_dir(original).unwrap();
         drop(_guard);
 

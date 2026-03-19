@@ -346,4 +346,105 @@ mod tests {
 
         clear_node_context();
     }
+
+    // ── Throttling macro tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_hlog_once_fires_exactly_once() {
+        use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+
+        let before = GLOBAL_LOG_BUFFER
+            .get_all()
+            .iter()
+            .filter(|e| e.message.contains("once_unique_9901"))
+            .count();
+
+        for _ in 0..100 {
+            crate::hlog_once!(info, "once_unique_9901");
+        }
+
+        let after = GLOBAL_LOG_BUFFER
+            .get_all()
+            .iter()
+            .filter(|e| e.message.contains("once_unique_9901"))
+            .count();
+
+        assert_eq!(
+            after - before,
+            1,
+            "hlog_once! should fire exactly 1 time in 100 calls. before={before}, after={after}"
+        );
+    }
+
+    #[test]
+    fn test_hlog_once_different_callsites_both_fire() {
+        use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+
+        crate::hlog_once!(info, "once_site_a_9902");
+        crate::hlog_once!(info, "once_site_b_9903");
+
+        let entries = GLOBAL_LOG_BUFFER.get_all();
+        let has_a = entries.iter().any(|e| e.message.contains("once_site_a_9902"));
+        let has_b = entries.iter().any(|e| e.message.contains("once_site_b_9903"));
+
+        assert!(has_a, "first callsite should fire");
+        assert!(has_b, "second callsite should fire independently");
+    }
+
+    #[test]
+    fn test_hlog_every_first_call_fires_immediately() {
+        use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+
+        let before = GLOBAL_LOG_BUFFER
+            .get_all()
+            .iter()
+            .filter(|e| e.message.contains("every_first_9904"))
+            .count();
+
+        // Interval of 60 seconds — but first call should fire immediately
+        crate::hlog_every!(60000, info, "every_first_9904");
+
+        let after = GLOBAL_LOG_BUFFER
+            .get_all()
+            .iter()
+            .filter(|e| e.message.contains("every_first_9904"))
+            .count();
+
+        assert_eq!(
+            after - before,
+            1,
+            "hlog_every! first call should fire immediately even with long interval"
+        );
+    }
+
+    #[test]
+    fn test_hlog_every_throttles_by_interval() {
+        use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+
+        let before = GLOBAL_LOG_BUFFER
+            .get_all()
+            .iter()
+            .filter(|e| e.message.contains("every_throttle_9905"))
+            .count();
+
+        // Call in a tight loop for 500ms with 200ms interval
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(500) {
+            crate::hlog_every!(200, info, "every_throttle_9905");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let after = GLOBAL_LOG_BUFFER
+            .get_all()
+            .iter()
+            .filter(|e| e.message.contains("every_throttle_9905"))
+            .count();
+
+        let count = after - before;
+        // At 200ms interval over 500ms: expect 2-4 entries (not 100+)
+        assert!(
+            count >= 2 && count <= 6,
+            "hlog_every!(200ms) over 500ms should produce 2-6 entries, got {count}"
+        );
+    }
 }

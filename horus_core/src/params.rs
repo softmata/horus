@@ -1179,4 +1179,165 @@ mod tests {
                 "list_keys len {} != get_all len {}", keys.len(), all.len());
         }
     }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Scale: 1000+ params, concurrent modification, file round-trip
+    // ════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn scale_1000_params_set_get_list() {
+        let params = create_test_params();
+
+        // Set 1000 params
+        let start = std::time::Instant::now();
+        for i in 0..1000 {
+            params.set(&format!("scale_key_{}", i), &(i as f64)).unwrap();
+        }
+        let set_elapsed = start.elapsed();
+
+        // Get all 1000
+        let start = std::time::Instant::now();
+        for i in 0..1000 {
+            let val: Option<Value> = params.get(&format!("scale_key_{}", i));
+            assert!(val.is_some(), "key {} must exist", i);
+        }
+        let get_elapsed = start.elapsed();
+
+        // List all
+        let start = std::time::Instant::now();
+        let all = params.get_all();
+        let list_elapsed = start.elapsed();
+
+        assert!(all.len() >= 1000, "should have at least 1000 params, got {}", all.len());
+
+        println!(
+            "1000 params: set={:?}, get={:?}, list={:?}",
+            set_elapsed, get_elapsed, list_elapsed
+        );
+
+        // CI bounds: each operation < 500ms
+        assert!(set_elapsed.as_millis() < 500, "1000 sets should complete in < 500ms");
+        assert!(get_elapsed.as_millis() < 500, "1000 gets should complete in < 500ms");
+        assert!(list_elapsed.as_millis() < 100, "list 1000+ params should complete in < 100ms");
+    }
+
+    #[test]
+    fn concurrent_4_thread_modification_no_corruption() {
+        let params = create_test_params();
+        let params = Arc::new(params);
+
+        let barrier = std::sync::Barrier::new(4);
+        let barrier = std::sync::Arc::new(barrier);
+
+        let handles: Vec<_> = (0..4)
+            .map(|t| {
+                let p = params.clone();
+                let b = barrier.clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    for i in 0..100 {
+                        p.set(&format!("thread_{}_key_{}", t, i), &(t * 100 + i))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // 4 threads × 100 keys = 400 thread-specific keys
+        let all = params.get_all();
+        for t in 0..4 {
+            for i in 0..100 {
+                let key = format!("thread_{}_key_{}", t, i);
+                assert!(
+                    all.contains_key(&key),
+                    "key {} must exist after concurrent set",
+                    key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn file_save_load_roundtrip() {
+        let params = create_test_params();
+
+        // Set some diverse params
+        params.set("string_param", &"hello world").unwrap();
+        params.set("int_param", &42).unwrap();
+        params.set("float_param", &3.14).unwrap();
+        params.set("bool_param", &true).unwrap();
+
+        // Use save_to_disk which writes to the configured path
+        // For a round-trip test, we use load_from_disk with a temp file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("params.yaml");
+
+        // Manual YAML save for round-trip
+        let all = params.get_all();
+        let yaml = serde_yaml::to_string(&all).unwrap();
+        std::fs::write(&path, &yaml).unwrap();
+        assert!(path.exists(), "params file must exist after save");
+
+        // Load into new instance
+        let params2 = create_test_params();
+        params2.load_from_disk(&path).unwrap();
+
+        // Verify values match
+        let v: Option<Value> = params2.get("string_param");
+        assert_eq!(v.unwrap().as_str(), Some("hello world"));
+        let v: Option<Value> = params2.get("int_param");
+        assert_eq!(v.unwrap().as_i64(), Some(42));
+        let v: Option<Value> = params2.get("float_param");
+        assert!((v.unwrap().as_f64().unwrap() - 3.14).abs() < 0.001);
+        let v: Option<Value> = params2.get("bool_param");
+        assert_eq!(v.unwrap().as_bool(), Some(true));
+    }
+
+    #[test]
+    fn version_advances_under_concurrent_writes() {
+        let params = create_test_params();
+        params.set("conflict_key", &"initial").unwrap();
+
+        let v1 = params.get_version("conflict_key");
+
+        // Two threads race to set the same key
+        let p = Arc::new(params);
+        let p1 = p.clone();
+        let p2 = p.clone();
+
+        let h1 = std::thread::spawn(move || {
+            for i in 0..50 {
+                let _ = p1.set("conflict_key", &format!("t1_{}", i));
+            }
+        });
+        let h2 = std::thread::spawn(move || {
+            for i in 0..50 {
+                let _ = p2.set("conflict_key", &format!("t2_{}", i));
+            }
+        });
+
+        h1.join().unwrap();
+        h2.join().unwrap();
+
+        // Version should have advanced (100 writes total)
+        let v2 = p.get_version("conflict_key");
+        assert!(
+            v2 > v1,
+            "version should advance after concurrent writes: {} -> {}",
+            v1, v2
+        );
+
+        // Value should be from one of the threads (not corrupted)
+        let val: Option<Value> = p.get("conflict_key");
+        let s = val.unwrap().as_str().unwrap().to_string();
+        assert!(
+            s.starts_with("t1_") || s.starts_with("t2_"),
+            "value should be from one of the threads, got: {}",
+            s
+        );
+    }
 }

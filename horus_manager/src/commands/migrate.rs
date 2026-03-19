@@ -160,19 +160,40 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Extract dependencies from a Cargo.toml file.
-fn extract_cargo_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> {
+/// Extracted deps and dev-deps from a Cargo.toml.
+pub(crate) struct ExtractedCargoDeps {
+    pub deps: BTreeMap<String, DependencyValue>,
+    pub dev_deps: BTreeMap<String, DependencyValue>,
+}
+
+/// Extract dependencies from a Cargo.toml file (both `[dependencies]` and `[dev-dependencies]`).
+pub(crate) fn extract_cargo_all_deps(path: &Path) -> Result<ExtractedCargoDeps> {
     let content = fs::read_to_string(path).context("Failed to read Cargo.toml")?;
     let doc = content
         .parse::<toml_edit::DocumentMut>()
         .context("Failed to parse Cargo.toml")?;
 
+    let deps = parse_cargo_dep_table(&doc, "dependencies");
+    let dev_deps = parse_cargo_dep_table(&doc, "dev-dependencies");
+
+    Ok(ExtractedCargoDeps { deps, dev_deps })
+}
+
+/// Extract only `[dependencies]` (backward-compat wrapper).
+pub(crate) fn extract_cargo_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> {
+    Ok(extract_cargo_all_deps(path)?.deps)
+}
+
+/// Parse a single TOML dependency table section by name.
+fn parse_cargo_dep_table(
+    doc: &toml_edit::DocumentMut,
+    section: &str,
+) -> BTreeMap<String, DependencyValue> {
     let mut deps = BTreeMap::new();
 
-    if let Some(dep_table) = doc.get("dependencies").and_then(|d| d.as_table()) {
+    if let Some(dep_table) = doc.get(section).and_then(|d| d.as_table()) {
         for (name, item) in dep_table.iter() {
-            // Skip horus internal deps
-            if name.starts_with("horus") {
+            if crate::native_sync::is_horus_internal(name) {
                 continue;
             }
 
@@ -191,6 +212,7 @@ fn extract_cargo_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> 
                         apt: None,
                         cmake_package: None,
                         lang: None,
+                        workspace: false,
                     })
                 }
                 toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
@@ -203,7 +225,7 @@ fn extract_cargo_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> 
         }
     }
 
-    Ok(deps)
+    deps
 }
 
 fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
@@ -221,6 +243,9 @@ fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
     let path = t.get("path").and_then(|v| v.as_str()).map(String::from);
     let git = t.get("git").and_then(|v| v.as_str()).map(String::from);
     let branch = t.get("branch").and_then(|v| v.as_str()).map(String::from);
+    let tag = t.get("tag").and_then(|v| v.as_str()).map(String::from);
+    let rev = t.get("rev").and_then(|v| v.as_str()).map(String::from);
+    let workspace = t.get("workspace").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let source = if path.is_some() {
         Some(DepSource::Path)
@@ -238,11 +263,12 @@ fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
         path,
         git,
         branch,
-        tag: None,
-        rev: None,
+        tag,
+        rev,
         apt: None,
         cmake_package: None,
         lang: None,
+        workspace,
     })
 }
 
@@ -261,6 +287,9 @@ fn parse_cargo_table_dep(t: &toml_edit::Table) -> DependencyValue {
     let path = t.get("path").and_then(|v| v.as_str()).map(String::from);
     let git = t.get("git").and_then(|v| v.as_str()).map(String::from);
     let branch = t.get("branch").and_then(|v| v.as_str()).map(String::from);
+    let tag = t.get("tag").and_then(|v| v.as_str()).map(String::from);
+    let rev = t.get("rev").and_then(|v| v.as_str()).map(String::from);
+    let workspace = t.get("workspace").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let source = if path.is_some() {
         Some(DepSource::Path)
@@ -278,16 +307,17 @@ fn parse_cargo_table_dep(t: &toml_edit::Table) -> DependencyValue {
         path,
         git,
         branch,
-        tag: None,
-        rev: None,
+        tag,
+        rev,
         apt: None,
         cmake_package: None,
         lang: None,
+        workspace,
     })
 }
 
 /// Extract dependencies from a pyproject.toml file.
-fn extract_pyproject_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> {
+pub(crate) fn extract_pyproject_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> {
     let content = fs::read_to_string(path).context("Failed to read pyproject.toml")?;
     let doc = content
         .parse::<toml_edit::DocumentMut>()
@@ -301,8 +331,8 @@ fn extract_pyproject_deps(path: &Path) -> Result<BTreeMap<String, DependencyValu
             for item in dep_array.iter() {
                 if let Some(spec) = item.as_str() {
                     let (name, version) = parse_pep_dep(spec);
-                    // Skip horus internal packages
-                    if name.starts_with("horus") {
+                    // Skip horus internal packages (exact match)
+                    if crate::native_sync::is_horus_internal(&name) {
                         continue;
                     }
                     deps.insert(
@@ -320,6 +350,7 @@ fn extract_pyproject_deps(path: &Path) -> Result<BTreeMap<String, DependencyValu
                             apt: None,
                             cmake_package: None,
                             lang: None,
+                            workspace: false,
                         }),
                     );
                 }
@@ -351,56 +382,150 @@ fn parse_pep_dep(spec: &str) -> (String, Option<String>) {
 /// Extract dependencies from a CMakeLists.txt file.
 ///
 /// Parses `find_package(PackageName ...)` calls and adds them as system deps.
-fn extract_cmake_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> {
+pub(crate) fn extract_cmake_deps(path: &Path) -> Result<BTreeMap<String, DependencyValue>> {
     let content = fs::read_to_string(path).context("Failed to read CMakeLists.txt")?;
     let mut deps = BTreeMap::new();
 
+    // Accumulator for multi-line FetchContent/ExternalProject blocks
+    let mut fetch_block: Option<String> = None;
+
     for line in content.lines() {
         let trimmed = line.trim();
-        // Skip comments
         if trimmed.starts_with('#') {
             continue;
         }
 
-        // Match find_package(PackageName ...) — package name is the first token
+        // ── Multi-line block accumulation ──────────────────────────────────
+        if let Some(ref mut block) = fetch_block {
+            block.push(' ');
+            block.push_str(trimmed);
+            if trimmed.contains(')') {
+                // Block complete — parse it
+                parse_fetch_content_block(block, &mut deps);
+                fetch_block = None;
+            }
+            continue;
+        }
+
+        // ── FetchContent_Declare( ──────────────────────────────────────────
+        if trimmed.starts_with("FetchContent_Declare(") || trimmed.starts_with("ExternalProject_Add(") {
+            let block = trimmed.to_string();
+            if trimmed.contains(')') {
+                parse_fetch_content_block(&block, &mut deps);
+            } else {
+                fetch_block = Some(block);
+            }
+            continue;
+        }
+
+        // ── pkg_check_modules / pkg_search_module ──────────────────────────
+        if let Some(rest) = trimmed
+            .strip_prefix("pkg_check_modules(")
+            .or_else(|| trimmed.strip_prefix("pkg_search_module("))
+        {
+            let inner = rest.trim_end_matches(')');
+            let tokens: Vec<&str> = inner.split_whitespace().collect();
+            // First token is the prefix variable, rest are package names (skip REQUIRED/QUIET/IMPORTED_TARGET)
+            for tok in tokens.iter().skip(1) {
+                if matches!(*tok, "REQUIRED" | "QUIET" | "IMPORTED_TARGET" | "NO_CMAKE_PATH") {
+                    continue;
+                }
+                if !tok.is_empty() && !crate::native_sync::is_horus_internal(tok) {
+                    deps.insert(
+                        tok.to_string(),
+                        DependencyValue::Detailed(DetailedDependency {
+                            source: Some(DepSource::System),
+                            cmake_package: Some(tok.to_string()),
+                            lang: Some("cpp".to_string()),
+                            ..DetailedDependency::default()
+                        }),
+                    );
+                }
+            }
+            continue;
+        }
+
+        // ── find_package(PackageName ...) ──────────────────────────────────
         if let Some(rest) = trimmed.strip_prefix("find_package(") {
             let rest = rest.trim();
-            // Extract the package name (first token before whitespace or ')')
             let pkg_end = rest
                 .find(|c: char| c.is_whitespace() || c == ')')
                 .unwrap_or(rest.len());
             let pkg_name = &rest[..pkg_end];
 
-            if pkg_name.is_empty() {
+            if pkg_name.is_empty() || pkg_name == "PkgConfig" {
                 continue;
             }
 
-            // Skip CMake built-in pseudo-packages
-            if pkg_name.starts_with("horus") {
+            if crate::native_sync::is_horus_internal(pkg_name) {
                 continue;
             }
 
             deps.insert(
                 pkg_name.to_string(),
                 DependencyValue::Detailed(DetailedDependency {
-                    version: None,
                     source: Some(DepSource::System),
-                    features: vec![],
-                    optional: false,
-                    path: None,
-                    git: None,
-                    branch: None,
-                    tag: None,
-                    rev: None,
-                    apt: None,
                     cmake_package: Some(pkg_name.to_string()),
-                    lang: None,
+                    ..DetailedDependency::default()
                 }),
             );
         }
     }
 
     Ok(deps)
+}
+
+/// Parse a FetchContent_Declare or ExternalProject_Add block to extract a git dependency.
+fn parse_fetch_content_block(block: &str, deps: &mut BTreeMap<String, DependencyValue>) {
+    // Extract name: first token after opening paren
+    let inner = block
+        .find('(')
+        .map(|i| &block[i + 1..])
+        .unwrap_or("")
+        .trim_end_matches(')')
+        .trim();
+
+    let tokens: Vec<&str> = inner.split_whitespace().collect();
+    if tokens.is_empty() {
+        return;
+    }
+    let name = tokens[0].to_lowercase();
+    if name.is_empty() || crate::native_sync::is_horus_internal(&name) {
+        return;
+    }
+
+    // Find GIT_REPOSITORY or URL
+    let mut git_url = None;
+    let mut git_tag = None;
+    for i in 0..tokens.len() {
+        match tokens[i] {
+            "GIT_REPOSITORY" | "URL" => {
+                if let Some(url) = tokens.get(i + 1) {
+                    git_url = Some(url.to_string());
+                }
+            }
+            "GIT_TAG" => {
+                if let Some(tag) = tokens.get(i + 1) {
+                    git_tag = Some(tag.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(url) = git_url {
+        deps.insert(
+            name.clone(),
+            DependencyValue::Detailed(DetailedDependency {
+                source: Some(DepSource::Git),
+                git: Some(url),
+                tag: git_tag,
+                cmake_package: Some(name),
+                lang: Some("cpp".to_string()),
+                ..DetailedDependency::default()
+            }),
+        );
+    }
 }
 
 #[cfg(test)]

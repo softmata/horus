@@ -33,7 +33,7 @@ horus new my_robot && cd my_robot && horus run
 
 | | **HORUS** | **ROS2** |
 |---|---|---|
-| Cross-process latency | **198 ns** (shared memory) | 50–500 µs (DDS) |
+| IPC latency | **22–184 ns** (shared memory) | 50–500 µs (DDS) |
 | GPU tensor transfer | **DLPack zero-copy** (PyTorch/JAX native) | Serialize → deserialize |
 | AI + RT in one process | Yes — AsyncIo for GPU, RT for motors | Separate processes, DDS overhead |
 | Perception types | 8 built-in (Detection, Tracking, Segmentation) | Define your own messages |
@@ -123,28 +123,36 @@ Both share the same topics over the same shared memory — zero overhead between
 
 ## Performance
 
-Measured on Intel i7-10750H, 100K iterations, RDTSC timing with Tukey IQR outlier removal and bootstrap 95% CIs. Full methodology in [`benchmarks/`](benchmarks/).
+Measured with RDTSC cycle counting, Tukey IQR outlier filtering, and bootstrap 95% CIs. Full methodology in [`benchmarks/`](benchmarks/).
 
-**Same-process IPC** (lock-free ring buffers):
+**IPC Latency** (lock-free ring buffers, auto-selected):
 
-| Topology | p50 | p99 |
-|----------|-----|-----|
-| 1 pub → N sub | **3 ns** | 10 ns |
-| 1 pub → 1 sub | 10 ns | 19 ns |
-| N pub → N sub | 100 ns | 643 ns |
+| Topology | 8B msg | 256B msg | 1KB msg |
+|----------|--------|----------|---------|
+| Same-process | **22 ns** | 30 ns | 51 ns |
+| 1 pub → 1 sub (cross-thread) | 154 ns | 177 ns | 235 ns |
+| 3 pubs → 1 sub | 53 ns | 57 ns | 107 ns |
+| 1 pub → 3 subs | 92 ns | 138 ns | 195 ns |
+| 3 pubs × 3 subs | 184 ns | 218 ns | 233 ns |
+| Raw UDP (for comparison) | 1,158 ns | — | — |
 
-**Cross-process IPC** (shared memory):
+HORUS is **50x faster than UDP** — shared memory eliminates the kernel network stack entirely. Only **12ns overhead** over raw `memcpy`.
 
-| Topology | p50 | p99 |
-|----------|-----|-----|
-| 1 pub → 2 sub | **198 ns** | 298 ns |
-| 1 pub → 8 sub | 276 ns | 510 ns |
-| 4 pub → 4 sub | 304 ns | 1.5 µs |
+**Scalability:**
 
-ROS2 DDS typically measures 50–500 µs for the same workloads.
+| Dimension | Range | Degradation |
+|-----------|-------|-------------|
+| Node count | 1 → 100 | **14%** (near-linear) |
+| Topic count | 1 → 1,000 | **0%** (O(1) lookup) |
+
+ROS2 DDS typically measures 50–500 µs for the same workloads — **230-575x slower**.
 
 ```bash
+# Quick benchmark
 cargo run --release -p horus_benchmarks --bin all_paths_latency
+
+# Full benchmark suite (sustained runs, size sweep, competitor comparison)
+./benchmarks/research/run_all.sh
 ```
 
 ---

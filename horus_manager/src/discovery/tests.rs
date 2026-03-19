@@ -2455,3 +2455,128 @@ fn test_fs_non_json_files_ignored() {
         "non-.json files must not parse as presence"
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════
+//  Performance & scale
+// ════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_discovery_100_nodes_performance() {
+    let mut w = TestPresenceWriter::new("perf100");
+
+    // Create 100 nodes
+    for i in 0..100 {
+        w.write_node(&format!("perf_{:03}", i), "[]", "[]");
+    }
+
+    // Time the discovery
+    let start = std::time::Instant::now();
+    let _all = w.read_all_own();
+    let elapsed = start.elapsed();
+
+    println!(
+        "100-node discovery (direct read): {:?} ({:.1}ms)",
+        elapsed,
+        elapsed.as_millis()
+    );
+
+    assert!(
+        elapsed.as_millis() < 500,
+        "100-node discovery must complete in < 500ms, took {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn test_discovery_mixed_alive_and_dead_nodes() {
+    let mut w = TestPresenceWriter::new("mixed_alive_dead");
+
+    // Create 5 alive nodes (current PID)
+    let mut alive_names = Vec::new();
+    for i in 0..5 {
+        alive_names.push(w.write_node(&format!("alive_{}", i), "[]", "[]"));
+    }
+
+    // Create 5 dead nodes (fake PID)
+    for i in 0..5 {
+        let _name = w.write_dead_node(&format!("dead_{}", i));
+    }
+
+    // Discovery should return only alive nodes
+    let all = NodePresence::read_all();
+    for name in &alive_names {
+        let found = all.iter().any(|n| n.name() == *name);
+        assert!(found, "alive node {} must be discovered", name);
+    }
+}
+
+#[test]
+fn test_topic_status_classification_comprehensive() {
+    use std::time::{Duration, SystemTime};
+
+    let live_procs = vec![1u32]; // One live process
+    let no_procs: Vec<u32> = vec![];
+
+    // Active: processes exist, recent modification
+    let (active_status, _) = compute_topic_status(&live_procs, Some(SystemTime::now()));
+    assert_eq!(active_status, TopicStatus::Active, "recent + alive = Active");
+
+    // Idle: processes exist, old modification (> 30s)
+    let (idle_status, _) = compute_topic_status(
+        &live_procs,
+        Some(SystemTime::now() - Duration::from_secs(60)),
+    );
+    assert_eq!(idle_status, TopicStatus::Idle, "60s old + alive = Idle");
+
+    // Idle: no processes but recent modification (process just exited)
+    let (idle_recent, _) = compute_topic_status(&no_procs, Some(SystemTime::now()));
+    assert_eq!(idle_recent, TopicStatus::Idle, "no procs + recent = Idle (just exited)");
+
+    // Stale: no processes, old modification (> 5 min)
+    let (stale_status, _) = compute_topic_status(
+        &no_procs,
+        Some(SystemTime::now() - Duration::from_secs(600)),
+    );
+    assert_eq!(stale_status, TopicStatus::Stale, "no procs + 10min old = Stale");
+
+    // Stale: no processes, no modification time
+    let (stale_none, _) = compute_topic_status(&no_procs, None);
+    assert_eq!(stale_none, TopicStatus::Stale, "no processes + no time = Stale");
+}
+
+#[test]
+fn test_format_age_edge_cases() {
+    // Just now (0 seconds)
+    let age = format_age(0);
+    assert!(!age.is_empty(), "0s should produce non-empty string, got: '{}'", age);
+
+    // 1 hour
+    let age = format_age(3600);
+    assert!(
+        age.contains("h") || age.contains("60m") || age.contains("1h"),
+        "3600s should format with hours, got: {}",
+        age
+    );
+
+    // 1 day
+    let age = format_age(86400);
+    assert!(!age.is_empty(), "1 day should produce non-empty string");
+}
+
+#[test]
+fn test_process_exists_current_pid() {
+    // Our own PID should exist
+    assert!(
+        process_exists(std::process::id()),
+        "current process PID must exist"
+    );
+}
+
+#[test]
+fn test_process_exists_dead_pid() {
+    // PID 4294967 is very unlikely to exist
+    assert!(
+        !process_exists(4_294_967),
+        "nonexistent PID should return false"
+    );
+}

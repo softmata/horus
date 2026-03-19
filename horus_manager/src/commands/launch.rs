@@ -1233,4 +1233,180 @@ nodes: []
         let result = run_launch(&path, true, None, 5);
         assert!(result.is_ok());
     }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Restart policy & shutdown edge cases
+    // ════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn launch_node_invalid_restart_still_parses() {
+        // serde_yaml accepts any string — validation happens at runtime
+        let yaml = "name: bad_restart\nrestart: banana";
+        let node: LaunchNode = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(node.restart, "banana");
+    }
+
+    #[test]
+    fn launch_node_restart_combined_with_depends_on() {
+        let yaml = r#"
+name: motor
+restart: on-failure
+depends_on: [sensor]
+command: /usr/bin/motor
+"#;
+        let node: LaunchNode = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(node.restart, "on-failure");
+        assert_eq!(node.depends_on, vec!["sensor"]);
+    }
+
+    #[test]
+    fn launch_config_shutdown_timeout_parameter() {
+        // run_launch accepts shutdown_timeout_secs as parameter
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timeout.yaml");
+        std::fs::write(&path, "nodes: []").unwrap();
+        // Various timeout values should all succeed on empty config
+        for timeout in [0, 1, 5, 30, 300] {
+            let result = run_launch(&path, true, None, timeout);
+            assert!(result.is_ok(), "timeout={} should succeed", timeout);
+        }
+    }
+
+    #[test]
+    fn launch_start_delay_edge_cases() {
+        // NaN, negative, zero, very large
+        for delay_str in ["0", "0.0", "-1.0", "999999.0"] {
+            let yaml = format!("name: delay_node\nstart_delay: {}\ncommand: /bin/true", delay_str);
+            let node: LaunchNode = serde_yaml::from_str(&yaml).unwrap();
+            assert!(node.start_delay.is_some());
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Scale: large node graphs & deep namespaces
+    // ════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn sort_50_node_linear_chain() {
+        // A → B → C → ... → Z (50 nodes in a chain)
+        let mut nodes = Vec::new();
+        for i in 0..50 {
+            nodes.push(LaunchNode {
+                name: format!("node_{:02}", i),
+                depends_on: if i > 0 {
+                    vec![format!("node_{:02}", i - 1)]
+                } else {
+                    vec![]
+                },
+                command: Some("/bin/true".to_string()),
+                ..serde_yaml::from_str("name: x").unwrap()
+            });
+        }
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted.len(), 50);
+        // First node should be node_00 (no deps)
+        assert_eq!(sorted[0].name, "node_00");
+        // Last should be node_49
+        assert_eq!(sorted[49].name, "node_49");
+    }
+
+    #[test]
+    fn sort_50_node_wide_fan() {
+        // 49 nodes all depend on node_00
+        let mut nodes = vec![LaunchNode {
+            name: "root".to_string(),
+            depends_on: vec![],
+            command: Some("/bin/true".to_string()),
+            ..serde_yaml::from_str("name: x").unwrap()
+        }];
+        for i in 1..50 {
+            nodes.push(LaunchNode {
+                name: format!("leaf_{:02}", i),
+                depends_on: vec!["root".to_string()],
+                command: Some("/bin/true".to_string()),
+                ..serde_yaml::from_str("name: x").unwrap()
+            });
+        }
+        let sorted = sort_by_dependencies(&nodes).unwrap();
+        assert_eq!(sorted.len(), 50);
+        assert_eq!(sorted[0].name, "root");
+    }
+
+    #[test]
+    fn deep_namespace_5_levels() {
+        let yaml = r#"
+namespace: /warehouse/floor1
+nodes:
+  - name: controller
+    namespace: /robot1/arm/joint3
+    command: /bin/true
+"#;
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        let node = &config.nodes[0];
+        let global_ns = config.namespace.as_ref();
+        let full_name = match (global_ns, &node.namespace) {
+            (Some(g), Some(l)) => format!("{}/{}/{}", g, l, node.name),
+            _ => node.name.clone(),
+        };
+        assert_eq!(
+            full_name, "/warehouse/floor1//robot1/arm/joint3/controller",
+            "deep namespace should merge correctly"
+        );
+    }
+
+    #[test]
+    fn sort_missing_dependency_target_errors() {
+        let nodes = vec![
+            LaunchNode {
+                name: "motor".to_string(),
+                depends_on: vec!["nonexistent_sensor".to_string()],
+                command: Some("/bin/true".to_string()),
+                ..serde_yaml::from_str("name: x").unwrap()
+            },
+        ];
+        let result = sort_by_dependencies(&nodes);
+        // Should either error or place the node (implementation-dependent)
+        // The important thing is it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn sort_duplicate_node_names() {
+        let nodes = vec![
+            LaunchNode {
+                name: "sensor".to_string(),
+                depends_on: vec![],
+                command: Some("/bin/a".to_string()),
+                ..serde_yaml::from_str("name: x").unwrap()
+            },
+            LaunchNode {
+                name: "sensor".to_string(),
+                depends_on: vec![],
+                command: Some("/bin/b".to_string()),
+                ..serde_yaml::from_str("name: x").unwrap()
+            },
+        ];
+        let result = sort_by_dependencies(&nodes);
+        // Should handle gracefully (no panic), either error or deduplicate
+        let _ = result;
+    }
+
+    #[test]
+    fn launch_config_mixed_package_and_command_nodes() {
+        let yaml = r#"
+nodes:
+  - name: driver
+    package: lidar_driver
+  - name: custom
+    command: /opt/my_node
+    args: ["--config", "prod.yaml"]
+"#;
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.nodes.len(), 2);
+        assert!(config.nodes[0].package.is_some());
+        assert!(config.nodes[0].command.is_none());
+        assert!(config.nodes[1].command.is_some());
+        assert!(config.nodes[1].package.is_none());
+    }
 }

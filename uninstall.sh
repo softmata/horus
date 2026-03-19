@@ -527,7 +527,7 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
     fi
 fi
 
-# Shell profiles: remove horus completion eval lines
+# Shell profiles: remove horus completion eval lines and shell integration
 for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
     if [ -f "$profile" ] && grep -q "horus completion" "$profile" 2>/dev/null; then
         # Create backup before modifying
@@ -538,6 +538,32 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_prof
         rm -f "${profile}.bak" 2>/dev/null
         echo -e "  ${GREEN}[+]${NC} Cleaned horus completion from $(basename $profile)"
         REMOVED=$((REMOVED + 1))
+    fi
+    # Remove shell integration (cargo/pip/cmake proxy)
+    if [ -f "$profile" ] && grep -q ".horus/env.sh" "$profile" 2>/dev/null; then
+        cp "$profile" "${profile}.horus-backup" 2>/dev/null
+        sed -i.bak '/\.horus\/env\.sh/d' "$profile" 2>/dev/null || \
+            sed -i '' '/\.horus\/env\.sh/d' "$profile" 2>/dev/null
+        sed -i.bak '/# Horus shell integration/d' "$profile" 2>/dev/null || \
+            sed -i '' '/# Horus shell integration/d' "$profile" 2>/dev/null
+        rm -f "${profile}.bak" 2>/dev/null
+        echo -e "  ${GREEN}[+]${NC} Cleaned horus shell integration from $(basename $profile)"
+        REMOVED=$((REMOVED + 1))
+    fi
+done
+
+# Remove fish shell integration
+if [ -f "$HOME/.config/fish/conf.d/horus.fish" ]; then
+    rm -f "$HOME/.config/fish/conf.d/horus.fish"
+    echo -e "  ${GREEN}[+]${NC} Removed fish shell integration"
+    REMOVED=$((REMOVED + 1))
+fi
+
+# Remove env.sh/env.fish files
+for envfile in "$HORUS_DIR/env.sh" "$HORUS_DIR/env.fish"; do
+    if [ -f "$envfile" ]; then
+        rm -f "$envfile"
+        echo -e "  ${GREEN}[+]${NC} Removed $(basename $envfile)"
     fi
 done
 

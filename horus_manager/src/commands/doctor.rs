@@ -2,6 +2,9 @@
 //!
 //! Checks: toolchains, SHM, plugins, manifest validity, registry,
 //! system deps, disk space. Summary by default, --verbose for details.
+//!
+//! With `--fix`: installs missing toolchains and system dependencies,
+//! then pins their versions in `horus.lock`.
 
 use anyhow::Result;
 use colored::*;
@@ -10,8 +13,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use horus_core::drivers::{self, DriverType};
+use horus_sys::sync::{self, SyncManifest, SystemDep};
 
 use crate::dispatch;
+use crate::lockfile::{HorusLockfile, SystemLock, HORUS_LOCK};
+use crate::manifest::HorusManifest;
 
 /// Health status for a check category.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,7 +46,7 @@ pub(crate) struct CheckResult {
 }
 
 /// Run `horus doctor`.
-pub fn run_doctor(verbose: bool, json: bool) -> Result<()> {
+pub fn run_doctor(verbose: bool, json: bool, fix: bool) -> Result<()> {
     let ctx = dispatch::detect_context(&std::env::current_dir()?);
     let mut results = Vec::new();
 
@@ -68,6 +74,11 @@ pub fn run_doctor(verbose: bool, json: bool) -> Result<()> {
     // ── 8. Driver device reachability ────────────────────────────────────
     results.push(check_drivers());
 
+    // ── 9. System dependencies (Python, C++, system libs) ────────────────
+    if let Some(manifest) = &ctx.manifest {
+        results.push(check_system_deps(manifest));
+    }
+
     // ── Output ───────────────────────────────────────────────────────────
     if json {
         print_json(&results);
@@ -75,22 +86,111 @@ pub fn run_doctor(verbose: bool, json: bool) -> Result<()> {
         print_summary(&results, verbose);
     }
 
-    // Exit code
-    let worst = results
-        .iter()
-        .map(|r| &r.health)
-        .max_by_key(|h| match h {
-            Health::Ok => 0,
-            Health::Warn => 1,
-            Health::Fail => 2,
-        })
-        .unwrap_or(&Health::Ok);
-
-    match worst {
-        Health::Ok => Ok(()),
-        Health::Warn => std::process::exit(1),
-        Health::Fail => std::process::exit(2),
+    // ── Fix mode: install missing deps and pin to horus.lock ─────────────
+    if fix {
+        if let Some(manifest) = &ctx.manifest {
+            run_fix(manifest, &ctx)?;
+        } else {
+            println!(
+                "\n  {} No horus.toml found — nothing to fix. Run {} to create a project.",
+                "!".yellow(),
+                "horus new".cyan()
+            );
+        }
     }
+
+    // Exit code
+    let has_failures = results.iter().any(|r| r.health == Health::Fail);
+    let has_warnings = results.iter().any(|r| r.health == Health::Warn);
+
+    if has_failures && !fix {
+        std::process::exit(2);
+    } else if has_warnings && !fix {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Install missing toolchains/system deps and pin versions to horus.lock.
+fn run_fix(manifest: &HorusManifest, ctx: &dispatch::ProjectContext) -> Result<()> {
+    println!("\n{}", "Fixing environment...".bold());
+
+    let report = sync::sync_environment(manifest)?;
+
+    for item in &report.items {
+        if item.installed {
+            let version = item.version.as_deref().unwrap_or("installed");
+            println!("  {} {} ({})", "✓".green(), item.name, version);
+        } else {
+            println!("  {} {} — not installed", "✗".red(), item.name);
+            if let Some(ref cmd) = item.install_cmd {
+                println!("    Install: {}", cmd.dimmed());
+            }
+        }
+    }
+
+    // Pin toolchain + system dep versions into horus.lock
+    let lock_path = ctx.root.join(HORUS_LOCK);
+    let mut lockfile = HorusLockfile::load_from(&lock_path).unwrap_or_default();
+
+    // Build toolchain pins from the sync report
+    let mut toolchain = lockfile.toolchain.unwrap_or_default();
+    for item in &report.items {
+        if let Some(ver) = &item.version {
+            match item.name.as_str() {
+                "rust" => toolchain.rust = Some(ver.clone()),
+                "python" => toolchain.python = Some(ver.clone()),
+                "cmake" => toolchain.cmake = Some(ver.clone()),
+                _ => {}
+            }
+        }
+    }
+    lockfile.toolchain = Some(toolchain);
+
+    // Build system dep pins from the sync report
+    let system_dep_names: Vec<String> = manifest
+        .system_deps()
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    for item in &report.items {
+        if system_dep_names.contains(&item.name) {
+            if let Some(ver) = &item.version {
+                // Find the manifest dep for cross-platform package names
+                let manifest_dep = manifest.system_deps().into_iter().find(|d| d.name == item.name);
+                let existing = lockfile.system_deps.iter_mut().find(|s| s.name == item.name);
+                if let Some(existing) = existing {
+                    existing.version = ver.clone();
+                } else {
+                    lockfile.system_deps.push(SystemLock {
+                        name: item.name.clone(),
+                        version: ver.clone(),
+                        pkg_config: manifest_dep.as_ref().and_then(|d| d.pkg_config.clone()),
+                        apt: manifest_dep.as_ref().and_then(|d| d.apt.clone()),
+                        brew: manifest_dep.as_ref().and_then(|d| d.brew.clone()),
+                        pacman: None,
+                        choco: manifest_dep.as_ref().and_then(|d| d.choco.clone()),
+                    });
+                }
+            }
+        }
+    }
+
+    lockfile.save_to(&lock_path)?;
+    println!(
+        "\n  {} Environment synced — {} updated",
+        "✓".green(),
+        HORUS_LOCK.bold()
+    );
+
+    if !report.all_satisfied {
+        println!(
+            "\n{} Some dependencies could not be installed automatically.",
+            "!".yellow()
+        );
+    }
+
+    Ok(())
 }
 
 pub(crate) fn print_summary(results: &[CheckResult], verbose: bool) {
@@ -390,6 +490,109 @@ fn check_dep_sources(ctx: &dispatch::ProjectContext) -> CheckResult {
     }
 }
 
+// ─── System dependency check (absorbed from horus sync) ──────────────────────
+
+/// Implement SyncManifest for HorusManifest so horus_sys::sync can extract requirements.
+impl SyncManifest for HorusManifest {
+    fn rust_edition(&self) -> Option<String> {
+        Some(self.package.edition.clone())
+    }
+
+    fn python_version(&self) -> Option<String> {
+        let has_python = self.dependencies.iter().any(|(_, dep)| {
+            if let crate::manifest::DependencyValue::Detailed(d) = dep {
+                matches!(d.source, Some(crate::manifest::DepSource::PyPI))
+            } else {
+                false
+            }
+        });
+        if has_python {
+            Some(">=3.9".to_string())
+        } else {
+            None
+        }
+    }
+
+    fn system_deps(&self) -> Vec<SystemDep> {
+        self.dependencies
+            .iter()
+            .filter_map(|(name, dep)| {
+                if let crate::manifest::DependencyValue::Detailed(d) = dep {
+                    if matches!(d.source, Some(crate::manifest::DepSource::System)) {
+                        return Some(SystemDep {
+                            name: name.clone(),
+                            apt: d.apt.clone().or_else(|| Some(name.clone())),
+                            brew: Some(name.clone()),
+                            choco: Some(name.clone()),
+                            pkg_config: d.cmake_package.clone(),
+                        });
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    fn needs_cpp(&self) -> bool {
+        self.cpp.is_some()
+    }
+
+    fn project_name(&self) -> String {
+        self.package.name.clone()
+    }
+}
+
+fn check_system_deps(manifest: &HorusManifest) -> CheckResult {
+    let report = sync::check_environment(manifest);
+
+    if report.items.is_empty() {
+        return CheckResult {
+            category: "System Deps".to_string(),
+            health: Health::Ok,
+            summary: "No system dependencies required".to_string(),
+            details: vec![],
+        };
+    }
+
+    let mut details = Vec::new();
+    let mut missing = Vec::new();
+
+    for item in &report.items {
+        if item.installed {
+            let version = item.version.as_deref().unwrap_or("installed");
+            details.push(format!("{}: {} ({})", item.name, version, "ok"));
+        } else {
+            details.push(format!("{}: not found", item.name));
+            if item.required {
+                missing.push(item.name.clone());
+            }
+        }
+    }
+
+    let health = if !missing.is_empty() {
+        Health::Fail
+    } else {
+        Health::Ok
+    };
+
+    let found = report.items.iter().filter(|i| i.installed).count();
+    let hint = if !missing.is_empty() {
+        format!(
+            " — run {} to install",
+            "horus doctor --fix".cyan()
+        )
+    } else {
+        String::new()
+    };
+
+    CheckResult {
+        category: "System Deps".to_string(),
+        health,
+        summary: format!("{}/{} satisfied{}", found, report.items.len(), hint),
+        details,
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn count_items(dir: &Path) -> usize {
@@ -398,27 +601,7 @@ fn count_items(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
-fn dir_size(path: &Path) -> u64 {
-    walkdir::WalkDir::new(path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum()
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
+use crate::fs_utils::{dir_size, format_bytes};
 
 // ── Driver device reachability ─────────────────────────────────────────────
 
@@ -579,7 +762,9 @@ mod tests {
                 categories: vec![],
                 standard: None,
                 rust_edition: None,
+                target_type: crate::manifest::TargetType::default(),
             },
+            workspace: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
@@ -674,12 +859,12 @@ mod tests {
 
     #[test]
     fn format_bytes_gigabytes() {
-        assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+        assert_eq!(format_bytes(1_073_741_824), "1.00 GB");
     }
 
     #[test]
     fn format_bytes_gigabytes_large() {
-        assert_eq!(format_bytes(10_737_418_240), "10.0 GB");
+        assert_eq!(format_bytes(10_737_418_240), "10.00 GB");
     }
 
     #[test]

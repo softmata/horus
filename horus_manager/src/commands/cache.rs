@@ -1,7 +1,6 @@
 //! Cache command - manage the HORUS package cache
 
 use crate::cli_output;
-use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::fs;
@@ -9,26 +8,14 @@ use std::path::Path;
 
 use crate::workspace;
 
-/// Calculate the total size of a directory recursively
+/// Calculate the total size of a directory recursively.
 pub fn dir_size(path: &Path) -> std::io::Result<u64> {
-    let mut size = 0;
-    if path.is_dir() {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let metadata = entry.metadata()?;
-            if metadata.is_dir() {
-                size += dir_size(&entry.path())?;
-            } else {
-                size += metadata.len();
-            }
-        }
-    }
-    Ok(size)
+    Ok(crate::fs_utils::dir_size(path))
 }
 
-/// Format a size in bytes as a human-readable string
+/// Format a size in bytes as a human-readable string.
 pub fn format_size(bytes: u64) -> String {
-    format_bytes(bytes)
+    crate::fs_utils::format_bytes(bytes)
 }
 
 /// Show cache information (directory, size, package count)

@@ -49,3 +49,22 @@ pub async fn logs_topic_handler(Path(topic_name): Path<String>) -> impl IntoResp
     )
         .into_response()
 }
+
+/// Returns all entries from the persistent error ring buffer.
+///
+/// Error/Warning entries are dual-written to a separate 500-slot buffer that
+/// survives sensor pub/sub volume flooding. Use this endpoint for post-mortem
+/// debugging when the main `/api/logs/all` has already wrapped.
+pub async fn logs_errors_handler() -> impl IntoResponse {
+    use horus_core::core::log_buffer::GLOBAL_ERROR_BUFFER;
+
+    let logs = GLOBAL_ERROR_BUFFER.get_all();
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "error_logs": logs
+        })),
+    )
+        .into_response()
+}

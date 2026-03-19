@@ -178,3 +178,140 @@ fn test_concurrent_registration() {
     assert!(count >= 50, "Should register many frames, got {}", count);
     assert!(tf.has_frame("world"));
 }
+
+// ============================================================================
+// Test: 16 writers + 32 readers — scaled up stress
+// ============================================================================
+
+#[test]
+fn test_16_writers_32_readers_no_corruption() {
+    let config = TransformFrameConfig::large();
+    let tf = Arc::new(TransformFrame::with_config(config));
+
+    tf.register_frame("world", None).unwrap();
+    for i in 0..16 {
+        tf.register_frame(&format!("big_s{}", i), Some("world")).unwrap();
+        tf.update_transform(
+            &format!("big_s{}", i),
+            &Transform::from_translation([i as f64, 0.0, 0.0]),
+            0,
+        ).unwrap();
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let corruptions = Arc::new(AtomicU64::new(0));
+    let total_reads = Arc::new(AtomicU64::new(0));
+    let mut handles = Vec::new();
+
+    // 16 writers
+    for w in 0..16 {
+        let tf = tf.clone();
+        let running = running.clone();
+        handles.push(std::thread::spawn(move || {
+            let name = format!("big_s{}", w);
+            let mut ts = 1u64;
+            while running.load(Ordering::Relaxed) {
+                let x = (ts as f64) * 0.001 + (w as f64);
+                let y = (ts as f64) * 0.0005;
+                let _ = tf.update_transform(&name, &Transform::from_translation([x, y, 0.0]), ts);
+                ts += 1;
+            }
+        }));
+    }
+
+    // 32 readers
+    for r in 0..32 {
+        let tf = tf.clone();
+        let running = running.clone();
+        let corruptions = corruptions.clone();
+        let reads = total_reads.clone();
+        handles.push(std::thread::spawn(move || {
+            let src = format!("big_s{}", r % 16);
+            while running.load(Ordering::Relaxed) {
+                if let Ok(result) = tf.tf(&src, "world") {
+                    reads.fetch_add(1, Ordering::Relaxed);
+                    if !result.translation[0].is_finite()
+                        || !result.translation[1].is_finite()
+                        || !result.translation[2].is_finite()
+                    {
+                        corruptions.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+    }
+
+    // Run for 2 seconds
+    std::thread::sleep(Duration::from_secs(2));
+    running.store(false, Ordering::SeqCst);
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let total = total_reads.load(Ordering::SeqCst);
+    let corrupt = corruptions.load(Ordering::SeqCst);
+
+    assert!(total > 1000, "Should complete >1000 reads in 2s, got {}", total);
+    assert_eq!(corrupt, 0, "Zero corruptions in {} reads (16W+32R)", total);
+}
+
+// ============================================================================
+// Test: Chain lookup during concurrent writes — A->B->C->D
+// ============================================================================
+
+#[test]
+fn test_chain_lookup_during_writes() {
+    let config = TransformFrameConfig::medium();
+    let tf = Arc::new(TransformFrame::with_config(config));
+
+    // Set up chain: world -> A -> B -> C -> D
+    tf.register_frame("chain_world", None).unwrap();
+    for (name, parent) in [("cA", "chain_world"), ("cB", "cA"), ("cC", "cB"), ("cD", "cC")] {
+        tf.register_frame(name, Some(parent)).unwrap();
+        tf.update_transform(name, &Transform::from_translation([1.0, 0.0, 0.0]), 0).unwrap();
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let corruptions = Arc::new(AtomicU64::new(0));
+    let total_reads = Arc::new(AtomicU64::new(0));
+
+    // Writer: continuously updates B->C transform
+    let tf_w = tf.clone();
+    let r_w = running.clone();
+    let writer = std::thread::spawn(move || {
+        let mut ts = 1u64;
+        while r_w.load(Ordering::Relaxed) {
+            let x = 1.0 + (ts as f64 % 100.0) * 0.01;
+            let _ = tf_w.update_transform("cB", &Transform::from_translation([x, 0.0, 0.0]), ts);
+            ts += 1;
+        }
+    });
+
+    // Reader: continuously looks up world -> D (4-link chain)
+    let tf_r = tf.clone();
+    let r_r = running.clone();
+    let c = corruptions.clone();
+    let reads = total_reads.clone();
+    let reader = std::thread::spawn(move || {
+        while r_r.load(Ordering::Relaxed) {
+            if let Ok(result) = tf_r.tf("cD", "chain_world") {
+                reads.fetch_add(1, Ordering::Relaxed);
+                // Chain: world->A(1.0) + A->B(varying) + B->C(1.0) + C->D(1.0) = ~4.0
+                if !result.translation[0].is_finite() {
+                    c.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+
+    std::thread::sleep(Duration::from_secs(1));
+    running.store(false, Ordering::SeqCst);
+    writer.join().unwrap();
+    reader.join().unwrap();
+
+    let total = total_reads.load(Ordering::SeqCst);
+    let corrupt = corruptions.load(Ordering::SeqCst);
+
+    assert!(total > 100, "Should complete >100 chain lookups, got {}", total);
+    assert_eq!(corrupt, 0, "Zero corruption in {} chain lookups during concurrent writes", total);
+}

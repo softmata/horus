@@ -27,7 +27,7 @@ use horus_library::messages::diagnostics::{
     ResourceUsage, SafetyStatus,
 };
 use horus_library::messages::force::{
-    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, WrenchStamped,
+    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray, WrenchStamped,
 };
 use horus_library::messages::geometry::{
     Accel, AccelStamped, Point3, Pose2D, Pose3D, PoseStamped, PoseWithCovariance, Quaternion,
@@ -105,6 +105,14 @@ impl PyCmdVel {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Stop command: zero linear and angular velocity.
+    #[staticmethod]
+    fn zero() -> Self {
+        Self {
+            inner: CmdVel::zero(),
+        }
     }
 
     #[classattr]
@@ -195,6 +203,29 @@ impl PyPose2D {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// The origin pose (0, 0, 0).
+    #[staticmethod]
+    fn origin() -> Self {
+        Self {
+            inner: Pose2D::origin(),
+        }
+    }
+
+    /// Euclidean distance to another pose (ignores theta).
+    fn distance_to(&self, other: &PyPose2D) -> f64 {
+        self.inner.distance_to(&other.inner)
+    }
+
+    /// Normalize theta to [-pi, pi] in-place.
+    fn normalize_angle(&mut self) {
+        self.inner.normalize_angle();
+    }
+
+    /// Check if all fields are finite (not NaN/Inf).
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     #[classattr]
@@ -325,6 +356,35 @@ impl PyImu {
         "imu"
     }
 
+    /// Set orientation from Euler angles (roll, pitch, yaw) in radians.
+    fn set_orientation_from_euler(&mut self, roll: f64, pitch: f64, yaw: f64) {
+        self.inner.set_orientation_from_euler(roll, pitch, yaw);
+    }
+
+    /// Check if orientation data is present (not identity quaternion).
+    fn has_orientation(&self) -> bool {
+        self.inner.has_orientation()
+    }
+
+    /// Check if all fields are finite (not NaN/Inf).
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+
+    /// Get angular velocity as a Vector3.
+    fn angular_velocity_vec(&self) -> PyVector3 {
+        PyVector3 {
+            inner: self.inner.angular_velocity_vec(),
+        }
+    }
+
+    /// Get linear acceleration as a Vector3.
+    fn linear_acceleration_vec(&self) -> PyVector3 {
+        PyVector3 {
+            inner: self.inner.linear_acceleration_vec(),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Imu(accel=[{:.3}, {:.3}, {:.3}], gyro=[{:.3}, {:.3}, {:.3}], timestamp_ns={})",
@@ -440,6 +500,21 @@ impl PyOdometry {
     #[classattr]
     fn __topic_name__() -> &'static str {
         "odom"
+    }
+
+    /// Set the coordinate frame names for this odometry message.
+    fn set_frames(&mut self, frame: &str, child_frame: &str) {
+        self.inner.set_frames(frame, child_frame);
+    }
+
+    /// Update pose and twist from new measurements.
+    fn update(&mut self, pose: &PyPose2D, twist: &PyTwist) {
+        self.inner.update(pose.inner, twist.inner);
+    }
+
+    /// Check if all fields are finite.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     fn __repr__(&self) -> String {
@@ -577,6 +652,21 @@ impl PyLaserScan {
         self.inner.timestamp_ns = v;
     }
 
+    /// Compute the angle (radians) for a given range index.
+    fn angle_at(&self, index: usize) -> f32 {
+        self.inner.angle_at(index)
+    }
+
+    /// Check if the range reading at the given index is within [range_min, range_max].
+    fn is_range_valid(&self, index: usize) -> bool {
+        self.inner.is_range_valid(index)
+    }
+
+    /// Return the minimum valid range value, or None if no valid ranges.
+    fn min_range(&self) -> Option<f32> {
+        self.inner.min_range()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "scan"
@@ -708,6 +798,32 @@ impl PyPose3D {
         self.inner.timestamp_ns = v;
     }
 
+    /// Identity pose: position (0,0,0), orientation identity quaternion.
+    #[staticmethod]
+    fn identity() -> Self {
+        Self {
+            inner: Pose3D::identity(),
+        }
+    }
+
+    /// Create a 3D pose from a 2D pose (x,y → x,y,0; theta → yaw quaternion).
+    #[staticmethod]
+    fn from_pose_2d(pose: &PyPose2D) -> Self {
+        Self {
+            inner: Pose3D::from_pose_2d(&pose.inner),
+        }
+    }
+
+    /// Euclidean distance to another 3D pose (position only).
+    fn distance_to(&self, other: &PyPose3D) -> f64 {
+        self.inner.distance_to(&other.inner)
+    }
+
+    /// Check if all fields are finite.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "pose3d"
@@ -816,6 +932,21 @@ impl PyJointState {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Look up a joint's position by name. Returns None if not found.
+    fn position(&self, name: &str) -> Option<f64> {
+        self.inner.position(name)
+    }
+
+    /// Look up a joint's velocity by name. Returns None if not found.
+    fn velocity(&self, name: &str) -> Option<f64> {
+        self.inner.velocity(name)
+    }
+
+    /// Look up a joint's effort by name. Returns None if not found.
+    fn effort(&self, name: &str) -> Option<f64> {
+        self.inner.effort(name)
     }
 
     #[classattr]
@@ -934,6 +1065,40 @@ impl PyClock {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Create a wall clock (real time).
+    #[staticmethod]
+    fn wall_clock() -> Self {
+        Self {
+            inner: Clock::wall_clock(),
+        }
+    }
+
+    /// Create a simulation clock with a given time and speed multiplier.
+    #[staticmethod]
+    fn sim_time(sim_ns: u64, speed: f64) -> Self {
+        Self {
+            inner: Clock::sim_time(sim_ns, speed),
+        }
+    }
+
+    /// Create a replay clock with a given time and speed multiplier.
+    #[staticmethod]
+    fn replay_time(replay_ns: u64, speed: f64) -> Self {
+        Self {
+            inner: Clock::replay_time(replay_ns, speed),
+        }
+    }
+
+    /// Elapsed time in nanoseconds since another clock reading.
+    fn elapsed_since(&self, earlier: &PyClock) -> u64 {
+        self.inner.elapsed_since(&earlier.inner)
+    }
+
+    /// Check if the clock is paused.
+    fn is_paused(&self) -> bool {
+        self.inner.is_paused()
     }
 
     #[classattr]
@@ -1154,6 +1319,28 @@ impl PyTwist {
         self.inner.timestamp_ns = v;
     }
 
+    /// Zero velocity command (all zeros) — emergency stop.
+    #[staticmethod]
+    fn stop() -> Self {
+        Self {
+            inner: Twist::stop(),
+        }
+    }
+
+    /// Create a 2D twist (linear_x + angular_z only, rest zero).
+    #[staticmethod]
+    #[pyo3(signature = (linear_x=0.0, angular_z=0.0))]
+    fn new_2d(linear_x: f64, angular_z: f64) -> Self {
+        Self {
+            inner: Twist::new_2d(linear_x, angular_z),
+        }
+    }
+
+    /// Check if all fields are finite (not NaN/Inf).
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "twist"
@@ -1234,6 +1421,43 @@ impl PyVector3 {
         self.inner.z = v;
     }
 
+    /// Create a zero vector (0, 0, 0).
+    #[staticmethod]
+    fn zero() -> Self {
+        Self {
+            inner: Vector3::zero(),
+        }
+    }
+
+    /// Euclidean magnitude (length) of this vector.
+    fn magnitude(&self) -> f64 {
+        self.inner.magnitude()
+    }
+
+    /// Normalize this vector in-place to unit length.
+    fn normalize(&mut self) {
+        self.inner.normalize();
+    }
+
+    /// Return a new unit-length copy of this vector.
+    fn normalized(&self) -> Self {
+        Self {
+            inner: self.inner.normalized(),
+        }
+    }
+
+    /// Dot product with another vector.
+    fn dot(&self, other: &PyVector3) -> f64 {
+        self.inner.dot(&other.inner)
+    }
+
+    /// Cross product with another vector.
+    fn cross(&self, other: &PyVector3) -> PyVector3 {
+        PyVector3 {
+            inner: self.inner.cross(&other.inner),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Vector3({:.3}, {:.3}, {:.3})",
@@ -1298,6 +1522,19 @@ impl PyPoint3 {
     #[setter]
     fn set_z(&mut self, v: f64) {
         self.inner.z = v;
+    }
+
+    /// The origin point (0, 0, 0).
+    #[staticmethod]
+    fn origin() -> Self {
+        Self {
+            inner: Point3::origin(),
+        }
+    }
+
+    /// Euclidean distance to another point.
+    fn distance_to(&self, other: &PyPoint3) -> f64 {
+        self.inner.distance_to(&other.inner)
     }
 
     fn __repr__(&self) -> String {
@@ -1373,6 +1610,33 @@ impl PyQuaternion {
     #[setter]
     fn set_w(&mut self, v: f64) {
         self.inner.w = v;
+    }
+
+    /// Identity quaternion (no rotation): (0, 0, 0, 1).
+    #[staticmethod]
+    fn identity() -> Self {
+        Self {
+            inner: Quaternion::identity(),
+        }
+    }
+
+    /// Create a quaternion from Euler angles (roll, pitch, yaw) in radians.
+    #[staticmethod]
+    #[pyo3(signature = (roll=0.0, pitch=0.0, yaw=0.0))]
+    fn from_euler(roll: f64, pitch: f64, yaw: f64) -> Self {
+        Self {
+            inner: Quaternion::from_euler(roll, pitch, yaw),
+        }
+    }
+
+    /// Normalize this quaternion in-place to unit length.
+    fn normalize(&mut self) {
+        self.inner.normalize();
+    }
+
+    /// Check if this quaternion has finite, non-zero components.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     fn __repr__(&self) -> String {
@@ -1492,6 +1756,32 @@ impl PyTransformStamped {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Identity transform: zero translation, identity rotation.
+    #[staticmethod]
+    fn identity() -> Self {
+        Self {
+            inner: TransformStamped::identity(),
+        }
+    }
+
+    /// Create a 3D transform from a 2D pose.
+    #[staticmethod]
+    fn from_pose_2d(pose: &PyPose2D) -> Self {
+        Self {
+            inner: TransformStamped::from_pose_2d(&pose.inner),
+        }
+    }
+
+    /// Check if all fields are finite.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+
+    /// Normalize the rotation quaternion in-place to unit length.
+    fn normalize_rotation(&mut self) {
+        self.inner.normalize_rotation();
     }
 
     #[classattr]
@@ -1794,6 +2084,16 @@ impl PyPoseWithCovariance {
         self.inner.timestamp_ns = v;
     }
 
+    /// Extract position variance [var_x, var_y, var_z] from the covariance diagonal.
+    fn position_variance(&self) -> [f64; 3] {
+        self.inner.position_variance()
+    }
+
+    /// Extract orientation variance [var_roll, var_pitch, var_yaw] from the covariance diagonal.
+    fn orientation_variance(&self) -> [f64; 3] {
+        self.inner.orientation_variance()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "pose_cov"
@@ -1938,6 +2238,16 @@ impl PyTwistWithCovariance {
         self.inner.timestamp_ns = v;
     }
 
+    /// Extract linear velocity variance [var_x, var_y, var_z] from the covariance diagonal.
+    fn linear_variance(&self) -> [f64; 3] {
+        self.inner.linear_variance()
+    }
+
+    /// Extract angular velocity variance [var_x, var_y, var_z] from the covariance diagonal.
+    fn angular_variance(&self) -> [f64; 3] {
+        self.inner.angular_variance()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "twist_cov"
@@ -2051,6 +2361,11 @@ impl PyAccel {
     #[classattr]
     fn __topic_name__() -> &'static str {
         "accel"
+    }
+
+    /// Check if all fields are finite (not NaN/Inf).
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     fn __repr__(&self) -> String {
@@ -2318,6 +2633,35 @@ impl PyMotorCommand {
         self.inner.timestamp_ns = v;
     }
 
+    /// Create a velocity command for a motor.
+    #[staticmethod]
+    fn velocity(motor_id: u8, velocity: f64) -> Self {
+        Self {
+            inner: MotorCommand::velocity(motor_id, velocity),
+        }
+    }
+
+    /// Create a position command for a motor.
+    #[staticmethod]
+    fn position(motor_id: u8, position: f64, max_velocity: f64) -> Self {
+        Self {
+            inner: MotorCommand::position(motor_id, position, max_velocity),
+        }
+    }
+
+    /// Create a stop command for a motor.
+    #[staticmethod]
+    fn stop(motor_id: u8) -> Self {
+        Self {
+            inner: MotorCommand::stop(motor_id),
+        }
+    }
+
+    /// Check if command fields are valid.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "motor_cmd"
@@ -2408,6 +2752,35 @@ impl PyServoCommand {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Create a servo command with speed limit.
+    #[staticmethod]
+    fn with_speed(servo_id: u8, position: f32, speed: f32) -> Self {
+        Self {
+            inner: ServoCommand::with_speed(servo_id, position, speed),
+        }
+    }
+
+    /// Create a disable (power-off) command for a servo.
+    #[staticmethod]
+    fn disable(servo_id: u8) -> Self {
+        Self {
+            inner: ServoCommand::disable(servo_id),
+        }
+    }
+
+    /// Create a servo command from angle in degrees (converts to radians).
+    #[staticmethod]
+    fn from_degrees(servo_id: u8, degrees: f32) -> Self {
+        Self {
+            inner: ServoCommand::from_degrees(servo_id, degrees),
+        }
+    }
+
+    /// Check if command fields are valid.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     #[classattr]
@@ -2506,6 +2879,27 @@ impl PyDifferentialDriveCommand {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Stop both wheels.
+    #[staticmethod]
+    fn stop() -> Self {
+        Self {
+            inner: DifferentialDriveCommand::stop(),
+        }
+    }
+
+    /// Convert a Twist (linear + angular velocity) to wheel speeds using kinematics.
+    #[staticmethod]
+    fn from_twist(linear: f64, angular: f64, wheel_base: f64, wheel_radius: f64) -> Self {
+        Self {
+            inner: DifferentialDriveCommand::from_twist(linear, angular, wheel_base, wheel_radius),
+        }
+    }
+
+    /// Check if command fields are valid.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     #[classattr]
@@ -2634,6 +3028,42 @@ impl PyPidConfig {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Proportional-only controller.
+    #[staticmethod]
+    fn proportional(kp: f64) -> Self {
+        Self {
+            inner: PidConfig::proportional(kp),
+        }
+    }
+
+    /// PI controller (proportional + integral).
+    #[staticmethod]
+    fn pi(kp: f64, ki: f64) -> Self {
+        Self {
+            inner: PidConfig::pi(kp, ki),
+        }
+    }
+
+    /// PD controller (proportional + derivative).
+    #[staticmethod]
+    fn pd(kp: f64, kd: f64) -> Self {
+        Self {
+            inner: PidConfig::pd(kp, kd),
+        }
+    }
+
+    /// Set integral and output limits. Returns a new PidConfig with limits applied.
+    fn with_limits(&self, integral_limit: f64, output_limit: f64) -> Self {
+        Self {
+            inner: self.inner.with_limits(integral_limit, output_limit),
+        }
+    }
+
+    /// Check if gains are valid (finite, non-negative kp).
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     #[classattr]
@@ -2765,6 +3195,22 @@ impl PyTrajectoryPoint {
         self.inner.time_from_start = v;
     }
 
+    /// Create a 2D trajectory point with position and velocity.
+    #[staticmethod]
+    fn new_2d(x: f64, y: f64, vx: f64, vy: f64, time: f64) -> Self {
+        Self {
+            inner: TrajectoryPoint::new_2d(x, y, vx, vy, time),
+        }
+    }
+
+    /// Create a stationary point (zero velocity) at a 3D position.
+    #[staticmethod]
+    fn stationary(x: f64, y: f64, z: f64) -> Self {
+        Self {
+            inner: TrajectoryPoint::stationary(x, y, z),
+        }
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "trajectory_point"
@@ -2873,6 +3319,25 @@ impl PyJointCommand {
 
     fn __len__(&self) -> usize {
         self.inner.joint_count as usize
+    }
+
+    /// Add a position command for a named joint.
+    fn add_position(&mut self, name: &str, position: f64) -> pyo3::PyResult<()> {
+        self.inner
+            .add_position(name, position)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Add a velocity command for a named joint.
+    fn add_velocity(&mut self, name: &str, velocity: f64) -> pyo3::PyResult<()> {
+        self.inner
+            .add_velocity(name, velocity)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Check if command fields are valid.
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
     }
 
     #[classattr]
@@ -3076,6 +3541,11 @@ impl PyBatteryState {
         self.inner.is_critical()
     }
 
+    /// Estimated time remaining in seconds, or None if not discharging.
+    fn time_remaining(&self) -> Option<f32> {
+        self.inner.time_remaining()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "battery"
@@ -3194,6 +3664,19 @@ impl PyNavSatFix {
     }
     fn horizontal_accuracy(&self) -> f32 {
         self.inner.horizontal_accuracy()
+    }
+
+    /// Create from GPS coordinates.
+    #[staticmethod]
+    fn from_coordinates(lat: f64, lon: f64, alt: f64) -> Self {
+        Self {
+            inner: NavSatFix::from_coordinates(lat, lon, alt),
+        }
+    }
+
+    /// Great-circle distance to another GPS position in meters.
+    fn distance_to(&self, other: &PyNavSatFix) -> f64 {
+        self.inner.distance_to(&other.inner)
     }
 
     #[classattr]
@@ -3515,6 +3998,11 @@ impl PyHeartbeat {
         self.inner.timestamp_ns = v;
     }
 
+    /// Increment sequence number and update uptime.
+    fn update(&mut self, uptime: f64) {
+        self.inner.update(uptime);
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "heartbeat"
@@ -3594,6 +4082,55 @@ impl PyDiagnosticStatus {
         self.inner.timestamp_ns = v;
     }
 
+    /// Create an OK status.
+    #[staticmethod]
+    fn ok(message: &str) -> Self {
+        Self {
+            inner: DiagnosticStatus::ok(message),
+        }
+    }
+
+    /// Create a WARN status.
+    #[staticmethod]
+    fn warn(code: u32, message: &str) -> Self {
+        Self {
+            inner: DiagnosticStatus::warn(code, message),
+        }
+    }
+
+    /// Create an ERROR status.
+    #[staticmethod]
+    fn error(code: u32, message: &str) -> Self {
+        Self {
+            inner: DiagnosticStatus::error(code, message),
+        }
+    }
+
+    /// Create a FATAL status.
+    #[staticmethod]
+    fn fatal(code: u32, message: &str) -> Self {
+        Self {
+            inner: DiagnosticStatus::fatal(code, message),
+        }
+    }
+
+    /// Set the component name. Returns a new DiagnosticStatus.
+    fn with_component(&self, component: &str) -> Self {
+        Self {
+            inner: self.inner.clone().with_component(component),
+        }
+    }
+
+    /// Get the message as a string.
+    fn message_str(&self) -> String {
+        self.inner.message_str()
+    }
+
+    /// Get the component as a string.
+    fn component_str(&self) -> String {
+        self.inner.component_str()
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "diagnostics"
@@ -3668,6 +4205,34 @@ impl PyEmergencyStop {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Create an engaged emergency stop.
+    #[staticmethod]
+    fn engage(reason: &str) -> Self {
+        Self {
+            inner: EmergencyStop::engage(reason),
+        }
+    }
+
+    /// Create a release (disengage) command.
+    #[staticmethod]
+    fn release() -> Self {
+        Self {
+            inner: EmergencyStop::release(),
+        }
+    }
+
+    /// Set the source identifier. Returns a new EmergencyStop.
+    fn with_source(&self, source: &str) -> Self {
+        Self {
+            inner: self.inner.clone().with_source(source),
+        }
+    }
+
+    /// Get the reason as a string.
+    fn reason_str(&self) -> String {
+        self.inner.reason_str()
     }
 
     #[classattr]
@@ -3792,6 +4357,21 @@ impl PyResourceUsage {
         self.inner.timestamp_ns = v;
     }
 
+    /// Check if CPU usage exceeds the given threshold percentage.
+    fn is_cpu_high(&self, threshold: f32) -> bool {
+        self.inner.is_cpu_high(threshold)
+    }
+
+    /// Check if memory usage exceeds the given threshold percentage.
+    fn is_memory_high(&self, threshold: f32) -> bool {
+        self.inner.is_memory_high(threshold)
+    }
+
+    /// Check if temperature exceeds the given threshold.
+    fn is_temperature_high(&self, threshold: f32) -> bool {
+        self.inner.is_temperature_high(threshold)
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "resources"
@@ -3885,6 +4465,42 @@ impl PyWrenchStamped {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Create a force-only wrench (zero torque).
+    #[staticmethod]
+    fn force_only(force: &PyVector3) -> Self {
+        Self {
+            inner: WrenchStamped::force_only(force.inner),
+        }
+    }
+
+    /// Create a torque-only wrench (zero force).
+    #[staticmethod]
+    fn torque_only(torque: &PyVector3) -> Self {
+        Self {
+            inner: WrenchStamped::torque_only(torque.inner),
+        }
+    }
+
+    /// Euclidean magnitude of the force vector.
+    fn force_magnitude(&self) -> f64 {
+        self.inner.force_magnitude()
+    }
+
+    /// Euclidean magnitude of the torque vector.
+    fn torque_magnitude(&self) -> f64 {
+        self.inner.torque_magnitude()
+    }
+
+    /// Check if force or torque exceed safety limits.
+    fn exceeds_limits(&self, max_force: f64, max_torque: f64) -> bool {
+        self.inner.exceeds_limits(max_force, max_torque)
+    }
+
+    /// Apply exponential moving average filter with previous reading.
+    fn filter(&mut self, prev: &PyWrenchStamped, alpha: f64) {
+        self.inner.filter(&prev.inner, alpha);
     }
 
     #[classattr]
@@ -4003,6 +4619,29 @@ impl PyForceCommand {
         self.inner.timestamp_ns = v;
     }
 
+    /// Create a force-only command (zero torque).
+    #[staticmethod]
+    fn force_only(target: &PyVector3) -> Self {
+        Self {
+            inner: ForceCommand::force_only(target.inner),
+        }
+    }
+
+    /// Create a surface contact command along a normal direction.
+    #[staticmethod]
+    fn surface_contact(normal_force: f64, normal: &PyVector3) -> Self {
+        Self {
+            inner: ForceCommand::surface_contact(normal_force, normal.inner),
+        }
+    }
+
+    /// Set a timeout. Returns a new ForceCommand.
+    fn with_timeout(&self, timeout_seconds: f64) -> Self {
+        Self {
+            inner: self.inner.clone().with_timeout(timeout_seconds),
+        }
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "force_cmd"
@@ -4098,6 +4737,11 @@ impl PyContactInfo {
 
     fn is_in_contact(&self) -> bool {
         self.inner.is_in_contact()
+    }
+
+    /// Duration of current contact in seconds.
+    fn contact_duration_seconds(&self) -> f64 {
+        self.inner.contact_duration_seconds()
     }
 
     #[classattr]
@@ -4221,6 +4865,35 @@ impl PyNavGoal {
         self.inner.timestamp_ns = v;
     }
 
+    /// Set a timeout in seconds. Returns a new NavGoal with the timeout applied.
+    fn with_timeout(&self, timeout_seconds: f64) -> Self {
+        Self {
+            inner: self.inner.clone().with_timeout(timeout_seconds),
+        }
+    }
+
+    /// Set a priority level. Returns a new NavGoal with the priority applied.
+    fn with_priority(&self, priority: u8) -> Self {
+        Self {
+            inner: self.inner.clone().with_priority(priority),
+        }
+    }
+
+    /// Check if the position tolerance is satisfied.
+    fn is_position_reached(&self, current: &PyPose2D) -> bool {
+        self.inner.is_position_reached(&current.inner)
+    }
+
+    /// Check if the orientation tolerance is satisfied.
+    fn is_orientation_reached(&self, current: &PyPose2D) -> bool {
+        self.inner.is_orientation_reached(&current.inner)
+    }
+
+    /// Check if both position and orientation tolerances are satisfied.
+    fn is_reached(&self, current: &PyPose2D) -> bool {
+        self.inner.is_reached(&current.inner)
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "nav_goal"
@@ -4311,6 +4984,13 @@ impl PyGoalResult {
     #[setter]
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
+    }
+
+    /// Attach an error message. Returns a new GoalResult with the message set.
+    fn with_error(&self, message: &str) -> Self {
+        Self {
+            inner: self.inner.clone().with_error(message),
+        }
     }
 
     #[classattr]
@@ -4476,6 +5156,53 @@ impl PyJoystickInput {
     }
     fn is_axis(&self) -> bool {
         self.inner.is_axis()
+    }
+
+    /// Check if this is a hat/D-pad event.
+    fn is_hat(&self) -> bool {
+        self.inner.is_hat()
+    }
+
+    /// Check if this is a connection/disconnection event.
+    fn is_connection_event(&self) -> bool {
+        self.inner.is_connection_event()
+    }
+
+    /// Check if the joystick is connected (for connection events).
+    fn is_connected(&self) -> bool {
+        self.inner.is_connected()
+    }
+
+    /// Create a button press/release event.
+    #[staticmethod]
+    fn new_button(joystick_id: u32, button_id: u32, name: String, pressed: bool) -> Self {
+        Self {
+            inner: JoystickInput::new_button(joystick_id, button_id, name, pressed),
+        }
+    }
+
+    /// Create an axis movement event.
+    #[staticmethod]
+    fn new_axis(joystick_id: u32, axis_id: u32, name: String, value: f32) -> Self {
+        Self {
+            inner: JoystickInput::new_axis(joystick_id, axis_id, name, value),
+        }
+    }
+
+    /// Create a hat/D-pad event.
+    #[staticmethod]
+    fn new_hat(joystick_id: u32, hat_id: u32, name: String, value: f32) -> Self {
+        Self {
+            inner: JoystickInput::new_hat(joystick_id, hat_id, name, value),
+        }
+    }
+
+    /// Create a connection/disconnection event.
+    #[staticmethod]
+    fn new_connection(joystick_id: u32, connected: bool) -> Self {
+        Self {
+            inner: JoystickInput::new_connection(joystick_id, connected),
+        }
     }
 
     #[classattr]
@@ -4898,6 +5625,13 @@ impl PyDetectionMsg {
         self.inner.confidence >= threshold
     }
 
+    /// Set the class ID. Returns a new Detection.
+    fn with_class_id(&self, class_id: u32) -> Self {
+        let mut inner = self.inner;
+        inner.class_id = class_id;
+        Self { inner }
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "detection"
@@ -5014,6 +5748,15 @@ impl PyDetection3D {
     #[setter]
     fn set_instance_id(&mut self, v: u32) {
         self.inner.instance_id = v;
+    }
+
+    /// Set velocity components. Returns a new Detection3D.
+    fn with_velocity(&self, vx: f32, vy: f32, vz: f32) -> Self {
+        let mut inner = self.inner;
+        inner.velocity_x = vx;
+        inner.velocity_y = vy;
+        inner.velocity_z = vz;
+        Self { inner }
     }
 
     #[classattr]
@@ -5138,6 +5881,11 @@ impl PySegmentationMask {
     }
     fn data_size(&self) -> usize {
         self.inner.data_size()
+    }
+
+    /// Size of the u16 data array (for instance/panoptic masks).
+    fn data_size_u16(&self) -> usize {
+        self.inner.data_size_u16()
     }
 
     #[classattr]
@@ -5846,6 +6594,17 @@ impl PyPlaneDetection {
         self.inner.timestamp_ns = v;
     }
 
+    /// Signed distance from a point to this plane.
+    fn distance_to_point(&self, px: f64, py: f64, pz: f64) -> f64 {
+        self.inner.distance_to_point(&Point3::new(px, py, pz))
+    }
+
+    /// Check if a point lies on or near this plane within tolerance.
+    fn contains_point(&self, px: f64, py: f64, pz: f64, tolerance: f64) -> bool {
+        self.inner
+            .contains_point(&Point3::new(px, py, pz), tolerance)
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "plane_detection"
@@ -6075,6 +6834,13 @@ impl PyCameraInfo {
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
     }
+    /// Set the distortion model name. Returns a new CameraInfo.
+    fn with_distortion_model(&self, model: &str) -> Self {
+        Self {
+            inner: self.inner.clone().with_distortion_model(model),
+        }
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "camera_info"
@@ -6334,6 +7100,17 @@ impl PyImpedanceParameters {
             inner: ImpedanceParameters::stiff(),
         }
     }
+
+    /// Enable impedance control.
+    fn enable(&mut self) {
+        self.inner.enable();
+    }
+
+    /// Disable impedance control.
+    fn disable(&mut self) {
+        self.inner.disable();
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "impedance_parameters"
@@ -6423,6 +7200,30 @@ impl PyHapticFeedback {
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
     }
+    /// Create a vibration feedback pattern.
+    #[staticmethod]
+    fn vibration(intensity: f32, frequency: f32, duration: f32) -> Self {
+        Self {
+            inner: HapticFeedback::vibration(intensity, frequency, duration),
+        }
+    }
+
+    /// Create a force feedback pattern.
+    #[staticmethod]
+    fn force(force: &PyVector3, duration: f32) -> Self {
+        Self {
+            inner: HapticFeedback::force(force.inner, duration),
+        }
+    }
+
+    /// Create a pulse feedback pattern.
+    #[staticmethod]
+    fn pulse(intensity: f32, frequency: f32, duration: f32) -> Self {
+        Self {
+            inner: HapticFeedback::pulse(intensity, frequency, duration),
+        }
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "haptic_feedback"
@@ -6570,6 +7371,34 @@ impl PyDiagnosticReport {
             })
             .collect()
     }
+    /// Add a string key-value pair to the report.
+    fn add_string(&mut self, key: &str, value: &str) -> pyo3::PyResult<()> {
+        self.inner
+            .add_string(key, value)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Add an integer key-value pair to the report.
+    fn add_int(&mut self, key: &str, value: i64) -> pyo3::PyResult<()> {
+        self.inner
+            .add_int(key, value)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Add a float key-value pair to the report.
+    fn add_float(&mut self, key: &str, value: f64) -> pyo3::PyResult<()> {
+        self.inner
+            .add_float(key, value)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Add a boolean key-value pair to the report.
+    fn add_bool(&mut self, key: &str, value: bool) -> pyo3::PyResult<()> {
+        self.inner
+            .add_bool(key, value)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "diagnostic_report"
@@ -6666,6 +7495,11 @@ impl PyNodeHeartbeat {
     fn is_fresh(&self, max_age_secs: u64) -> bool {
         self.inner.is_fresh(max_age_secs)
     }
+    /// Update the timestamp to current time.
+    fn update_timestamp(&mut self) {
+        self.inner.update_timestamp();
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "node_heartbeat"
@@ -6760,6 +7594,21 @@ impl PySafetyStatus {
     fn set_timestamp_ns(&mut self, v: u64) {
         self.inner.timestamp_ns = v;
     }
+    /// Check if all safety conditions are met.
+    fn is_safe(&self) -> bool {
+        self.inner.is_safe()
+    }
+
+    /// Set a fault code.
+    fn set_fault(&mut self, code: u32) {
+        self.inner.set_fault(code);
+    }
+
+    /// Clear all fault codes.
+    fn clear_faults(&mut self) {
+        self.inner.clear_faults();
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "safety_status"
@@ -6842,6 +7691,20 @@ impl PyWaypoint {
     fn set_stop_required(&mut self, v: bool) {
         self.inner.stop_required = v as u8;
     }
+    /// Set a velocity constraint at this waypoint. Returns a new Waypoint.
+    fn with_velocity(&self, velocity: &PyTwist) -> Self {
+        Self {
+            inner: self.inner.clone().with_velocity(velocity.inner),
+        }
+    }
+
+    /// Mark this waypoint as requiring a full stop. Returns a new Waypoint.
+    fn with_stop(&self) -> Self {
+        Self {
+            inner: self.inner.clone().with_stop(),
+        }
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "waypoint"
@@ -6919,6 +7782,16 @@ impl PyNavPath {
             })
             .collect()
     }
+    /// Find the index of the closest waypoint to the current pose.
+    fn closest_waypoint_index(&self, current: &PyPose2D) -> Option<usize> {
+        self.inner.closest_waypoint_index(&current.inner)
+    }
+
+    /// Calculate progress along the path as a fraction [0.0, 1.0].
+    fn calculate_progress(&self, current: &PyPose2D) -> f32 {
+        self.inner.calculate_progress(&current.inner)
+    }
+
     #[classattr]
     fn __topic_name__() -> &'static str {
         "nav_path"
@@ -7329,6 +8202,8 @@ pub fn register_message_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCostMap>()?;
     // Audio
     m.add_class::<PyAudioFrame>()?;
+    // Tactile
+    m.add_class::<PyTactileArray>()?;
     Ok(())
 }
 
@@ -7447,6 +8322,30 @@ impl PyAudioFrame {
         self.inner.frame_id_str().to_string()
     }
 
+    /// Create a mono audio frame.
+    #[staticmethod]
+    fn mono(sample_rate: u32, samples: Vec<f32>) -> Self {
+        Self {
+            inner: AudioFrame::mono(sample_rate, &samples),
+        }
+    }
+
+    /// Create a stereo audio frame (interleaved L/R samples).
+    #[staticmethod]
+    fn stereo(sample_rate: u32, samples: Vec<f32>) -> Self {
+        Self {
+            inner: AudioFrame::stereo(sample_rate, &samples),
+        }
+    }
+
+    /// Create a multi-channel audio frame.
+    #[staticmethod]
+    fn multi_channel(sample_rate: u32, channels: u8, samples: Vec<f32>) -> Self {
+        Self {
+            inner: AudioFrame::multi_channel(sample_rate, channels, &samples),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "AudioFrame({}ch, {}Hz, {} samples, {:.1}ms)",
@@ -7455,5 +8354,115 @@ impl PyAudioFrame {
             self.inner.num_samples,
             self.inner.duration_ms()
         )
+    }
+}
+
+// ============================================================================
+// Tactile Types
+// ============================================================================
+
+/// TactileArray — tactile sensor array reading for contact-rich manipulation.
+///
+/// Args:
+///     rows: Number of taxel rows (default: 0)
+///     cols: Number of taxel columns (default: 0)
+///
+/// Example::
+///
+///     tactile = TactileArray(rows=4, cols=4)
+///     tactile.set_force(1, 2, 3.5)
+///     print(tactile.get_force(1, 2))
+#[pyclass(name = "TactileArray")]
+#[derive(Clone)]
+pub struct PyTactileArray {
+    pub(crate) inner: TactileArray,
+}
+
+#[pymethods]
+impl PyTactileArray {
+    #[new]
+    #[pyo3(signature = (rows=0, cols=0))]
+    fn new(rows: u32, cols: u32) -> Self {
+        Self {
+            inner: TactileArray::new(rows, cols),
+        }
+    }
+    #[getter]
+    fn rows(&self) -> u32 {
+        self.inner.rows
+    }
+    #[setter]
+    fn set_rows(&mut self, v: u32) {
+        self.inner.rows = v;
+    }
+    #[getter]
+    fn cols(&self) -> u32 {
+        self.inner.cols
+    }
+    #[setter]
+    fn set_cols(&mut self, v: u32) {
+        self.inner.cols = v;
+    }
+    #[getter]
+    fn forces(&self) -> Vec<f32> {
+        self.inner.forces.clone()
+    }
+    #[setter]
+    fn set_forces(&mut self, v: Vec<f32>) {
+        self.inner.forces = v;
+    }
+    #[getter]
+    fn total_force(&self) -> [f32; 3] {
+        self.inner.total_force
+    }
+    #[setter]
+    fn set_total_force(&mut self, v: [f32; 3]) {
+        self.inner.total_force = v;
+    }
+    #[getter]
+    fn center_of_pressure(&self) -> [f32; 2] {
+        self.inner.center_of_pressure
+    }
+    #[setter]
+    fn set_center_of_pressure(&mut self, v: [f32; 2]) {
+        self.inner.center_of_pressure = v;
+    }
+    #[getter]
+    fn in_contact(&self) -> bool {
+        self.inner.in_contact
+    }
+    #[setter]
+    fn set_in_contact(&mut self, v: bool) {
+        self.inner.in_contact = v;
+    }
+    #[getter]
+    fn physical_size(&self) -> [f32; 2] {
+        self.inner.physical_size
+    }
+    #[setter]
+    fn set_physical_size(&mut self, v: [f32; 2]) {
+        self.inner.physical_size = v;
+    }
+    #[getter]
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns
+    }
+    #[setter]
+    fn set_timestamp_ns(&mut self, v: u64) {
+        self.inner.timestamp_ns = v;
+    }
+    fn get_force(&self, row: u32, col: u32) -> Option<f32> {
+        self.inner.get_force(row, col)
+    }
+    fn set_force(&mut self, row: u32, col: u32, force: f32) {
+        self.inner.set_force(row, col, force);
+    }
+    #[classattr]
+    fn __topic_name__() -> &'static str {
+        "tactile_array"
+    }
+    fn __repr__(&self) -> String {
+        use horus::core::LogSummary;
+        self.inner.log_summary()
     }
 }

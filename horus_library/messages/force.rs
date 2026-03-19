@@ -393,6 +393,76 @@ impl softmata_core::sensor::WrenchData for WrenchStamped {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
+/// Tactile sensor array reading.
+///
+/// Represents a grid of taxel (tactile pixel) readings from a tactile sensor
+/// pad. Used for grasp detection, contact mapping, and manipulation feedback.
+///
+/// Data layout: row-major order, `rows × cols` taxels, each a force value in Newtons.
+/// Center of pressure is computed as weighted average of taxel positions.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TactileArray {
+    /// Array dimensions: rows
+    pub rows: u32,
+    /// Array dimensions: columns
+    pub cols: u32,
+    /// Taxel force readings in Newtons (row-major, length = rows × cols)
+    pub forces: Vec<f32>,
+    /// Total contact force [fx, fy, fz] in Newtons
+    pub total_force: [f32; 3],
+    /// Center of pressure in normalized coordinates [0.0, 1.0] (row, col)
+    /// None if no contact detected
+    pub center_of_pressure: [f32; 2],
+    /// Whether any contact is detected (any force > threshold)
+    pub in_contact: bool,
+    /// Physical size of sensor surface [width_m, height_m]
+    pub physical_size: [f32; 2],
+    /// Timestamp in nanoseconds
+    pub timestamp_ns: u64,
+}
+
+impl TactileArray {
+    /// Create a new tactile array with given dimensions.
+    pub fn new(rows: u32, cols: u32) -> Self {
+        Self {
+            rows,
+            cols,
+            forces: vec![0.0; (rows * cols) as usize],
+            ..Default::default()
+        }
+    }
+
+    /// Get the force reading at (row, col).
+    pub fn get_force(&self, row: u32, col: u32) -> Option<f32> {
+        if row < self.rows && col < self.cols {
+            Some(self.forces[(row * self.cols + col) as usize])
+        } else {
+            None
+        }
+    }
+
+    /// Set the force reading at (row, col).
+    pub fn set_force(&mut self, row: u32, col: u32, force: f32) {
+        if row < self.rows && col < self.cols {
+            self.forces[(row * self.cols + col) as usize] = force;
+        }
+    }
+}
+
+impl horus_core::core::LogSummary for TactileArray {
+    fn log_summary(&self) -> String {
+        format!(
+            "TactileArray({}x{}, contact={}, force=[{:.2},{:.2},{:.2}])",
+            self.rows,
+            self.cols,
+            self.in_contact,
+            self.total_force[0],
+            self.total_force[1],
+            self.total_force[2]
+        )
+    }
+}
+
 crate::messages::impl_pod_message!(
     WrenchStamped,
     ImpedanceParameters,
@@ -400,3 +470,4 @@ crate::messages::impl_pod_message!(
     ContactInfo,
     HapticFeedback,
 );
+// Note: TactileArray uses Vec<f32> so it's NOT POD — uses serde serialization path

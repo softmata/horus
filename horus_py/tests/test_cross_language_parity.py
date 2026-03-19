@@ -779,3 +779,133 @@ class TestCrossLanguageRustSendsPythonReceives:
         grid = horus.OccupancyGrid(width=3, height=3, resolution=0.5)
         msg = horus.CostMap(grid=grid, inflation_radius=0.5)
         roundtrip(horus.CostMap, msg, {"inflation_radius": 0.5})
+
+
+# =============================================================================
+# JointCommand
+# =============================================================================
+
+class TestJointCommand:
+    def test_construction_empty(self):
+        cmd = horus.JointCommand()
+        assert len(cmd) == 0
+        assert cmd.names == []
+        assert cmd.positions == []
+
+    def test_construction_with_joints(self):
+        cmd = horus.JointCommand(
+            names=["shoulder", "elbow"],
+            positions=[1.5, -0.3],
+            velocities=[0.1, 0.2],
+        )
+        assert len(cmd) == 2
+        assert cmd.names == ["shoulder", "elbow"]
+        assert abs(cmd.positions[0] - 1.5) < 1e-9
+        assert abs(cmd.positions[1] - (-0.3)) < 1e-9
+        assert abs(cmd.velocities[0] - 0.1) < 1e-9
+
+    def test_add_position(self):
+        cmd = horus.JointCommand()
+        cmd.add_position("joint1", 1.5)
+        cmd.add_position("joint2", -0.7)
+        assert len(cmd) == 2
+        assert cmd.names == ["joint1", "joint2"]
+        assert abs(cmd.positions[0] - 1.5) < 1e-9
+        assert abs(cmd.positions[1] - (-0.7)) < 1e-9
+
+    def test_add_velocity(self):
+        cmd = horus.JointCommand()
+        cmd.add_velocity("wrist", 2.0)
+        assert len(cmd) == 1
+        assert abs(cmd.velocities[0] - 2.0) < 1e-9
+
+    def test_is_valid(self):
+        cmd = horus.JointCommand(names=["a"], positions=[1.0])
+        assert cmd.is_valid()
+
+    def test_roundtrip(self):
+        msg = horus.JointCommand(
+            names=["shoulder", "elbow"],
+            positions=[1.5, -0.3],
+        )
+        # JointCommand topic name is "joint_command"
+        # Use roundtrip with field checks on length
+        received = []
+
+        def publisher(node):
+            if node.info.tick_count() == 0:
+                node.send("JointCommand", msg)
+            elif node.info.tick_count() > 2:
+                node.request_stop()
+
+        def subscriber(node):
+            m = node.recv("JointCommand")
+            if m is not None:
+                received.append(m)
+                node.request_stop()
+            elif node.info.tick_count() > 10:
+                node.request_stop()
+
+        pub = horus.Node(name="pub", pubs="JointCommand", tick=publisher)
+        sub = horus.Node(name="sub", subs="JointCommand", tick=subscriber)
+        horus.run(pub, sub, duration=1.0)
+
+        assert len(received) >= 1, "No JointCommand received"
+        m = received[0]
+        assert len(m) == 2
+
+
+# =============================================================================
+# PlaneArray
+# =============================================================================
+
+class TestPlaneArray:
+    def test_construction(self):
+        pa = horus.PlaneArray()
+        assert pa.count == 0
+        assert len(pa) == 0
+
+    def test_add_plane(self):
+        pa = horus.PlaneArray()
+        plane = horus.PlaneDetection()
+        pa.add_plane(plane)
+        assert pa.count == 1
+        assert len(pa) == 1
+        # Access via __getitem__
+        p = pa[0]
+        assert abs(p.confidence - 0.5) < 0.01  # default confidence
+
+    def test_roundtrip(self):
+        msg = horus.PlaneArray()
+        roundtrip(horus.PlaneArray, msg, {"count": 0})
+
+
+# =============================================================================
+# TactileArray
+# =============================================================================
+
+class TestTactileArray:
+    def test_construction(self):
+        ta = horus.TactileArray(rows=4, cols=4)
+        assert ta.rows == 4
+        assert ta.cols == 4
+        assert ta.in_contact == False
+        assert len(ta.forces) == 16  # 4*4
+
+    def test_set_get_force(self):
+        ta = horus.TactileArray(rows=3, cols=3)
+        ta.set_force(0, 0, 1.5)
+        ta.set_force(2, 2, 3.7)
+        f00 = ta.get_force(0, 0)
+        f22 = ta.get_force(2, 2)
+        assert f00 is not None and abs(f00 - 1.5) < 0.01
+        assert f22 is not None and abs(f22 - 3.7) < 0.01
+
+    def test_contact_flag(self):
+        ta = horus.TactileArray(rows=2, cols=2)
+        ta.in_contact = True
+        assert ta.in_contact == True
+
+    def test_roundtrip(self):
+        msg = horus.TactileArray(rows=4, cols=4)
+        roundtrip(horus.TactileArray, msg, {"rows": 4, "cols": 4})

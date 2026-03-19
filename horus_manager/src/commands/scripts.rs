@@ -192,7 +192,8 @@ mod tests {
     }
 
     #[test]
-    fn scripts_missing_package_section_fails() {
+    fn scripts_missing_package_section_still_parses() {
+        // A manifest without [package] is valid (virtual workspace pattern).
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(
             tmp.path().join(HORUS_TOML),
@@ -201,17 +202,18 @@ mod tests {
         .unwrap();
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
         assert!(
-            result.is_err(),
-            "Manifest without [package] should fail to parse"
+            result.is_ok(),
+            "Manifest without [package] should parse (virtual workspace)"
         );
     }
 
     #[test]
-    fn scripts_empty_file_fails() {
+    fn scripts_empty_file_parses_with_defaults() {
+        // An empty horus.toml parses with all defaults.
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join(HORUS_TOML), "").unwrap();
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     // ── List (name = None) ───────────────────────────────────────────────────
