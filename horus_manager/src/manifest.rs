@@ -3609,4 +3609,79 @@ version = "0.1.0"
             serialized_ws
         );
     }
+
+    // ── Additional manifest parsing tests ────────────────────────────
+
+    #[test]
+    fn test_manifest_parse_minimal_toml() {
+        let toml_str = "[package]\nname = \"test\"\nversion = \"0.1.0\"";
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.package.name, "test");
+        assert_eq!(manifest.package.version, "0.1.0");
+        // Defaults are applied for optional fields
+        assert!(manifest.package.description.is_none());
+        assert!(manifest.package.authors.is_empty());
+        assert!(manifest.dependencies.is_empty());
+        assert!(manifest.scripts.is_empty());
+    }
+
+    #[test]
+    fn test_manifest_parse_with_dependencies() {
+        let toml_str = r#"
+[package]
+name = "test-deps"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.dependencies.len(), 1);
+        match &manifest.dependencies["serde"] {
+            DependencyValue::Simple(v) => assert_eq!(v, "1.0"),
+            other => panic!("expected Simple(\"1.0\"), got {:?}", other),
+        }
+        // Simple deps default to Registry source
+        assert_eq!(
+            manifest.dependencies["serde"].effective_source(),
+            DepSource::Registry
+        );
+    }
+
+    #[test]
+    fn test_manifest_parse_with_detailed_dep() {
+        let toml_str = r#"
+[package]
+name = "test-detailed"
+version = "0.1.0"
+
+[dependencies.tokio]
+version = "1.0"
+features = ["full"]
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.dependencies.len(), 1);
+        match &manifest.dependencies["tokio"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.version.as_deref(), Some("1.0"));
+                assert_eq!(d.features, vec!["full"]);
+            }
+            other => panic!("expected Detailed with version and features, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_manifest_parse_with_scripts() {
+        let toml_str = r#"
+[package]
+name = "test-scripts"
+version = "0.1.0"
+
+[scripts]
+test = "cargo test"
+"#;
+        let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.scripts.len(), 1);
+        assert_eq!(manifest.scripts["test"], "cargo test");
+    }
 }

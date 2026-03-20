@@ -28,7 +28,7 @@ horus monitor                   # Web UI system monitor (-t for terminal UI)
 horus topic list|echo|pub       # Topic interaction
 horus node list|info|kill       # Node management
 horus param get|set|list        # Runtime parameters
-horus hf list|echo|tree         # Coordinate transforms
+horus frame list|echo|tree      # Coordinate transforms (alias: horus tf)
 horus msg list|show|fields      # Message type inspection
 horus log [node]                # View logs (-f follow, -l level)
 ```

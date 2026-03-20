@@ -224,16 +224,24 @@ impl Odometry {
         }
     }
 
-    /// Set frame IDs from strings
+    /// Set frame IDs from strings.
+    ///
+    /// Frame IDs longer than 31 bytes are truncated with a warning.
     pub fn set_frames(&mut self, frame: &str, child_frame: &str) {
         // Copy frame_id string
         let frame_bytes = frame.as_bytes();
+        if frame_bytes.len() > 31 {
+            eprintln!("[WARN] Odometry frame_id '{}' truncated to 31 bytes", frame);
+        }
         let len = frame_bytes.len().min(31);
         self.frame_id[..len].copy_from_slice(&frame_bytes[..len]);
         self.frame_id[len] = 0; // Null terminator
 
         // Copy child_frame_id string
         let child_bytes = child_frame.as_bytes();
+        if child_bytes.len() > 31 {
+            eprintln!("[WARN] Odometry child_frame_id '{}' truncated to 31 bytes", child_frame);
+        }
         let len = child_bytes.len().min(31);
         self.child_frame_id[..len].copy_from_slice(&child_bytes[..len]);
         self.child_frame_id[len] = 0; // Null terminator

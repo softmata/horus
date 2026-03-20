@@ -28,6 +28,29 @@ pub enum SafetyState {
     EmergencyStop,
 }
 
+/// Policy for handling tick budget violations.
+///
+/// Controls what happens when a node exceeds its allocated tick budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetPolicy {
+    /// Log the violation but take no corrective action (default).
+    /// The graduated degradation path will handle it over time.
+    Warn,
+    /// Immediately stop the node after a budget violation.
+    /// The node will have shutdown() called and be permanently removed.
+    /// Safer than mid-tick interruption — waits for tick to complete,
+    /// then prevents all future ticks.
+    Enforce,
+    /// Trigger emergency stop on budget violation (for critical nodes).
+    EmergencyStop,
+}
+
+impl Default for BudgetPolicy {
+    fn default() -> Self {
+        BudgetPolicy::Warn
+    }
+}
+
 /// Graduated watchdog severity level.
 ///
 /// Returned by `Watchdog::check_graduated()` to indicate how far past the
@@ -85,7 +108,7 @@ impl Watchdog {
     pub(crate) fn check(&self) -> bool {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns().saturating_sub(last_ns);
-        let expired = elapsed_ns > self.timeout.as_nanos() as u64;
+        let expired = elapsed_ns >= self.timeout.as_nanos() as u64;
         if expired {
             self.expired.store(true, Ordering::SeqCst);
         }
@@ -290,6 +313,8 @@ pub(crate) struct DegradationPolicy {
     pub(crate) reduce_after: u64,
     /// Consecutive misses before isolating node (default: 10)
     pub(crate) isolate_after: u64,
+    /// Consecutive misses before killing node — permanently removing from execution (default: 20)
+    pub(crate) kill_after: u64,
     /// Successful ticks at reduced rate before restoring original (default: 100)
     pub(crate) recovery_ticks: u64,
 }
@@ -300,6 +325,7 @@ impl Default for DegradationPolicy {
             warn_after: 3,
             reduce_after: 5,
             isolate_after: 10,
+            kill_after: 20,
             recovery_ticks: 100,
         }
     }
@@ -316,6 +342,8 @@ pub(crate) enum DegradationStage {
     RateReduced,
     /// Isolated — node skipped entirely in tick loop.
     Isolated,
+    /// Killed — node permanently removed from execution after shutdown().
+    Killed,
 }
 
 /// Per-node degradation tracking.
@@ -350,8 +378,13 @@ pub(crate) enum DegradationAction {
     ReduceRate { node: String, new_rate_hz: f64 },
     /// Isolate node — skip in tick loop.
     Isolate(String),
+    /// Kill node — call shutdown() and permanently remove from execution.
+    /// This is the final stage for nodes that remain stalled after isolation.
+    Kill(String),
     /// Restore node to original rate (recovery).
     RestoreRate { node: String, original_rate_hz: f64 },
+    /// De-isolate node — resume ticking at reduced rate.
+    Deisolate(String),
 }
 
 /// budget (Worst-Case Execution Time) enforcer with real per-node metrics.
@@ -692,13 +725,21 @@ impl SafetyMonitor {
         let mut states = self.degradation_states.lock();
         let state = states.entry(node_name.to_string()).or_default();
 
-        if consecutive_misses >= policy.isolate_after && state.stage != DegradationStage::Isolated {
+        if consecutive_misses >= policy.kill_after && state.stage != DegradationStage::Killed {
+            state.stage = DegradationStage::Killed;
+            state.recovery_counter = 0;
+            DegradationAction::Kill(node_name.to_string())
+        } else if consecutive_misses >= policy.isolate_after
+            && state.stage != DegradationStage::Isolated
+            && state.stage != DegradationStage::Killed
+        {
             state.stage = DegradationStage::Isolated;
             state.recovery_counter = 0;
             DegradationAction::Isolate(node_name.to_string())
         } else if consecutive_misses >= policy.reduce_after
             && state.stage != DegradationStage::RateReduced
             && state.stage != DegradationStage::Isolated
+            && state.stage != DegradationStage::Killed
         {
             state.stage = DegradationStage::RateReduced;
             state.recovery_counter = 0;
@@ -710,7 +751,8 @@ impl SafetyMonitor {
                 node: node_name.to_string(),
                 new_rate_hz: new_rate,
             }
-        } else if consecutive_misses >= policy.warn_after && state.stage == DegradationStage::Normal
+        } else if consecutive_misses >= policy.warn_after
+            && state.stage == DegradationStage::Normal
         {
             state.stage = DegradationStage::Warned;
             DegradationAction::Warn(node_name.to_string())
@@ -746,7 +788,11 @@ impl SafetyMonitor {
                             original_rate_hz: rate,
                         };
                     }
-                    // No original rate saved — just go back to Normal stage
+                    // No original rate saved — rate cannot be restored
+                    log::warn!(
+                        "Node '{}': recovered from RateReduced but original_rate_hz was None — rate not restored",
+                        node_name
+                    );
                     DegradationAction::None
                 } else {
                     DegradationAction::None
@@ -757,6 +803,22 @@ impl SafetyMonitor {
                 state.stage = DegradationStage::Normal;
                 state.recovery_counter = 0;
                 DegradationAction::None
+            }
+            DegradationStage::Isolated => {
+                // Successful tick at Isolated stage — recover to RateReduced first,
+                // then RateReduced → Normal on continued success.
+                state.recovery_counter += 1;
+                if state.recovery_counter >= recovery_ticks {
+                    state.stage = DegradationStage::RateReduced;
+                    state.recovery_counter = 0;
+                    log::info!(
+                        "Node '{}': recovered from Isolated to RateReduced after {} successful ticks",
+                        node_name, recovery_ticks
+                    );
+                    DegradationAction::Deisolate(node_name.to_string())
+                } else {
+                    DegradationAction::None
+                }
             }
             _ => DegradationAction::None,
         }
@@ -1329,6 +1391,7 @@ mod tests {
             warn_after: 3,
             reduce_after: 5,
             isolate_after: 10,
+            kill_after: 20,
             recovery_ticks: 100,
         });
 
@@ -1354,8 +1417,12 @@ mod tests {
         let action = monitor.evaluate_degradation("motor", 10, Some(100.0));
         assert_eq!(action, DegradationAction::Isolate("motor".to_string()));
 
-        // Already isolated — no further action
+        // At kill threshold — kill the node permanently
         let action = monitor.evaluate_degradation("motor", 20, Some(100.0));
+        assert_eq!(action, DegradationAction::Kill("motor".to_string()));
+
+        // Already killed — no further action
+        let action = monitor.evaluate_degradation("motor", 30, Some(100.0));
         assert_eq!(action, DegradationAction::None);
     }
 
@@ -1366,6 +1433,7 @@ mod tests {
             warn_after: 1,
             reduce_after: 2,
             isolate_after: 100, // high so we test recovery at RateReduced stage
+            kill_after: 200,
             recovery_ticks: 5,
         });
 
@@ -1410,6 +1478,7 @@ mod tests {
             warn_after: 2,
             reduce_after: 5,
             isolate_after: 10,
+            kill_after: 20,
             recovery_ticks: 100,
         });
 
@@ -1437,6 +1506,7 @@ mod tests {
             warn_after: 1,
             reduce_after: 2,
             isolate_after: 10,
+            kill_after: 20,
             recovery_ticks: 100,
         });
 
@@ -1459,6 +1529,7 @@ mod tests {
             warn_after: 2,
             reduce_after: 5,
             isolate_after: 10,
+            kill_after: 20,
             recovery_ticks: 100,
         });
 
@@ -1567,12 +1638,282 @@ mod tests {
             warn_after: 1000,
             reduce_after: 2000,
             isolate_after: 3000,
+            kill_after: 6000,
             recovery_ticks: 100,
         });
 
         monitor.record_deadline_miss_with_severity("motor", 500);
         let action = monitor.evaluate_degradation("motor", 1, None);
         assert_eq!(action, DegradationAction::None);
+    }
+
+    // ========================================================================
+    // Deisolate recovery tests
+    // ========================================================================
+
+    #[test]
+    fn test_deisolate_recovery_from_isolated_stage() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 5,
+            kill_after: 100,
+            recovery_ticks: 3,
+        });
+
+        // Escalate to Isolated
+        let _ = monitor.evaluate_degradation("motor", 1, Some(100.0)); // Warn
+        let _ = monitor.evaluate_degradation("motor", 2, Some(100.0)); // ReduceRate
+        let action = monitor.evaluate_degradation("motor", 5, Some(100.0)); // Isolate
+        assert_eq!(action, DegradationAction::Isolate("motor".to_string()));
+        assert_eq!(
+            monitor.degradation_stage("motor"),
+            DegradationStage::Isolated
+        );
+
+        // 2 successful ticks — not yet recovered
+        for _ in 0..2 {
+            let action = monitor.record_successful_tick("motor");
+            assert_eq!(action, DegradationAction::None);
+        }
+        assert_eq!(
+            monitor.degradation_stage("motor"),
+            DegradationStage::Isolated
+        );
+
+        // 3rd successful tick — Deisolate!
+        let action = monitor.record_successful_tick("motor");
+        assert_eq!(
+            action,
+            DegradationAction::Deisolate("motor".to_string())
+        );
+        assert_eq!(
+            monitor.degradation_stage("motor"),
+            DegradationStage::RateReduced
+        );
+    }
+
+    #[test]
+    fn test_deisolate_then_restore_full_recovery_path() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 5,
+            kill_after: 100,
+            recovery_ticks: 3,
+        });
+
+        // Escalate to Isolated
+        let _ = monitor.evaluate_degradation("arm", 1, Some(200.0));
+        let _ = monitor.evaluate_degradation("arm", 2, Some(200.0));
+        let _ = monitor.evaluate_degradation("arm", 5, Some(200.0));
+        assert_eq!(monitor.degradation_stage("arm"), DegradationStage::Isolated);
+
+        // Recover from Isolated → RateReduced (3 successful ticks)
+        for _ in 0..2 {
+            monitor.record_successful_tick("arm");
+        }
+        let action = monitor.record_successful_tick("arm");
+        assert_eq!(action, DegradationAction::Deisolate("arm".to_string()));
+        assert_eq!(
+            monitor.degradation_stage("arm"),
+            DegradationStage::RateReduced
+        );
+
+        // Recover from RateReduced → Normal (3 more successful ticks)
+        for _ in 0..2 {
+            monitor.record_successful_tick("arm");
+        }
+        let action = monitor.record_successful_tick("arm");
+        assert_eq!(
+            action,
+            DegradationAction::RestoreRate {
+                node: "arm".to_string(),
+                original_rate_hz: 200.0,
+            }
+        );
+        assert_eq!(monitor.degradation_stage("arm"), DegradationStage::Normal);
+    }
+
+    #[test]
+    fn test_isolated_node_does_not_stay_stuck_forever() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 3,
+            kill_after: 100,
+            recovery_ticks: 5,
+        });
+
+        // Isolate the node
+        let _ = monitor.evaluate_degradation("sensor", 1, Some(50.0));
+        let _ = monitor.evaluate_degradation("sensor", 2, Some(50.0));
+        let _ = monitor.evaluate_degradation("sensor", 3, Some(50.0));
+        assert_eq!(
+            monitor.degradation_stage("sensor"),
+            DegradationStage::Isolated
+        );
+
+        // Simulate 1000 successful ticks — must eventually recover fully
+        let mut saw_deisolate = false;
+        let mut saw_restore = false;
+        for _ in 0..1000 {
+            let action = monitor.record_successful_tick("sensor");
+            match action {
+                DegradationAction::Deisolate(_) => saw_deisolate = true,
+                DegradationAction::RestoreRate { .. } => saw_restore = true,
+                _ => {}
+            }
+            if saw_restore {
+                break;
+            }
+        }
+        assert!(saw_deisolate, "node must transition through Deisolate");
+        assert!(saw_restore, "node must eventually reach RestoreRate");
+        assert_eq!(
+            monitor.degradation_stage("sensor"),
+            DegradationStage::Normal
+        );
+    }
+
+    // ========================================================================
+    // Kill degradation tests
+    // ========================================================================
+
+    #[test]
+    fn test_kill_stage_after_prolonged_failure() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 2,
+            reduce_after: 5,
+            isolate_after: 10,
+            kill_after: 20,
+            recovery_ticks: 100,
+        });
+
+        // Escalate through all stages
+        let _ = monitor.evaluate_degradation("stalled", 2, Some(100.0)); // Warn
+        let _ = monitor.evaluate_degradation("stalled", 5, Some(100.0)); // ReduceRate
+        let _ = monitor.evaluate_degradation("stalled", 10, Some(100.0)); // Isolate
+        let action = monitor.evaluate_degradation("stalled", 20, Some(100.0)); // Kill
+        assert_eq!(
+            action,
+            DegradationAction::Kill("stalled".to_string())
+        );
+        assert_eq!(
+            monitor.degradation_stage("stalled"),
+            DegradationStage::Killed
+        );
+    }
+
+    #[test]
+    fn test_killed_node_no_further_actions() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 3,
+            kill_after: 5,
+            recovery_ticks: 2,
+        });
+
+        // Kill the node
+        let _ = monitor.evaluate_degradation("dead", 1, Some(100.0));
+        let _ = monitor.evaluate_degradation("dead", 2, Some(100.0));
+        let _ = monitor.evaluate_degradation("dead", 3, Some(100.0));
+        let _ = monitor.evaluate_degradation("dead", 5, Some(100.0));
+        assert_eq!(monitor.degradation_stage("dead"), DegradationStage::Killed);
+
+        // Further misses produce no action (already dead)
+        let action = monitor.evaluate_degradation("dead", 100, Some(100.0));
+        assert_eq!(action, DegradationAction::None);
+
+        // Successful ticks produce no action (killed nodes can't recover)
+        let action = monitor.record_successful_tick("dead");
+        assert_eq!(action, DegradationAction::None);
+    }
+
+    // ========================================================================
+    // Multi-node independent degradation
+    // ========================================================================
+
+    #[test]
+    fn test_degradation_multiple_nodes_independent_stages() {
+        let mut monitor = SafetyMonitor::new(100);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 2,
+            reduce_after: 4,
+            isolate_after: 8,
+            kill_after: 16,
+            recovery_ticks: 3,
+        });
+
+        // Motor is isolated, arm is warned, sensor is normal
+        let _ = monitor.evaluate_degradation("motor", 2, Some(100.0));
+        let _ = monitor.evaluate_degradation("motor", 4, Some(100.0));
+        let _ = monitor.evaluate_degradation("motor", 8, Some(100.0));
+        let _ = monitor.evaluate_degradation("arm", 2, Some(50.0));
+
+        assert_eq!(
+            monitor.degradation_stage("motor"),
+            DegradationStage::Isolated
+        );
+        assert_eq!(
+            monitor.degradation_stage("arm"),
+            DegradationStage::Warned
+        );
+
+        // Motor recovers while arm stays warned
+        for _ in 0..3 {
+            monitor.record_successful_tick("motor");
+        }
+        assert_eq!(
+            monitor.degradation_stage("motor"),
+            DegradationStage::RateReduced
+        );
+        assert_eq!(
+            monitor.degradation_stage("arm"),
+            DegradationStage::Warned
+        );
+
+        // Arm recovers independently
+        let action = monitor.record_successful_tick("arm");
+        assert_eq!(action, DegradationAction::None);
+        assert_eq!(
+            monitor.degradation_stage("arm"),
+            DegradationStage::Normal
+        );
+    }
+
+    // ========================================================================
+    // Emergency stop cleanup
+    // ========================================================================
+
+    #[test]
+    fn test_emergency_stop_sets_flag_and_state() {
+        let monitor = SafetyMonitor::new(100);
+        assert!(!monitor.is_emergency_stop());
+
+        monitor.trigger_emergency_stop("test reason".to_string());
+
+        assert!(monitor.is_emergency_stop());
+    }
+
+    #[test]
+    fn test_emergency_stop_from_critical_node_miss() {
+        let monitor = SafetyMonitor::new(100);
+        monitor.add_critical_node("balance_controller".to_string(), Duration::from_millis(100));
+
+        // Non-critical miss — no estop
+        monitor.record_deadline_miss("arm_controller");
+        assert!(!monitor.is_emergency_stop());
+
+        // Critical miss — estop
+        monitor.record_deadline_miss("balance_controller");
+        assert!(monitor.is_emergency_stop());
     }
 }
 
@@ -1619,5 +1960,30 @@ mod loom_tests {
             t_read1.join().unwrap();
             t_read2.join().unwrap();
         });
+    }
+
+    // ========================================================================
+    // BudgetPolicy tests
+    // ========================================================================
+
+    #[test]
+    fn test_budget_policy_default_is_warn() {
+        assert_eq!(BudgetPolicy::default(), BudgetPolicy::Warn);
+    }
+
+    #[test]
+    fn test_budget_policy_variants_are_distinct() {
+        assert_ne!(BudgetPolicy::Warn, BudgetPolicy::Enforce);
+        assert_ne!(BudgetPolicy::Warn, BudgetPolicy::EmergencyStop);
+        assert_ne!(BudgetPolicy::Enforce, BudgetPolicy::EmergencyStop);
+    }
+
+    #[test]
+    fn test_budget_policy_clone_and_copy() {
+        let policy = BudgetPolicy::Enforce;
+        let cloned = policy.clone();
+        let copied = policy; // Copy
+        assert_eq!(policy, cloned);
+        assert_eq!(policy, copied);
     }
 }

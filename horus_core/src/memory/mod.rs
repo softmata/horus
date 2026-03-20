@@ -231,8 +231,10 @@ macro_rules! impl_tensor_backed {
 }
 
 // Domain-specific types (RAII wrappers with rich API for data access)
+pub mod costmap;
 pub mod depth_image;
 pub mod image;
+pub mod occupancy_grid;
 pub mod pointcloud;
 
 #[doc(hidden)]
@@ -240,6 +242,8 @@ pub use tensor_handle::TensorHandle;
 #[doc(hidden)]
 pub use tensor_pool::{PoolAllocator, TensorPool, TensorPoolConfig};
 
+pub use costmap::CostMap;
 pub use depth_image::DepthImage;
 pub use image::Image;
+pub use occupancy_grid::OccupancyGrid;
 pub use pointcloud::PointCloud;

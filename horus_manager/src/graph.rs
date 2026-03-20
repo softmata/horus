@@ -675,4 +675,227 @@ mod tests {
         assert!((new_position.x - 5.0).abs() < 0.001);
         assert!((new_position.y - 10.0).abs() < 0.001);
     }
+
+    // ── Simple chain: A publishes to topic, topic subscribed by B, B publishes to topic2, topic2 subscribed by C ──
+
+    #[test]
+    fn test_dependency_graph_simple_chain() {
+        // Build a linear pipeline: process_A -> topic_1 -> process_B -> topic_2 -> process_C
+        let nodes = vec![
+            GraphNode {
+                id: "process_A".into(),
+                label: "A".into(),
+                node_type: NodeType::Process,
+                position: Pos2::new(-300.0, 0.0),
+                velocity: Vec2::ZERO,
+                pid: Some(100),
+                active: true,
+            },
+            GraphNode {
+                id: "topic_1".into(),
+                label: "sensor.data".into(),
+                node_type: NodeType::Topic,
+                position: Pos2::new(0.0, 0.0),
+                velocity: Vec2::ZERO,
+                pid: None,
+                active: true,
+            },
+            GraphNode {
+                id: "process_B".into(),
+                label: "B".into(),
+                node_type: NodeType::Process,
+                position: Pos2::new(-300.0, 120.0),
+                velocity: Vec2::ZERO,
+                pid: Some(101),
+                active: true,
+            },
+            GraphNode {
+                id: "topic_2".into(),
+                label: "processed.data".into(),
+                node_type: NodeType::Topic,
+                position: Pos2::new(0.0, 120.0),
+                velocity: Vec2::ZERO,
+                pid: None,
+                active: true,
+            },
+            GraphNode {
+                id: "process_C".into(),
+                label: "C".into(),
+                node_type: NodeType::Process,
+                position: Pos2::new(-300.0, 240.0),
+                velocity: Vec2::ZERO,
+                pid: Some(102),
+                active: true,
+            },
+        ];
+
+        let edges = vec![
+            GraphEdge { from: "process_A".into(), to: "topic_1".into(), edge_type: EdgeType::Publish, active: true },
+            GraphEdge { from: "topic_1".into(), to: "process_B".into(), edge_type: EdgeType::Subscribe, active: true },
+            GraphEdge { from: "process_B".into(), to: "topic_2".into(), edge_type: EdgeType::Publish, active: true },
+            GraphEdge { from: "topic_2".into(), to: "process_C".into(), edge_type: EdgeType::Subscribe, active: true },
+        ];
+
+        // Verify chain structure: walk from A to C via edges
+        // A -> topic_1
+        assert!(edges.iter().any(|e| e.from == "process_A" && e.to == "topic_1" && e.edge_type == EdgeType::Publish));
+        // topic_1 -> B
+        assert!(edges.iter().any(|e| e.from == "topic_1" && e.to == "process_B" && e.edge_type == EdgeType::Subscribe));
+        // B -> topic_2
+        assert!(edges.iter().any(|e| e.from == "process_B" && e.to == "topic_2" && e.edge_type == EdgeType::Publish));
+        // topic_2 -> C
+        assert!(edges.iter().any(|e| e.from == "topic_2" && e.to == "process_C" && e.edge_type == EdgeType::Subscribe));
+
+        // All edges reference valid node IDs
+        let node_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        for edge in &edges {
+            assert!(node_ids.contains(edge.from.as_str()), "edge.from '{}' not in nodes", edge.from);
+            assert!(node_ids.contains(edge.to.as_str()), "edge.to '{}' not in nodes", edge.to);
+        }
+
+        // Topological ordering: A comes before B, B comes before C
+        let process_order: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n.node_type == NodeType::Process)
+            .map(|n| n.label.as_str())
+            .collect();
+        assert_eq!(process_order, vec!["A", "B", "C"]);
+    }
+
+    // ── Cycle detection via edge validation ────────────────────────────
+
+    #[test]
+    fn test_dependency_graph_detects_cycle() {
+        // Build a graph where A -> topic -> B -> topic2 -> A (circular data flow)
+        let edges = vec![
+            GraphEdge { from: "process_A".into(), to: "topic_1".into(), edge_type: EdgeType::Publish, active: true },
+            GraphEdge { from: "topic_1".into(), to: "process_B".into(), edge_type: EdgeType::Subscribe, active: true },
+            GraphEdge { from: "process_B".into(), to: "topic_2".into(), edge_type: EdgeType::Publish, active: true },
+            GraphEdge { from: "topic_2".into(), to: "process_A".into(), edge_type: EdgeType::Subscribe, active: true },
+        ];
+
+        // Detect cycle: check if following edges from any process eventually
+        // returns to the same process.
+        fn has_cycle(edges: &[GraphEdge], start: &str) -> bool {
+            let mut visited = std::collections::HashSet::new();
+            let mut current = start.to_string();
+            loop {
+                if !visited.insert(current.clone()) {
+                    return current == start; // cycle back to start
+                }
+                // Follow outgoing edges (Publish from process, Subscribe from topic)
+                if let Some(edge) = edges.iter().find(|e| e.from == current) {
+                    current = edge.to.clone();
+                } else {
+                    return false; // dead end
+                }
+            }
+        }
+
+        assert!(
+            has_cycle(&edges, "process_A"),
+            "should detect cycle: A -> topic_1 -> B -> topic_2 -> A"
+        );
+    }
+
+    // ── Parallel independent nodes ─────────────────────────────────────
+
+    #[test]
+    fn test_dependency_graph_parallel_independent() {
+        // Three independent process nodes, each publishing to their own topic.
+        // No shared topics, no dependencies between processes.
+        let nodes = vec![
+            GraphNode {
+                id: "process_X".into(),
+                label: "lidar".into(),
+                node_type: NodeType::Process,
+                position: Pos2::new(-300.0, 0.0),
+                velocity: Vec2::ZERO,
+                pid: Some(200),
+                active: true,
+            },
+            GraphNode {
+                id: "topic_lidar_data".into(),
+                label: "lidar.data".into(),
+                node_type: NodeType::Topic,
+                position: Pos2::new(300.0, 0.0),
+                velocity: Vec2::ZERO,
+                pid: None,
+                active: true,
+            },
+            GraphNode {
+                id: "process_Y".into(),
+                label: "camera".into(),
+                node_type: NodeType::Process,
+                position: Pos2::new(-300.0, 120.0),
+                velocity: Vec2::ZERO,
+                pid: Some(201),
+                active: true,
+            },
+            GraphNode {
+                id: "topic_camera_data".into(),
+                label: "camera.data".into(),
+                node_type: NodeType::Topic,
+                position: Pos2::new(300.0, 120.0),
+                velocity: Vec2::ZERO,
+                pid: None,
+                active: true,
+            },
+            GraphNode {
+                id: "process_Z".into(),
+                label: "imu".into(),
+                node_type: NodeType::Process,
+                position: Pos2::new(-300.0, 240.0),
+                velocity: Vec2::ZERO,
+                pid: Some(202),
+                active: true,
+            },
+            GraphNode {
+                id: "topic_imu_data".into(),
+                label: "imu.data".into(),
+                node_type: NodeType::Topic,
+                position: Pos2::new(300.0, 240.0),
+                velocity: Vec2::ZERO,
+                pid: None,
+                active: true,
+            },
+        ];
+
+        let edges = vec![
+            GraphEdge { from: "process_X".into(), to: "topic_lidar_data".into(), edge_type: EdgeType::Publish, active: true },
+            GraphEdge { from: "process_Y".into(), to: "topic_camera_data".into(), edge_type: EdgeType::Publish, active: true },
+            GraphEdge { from: "process_Z".into(), to: "topic_imu_data".into(), edge_type: EdgeType::Publish, active: true },
+        ];
+
+        // All three processes appear in the graph
+        let process_nodes: Vec<&GraphNode> = nodes
+            .iter()
+            .filter(|n| n.node_type == NodeType::Process)
+            .collect();
+        assert_eq!(process_nodes.len(), 3);
+
+        // Each process has exactly one outgoing edge
+        for proc_node in &process_nodes {
+            let outgoing: Vec<&GraphEdge> = edges
+                .iter()
+                .filter(|e| e.from == proc_node.id)
+                .collect();
+            assert_eq!(
+                outgoing.len(),
+                1,
+                "process '{}' should have exactly one outgoing edge",
+                proc_node.label
+            );
+        }
+
+        // No process depends on another process (no cross-process edges)
+        let process_ids: std::collections::HashSet<&str> =
+            process_nodes.iter().map(|n| n.id.as_str()).collect();
+        for edge in &edges {
+            assert!(
+                !(process_ids.contains(edge.from.as_str()) && process_ids.contains(edge.to.as_str())),
+                "independent graph should have no direct process-to-process edges"
+            );
+        }
+    }
 }

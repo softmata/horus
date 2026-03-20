@@ -467,10 +467,20 @@ impl TensorPool {
 
         // Find a free slot
         let slot_id = self.find_free_slot()?;
-        let slot = self.slot_mut(slot_id);
 
-        // Allocate from data region
-        let offset = self.allocate_data(aligned_size)?;
+        // Allocate from data region — if this fails, return the slot to the free list
+        let offset = match self.allocate_data(aligned_size) {
+            Ok(o) => o,
+            Err(e) => {
+                // Return slot to free list to prevent permanent slot leak.
+                // Without this, a failed allocate_data leaves the slot removed
+                // from the free stack but never marked ALLOCATED — permanently lost.
+                self.push_free_slot(slot_id);
+                return Err(e);
+            }
+        };
+
+        let slot = self.slot_mut(slot_id);
 
         // Initialize slot — bump 64-bit generation counter to prevent ABA.
         // The returned u64 is split into low/high 32-bit halves in Tensor.

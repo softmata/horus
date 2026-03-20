@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use super::fault_tolerance::FailureHandler;
 use super::profiler::RuntimeProfiler;
 use super::record_replay::NodeRecorder;
+use super::safety_monitor::BudgetPolicy;
 use crate::core::{Miss, Node, NodeInfo, RtStats};
 
 /// Health state of a node, tracked by the watchdog system.
@@ -124,6 +125,7 @@ mod execution_class_tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: crate::scheduling::safety_monitor::BudgetPolicy::default(),
         }
     }
 
@@ -377,6 +379,8 @@ pub(crate) struct RegisteredNode {
     #[allow(dead_code)]
     // false positive: read via self.nodes[i].failure_handler in node_ops.rs
     pub(crate) failure_handler: Option<FailureHandler>,
+    /// Policy for budget violation enforcement.
+    pub(crate) budget_policy: BudgetPolicy,
 }
 
 /// Shared monitoring references passed to executor threads.

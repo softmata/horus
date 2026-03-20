@@ -114,7 +114,7 @@ impl AsyncExecutor {
                     if let Some(rate_hz) = node.rate_hz {
                         if let Some(last_tick) = node.last_tick {
                             let elapsed = loop_start.duration_since(last_tick).as_secs_f64();
-                            if elapsed < 1.0 / rate_hz {
+                            if rate_hz > 0.0 && elapsed < 1.0 / rate_hz {
                                 continue;
                             }
                         }
@@ -342,6 +342,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         }
     }
 
@@ -373,6 +374,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         }
     }
 

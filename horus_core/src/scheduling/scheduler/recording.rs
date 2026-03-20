@@ -88,6 +88,7 @@ impl Scheduler {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         });
 
         self.nodes.sort_by_key(|n| n.priority);

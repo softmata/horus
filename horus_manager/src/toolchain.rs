@@ -394,4 +394,101 @@ mod tests {
         let result = write_toolchain_file("riscv", dir.path());
         assert!(result.is_err());
     }
+
+    // ── Toolchain detection (system probing) ────────────────────────────
+
+    #[test]
+    fn test_toolchain_detect_rust() {
+        // On any system where this test suite runs, rustc and cargo must be
+        // available (we compiled this binary with them).
+        let rust_version = crate::registry::helpers::get_rust_version();
+        assert!(
+            rust_version.is_some(),
+            "rustc should be detectable on the build host"
+        );
+        let version = rust_version.unwrap();
+        assert!(
+            !version.is_empty(),
+            "Rust version string should be non-empty"
+        );
+        // Version should look like semver: at least "major.minor"
+        assert!(
+            version.contains('.'),
+            "Rust version '{}' should contain a dot (e.g., '1.78.0')",
+            version
+        );
+
+        // Verify cargo is also detectable by running it
+        let cargo_output = std::process::Command::new("cargo")
+            .arg("--version")
+            .output();
+        assert!(
+            cargo_output.is_ok(),
+            "cargo --version should succeed on the build host"
+        );
+        let output = cargo_output.unwrap();
+        let cargo_stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            cargo_stdout.contains("cargo"),
+            "cargo --version output should contain 'cargo', got: {}",
+            cargo_stdout
+        );
+    }
+
+    #[test]
+    fn test_toolchain_detect_python() {
+        // Python3 may or may not be installed. The detection function
+        // should return Some(version) or None — never panic.
+        let python_version = crate::registry::helpers::get_python_version();
+        // Either it finds python3 or it gracefully returns None
+        if let Some(version) = python_version {
+            assert!(
+                !version.is_empty(),
+                "Python version string should be non-empty when detected"
+            );
+            // Python versions look like "3.11.2"
+            assert!(
+                version.contains('.'),
+                "Python version '{}' should contain a dot",
+                version
+            );
+        }
+        // If None, that's fine — python3 is not required for horus builds
+    }
+
+    #[test]
+    fn test_toolchain_version_parsing() {
+        // Test parsing version strings like "1.78.0", "3.11.2"
+        // using the semver crate (already a dependency of horus_manager).
+        use semver::Version;
+
+        // Standard three-part version
+        let v1 = Version::parse("1.78.0").expect("should parse 1.78.0");
+        assert_eq!(v1.major, 1);
+        assert_eq!(v1.minor, 78);
+        assert_eq!(v1.patch, 0);
+
+        // Python-style version
+        let v2 = Version::parse("3.11.2").expect("should parse 3.11.2");
+        assert_eq!(v2.major, 3);
+        assert_eq!(v2.minor, 11);
+        assert_eq!(v2.patch, 2);
+
+        // Pre-release version
+        let v3 = Version::parse("1.80.0-nightly").expect("should parse 1.80.0-nightly");
+        assert_eq!(v3.major, 1);
+        assert_eq!(v3.minor, 80);
+        assert_eq!(v3.patch, 0);
+        assert!(!v3.pre.is_empty(), "pre-release should be non-empty");
+
+        // Invalid version strings should fail
+        assert!(
+            Version::parse("not-a-version").is_err(),
+            "garbage string should not parse as semver"
+        );
+        assert!(
+            Version::parse("1.2").is_err(),
+            "two-part version should not parse as strict semver"
+        );
+    }
 }

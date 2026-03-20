@@ -71,6 +71,9 @@ try:
         Image,
         PointCloud,
         DepthImage,
+        # Tensor system — general-purpose zero-copy shared memory tensor
+        Tensor,
+        TensorPool,
         # Native message classes (registered from Rust)
         CmdVel as _RustCmdVel,
         Pose2D as _RustPose2D,

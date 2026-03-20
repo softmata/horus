@@ -1326,4 +1326,107 @@ mod tests {
     fn tool_version_returns_none_for_nonexistent() {
         assert!(tool_version("__horus_nonexistent_tool_xyz_12345__").is_none());
     }
+
+    // ── Language detection: .horus/ generated build files ─────────────────
+
+    #[test]
+    fn test_detect_languages_rust_project() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create .horus/Cargo.toml (generated build file)
+        fs::create_dir_all(dir.path().join(".horus")).unwrap();
+        fs::write(
+            dir.path().join(".horus/Cargo.toml"),
+            "[package]\nname = \"my-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        // Create a .rs source file in src/
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let ctx = detect_context(dir.path());
+        assert!(
+            ctx.has_rust(),
+            "Should detect Rust from .horus/Cargo.toml + .rs file"
+        );
+        assert!(
+            !ctx.has_python(),
+            "Should not detect Python in a Rust-only project"
+        );
+        assert!(
+            !ctx.has_cpp(),
+            "Should not detect C++ in a Rust-only project"
+        );
+        assert_eq!(ctx.languages.len(), 1);
+        assert_eq!(ctx.languages[0], Language::Rust);
+    }
+
+    #[test]
+    fn test_detect_languages_python_project() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create .horus/pyproject.toml (generated build file) — detected
+        // via pyproject.toml in root (per detect_project_languages logic)
+        // The function checks root-level pyproject.toml, not .horus/ for Python.
+        // So we use pyproject.toml in root OR a .py file.
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"my-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        // Create a .py source file in src/
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/main.py"), "print('hello')").unwrap();
+
+        let ctx = detect_context(dir.path());
+        assert!(
+            ctx.has_python(),
+            "Should detect Python from pyproject.toml + .py file"
+        );
+        assert!(
+            !ctx.has_rust(),
+            "Should not detect Rust in a Python-only project"
+        );
+        assert!(
+            !ctx.has_cpp(),
+            "Should not detect C++ in a Python-only project"
+        );
+        assert_eq!(ctx.languages.len(), 1);
+        assert_eq!(ctx.languages[0], Language::Python);
+    }
+
+    #[test]
+    fn test_detect_languages_mixed_project() {
+        let dir = tempfile::tempdir().unwrap();
+        // Rust: .horus/Cargo.toml + .rs file
+        fs::create_dir_all(dir.path().join(".horus")).unwrap();
+        fs::write(
+            dir.path().join(".horus/Cargo.toml"),
+            "[package]\nname = \"mixed-bot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src/main.rs"),
+            "fn main() { println!(\"hello\"); }",
+        )
+        .unwrap();
+        // Python: .py file
+        fs::write(dir.path().join("src/helper.py"), "def helper(): pass").unwrap();
+
+        let ctx = detect_context(dir.path());
+        assert!(
+            ctx.has_rust(),
+            "Should detect Rust in mixed project"
+        );
+        assert!(
+            ctx.has_python(),
+            "Should detect Python in mixed project"
+        );
+        assert!(
+            ctx.is_mixed(),
+            "Project with both Rust and Python should be detected as mixed"
+        );
+        assert!(ctx.languages.len() >= 2, "At least 2 languages detected");
+        assert!(ctx.languages.contains(&Language::Rust));
+        assert!(ctx.languages.contains(&Language::Python));
+    }
 }

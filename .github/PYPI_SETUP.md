@@ -1,6 +1,10 @@
 # PyPI Setup Guide for HORUS
 
-This document explains how to set up automatic PyPI publishing for the HORUS Python bindings.
+This document explains how to set up automatic PyPI publishing for the HORUS Python bindings (`horus-robotics` package).
+
+> **Note**: Only the Python bindings are published to PyPI. The main HORUS framework
+> is distributed through the GitHub `release` branch and one-line installer.
+> Rust workspace crates are NOT published to crates.io.
 
 ## One-Time Setup
 

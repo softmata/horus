@@ -488,6 +488,83 @@ fn roundtrip_tactile_array_single_cell() {
 }
 
 // ============================================================================
+// Previously missing types — SLAM Cycle 1
+// ============================================================================
+
+// Navigation
+#[test]
+fn roundtrip_nav_path() {
+    json_roundtrip(&NavPath::default(), "NavPath");
+}
+#[test]
+fn roundtrip_nav_path_with_waypoints() {
+    let mut path = NavPath::default();
+    path.waypoint_count = 2;
+    path.total_length = 5.5;
+    path.duration_seconds = 10.0;
+    json_roundtrip(&path, "NavPath::with_waypoints");
+}
+
+// Vision
+#[test]
+fn roundtrip_stereo_info() {
+    json_roundtrip(&StereoInfo::default(), "StereoInfo");
+}
+#[test]
+fn roundtrip_stereo_info_populated() {
+    let mut si = StereoInfo::default();
+    si.baseline = 0.12;
+    si.depth_scale = 1.0;
+    si.left_camera.width = 640;
+    si.left_camera.height = 480;
+    si.right_camera.width = 640;
+    si.right_camera.height = 480;
+    json_roundtrip(&si, "StereoInfo::populated");
+}
+
+// Perception
+#[test]
+fn roundtrip_point_field() {
+    let pf = PointField::new("x", 0, horus_core::types::TensorDtype::F32, 1);
+    json_roundtrip(&pf, "PointField");
+}
+
+// Enums — verify all variants roundtrip
+#[test]
+fn roundtrip_status_level_all_variants() {
+    json_roundtrip(&StatusLevel::Ok, "StatusLevel::Ok");
+    json_roundtrip(&StatusLevel::Warn, "StatusLevel::Warn");
+    json_roundtrip(&StatusLevel::Error, "StatusLevel::Error");
+    json_roundtrip(&StatusLevel::Fatal, "StatusLevel::Fatal");
+}
+
+#[test]
+fn roundtrip_node_state_msg_all_variants() {
+    json_roundtrip(&NodeStateMsg::Idle, "NodeStateMsg::Idle");
+    json_roundtrip(&NodeStateMsg::Initializing, "NodeStateMsg::Initializing");
+    json_roundtrip(&NodeStateMsg::Running, "NodeStateMsg::Running");
+    json_roundtrip(&NodeStateMsg::Paused, "NodeStateMsg::Paused");
+    json_roundtrip(&NodeStateMsg::Stopped, "NodeStateMsg::Stopped");
+    json_roundtrip(&NodeStateMsg::Error, "NodeStateMsg::Error");
+}
+
+#[test]
+fn roundtrip_audio_encoding_all_variants() {
+    json_roundtrip(&AudioEncoding::F32, "AudioEncoding::F32");
+    json_roundtrip(&AudioEncoding::I16, "AudioEncoding::I16");
+}
+
+#[test]
+fn roundtrip_contact_state_all_variants() {
+    json_roundtrip(&ContactState::NoContact, "ContactState::NoContact");
+    json_roundtrip(&ContactState::InitialContact, "ContactState::InitialContact");
+    json_roundtrip(&ContactState::StableContact, "ContactState::StableContact");
+    json_roundtrip(&ContactState::ContactLoss, "ContactState::ContactLoss");
+    json_roundtrip(&ContactState::Sliding, "ContactState::Sliding");
+    json_roundtrip(&ContactState::Impact, "ContactState::Impact");
+}
+
+// ============================================================================
 // NaN/Inf handling for new types
 // ============================================================================
 

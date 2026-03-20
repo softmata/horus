@@ -392,4 +392,134 @@ mod tests {
         assert!(!is_horus_internal("horus-nav"));
         assert!(!is_horus_internal("serde"));
     }
+
+    #[test]
+    fn test_sync_from_native_no_changes_when_fingerprints_match() {
+        use crate::manifest::{HorusManifest, PackageInfo, IgnoreConfig};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        std::fs::create_dir_all(&horus_dir).unwrap();
+
+        // Write a Cargo.toml in .horus/
+        let cargo_content = r#"[package]
+name = "test-project"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+"#;
+        std::fs::write(horus_dir.join("Cargo.toml"), cargo_content).unwrap();
+
+        // Record fingerprint matching the file content
+        let mut fingerprints = Fingerprints::default();
+        fingerprints.record("Cargo.toml", cargo_content);
+        fingerprints.save(tmp.path()).unwrap();
+
+        let mut manifest = HorusManifest {
+            package: PackageInfo {
+                name: "test-project".to_string(),
+                version: "0.1.0".to_string(),
+                ..PackageInfo::default()
+            },
+            workspace: None,
+            dependencies: std::collections::BTreeMap::new(),
+            dev_dependencies: std::collections::BTreeMap::new(),
+            drivers: std::collections::BTreeMap::new(),
+            scripts: std::collections::BTreeMap::new(),
+            ignore: IgnoreConfig::default(),
+            enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
+        };
+
+        let result = sync_from_native(
+            tmp.path(),
+            &mut manifest,
+            NativeFileType::Cargo,
+            &mut fingerprints,
+        )
+        .unwrap();
+
+        assert!(matches!(result, SyncResult::NoChanges));
+    }
+
+    #[test]
+    fn test_is_horus_internal_identifies_workspace_crates() {
+        // All known horus internal crate names must return true
+        let internal = [
+            "horus",
+            "horus_core",
+            "horus_library",
+            "horus_sys",
+            "horus_macros",
+            "horus-py",
+            "horus-robotics",
+        ];
+        for name in &internal {
+            assert!(
+                is_horus_internal(name),
+                "Expected '{}' to be recognized as horus internal",
+                name
+            );
+        }
+
+        // External crates must return false
+        let external = ["serde", "tokio", "bevy", "rand", "anyhow", "horus-nav", "horus_slam"];
+        for name in &external {
+            assert!(
+                !is_horus_internal(name),
+                "Expected '{}' to NOT be recognized as horus internal",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_deps_equal_detects_version_change() {
+        // Different versions => not equal
+        let a = DependencyValue::Simple("1.0".to_string());
+        let b = DependencyValue::Simple("1.1".to_string());
+        assert!(!deps_equal(&a, &b));
+
+        // Same versions => equal
+        let c = DependencyValue::Simple("2.5".to_string());
+        let d = DependencyValue::Simple("2.5".to_string());
+        assert!(deps_equal(&c, &d));
+
+        // Detailed with different versions => not equal
+        use crate::manifest::DetailedDependency;
+        let e = DependencyValue::Detailed(DetailedDependency {
+            version: Some("0.8".to_string()),
+            source: Some(DepSource::CratesIo),
+            ..DetailedDependency::default()
+        });
+        let f = DependencyValue::Detailed(DetailedDependency {
+            version: Some("0.9".to_string()),
+            source: Some(DepSource::CratesIo),
+            ..DetailedDependency::default()
+        });
+        assert!(!deps_equal(&e, &f));
+
+        // Detailed with same version => equal
+        let g = DependencyValue::Detailed(DetailedDependency {
+            version: Some("3.0".to_string()),
+            source: Some(DepSource::CratesIo),
+            ..DetailedDependency::default()
+        });
+        let h = DependencyValue::Detailed(DetailedDependency {
+            version: Some("3.0".to_string()),
+            source: Some(DepSource::CratesIo),
+            ..DetailedDependency::default()
+        });
+        assert!(deps_equal(&g, &h));
+
+        // Simple vs Detailed with same version => equal (cross-variant)
+        let i = DependencyValue::Simple("1.0".to_string());
+        let j = DependencyValue::Detailed(DetailedDependency {
+            version: Some("1.0".to_string()),
+            ..DetailedDependency::default()
+        });
+        assert!(deps_equal(&i, &j));
+    }
 }

@@ -386,6 +386,14 @@ pub(crate) struct RingTopic<T> {
     /// Connection state (for network backend compatibility)
     state: AtomicU8,
 
+    /// Lazy-initialized TensorPool for spilling large serde messages.
+    ///
+    /// `None` until the first message exceeds `SPILL_THRESHOLD`, at which point
+    /// a pool is created via `pool_registry::get_or_create_pool(&self.name)`.
+    /// Pool-backed types (Image, PointCloud) have their own pool via `Topic<T>::pool`;
+    /// this is only for serde types that occasionally send large messages.
+    spill_pool: std::cell::UnsafeCell<Option<Arc<TensorPool>>>,
+
     /// Type marker
     _marker: PhantomData<T>,
 }
@@ -541,6 +549,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             header_ptr,
             metrics: Arc::new(MigrationMetrics::default()),
             state: AtomicU8::new(ConnectionState::Connected.into_u8()),
+            spill_pool: std::cell::UnsafeCell::new(None),
             _marker: PhantomData,
         })
     }
@@ -1576,6 +1585,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         true
     }
 
+    /// Get or lazily create a TensorPool for spilling large serde messages.
+    ///
+    /// The pool is created on first call using the topic name as the pool_id
+    /// seed (FNV-1a hash), so publisher and subscriber processes converge on
+    /// the same shared memory file.
+    ///
+    /// # Safety
+    /// Must be called from the owning thread (Topic is !Sync for mutation).
+    /// Uses UnsafeCell — same single-thread guarantee as all other dispatch code.
+    pub(crate) fn get_or_create_spill_pool(&self) -> Arc<TensorPool> {
+        // SAFETY: single-thread ownership — Topic<T> is !Send+!Sync for mutation.
+        // UnsafeCell access is safe because dispatch functions run on the owning thread.
+        let pool_ref = unsafe { &mut *self.spill_pool.get() };
+        if let Some(pool) = pool_ref {
+            return Arc::clone(pool);
+        }
+        let pool = pool_registry::get_or_create_pool(&self.name);
+        *pool_ref = Some(Arc::clone(&pool));
+        pool
+    }
+
+    /// Get the spill pool if it has been initialized (no lazy creation).
+    ///
+    /// Used on the recv path — if the sender spilled, the receiver needs the pool.
+    /// Creates lazily if needed (receiver may see a spill before sender's pool is cached).
+    pub(crate) fn get_or_create_spill_pool_for_recv(&self) -> Arc<TensorPool> {
+        self.get_or_create_spill_pool()
+    }
+
     /// Periodic migration check — reads migration_epoch from SHM header.
     ///
     /// Uses `self.header_ptr` (stable pointer to the SHM TopicHeader) instead
@@ -2195,6 +2233,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for 
             header_ptr: self.header_ptr,
             metrics: Arc::clone(&self.metrics),
             state: AtomicU8::new(self.state.load(Ordering::Relaxed)),
+            // Clone shares the spill pool if one was already created
+            spill_pool: std::cell::UnsafeCell::new(
+                // SAFETY: single-thread access (Topic is !Sync for mutation)
+                unsafe { &*self.spill_pool.get() }.clone(),
+            ),
             _marker: PhantomData,
         }
     }

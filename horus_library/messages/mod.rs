@@ -110,7 +110,8 @@ pub use navigation::{
 
 // Force
 pub use force::{
-    ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray, WrenchStamped,
+    ContactInfo, ContactState, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray,
+    WrenchStamped,
 };
 
 // Perception

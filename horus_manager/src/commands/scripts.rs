@@ -748,4 +748,105 @@ enable = ["cuda", "editor"]
         let result = in_tmp(&tmp, || run_scripts(Some("self-read".to_string()), vec![]));
         assert!(result.is_ok());
     }
+
+    // ── Intent tests: manifest script parsing ──────────────────────────────
+
+    /// INTENT: Parse a horus.toml with [scripts] containing "test" and "build".
+    /// Both scripts must be extracted and accessible by name.
+    #[test]
+    fn test_scripts_parse_from_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "my-robot"
+version = "0.1.0"
+
+[scripts]
+test = "cargo test --all"
+build = "cargo build --release"
+"#;
+        fs::write(tmp.path().join(HORUS_TOML), toml_content).unwrap();
+
+        let manifest = in_tmp(&tmp, || {
+            crate::manifest::HorusManifest::load_from(std::path::Path::new(HORUS_TOML)).unwrap()
+        });
+
+        assert_eq!(
+            manifest.scripts.len(),
+            2,
+            "Should parse exactly 2 scripts, got {}",
+            manifest.scripts.len()
+        );
+        assert!(
+            manifest.scripts.contains_key("test"),
+            "Scripts must contain 'test'"
+        );
+        assert!(
+            manifest.scripts.contains_key("build"),
+            "Scripts must contain 'build'"
+        );
+        assert_eq!(manifest.scripts["test"], "cargo test --all");
+        assert_eq!(manifest.scripts["build"], "cargo build --release");
+    }
+
+    /// INTENT: Parse a horus.toml with an empty [scripts] section.
+    /// The scripts map must be empty, not an error.
+    #[test]
+    fn test_scripts_empty_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "my-robot"
+version = "0.1.0"
+
+[scripts]
+"#;
+        fs::write(tmp.path().join(HORUS_TOML), toml_content).unwrap();
+
+        let manifest = in_tmp(&tmp, || {
+            crate::manifest::HorusManifest::load_from(std::path::Path::new(HORUS_TOML)).unwrap()
+        });
+
+        assert!(
+            manifest.scripts.is_empty(),
+            "Empty [scripts] section should produce an empty map, got {} entries",
+            manifest.scripts.len()
+        );
+    }
+
+    /// INTENT: Parse a script entry with arguments like "cargo test -- --nocapture".
+    /// The full command string including args must be preserved verbatim.
+    #[test]
+    fn test_scripts_with_args() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml_content = r#"
+[package]
+name = "my-robot"
+version = "0.1.0"
+
+[scripts]
+test-verbose = "cargo test -- --nocapture"
+"#;
+        fs::write(tmp.path().join(HORUS_TOML), toml_content).unwrap();
+
+        let manifest = in_tmp(&tmp, || {
+            crate::manifest::HorusManifest::load_from(std::path::Path::new(HORUS_TOML)).unwrap()
+        });
+
+        assert!(
+            manifest.scripts.contains_key("test-verbose"),
+            "Scripts must contain 'test-verbose'"
+        );
+        let cmd = &manifest.scripts["test-verbose"];
+        assert_eq!(
+            cmd, "cargo test -- --nocapture",
+            "Full command with args must be preserved verbatim"
+        );
+        // Verify the args portion is intact (double-dash separator preserved)
+        assert!(
+            cmd.contains("-- --nocapture"),
+            "Double-dash separator and args must be preserved, got: {}",
+            cmd
+        );
+    }
 }

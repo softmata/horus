@@ -1409,4 +1409,107 @@ nodes:
         assert!(config.nodes[1].command.is_some());
         assert!(config.nodes[1].package.is_none());
     }
+
+    // ── YAML parsing: basic two-node config ────────────────────────────
+
+    #[test]
+    fn test_launch_parse_yaml_basic() {
+        let yaml = r#"
+nodes:
+  - name: lidar_driver
+    command: /usr/bin/lidar
+    args: ["--port", "5000", "--rate", "10"]
+  - name: slam_node
+    command: /usr/bin/slam
+    args: ["--map", "warehouse.pgm"]
+"#;
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.nodes.len(), 2);
+
+        let lidar = &config.nodes[0];
+        assert_eq!(lidar.name, "lidar_driver");
+        assert_eq!(lidar.command.as_deref(), Some("/usr/bin/lidar"));
+        assert_eq!(lidar.args, vec!["--port", "5000", "--rate", "10"]);
+
+        let slam = &config.nodes[1];
+        assert_eq!(slam.name, "slam_node");
+        assert_eq!(slam.command.as_deref(), Some("/usr/bin/slam"));
+        assert_eq!(slam.args, vec!["--map", "warehouse.pgm"]);
+    }
+
+    // ── YAML parsing: depends_on ───────────────────────────────────────
+
+    #[test]
+    fn test_launch_parse_yaml_with_depends_on() {
+        let yaml = r#"
+nodes:
+  - name: node_a
+    command: /bin/a
+  - name: node_b
+    command: /bin/b
+    depends_on: [node_a]
+"#;
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.nodes.len(), 2);
+
+        let node_a = &config.nodes[0];
+        assert!(node_a.depends_on.is_empty(), "node_a should have no dependencies");
+
+        let node_b = &config.nodes[1];
+        assert_eq!(node_b.depends_on.len(), 1);
+        assert_eq!(node_b.depends_on[0], "node_a");
+
+        // Verify topological sort respects the dependency
+        let sorted = sort_by_dependencies(&config.nodes).unwrap();
+        let a_pos = sorted.iter().position(|n| n.name == "node_a").unwrap();
+        let b_pos = sorted.iter().position(|n| n.name == "node_b").unwrap();
+        assert!(
+            a_pos < b_pos,
+            "node_a (pos {}) must come before node_b (pos {})",
+            a_pos,
+            b_pos
+        );
+    }
+
+    // ── YAML parsing: restart policies ─────────────────────────────────
+
+    #[test]
+    fn test_launch_parse_yaml_with_restart_policy() {
+        let yaml = r#"
+nodes:
+  - name: always_node
+    command: /bin/always
+    restart: always
+  - name: never_node
+    command: /bin/never
+    restart: never
+  - name: failure_node
+    command: /bin/fail
+    restart: on-failure
+"#;
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.nodes.len(), 3);
+
+        assert_eq!(config.nodes[0].name, "always_node");
+        assert_eq!(config.nodes[0].restart, "always");
+
+        assert_eq!(config.nodes[1].name, "never_node");
+        assert_eq!(config.nodes[1].restart, "never");
+
+        assert_eq!(config.nodes[2].name, "failure_node");
+        assert_eq!(config.nodes[2].restart, "on-failure");
+    }
+
+    // ── YAML parsing: empty nodes list ─────────────────────────────────
+
+    #[test]
+    fn test_launch_parse_yaml_empty_nodes() {
+        let yaml = "nodes: []";
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.nodes.is_empty(), "nodes list should be empty");
+
+        // sort_by_dependencies should also handle empty input
+        let sorted = sort_by_dependencies(&config.nodes).unwrap();
+        assert!(sorted.is_empty());
+    }
 }

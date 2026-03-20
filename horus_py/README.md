@@ -40,20 +40,22 @@ horus.run(node, duration=10)
 ```python
 from horus import Topic, CmdVel, Pose2D
 
-topic = Topic("cmd_vel", CmdVel)
+topic = Topic(CmdVel)                        # Typed topic (auto-named "cmd_vel")
 topic.send(CmdVel(linear=1.5, angular=0.3))
-msg = topic.recv()  # Returns CmdVel instance
+msg = topic.recv()                            # Returns CmdVel instance
 ```
 
 ## Scheduler API
 
 ```python
 import horus
+from horus import Node, Scheduler
 
-scheduler = horus.Scheduler()
-scheduler.node(motor_ctrl).order(0).rt().rate(1000.0).build()
-scheduler.node(planner).order(5).compute().build()
-scheduler.node(telemetry).order(10).async_io().rate(1.0).build()
+sched = Scheduler(tick_rate=1000)
+sched.add(Node(tick=motor_fn, rate=1000, order=0))
+sched.add(Node(tick=planner_fn, rate=100, order=5, compute=True))
+sched.add(Node(tick=telemetry_fn, rate=1, order=10, async_io=True))
+sched.run()
 ```
 
 ## Multiple Nodes

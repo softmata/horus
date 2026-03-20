@@ -218,6 +218,36 @@ impl RtExecutor {
                         });
                     }
                 }
+                // Budget enforcement based on per-node policy.
+                // Post-tick enforcement (safe — tick completed, no shared state issues).
+                use super::safety_monitor::BudgetPolicy;
+                match node.budget_policy {
+                    BudgetPolicy::Warn => {
+                        // Default: log only (already logged above)
+                    }
+                    BudgetPolicy::Enforce => {
+                        // Stop node if tick exceeded 2x budget
+                        if tr.duration > tick_budget * 2 {
+                            print_line(&format!(
+                                "[RT-thread] BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
+                                node.name, tr.duration, tick_budget * 2
+                            ));
+                            node.node.shutdown();
+                            node.is_stopped = true;
+                        }
+                    }
+                    BudgetPolicy::EmergencyStop => {
+                        // Any budget violation triggers e-stop
+                        print_line(&format!(
+                            "[RT-thread] BUDGET E-STOP: '{}' budget violation ({:?} > {:?})",
+                            node.name, tr.duration, tick_budget
+                        ));
+                        node.node.shutdown();
+                        node.is_stopped = true;
+                        // Signal stop via running flag — RT thread will exit
+                        running.store(false, Ordering::SeqCst);
+                    }
+                }
             }
         }
 
@@ -392,7 +422,7 @@ impl RtExecutor {
                 if let Some(rate_hz) = node.rate_hz {
                     if let Some(last_tick) = node.last_tick {
                         let elapsed = loop_start.duration_since(last_tick).as_secs_f64();
-                        if elapsed < 1.0 / rate_hz {
+                        if rate_hz > 0.0 && elapsed < 1.0 / rate_hz {
                             continue;
                         }
                     }
@@ -519,6 +549,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         }
     }
 
@@ -634,6 +665,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         };
 
         let running = Arc::new(AtomicBool::new(true));
@@ -889,6 +921,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         };
 
         let normal_registered = make_rt_registered("survivor_node", normal_count.clone());
@@ -995,6 +1028,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         };
 
         let normal_registered = make_rt_registered("quiet_normal", normal_count.clone());
@@ -1022,6 +1056,307 @@ mod tests {
         assert!(
             normal_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
             "Normal node should tick even with verbose=false and sibling panic"
+        );
+    }
+
+    // ========================================================================
+    // Multi-chain parallel execution tests
+    // ========================================================================
+
+    #[test]
+    fn test_multi_chain_independent_execution() {
+        // Two chains on separate threads — both must tick independently
+        let count_a = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count_b = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let chain_0 = vec![make_rt_registered("chain0_node", count_a.clone())];
+        let chain_1 = vec![make_rt_registered("chain1_node", count_b.clone())];
+
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = RtExecutor::start_pool(
+            vec![chain_0, chain_1],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        let ticks_a = count_a.load(std::sync::atomic::Ordering::Relaxed);
+        let ticks_b = count_b.load(std::sync::atomic::Ordering::Relaxed);
+
+        assert!(ticks_a > 0, "chain 0 must tick: got {}", ticks_a);
+        assert!(ticks_b > 0, "chain 1 must tick: got {}", ticks_b);
+        assert_eq!(returned.len(), 2, "both nodes returned on stop");
+    }
+
+    #[test]
+    fn test_multi_chain_panic_in_one_does_not_block_other() {
+        // Chain 0 has a panicking node. Chain 1 must still tick.
+        struct PanicNode;
+        impl Node for PanicNode {
+            fn name(&self) -> &str { "panic_node" }
+            fn tick(&mut self) { panic!("intentional panic in chain 0"); }
+        }
+
+        let healthy_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let panic_node = RegisteredNode {
+            node: super::super::types::NodeKind::new(Box::new(PanicNode)),
+            name: Arc::from("panic_node"),
+            priority: 0,
+            initialized: true,
+            context: Some(crate::core::NodeInfo::new("panic_node".to_string())),
+            rate_hz: None,
+            last_tick: None,
+            is_rt_node: true,
+            tick_budget: None,
+            deadline: None,
+            recorder: None,
+            is_stopped: false,
+            is_paused: false,
+            rt_stats: None,
+            miss_policy: Miss::Warn,
+            execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
+            failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
+        };
+
+        let chain_0 = vec![panic_node];
+        let chain_1 = vec![make_rt_registered("healthy", healthy_count.clone())];
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![chain_0, chain_1],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        let healthy_ticks = healthy_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            healthy_ticks > 0,
+            "healthy chain must tick despite panic in other chain: got {}",
+            healthy_ticks
+        );
+    }
+
+    #[test]
+    fn test_multi_chain_three_chains_all_tick() {
+        let counts: Vec<_> = (0..3)
+            .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .collect();
+
+        let chains: Vec<Vec<RegisteredNode>> = counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| vec![make_rt_registered(&format!("node_{}", i), c.clone())])
+            .collect();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            chains,
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        for (i, c) in counts.iter().enumerate() {
+            let ticks = c.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(ticks > 0, "chain {} must tick: got {}", i, ticks);
+        }
+        assert_eq!(returned.len(), 3);
+    }
+
+    // ========================================================================
+    // Budget policy enforcement tests
+    // ========================================================================
+
+    struct SlowNode {
+        name: String,
+        count: Arc<std::sync::atomic::AtomicU64>,
+        sleep_us: u64,
+    }
+
+    impl Node for SlowNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {
+            self.count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::thread::sleep(Duration::from_micros(self.sleep_us));
+        }
+    }
+
+    fn make_slow_rt_node(
+        name: &str,
+        count: Arc<std::sync::atomic::AtomicU64>,
+        sleep_us: u64,
+        budget: Duration,
+        policy: super::super::safety_monitor::BudgetPolicy,
+    ) -> RegisteredNode {
+        use crate::core::NodeInfo;
+
+        let node = SlowNode {
+            name: name.to_string(),
+            count,
+            sleep_us,
+        };
+        RegisteredNode {
+            node: super::super::types::NodeKind::new(Box::new(node)),
+            name: Arc::from(name),
+            priority: 0,
+            initialized: true,
+            context: Some(NodeInfo::new(name.to_string())),
+            rate_hz: Some(1000.0),
+            last_tick: None,
+            is_rt_node: true,
+            tick_budget: Some(budget),
+            deadline: None,
+            recorder: None,
+            is_stopped: false,
+            is_paused: false,
+            rt_stats: Some(crate::core::RtStats::default()),
+            miss_policy: Miss::Warn,
+            execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
+            failure_handler: None,
+            budget_policy: policy,
+        }
+    }
+
+    #[test]
+    fn test_budget_policy_warn_does_not_stop_node() {
+        use super::super::safety_monitor::BudgetPolicy;
+
+        // Node sleeps 500μs with 100μs budget (5x over) but policy=Warn → keeps running
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let node = make_slow_rt_node(
+            "warn_node",
+            count.clone(),
+            500,
+            Duration::from_micros(100),
+            BudgetPolicy::Warn,
+        );
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        let ticks = count.load(std::sync::atomic::Ordering::Relaxed);
+        // With Warn policy, node should tick multiple times (not stopped)
+        assert!(
+            ticks > 1,
+            "Warn policy should NOT stop node — got {} ticks",
+            ticks
+        );
+        // Node should still be alive (not stopped)
+        assert!(
+            !returned[0].is_stopped,
+            "Warn policy should not set is_stopped"
+        );
+    }
+
+    #[test]
+    fn test_budget_policy_enforce_stops_node_on_2x_overrun() {
+        use super::super::safety_monitor::BudgetPolicy;
+
+        // Node sleeps 500μs with 100μs budget (5x > 2x threshold) and policy=Enforce → stopped
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let node = make_slow_rt_node(
+            "enforce_node",
+            count.clone(),
+            500,
+            Duration::from_micros(100),
+            BudgetPolicy::Enforce,
+        );
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        // Node should have been stopped after first tick (5x > 2x budget)
+        assert!(
+            returned[0].is_stopped,
+            "Enforce policy should stop node that exceeds 2x budget"
+        );
+    }
+
+    #[test]
+    fn test_budget_policy_emergency_stop_halts_executor() {
+        use super::super::safety_monitor::BudgetPolicy;
+
+        // Node sleeps 500μs with 100μs budget and policy=EmergencyStop → halts everything
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let node = make_slow_rt_node(
+            "estop_node",
+            count.clone(),
+            500,
+            Duration::from_micros(100),
+            BudgetPolicy::EmergencyStop,
+        );
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        // Give it enough time to detect and e-stop
+        std::thread::sleep(Duration::from_millis(50));
+        // running should be false (set by e-stop)
+        assert!(
+            !running.load(Ordering::SeqCst),
+            "EmergencyStop policy should set running=false"
+        );
+
+        let returned = executor.stop();
+        assert!(
+            returned[0].is_stopped,
+            "EmergencyStop policy should stop the node"
         );
     }
 }

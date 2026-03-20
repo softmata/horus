@@ -94,8 +94,8 @@ fn main() -> Result<()> {
         .name("motor_control")
         .tick_rate(1000.hz());
 
-    scheduler.add(SensorNode::new()?).order(0).build();
-    scheduler.add(ControllerNode::new()?).order(1).build();
+    scheduler.add(SensorNode::new()?).order(0).build()?;
+    scheduler.add(ControllerNode::new()?).order(1).build()?;
 
     scheduler.run()
 }
@@ -165,19 +165,19 @@ Five execution classes — the scheduler auto-selects based on your configuratio
 
 ```rust
 // RT — 1kHz motor control with deadline enforcement
-scheduler.add(motor).order(0).rate(1000.hz()).on_miss(Miss::SafeMode).build();
+scheduler.add(motor).order(0).rate(1000.hz()).on_miss(Miss::SafeMode).build()?;
 
 // Compute — path planning on thread pool (doesn't block RT)
-scheduler.add(planner).order(1).compute().build();
+scheduler.add(planner).order(1).compute().build()?;
 
 // Event — fires only when emergency_stop topic updates
-scheduler.add(estop).order(0).on("emergency_stop").build();
+scheduler.add(estop).order(0).on("emergency_stop").build()?;
 
 // AsyncIo — GPU inference without blocking anything
-scheduler.add(detector).order(2).async_io().build();
+scheduler.add(detector).order(2).async_io().build()?;
 
 // BestEffort — logging, telemetry (default)
-scheduler.add(logger).build();
+scheduler.add(logger).build()?;
 ```
 
 RT is automatic — set `.rate()`, `.budget()`, or `.deadline()` and the scheduler derives timing constraints. No manual thread management.

@@ -296,6 +296,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
         }
     }
 

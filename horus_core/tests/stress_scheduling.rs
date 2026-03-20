@@ -206,10 +206,10 @@ fn test_sustained_high_rate_1_second() {
     scheduler.run_for(1_u64.secs()).unwrap();
 
     let ticks = tick_count.load(Ordering::SeqCst);
-    // At 200Hz for 1s, expect ~200 ticks. Wide margin for non-RT kernels.
+    // At 200Hz for 1s, expect ~200 ticks. ±75% margin for non-RT kernels + CI load.
     assert!(
-        (50..=1000).contains(&ticks),
-        "200Hz node should tick ~50-1000 times in 1s, got {}",
+        (50..=500).contains(&ticks),
+        "200Hz node should tick ~50-500 times in 1s (expected ~200), got {}",
         ticks
     );
 }

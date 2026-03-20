@@ -59,6 +59,7 @@
 //!     .build()?;
 //! ```
 
+use super::safety_monitor::BudgetPolicy;
 use super::types::{ExecutionClass, NodeKind};
 use crate::core::duration_ext::Frequency;
 use crate::core::{Miss, Node};
@@ -126,6 +127,8 @@ pub struct NodeRegistration {
     pub(crate) pinned_core: Option<usize>,
     /// Per-node watchdog timeout. Overrides scheduler global.
     pub(crate) node_watchdog: Option<Duration>,
+    /// Policy for budget violation enforcement.
+    pub(crate) budget_policy: BudgetPolicy,
 }
 
 impl NodeRegistration {
@@ -152,6 +155,7 @@ impl NodeRegistration {
             os_priority: None,
             pinned_core: None,
             node_watchdog: None,
+            budget_policy: BudgetPolicy::default(),
         }
     }
 
@@ -326,6 +330,16 @@ impl NodeRegistration {
     /// ```
     pub fn deadline(mut self, deadline: Duration) -> Self {
         self.deadline = Some(deadline);
+        self
+    }
+
+    /// Set the budget violation enforcement policy.
+    ///
+    /// - `Warn`: log only (default)
+    /// - `Enforce`: stop node after 2x budget overrun
+    /// - `EmergencyStop`: trigger e-stop on any budget violation
+    pub fn budget_policy(mut self, policy: BudgetPolicy) -> Self {
+        self.budget_policy = policy;
         self
     }
 
@@ -691,6 +705,16 @@ impl<'a> NodeBuilder<'a> {
     /// ```
     pub fn deadline(mut self, deadline: Duration) -> Self {
         self.config = self.config.deadline(deadline);
+        self
+    }
+
+    /// Set the budget violation enforcement policy.
+    ///
+    /// - `Warn`: log only (default)
+    /// - `Enforce`: stop node after 2x budget overrun
+    /// - `EmergencyStop`: trigger e-stop on any budget violation
+    pub fn budget_policy(mut self, policy: BudgetPolicy) -> Self {
+        self.config = self.config.budget_policy(policy);
         self
     }
 

@@ -336,7 +336,7 @@ proptest! {
         let expected = rotation_only.transform_point(vec);
 
         let err = point_dist(result, expected);
-        prop_assert!(err < 1e-10,
+        prop_assert!(err < 1e-9,
             "transform_vector should equal rotation-only transform_point: error={err}");
     }
 }

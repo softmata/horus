@@ -397,4 +397,64 @@ mod tests {
         let result = run_clean(true);
         assert!(result.is_ok());
     }
+
+    // ── Cache size on empty dir ─────────────────────────────────────────
+
+    #[test]
+    fn test_cache_size_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // An empty directory should report 0 bytes
+        let size = dir_size(tmp.path()).unwrap();
+        assert_eq!(size, 0, "Empty cache dir should have size 0");
+
+        // Also verify with a nested empty subdirectory structure
+        let sub = tmp.path().join("empty_pkg");
+        fs::create_dir(&sub).unwrap();
+        let sub2 = tmp.path().join("another_empty");
+        fs::create_dir(&sub2).unwrap();
+
+        // Directories themselves don't count as file bytes
+        let size = dir_size(tmp.path()).unwrap();
+        assert_eq!(
+            size, 0,
+            "Directory with only empty subdirs should have size 0"
+        );
+    }
+
+    // ── Cache clean removes entries ─────────────────────────────────────
+
+    #[test]
+    fn test_cache_clean_removes_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        fs::create_dir(&cache_dir).unwrap();
+
+        // Create dummy cached packages
+        let pkg1 = cache_dir.join("pkg_alpha@1.0.0");
+        fs::create_dir(&pkg1).unwrap();
+        fs::write(pkg1.join("data.bin"), vec![0u8; 100]).unwrap();
+
+        let pkg2 = cache_dir.join("pkg_beta@2.1.0");
+        fs::create_dir(&pkg2).unwrap();
+        fs::write(pkg2.join("lib.so"), vec![0u8; 200]).unwrap();
+
+        // Verify files exist before purge
+        assert!(pkg1.exists(), "pkg1 should exist before purge");
+        assert!(pkg2.exists(), "pkg2 should exist before purge");
+
+        let pre_size = dir_size(cache_dir.as_path()).unwrap();
+        assert_eq!(pre_size, 300, "Cache should contain 300 bytes before purge");
+
+        // Purge the cache directory
+        fs::remove_dir_all(&cache_dir).unwrap();
+
+        // Verify everything is removed
+        assert!(
+            !cache_dir.exists(),
+            "Cache directory should not exist after purge"
+        );
+        assert!(!pkg1.exists(), "pkg1 should be removed after purge");
+        assert!(!pkg2.exists(), "pkg2 should be removed after purge");
+    }
 }

@@ -1840,4 +1840,117 @@ targets:
         assert!(args.parallel);
         assert_eq!(args.targets.len(), 2);
     }
+
+    // ── Intent tests: deploy target parsing ────────────────────────────────
+
+    /// INTENT: Parse a deploy target string "user@192.168.1.100:/opt/robot".
+    /// The user, host, and path components must be extracted correctly from
+    /// the YAML config format.
+    #[test]
+    fn test_deploy_target_parsing() {
+        let yaml_str = r#"
+targets:
+  robot:
+    host: user@192.168.1.100
+    dir: /opt/robot
+"#;
+        let yaml: DeployYaml = serde_yaml::from_str(yaml_str).unwrap();
+        let target = &yaml.targets["robot"];
+
+        // The host field carries user@host
+        assert_eq!(target.host, "user@192.168.1.100");
+        assert!(
+            target.host.contains('@'),
+            "Host must contain '@' separator for user@host format"
+        );
+
+        // Extract user and host parts
+        let parts: Vec<&str> = target.host.splitn(2, '@').collect();
+        assert_eq!(parts.len(), 2, "user@host must split into exactly 2 parts");
+        assert_eq!(parts[0], "user", "User must be 'user'");
+        assert_eq!(parts[1], "192.168.1.100", "Host must be '192.168.1.100'");
+
+        // dir field carries the remote path
+        assert_eq!(
+            target.dir.as_deref(),
+            Some("/opt/robot"),
+            "Remote path must be '/opt/robot'"
+        );
+    }
+
+    /// INTENT: Parse a deploy target with a custom port.
+    /// Port must be correctly extracted from the YAML config.
+    #[test]
+    fn test_deploy_target_with_port() {
+        let yaml_str = r#"
+targets:
+  robot:
+    host: user@host
+    port: 2222
+    dir: /path
+"#;
+        let yaml: DeployYaml = serde_yaml::from_str(yaml_str).unwrap();
+        let target = &yaml.targets["robot"];
+
+        assert_eq!(
+            target.port,
+            Some(2222),
+            "Port must be 2222"
+        );
+        assert_eq!(target.host, "user@host");
+        assert_eq!(target.dir.as_deref(), Some("/path"));
+    }
+
+    /// INTENT: Target architecture strings ("aarch64", "armv7", "x86_64")
+    /// must all be recognized as valid architectures by TargetArch::from_str.
+    /// Unrecognized strings must return None.
+    #[test]
+    fn test_deploy_arch_detection() {
+        // All three primary robot architectures must be recognized
+        let aarch64 = TargetArch::from_str("aarch64");
+        assert!(
+            aarch64.is_some(),
+            "'aarch64' must be recognized as a valid architecture"
+        );
+        assert_eq!(
+            aarch64.unwrap().rust_target(),
+            "aarch64-unknown-linux-gnu",
+            "aarch64 must map to the correct Rust target triple"
+        );
+
+        let armv7 = TargetArch::from_str("armv7");
+        assert!(
+            armv7.is_some(),
+            "'armv7' must be recognized as a valid architecture"
+        );
+        assert_eq!(
+            armv7.unwrap().rust_target(),
+            "armv7-unknown-linux-gnueabihf",
+            "armv7 must map to the correct Rust target triple"
+        );
+
+        let x86_64 = TargetArch::from_str("x86_64");
+        assert!(
+            x86_64.is_some(),
+            "'x86_64' must be recognized as a valid architecture"
+        );
+        assert_eq!(
+            x86_64.unwrap().rust_target(),
+            "x86_64-unknown-linux-gnu",
+            "x86_64 must map to the correct Rust target triple"
+        );
+
+        // Unknown architectures must return None (not panic or default)
+        let unknown = TargetArch::from_str("riscv64");
+        assert!(
+            unknown.is_none(),
+            "Unrecognized architecture 'riscv64' must return None"
+        );
+
+        let empty = TargetArch::from_str("");
+        assert!(
+            empty.is_none(),
+            "Empty string must return None for architecture"
+        );
+    }
 }

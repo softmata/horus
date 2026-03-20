@@ -17,11 +17,17 @@ use std::sync::Arc;
 
 use serde::{de::DeserializeOwned, Serialize};
 
+use crate::memory::costmap::CostMap;
 use crate::memory::depth_image::DepthImage;
 use crate::memory::image::Image;
+use crate::memory::occupancy_grid::OccupancyGrid;
 use crate::memory::pointcloud::PointCloud;
+use crate::memory::TensorHandle;
 use crate::memory::TensorPool;
-use crate::types::{DepthImageDescriptor, ImageDescriptor, PointCloudDescriptor};
+use crate::types::{
+    CostMapDescriptor, DepthImageDescriptor, ImageDescriptor, OccupancyGridDescriptor,
+    PointCloudDescriptor, Tensor,
+};
 
 use super::pool_registry::global_pool;
 
@@ -106,7 +112,61 @@ macro_rules! impl_pool_backed_topic_message {
 }
 
 impl_pool_backed_topic_message!(
-    Image      => ImageDescriptor,
-    PointCloud => PointCloudDescriptor,
-    DepthImage => DepthImageDescriptor,
+    Image         => ImageDescriptor,
+    PointCloud    => PointCloudDescriptor,
+    DepthImage    => DepthImageDescriptor,
+    OccupancyGrid => OccupancyGridDescriptor,
 );
+
+// ============================================================================
+// CostMap: Custom TopicMessage — dual-tensor (grid + cost)
+// The macro above assumes one tensor per type. CostMap has two.
+// ============================================================================
+
+impl TopicMessage for CostMap {
+    type Wire = CostMapDescriptor;
+
+    #[inline]
+    fn to_wire(&self, _pool: &Option<Arc<TensorPool>>) -> CostMapDescriptor {
+        // Retain BOTH tensors so they survive until all receivers drop
+        self.pool().retain(self.descriptor().grid_tensor());
+        self.pool().retain(self.descriptor().cost_tensor());
+        *self.descriptor()
+    }
+
+    #[inline]
+    fn from_wire(wire: CostMapDescriptor, pool: &Option<Arc<TensorPool>>) -> Self {
+        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+        CostMap::from_owned(wire, p)
+    }
+
+    #[inline(always)]
+    fn needs_pool() -> bool {
+        true
+    }
+}
+
+// ============================================================================
+// TensorHandle: Generic user tensor — Wire = Tensor descriptor (168B)
+// ============================================================================
+
+impl TopicMessage for TensorHandle {
+    type Wire = Tensor;
+
+    #[inline]
+    fn to_wire(&self, _pool: &Option<Arc<TensorPool>>) -> Tensor {
+        self.pool().retain(self.tensor());
+        *self.tensor()
+    }
+
+    #[inline]
+    fn from_wire(wire: Tensor, pool: &Option<Arc<TensorPool>>) -> Self {
+        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+        TensorHandle::new(wire, p)
+    }
+
+    #[inline(always)]
+    fn needs_pool() -> bool {
+        true
+    }
+}

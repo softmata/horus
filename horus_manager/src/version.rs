@@ -291,4 +291,106 @@ mod tests {
         print_version_mismatch("", ""); // empty versions
         print_version_mismatch("1.0.0-beta", "1.0.0"); // pre-release vs release
     }
+
+    // ========================================================================
+    // Semver comparison tests
+    // ========================================================================
+
+    #[test]
+    fn test_version_comparison() {
+        use semver::Version;
+
+        let v010 = Version::parse("0.1.0").unwrap();
+        let v020 = Version::parse("0.2.0").unwrap();
+        let v100 = Version::parse("1.0.0").unwrap();
+
+        // Strict ordering: 0.1.0 < 0.2.0 < 1.0.0
+        assert!(
+            v010 < v020,
+            "0.1.0 should be less than 0.2.0"
+        );
+        assert!(
+            v020 < v100,
+            "0.2.0 should be less than 1.0.0"
+        );
+        assert!(
+            v010 < v100,
+            "0.1.0 should be less than 1.0.0 (transitivity)"
+        );
+
+        // Pre-release is less than release
+        let v100_beta = Version::parse("1.0.0-beta").unwrap();
+        assert!(
+            v100_beta < v100,
+            "1.0.0-beta should be less than 1.0.0 (pre-release < release)"
+        );
+
+        // Patch ordering
+        let v019 = Version::parse("0.1.9").unwrap();
+        assert!(
+            v010 < v019,
+            "0.1.0 should be less than 0.1.9"
+        );
+        assert!(
+            v019 < v020,
+            "0.1.9 should be less than 0.2.0"
+        );
+    }
+
+    #[test]
+    fn test_version_parse_valid() {
+        use semver::Version;
+
+        // Standard semver
+        let v1 = Version::parse("1.2.3");
+        assert!(
+            v1.is_ok(),
+            "1.2.3 should parse as valid semver, got: {:?}",
+            v1.err()
+        );
+        let v1 = v1.unwrap();
+        assert_eq!(v1.major, 1);
+        assert_eq!(v1.minor, 2);
+        assert_eq!(v1.patch, 3);
+
+        // Pre-release version
+        let v2 = Version::parse("0.1.0-beta");
+        assert!(
+            v2.is_ok(),
+            "0.1.0-beta should parse as valid semver, got: {:?}",
+            v2.err()
+        );
+        let v2 = v2.unwrap();
+        assert_eq!(v2.major, 0);
+        assert_eq!(v2.minor, 1);
+        assert_eq!(v2.patch, 0);
+        assert!(
+            !v2.pre.is_empty(),
+            "Pre-release field should be non-empty for 0.1.0-beta"
+        );
+
+        // Build metadata version
+        let v3 = Version::parse("2.0.0+build123");
+        assert!(
+            v3.is_ok(),
+            "2.0.0+build123 should parse as valid semver, got: {:?}",
+            v3.err()
+        );
+        let v3 = v3.unwrap();
+        assert_eq!(v3.major, 2);
+        assert_eq!(v3.minor, 0);
+        assert_eq!(v3.patch, 0);
+        assert!(
+            !v3.build.is_empty(),
+            "Build metadata should be non-empty for 2.0.0+build123"
+        );
+
+        // Pre-release + build metadata combined
+        let v4 = Version::parse("1.0.0-alpha.1+build.456");
+        assert!(
+            v4.is_ok(),
+            "1.0.0-alpha.1+build.456 should parse as valid semver, got: {:?}",
+            v4.err()
+        );
+    }
 }

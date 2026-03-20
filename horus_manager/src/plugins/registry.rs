@@ -661,4 +661,146 @@ mod tests {
         assert_eq!(registry.scope, PluginScope::Project);
         assert_eq!(registry.project_name, Some("my-bot".to_string()));
     }
+
+    #[test]
+    fn test_plugin_registry_save_load_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("plugins.lock");
+
+        let mut registry = PluginRegistry::new_global();
+
+        let entry_a = PluginEntry {
+            package: "nav2-lite".to_string(),
+            version: "1.2.3".to_string(),
+            source: PluginSource::Registry,
+            binary: PathBuf::from("/usr/local/bin/horus-nav2"),
+            checksum: "sha256:aaa111".to_string(),
+            signature: Some("sig-nav2".to_string()),
+            installed_at: Utc::now(),
+            installed_by: HORUS_VERSION.to_string(),
+            compatibility: Compatibility {
+                horus_min: "0.1.0".to_string(),
+                horus_max: "3.0.0".to_string(),
+                platforms: vec!["linux-x86_64".to_string()],
+            },
+            commands: vec![CommandInfo {
+                name: "navigate".to_string(),
+                description: "Run navigation stack".to_string(),
+            }],
+            permissions: vec!["network".to_string()],
+        };
+
+        let entry_b = PluginEntry {
+            package: "slam-toolkit".to_string(),
+            version: "0.5.0".to_string(),
+            source: PluginSource::Git {
+                url: "https://github.com/example/slam.git".to_string(),
+                rev: Some("abc123".to_string()),
+            },
+            binary: PathBuf::from("/usr/local/bin/horus-slam"),
+            checksum: "sha256:bbb222".to_string(),
+            signature: None,
+            installed_at: Utc::now(),
+            installed_by: HORUS_VERSION.to_string(),
+            compatibility: Compatibility::default(),
+            commands: vec![
+                CommandInfo {
+                    name: "map".to_string(),
+                    description: "Build a map".to_string(),
+                },
+                CommandInfo {
+                    name: "localize".to_string(),
+                    description: "Localize in map".to_string(),
+                },
+            ],
+            permissions: vec![],
+        };
+
+        registry.register_plugin("nav2", entry_a);
+        registry.register_plugin("slam", entry_b);
+        registry.save_to(&path).unwrap();
+
+        let loaded = PluginRegistry::load(&path).unwrap();
+        assert_eq!(loaded.plugins.len(), 2);
+
+        let nav = loaded.get_plugin("nav2").unwrap();
+        assert_eq!(nav.package, "nav2-lite");
+        assert_eq!(nav.version, "1.2.3");
+        assert_eq!(nav.checksum, "sha256:aaa111");
+        assert_eq!(nav.signature, Some("sig-nav2".to_string()));
+        assert_eq!(nav.compatibility.horus_max, "3.0.0");
+        assert_eq!(nav.commands.len(), 1);
+        assert_eq!(nav.commands[0].name, "navigate");
+        assert_eq!(nav.permissions, vec!["network".to_string()]);
+
+        let slam = loaded.get_plugin("slam").unwrap();
+        assert_eq!(slam.package, "slam-toolkit");
+        assert_eq!(slam.version, "0.5.0");
+        assert_eq!(slam.commands.len(), 2);
+        match &slam.source {
+            PluginSource::Git { url, rev } => {
+                assert_eq!(url, "https://github.com/example/slam.git");
+                assert_eq!(rev.as_deref(), Some("abc123"));
+            }
+            other => panic!("Expected Git source, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_plugin_registry_add_duplicate_updates() {
+        let mut registry = PluginRegistry::default();
+
+        let entry_v1 = PluginEntry {
+            package: "foo-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            source: PluginSource::Registry,
+            binary: PathBuf::from("/bin/horus-foo"),
+            checksum: "sha256:v1hash".to_string(),
+            signature: None,
+            installed_at: Utc::now(),
+            installed_by: HORUS_VERSION.to_string(),
+            compatibility: Compatibility::default(),
+            commands: vec![],
+            permissions: vec![],
+        };
+
+        let entry_v2 = PluginEntry {
+            package: "foo-pkg".to_string(),
+            version: "2.0.0".to_string(),
+            source: PluginSource::Registry,
+            binary: PathBuf::from("/bin/horus-foo"),
+            checksum: "sha256:v2hash".to_string(),
+            signature: None,
+            installed_at: Utc::now(),
+            installed_by: HORUS_VERSION.to_string(),
+            compatibility: Compatibility::default(),
+            commands: vec![],
+            permissions: vec![],
+        };
+
+        registry.register_plugin("foo", entry_v1);
+        assert_eq!(registry.get_plugin("foo").unwrap().version, "1.0.0");
+        assert_eq!(registry.plugins.len(), 1);
+
+        // Register again with v2 — should replace, not duplicate
+        registry.register_plugin("foo", entry_v2);
+        assert_eq!(registry.plugins.len(), 1, "should still have exactly 1 entry, not 2");
+        assert_eq!(registry.get_plugin("foo").unwrap().version, "2.0.0");
+        assert_eq!(registry.get_plugin("foo").unwrap().checksum, "sha256:v2hash");
+    }
+
+    #[test]
+    fn test_plugin_registry_remove_nonexistent() {
+        let mut registry = PluginRegistry::default();
+        // Add one plugin so the registry isn't empty
+        registry.register_plugin("existing", test_entry("existing"));
+
+        // Remove a plugin that doesn't exist — should not panic
+        let removed = registry.unregister_plugin("nonexistent_plugin");
+        assert!(removed.is_none(), "removing nonexistent plugin should return None");
+
+        // The existing plugin should still be there
+        assert_eq!(registry.plugins.len(), 1);
+        assert!(registry.get_plugin("existing").is_some());
+    }
 }

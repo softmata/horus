@@ -1044,4 +1044,65 @@ mod tests {
         assert!(report.contains("opencv"));
         assert!(report.contains("sudo apt install libopencv-dev"));
     }
+
+    // ── System dep package name mapping ──────────────────────────────
+
+    #[test]
+    fn test_system_dep_package_name_mapping() {
+        // Verify that known features map to correct platform-specific package names.
+        // "opencv-backend" should map to "libopencv-dev" on Debian/Ubuntu (apt).
+        let opencv = SYSTEM_DEPS
+            .iter()
+            .find(|d| d.feature == "opencv-backend")
+            .expect("opencv-backend feature should exist");
+        assert!(
+            opencv.apt_packages.contains(&"libopencv-dev"),
+            "opencv-backend should map to libopencv-dev on apt, got: {:?}",
+            opencv.apt_packages
+        );
+        assert!(
+            opencv.brew_packages.contains(&"opencv"),
+            "opencv-backend should map to opencv on brew, got: {:?}",
+            opencv.brew_packages
+        );
+        assert!(
+            opencv.pacman_packages.contains(&"opencv"),
+            "opencv-backend should map to opencv on pacman, got: {:?}",
+            opencv.pacman_packages
+        );
+
+        // "gilrs" should map to "libudev-dev" on Debian/Ubuntu.
+        let gilrs = SYSTEM_DEPS
+            .iter()
+            .find(|d| d.feature == "gilrs")
+            .expect("gilrs feature should exist");
+        assert!(
+            gilrs.apt_packages.contains(&"libudev-dev"),
+            "gilrs should map to libudev-dev on apt, got: {:?}",
+            gilrs.apt_packages
+        );
+    }
+
+    #[test]
+    fn test_system_dep_unknown_package_passthrough() {
+        // Unknown feature names should not match any entry in SYSTEM_DEPS,
+        // meaning check_dependencies produces no package mappings for them.
+        let result = check_dependencies(&["unknown-package-xyz".to_string()]);
+        assert!(
+            result.missing_packages.is_empty(),
+            "unknown feature should not produce any package mappings"
+        );
+        assert!(
+            result.docs_links.is_empty(),
+            "unknown feature should not produce any docs links"
+        );
+        assert!(
+            result.install_commands.is_empty(),
+            "unknown feature should not produce any install commands"
+        );
+        assert!(
+            result.missing_pkg_config.is_empty(),
+            "unknown feature should not produce any pkg-config entries"
+        );
+    }
 }

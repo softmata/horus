@@ -49,6 +49,10 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pointcloud::PyPointCloud>()?;
     m.add_class::<depth_image::PyDepthImage>()?;
 
+    // Tensor system (public API)
+    m.add_class::<tensor::PyTensorHandle>()?;
+    m.add_class::<tensor::PyTensorPool>()?;
+
     // Runtime parameters
     m.add_class::<params::PyParams>()?;
 

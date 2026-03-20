@@ -1331,4 +1331,77 @@ mod tests {
         // Not on crates.io, not on PyPI, no context → Low confidence Registry
         assert_eq!(result.confidence, Confidence::Low);
     }
+
+    // ── Source resolution for dependency types ────────────────────────
+
+    #[test]
+    fn test_resolve_crates_io_source() {
+        // A dep with name "serde" and no explicit source should resolve to CratesIo
+        // because "serde" is in the well-known crates.io list.
+        let resolver = PackageSourceResolver::without_context();
+        let result = resolver.resolve("serde");
+        assert_eq!(result.source, DepSource::CratesIo);
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(
+            result.reason.contains("well-known"),
+            "reason should mention well-known: {}",
+            result.reason
+        );
+    }
+
+    #[test]
+    fn test_resolve_pypi_source() {
+        // A dep with source explicitly set to PyPI should stay as PyPI
+        // when resolved through DependencyValue::effective_source().
+        use crate::manifest::{DependencyValue, DetailedDependency};
+        let dep = DependencyValue::Detailed(DetailedDependency {
+            version: Some("1.0".to_string()),
+            source: Some(DepSource::PyPI),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
+            workspace: false,
+        });
+        assert_eq!(dep.effective_source(), DepSource::PyPI);
+    }
+
+    #[test]
+    fn test_resolve_git_source_preserves_url() {
+        // A dep with source = Git should preserve the git URL and tag
+        // through DetailedDependency fields.
+        use crate::manifest::{DependencyValue, DetailedDependency};
+        let url = "https://github.com/org/repo.git";
+        let tag = "v1.2.3";
+        let dep = DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            source: Some(DepSource::Git),
+            features: vec![],
+            optional: false,
+            path: None,
+            git: Some(url.to_string()),
+            branch: None,
+            tag: Some(tag.to_string()),
+            rev: None,
+            apt: None,
+            cmake_package: None,
+            lang: None,
+            workspace: false,
+        });
+        assert_eq!(dep.effective_source(), DepSource::Git);
+        // Verify the URL and tag are preserved in the DetailedDependency
+        match &dep {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.git.as_deref(), Some(url));
+                assert_eq!(d.tag.as_deref(), Some(tag));
+            }
+            _ => panic!("expected Detailed variant"),
+        }
+    }
 }

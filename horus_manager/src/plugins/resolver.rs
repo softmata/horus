@@ -547,4 +547,76 @@ mod tests {
             VerificationStatus::Error
         );
     }
+
+    #[test]
+    fn test_resolver_finds_local_plugin() {
+        // Set up a global registry with a plugin whose binary points to a real temp file
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin_path = tmp.path().join("horus-localplugin");
+        std::fs::write(&bin_path, b"fake binary content").unwrap();
+
+        let checksum =
+            crate::plugins::registry::PluginRegistry::calculate_checksum(&bin_path).unwrap();
+
+        let mut global = PluginRegistry::new_global();
+        let entry = PluginEntry {
+            package: "local-plugin".to_string(),
+            version: "0.1.0".to_string(),
+            source: PluginSource::Local {
+                path: tmp.path().to_path_buf(),
+            },
+            binary: bin_path.clone(),
+            checksum,
+            signature: None,
+            installed_at: Utc::now(),
+            installed_by: "0.1.0".to_string(),
+            compatibility: Compatibility::default(),
+            commands: vec![CommandInfo {
+                name: "run".to_string(),
+                description: "Run local plugin".to_string(),
+            }],
+            permissions: vec![],
+        };
+        global.register_plugin("localplugin", entry);
+
+        let resolver = PluginResolver::with_registries(global, None, None);
+
+        // The resolver should find the plugin by command name
+        let resolved = resolver.resolve("localplugin");
+        assert!(resolved.is_some(), "resolver should find the locally-registered plugin");
+        let resolved = resolved.unwrap();
+        assert_eq!(resolved.package, "local-plugin");
+        assert_eq!(resolved.version, "0.1.0");
+        assert_eq!(resolved.binary, bin_path);
+        assert!(resolver.is_plugin("localplugin"));
+
+        // Also verify the binary exists on disk at the resolved path
+        assert!(resolved.binary.exists(), "binary should exist at the resolved path");
+    }
+
+    #[test]
+    fn test_resolver_returns_none_for_missing() {
+        // Empty global registry, no project registry
+        let global = PluginRegistry::new_global();
+        let resolver = PluginResolver::with_registries(global, None, None);
+
+        assert!(resolver.resolve("nonexistent_plugin").is_none());
+        assert!(resolver.resolve("").is_none());
+        assert!(resolver.resolve("horus-does-not-exist").is_none());
+        assert!(!resolver.is_plugin("nonexistent_plugin"));
+
+        // Also test with a project registry that has no matching plugin
+        let project = PluginRegistry::new_project("test-project");
+        let resolver_with_project = PluginResolver::with_registries(
+            PluginRegistry::new_global(),
+            Some(project),
+            Some(PathBuf::from("/tmp/test-project")),
+        );
+        assert!(resolver_with_project.resolve("still_missing").is_none());
+        assert!(!resolver_with_project.is_plugin("still_missing"));
+
+        // Verify all_commands returns empty when nothing is registered
+        let cmds = resolver.all_commands();
+        assert!(cmds.is_empty());
+    }
 }

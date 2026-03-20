@@ -1108,6 +1108,121 @@ dependencies = ["numpy>=1.24", "requests"]
         assert!(!tmp.path().join("main.rs").exists());
     }
 
+    // ── extract_cmake_deps ────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_cmake_deps_find_package() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cmake_path = tmp.path().join("CMakeLists.txt");
+        fs::write(
+            &cmake_path,
+            r#"
+cmake_minimum_required(VERSION 3.14)
+project(mybot)
+
+find_package(OpenCV REQUIRED)
+find_package(Boost COMPONENTS system)
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cmake_deps(&cmake_path).unwrap();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains_key("OpenCV"), "Should contain OpenCV");
+        assert!(deps.contains_key("Boost"), "Should contain Boost");
+
+        match &deps["OpenCV"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.source, Some(DepSource::System));
+                assert_eq!(d.cmake_package.as_deref(), Some("OpenCV"));
+            }
+            _ => panic!("Expected Detailed variant for OpenCV"),
+        }
+
+        match &deps["Boost"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.source, Some(DepSource::System));
+                assert_eq!(d.cmake_package.as_deref(), Some("Boost"));
+            }
+            _ => panic!("Expected Detailed variant for Boost"),
+        }
+    }
+
+    #[test]
+    fn test_extract_cmake_deps_fetch_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cmake_path = tmp.path().join("CMakeLists.txt");
+        fs::write(
+            &cmake_path,
+            r#"
+cmake_minimum_required(VERSION 3.14)
+include(FetchContent)
+
+FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.11.3)
+FetchContent_MakeAvailable(json)
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cmake_deps(&cmake_path).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains_key("json"), "Should contain json");
+
+        match &deps["json"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.source, Some(DepSource::Git));
+                assert_eq!(
+                    d.git.as_deref(),
+                    Some("https://github.com/nlohmann/json.git")
+                );
+                assert_eq!(d.tag.as_deref(), Some("v3.11.3"));
+                assert_eq!(d.cmake_package.as_deref(), Some("json"));
+                assert_eq!(d.lang.as_deref(), Some("cpp"));
+            }
+            _ => panic!("Expected Detailed variant for json"),
+        }
+    }
+
+    #[test]
+    fn test_extract_cmake_deps_pkg_check_modules() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cmake_path = tmp.path().join("CMakeLists.txt");
+        fs::write(
+            &cmake_path,
+            r#"
+cmake_minimum_required(VERSION 3.14)
+find_package(PkgConfig REQUIRED)
+
+pkg_check_modules(GLIB REQUIRED glib-2.0)
+"#,
+        )
+        .unwrap();
+
+        let deps = extract_cmake_deps(&cmake_path).unwrap();
+        // find_package(PkgConfig) is skipped by the parser
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains_key("glib-2.0"), "Should contain glib-2.0");
+
+        match &deps["glib-2.0"] {
+            DependencyValue::Detailed(d) => {
+                assert_eq!(d.source, Some(DepSource::System));
+                assert_eq!(d.cmake_package.as_deref(), Some("glib-2.0"));
+                assert_eq!(d.lang.as_deref(), Some("cpp"));
+            }
+            _ => panic!("Expected Detailed variant for glib-2.0"),
+        }
+    }
+
+    #[test]
+    fn test_extract_cmake_deps_empty_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cmake_path = tmp.path().join("CMakeLists.txt");
+        fs::write(&cmake_path, "").unwrap();
+
+        let deps = extract_cmake_deps(&cmake_path).unwrap();
+        assert!(deps.is_empty(), "Empty file should produce no deps");
+    }
+
     #[test]
     fn migrate_does_not_move_src_main_when_root_main_exists() {
         let tmp = tempfile::TempDir::new().unwrap();

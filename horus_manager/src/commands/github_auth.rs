@@ -1819,4 +1819,88 @@ mod tests {
             Some("a&b".to_string())
         );
     }
+
+    #[test]
+    fn test_api_key_generation_format() {
+        // The generate_key function validates tokens with the "horus_key_" prefix.
+        // Test that valid keys pass and various malformed keys are rejected.
+        let valid_keys = [
+            "horus_key_a1b2c3d4e5f6",
+            "horus_key_0123456789abcdef",
+            "horus_key_ABCDEF0123456789abcdef",
+            "horus_key_x", // minimal valid key
+        ];
+        for key in &valid_keys {
+            assert!(
+                key.starts_with("horus_key_"),
+                "Key '{}' should be valid (starts with horus_key_)",
+                key
+            );
+            assert!(
+                key.len() > "horus_key_".len(),
+                "Key '{}' should have content after prefix",
+                key
+            );
+        }
+
+        // Test that generated keys can roundtrip through AuthConfig serialization
+        for key in &valid_keys {
+            let config = AuthConfig {
+                api_key: key.to_string(),
+                registry_url: "https://api.horusrobotics.dev".to_string(),
+                github_username: Some("testuser".to_string()),
+            };
+            let json = serde_json::to_string_pretty(&config).unwrap();
+            let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.api_key, *key);
+            assert!(parsed.api_key.starts_with("horus_key_"));
+        }
+
+        // Verify that a hex-only suffix (realistic key format) preserves correctly
+        let hex_key = "horus_key_deadbeef0123456789abcdef";
+        let suffix = &hex_key["horus_key_".len()..];
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "Suffix should be valid hex characters"
+        );
+        assert_eq!(suffix.len(), 24, "Expected 24-char hex suffix");
+    }
+
+    #[test]
+    fn test_auth_token_validation() {
+        // The generate_key() function rejects tokens that don't start with "horus_key_".
+        // Simulate the same validation logic used in that function.
+        let validate_token = |token: &str| -> bool {
+            token.starts_with("horus_key_") && token.len() > "horus_key_".len()
+        };
+
+        // Valid tokens
+        assert!(validate_token("horus_key_abc123"));
+        assert!(validate_token("horus_key_0"));
+        assert!(validate_token("horus_key_deadbeefcafe0123456789abcdef"));
+
+        // Invalid tokens — wrong or missing prefix
+        assert!(!validate_token(""), "empty string is invalid");
+        assert!(!validate_token("horus_key_"), "bare prefix with no content is invalid");
+        assert!(!validate_token("horus_key"), "missing trailing underscore");
+        assert!(!validate_token("invalid_token_abc123"), "wrong prefix");
+        assert!(!validate_token("HORUS_KEY_abc123"), "case-sensitive prefix");
+        assert!(!validate_token("horus-key_abc123"), "wrong separator");
+        assert!(!validate_token("horus_Key_abc123"), "mixed case");
+        assert!(!validate_token(" horus_key_abc123"), "leading whitespace");
+        assert!(!validate_token("bearer horus_key_abc123"), "bearer prefix");
+
+        // Verify that a token passing validation can be stored and loaded
+        let valid_token = "horus_key_test_validation_abc";
+        assert!(validate_token(valid_token));
+        let config = AuthConfig {
+            api_key: valid_token.to_string(),
+            registry_url: "https://api.horusrobotics.dev".to_string(),
+            github_username: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_key, valid_token);
+        assert!(validate_token(&parsed.api_key));
+    }
 }

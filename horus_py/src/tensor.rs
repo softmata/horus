@@ -181,13 +181,120 @@ impl PyTensorPool {
 }
 
 /// Python wrapper for TensorHandle with numpy interop
-#[pyclass(name = "TensorHandle")]
+///
+/// Exposed as `horus.Tensor` in Python — the general-purpose zero-copy
+/// shared memory tensor for custom data (costmaps, feature maps, matrices, etc.).
+#[pyclass(name = "Tensor")]
 pub struct PyTensorHandle {
-    handle: Option<TensorHandle>,
+    pub(crate) handle: Option<TensorHandle>,
 }
 
 #[pymethods]
 impl PyTensorHandle {
+    /// Create a new tensor with the given shape and dtype.
+    ///
+    /// Allocates shared memory from the global pool. Data is zero-initialized.
+    ///
+    /// Args:
+    ///     shape: Tuple or list of dimensions (e.g., [1000, 1000])
+    ///     dtype: Data type string (default: "float32")
+    ///
+    /// Example:
+    ///     t = horus.Tensor([480, 640, 3], dtype="uint8")
+    #[new]
+    #[pyo3(signature = (shape, dtype="float32"))]
+    fn new(shape: Vec<u64>, dtype: &str) -> PyResult<Self> {
+        if shape.is_empty() {
+            return Err(PyValueError::new_err("Tensor shape must have at least one dimension"));
+        }
+        if shape.iter().any(|&d| d == 0) {
+            return Err(PyValueError::new_err("Tensor dimensions must be > 0"));
+        }
+        let dtype = parse_dtype(dtype)?;
+        let pool = get_or_create_pool(1, None)?;
+        let handle = TensorHandle::alloc(pool, &shape, dtype, horus_core::types::Device::cpu())
+            .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
+        Ok(Self {
+            handle: Some(handle),
+        })
+    }
+
+    /// Create a zero-initialized tensor.
+    ///
+    /// Args:
+    ///     shape: Tuple or list of dimensions
+    ///     dtype: Data type string (default: "float32")
+    #[staticmethod]
+    #[pyo3(signature = (shape, dtype="float32"))]
+    fn zeros(shape: Vec<u64>, dtype: &str) -> PyResult<Self> {
+        // new() already zero-initializes (TensorPool mmaps are zeroed)
+        Self::new(shape, dtype)
+    }
+
+    /// Create an uninitialized tensor (fast, no zero-fill).
+    ///
+    /// Args:
+    ///     shape: Tuple or list of dimensions
+    ///     dtype: Data type string (default: "float32")
+    #[staticmethod]
+    #[pyo3(signature = (shape, dtype="float32"))]
+    fn empty(shape: Vec<u64>, dtype: &str) -> PyResult<Self> {
+        // Same as new() — mmap pages are zeroed by the OS anyway
+        Self::new(shape, dtype)
+    }
+
+    /// Create a tensor from a numpy array (one copy into shared memory).
+    ///
+    /// Args:
+    ///     array: numpy array
+    ///
+    /// Returns:
+    ///     Tensor backed by shared memory with data copied from the array
+    #[staticmethod]
+    fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let np = py.import("numpy")?;
+        // Ensure contiguous C-order array
+        let arr = np.call_method1("ascontiguousarray", (array,))?;
+
+        // Get shape
+        let shape_obj = arr.getattr("shape")?;
+        let shape_i64: Vec<i64> = shape_obj.extract()?;
+        if shape_i64.iter().any(|&x| x < 0) {
+            return Err(PyValueError::new_err("Tensor shape dimensions must be non-negative"));
+        }
+        let shape: Vec<u64> = shape_i64.iter().map(|&x| x as u64).collect();
+
+        // Get dtype string
+        let dtype_obj = arr.getattr("dtype")?;
+        let dtype_str = dtype_obj.getattr("str")?.extract::<String>()?;
+        let dtype = numpy_typestr_to_dtype(&dtype_str)?;
+
+        // Allocate tensor
+        let pool = get_or_create_pool(1, None)?;
+        let handle = TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, horus_core::types::Device::cpu())
+            .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
+
+        // Copy data from numpy to shared memory
+        let nbytes = handle.nbytes() as usize;
+        let dst_ptr = handle.data_ptr();
+
+        // Get pointer to numpy data via __array_interface__
+        let iface = arr.getattr("__array_interface__")?;
+        let data_tuple = iface.get_item("data")?;
+        let src_addr: usize = data_tuple.get_item(0)?.extract()?;
+
+        // SAFETY: src_addr points to numpy's contiguous data buffer with at least
+        // nbytes of valid data. dst_ptr points to a freshly allocated TensorPool
+        // slot with the same size. Both are properly aligned for byte-level copy.
+        unsafe {
+            std::ptr::copy_nonoverlapping(src_addr as *const u8, dst_ptr, nbytes);
+        }
+
+        Ok(Self {
+            handle: Some(handle),
+        })
+    }
+
     /// Create a TensorHandle from a raw tensor descriptor
     ///
     /// This is used when receiving tensors from Topic.
@@ -403,8 +510,11 @@ impl PyTensorHandle {
     ///     TensorHandle wrapping a copy of the DLPack tensor data
     #[staticmethod]
     fn from_dlpack(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Self> {
-        // Get capsule from __dlpack__(stream=None)
-        let capsule_obj = obj.call_method1(py, "__dlpack__", (py.None(),))?;
+        // Get capsule from __dlpack__ — try without args first (PyTorch 2.x),
+        // fall back to __dlpack__(stream=None) (older DLPack spec)
+        let capsule_obj = obj
+            .call_method0(py, "__dlpack__")
+            .or_else(|_| obj.call_method1(py, "__dlpack__", (py.None(),)))?;
 
         // Extract DLManagedTensor* from PyCapsule
         let capsule_name = CString::new("dltensor").expect("static str has no NUL");
@@ -726,6 +836,252 @@ impl PyTensorHandle {
         ))
     }
 
+    // =================================================================
+    // Pythonic sugar — makes horus.Tensor feel like PyTorch/NumPy
+    // =================================================================
+
+    /// Indexing: t[0], t[0:10], t[0, :, 3]
+    ///
+    /// Delegates to numpy for full indexing support. Returns a numpy array
+    /// (view when possible, copy for advanced indexing).
+    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let np_arr = Self::numpy(slf, py)?;
+        np_arr.get_item(key)
+    }
+
+    /// Assignment: t[0] = 1.0, t[0:10] = array
+    ///
+    /// Writes directly into shared memory via numpy view.
+    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+        let np_arr = Self::numpy(slf, py)?;
+        np_arr.set_item(key, value)
+    }
+
+    /// Length of first dimension: len(t)
+    fn __len__(&self) -> PyResult<usize> {
+        let handle = self.handle.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+        let shape = handle.shape();
+        if shape.is_empty() {
+            Ok(0)
+        } else {
+            Ok(shape[0] as usize)
+        }
+    }
+
+    /// Reshape: t.reshape([10, 10]) or t.reshape(10, 10)
+    ///
+    /// Returns a new Tensor with the same data but different shape.
+    /// Must be contiguous and total elements must match.
+    #[pyo3(signature = (*args))]
+    fn reshape(&self, args: &Bound<'_, PyTuple>) -> PyResult<Self> {
+        let new_shape = parse_shape_args(args)?;
+        let handle = self.handle.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+        let viewed = handle.view(&new_shape)
+            .ok_or_else(|| PyValueError::new_err(
+                "Cannot reshape: tensor must be contiguous and new shape must have same number of elements"
+            ))?;
+        Ok(Self { handle: Some(viewed) })
+    }
+
+    /// Flatten to 1D: t.flatten()
+    fn flatten(&self) -> PyResult<Self> {
+        let handle = self.handle.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+        let total = handle.numel();
+        let viewed = handle.view(&[total])
+            .ok_or_else(|| PyValueError::new_err("Cannot flatten: tensor must be contiguous"))?;
+        Ok(Self { handle: Some(viewed) })
+    }
+
+    /// Squeeze: remove dimensions of size 1
+    fn squeeze(&self) -> PyResult<Self> {
+        let handle = self.handle.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+        let new_shape: Vec<u64> = handle.shape().iter().copied().filter(|&d| d != 1).collect();
+        if new_shape.is_empty() {
+            // Scalar — keep as [1]
+            let viewed = handle.view(&[1])
+                .ok_or_else(|| PyValueError::new_err("Cannot squeeze"))?;
+            Ok(Self { handle: Some(viewed) })
+        } else {
+            let viewed = handle.view(&new_shape)
+                .ok_or_else(|| PyValueError::new_err("Cannot squeeze: tensor must be contiguous"))?;
+            Ok(Self { handle: Some(viewed) })
+        }
+    }
+
+    /// Unsqueeze: add a dimension of size 1 at the given position
+    fn unsqueeze(&self, dim: i64) -> PyResult<Self> {
+        let handle = self.handle.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+        let ndim = handle.shape().len() as i64;
+        let dim = if dim < 0 { ndim + 1 + dim } else { dim };
+        if dim < 0 || dim > ndim {
+            return Err(PyValueError::new_err(format!("dim {} out of range for {}-d tensor", dim, ndim)));
+        }
+        let mut new_shape: Vec<u64> = handle.shape().to_vec();
+        new_shape.insert(dim as usize, 1);
+        let viewed = handle.view(&new_shape)
+            .ok_or_else(|| PyValueError::new_err("Cannot unsqueeze: tensor must be contiguous"))?;
+        Ok(Self { handle: Some(viewed) })
+    }
+
+    /// Transpose (2D only): t.T or t.transpose()
+    #[getter]
+    fn T<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let np_arr = Self::numpy(slf, py)?;
+        np_arr.getattr("T")
+    }
+
+    // =================================================================
+    // Arithmetic — delegate to NumPy (BLAS-optimized)
+    // =================================================================
+
+    /// t + other
+    fn __add__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "add")
+    }
+
+    /// t - other
+    fn __sub__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "subtract")
+    }
+
+    /// t * other
+    fn __mul__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "multiply")
+    }
+
+    /// t / other
+    fn __truediv__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "divide")
+    }
+
+    /// -t
+    fn __neg__<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Self> {
+        let np = py.import("numpy")?;
+        let arr = Self::numpy(slf, py)?;
+        let result = np.call_method1("negative", (&arr,))?;
+        Self::from_numpy(py, &result)
+    }
+
+    // =================================================================
+    // Comparisons — return bool Tensor
+    // =================================================================
+
+    /// t == other
+    fn __eq__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "equal")
+    }
+
+    /// t < other
+    fn __lt__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "less")
+    }
+
+    /// t > other
+    fn __gt__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "greater")
+    }
+
+    /// t <= other
+    fn __le__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "less_equal")
+    }
+
+    /// t >= other
+    fn __ge__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+        numpy_binop(slf, py, other, "greater_equal")
+    }
+
+    // =================================================================
+    // Reductions — delegate to NumPy
+    // =================================================================
+
+    /// Sum of elements: t.sum() or t.sum(dim=0)
+    #[pyo3(signature = (dim=None))]
+    fn sum<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dim: Option<i64>) -> PyResult<Self> {
+        numpy_reduction(slf, py, "sum", dim)
+    }
+
+    /// Mean of elements: t.mean() or t.mean(dim=0)
+    #[pyo3(signature = (dim=None))]
+    fn mean<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dim: Option<i64>) -> PyResult<Self> {
+        numpy_reduction(slf, py, "mean", dim)
+    }
+
+    /// Max of elements: t.max() or t.max(dim=0)
+    #[pyo3(signature = (dim=None))]
+    fn max<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dim: Option<i64>) -> PyResult<Self> {
+        numpy_reduction(slf, py, "max", dim)
+    }
+
+    /// Min of elements: t.min() or t.min(dim=0)
+    #[pyo3(signature = (dim=None))]
+    fn min<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dim: Option<i64>) -> PyResult<Self> {
+        numpy_reduction(slf, py, "min", dim)
+    }
+
+    // =================================================================
+    // Type conversion
+    // =================================================================
+
+    /// Convert dtype: t.astype("float16")
+    fn astype<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dtype: &str) -> PyResult<Self> {
+        let inner = slf.borrow();
+        let handle = inner.handle.as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+        let new_dtype = parse_dtype(dtype)?;
+        if handle.dtype() == new_dtype {
+            return Ok(Self { handle: Some(handle.clone()) });
+        }
+        let np = py.import("numpy")?;
+        let np_dtype = np.call_method1("dtype", (dtype,))?;
+        let src = Self::numpy(slf, py)?;
+        let converted = src.call_method1("astype", (&np_dtype,))?;
+        Self::from_numpy(py, &converted)
+    }
+
+    /// Convenience: t.to_float32() → float32
+    fn to_float32<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Self> {
+        Self::astype(slf, py, "float32")
+    }
+
+    /// Convenience: t.to_float16() → float16
+    fn to_float16<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Self> {
+        Self::astype(slf, py, "float16")
+    }
+
+    /// Convenience: t.to_int32() → int32
+    fn to_int32<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Self> {
+        Self::astype(slf, py, "int32")
+    }
+
+    /// Convenience: t.to_uint8() → uint8
+    fn to_uint8<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Self> {
+        Self::astype(slf, py, "uint8")
+    }
+
+    /// Convert to Python list: t.tolist()
+    fn tolist<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let np_arr = Self::numpy(slf, py)?;
+        np_arr.call_method0("tolist")
+    }
+
+    /// Create from a PyTorch tensor (one copy into shared memory).
+    #[staticmethod]
+    fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // Use DLPack if available, fall back to numpy
+        if tensor.hasattr("__dlpack__")? {
+            Self::from_dlpack(py, tensor.clone().unbind())
+        } else {
+            let arr = tensor.call_method0("numpy")?;
+            Self::from_numpy(py, &arr)
+        }
+    }
+
     /// Release the tensor handle explicitly
     ///
     /// Normally handles are released when garbage collected, but this allows
@@ -737,13 +1093,11 @@ impl PyTensorHandle {
     fn __repr__(&self) -> String {
         match &self.handle {
             Some(h) => format!(
-                "TensorHandle(shape={:?}, dtype={}, device={}, refcount={})",
+                "Tensor(shape={:?}, dtype={})",
                 h.shape(),
                 dtype_to_str(h.dtype()),
-                device_to_string(h.device()),
-                h.refcount()
             ),
-            None => "TensorHandle(released)".to_string(),
+            None => "Tensor(released)".to_string(),
         }
     }
 
@@ -760,6 +1114,133 @@ use dlpack_utils::{device_to_string, dtype_to_str, parse_device, parse_dtype};
 
 fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
     dtype.numpy_typestr()
+}
+
+/// Perform a binary operation via numpy (add, subtract, multiply, etc.)
+/// and return a new horus.Tensor backed by shared memory.
+fn numpy_binop<'py>(
+    slf: &Bound<'py, PyTensorHandle>,
+    py: Python<'py>,
+    other: &Bound<'py, PyAny>,
+    op: &str,
+) -> PyResult<PyTensorHandle> {
+    let np = py.import("numpy")?;
+    let a = PyTensorHandle::numpy(slf, py)?;
+    // If other is a Tensor, convert to numpy first
+    let b = if other.is_instance_of::<PyTensorHandle>() {
+        let other_bound = other.downcast::<PyTensorHandle>()?;
+        PyTensorHandle::numpy(other_bound, py)?
+    } else {
+        other.clone()
+    };
+    let result = np.call_method1(op, (&a, &b))?;
+    PyTensorHandle::from_numpy_internal(py, &result)
+}
+
+/// Perform a reduction via numpy (sum, mean, max, min) and return a new Tensor.
+fn numpy_reduction<'py>(
+    slf: &Bound<'py, PyTensorHandle>,
+    py: Python<'py>,
+    op: &str,
+    dim: Option<i64>,
+) -> PyResult<PyTensorHandle> {
+    let np_arr = PyTensorHandle::numpy(slf, py)?;
+    let result = match dim {
+        Some(d) => np_arr.call_method1(op, (d,))?,
+        None => np_arr.call_method0(op)?,
+    };
+    // Ensure result is at least 1D for Tensor wrapping
+    let np = py.import("numpy")?;
+    let result = np.call_method1("atleast_1d", (&result,))?;
+    PyTensorHandle::from_numpy_internal(py, &result)
+}
+
+/// Parse shape arguments: supports reshape(10, 10) and reshape([10, 10])
+fn parse_shape_args(args: &Bound<'_, PyTuple>) -> PyResult<Vec<u64>> {
+    if args.len() == 1 {
+        // Single argument — could be a list/tuple
+        let arg = args.get_item(0)?;
+        if let Ok(list) = arg.extract::<Vec<i64>>() {
+            if list.iter().any(|&x| x < 0) {
+                return Err(PyValueError::new_err("reshape dimensions must be non-negative"));
+            }
+            return Ok(list.iter().map(|&x| x as u64).collect());
+        }
+        // Single int — 1D reshape
+        if let Ok(val) = arg.extract::<i64>() {
+            if val < 0 {
+                return Err(PyValueError::new_err("reshape dimensions must be non-negative"));
+            }
+            return Ok(vec![val as u64]);
+        }
+        Err(PyValueError::new_err("reshape expects int dimensions or a list/tuple"))
+    } else {
+        // Multiple arguments: reshape(10, 10)
+        let mut shape = Vec::with_capacity(args.len());
+        for i in 0..args.len() {
+            let val: i64 = args.get_item(i)?.extract()?;
+            if val < 0 {
+                return Err(PyValueError::new_err("reshape dimensions must be non-negative"));
+            }
+            shape.push(val as u64);
+        }
+        Ok(shape)
+    }
+}
+
+/// Convert numpy dtype string (e.g., "<f4", "|u1") to TensorDtype.
+fn numpy_typestr_to_dtype(s: &str) -> PyResult<TensorDtype> {
+    match s {
+        "<f4" | "float32" => Ok(TensorDtype::F32),
+        "<f8" | "float64" => Ok(TensorDtype::F64),
+        "<f2" | "float16" => Ok(TensorDtype::F16),
+        "|i1" | "int8" => Ok(TensorDtype::I8),
+        "<i2" | "int16" => Ok(TensorDtype::I16),
+        "<i4" | "int32" => Ok(TensorDtype::I32),
+        "<i8" | "int64" => Ok(TensorDtype::I64),
+        "|u1" | "uint8" => Ok(TensorDtype::U8),
+        "<u2" | "uint16" => Ok(TensorDtype::U16),
+        "<u4" | "uint32" => Ok(TensorDtype::U32),
+        "<u8" | "uint64" => Ok(TensorDtype::U64),
+        "|b1" | "bool" => Ok(TensorDtype::Bool),
+        _ => Err(PyValueError::new_err(format!(
+            "Unsupported numpy dtype: '{}'. Supported: float32, float64, float16, \
+             int8, int16, int32, int64, uint8, uint16, uint32, uint64, bool",
+            s
+        ))),
+    }
+}
+
+// Public (crate) API for cross-module use (image.rs, pointcloud.rs, etc.)
+impl PyTensorHandle {
+    /// Create a PyTensorHandle from a numpy array (crate-internal version).
+    ///
+    /// This duplicates the #[staticmethod] from_numpy but is callable from Rust.
+    pub(crate) fn from_numpy_internal(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let np = py.import("numpy")?;
+        let arr = np.call_method1("ascontiguousarray", (array,))?;
+        let shape_obj = arr.getattr("shape")?;
+        let shape_i64: Vec<i64> = shape_obj.extract()?;
+        if shape_i64.iter().any(|&x| x < 0) {
+            return Err(PyValueError::new_err("Tensor shape dimensions must be non-negative"));
+        }
+        let shape: Vec<u64> = shape_i64.iter().map(|&x| x as u64).collect();
+        let dtype_obj = arr.getattr("dtype")?;
+        let dtype_str = dtype_obj.getattr("str")?.extract::<String>()?;
+        let dtype = numpy_typestr_to_dtype(&dtype_str)?;
+        let pool = get_or_create_pool(1, None)?;
+        let handle = TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, horus_core::types::Device::cpu())
+            .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
+        let nbytes = handle.nbytes() as usize;
+        let dst_ptr = handle.data_ptr();
+        let iface = arr.getattr("__array_interface__")?;
+        let data_tuple = iface.get_item("data")?;
+        let src_addr: usize = data_tuple.get_item(0)?.extract()?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(src_addr as *const u8, dst_ptr, nbytes);
+        }
+        Ok(Self { handle: Some(handle) })
+    }
 }
 
 #[cfg(test)]

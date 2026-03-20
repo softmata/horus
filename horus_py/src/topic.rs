@@ -57,6 +57,7 @@ use horus_library::messages::sensor::{
 use horus_library::messages::tracking::{TrackedObject, TrackingHeader};
 use horus_library::messages::vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
 use horus_library::messages::GenericMessage;
+use horus::memory::TensorHandle;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
@@ -81,6 +82,7 @@ use crate::messages::{
     PyVelocityObstacles, PyWaypoint, PyWrenchStamped,
 };
 use crate::pointcloud::PyPointCloud;
+use crate::tensor::PyTensorHandle;
 
 /// Acquire a read lock, converting a poisoned lock into a PyRuntimeError.
 #[inline]
@@ -221,6 +223,8 @@ enum TopicType {
     CostMap(Arc<RwLock<Topic<CostMap>>>),
     // Audio
     AudioFrame(Arc<RwLock<Topic<AudioFrame>>>),
+    // Tensor — general-purpose user tensor (uses Tensor descriptor as wire type)
+    Tensor(Arc<RwLock<Topic<horus_core::types::Tensor>>>),
     Generic(Arc<RwLock<Topic<GenericMessage>>>),
 }
 
@@ -308,6 +312,7 @@ macro_rules! topic_dispatch {
             TopicType::OccupancyGrid($t) => $body,
             TopicType::CostMap($t) => $body,
             TopicType::AudioFrame($t) => $body,
+            TopicType::Tensor($t) => $body,
             TopicType::Generic($t) => $body,
         }
     };
@@ -725,6 +730,10 @@ impl PyTopic {
             "AudioFrame" => {
                 let topic = create_topic::<AudioFrame>(&effective_endpoint, cap)?;
                 TopicType::AudioFrame(Arc::new(RwLock::new(topic)))
+            }
+            "Tensor" => {
+                let topic = create_topic::<horus_core::types::Tensor>(&effective_endpoint, cap)?;
+                TopicType::Tensor(Arc::new(RwLock::new(topic)))
             }
             _ => {
                 let topic = create_topic::<GenericMessage>(&effective_endpoint, cap)?;
@@ -2378,6 +2387,35 @@ impl PyTopic {
                 };
                 let success = py.detach(|| {
                     topic_ref.write().expect("topic lock poisoned").send(msg);
+                    true
+                });
+                if node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                success
+            }
+            TopicType::Tensor(topic) => {
+                let py_tensor: PyRef<PyTensorHandle> = message.extract(py)?;
+                let handle = py_tensor.handle.as_ref()
+                    .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+                // Retain the tensor so it survives for receivers, then send the descriptor
+                handle.pool().retain(handle.tensor());
+                let descriptor = *handle.tensor();
+                let log_msg = format!(
+                    "Tensor(shape={:?}, dtype={})",
+                    handle.shape(),
+                    handle.dtype()
+                );
+                let topic_ref = topic.clone();
+                let success = py.detach(|| {
+                    topic_ref.write().expect("topic lock poisoned").send(descriptor);
                     true
                 });
                 if node.is_some() {
@@ -4082,6 +4120,33 @@ impl PyTopic {
                     Ok(None)
                 }
             }
+            TopicType::Tensor(topic) => {
+                let topic_ref = topic.clone();
+                let topic_name = self.name.clone();
+                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
+                if let Some(descriptor) = msg_opt {
+                    // Wrap the received Tensor descriptor in a TensorHandle
+                    // Get pool for this topic — use the Topic's own pool() method
+                    let pool = {
+                        let t = topic_ref.read().expect("topic lock");
+                        t.pool()
+                    };
+                    let handle = TensorHandle::new(descriptor, pool);
+                    if node.is_some() {
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
+                            format!("Tensor(shape={:?})", handle.shape()),
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
+                    }
+                    Ok(Some(Py::new(py, PyTensorHandle { handle: Some(handle) })?.into_any()))
+                } else {
+                    Ok(None)
+                }
+            }
             TopicType::Generic(topic) => {
                 let topic_ref = topic.clone();
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
@@ -4385,6 +4450,9 @@ impl PyTopic {
             TopicType::AudioFrame(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
+            TopicType::Tensor(t) => read_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             TopicType::Generic(t) => read_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
@@ -4493,6 +4561,7 @@ impl PyTopic {
                 TopicType::OccupancyGrid(t) => read_lock(t)?.metrics(),
                 TopicType::CostMap(t) => read_lock(t)?.metrics(),
                 TopicType::AudioFrame(t) => read_lock(t)?.metrics(),
+                TopicType::Tensor(t) => read_lock(t)?.metrics(),
                 TopicType::Generic(t) => read_lock(t)?.metrics(),
             };
 
@@ -4670,6 +4739,7 @@ impl PyTopic {
             // Non-Copy types: pool-backed, dynamic
             TopicType::Image(_) | TopicType::PointCloud(_) | TopicType::DepthImage(_)
             | TopicType::OccupancyGrid(_) | TopicType::CostMap(_)
+            | TopicType::Tensor(_)
             | TopicType::CompressedImage(_) | TopicType::PlaneArray(_)
             | TopicType::TactileArray(_) | TopicType::Generic(_) => {
                 Err(PyRuntimeError::new_err(

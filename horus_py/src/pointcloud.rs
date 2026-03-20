@@ -1,12 +1,14 @@
 //! Python bindings for HORUS PointCloud type
 
 use horus_core::memory::PointCloud;
+use horus_core::memory::TensorHandle;
 use horus_core::types::TensorDtype;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
 use crate::dlpack_utils;
+use crate::tensor::PyTensorHandle;
 
 /// HORUS PointCloud — zero-copy shared memory point cloud with ML framework interop.
 ///
@@ -238,6 +240,38 @@ impl PyPointCloud {
     }
     fn is_cuda(&self) -> bool {
         self.inner.is_cuda()
+    }
+
+    // =================================================================
+    // Tensor interop
+    // =================================================================
+
+    /// Get a horus.Tensor view of this point cloud's data (zero-copy).
+    fn as_tensor(&self) -> PyResult<PyTensorHandle> {
+        let tensor = *self.inner.descriptor().tensor();
+        let pool = std::sync::Arc::clone(self.inner.pool());
+        // TensorHandle::new() calls pool.retain() internally — do NOT retain here
+        let handle = TensorHandle::new(tensor, pool);
+        Ok(PyTensorHandle { handle: Some(handle) })
+    }
+
+    /// Indexing: cloud[0], cloud[0:100]
+    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let np = py.import("numpy")?;
+        let arr = np.call_method1("asarray", (slf.as_any(),))?;
+        arr.get_item(key)
+    }
+
+    /// Assignment: cloud[0] = [x, y, z]
+    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+        let np = py.import("numpy")?;
+        let arr = np.call_method1("asarray", (slf.as_any(),))?;
+        arr.set_item(key, value)
+    }
+
+    /// len(cloud) — number of points
+    fn __len__(&self) -> usize {
+        self.inner.point_count() as usize
     }
 
     fn __repr__(&self) -> String {

@@ -485,6 +485,184 @@ mod tests {
         assert_eq!(lock.get_pinned("numpy", "pypi"), Some("1.26.4"));
     }
 
+    #[test]
+    fn test_lockfile_roundtrip_with_multiple_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("horus.lock");
+
+        let mut lock = HorusLockfile::new();
+        lock.config_hash = Some("multi_source_hash".to_string());
+        lock.toolchain = Some(ToolchainPins {
+            rust: Some("1.78.0".to_string()),
+            python: Some("3.12.3".to_string()),
+            cmake: None,
+        });
+
+        // Pin deps from all 6 source types
+        lock.pin(
+            "rplidar",
+            "1.2.0",
+            "registry",
+            Some("sha256:reg_check".to_string()),
+        );
+        lock.pin(
+            "serde",
+            "1.0.215",
+            "crates.io",
+            Some("sha256:crate_check".to_string()),
+        );
+        lock.pin("numpy", "1.26.4", "pypi", None);
+        lock.pin("libudev", "252", "system", None);
+        lock.pin("my_local_lib", "0.1.0", "path", None);
+        lock.pin("horus_utils", "0.2.0", "git", None);
+
+        lock.save_to(&path).unwrap();
+        let loaded = HorusLockfile::load_from(&path).unwrap();
+
+        // All 6 packages preserved
+        assert_eq!(loaded.packages.len(), 6);
+
+        // Verify each source is preserved
+        assert_eq!(loaded.get_pinned("rplidar", "registry"), Some("1.2.0"));
+        assert_eq!(loaded.get_pinned("serde", "crates.io"), Some("1.0.215"));
+        assert_eq!(loaded.get_pinned("numpy", "pypi"), Some("1.26.4"));
+        assert_eq!(loaded.get_pinned("libudev", "system"), Some("252"));
+        assert_eq!(loaded.get_pinned("my_local_lib", "path"), Some("0.1.0"));
+        assert_eq!(loaded.get_pinned("horus_utils", "git"), Some("0.2.0"));
+
+        // Checksums preserved where set
+        let registry_pkg = loaded
+            .packages
+            .iter()
+            .find(|p| p.source == "registry")
+            .unwrap();
+        assert_eq!(
+            registry_pkg.checksum,
+            Some("sha256:reg_check".to_string())
+        );
+        let crates_pkg = loaded
+            .packages
+            .iter()
+            .find(|p| p.source == "crates.io")
+            .unwrap();
+        assert_eq!(
+            crates_pkg.checksum,
+            Some("sha256:crate_check".to_string())
+        );
+        let pypi_pkg = loaded
+            .packages
+            .iter()
+            .find(|p| p.source == "pypi")
+            .unwrap();
+        assert!(pypi_pkg.checksum.is_none());
+
+        // Toolchain preserved
+        assert_eq!(
+            loaded.toolchain.as_ref().unwrap().rust,
+            Some("1.78.0".to_string())
+        );
+        assert_eq!(
+            loaded.toolchain.as_ref().unwrap().python,
+            Some("3.12.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_lockfile_version_3_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("horus.lock");
+
+        let v3_content = r#"
+version = 3
+config_hash = "v3_test_hash"
+
+[[package]]
+name = "tokio"
+version = "1.36.0"
+source = "crates.io"
+
+[[package]]
+name = "rplidar"
+version = "1.0.0"
+source = "registry"
+"#;
+        fs::write(&path, v3_content).unwrap();
+
+        let loaded = HorusLockfile::load_from(&path);
+        assert!(loaded.is_ok(), "v3 lockfile should be accepted");
+        let lock = loaded.unwrap();
+        assert_eq!(lock.version, 3);
+        assert_eq!(lock.config_hash, Some("v3_test_hash".to_string()));
+        assert_eq!(lock.packages.len(), 2);
+        assert_eq!(lock.packages[0].name, "tokio");
+        assert_eq!(lock.packages[1].name, "rplidar");
+        // v3 has no toolchain, features, or system_deps
+        assert!(lock.toolchain.is_none());
+        assert!(lock.features.is_empty());
+        assert!(lock.system_deps.is_empty());
+    }
+
+    #[test]
+    fn test_lockfile_old_version_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // v1 rejected
+        let path_v1 = dir.path().join("v1.lock");
+        fs::write(&path_v1, "version = 1\nmanifest_hash = \"old\"\n").unwrap();
+        let result = HorusLockfile::load_from(&path_v1);
+        assert!(result.is_err(), "v1 lockfile must be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Outdated lockfile version"),
+            "Error should mention outdated version"
+        );
+
+        // v2 rejected
+        let path_v2 = dir.path().join("v2.lock");
+        fs::write(&path_v2, "version = 2\nconfig_hash = \"old\"\n").unwrap();
+        let result = HorusLockfile::load_from(&path_v2);
+        assert!(result.is_err(), "v2 lockfile must be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Outdated lockfile version"),
+            "Error should mention outdated version"
+        );
+    }
+
+    #[test]
+    fn test_lockfile_check_detects_stale() {
+        // Create a lockfile with a known config hash
+        let original_config = "[package]\nname = \"bot\"\nversion = \"0.1.0\"\n";
+        let original_hash = hash_config(original_config);
+
+        let mut lock = HorusLockfile::new();
+        lock.config_hash = Some(original_hash.clone());
+        lock.pin("serde", "1.0.0", "crates.io", None);
+
+        // Same config => not stale
+        assert!(
+            !lock.is_stale(&original_hash),
+            "Lockfile with matching hash should not be stale"
+        );
+
+        // Modified config (added a dep) => different hash => stale
+        let modified_config =
+            "[package]\nname = \"bot\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1.0\"\n";
+        let modified_hash = hash_config(modified_config);
+        assert_ne!(
+            original_hash, modified_hash,
+            "Different configs must produce different hashes"
+        );
+        assert!(
+            lock.is_stale(&modified_hash),
+            "Lockfile should be stale after manifest modification"
+        );
+    }
+
     // --- v4 lockfile tests ---
 
     #[test]

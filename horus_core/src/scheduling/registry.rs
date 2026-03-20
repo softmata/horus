@@ -162,7 +162,7 @@ impl SchedulerRegistry {
     }
 
     fn init_header(&self) {
-        let guard = self.mmap.lock().unwrap();
+        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base = guard.as_ptr() as *mut u8;
         // SAFETY: mmap is at least REGISTRY_FILE_SIZE bytes, HEADER_SIZE=64.
         unsafe {
@@ -180,7 +180,7 @@ impl SchedulerRegistry {
 
     /// Register a node and return its slot index.
     pub fn register_node(&self, name: &str, order: u8, rate_hz: f64, execution_class: u8) -> usize {
-        let mut guard = self.mmap.lock().unwrap();
+        let mut guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base = guard.as_mut_ptr();
 
         // SAFETY: mmap covers REGISTRY_FILE_SIZE bytes.
@@ -251,7 +251,7 @@ impl SchedulerRegistry {
         if slot_idx >= MAX_REGISTRY_NODES {
             return;
         }
-        let guard = self.mmap.lock().unwrap();
+        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base = guard.as_ptr() as *mut u8;
         let slot_offset = HEADER_SIZE + slot_idx * SLOT_SIZE;
 

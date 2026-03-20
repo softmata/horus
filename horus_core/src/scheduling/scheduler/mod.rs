@@ -906,7 +906,11 @@ impl Scheduler {
             } else {
                 100.0 // Safe fallback for invalid rate
             };
-        self.tick.period = Duration::from_micros((1_000_000.0 / rate_hz) as u64);
+        self.tick.period = if rate_hz > 0.0 {
+            Duration::from_micros((1_000_000.0 / rate_hz) as u64)
+        } else {
+            Duration::from_millis(10) // 100Hz fallback for invalid rate
+        };
 
         // RT safety and OS-level optimizations
         self.apply_safety_config(&config.realtime);
@@ -1364,6 +1368,7 @@ impl Scheduler {
             failure_handler: config
                 .failure_policy
                 .map(crate::scheduling::fault_tolerance::FailureHandler::new),
+            budget_policy: config.budget_policy,
         });
 
         if let Some(rate) = node_rate {
@@ -2034,7 +2039,11 @@ impl Scheduler {
         }
 
         // Set up SIGTERM handler for graceful termination (e.g., from `kill` or `timeout`)
+        // Register handler BEFORE resetting flag — any signal during reset is caught.
         horus_sys::process::on_terminate(sigterm_handler);
+
+        // Reset SIGTERM flag from previous scheduler instances (e.g., tests, multi-scheduler)
+        SIGTERM_RECEIVED.store(false, Ordering::SeqCst);
     }
 
     /// Initialize nodes matching the optional filter.
@@ -2855,7 +2864,7 @@ impl Scheduler {
                 let current_time = Instant::now();
                 if let Some(last_tick) = registered.last_tick {
                     let elapsed_secs = (current_time - last_tick).as_secs_f64();
-                    let period_secs = 1.0 / rate_hz;
+                    let period_secs = if rate_hz > 0.0 { 1.0 / rate_hz } else { 0.0 };
                     elapsed_secs >= period_secs
                 } else {
                     true
@@ -3146,6 +3155,37 @@ impl Scheduler {
                     if let Some(ref monitor) = self.monitor.safety {
                         let _ = monitor.check_tick_budget(&node_name, tick_duration);
                     }
+
+                    // Enforce budget policy
+                    match self.nodes[i].budget_policy {
+                        super::safety_monitor::BudgetPolicy::Warn => {
+                            // Default: log only, graduated degradation handles it
+                        }
+                        super::safety_monitor::BudgetPolicy::Enforce => {
+                            // Post-tick enforcement: stop node if >2x budget
+                            if tick_duration > tick_budget * 2 {
+                                print_line(&format!(
+                                    " BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
+                                    node_name, tick_duration, tick_budget * 2
+                                ));
+                                self.nodes[i].node.shutdown();
+                                self.nodes[i].is_stopped = true;
+                            }
+                        }
+                        super::safety_monitor::BudgetPolicy::EmergencyStop => {
+                            print_line(&format!(
+                                " BUDGET E-STOP: '{}' budget violation ({:?} > {:?}) — triggering emergency stop",
+                                node_name, tick_duration, tick_budget
+                            ));
+                            if let Some(ref monitor) = self.monitor.safety {
+                                monitor.trigger_emergency_stop(format!(
+                                    "Node {} exceeded tick budget: {:?} > {:?}",
+                                    node_name, tick_duration, tick_budget
+                                ));
+                            }
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -3272,6 +3312,18 @@ impl Scheduler {
                     monitor.record_degrade_activation();
                 }
             }
+            DegradationAction::Kill(ref name) => {
+                self.nodes[i].health_state.store(NodeHealthState::Isolated);
+                self.nodes[i].node.shutdown();
+                self.nodes[i].is_stopped = true;
+                print_line(&format!(
+                    " KILL: '{}' — permanently removed from execution after shutdown()",
+                    name
+                ));
+                if let Some(ref monitor) = self.monitor.safety {
+                    monitor.record_degrade_activation();
+                }
+            }
             DegradationAction::RestoreRate {
                 ref node,
                 original_rate_hz,
@@ -3282,6 +3334,13 @@ impl Scheduler {
                 print_line(&format!(
                     " Recovery: '{}' — restored to {:.1} Hz",
                     node, original_rate_hz
+                ));
+            }
+            DegradationAction::Deisolate(ref name) => {
+                self.nodes[i].health_state.store(NodeHealthState::Warning);
+                print_line(&format!(
+                    " Recovery: '{}' — de-isolated, resuming at reduced rate",
+                    name
                 ));
             }
         }

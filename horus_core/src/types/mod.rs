@@ -8,10 +8,14 @@ pub mod dtype;
 pub mod tensor;
 
 #[doc(hidden)]
+pub mod costmap_descriptor;
+#[doc(hidden)]
 pub mod depth_image_descriptor;
 #[doc(hidden)]
 pub mod image_descriptor;
 pub mod image_encoding;
+#[doc(hidden)]
+pub mod occupancy_grid_descriptor;
 pub mod point;
 #[doc(hidden)]
 pub mod pointcloud_descriptor;
@@ -107,9 +111,13 @@ pub use point::{PointXYZ, PointXYZI, PointXYZRGB};
 
 // Descriptors must stay pub (used as associated types on public TopicMessage trait)
 #[doc(hidden)]
+pub use costmap_descriptor::CostMapDescriptor;
+#[doc(hidden)]
 pub use depth_image_descriptor::DepthImageDescriptor;
 #[doc(hidden)]
 pub use image_descriptor::ImageDescriptor;
+#[doc(hidden)]
+pub use occupancy_grid_descriptor::OccupancyGridDescriptor;
 #[doc(hidden)]
 pub use pointcloud_descriptor::PointCloudDescriptor;
 pub(crate) use tensor::MAX_TENSOR_DIMS;

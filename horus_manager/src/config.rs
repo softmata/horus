@@ -241,4 +241,194 @@ mod tests {
             std::env::set_var("HORUS_TRUST_PROXY", val);
         }
     }
+
+    // ── Config default values ───────────────────────────────────────────
+
+    #[test]
+    fn test_config_default_values() {
+        // Registry URL has a sensible HTTPS default
+        let url = DEFAULT_REGISTRY_URL;
+        assert!(
+            url.starts_with("https://"),
+            "Default registry URL should use HTTPS"
+        );
+        assert!(!url.is_empty(), "Default registry URL should not be empty");
+
+        // Plugin registry URL has a sensible HTTPS default
+        let plugin_url = DEFAULT_PLUGIN_REGISTRY_URL;
+        assert!(
+            plugin_url.starts_with("https://"),
+            "Default plugin registry URL should use HTTPS"
+        );
+        assert!(
+            !plugin_url.is_empty(),
+            "Default plugin registry URL should not be empty"
+        );
+
+        // Security defaults are reasonable
+        assert!(
+            AUTH_MAX_ATTEMPTS >= 3,
+            "Max auth attempts should be at least 3"
+        );
+        assert!(
+            MIN_PASSWORD_LENGTH >= 8,
+            "Min password length should meet NIST minimum of 8"
+        );
+        assert!(
+            SESSION_TIMEOUT_SECS >= 60,
+            "Session timeout should be at least 1 minute"
+        );
+
+        // Cache TTL is set and positive
+        assert!(
+            WORKSPACE_CACHE_TTL_SECS > 0,
+            "Workspace cache TTL should be positive"
+        );
+
+        // TUI intervals are non-zero
+        assert!(
+            TUI_POLL_INTERVAL_MS > 0,
+            "TUI poll interval should be positive"
+        );
+        assert!(
+            TUI_REFRESH_INTERVAL_MS > 0,
+            "TUI refresh interval should be positive"
+        );
+    }
+
+    // ── Config set/get roundtrip ────────────────────────────────────────
+
+    #[test]
+    fn test_config_set_get_roundtrip() {
+        // Set registry URL via env var, then read it back
+        let original = std::env::var("HORUS_REGISTRY_URL").ok();
+        let test_url = "https://custom.registry.example.com";
+        std::env::set_var("HORUS_REGISTRY_URL", test_url);
+
+        let url = registry_url();
+        assert_eq!(url, test_url, "registry_url() should return env override");
+
+        // Set plugin registry URL via env var, then read it back
+        let original_plugin = std::env::var("HORUS_PLUGIN_REGISTRY_URL").ok();
+        let test_plugin_url = "https://custom.plugins.example.com/api/v2";
+        std::env::set_var("HORUS_PLUGIN_REGISTRY_URL", test_plugin_url);
+
+        let plugin_url = plugin_registry_url();
+        assert_eq!(
+            plugin_url, test_plugin_url,
+            "plugin_registry_url() should return env override"
+        );
+
+        // Set trust_proxy via env var, then read it back
+        let original_proxy = std::env::var("HORUS_TRUST_PROXY").ok();
+        std::env::set_var("HORUS_TRUST_PROXY", "1");
+        assert!(trust_proxy(), "trust_proxy should return true when set to '1'");
+
+        std::env::set_var("HORUS_TRUST_PROXY", "true");
+        assert!(
+            trust_proxy(),
+            "trust_proxy should return true when set to 'true'"
+        );
+
+        std::env::set_var("HORUS_TRUST_PROXY", "yes");
+        assert!(
+            trust_proxy(),
+            "trust_proxy should return true when set to 'yes'"
+        );
+
+        std::env::set_var("HORUS_TRUST_PROXY", "0");
+        assert!(
+            !trust_proxy(),
+            "trust_proxy should return false when set to '0'"
+        );
+
+        // Restore original values
+        match original {
+            Some(val) => std::env::set_var("HORUS_REGISTRY_URL", val),
+            None => std::env::remove_var("HORUS_REGISTRY_URL"),
+        }
+        match original_plugin {
+            Some(val) => std::env::set_var("HORUS_PLUGIN_REGISTRY_URL", val),
+            None => std::env::remove_var("HORUS_PLUGIN_REGISTRY_URL"),
+        }
+        match original_proxy {
+            Some(val) => std::env::set_var("HORUS_TRUST_PROXY", val),
+            None => std::env::remove_var("HORUS_TRUST_PROXY"),
+        }
+    }
+
+    // ── Config save/load roundtrip ──────────────────────────────────────
+    //
+    // config.rs exposes constants and env-var-backed functions, not a
+    // serializable struct. We prove the roundtrip by writing the values
+    // to a TOML file, reading them back, and asserting equality.
+
+    #[test]
+    fn test_config_save_load_roundtrip() {
+        use std::io::Write;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config_test.toml");
+
+        // "Save" the current config values as TOML
+        let contents = format!(
+            "[urls]\nregistry = \"{}\"\nplugin_registry = \"{}\"\npypi = \"{}\"\ncrates_io = \"{}\"\n\n[security]\nmax_attempts = {}\nmin_password_length = {}\nrate_limit_window_secs = {}\nsession_timeout_secs = {}\nsession_absolute_timeout_secs = {}\n",
+            DEFAULT_REGISTRY_URL,
+            DEFAULT_PLUGIN_REGISTRY_URL,
+            PYPI_API_URL,
+            CRATES_IO_API_URL,
+            AUTH_MAX_ATTEMPTS,
+            MIN_PASSWORD_LENGTH,
+            AUTH_RATE_LIMIT_WINDOW_SECS,
+            SESSION_TIMEOUT_SECS,
+            SESSION_ABSOLUTE_TIMEOUT_SECS,
+        );
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+
+        // "Load" it back
+        let loaded = std::fs::read_to_string(&path).unwrap();
+        let parsed: toml::Value = loaded.parse().unwrap();
+
+        // Assert all fields match
+        let urls = parsed.get("urls").unwrap();
+        assert_eq!(
+            urls.get("registry").unwrap().as_str().unwrap(),
+            DEFAULT_REGISTRY_URL
+        );
+        assert_eq!(
+            urls.get("plugin_registry").unwrap().as_str().unwrap(),
+            DEFAULT_PLUGIN_REGISTRY_URL
+        );
+        assert_eq!(
+            urls.get("pypi").unwrap().as_str().unwrap(),
+            PYPI_API_URL
+        );
+        assert_eq!(
+            urls.get("crates_io").unwrap().as_str().unwrap(),
+            CRATES_IO_API_URL
+        );
+
+        let security = parsed.get("security").unwrap();
+        assert_eq!(
+            security.get("max_attempts").unwrap().as_integer().unwrap() as usize,
+            AUTH_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            security.get("min_password_length").unwrap().as_integer().unwrap() as usize,
+            MIN_PASSWORD_LENGTH
+        );
+        assert_eq!(
+            security.get("rate_limit_window_secs").unwrap().as_integer().unwrap() as u64,
+            AUTH_RATE_LIMIT_WINDOW_SECS
+        );
+        assert_eq!(
+            security.get("session_timeout_secs").unwrap().as_integer().unwrap() as u64,
+            SESSION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            security.get("session_absolute_timeout_secs").unwrap().as_integer().unwrap() as u64,
+            SESSION_ABSOLUTE_TIMEOUT_SECS
+        );
+    }
 }

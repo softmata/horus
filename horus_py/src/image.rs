@@ -15,6 +15,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
 use crate::dlpack_utils;
+use crate::tensor::PyTensorHandle;
+use horus_core::memory::TensorHandle;
 
 /// Parse a user-facing encoding string into `ImageEncoding`.
 fn parse_encoding(s: &str) -> PyResult<ImageEncoding> {
@@ -376,6 +378,78 @@ impl PyImage {
         self.inner.is_cuda()
     }
 
+    // =================================================================
+    // Tensor interop — makes Image usable like a Tensor
+    // =================================================================
+
+    /// Get a horus.Tensor view of this image's data (zero-copy).
+    ///
+    /// The returned Tensor shares the same shared memory — modifications
+    /// to the Tensor are visible in the Image and vice versa. All Tensor
+    /// operations (indexing, arithmetic, reshape, DLPack) work on the result.
+    ///
+    /// Example:
+    ///     img = horus.Image(480, 640, "rgb8")
+    ///     t = img.as_tensor()       # zero-copy view
+    ///     t[0:10] += 128            # modifies image pixels
+    ///     features = t.flatten()    # Tensor ops work
+    ///     pt = torch.from_dlpack(t) # PyTorch interop
+    fn as_tensor(&self) -> PyResult<PyTensorHandle> {
+        let tensor = *self.inner.descriptor().tensor();
+        let pool = std::sync::Arc::clone(self.inner.pool());
+        // TensorHandle::new() calls pool.retain() internally — do NOT retain here
+        let handle = TensorHandle::new(tensor, pool);
+        Ok(PyTensorHandle { handle: Some(handle) })
+    }
+
+    /// Indexing: img[y, x] or img[y, x, c]
+    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = slf.borrow();
+        let np = py.import("numpy")?;
+        let arr = inner.to_numpy_internal(slf, py, &np)?;
+        arr.get_item(key)
+    }
+
+    /// Assignment: img[y, x] = value
+    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+        let inner = slf.borrow();
+        let np = py.import("numpy")?;
+        let arr = inner.to_numpy_internal(slf, py, &np)?;
+        arr.set_item(key, value)
+    }
+
+    /// img + other (brightness adjustment, etc.)
+    fn __add__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+        let np = py.import("numpy")?;
+        let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
+        let result = np.call_method1("add", (&a, other))?;
+        PyTensorHandle::from_numpy_internal(py, &result)
+    }
+
+    /// img - other
+    fn __sub__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+        let np = py.import("numpy")?;
+        let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
+        let result = np.call_method1("subtract", (&a, other))?;
+        PyTensorHandle::from_numpy_internal(py, &result)
+    }
+
+    /// img * other
+    fn __mul__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+        let np = py.import("numpy")?;
+        let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
+        let result = np.call_method1("multiply", (&a, other))?;
+        PyTensorHandle::from_numpy_internal(py, &result)
+    }
+
+    /// img / other
+    fn __truediv__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+        let np = py.import("numpy")?;
+        let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
+        let result = np.call_method1("divide", (&a, other))?;
+        PyTensorHandle::from_numpy_internal(py, &result)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Image(height={}, width={}, encoding='{}', dtype='{}')",
@@ -397,5 +471,14 @@ impl PyImage {
     }
     pub fn inner(&self) -> &Image {
         &self.inner
+    }
+    /// Get numpy array for internal use (indexing, arithmetic).
+    fn to_numpy_internal<'py>(
+        &self,
+        slf: &Bound<'py, PyImage>,
+        py: Python<'py>,
+        np: &Bound<'py, pyo3::types::PyModule>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        np.call_method1("asarray", (slf.as_any(),))
     }
 }

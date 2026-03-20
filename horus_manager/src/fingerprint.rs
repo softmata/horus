@@ -190,4 +190,94 @@ mod tests {
             fp.files["Cargo.toml"].hash
         );
     }
+
+    #[test]
+    fn test_fingerprints_save_load_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let mut fp = Fingerprints::default();
+        fp.record("Cargo.toml", "[package]\nname = \"test\"");
+        fp.record("pyproject.toml", "[project]\nname = \"test\"");
+        fp.record("CMakeLists.txt", "cmake_minimum_required(VERSION 3.20)");
+        fp.save(tmp.path()).unwrap();
+
+        let loaded = Fingerprints::load(tmp.path()).unwrap();
+
+        // Version preserved
+        assert_eq!(loaded.version, fp.version);
+        assert_eq!(loaded.version, 1);
+
+        // All three files present
+        assert_eq!(loaded.files.len(), 3);
+        assert!(loaded.files.contains_key("Cargo.toml"));
+        assert!(loaded.files.contains_key("pyproject.toml"));
+        assert!(loaded.files.contains_key("CMakeLists.txt"));
+
+        // Hashes match exactly
+        for (key, original_fp) in &fp.files {
+            let loaded_fp = &loaded.files[key];
+            assert_eq!(loaded_fp.hash, original_fp.hash, "Hash mismatch for {}", key);
+            assert_eq!(
+                loaded_fp.generated_at, original_fp.generated_at,
+                "Timestamp mismatch for {}",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_fingerprints_load_missing_file_returns_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Do NOT create .horus/ or fingerprints.json — path does not exist
+
+        let fp = Fingerprints::load(tmp.path()).unwrap();
+
+        assert_eq!(fp.version, 0);
+        assert!(fp.files.is_empty());
+    }
+
+    #[test]
+    fn test_fingerprints_is_modified_detects_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        std::fs::create_dir_all(&horus_dir).unwrap();
+
+        let original_content = "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"";
+        let cargo_path = horus_dir.join("Cargo.toml");
+        std::fs::write(&cargo_path, original_content).unwrap();
+
+        // Record fingerprint matching current content
+        let mut fp = Fingerprints::default();
+        fp.record("Cargo.toml", original_content);
+
+        // File matches fingerprint — should NOT be modified
+        assert!(
+            !fp.is_modified("Cargo.toml", tmp.path()),
+            "File should not be detected as modified when content matches fingerprint"
+        );
+
+        // Now modify the file on disk (simulating an external tool like cargo)
+        let modified_content =
+            "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1.0\"";
+        std::fs::write(&cargo_path, modified_content).unwrap();
+
+        // File no longer matches fingerprint — SHOULD be modified
+        assert!(
+            fp.is_modified("Cargo.toml", tmp.path()),
+            "File should be detected as modified after external changes"
+        );
+
+        // A file not tracked in fingerprints should NOT report as modified
+        assert!(
+            !fp.is_modified("pyproject.toml", tmp.path()),
+            "Untracked file should not be detected as modified"
+        );
+
+        // A tracked file that doesn't exist on disk should NOT report as modified
+        fp.record("missing.toml", "some content");
+        assert!(
+            !fp.is_modified("missing.toml", tmp.path()),
+            "Missing file on disk should not be detected as modified"
+        );
+    }
 }

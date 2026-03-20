@@ -246,7 +246,7 @@ pub use record_replay::{
     RecordingManager, ReplayDebugger, SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 #[doc(hidden)]
-pub use safety_monitor::{SafetyState, SafetyStats};
+pub use safety_monitor::{BudgetPolicy, SafetyState, SafetyStats};
 #[doc(hidden)]
 pub use scheduler::RtFeatureDegradation;
 #[doc(hidden)]

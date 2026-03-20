@@ -810,4 +810,53 @@ mod tests {
             debug
         );
     }
+
+    // ========================================================================
+    // Workspace discovery tests
+    // ========================================================================
+
+    #[test]
+    fn test_workspace_discover_single_project() {
+        let tmp = TempDir::new().unwrap();
+        // Create a horus.toml in the temp directory to make it a valid workspace
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"single-project\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let root = find_workspace_root();
+        assert!(root.is_some(), "Should discover workspace with horus.toml");
+        assert_eq!(root.unwrap(), tmp.path());
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_workspace_discover_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        // Empty dir: no horus.toml, no .horus/
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let root = find_workspace_root();
+        // find_workspace_root searches upward, so it may find a workspace
+        // above the temp dir. The key invariant: if it returns Some, the path
+        // must NOT be the empty temp dir (since it has no markers).
+        if let Some(found) = &root {
+            assert_ne!(
+                found,
+                tmp.path(),
+                "Empty dir itself should not be identified as workspace root"
+            );
+        }
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
 }

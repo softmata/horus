@@ -445,4 +445,63 @@ mod tests {
             warn(&msg);
         });
     }
+
+    // ── safe_truncate: size-like and display formatting ──────────────
+
+    #[test]
+    fn test_cli_output_format_size_bytes() {
+        // Verify safe_truncate handles byte-count-sized strings correctly
+        // 0 bytes: empty string remains empty
+        assert_eq!(safe_truncate("", 0), "");
+        // 1024 chars: within limit returns unchanged
+        let kb_str = "a".repeat(1024);
+        assert_eq!(safe_truncate(&kb_str, 1024), kb_str);
+        // 1048576 chars: truncated to a smaller display size
+        let mb_str = "b".repeat(1_048_576);
+        let truncated = safe_truncate(&mb_str, 1024);
+        assert_eq!(truncated.len(), 1024);
+        assert!(truncated.ends_with("..."));
+        // The prefix before "..." should be all 'b' characters
+        assert!(truncated[..1021].chars().all(|c| c == 'b'));
+    }
+
+    #[test]
+    fn test_cli_output_format_duration() {
+        // Test safe_truncate on duration-like display strings
+        let short_dur = "0ms";
+        assert_eq!(safe_truncate(short_dur, 10), "0ms");
+        assert_eq!(safe_truncate(short_dur, 3), "0ms"); // exact fit
+
+        let long_dur = "1500ms (1.5 seconds elapsed)";
+        let truncated = safe_truncate(long_dur, 10);
+        assert!(truncated.len() <= 10);
+        assert!(truncated.ends_with("..."));
+
+        // Very long timing string gets truncated cleanly
+        let verbose_dur = "Duration { secs: 42, nanos: 123456789 }";
+        let result = safe_truncate(verbose_dur, 20);
+        assert!(result.len() <= 20);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_cli_output_truncate_string() {
+        // Long string gets "..." appended when truncated
+        let long_msg = "This is a very long message that should be truncated for display purposes in the CLI output";
+        let result = safe_truncate(long_msg, 30);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 30);
+        assert_eq!(&result[..27], "This is a very long message");
+
+        // String exactly at limit: no truncation, no "..."
+        let exact = "exactly20characters!";
+        assert_eq!(exact.len(), 20);
+        assert_eq!(safe_truncate(exact, 20), exact);
+        assert!(!safe_truncate(exact, 20).ends_with("..."));
+
+        // String one over limit: truncated with "..."
+        let one_over = safe_truncate(exact, 19);
+        assert!(one_over.ends_with("..."));
+        assert!(one_over.len() <= 19);
+    }
 }

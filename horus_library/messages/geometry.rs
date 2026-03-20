@@ -164,7 +164,7 @@ impl TransformStamped {
 
         // Check quaternion normalization
         let norm = self.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
-        (norm - 1.0).abs() < 0.01
+        (norm - 1.0).abs() < 1e-6
     }
 
     /// Normalize the quaternion component
@@ -230,12 +230,15 @@ impl Vector3 {
         (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
     }
 
-    pub fn normalize(&mut self) {
+    pub fn normalize(&mut self) -> bool {
         let mag = self.magnitude();
         if mag > 1e-12 {
             self.x /= mag;
             self.y /= mag;
             self.z /= mag;
+            true
+        } else {
+            false
         }
     }
 

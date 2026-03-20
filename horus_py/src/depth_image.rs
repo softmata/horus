@@ -1,12 +1,14 @@
 //! Python bindings for HORUS DepthImage type
 
 use horus_core::memory::DepthImage;
+use horus_core::memory::TensorHandle;
 use horus_core::types::TensorDtype;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
 use crate::dlpack_utils;
+use crate::tensor::PyTensorHandle;
 
 /// Parse a depth dtype string.
 fn parse_depth_dtype(s: &str) -> PyResult<TensorDtype> {
@@ -268,6 +270,33 @@ impl PyDepthImage {
     }
     fn is_cuda(&self) -> bool {
         self.inner.is_cuda()
+    }
+
+    // =================================================================
+    // Tensor interop
+    // =================================================================
+
+    /// Get a horus.Tensor view of this depth image's data (zero-copy).
+    fn as_tensor(&self) -> PyResult<PyTensorHandle> {
+        let tensor = *self.inner.descriptor().tensor();
+        let pool = std::sync::Arc::clone(self.inner.pool());
+        // TensorHandle::new() calls pool.retain() internally — do NOT retain here
+        let handle = TensorHandle::new(tensor, pool);
+        Ok(PyTensorHandle { handle: Some(handle) })
+    }
+
+    /// Indexing: depth[y, x]
+    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let np = py.import("numpy")?;
+        let arr = np.call_method1("asarray", (slf.as_any(),))?;
+        arr.get_item(key)
+    }
+
+    /// Assignment: depth[y, x] = value
+    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+        let np = py.import("numpy")?;
+        let arr = np.call_method1("asarray", (slf.as_any(),))?;
+        arr.set_item(key, value)
     }
 
     fn __repr__(&self) -> String {

@@ -334,6 +334,7 @@ mod tests {
             pinned_core: None,
             node_watchdog: None,
             failure_handler: None,
+            budget_policy: crate::scheduling::safety_monitor::BudgetPolicy::default(),
         }
     }
 

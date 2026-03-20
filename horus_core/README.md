@@ -23,8 +23,8 @@ use horus::prelude::*;
 fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
-    scheduler.add(SensorNode::new()?).order(0).build();
-    scheduler.add(ControlNode::new()?).order(1).build();
+    scheduler.add(SensorNode::new()?).order(0).build()?;
+    scheduler.add(ControlNode::new()?).order(1).build()?;
 
     scheduler.run()
 }

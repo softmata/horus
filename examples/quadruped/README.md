@@ -5,7 +5,7 @@ A quadruped robot with a trot gait, real-time joint control, and IMU-based balan
 ## What you'll learn
 
 - High-frequency RT scheduling (200Hz)
-- RT node configuration: `tick_budget()`, `deadline()`, `deadline_miss_policy()`
+- RT node configuration: `.budget(Duration)`, `.deadline(Duration)`, `.on_miss(Miss::{Warn|Skip|SafeMode|Stop})`
 - 12-DOF joint coordination (4 legs x 3 joints)
 - IMU-based balance compensation
 - Deadline monitoring with blackbox analysis

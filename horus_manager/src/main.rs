@@ -776,21 +776,6 @@ enum Commands {
         command: SelfCommands,
     },
 
-    /// DEPRECATED: Use `horus self update` instead
-    #[command(name = "upgrade", hide = true)]
-    DeprecatedUpgrade {
-        /// Check for updates without installing
-        #[arg(long = "check")]
-        check_only: bool,
-    },
-
-    /// DEPRECATED: Use `horus doctor --fix` instead
-    #[command(name = "sync", hide = true)]
-    DeprecatedSync {
-        /// Check only — don't install anything
-        #[arg(long = "check")]
-        check: bool,
-    },
 
     /// View/edit horus.toml settings
     Config {
@@ -876,9 +861,6 @@ enum Commands {
         command: OwnerCommands,
     },
 
-    /// DEPRECATED: Use `horus auth signing-key` instead
-    #[command(name = "keygen", hide = true)]
-    DeprecatedKeyGen,
 
     /// Deploy project to remote robot(s)
     Deploy {
@@ -2652,13 +2634,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             OwnerCommands::Reject { id } => commands::pkg::run_owner_reject(id),
         },
 
-        Commands::DeprecatedKeyGen => {
-            eprintln!(
-                "{} `horus keygen` is deprecated. Use `horus auth signing-key` instead.",
-                "WARNING:".yellow().bold()
-            );
-            commands::pkg::run_keygen()
-        }
 
         Commands::Info { name, json } => commands::plugin::run_info_unified(name, json),
 
@@ -2896,24 +2871,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         },
 
-        Commands::DeprecatedUpgrade { check_only } => {
-            eprintln!(
-                "{} `horus upgrade` is deprecated. Use `horus self update` instead.",
-                "WARNING:".yellow().bold()
-            );
-            commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
-
-            Ok(())
-        }
-
-        Commands::DeprecatedSync { check } => {
-            eprintln!(
-                "{} `horus sync` is deprecated. Use `horus doctor{}` instead.",
-                "WARNING:".yellow().bold(),
-                if check { "" } else { " --fix" }
-            );
-            commands::doctor::run_doctor(false, false, !check).map_err(HorusError::from)
-        }
 
         Commands::Config { command } => match command {
             ConfigCommands::Get { key } => {

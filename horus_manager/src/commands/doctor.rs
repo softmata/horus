@@ -1550,4 +1550,117 @@ mod tests {
         assert_eq!(health, Health::Warn);
         assert!(detail.contains("unreachable"), "detail: {}", detail);
     }
+
+    // ── CheckResult display & description ──────────────────────────────
+
+    #[test]
+    fn test_doctor_check_result_display() {
+        let cases = vec![
+            CheckResult {
+                category: "Toolchains".to_string(),
+                health: Health::Ok,
+                summary: "8/8 tools found".to_string(),
+                details: vec!["cargo: 1.77.0".to_string()],
+            },
+            CheckResult {
+                category: "Manifest".to_string(),
+                health: Health::Warn,
+                summary: "horus.toml has warnings".to_string(),
+                details: vec!["missing license field".to_string()],
+            },
+            CheckResult {
+                category: "System Deps".to_string(),
+                health: Health::Fail,
+                summary: "2 missing dependencies".to_string(),
+                details: vec!["libssl-dev: not found".to_string(), "cmake: not found".to_string()],
+            },
+        ];
+
+        for cr in &cases {
+            assert!(!cr.category.is_empty(), "category must be non-empty");
+            assert!(!cr.summary.is_empty(), "summary must be non-empty (acts as display)");
+            // details act as the description — at least one entry for each case above
+            assert!(
+                !cr.details.is_empty(),
+                "details/description must be non-empty for category '{}'",
+                cr.category
+            );
+            // Verify icon rendering doesn't panic
+            let _icon = cr.health.icon();
+        }
+    }
+
+    // ── All check category names unique ────────────────────────────────
+
+    #[test]
+    fn test_doctor_all_check_names_unique() {
+        // Collect the category names from all individual check functions.
+        // We cannot call check_dep_sources/check_manifest without a real context,
+        // but the categories are deterministic string literals, so we gather
+        // the ones we can call plus the known constant categories.
+        let callable_results = vec![
+            check_toolchains(),
+            check_shm(),
+            check_plugins(),
+        ];
+
+        // Known categories from code inspection (check_manifest, check_languages,
+        // check_dep_sources, check_disk, check_drivers, check_system_deps):
+        let known_categories = vec![
+            "Manifest",
+            "Languages",
+            "Dependencies",
+            "Disk",
+            "Drivers",
+            "System Deps",
+        ];
+
+        let mut all_names: Vec<String> = callable_results
+            .iter()
+            .map(|r| r.category.clone())
+            .collect();
+        all_names.extend(known_categories.into_iter().map(String::from));
+
+        let unique: std::collections::HashSet<&str> =
+            all_names.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            unique.len(),
+            all_names.len(),
+            "duplicate check category names detected: {:?}",
+            all_names
+        );
+    }
+
+    // ── Fix mode flag propagation ──────────────────────────────────────
+
+    #[test]
+    fn test_doctor_fix_mode_flag_propagates() {
+        // run_doctor(verbose, json, fix) accepts the fix flag.
+        // We cannot run full doctor in tests (it calls process::exit),
+        // but we can verify the fix path is reachable by calling run_fix
+        // with a manifest that has no system deps — it should succeed
+        // without installing anything.
+        let manifest = make_manifest("fix-test-proj");
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = dispatch::ProjectContext {
+            root: tmp.path().to_path_buf(),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: Some(manifest.clone()),
+        };
+        // run_fix should not error on a project with zero system deps
+        let result = run_fix(&manifest, &ctx);
+        assert!(
+            result.is_ok(),
+            "fix mode should succeed on empty-dep project: {:?}",
+            result.err()
+        );
+        // After fix, a lockfile should have been written
+        let lock_path = tmp.path().join(HORUS_LOCK);
+        assert!(
+            lock_path.exists(),
+            "fix mode should create/update {}",
+            HORUS_LOCK
+        );
+    }
 }
