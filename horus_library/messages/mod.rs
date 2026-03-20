@@ -70,6 +70,8 @@ pub mod audio;
 pub mod cmd_vel;
 
 // softmata-core compatibility (From impls for cross-project IPC)
+// Gated: softmata-core doesn't have messages module yet
+#[cfg(feature = "softmata-compat")]
 pub mod compat;
 
 // Re-export all message types for convenience

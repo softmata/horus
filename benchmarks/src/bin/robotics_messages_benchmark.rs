@@ -336,7 +336,9 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
 
     let consumer_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(1);
-        let rx: Topic<Imu> = Topic::new(&topic_name_clone).unwrap();
+        // Use explicit capacity=128 to prevent deadlock with batch sync
+        // (Imu is 296B, auto-capacity would be ~16, too small for BATCH_SIZE=8)
+        let rx: Topic<Imu> = Topic::with_capacity(&topic_name_clone, 128, None).unwrap();
         consumer_ready_clone.store(true, Ordering::Release);
 
         let mut received = 0u64;
@@ -357,10 +359,11 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
     thread::sleep(10_u64.ms());
 
     let _ = set_cpu_affinity(0);
-    let tx: Topic<Imu> = Topic::new(&topic_name).unwrap();
+    // Match consumer capacity
+    let tx: Topic<Imu> = Topic::with_capacity(&topic_name, 128, None).unwrap();
 
-    // Warmup - batch to avoid buffer overflow (capacity = 64)
-    const BATCH_SIZE: usize = 32;
+    // Warmup - use smaller batch to stay within capacity
+    const BATCH_SIZE: usize = 8;
     for i in 0..DEFAULT_WARMUP {
         let msg = Imu::new();
         tx.send(msg);
@@ -431,7 +434,8 @@ fn benchmark_laserscan(
 
     let consumer_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(1);
-        let rx: Topic<LaserScan> = Topic::new(&topic_name_clone).unwrap();
+        // LaserScan is 1480B, auto-capacity=16. Use explicit 64 to avoid deadlock.
+        let rx: Topic<LaserScan> = Topic::with_capacity(&topic_name_clone, 64, None).unwrap();
         consumer_ready_clone.store(true, Ordering::Release);
 
         let mut received = 0u64;
@@ -452,10 +456,10 @@ fn benchmark_laserscan(
     thread::sleep(10_u64.ms());
 
     let _ = set_cpu_affinity(0);
-    let tx: Topic<LaserScan> = Topic::new(&topic_name).unwrap();
+    let tx: Topic<LaserScan> = Topic::with_capacity(&topic_name, 64, None).unwrap();
 
-    // Warmup - batch to avoid buffer overflow (capacity = 64)
-    const BATCH_SIZE: usize = 32;
+    // Warmup - use small batch to stay within capacity
+    const BATCH_SIZE: usize = 8;
     for i in 0..warmup_count {
         let mut msg = LaserScan::new();
         for j in 0..360 {
@@ -529,7 +533,8 @@ fn benchmark_jointcmd(
 
     let consumer_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(1);
-        let rx: Topic<JointCommand> = Topic::new(&topic_name_clone).unwrap();
+        // JointCommand is 1032B, auto-capacity=16. Use explicit 64 to avoid deadlock.
+        let rx: Topic<JointCommand> = Topic::with_capacity(&topic_name_clone, 64, None).unwrap();
         consumer_ready_clone.store(true, Ordering::Release);
 
         let mut received = 0u64;
@@ -550,10 +555,10 @@ fn benchmark_jointcmd(
     thread::sleep(10_u64.ms());
 
     let _ = set_cpu_affinity(0);
-    let tx: Topic<JointCommand> = Topic::new(&topic_name).unwrap();
+    let tx: Topic<JointCommand> = Topic::with_capacity(&topic_name, 64, None).unwrap();
 
-    // Warmup - batch to avoid buffer overflow (capacity = 64)
-    const BATCH_SIZE: usize = 32;
+    // Warmup - use small batch to stay within capacity
+    const BATCH_SIZE: usize = 8;
     for i in 0..DEFAULT_WARMUP {
         let mut msg = JointCommand::new();
         msg.add_position("shoulder_pan", 0.5).ok();

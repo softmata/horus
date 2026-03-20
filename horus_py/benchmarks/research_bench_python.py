@@ -130,7 +130,7 @@ def main():
         from horus._horus import Topic, CmdVel, Pose2D, Imu
 
         def setup_cmdvel():
-            t = Topic("rbench_cmdvel")
+            t = Topic(CmdVel)
             msg = CmdVel(1.0, 0.5)
             return (t, msg)
 

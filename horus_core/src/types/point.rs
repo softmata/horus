@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn test_xyz_conversion() {
         let xyz = PointXYZ::new(1.0, 2.0, 3.0);
-        let rgb = PointXYZRGBExt::from_xyz(xyz);
+        let rgb = <PointXYZRGB as PointXYZRGBExt>::from_xyz(xyz);
         assert_eq!(rgb.x, 1.0);
         assert_eq!(rgb.r, 255);
         let back = rgb.xyz();
