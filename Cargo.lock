@@ -1740,6 +1740,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "softmata-core",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
