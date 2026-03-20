@@ -121,6 +121,51 @@ install_rust() {
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 }
 
+# --- Progress bar ---
+INSTALL_TOTAL_STEPS=5
+INSTALL_CURRENT_STEP=0
+INSTALL_START_TIME=0
+
+init_progress() {
+    INSTALL_TOTAL_STEPS=$1
+    INSTALL_CURRENT_STEP=0
+    INSTALL_START_TIME=$(date +%s)
+}
+
+update_progress() {
+    local step_name="$1"
+    INSTALL_CURRENT_STEP=$((INSTALL_CURRENT_STEP + 1))
+
+    local percent=0
+    if [ "$INSTALL_TOTAL_STEPS" -gt 0 ]; then
+        percent=$((INSTALL_CURRENT_STEP * 100 / INSTALL_TOTAL_STEPS))
+    fi
+
+    local elapsed=$(($(date +%s) - INSTALL_START_TIME))
+    local eta_str=""
+    if [ "$elapsed" -gt 0 ] && [ "$percent" -gt 0 ] && [ "$percent" -lt 100 ]; then
+        local total_estimated=$((elapsed * 100 / percent))
+        local remaining=$((total_estimated - elapsed))
+        if [ "$remaining" -gt 0 ]; then
+            eta_str=" ETA: ${remaining}s"
+        fi
+    fi
+
+    local width=25
+    local filled=$((percent * width / 100))
+    local empty=$((width - filled))
+    local bar=""
+    for ((j=0; j<filled; j++)); do bar+="█"; done
+    for ((j=0; j<empty; j++)); do bar+="░"; done
+
+    printf "\r  [${bar}] %3d%% %-30s${eta_str}    \n" "$percent" "$step_name"
+}
+
+complete_progress() {
+    local elapsed=$(($(date +%s) - INSTALL_START_TIME))
+    printf "\r  [█████████████████████████] 100%% Installed in ${elapsed}s                \n"
+}
+
 # --- Main ---
 OS=$(detect_os)
 ARCH=$(detect_arch)
@@ -163,7 +208,10 @@ else
 fi
 RELEASE_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}.${ASSET_EXT}"
 
-echo -e "${CYAN}[1/3]${NC} Downloading horus..."
+# Pre-built path: 3 steps (download, verify, PATH)
+# Source build path: 5 steps (deps, clone, build, verify, PATH)
+init_progress 3
+update_progress "Downloading horus..."
 
 TMPDIR=$(mktemp -d)
 HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
@@ -178,12 +226,16 @@ if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; th
     chmod +x "${TMPDIR}/${BINARY_NAME}" 2>/dev/null || true
     mv "${TMPDIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
     rm -rf "$TMPDIR"
-    echo -e "${GREEN}[1/3]${NC} Downloaded pre-built binary"
+    echo -e "  ${GREEN}Downloaded pre-built binary${NC}"
 
 else
     rm -rf "$TMPDIR"
-    echo -e "${YELLOW}[1/3]${NC} No pre-built binary for ${OS}-${ARCH}, building from source..."
+    echo -e "  ${YELLOW}No pre-built binary for ${OS}-${ARCH}, building from source...${NC}"
     echo ""
+
+    # Switch to 5-step progress for source builds
+    init_progress 5
+    update_progress "Installing dependencies..."
 
     # Ensure Rust is available
     if ! command -v cargo &>/dev/null; then
@@ -198,24 +250,47 @@ else
     if [ "$OS" = "linux" ] || [ "$OS" = "macos" ]; then
         install_build_deps
     fi
+    echo -e "  ${GREEN}Dependencies ready${NC}"
 
-    # Clone release branch and build
+    # Clone release branch
+    update_progress "Cloning release branch..."
     CLONE_DIR=$(mktemp -d)
-    echo -e "  ${CYAN}Cloning release branch...${NC}"
     git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$CLONE_DIR" 2>&1 | tail -1
+    echo -e "  ${GREEN}Source cloned${NC}"
 
-    echo -e "  ${CYAN}Building from source (this takes a few minutes)...${NC}"
+    # Build from source (longest step)
+    update_progress "Building from source..."
     cd "$CLONE_DIR"
-    cargo build --release -p horus_manager --no-default-features 2>&1 | tail -5
+
+    # Show a spinner during build since cargo output is suppressed
+    cargo build --release -p horus_manager --no-default-features > /tmp/horus_build.log 2>&1 &
+    BUILD_PID=$!
+    SPIN_CHARS=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    SPIN_IDX=0
+    while kill -0 $BUILD_PID 2>/dev/null; do
+        printf "\r  ${CYAN}${SPIN_CHARS[$SPIN_IDX]}${NC} Compiling...  "
+        SPIN_IDX=$(( (SPIN_IDX + 1) % ${#SPIN_CHARS[@]} ))
+        sleep 0.15
+    done
+    wait $BUILD_PID
+    BUILD_EXIT=$?
+    printf "\r                      \r"
+
+    if [ $BUILD_EXIT -ne 0 ]; then
+        echo -e "${RED}  Build failed${NC}"
+        echo "  Build log: /tmp/horus_build.log"
+        echo "  Report issues: https://github.com/${REPO}/issues"
+        exit 1
+    fi
 
     # Install the binary
     if [ -f "target/release/${BINARY_NAME}" ]; then
         cp "target/release/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
         chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-        echo -e "${GREEN}[1/3]${NC} Built and installed from source"
+        echo -e "  ${GREEN}Built and installed from source${NC}"
     else
         echo -e "${RED}  Build failed — binary not found${NC}"
-        echo "  Build log: ${CLONE_DIR}"
+        echo "  Build log: /tmp/horus_build.log"
         echo "  Report issues: https://github.com/${REPO}/issues"
         exit 1
     fi
@@ -225,22 +300,22 @@ else
     rm -rf "$CLONE_DIR"
 fi
 
-# --- Step 2: Verify ---
-echo -e "${CYAN}[2/3]${NC} Verifying installation..."
+# --- Step: Verify ---
+update_progress "Verifying installation..."
 
 if [ -f "${INSTALL_DIR}/${BINARY_NAME}" ]; then
     VERSION=$("${INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null || echo "installed")
-    echo -e "${GREEN}[2/3]${NC} horus ${VERSION}"
+    echo -e "  ${GREEN}horus ${VERSION}${NC}"
 else
-    echo -e "${RED}[2/3]${NC} Installation failed"
+    echo -e "${RED}  Installation failed${NC}"
     exit 1
 fi
 
-# --- Step 3: PATH ---
-echo -e "${CYAN}[3/3]${NC} Checking PATH..."
+# --- Step: PATH ---
+update_progress "Configuring PATH..."
 
 if echo "$PATH" | grep -q "$INSTALL_DIR"; then
-    echo -e "${GREEN}[3/3]${NC} ${INSTALL_DIR} already in PATH"
+    echo -e "  ${GREEN}${INSTALL_DIR} already in PATH${NC}"
 else
     SHELL_RC=""
     case "${SHELL:-/bin/bash}" in
@@ -252,9 +327,9 @@ else
     if [ -n "$SHELL_RC" ]; then
         if ! grep -q "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null; then
             echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_RC"
-            echo -e "${GREEN}[3/3]${NC} Added to PATH in $(basename "$SHELL_RC")"
+            echo -e "  ${GREEN}Added to PATH in $(basename "$SHELL_RC")${NC}"
         else
-            echo -e "${GREEN}[3/3]${NC} Already configured in $(basename "$SHELL_RC")"
+            echo -e "  ${GREEN}Already configured in $(basename "$SHELL_RC")${NC}"
         fi
     fi
     export PATH="${INSTALL_DIR}:$PATH"
@@ -264,6 +339,7 @@ fi
 horus env --init 2>/dev/null || true
 
 # --- Done ---
+complete_progress
 echo ""
 echo -e "${GREEN}  Installation complete!${NC}"
 echo ""
