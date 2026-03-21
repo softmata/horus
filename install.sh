@@ -23,21 +23,20 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
+
+# --- Helpers ---
+info()  { echo -e "  ${CYAN}→${NC} $1"; }
+ok()    { echo -e "  ${GREEN}✓${NC} $1"; }
+warn()  { echo -e "  ${YELLOW}!${NC} $1"; }
+fail()  { echo -e "  ${RED}✗${NC} $1"; }
 
 # --- Platform detection ---
 detect_os() {
-    local uname_s
-    uname_s="$(uname -s)"
-    case "$uname_s" in
-        Linux*)
-            if grep -qi microsoft /proc/version 2>/dev/null; then
-                echo "linux"  # WSL is still linux
-            else
-                echo "linux"
-            fi
-            ;;
-        Darwin*)  echo "macos" ;;
+    case "$(uname -s)" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "macos" ;;
         MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
         *) echo "unknown" ;;
     esac
@@ -78,7 +77,7 @@ find_install_dir() {
 install_build_deps() {
     local distro
     distro=$(detect_distro)
-    echo -e "  ${CYAN}Installing build dependencies for ${distro}...${NC}"
+    info "Installing build dependencies for ${distro}..."
 
     case "$distro" in
         ubuntu|debian|pop|linuxmint|elementary)
@@ -107,69 +106,25 @@ install_build_deps() {
             fi
             ;;
         *)
-            echo -e "  ${YELLOW}Unknown distro '${distro}' — you may need to install build deps manually${NC}"
-            echo "  Needed: gcc, pkg-config, openssl-dev, libudev-dev, alsa-dev, clang"
+            warn "Unknown distro '${distro}' — you may need to install build deps manually"
+            echo "    Needed: gcc, pkg-config, openssl-dev, libudev-dev, alsa-dev, clang"
             ;;
     esac
 }
 
 install_rust() {
-    echo -e "  ${CYAN}Installing Rust...${NC}"
+    info "Installing Rust..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable 2>&1 | tail -1
     export PATH="$HOME/.cargo/bin:$PATH"
     # shellcheck disable=SC1091
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 }
 
-# --- Progress bar ---
-INSTALL_TOTAL_STEPS=5
-INSTALL_CURRENT_STEP=0
-INSTALL_START_TIME=0
-
-init_progress() {
-    INSTALL_TOTAL_STEPS=$1
-    INSTALL_CURRENT_STEP=0
-    INSTALL_START_TIME=$(date +%s)
-}
-
-update_progress() {
-    local step_name="$1"
-    INSTALL_CURRENT_STEP=$((INSTALL_CURRENT_STEP + 1))
-
-    local percent=0
-    if [ "$INSTALL_TOTAL_STEPS" -gt 0 ]; then
-        percent=$((INSTALL_CURRENT_STEP * 100 / INSTALL_TOTAL_STEPS))
-    fi
-
-    local elapsed=$(($(date +%s) - INSTALL_START_TIME))
-    local eta_str=""
-    if [ "$elapsed" -gt 0 ] && [ "$percent" -gt 0 ] && [ "$percent" -lt 100 ]; then
-        local total_estimated=$((elapsed * 100 / percent))
-        local remaining=$((total_estimated - elapsed))
-        if [ "$remaining" -gt 0 ]; then
-            eta_str=" ETA: ${remaining}s"
-        fi
-    fi
-
-    local width=25
-    local filled=$((percent * width / 100))
-    local empty=$((width - filled))
-    local bar=""
-    for ((j=0; j<filled; j++)); do bar+="█"; done
-    for ((j=0; j<empty; j++)); do bar+="░"; done
-
-    printf "\r  [${bar}] %3d%% %-30s${eta_str}    \n" "$percent" "$step_name"
-}
-
-complete_progress() {
-    local elapsed=$(($(date +%s) - INSTALL_START_TIME))
-    printf "\r  [█████████████████████████] 100%% Installed in ${elapsed}s                \n"
-}
-
 # --- Main ---
 OS=$(detect_os)
 ARCH=$(detect_arch)
 INSTALL_DIR=$(find_install_dir)
+INSTALL_START=$(date +%s)
 if [ "$OS" = "windows" ]; then
     BINARY_NAME="horus.exe"
 else
@@ -189,17 +144,17 @@ echo -e "  Install: ${GREEN}${INSTALL_DIR}${NC}"
 echo ""
 
 if [ "$OS" = "unknown" ] || [ "$ARCH" = "unknown" ]; then
-    echo -e "${RED}  Unsupported platform: $(uname -s) $(uname -m)${NC}"
-    echo "  Supported: Linux/macOS (amd64, arm64), Windows (via Git Bash/WSL)"
+    fail "Unsupported platform: $(uname -s) $(uname -m)"
+    echo "    Supported: Linux/macOS (amd64, arm64), Windows (via Git Bash/WSL)"
     exit 1
 fi
 
 if ! command -v curl &>/dev/null; then
-    echo -e "${RED}  curl is required${NC}"
+    fail "curl is required"
     exit 1
 fi
 
-# --- Step 1: Try pre-built binary from GitHub Releases ---
+# --- Try pre-built binary from GitHub Releases ---
 ASSET_NAME="horus-${OS}-${ARCH}"
 if [ "$OS" = "windows" ]; then
     ASSET_EXT="zip"
@@ -208,16 +163,14 @@ else
 fi
 RELEASE_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}.${ASSET_EXT}"
 
-# Pre-built path: 3 steps (download, verify, PATH)
-# Source build path: 5 steps (deps, clone, build, verify, PATH)
-init_progress 3
-update_progress "Downloading horus..."
+info "Checking for pre-built binary..."
 
 TMPDIR=$(mktemp -d)
 HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
 
 if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
-    # Extract and install pre-built binary
+    # --- Fast path: pre-built binary ---
+    info "Extracting binary..."
     if [ "$OS" = "windows" ]; then
         unzip -q "${TMPDIR}/${ASSET_NAME}.zip" -d "$TMPDIR"
     else
@@ -226,72 +179,57 @@ if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; th
     chmod +x "${TMPDIR}/${BINARY_NAME}" 2>/dev/null || true
     mv "${TMPDIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
     rm -rf "$TMPDIR"
-    echo -e "  ${GREEN}Downloaded pre-built binary${NC}"
+    ok "Downloaded pre-built binary"
 
 else
+    # --- Slow path: build from source ---
     rm -rf "$TMPDIR"
-    echo -e "  ${YELLOW}No pre-built binary for ${OS}-${ARCH}, building from source...${NC}"
+    warn "No pre-built binary for ${OS}-${ARCH}, building from source..."
     echo ""
 
-    # Switch to 5-step progress for source builds
-    init_progress 5
-    update_progress "Installing dependencies..."
-
-    # Ensure Rust is available
+    # Dependencies
     if ! command -v cargo &>/dev/null; then
         install_rust
         if ! command -v cargo &>/dev/null; then
-            echo -e "${RED}  Failed to install Rust. Install manually: https://rustup.rs${NC}"
+            fail "Failed to install Rust. Install manually: https://rustup.rs"
             exit 1
         fi
     fi
-
-    # Install system build dependencies
     if [ "$OS" = "linux" ] || [ "$OS" = "macos" ]; then
         install_build_deps
     fi
-    echo -e "  ${GREEN}Dependencies ready${NC}"
+    ok "Dependencies ready"
 
-    # Clone release branch
-    update_progress "Cloning release branch..."
+    # Clone
+    info "Cloning release branch..."
     CLONE_DIR=$(mktemp -d)
     git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$CLONE_DIR" 2>&1 | tail -1
-    echo -e "  ${GREEN}Source cloned${NC}"
+    ok "Source cloned"
 
-    # Build from source (longest step)
-    update_progress "Building from source..."
+    # Build — cargo shows its own progress
+    echo ""
+    info "Building from source (this takes a few minutes)..."
+    echo ""
+    BUILD_START=$(date +%s)
     cd "$CLONE_DIR"
-
-    # Show a spinner during build since cargo output is suppressed
-    cargo build --release -p horus_manager --no-default-features > /tmp/horus_build.log 2>&1 &
-    BUILD_PID=$!
-    SPIN_CHARS=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    SPIN_IDX=0
-    while kill -0 $BUILD_PID 2>/dev/null; do
-        printf "\r  ${CYAN}${SPIN_CHARS[$SPIN_IDX]}${NC} Compiling...  "
-        SPIN_IDX=$(( (SPIN_IDX + 1) % ${#SPIN_CHARS[@]} ))
-        sleep 0.15
-    done
-    wait $BUILD_PID
-    BUILD_EXIT=$?
-    printf "\r                      \r"
-
-    if [ $BUILD_EXIT -ne 0 ]; then
-        echo -e "${RED}  Build failed${NC}"
-        echo "  Build log: /tmp/horus_build.log"
-        echo "  Report issues: https://github.com/${REPO}/issues"
+    # Force stable toolchain — nightly may have compiler bugs
+    if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
+        echo ""
+        fail "Build failed"
+        echo "    Report issues: https://github.com/${REPO}/issues"
         exit 1
     fi
+    build_elapsed=$(($(date +%s) - BUILD_START))
+    echo ""
 
-    # Install the binary
+    # Install binary
     if [ -f "target/release/${BINARY_NAME}" ]; then
         cp "target/release/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
         chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-        echo -e "  ${GREEN}Built and installed from source${NC}"
+        ok "Built and installed in ${build_elapsed}s"
     else
-        echo -e "${RED}  Build failed — binary not found${NC}"
-        echo "  Build log: /tmp/horus_build.log"
-        echo "  Report issues: https://github.com/${REPO}/issues"
+        fail "Build succeeded but binary not found"
+        echo "    Report issues: https://github.com/${REPO}/issues"
         exit 1
     fi
 
@@ -300,22 +238,18 @@ else
     rm -rf "$CLONE_DIR"
 fi
 
-# --- Step: Verify ---
-update_progress "Verifying installation..."
-
+# --- Verify ---
 if [ -f "${INSTALL_DIR}/${BINARY_NAME}" ]; then
     VERSION=$("${INSTALL_DIR}/${BINARY_NAME}" --version 2>/dev/null || echo "installed")
-    echo -e "  ${GREEN}horus ${VERSION}${NC}"
+    ok "Verified: horus ${VERSION}"
 else
-    echo -e "${RED}  Installation failed${NC}"
+    fail "Installation failed"
     exit 1
 fi
 
-# --- Step: PATH ---
-update_progress "Configuring PATH..."
-
+# --- Configure PATH ---
 if echo "$PATH" | grep -q "$INSTALL_DIR"; then
-    echo -e "  ${GREEN}${INSTALL_DIR} already in PATH${NC}"
+    ok "PATH already configured"
 else
     SHELL_RC=""
     case "${SHELL:-/bin/bash}" in
@@ -327,21 +261,19 @@ else
     if [ -n "$SHELL_RC" ]; then
         if ! grep -q "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null; then
             echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_RC"
-            echo -e "  ${GREEN}Added to PATH in $(basename "$SHELL_RC")${NC}"
-        else
-            echo -e "  ${GREEN}Already configured in $(basename "$SHELL_RC")${NC}"
         fi
     fi
     export PATH="${INSTALL_DIR}:$PATH"
+    ok "Added to PATH"
 fi
 
-# --- Shell integration (cargo/pip/cmake proxy) ---
+# Shell integration
 horus env --init 2>/dev/null || true
 
 # --- Done ---
-complete_progress
+elapsed_total=$(($(date +%s) - INSTALL_START))
 echo ""
-echo -e "${GREEN}  Installation complete!${NC}"
+echo -e "  ${GREEN}${BOLD}Installation complete!${NC}  horus ${VERSION}  (${elapsed_total}s)"
 echo ""
 echo "  Get started:"
 echo -e "    ${CYAN}horus new my_robot -r${NC}     Create a Rust project"
@@ -352,7 +284,6 @@ echo -e "  Docs: ${CYAN}https://docs.horusrobotics.dev${NC}"
 echo ""
 
 if ! command -v horus &>/dev/null; then
-    echo -e "  ${YELLOW}Restart your terminal or run:${NC}"
-    echo -e "    ${CYAN}source ~/${SHELL_RC##*/}${NC}"
+    warn "Restart your terminal or run: ${CYAN}source ~/${SHELL_RC##*/}${NC}"
     echo ""
 fi
