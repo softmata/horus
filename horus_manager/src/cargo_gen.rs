@@ -8,6 +8,8 @@
 //! The generated file is always gitignored and treated as a build artifact.
 
 use anyhow::{Context, Result};
+use colored::Colorize;
+use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,6 +94,12 @@ pub fn generate(
             let rel = relative_to_horus(file, &horus_dir);
             write_bin_entry(&mut cargo, &stem, &rel);
         }
+    }
+
+    // ── Auto-install missing registry deps ────────────────────────────────
+    auto_install_registry_deps(&manifest.dependencies, project_dir, &horus_dir)?;
+    if include_dev && !manifest.dev_dependencies.is_empty() {
+        auto_install_registry_deps(&manifest.dev_dependencies, project_dir, &horus_dir)?;
     }
 
     // ── Dependencies ─────────────────────────────────────────────────────
@@ -320,6 +328,86 @@ fn write_deps_section(
     Ok(())
 }
 
+/// Auto-install missing registry dependencies before Cargo.toml generation.
+///
+/// Scans the dependency map for `DepSource::Registry` entries, checks if each
+/// is already present in `.horus/packages/<name>/`, and silently installs any
+/// that are missing from the horus registry. This ensures `write_deps_section`
+/// can emit real path deps instead of commented-out placeholders.
+///
+/// Failures are logged as warnings — the build continues and cargo will report
+/// the missing crate with a clear error if auto-install didn't succeed.
+fn auto_install_registry_deps(
+    deps: &BTreeMap<String, DependencyValue>,
+    project_dir: &Path,
+    horus_dir: &Path,
+) -> Result<()> {
+    use crate::source_resolver::PackageSourceResolver;
+    use crate::manifest::Language;
+
+    let resolver = PackageSourceResolver::new(&[Language::Rust]);
+    let mut missing: Vec<(String, Option<String>)> = Vec::new();
+
+    for (name, dep) in deps {
+        let source = match dep.effective_source() {
+            DepSource::Registry => {
+                let resolved = resolver.resolve(name);
+                if resolved.confidence == crate::source_resolver::Confidence::High {
+                    resolved.source
+                } else {
+                    DepSource::Registry
+                }
+            }
+            other => other,
+        };
+
+        if source == DepSource::Registry {
+            let pkg_dir = horus_dir.join("packages").join(name);
+            if !pkg_dir.exists() || !pkg_dir.join("Cargo.toml").exists() {
+                missing.push((name.clone(), dep.version().map(String::from)));
+            }
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!(
+        "  {} Auto-installing {} registry package(s)...",
+        crate::cli_output::ICON_INFO.cyan(),
+        missing.len()
+    );
+
+    let client = crate::registry::RegistryClient::new();
+    let target = crate::workspace::InstallTarget::Local(project_dir.to_path_buf());
+
+    for (name, version) in &missing {
+        eprintln!("    {} {}...", "\u{2193}".cyan(), name); // ↓
+        match client.install_from_registry(name, version.as_deref(), target.clone()) {
+            Ok(v) => {
+                eprintln!(
+                    "    {} {} v{}",
+                    crate::cli_output::ICON_SUCCESS.green(),
+                    name,
+                    v
+                );
+            }
+            Err(e) => {
+                // Warn but don't fail — cargo build will give a clear error
+                eprintln!(
+                    "    {} Failed to auto-install {}: {}",
+                    crate::cli_output::ICON_WARN.yellow(),
+                    name,
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Write a crates.io dependency line.
 fn write_crates_io_dep(cargo: &mut String, name: &str, dep: &DependencyValue) {
     match dep {
@@ -470,6 +558,18 @@ pub fn generate_workspace(
 ) -> Result<(PathBuf, String)> {
     let horus_dir = project_dir.join(HORUS_DIR);
     fs::create_dir_all(&horus_dir).context("Failed to create .horus directory")?;
+
+    // ── Auto-install missing registry deps (workspace + all members) ─────
+    if let Some(ref ws) = root_manifest.workspace {
+        if !ws.dependencies.is_empty() {
+            auto_install_registry_deps(&ws.dependencies, project_dir, &horus_dir)?;
+        }
+    }
+    for (_, member_manifest) in members {
+        if !member_manifest.dependencies.is_empty() {
+            auto_install_registry_deps(&member_manifest.dependencies, project_dir, &horus_dir)?;
+        }
+    }
 
     let mut root_cargo = String::with_capacity(2048);
 

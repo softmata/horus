@@ -1359,4 +1359,650 @@ mod tests {
             "EmergencyStop policy should stop the node"
         );
     }
+
+    // ========================================================================
+    // Edge case tests
+    // ========================================================================
+
+    /// Empty executor (zero chains) — start_pool and stop complete without error.
+    #[test]
+    fn test_empty_executor_no_chains() {
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = RtExecutor::start_pool(
+            Vec::new(),
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+        assert!(returned.is_empty(), "no chains → no nodes returned");
+    }
+
+    /// Single chain with a single empty chain (zero nodes in chain).
+    #[test]
+    fn test_single_empty_chain() {
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = RtExecutor::start_pool(
+            vec![Vec::new()],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        // Let the empty RT thread loop briefly
+        std::thread::sleep(20_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+        assert!(returned.is_empty(), "empty chain → no nodes returned");
+    }
+
+    /// Single chain with exactly one node — verifies the degenerate-chain case.
+    #[test]
+    fn test_single_chain_single_node() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let node = make_rt_registered("solo_node", count.clone());
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(30_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 1);
+        assert_eq!(&*returned[0].name, "solo_node");
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "single node must tick at least once"
+        );
+    }
+
+    /// Chain with many nodes (12) — all are ticked and returned.
+    #[test]
+    fn test_chain_with_many_nodes() {
+        let counts: Vec<_> = (0..12)
+            .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .collect();
+
+        let nodes: Vec<RegisteredNode> = counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| make_rt_registered(&format!("node_{}", i), c.clone()))
+            .collect();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 12, "all 12 nodes returned");
+        for (i, c) in counts.iter().enumerate() {
+            let ticks = c.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(ticks > 0, "node_{} must tick at least once, got {}", i, ticks);
+        }
+    }
+
+    /// Node with a sub-microsecond tick (empty body) — no issues with near-zero durations.
+    struct NoOpNode(String);
+    impl Node for NoOpNode {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        fn tick(&mut self) {
+            // Intentionally empty — sub-microsecond tick
+        }
+    }
+
+    #[test]
+    fn test_sub_microsecond_node_runs_without_issue() {
+        use crate::core::NodeInfo;
+
+        let node = NoOpNode("noop".to_string());
+        let registered = RegisteredNode {
+            node: super::super::types::NodeKind::new(Box::new(node)),
+            name: Arc::from("noop"),
+            priority: 0,
+            initialized: true,
+            context: Some(NodeInfo::new("noop".to_string())),
+            rate_hz: None,
+            last_tick: None,
+            is_rt_node: true,
+            tick_budget: None,
+            deadline: None,
+            recorder: None,
+            is_stopped: false,
+            is_paused: false,
+            rt_stats: Some(crate::core::RtStats::default()),
+            miss_policy: Miss::Warn,
+            execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
+            failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
+        };
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![registered]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(30_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 1);
+        // RtStats should have recorded ticks with non-NaN avg
+        let stats = returned[0].rt_stats.as_ref().unwrap();
+        assert!(
+            stats.sampled_ticks() > 0,
+            "sub-microsecond node should have recorded ticks"
+        );
+        assert!(
+            stats.avg_execution_us().is_finite(),
+            "avg_execution_us must be finite, not NaN/inf"
+        );
+    }
+
+    /// Chain ordering: nodes are sorted by priority before execution.
+    /// Nodes with lower priority values run first.
+    #[test]
+    fn test_chain_nodes_sorted_by_priority() {
+        // Create nodes with intentionally reversed priorities to verify sorting.
+        // After sorting, priority 0 runs before priority 10, which runs before priority 20.
+        // We use a shared Vec to capture execution order on the first tick cycle.
+        let order = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        struct OrderNode {
+            name: String,
+            order: Arc<Mutex<Vec<String>>>,
+        }
+        impl Node for OrderNode {
+            fn name(&self) -> &str {
+                &self.name
+            }
+            fn tick(&mut self) {
+                let mut guard = self.order.lock().unwrap();
+                // Only record during the first few ticks to keep deterministic
+                if guard.len() < 30 {
+                    guard.push(self.name.clone());
+                }
+            }
+        }
+
+        let make_order_node = |name: &str, priority: u32| -> RegisteredNode {
+            use crate::core::NodeInfo;
+            let node = OrderNode {
+                name: name.to_string(),
+                order: order.clone(),
+            };
+            RegisteredNode {
+                node: super::super::types::NodeKind::new(Box::new(node)),
+                name: Arc::from(name),
+                priority,
+                initialized: true,
+                context: Some(NodeInfo::new(name.to_string())),
+                rate_hz: None,
+                last_tick: None,
+                is_rt_node: true,
+                tick_budget: None,
+                deadline: None,
+                recorder: None,
+                is_stopped: false,
+                is_paused: false,
+                rt_stats: None,
+                miss_policy: Miss::Warn,
+                execution_class: super::super::types::ExecutionClass::Rt,
+                health_state: super::super::types::AtomicHealthState::default(),
+                os_priority: None,
+                pinned_core: None,
+                node_watchdog: None,
+                failure_handler: None,
+                budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
+            }
+        };
+
+        // Provide in REVERSE priority order — start_pool should sort them
+        let nodes = vec![
+            make_order_node("prio_20", 20),
+            make_order_node("prio_0", 0),
+            make_order_node("prio_10", 10),
+        ];
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![nodes],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(30_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let _returned = executor.stop();
+
+        let recorded = order.lock().unwrap();
+        // We need at least 3 entries (one full cycle) to check ordering
+        assert!(
+            recorded.len() >= 3,
+            "need at least one full cycle of 3 nodes, got {}",
+            recorded.len()
+        );
+        // Check that within each 3-node cycle, priority order is maintained
+        // (prio_0, prio_10, prio_20) repeating
+        for chunk in recorded.chunks_exact(3) {
+            assert_eq!(chunk[0], "prio_0", "first in cycle should be prio_0");
+            assert_eq!(chunk[1], "prio_10", "second in cycle should be prio_10");
+            assert_eq!(chunk[2], "prio_20", "third in cycle should be prio_20");
+        }
+    }
+
+    /// Multiple chains with multiple nodes each — all execute.
+    #[test]
+    fn test_multiple_chains_multiple_nodes_each() {
+        let counts: Vec<_> = (0..6)
+            .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .collect();
+
+        // 3 chains with 2 nodes each
+        let chain_0 = vec![
+            make_rt_registered("c0_n0", counts[0].clone()),
+            make_rt_registered("c0_n1", counts[1].clone()),
+        ];
+        let chain_1 = vec![
+            make_rt_registered("c1_n0", counts[2].clone()),
+            make_rt_registered("c1_n1", counts[3].clone()),
+        ];
+        let chain_2 = vec![
+            make_rt_registered("c2_n0", counts[4].clone()),
+            make_rt_registered("c2_n1", counts[5].clone()),
+        ];
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![chain_0, chain_1, chain_2],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 6, "all 6 nodes returned across 3 chains");
+        for (i, c) in counts.iter().enumerate() {
+            let ticks = c.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(ticks > 0, "node index {} must tick, got 0", i);
+        }
+    }
+
+    /// RtStats are correctly populated after execution.
+    #[test]
+    fn test_rt_stats_populated_after_execution() {
+        use crate::core::NodeInfo;
+
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let node = CounterNode {
+            name: "stats_node".to_string(),
+            count: count.clone(),
+        };
+
+        let registered = RegisteredNode {
+            node: super::super::types::NodeKind::new(Box::new(node)),
+            name: Arc::from("stats_node"),
+            priority: 0,
+            initialized: true,
+            context: Some(NodeInfo::new("stats_node".to_string())),
+            rate_hz: None,
+            last_tick: None,
+            is_rt_node: true,
+            tick_budget: None,
+            deadline: None,
+            recorder: None,
+            is_stopped: false,
+            is_paused: false,
+            rt_stats: Some(crate::core::RtStats::default()),
+            miss_policy: Miss::Warn,
+            execution_class: super::super::types::ExecutionClass::Rt,
+            health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
+            failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
+        };
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![registered]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        let stats = returned[0].rt_stats.as_ref().unwrap();
+        let tick_count = count.load(std::sync::atomic::Ordering::Relaxed);
+
+        assert_eq!(
+            stats.sampled_ticks(), tick_count,
+            "sampled_ticks should match actual tick count"
+        );
+        assert!(stats.sampled_ticks() > 0, "must have recorded at least one tick");
+        assert!(
+            stats.worst_execution() >= stats.last_execution()
+                || stats.sampled_ticks() == 1,
+            "worst >= last (or only one sample)"
+        );
+        assert_eq!(stats.deadline_misses(), 0, "no deadline set → 0 misses");
+        assert_eq!(stats.budget_violations(), 0, "no budget set → 0 violations");
+        assert!(stats.avg_execution_us().is_finite(), "avg must be finite");
+        assert!(stats.jitter_us().is_finite(), "jitter must be finite");
+    }
+
+    /// Stopped node is skipped — it never gets ticked.
+    #[test]
+    fn test_stopped_node_is_skipped() {
+        let stopped_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let healthy_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let mut stopped_node = make_rt_registered("stopped", stopped_count.clone());
+        stopped_node.is_stopped = true;
+
+        let healthy_node = make_rt_registered("healthy", healthy_count.clone());
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![stopped_node, healthy_node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 2);
+        assert_eq!(
+            stopped_count.load(std::sync::atomic::Ordering::Relaxed), 0,
+            "stopped node must never tick"
+        );
+        assert!(
+            healthy_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "healthy sibling must still tick"
+        );
+    }
+
+    /// Uninitialized node is skipped — it never gets ticked.
+    #[test]
+    fn test_uninitialized_node_is_skipped() {
+        let uninit_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let normal_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let mut uninit_node = make_rt_registered("uninit", uninit_count.clone());
+        uninit_node.initialized = false;
+
+        let normal_node = make_rt_registered("normal", normal_count.clone());
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![uninit_node, normal_node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 2);
+        assert_eq!(
+            uninit_count.load(std::sync::atomic::Ordering::Relaxed), 0,
+            "uninitialized node must never tick"
+        );
+        assert!(
+            normal_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "initialized sibling must still tick"
+        );
+    }
+
+    /// Paused node auto-unpauses after being skipped once.
+    /// The RT loop sets is_paused=false and skips (continue), so the node
+    /// misses exactly one tick cycle then resumes.
+    #[test]
+    fn test_paused_node_auto_unpauses() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut node = make_rt_registered("paused_node", count.clone());
+        node.is_paused = true;
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        // Let it run — first cycle skips (unpause), subsequent cycles tick normally
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 1);
+        assert!(
+            !returned[0].is_paused,
+            "node should be unpaused after running"
+        );
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "paused node must resume ticking after auto-unpause"
+        );
+    }
+
+    /// Fallback period is used when no node declares a rate.
+    #[test]
+    fn test_fallback_period_used_when_no_rate() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        // Node has rate_hz = None
+        let node = make_rt_registered("no_rate", count.clone());
+
+        let running = Arc::new(AtomicBool::new(true));
+        // Fallback period of 10ms → ~100Hz effective tick rate
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            10_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(100_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        let ticks = count.load(std::sync::atomic::Ordering::Relaxed);
+        // At 10ms fallback period over 100ms, expect roughly 10 ticks (wide margin)
+        assert!(
+            ticks >= 3 && ticks <= 50,
+            "with 10ms fallback period over 100ms, expected 3-50 ticks, got {}",
+            ticks
+        );
+        assert_eq!(returned.len(), 1);
+    }
+
+    /// Nodes without rt_stats=Some still tick without error (stats recording skipped).
+    #[test]
+    fn test_node_without_rt_stats() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut node = make_rt_registered("no_stats", count.clone());
+        // Explicitly set rt_stats to None (this is the default from make_rt_registered)
+        node.rt_stats = None;
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(30_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 1);
+        assert!(returned[0].rt_stats.is_none(), "rt_stats should remain None");
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "node without rt_stats must still tick"
+        );
+    }
+
+    /// CPU affinity round-robin assignment across chains.
+    /// Verifies the executor doesn't crash when rt_cpus are provided.
+    #[test]
+    fn test_cpu_affinity_with_multiple_chains() {
+        let count_a = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count_b = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let chain_0 = vec![make_rt_registered("cpu_node_0", count_a.clone())];
+        let chain_1 = vec![make_rt_registered("cpu_node_1", count_b.clone())];
+
+        let running = Arc::new(AtomicBool::new(true));
+        // Provide CPU cores — may fail to pin (requires root/capabilities) but
+        // must not crash. The executor logs and continues unpinned.
+        let executor = RtExecutor::start_pool(
+            vec![chain_0, chain_1],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            vec![0, 1],
+        );
+
+        std::thread::sleep(30_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 2);
+        assert!(count_a.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert!(count_b.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    }
+
+    /// Immediate stop — running set false before any tick can occur.
+    /// The executor must still return all nodes without hanging.
+    #[test]
+    fn test_immediate_stop_returns_all_nodes() {
+        let counts: Vec<_> = (0..4)
+            .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .collect();
+
+        let chain = counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| make_rt_registered(&format!("imm_{}", i), c.clone()))
+            .collect();
+
+        let running = Arc::new(AtomicBool::new(false)); // Already false!
+
+        let executor = RtExecutor::start_pool(
+            vec![chain],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        let returned = executor.stop();
+        assert_eq!(returned.len(), 4, "all nodes returned even with immediate stop");
+    }
+
+    /// Mixed stopped/uninitialized/paused/healthy in one chain — only healthy ones tick.
+    #[test]
+    fn test_mixed_node_states_in_chain() {
+        let count_stopped = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count_uninit = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count_paused = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count_healthy = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let mut stopped = make_rt_registered("stopped", count_stopped.clone());
+        stopped.is_stopped = true;
+
+        let mut uninit = make_rt_registered("uninit", count_uninit.clone());
+        uninit.initialized = false;
+
+        let mut paused = make_rt_registered("paused", count_paused.clone());
+        paused.is_paused = true;
+
+        let healthy = make_rt_registered("healthy", count_healthy.clone());
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![stopped, uninit, paused, healthy]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(returned.len(), 4);
+        assert_eq!(
+            count_stopped.load(std::sync::atomic::Ordering::Relaxed), 0,
+            "stopped node must not tick"
+        );
+        assert_eq!(
+            count_uninit.load(std::sync::atomic::Ordering::Relaxed), 0,
+            "uninitialized node must not tick"
+        );
+        // Paused node skips one cycle then resumes
+        assert!(
+            count_paused.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "paused node must resume after auto-unpause"
+        );
+        assert!(
+            count_healthy.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "healthy node must tick normally"
+        );
+    }
 }

@@ -82,6 +82,7 @@ fn default_manifest() -> HorusManifest {
         },
         dependencies: BTreeMap::new(),
         dev_dependencies: BTreeMap::new(),
+        sim_dependencies: BTreeMap::new(),
         drivers: BTreeMap::new(),
         scripts: BTreeMap::new(),
         ignore: IgnoreConfig::default(),

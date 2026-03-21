@@ -1124,4 +1124,596 @@ mod tests {
         assert_eq!(f, [1.0, 2.0, 3.0]);
         assert_eq!(t, [0.1, 0.2, 0.3]);
     }
+
+    // ========================================================================
+    // Pod roundtrip tests — verify bytemuck cast preserves all fields
+    // ========================================================================
+
+    #[test]
+    fn test_imu_pod_roundtrip() {
+        let mut imu = Imu::default();
+        imu.linear_acceleration = [1.0, 2.0, 3.0];
+        imu.angular_velocity = [4.0, 5.0, 6.0];
+        imu.orientation = [0.0, 0.0, 0.0, 1.0];
+        imu.timestamp_ns = 123456789;
+
+        let bytes: &[u8] = bytemuck::bytes_of(&imu);
+        let recovered: &Imu = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.linear_acceleration, [1.0, 2.0, 3.0]);
+        assert_eq!(recovered.angular_velocity, [4.0, 5.0, 6.0]);
+        assert_eq!(recovered.orientation[3], 1.0);
+        assert_eq!(recovered.timestamp_ns, 123456789);
+    }
+
+    #[test]
+    fn test_odometry_pod_roundtrip() {
+        let mut odom = Odometry::default();
+        odom.pose = Pose2D::new(1.5, 2.5, 0.785);
+        odom.set_frames("odom", "base_link");
+
+        let bytes: &[u8] = bytemuck::bytes_of(&odom);
+        let recovered: &Odometry = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.pose.x, 1.5);
+        assert_eq!(recovered.pose.y, 2.5);
+        assert!((recovered.pose.theta - 0.785).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_laser_scan_pod_roundtrip() {
+        let mut scan = LaserScan::default();
+        scan.angle_min = -std::f32::consts::PI;
+        scan.angle_max = std::f32::consts::PI;
+        scan.ranges[0] = 1.5;
+        scan.ranges[359] = 10.0;
+
+        let bytes: &[u8] = bytemuck::bytes_of(&scan);
+        let recovered: &LaserScan = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.angle_min, -std::f32::consts::PI);
+        assert_eq!(recovered.ranges[0], 1.5);
+        assert_eq!(recovered.ranges[359], 10.0);
+    }
+
+    #[test]
+    fn test_range_sensor_pod_roundtrip() {
+        let range = RangeSensor {
+            sensor_type: 0,
+            field_of_view: 0.26,
+            min_range: 0.02,
+            max_range: 4.0,
+            range: 1.5,
+            timestamp_ns: 42,
+        };
+        let bytes: &[u8] = bytemuck::bytes_of(&range);
+        let recovered: &RangeSensor = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.range, 1.5);
+        assert_eq!(recovered.max_range, 4.0);
+        assert_eq!(recovered.timestamp_ns, 42);
+    }
+
+    // ============================================================================
+    // BatteryState Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_battery_state_fully_charged() {
+        let bat = BatteryState::new(12.6, 100.0);
+        assert!(!bat.is_low(20.0));
+        assert!(!bat.is_critical());
+    }
+
+    #[test]
+    fn test_battery_state_empty() {
+        let bat = BatteryState::new(10.0, 0.0);
+        assert!(bat.is_low(20.0));
+        assert!(bat.is_critical());
+    }
+
+    #[test]
+    fn test_battery_state_critical_boundary() {
+        // Exactly 10% should NOT be critical (< 10.0, not <=)
+        let bat_at_10 = BatteryState::new(11.0, 10.0);
+        assert!(!bat_at_10.is_critical());
+
+        let bat_below = BatteryState::new(11.0, 9.99);
+        assert!(bat_below.is_critical());
+    }
+
+    #[test]
+    fn test_battery_state_low_boundary() {
+        let bat = BatteryState::new(11.5, 20.0);
+        // percentage 20.0 < threshold 20.0 is false
+        assert!(!bat.is_low(20.0));
+
+        let bat2 = BatteryState::new(11.5, 19.99);
+        assert!(bat2.is_low(20.0));
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_discharging() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = -2.0; // discharging at 2A
+        bat.charge = 4.0;   // 4Ah remaining
+        let time = bat.time_remaining().unwrap();
+        // 4Ah / 2A = 2 hours = 7200 seconds
+        assert!((time - 7200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_charging() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = 2.0; // charging (positive)
+        bat.charge = 4.0;
+        assert!(bat.time_remaining().is_none());
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_zero_current() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = 0.0;
+        bat.charge = 4.0;
+        assert!(bat.time_remaining().is_none());
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_nan_charge() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = -1.0;
+        // charge defaults to NaN
+        assert!(bat.time_remaining().is_none());
+    }
+
+    #[test]
+    fn test_battery_state_default_charge_is_nan() {
+        let bat = BatteryState::default();
+        assert!(bat.charge.is_nan());
+        assert!(bat.capacity.is_nan());
+    }
+
+    #[test]
+    fn test_battery_state_status_constants() {
+        assert_eq!(BatteryState::STATUS_UNKNOWN, 0);
+        assert_eq!(BatteryState::STATUS_CHARGING, 1);
+        assert_eq!(BatteryState::STATUS_DISCHARGING, 2);
+        assert_eq!(BatteryState::STATUS_FULL, 3);
+    }
+
+    #[test]
+    fn test_battery_state_with_cell_voltages() {
+        let mut bat = BatteryState::new(12.6, 100.0);
+        bat.cell_count = 3;
+        bat.cell_voltages[0] = 4.2;
+        bat.cell_voltages[1] = 4.2;
+        bat.cell_voltages[2] = 4.2;
+        assert_eq!(bat.cell_count, 3);
+        assert_eq!(bat.cell_voltages[0], 4.2);
+        assert_eq!(bat.cell_voltages[2], 4.2);
+        // Unused cells should be 0.0
+        assert_eq!(bat.cell_voltages[3], 0.0);
+    }
+
+    #[test]
+    fn test_battery_state_all_16_cells() {
+        let mut bat = BatteryState::new(48.0, 95.0);
+        bat.cell_count = 16;
+        for i in 0..16 {
+            bat.cell_voltages[i] = 3.0 + (i as f32) * 0.01;
+        }
+        assert_eq!(bat.cell_count, 16);
+        assert!((bat.cell_voltages[0] - 3.0).abs() < 1e-6);
+        assert!((bat.cell_voltages[15] - 3.15).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_battery_state_serialization() {
+        let mut bat = BatteryState::new(12.0, 75.0);
+        bat.power_supply_status = BatteryState::STATUS_DISCHARGING;
+        bat.temperature = 35.0;
+        // Set charge/capacity to finite values (defaults are NaN, which serialize to null)
+        bat.charge = 4.0;
+        bat.capacity = 5.0;
+        let json = serde_json::to_string(&bat).unwrap();
+        let recovered: BatteryState = serde_json::from_str(&json).unwrap();
+        assert!((recovered.voltage - 12.0).abs() < 1e-6);
+        assert!((recovered.percentage - 75.0).abs() < 1e-6);
+        assert_eq!(recovered.power_supply_status, BatteryState::STATUS_DISCHARGING);
+        assert!((recovered.temperature - 35.0).abs() < 1e-6);
+        assert!((recovered.charge - 4.0).abs() < 1e-6);
+        assert!((recovered.capacity - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_battery_state_pod_roundtrip() {
+        let mut bat = BatteryState::new(12.6, 100.0);
+        bat.current = -0.5;
+        bat.temperature = 22.0;
+        bat.cell_count = 3;
+        bat.cell_voltages[0] = 4.2;
+        let bytes: &[u8] = bytemuck::bytes_of(&bat);
+        let recovered: &BatteryState = bytemuck::from_bytes(bytes);
+        assert!((recovered.voltage - 12.6).abs() < 1e-6);
+        assert!((recovered.current - (-0.5)).abs() < 1e-6);
+        assert_eq!(recovered.cell_count, 3);
+        assert!((recovered.cell_voltages[0] - 4.2).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // JointState Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_joint_state_fill_all_16() {
+        let mut js = JointState::new();
+        for i in 0..16 {
+            let name = format!("joint_{}", i);
+            js.add_joint(&name, i as f64 * 0.1, i as f64 * 0.01, i as f64 * 1.0)
+                .unwrap();
+        }
+        assert_eq!(js.joint_count, 16);
+        assert_eq!(JointData::num_joints(&js), 16);
+
+        // Verify first and last joints
+        assert_eq!(js.joint_name(0), Some("joint_0"));
+        assert_eq!(js.joint_name(15), Some("joint_15"));
+        assert!((js.positions[0] - 0.0).abs() < 1e-10);
+        assert!((js.positions[15] - 1.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_joint_state_17th_joint_fails() {
+        let mut js = JointState::new();
+        for i in 0..16 {
+            js.add_joint(&format!("j{}", i), 0.0, 0.0, 0.0).unwrap();
+        }
+        let result = js.add_joint("j16", 0.0, 0.0, 0.0);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Maximum 16 joints supported");
+    }
+
+    #[test]
+    fn test_joint_state_lookup_by_name() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder", 1.0, 0.5, 10.0).unwrap();
+        js.add_joint("elbow", 0.5, 0.2, 5.0).unwrap();
+        js.add_joint("wrist", 0.3, 0.1, 2.0).unwrap();
+
+        assert_eq!(js.position("shoulder"), Some(1.0));
+        assert_eq!(js.velocity("elbow"), Some(0.2));
+        assert_eq!(js.effort("wrist"), Some(2.0));
+        assert_eq!(js.position("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_joint_state_long_name_truncated() {
+        let mut js = JointState::new();
+        let long_name = "a_very_long_joint_name_that_exceeds_31_characters_limit";
+        js.add_joint(long_name, 0.0, 0.0, 0.0).unwrap();
+        // Name should be truncated to 31 chars
+        let name = js.joint_name(0).unwrap();
+        assert_eq!(name.len(), 31);
+        assert_eq!(name, &long_name[..31]);
+    }
+
+    #[test]
+    fn test_joint_state_negative_values() {
+        let mut js = JointState::new();
+        js.add_joint("revolute", -3.14, -1.0, -50.0).unwrap();
+        assert!((js.positions[0] - (-3.14)).abs() < 1e-10);
+        assert!((js.velocities[0] - (-1.0)).abs() < 1e-10);
+        assert!((js.efforts[0] - (-50.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_joint_state_empty_name() {
+        let mut js = JointState::new();
+        js.add_joint("", 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(js.joint_name(0), Some(""));
+    }
+
+    #[test]
+    fn test_joint_state_pod_roundtrip() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder", 1.5, 0.3, 12.0).unwrap();
+        js.add_joint("elbow", -0.7, -0.1, 5.0).unwrap();
+        let bytes: &[u8] = bytemuck::bytes_of(&js);
+        let recovered: &JointState = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.joint_count, 2);
+        assert!((recovered.positions[0] - 1.5).abs() < 1e-10);
+        assert!((recovered.positions[1] - (-0.7)).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // Temperature Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_temperature_absolute_zero() {
+        let temp = Temperature::new(-273.15);
+        assert!((temp.temperature - (-273.15)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_boiling_point() {
+        let temp = Temperature::new(100.0);
+        assert!((TemperatureData::celsius(&temp) - 100.0).abs() < 0.01);
+        assert!((TemperatureData::fahrenheit(&temp) - 212.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_temperature_freezing_point() {
+        let temp = Temperature::new(0.0);
+        assert!((TemperatureData::celsius(&temp) - 0.0).abs() < 0.01);
+        assert!((TemperatureData::fahrenheit(&temp) - 32.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_temperature_extreme_hot() {
+        let temp = Temperature::new(1500.0); // e.g., molten metal
+        assert!((temp.temperature - 1500.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_with_variance() {
+        let mut temp = Temperature::new(25.0);
+        temp.variance = 0.5;
+        assert!((temp.variance - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_with_frame_id() {
+        let temp = Temperature::new(25.0).with_frame_id("motor_housing");
+        let frame_str = std::str::from_utf8(
+            &temp.frame_id[..temp.frame_id.iter().position(|&b| b == 0).unwrap_or(32)],
+        )
+        .unwrap();
+        assert_eq!(frame_str, "motor_housing");
+    }
+
+    #[test]
+    fn test_temperature_serialization() {
+        let temp = Temperature::new(-40.0);
+        let json = serde_json::to_string(&temp).unwrap();
+        let recovered: Temperature = serde_json::from_str(&json).unwrap();
+        assert!((recovered.temperature - (-40.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_pod_roundtrip() {
+        let temp = Temperature::new(36.6);
+        let bytes: &[u8] = bytemuck::bytes_of(&temp);
+        let recovered: &Temperature = bytemuck::from_bytes(bytes);
+        assert!((recovered.temperature - 36.6).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // LaserScan Additional Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_laser_scan_no_valid_ranges() {
+        let scan = LaserScan::new();
+        // All ranges default to 0.0, which is below range_min (0.1)
+        assert_eq!(scan.valid_count(), 0);
+        assert!(scan.min_range().is_none());
+    }
+
+    #[test]
+    fn test_laser_scan_all_ranges_valid() {
+        let mut scan = LaserScan::new();
+        for i in 0..360 {
+            scan.ranges[i] = 1.0; // Within [0.1, 30.0]
+        }
+        assert_eq!(scan.valid_count(), 360);
+    }
+
+    #[test]
+    fn test_laser_scan_angle_at_out_of_bounds() {
+        let scan = LaserScan::new();
+        assert_eq!(scan.angle_at(360), 0.0);
+        assert_eq!(scan.angle_at(1000), 0.0);
+    }
+
+    #[test]
+    fn test_laser_scan_is_range_valid_out_of_bounds() {
+        let scan = LaserScan::new();
+        assert!(!scan.is_range_valid(360));
+        assert!(!scan.is_range_valid(usize::MAX));
+    }
+
+    #[test]
+    fn test_laser_scan_nan_range_invalid() {
+        let mut scan = LaserScan::new();
+        scan.ranges[0] = f32::NAN;
+        assert!(!scan.is_range_valid(0));
+    }
+
+    #[test]
+    fn test_laser_scan_infinity_range_invalid() {
+        let mut scan = LaserScan::new();
+        scan.ranges[0] = f32::INFINITY;
+        assert!(!scan.is_range_valid(0));
+    }
+
+    #[test]
+    fn test_laser_scan_min_range_finds_closest() {
+        let mut scan = LaserScan::new();
+        scan.ranges[10] = 5.0;
+        scan.ranges[20] = 0.5;
+        scan.ranges[30] = 15.0;
+        assert!((scan.min_range().unwrap() - 0.5).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // Odometry Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_odometry_set_frames_long_names() {
+        let mut odom = Odometry::new();
+        let long_frame = "a_very_long_frame_name_that_is_over_31_chars";
+        odom.set_frames(long_frame, "child");
+        // Frame should be truncated to 31 chars
+        let end = odom.frame_id.iter().position(|&b| b == 0).unwrap_or(32);
+        let frame_str = std::str::from_utf8(&odom.frame_id[..end]).unwrap();
+        assert_eq!(frame_str.len(), 31);
+    }
+
+    #[test]
+    fn test_odometry_update() {
+        let mut odom = Odometry::new();
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let twist = Twist::new_2d(0.5, 0.1);
+        odom.update(pose, twist);
+        assert_eq!(odom.pose.x, 1.0);
+        assert_eq!(odom.pose.y, 2.0);
+        assert!((odom.twist.linear[0] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_odometry_is_valid_with_invalid_pose() {
+        let mut odom = Odometry::new();
+        odom.pose = Pose2D {
+            x: f64::INFINITY,
+            y: 0.0,
+            theta: 0.0,
+            timestamp_ns: 0,
+        };
+        assert!(!odom.is_valid());
+    }
+
+    #[test]
+    fn test_odometry_is_valid_with_invalid_twist() {
+        let mut odom = Odometry::new();
+        odom.twist = Twist {
+            linear: [f64::NAN, 0.0, 0.0],
+            angular: [0.0; 3],
+            timestamp_ns: 0,
+        };
+        assert!(!odom.is_valid());
+    }
+
+    // ============================================================================
+    // IMU Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_imu_set_orientation_from_euler() {
+        let mut imu = Imu::new();
+        imu.set_orientation_from_euler(0.0, 0.0, std::f64::consts::FRAC_PI_2);
+        // 90 degree yaw
+        assert!((imu.orientation[2] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((imu.orientation[3] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_imu_invalid_with_nan() {
+        let mut imu = Imu::new();
+        imu.angular_velocity[1] = f64::NAN;
+        assert!(!imu.is_valid());
+    }
+
+    #[test]
+    fn test_imu_invalid_with_inf_acceleration() {
+        let mut imu = Imu::new();
+        imu.linear_acceleration[2] = f64::INFINITY;
+        assert!(!imu.is_valid());
+    }
+
+    #[test]
+    fn test_imu_vector_accessors() {
+        let mut imu = Imu::new();
+        imu.angular_velocity = [0.1, 0.2, 0.3];
+        imu.linear_acceleration = [1.0, 2.0, 9.81];
+        let av = imu.angular_velocity_vec();
+        assert!((av.x - 0.1).abs() < 1e-10);
+        assert!((av.y - 0.2).abs() < 1e-10);
+        assert!((av.z - 0.3).abs() < 1e-10);
+        let la = imu.linear_acceleration_vec();
+        assert!((la.x - 1.0).abs() < 1e-10);
+        assert!((la.z - 9.81).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // RangeSensor Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_range_sensor_below_min_invalid() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 0.01); // below min_range 0.02
+        assert!(!range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_above_max_invalid() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 5.0); // above max_range 4.0
+        assert!(!range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_nan_invalid() {
+        let range = RangeSensor::new(RangeSensor::INFRARED, f32::NAN);
+        assert!(!range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_at_exact_min() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 0.02);
+        assert!(range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_at_exact_max() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 4.0);
+        assert!(range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_infrared_type() {
+        let range = RangeSensor::new(RangeSensor::INFRARED, 1.0);
+        assert_eq!(range.sensor_type, 1);
+    }
+
+    // ============================================================================
+    // NavSatFix Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_navsat_valid_coordinates() {
+        let fix = NavSatFix::from_coordinates(37.7749, -122.4194, 10.0);
+        assert!(fix.is_valid());
+        assert!(fix.has_fix());
+    }
+
+    #[test]
+    fn test_navsat_invalid_latitude() {
+        let mut fix = NavSatFix::new();
+        fix.latitude = 91.0; // out of range
+        assert!(!fix.is_valid());
+    }
+
+    #[test]
+    fn test_navsat_invalid_longitude() {
+        let mut fix = NavSatFix::new();
+        fix.longitude = -181.0; // out of range
+        assert!(!fix.is_valid());
+    }
+
+    #[test]
+    fn test_navsat_no_fix_status() {
+        let fix = NavSatFix::new();
+        assert!(!fix.has_fix());
+        assert_eq!(fix.status, NavSatFix::STATUS_NO_FIX);
+    }
+
+    #[test]
+    fn test_navsat_distance_same_point() {
+        let fix = NavSatFix::from_coordinates(0.0, 0.0, 0.0);
+        assert!(fix.distance_to(&fix) < 1e-6);
+    }
+
+    #[test]
+    fn test_navsat_horizontal_accuracy() {
+        let mut fix = NavSatFix::new();
+        fix.hdop = 1.0;
+        assert!((fix.horizontal_accuracy() - 5.0).abs() < 1e-6);
+    }
 }

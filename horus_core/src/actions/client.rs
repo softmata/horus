@@ -909,4 +909,770 @@ mod tests {
         assert!(GoalStatus::Succeeded.is_success());
         assert!(GoalStatus::Aborted.is_failure());
     }
+
+    // ========================================================================
+    // Negative and edge case tests
+    // ========================================================================
+
+    #[test]
+    fn test_goal_status_all_terminal_states() {
+        // Verify all terminal states are correctly identified
+        let terminals = [
+            GoalStatus::Succeeded,
+            GoalStatus::Aborted,
+            GoalStatus::Rejected,
+            GoalStatus::Canceled,
+        ];
+        for status in &terminals {
+            assert!(status.is_terminal(), "{:?} should be terminal", status);
+            assert!(!status.is_active(), "{:?} should not be active", status);
+        }
+    }
+
+    #[test]
+    fn test_goal_status_all_active_states() {
+        let actives = [
+            GoalStatus::Pending,
+            GoalStatus::Active,
+        ];
+        for status in &actives {
+            assert!(status.is_active(), "{:?} should be active", status);
+            assert!(!status.is_terminal(), "{:?} should not be terminal", status);
+        }
+    }
+
+    #[test]
+    fn test_goal_state_initial_values() {
+        let state = ClientGoalState::<TestAction>::new();
+        assert_eq!(state.status, GoalStatus::Pending);
+        assert!(state.result.is_none());
+        assert!(state.last_feedback.is_none());
+        assert_eq!(state.feedback_count, 0);
+    }
+
+    #[test]
+    fn test_action_client_builder_no_callbacks() {
+        // Builder with no callbacks should still work
+        let client = ActionClientBuilder::<TestAction>::new().build();
+        assert_eq!(client.metrics().goals_sent, 0);
+        assert_eq!(client.metrics().active_goals, 0);
+    }
+
+    #[test]
+    fn test_action_client_builder_all_callbacks() {
+        let feedback_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let result_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let status_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let fc = feedback_count.clone();
+        let rc = result_count.clone();
+        let sc = status_count.clone();
+
+        let _client = ActionClientBuilder::<TestAction>::new()
+            .on_feedback(move |_id, _fb| {
+                fc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+            .on_result(move |_id, _status, _result| {
+                rc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+            .on_status(move |_id, _status| {
+                sc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+            .build();
+
+        // No goals sent yet — callbacks not invoked
+        assert_eq!(feedback_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(result_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(status_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_goal_state_before_completion() {
+        let state = ClientGoalState::<TestAction>::new();
+
+        // Result should be None before completion
+        assert!(state.result.is_none());
+        assert!(state.status.is_active());
+        assert!(!state.status.is_terminal());
+    }
+
+    #[test]
+    fn test_goal_state_after_completion() {
+        let mut state = ClientGoalState::<TestAction>::new();
+        state.status = GoalStatus::Succeeded;
+        state.result = Some(TestResult { success: true });
+
+        assert!(!state.status.is_active());
+        assert!(state.status.is_terminal());
+        assert!(state.status.is_success());
+        let result = state.result.unwrap();
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_goal_id_uniqueness() {
+        let ids: Vec<GoalId> = (0..100).map(|_| GoalId::new()).collect();
+        // All IDs should be unique
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 100, "all 100 goal IDs should be unique");
+    }
+
+    // ========================================================================
+    // ActionError variant construction and Display coverage
+    // ========================================================================
+
+    #[test]
+    fn test_action_error_goal_rejected() {
+        let err = ActionError::GoalRejected("invalid target".into());
+        assert!(matches!(err, ActionError::GoalRejected(ref s) if s == "invalid target"));
+        let msg = format!("{}", err);
+        assert!(msg.contains("invalid target"), "Display should contain reason");
+    }
+
+    #[test]
+    fn test_action_error_goal_canceled() {
+        let err = ActionError::GoalCanceled;
+        assert!(matches!(err, ActionError::GoalCanceled));
+        let msg = format!("{}", err);
+        assert!(msg.contains("canceled"), "Display should mention canceled");
+    }
+
+    #[test]
+    fn test_action_error_goal_preempted() {
+        let err = ActionError::GoalPreempted;
+        assert!(matches!(err, ActionError::GoalPreempted));
+        let msg = format!("{}", err);
+        assert!(msg.contains("preempted"), "Display should mention preempted");
+    }
+
+    #[test]
+    fn test_action_error_goal_timeout() {
+        let err = ActionError::GoalTimeout;
+        assert!(matches!(err, ActionError::GoalTimeout));
+        let msg = format!("{}", err);
+        assert!(msg.contains("timed out"), "Display should mention timed out");
+    }
+
+    #[test]
+    fn test_action_error_server_unavailable() {
+        let err = ActionError::ServerUnavailable;
+        assert!(matches!(err, ActionError::ServerUnavailable));
+        let msg = format!("{}", err);
+        assert!(msg.contains("unavailable"), "Display should mention unavailable");
+    }
+
+    #[test]
+    fn test_action_error_communication_error() {
+        let err = ActionError::CommunicationError("link down".into());
+        assert!(matches!(err, ActionError::CommunicationError(ref s) if s == "link down"));
+        let msg = format!("{}", err);
+        assert!(msg.contains("link down"), "Display should contain reason");
+    }
+
+    #[test]
+    fn test_action_error_execution_error() {
+        let err = ActionError::ExecutionError("motor stall".into());
+        assert!(matches!(err, ActionError::ExecutionError(ref s) if s == "motor stall"));
+        let msg = format!("{}", err);
+        assert!(msg.contains("motor stall"), "Display should contain reason");
+    }
+
+    #[test]
+    fn test_action_error_invalid_goal() {
+        let err = ActionError::InvalidGoal("negative distance".into());
+        assert!(matches!(err, ActionError::InvalidGoal(ref s) if s == "negative distance"));
+        let msg = format!("{}", err);
+        assert!(msg.contains("negative distance"), "Display should contain reason");
+    }
+
+    #[test]
+    fn test_action_error_goal_not_found() {
+        let id = GoalId::new();
+        let err = ActionError::GoalNotFound(id);
+        assert!(matches!(err, ActionError::GoalNotFound(found_id) if found_id == id));
+        let msg = format!("{}", err);
+        assert!(msg.contains(&id.to_string()), "Display should contain goal id");
+    }
+
+    #[test]
+    fn test_action_error_clone() {
+        let err = ActionError::GoalRejected("reason".into());
+        let cloned = err.clone();
+        assert!(matches!(cloned, ActionError::GoalRejected(ref s) if s == "reason"));
+
+        let err2 = ActionError::GoalNotFound(GoalId::new());
+        let _ = err2.clone(); // should not panic
+    }
+
+    // ========================================================================
+    // GoalStatus transition coverage (every variant checked individually)
+    // ========================================================================
+
+    #[test]
+    fn test_goal_status_pending_properties() {
+        let s = GoalStatus::Pending;
+        assert!(s.is_active());
+        assert!(!s.is_terminal());
+        assert!(!s.is_success());
+        assert!(!s.is_failure());
+        assert_eq!(format!("{}", s), "PENDING");
+    }
+
+    #[test]
+    fn test_goal_status_active_properties() {
+        let s = GoalStatus::Active;
+        assert!(s.is_active());
+        assert!(!s.is_terminal());
+        assert!(!s.is_success());
+        assert!(!s.is_failure());
+        assert_eq!(format!("{}", s), "ACTIVE");
+    }
+
+    #[test]
+    fn test_goal_status_succeeded_properties() {
+        let s = GoalStatus::Succeeded;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(s.is_success());
+        assert!(!s.is_failure());
+        assert_eq!(format!("{}", s), "SUCCEEDED");
+    }
+
+    #[test]
+    fn test_goal_status_aborted_properties() {
+        let s = GoalStatus::Aborted;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+        assert_eq!(format!("{}", s), "ABORTED");
+    }
+
+    #[test]
+    fn test_goal_status_canceled_properties() {
+        let s = GoalStatus::Canceled;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+        assert_eq!(format!("{}", s), "CANCELED");
+    }
+
+    #[test]
+    fn test_goal_status_preempted_properties() {
+        let s = GoalStatus::Preempted;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+        assert_eq!(format!("{}", s), "PREEMPTED");
+    }
+
+    #[test]
+    fn test_goal_status_rejected_properties() {
+        let s = GoalStatus::Rejected;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+        assert_eq!(format!("{}", s), "REJECTED");
+    }
+
+    // ========================================================================
+    // ClientGoalState edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_goal_state_result_none_while_active() {
+        let state = ClientGoalState::<TestAction>::new();
+        // Must be None before any result is set
+        assert!(state.result.is_none());
+        assert!(state.last_feedback.is_none());
+        assert_eq!(state.feedback_count, 0);
+        assert!(state.status.is_active());
+    }
+
+    #[test]
+    fn test_goal_state_feedback_accumulates() {
+        let mut state = ClientGoalState::<TestAction>::new();
+        state.status = GoalStatus::Active;
+
+        // Simulate receiving multiple feedback messages
+        for i in 1..=5 {
+            state.last_feedback = Some(TestFeedback { progress: i as f32 * 0.2 });
+            state.feedback_count += 1;
+            state.updated_at = Instant::now();
+        }
+
+        assert_eq!(state.feedback_count, 5);
+        let fb = state.last_feedback.as_ref().unwrap();
+        assert!((fb.progress - 1.0).abs() < f32::EPSILON, "last feedback should be the final one");
+    }
+
+    #[test]
+    fn test_goal_state_result_set_without_terminal_status() {
+        // Contrived scenario: result is written but status not yet updated
+        let mut state = ClientGoalState::<TestAction>::new();
+        state.result = Some(TestResult { success: true });
+        // Status still Pending — result exists but goal not "done"
+        assert!(state.result.is_some());
+        assert!(state.status.is_active());
+        assert!(!state.status.is_terminal());
+    }
+
+    #[test]
+    fn test_goal_state_overwrite_result() {
+        // Simulate double-completion (result overwritten)
+        let mut state = ClientGoalState::<TestAction>::new();
+        state.status = GoalStatus::Succeeded;
+        state.result = Some(TestResult { success: true });
+
+        // Overwrite with a second result
+        state.result = Some(TestResult { success: false });
+        let r = state.result.unwrap();
+        assert!(!r.success, "latest result should take precedence");
+    }
+
+    #[test]
+    fn test_goal_state_aborted_has_result() {
+        let mut state = ClientGoalState::<TestAction>::new();
+        state.status = GoalStatus::Aborted;
+        state.result = Some(TestResult { success: false });
+
+        assert!(state.status.is_terminal());
+        assert!(state.status.is_failure());
+        assert!(state.result.is_some());
+    }
+
+    #[test]
+    fn test_goal_state_canceled_no_result() {
+        let mut state = ClientGoalState::<TestAction>::new();
+        state.status = GoalStatus::Canceled;
+        // Result may or may not be present on cancellation
+        assert!(state.result.is_none());
+        assert!(state.status.is_failure());
+    }
+
+    #[test]
+    fn test_goal_state_updated_at_advances() {
+        let state = ClientGoalState::<TestAction>::new();
+        let first = state.updated_at;
+        // Tiny sleep to ensure clock moves forward
+        std::thread::sleep(Duration::from_millis(1));
+        let mut state2 = ClientGoalState::<TestAction>::new();
+        state2.updated_at = Instant::now();
+        assert!(state2.updated_at >= first);
+    }
+
+    // ========================================================================
+    // ActionClientInner error paths (no IPC required)
+    // ========================================================================
+
+    #[test]
+    fn test_send_goal_before_init_returns_server_unavailable() {
+        let inner = ActionClientInner::<TestAction>::new();
+        // Not initialized — should return ServerUnavailable
+        let result = inner.send_goal(TestGoal { target: 1.0 }, GoalPriority::NORMAL);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ActionError::ServerUnavailable));
+    }
+
+    #[test]
+    fn test_register_goal_creates_pending_state() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id = GoalId::new();
+        let state = inner.register_goal(id);
+
+        let s = state.read();
+        assert_eq!(s.status, GoalStatus::Pending);
+        assert!(s.result.is_none());
+        assert_eq!(s.feedback_count, 0);
+
+        // Verify it is in the goals map
+        assert!(inner.goals.read().contains_key(&id));
+    }
+
+    #[test]
+    fn test_register_multiple_goals() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id1 = GoalId::new();
+        let id2 = GoalId::new();
+        let id3 = GoalId::new();
+
+        inner.register_goal(id1);
+        inner.register_goal(id2);
+        inner.register_goal(id3);
+
+        let goals = inner.goals.read();
+        assert_eq!(goals.len(), 3);
+        assert!(goals.contains_key(&id1));
+        assert!(goals.contains_key(&id2));
+        assert!(goals.contains_key(&id3));
+    }
+
+    #[test]
+    fn test_handle_status_update_known_goal() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id = GoalId::new();
+        let state = inner.register_goal(id);
+
+        // Simulate a status update
+        let update = GoalStatusUpdate::new(id, GoalStatus::Active);
+        inner.handle_status_update(update);
+
+        assert_eq!(state.read().status, GoalStatus::Active);
+    }
+
+    #[test]
+    fn test_handle_status_update_unknown_goal_is_noop() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let unknown_id = GoalId::new();
+
+        // Should not panic for an unknown goal
+        let update = GoalStatusUpdate::new(unknown_id, GoalStatus::Active);
+        inner.handle_status_update(update);
+
+        assert!(inner.goals.read().is_empty());
+    }
+
+    #[test]
+    fn test_handle_feedback_known_goal() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id = GoalId::new();
+        let state = inner.register_goal(id);
+
+        let fb = ActionFeedback::new(id, TestFeedback { progress: 0.5 });
+        inner.handle_feedback(fb);
+
+        let s = state.read();
+        assert_eq!(s.feedback_count, 1);
+        let last = s.last_feedback.as_ref().unwrap();
+        assert!((last.progress - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_handle_feedback_unknown_goal_is_noop() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let unknown_id = GoalId::new();
+
+        let fb = ActionFeedback::new(unknown_id, TestFeedback { progress: 0.5 });
+        inner.handle_feedback(fb); // should not panic
+    }
+
+    #[test]
+    fn test_handle_result_sets_state_and_removes_terminal() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id = GoalId::new();
+        let state = inner.register_goal(id);
+
+        let result_msg = ActionResult::succeeded(id, TestResult { success: true });
+        inner.handle_result(result_msg);
+
+        // State should be updated even though goal is removed from map
+        let s = state.read();
+        assert_eq!(s.status, GoalStatus::Succeeded);
+        assert!(s.result.as_ref().unwrap().success);
+
+        // Terminal goal removed from goals map
+        assert!(!inner.goals.read().contains_key(&id));
+    }
+
+    #[test]
+    fn test_handle_result_aborted_removes_from_map() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id = GoalId::new();
+        let state = inner.register_goal(id);
+
+        let result_msg = ActionResult::aborted(id, TestResult { success: false });
+        inner.handle_result(result_msg);
+
+        let s = state.read();
+        assert_eq!(s.status, GoalStatus::Aborted);
+        assert!(!inner.goals.read().contains_key(&id));
+    }
+
+    #[test]
+    fn test_handle_result_canceled_removes_from_map() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id = GoalId::new();
+        let _state = inner.register_goal(id);
+
+        let result_msg = ActionResult::canceled(id, TestResult { success: false });
+        inner.handle_result(result_msg);
+
+        assert!(!inner.goals.read().contains_key(&id));
+    }
+
+    #[test]
+    fn test_handle_result_preempted_removes_from_map() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let id = GoalId::new();
+        let _state = inner.register_goal(id);
+
+        let result_msg = ActionResult::preempted(id, TestResult { success: false });
+        inner.handle_result(result_msg);
+
+        assert!(!inner.goals.read().contains_key(&id));
+    }
+
+    #[test]
+    fn test_handle_result_unknown_goal_is_noop() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let unknown_id = GoalId::new();
+
+        let result_msg = ActionResult::succeeded(unknown_id, TestResult { success: true });
+        inner.handle_result(result_msg); // should not panic
+    }
+
+    // ========================================================================
+    // Status callback invocation through handle_status_update
+    // ========================================================================
+
+    #[test]
+    fn test_status_callback_invoked() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        *inner.status_callback.write() =
+            Some(Box::new(move |_id, _status| {
+                called_clone.store(true, Ordering::Relaxed);
+            }));
+
+        let id = GoalId::new();
+        inner.register_goal(id);
+
+        let update = GoalStatusUpdate::new(id, GoalStatus::Active);
+        inner.handle_status_update(update);
+
+        assert!(called.load(Ordering::Relaxed), "status callback should fire");
+    }
+
+    #[test]
+    fn test_feedback_callback_invoked() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        *inner.feedback_callback.write() =
+            Some(Box::new(move |_id, _fb: &TestFeedback| {
+                called_clone.store(true, Ordering::Relaxed);
+            }));
+
+        let id = GoalId::new();
+        inner.register_goal(id);
+
+        let fb = ActionFeedback::new(id, TestFeedback { progress: 0.7 });
+        inner.handle_feedback(fb);
+
+        assert!(called.load(Ordering::Relaxed), "feedback callback should fire");
+    }
+
+    #[test]
+    fn test_result_callback_invoked() {
+        let inner = ActionClientInner::<TestAction>::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        *inner.result_callback.write() =
+            Some(Box::new(move |_id, _status, _result: &TestResult| {
+                called_clone.store(true, Ordering::Relaxed);
+            }));
+
+        let id = GoalId::new();
+        inner.register_goal(id);
+
+        let result_msg = ActionResult::succeeded(id, TestResult { success: true });
+        inner.handle_result(result_msg);
+
+        assert!(called.load(Ordering::Relaxed), "result callback should fire");
+    }
+
+    // ========================================================================
+    // ActionClientNode metrics and goal tracking (no IPC)
+    // ========================================================================
+
+    #[test]
+    fn test_client_node_name() {
+        let node = ActionClientBuilder::<TestAction>::new().build();
+        assert_eq!(node.name(), "test_action_client");
+    }
+
+    #[test]
+    fn test_client_node_goal_status_unknown_id() {
+        let node = ActionClientBuilder::<TestAction>::new().build();
+        let unknown_id = GoalId::new();
+        assert!(node.goal_status(unknown_id).is_none());
+    }
+
+    #[test]
+    fn test_client_node_active_goals_empty() {
+        let node = ActionClientBuilder::<TestAction>::new().build();
+        assert!(node.active_goals().is_empty());
+        assert_eq!(node.active_goal_count(), 0);
+    }
+
+    #[test]
+    fn test_client_node_cancel_increments_metric() {
+        let node = ActionClientBuilder::<TestAction>::new().build();
+        let fake_id = GoalId::new();
+
+        // Cancel should increment the metric even if the goal doesn't exist
+        node.cancel_goal(fake_id);
+        assert_eq!(node.metrics().cancels_sent, 1);
+
+        node.cancel_goal(fake_id);
+        assert_eq!(node.metrics().cancels_sent, 2);
+    }
+
+    #[test]
+    fn test_client_node_send_goal_without_init_fails() {
+        let node = ActionClientBuilder::<TestAction>::new().build();
+        // inner is not initialized, so send_goal should return ServerUnavailable
+        let result = node.send_goal(TestGoal { target: 42.0 });
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ActionError::ServerUnavailable));
+    }
+
+    // ========================================================================
+    // ActionClientMetrics
+    // ========================================================================
+
+    #[test]
+    fn test_client_metrics_fields() {
+        let m = ActionClientMetrics {
+            goals_sent: 10,
+            goals_succeeded: 7,
+            goals_failed: 2,
+            cancels_sent: 1,
+            active_goals: 3,
+        };
+        assert_eq!(m.goals_sent, 10);
+        assert_eq!(m.goals_succeeded, 7);
+        assert_eq!(m.goals_failed, 2);
+        assert_eq!(m.cancels_sent, 1);
+        assert_eq!(m.active_goals, 3);
+    }
+
+    #[test]
+    fn test_client_metrics_debug() {
+        let m = ActionClientMetrics::default();
+        let dbg = format!("{:?}", m);
+        assert!(dbg.contains("goals_sent"));
+        assert!(dbg.contains("active_goals"));
+    }
+
+    #[test]
+    fn test_client_metrics_clone() {
+        let m = ActionClientMetrics {
+            goals_sent: 5,
+            goals_succeeded: 3,
+            goals_failed: 1,
+            cancels_sent: 1,
+            active_goals: 0,
+        };
+        let m2 = m.clone();
+        assert_eq!(m2.goals_sent, 5);
+        assert_eq!(m2.goals_succeeded, 3);
+    }
+
+    // ========================================================================
+    // GoalPriority edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_goal_priority_constants_ordering() {
+        assert!(GoalPriority::HIGHEST.is_higher_than(&GoalPriority::HIGH));
+        assert!(GoalPriority::HIGH.is_higher_than(&GoalPriority::NORMAL));
+        assert!(GoalPriority::NORMAL.is_higher_than(&GoalPriority::LOW));
+        assert!(GoalPriority::LOW.is_higher_than(&GoalPriority::LOWEST));
+    }
+
+    #[test]
+    fn test_goal_priority_same_not_higher() {
+        assert!(!GoalPriority::NORMAL.is_higher_than(&GoalPriority::NORMAL));
+        assert!(!GoalPriority::HIGHEST.is_higher_than(&GoalPriority::HIGHEST));
+    }
+
+    #[test]
+    fn test_goal_priority_default_is_normal() {
+        assert_eq!(GoalPriority::default(), GoalPriority::NORMAL);
+    }
+
+    // ========================================================================
+    // ActionClientBuilder default impl
+    // ========================================================================
+
+    #[test]
+    fn test_action_client_builder_default() {
+        let builder = ActionClientBuilder::<TestAction>::default();
+        let node = builder.build();
+        assert_eq!(node.name(), "test_action_client");
+        assert_eq!(node.metrics().goals_sent, 0);
+    }
+
+    // ========================================================================
+    // Full status transition sequence on ClientGoalState
+    // ========================================================================
+
+    #[test]
+    fn test_goal_state_full_lifecycle() {
+        let mut state = ClientGoalState::<TestAction>::new();
+
+        // Start: Pending
+        assert_eq!(state.status, GoalStatus::Pending);
+        assert!(state.result.is_none());
+
+        // Transition to Active
+        state.status = GoalStatus::Active;
+        state.updated_at = Instant::now();
+        assert!(state.status.is_active());
+
+        // Receive feedback
+        state.last_feedback = Some(TestFeedback { progress: 0.5 });
+        state.feedback_count = 1;
+        assert_eq!(state.feedback_count, 1);
+
+        // Transition to Succeeded
+        state.status = GoalStatus::Succeeded;
+        state.result = Some(TestResult { success: true });
+        state.updated_at = Instant::now();
+
+        assert!(state.status.is_terminal());
+        assert!(state.status.is_success());
+        assert!(state.result.as_ref().unwrap().success);
+    }
+
+    #[test]
+    fn test_goal_state_rejected_lifecycle() {
+        let mut state = ClientGoalState::<TestAction>::new();
+        // Goal can go directly from Pending to Rejected
+        assert_eq!(state.status, GoalStatus::Pending);
+
+        state.status = GoalStatus::Rejected;
+        state.updated_at = Instant::now();
+
+        assert!(state.status.is_terminal());
+        assert!(state.status.is_failure());
+        assert!(state.result.is_none()); // Rejected goals may have no result
+    }
+
+    #[test]
+    fn test_goal_state_preempted_lifecycle() {
+        let mut state = ClientGoalState::<TestAction>::new();
+        state.status = GoalStatus::Active;
+        state.last_feedback = Some(TestFeedback { progress: 0.3 });
+        state.feedback_count = 1;
+
+        // Preempted by higher priority goal
+        state.status = GoalStatus::Preempted;
+        state.result = Some(TestResult { success: false });
+        state.updated_at = Instant::now();
+
+        assert!(state.status.is_terminal());
+        assert!(state.status.is_failure());
+        assert!(!state.status.is_success());
+        // Feedback from before preemption is preserved
+        assert_eq!(state.feedback_count, 1);
+    }
 }

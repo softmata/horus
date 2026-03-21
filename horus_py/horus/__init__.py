@@ -54,6 +54,7 @@ import time
 try:
     from horus._horus import (
         Topic,  # Unified communication API
+        # Internal: Rust bridge classes (not user-facing — use horus.Scheduler wrapper instead)
         Scheduler as _PyScheduler,
         SchedulerConfig as _SchedulerConfig,
         Miss,
@@ -143,6 +144,8 @@ try:
         PointField as _RustPointField,
         PlaneDetection as _RustPlaneDetection,
         PlaneArray as _RustPlaneArray,
+        # Audio types
+        AudioFrame as _RustAudioFrame,
         # Vision types
         CompressedImage as _RustCompressedImage,
         CameraInfo as _RustCameraInfo,
@@ -845,10 +848,12 @@ class Node:
 
 class Scheduler:
     """
-    Scheduler for running HORUS nodes.
+    User-facing scheduler API for running HORUS nodes.
 
-    Most users should use ``horus.run()`` instead. Use Scheduler directly
-    only for dynamic node management or advanced control.
+    This wrapper exposes 100% of the Rust ``_PyScheduler`` methods with
+    Pythonic signatures and docstrings. The underlying ``_PyScheduler``
+    (in ``horus._horus``) is the backend implementation — use this class
+    instead.
 
     Example::
 
@@ -1072,6 +1077,230 @@ class Scheduler:
             return self._scheduler.current_tick()
         return 0
 
+    # ── Runtime Mutation ─────────────────────────────────────────────
+
+    def set_node_rate(self, node_name: str, rate: float) -> None:
+        """Change a node's tick rate at runtime.
+
+        Args:
+            node_name: Name of the node to modify
+            rate: New rate in Hz (0 < rate <= 10000)
+
+        Example::
+
+            sched.set_node_rate("sensor", 200)  # slow down from 500Hz to 200Hz
+        """
+        if self._scheduler:
+            self._scheduler.set_node_rate(node_name, rate)
+
+    def set_tick_budget(self, node_name: str, budget_us: int) -> None:
+        """Change a node's tick budget at runtime.
+
+        Args:
+            node_name: Name of the node to modify
+            budget_us: New budget in microseconds
+
+        Example::
+
+            sched.set_tick_budget("motor", 500)  # allow 500μs per tick
+        """
+        if self._scheduler:
+            self._scheduler.set_tick_budget(node_name, budget_us)
+
+    def add_critical_node(self, node_name: str, timeout_ms: int) -> None:
+        """Mark a node as safety-critical with a watchdog timeout.
+
+        Critical nodes trigger ``enter_safe_state()`` on all nodes if they
+        exceed the timeout. Use for motor controllers, safety monitors.
+
+        Args:
+            node_name: Name of the node to mark critical
+            timeout_ms: Watchdog timeout in milliseconds
+
+        Example::
+
+            sched.add_critical_node("motor_controller", 500)
+        """
+        if self._scheduler:
+            self._scheduler.add_critical_node(node_name, timeout_ms)
+
+    def remove_node(self, node_name: str) -> bool:
+        """Remove a node from the scheduler.
+
+        Args:
+            node_name: Name of the node to remove
+
+        Returns:
+            True if the node was found and removed
+        """
+        if self._scheduler:
+            return self._scheduler.remove_node(node_name)
+        return False
+
+    # ── Single-Tick Execution (Testing & Simulation) ─────────────────
+
+    def tick_once(self, node_names: Optional[List[str]] = None) -> None:
+        """Execute exactly one tick cycle.
+
+        Useful for testing and simulation stepping. Lazily initializes
+        nodes on first call.
+
+        Args:
+            node_names: Optional list of node names to tick (None = all nodes)
+
+        Example::
+
+            sched.add(Node(tick=sensor_fn, rate=100))
+            sched.tick_once()  # one tick, then return
+            sched.tick_once(["sensor"])  # tick only the sensor node
+        """
+        if self._scheduler:
+            names = node_names or [n.name for n in self._nodes]
+            self._scheduler.tick(names)
+
+    def tick_for(self, duration: float, node_names: Optional[List[str]] = None) -> None:
+        """Run the tick loop for a specific duration, then return.
+
+        Args:
+            duration: Duration in seconds
+            node_names: Optional list of node names to tick (None = all nodes)
+
+        Example::
+
+            sched.tick_for(1.0)  # run for 1 second, then return
+        """
+        if self._scheduler:
+            names = node_names or [n.name for n in self._nodes]
+            self._scheduler.tick_for(names, duration)
+
+    # ── Introspection ────────────────────────────────────────────────
+
+    def is_running(self) -> bool:
+        """Check if the scheduler is currently running."""
+        if self._scheduler:
+            return self._scheduler.is_running()
+        return False
+
+    def has_node(self, node_name: str) -> bool:
+        """Check if a node exists by name."""
+        if self._scheduler:
+            return self._scheduler.has_node(node_name)
+        return any(n.name == node_name for n in self._nodes)
+
+    def get_node_names(self) -> List[str]:
+        """Get list of all registered node names."""
+        if self._scheduler:
+            return self._scheduler.get_node_names()
+        return [n.name for n in self._nodes]
+
+    def get_node_count(self) -> int:
+        """Get the number of registered nodes."""
+        if self._scheduler:
+            return self._scheduler.get_node_count()
+        return len(self._nodes)
+
+    def get_all_nodes(self) -> List[Dict[str, Any]]:
+        """Get information about all registered nodes.
+
+        Returns:
+            List of dicts with node info (name, order, state, etc.)
+        """
+        if self._scheduler:
+            return self._scheduler.get_all_nodes()
+        return []
+
+    def get_node_info(self, node_name: str) -> Optional[int]:
+        """Get the execution order of a node.
+
+        Args:
+            node_name: Name of the node
+
+        Returns:
+            Execution order (int), or None if not found
+        """
+        if self._scheduler:
+            return self._scheduler.get_node_info(node_name)
+        return None
+
+    def scheduler_name(self) -> str:
+        """Get the scheduler's name."""
+        if self._scheduler:
+            return self._scheduler.scheduler_name()
+        return "mock"
+
+    # ── RT & Safety ──────────────────────────────────────────────────
+
+    def capabilities(self) -> Optional[Dict[str, Any]]:
+        """Get runtime capabilities (RT support, CPU features, etc.)."""
+        if self._scheduler:
+            return self._scheduler.capabilities()
+        return None
+
+    def has_full_rt(self) -> bool:
+        """Check if full real-time capabilities are available."""
+        if self._scheduler:
+            return self._scheduler.has_full_rt()
+        return False
+
+    def degradations(self) -> List[str]:
+        """Get list of RT degradations (features requested but unavailable)."""
+        if self._scheduler:
+            return self._scheduler.degradations()
+        return []
+
+    def safety_stats(self) -> Optional[Dict[str, Any]]:
+        """Get safety monitoring statistics.
+
+        Returns:
+            Dict with watchdog stats, deadline misses, health states, or None
+        """
+        if self._scheduler:
+            return self._scheduler.safety_stats()
+        return None
+
+    # ── Recording & Replay ───────────────────────────────────────────
+
+    def is_recording(self) -> bool:
+        """Check if session recording is active."""
+        if self._scheduler:
+            return self._scheduler.is_recording()
+        return False
+
+    def is_replaying(self) -> bool:
+        """Check if session replay is active."""
+        if self._scheduler:
+            return self._scheduler.is_replaying()
+        return False
+
+    def stop_recording(self) -> List[str]:
+        """Stop recording and return list of recorded session files.
+
+        Returns:
+            List of file paths for the recorded session
+        """
+        if self._scheduler:
+            return self._scheduler.stop_recording()
+        return []
+
+    def list_recordings(self) -> List[str]:
+        """List all available recording sessions."""
+        if self._scheduler:
+            return self._scheduler.list_recordings()
+        return []
+
+    def delete_recording(self, name: str) -> bool:
+        """Delete a recorded session.
+
+        Args:
+            name: Recording session name to delete
+
+        Returns:
+            True if the recording was found and deleted
+        """
+        if self._scheduler:
+            return self._scheduler.delete_recording(name)
+        return False
+
 
 # Convenience functions
 
@@ -1232,6 +1461,7 @@ except ImportError:
         PointField = _RustPointField
         PlaneDetection = _RustPlaneDetection
         PlaneArray = _RustPlaneArray
+        AudioFrame = _RustAudioFrame
         CompressedImage = _RustCompressedImage
         CameraInfo = _RustCameraInfo
         RegionOfInterest = _RustRegionOfInterest

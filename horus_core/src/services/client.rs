@@ -347,3 +347,283 @@ where
         }
     }
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    // ── Test service types ───────────────────────────────────────────────
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct CliTestReq {
+        value: i64,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct CliTestRes {
+        result: i64,
+    }
+
+    struct CliTestService;
+
+    impl Service for CliTestService {
+        type Request = CliTestReq;
+        type Response = CliTestRes;
+
+        fn name() -> &'static str {
+            "cli_edge_test_svc"
+        }
+    }
+
+    // ── Request ID generator ─────────────────────────────────────────────
+
+    #[test]
+    fn request_ids_are_monotonic() {
+        let id1 = next_request_id();
+        let id2 = next_request_id();
+        let id3 = next_request_id();
+        assert!(id2 > id1, "IDs must be monotonically increasing");
+        assert!(id3 > id2, "IDs must be monotonically increasing");
+    }
+
+    #[test]
+    fn client_ids_are_monotonic() {
+        let id1 = next_client_id();
+        let id2 = next_client_id();
+        assert!(id2 > id1, "Client IDs must be monotonically increasing");
+    }
+
+    #[test]
+    fn request_ids_are_unique_across_calls() {
+        let ids: Vec<u64> = (0..100).map(|_| next_request_id()).collect();
+        let mut deduped = ids.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(ids.len(), deduped.len(), "All request IDs must be unique");
+    }
+
+    // ── ServiceClient construction ───────────────────────────────────────
+
+    #[test]
+    fn service_client_new_succeeds() {
+        let client = ServiceClient::<CliTestService>::new();
+        assert!(client.is_ok(), "ServiceClient::new() should succeed");
+    }
+
+    #[test]
+    fn service_client_custom_poll_interval() {
+        let client = ServiceClient::<CliTestService>::with_poll_interval(Duration::from_millis(50));
+        assert!(
+            client.is_ok(),
+            "ServiceClient with custom poll interval should succeed"
+        );
+    }
+
+    #[test]
+    fn service_client_zero_poll_interval() {
+        // Zero poll interval is technically valid (busy-spin)
+        let client = ServiceClient::<CliTestService>::with_poll_interval(Duration::ZERO);
+        assert!(
+            client.is_ok(),
+            "ServiceClient with zero poll interval should succeed"
+        );
+    }
+
+    #[test]
+    fn service_client_large_poll_interval() {
+        let client =
+            ServiceClient::<CliTestService>::with_poll_interval(Duration::from_secs(3600));
+        assert!(
+            client.is_ok(),
+            "ServiceClient with very large poll interval should succeed"
+        );
+    }
+
+    // ── ServiceClient::call — timeout behavior ──────────────────────────
+
+    #[test]
+    fn service_client_call_times_out_with_no_server() {
+        let mut client = ServiceClient::<CliTestService>::new().unwrap();
+        let result = client.call(CliTestReq { value: 42 }, Duration::from_millis(5));
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), ServiceError::Timeout),
+            "Call with no server should timeout"
+        );
+    }
+
+    #[test]
+    fn service_client_call_zero_timeout_returns_timeout() {
+        let mut client = ServiceClient::<CliTestService>::new().unwrap();
+        let result = client.call(CliTestReq { value: 1 }, Duration::ZERO);
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), ServiceError::Timeout),
+            "Zero timeout should return Timeout immediately"
+        );
+    }
+
+    // ── ServiceClient::call_optional ─────────────────────────────────────
+
+    #[test]
+    fn service_client_call_optional_returns_none_on_timeout() {
+        let mut client = ServiceClient::<CliTestService>::new().unwrap();
+        let result = client.call_optional(CliTestReq { value: 1 }, Duration::from_millis(5));
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap().is_none(),
+            "call_optional should return Ok(None) on timeout"
+        );
+    }
+
+    #[test]
+    fn service_client_call_optional_zero_timeout() {
+        let mut client = ServiceClient::<CliTestService>::new().unwrap();
+        let result = client.call_optional(CliTestReq { value: 1 }, Duration::ZERO);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    // ── Multiple clients get distinct response topics ────────────────────
+
+    #[test]
+    fn multiple_clients_get_unique_response_topics() {
+        let c1 = ServiceClient::<CliTestService>::new().unwrap();
+        let c2 = ServiceClient::<CliTestService>::new().unwrap();
+        assert_ne!(
+            c1.response_topic_name, c2.response_topic_name,
+            "Each client must get a unique per-client response topic"
+        );
+    }
+
+    #[test]
+    fn client_response_topic_contains_service_name() {
+        let client = ServiceClient::<CliTestService>::new().unwrap();
+        assert!(
+            client
+                .response_topic_name
+                .starts_with("cli_edge_test_svc.response."),
+            "Response topic should start with service response prefix, got: {}",
+            client.response_topic_name
+        );
+    }
+
+    // ── AsyncServiceClient construction ──────────────────────────────────
+
+    #[test]
+    fn async_service_client_new_succeeds() {
+        let client = AsyncServiceClient::<CliTestService>::new();
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn async_service_client_custom_poll_interval() {
+        let client =
+            AsyncServiceClient::<CliTestService>::with_poll_interval(Duration::from_millis(100));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn async_client_response_topic_contains_service_name() {
+        let client = AsyncServiceClient::<CliTestService>::new().unwrap();
+        assert!(
+            client
+                .response_topic_name
+                .starts_with("cli_edge_test_svc.response."),
+            "Async client response topic should start with service response prefix, got: {}",
+            client.response_topic_name
+        );
+    }
+
+    // ── PendingServiceCall ───────────────────────────────────────────────
+
+    #[test]
+    fn pending_call_is_expired_after_zero_timeout() {
+        let mut client = AsyncServiceClient::<CliTestService>::new().unwrap();
+        let pending = client.call_async(CliTestReq { value: 1 }, Duration::ZERO);
+        // A zero-timeout pending call should be expired almost immediately.
+        // Sleep briefly to guarantee the deadline has passed.
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(pending.is_expired());
+    }
+
+    #[test]
+    fn pending_call_not_expired_with_large_timeout() {
+        let mut client = AsyncServiceClient::<CliTestService>::new().unwrap();
+        let pending = client.call_async(CliTestReq { value: 1 }, Duration::from_secs(3600));
+        assert!(!pending.is_expired());
+    }
+
+    #[test]
+    fn pending_call_check_returns_timeout_after_expiry() {
+        let mut client = AsyncServiceClient::<CliTestService>::new().unwrap();
+        let mut pending = client.call_async(CliTestReq { value: 1 }, Duration::ZERO);
+        std::thread::sleep(Duration::from_millis(1));
+        let result = pending.check();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ServiceError::Timeout));
+    }
+
+    #[test]
+    fn pending_call_check_returns_none_when_no_response_yet() {
+        let mut client = AsyncServiceClient::<CliTestService>::new().unwrap();
+        let mut pending = client.call_async(CliTestReq { value: 1 }, Duration::from_secs(60));
+        // No server running, so no response — but not yet timed out
+        let result = pending.check();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn pending_call_wait_returns_timeout_with_zero_duration() {
+        let mut client = AsyncServiceClient::<CliTestService>::new().unwrap();
+        let pending = client.call_async(CliTestReq { value: 1 }, Duration::ZERO);
+        std::thread::sleep(Duration::from_millis(1));
+        let result = pending.wait();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ServiceError::Timeout));
+    }
+
+    // ── ServiceClient::call_resilient ────────────────────────────────────
+
+    #[test]
+    fn call_resilient_exhausts_retries_on_timeout() {
+        let mut client =
+            ServiceClient::<CliTestService>::with_poll_interval(Duration::from_millis(1)).unwrap();
+        // With 0 retries and tiny timeout, should fail on first attempt
+        let config = RetryConfig::new(0, Duration::from_millis(1));
+        let result = client.call_resilient_with(
+            CliTestReq { value: 1 },
+            Duration::from_millis(1),
+            config,
+        );
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ServiceError::Timeout));
+    }
+
+    // ── Service trait topic methods ──────────────────────────────────────
+
+    #[test]
+    fn service_name_is_snake_case() {
+        assert_eq!(CliTestService::name(), "cli_edge_test_svc");
+    }
+
+    #[test]
+    fn request_topic_format() {
+        assert_eq!(
+            CliTestService::request_topic(),
+            "cli_edge_test_svc.request"
+        );
+    }
+
+    #[test]
+    fn response_topic_format() {
+        assert_eq!(
+            CliTestService::response_topic(),
+            "cli_edge_test_svc.response"
+        );
+    }
+}

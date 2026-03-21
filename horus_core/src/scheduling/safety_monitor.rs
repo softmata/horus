@@ -1915,6 +1915,831 @@ mod tests {
         monitor.record_deadline_miss("balance_controller");
         assert!(monitor.is_emergency_stop());
     }
+
+    // ========================================================================
+    // Stress and multi-node tests
+    // ========================================================================
+
+    /// 10+ nodes with different budgets, all recording ticks concurrently.
+    /// Verifies per-node isolation: no cross-contamination of timing data.
+    #[test]
+    fn test_multi_node_different_budgets_all_recording() {
+        let monitor = SafetyMonitor::new(1000);
+        let node_count = 15;
+
+        // Register nodes with budgets from 100us to 1500us (100us increments)
+        for i in 0..node_count {
+            let budget = Duration::from_micros((i + 1) * 100);
+            let name = format!("node_{:02}", i);
+            monitor.set_tick_budget(name, budget);
+        }
+
+        // Each node records 50 ticks at half its budget (no overruns expected)
+        for i in 0..node_count {
+            let tick_duration = Duration::from_micros((i + 1) * 50);
+            let name = format!("node_{:02}", i);
+            for _ in 0..50 {
+                let result = monitor.check_tick_budget(&name, tick_duration);
+                assert!(result.is_ok(), "node_{:02} should be within budget", i);
+            }
+        }
+
+        // Verify per-node stats are independent
+        let all_stats = monitor.all_node_timing();
+        assert_eq!(all_stats.len(), node_count as usize);
+        for (name, stats, budget, overruns) in &all_stats {
+            assert_eq!(stats.total_ticks, 50, "{} should have 50 ticks", name);
+            assert!(budget.is_some(), "{} should have a budget set", name);
+            assert_eq!(*overruns, 0, "{} should have 0 overruns", name);
+        }
+    }
+
+    /// Rapid watchdog feed/check cycles: 1000+ iterations in a tight loop.
+    /// Verifies the AtomicU64 approach stays consistent under rapid mutation.
+    #[test]
+    fn test_rapid_watchdog_feed_check_1000_iterations() {
+        let wd = Watchdog::new(1_u64.secs()); // long timeout so it never expires
+
+        for _ in 0..2000 {
+            wd.feed();
+            assert!(!wd.check(), "watchdog must not expire with 1s timeout in a tight loop");
+            assert!(!wd.is_expired());
+            assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
+        }
+    }
+
+    /// BudgetEnforcer with 20 different node names, each recording multiple ticks.
+    /// Verifies HashMap scaling and per-node isolation.
+    #[test]
+    fn test_budget_enforcer_20_nodes() {
+        let mut enforcer = BudgetEnforcer::new();
+
+        for i in 0..20 {
+            enforcer.set_budget(format!("node_{:02}", i), Duration::from_micros((i + 1) * 100));
+        }
+
+        // Record 100 ticks for each node at exactly half budget (no overruns)
+        for i in 0..20u64 {
+            let tick = Duration::from_micros((i + 1) * 50);
+            for _ in 0..100 {
+                let result = enforcer.check_budget(&format!("node_{:02}", i), tick);
+                assert!(result.is_ok());
+            }
+        }
+
+        assert_eq!(enforcer.get_overrun_count(), 0);
+
+        // Verify each node has independent stats
+        for i in 0..20u64 {
+            let stats = enforcer.node_stats(&format!("node_{:02}", i)).unwrap();
+            assert_eq!(stats.total_ticks, 100);
+            assert_eq!(stats.min_us, (i + 1) * 50);
+            assert_eq!(stats.max_us, (i + 1) * 50);
+            assert_eq!(stats.avg_us, (i + 1) * 50);
+        }
+
+        // Now trigger one overrun on node_00 (budget 100us, actual 200us)
+        let result = enforcer.check_budget("node_00", 200_u64.us());
+        assert!(result.is_err());
+        assert_eq!(enforcer.get_overrun_count(), 1);
+
+        // Other nodes unaffected
+        let stats_01 = enforcer.node_stats("node_01").unwrap();
+        assert_eq!(stats_01.total_ticks, 100);
+    }
+
+    /// Degradation cascade: 5+ consecutive misses on one node while others stay healthy.
+    /// Verifies that only the failing node degrades through warn -> reduce -> isolate -> kill.
+    #[test]
+    fn test_degradation_cascade_single_node_others_healthy() {
+        let mut monitor = SafetyMonitor::new(1000); // high max so no global estop
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 2,
+            reduce_after: 4,
+            isolate_after: 8,
+            kill_after: 15,
+            recovery_ticks: 100,
+        });
+
+        // 5 healthy nodes
+        let healthy_nodes: Vec<String> = (0..5).map(|i| format!("healthy_{}", i)).collect();
+
+        // Simulate the failing node escalating through all stages
+        let failing = "failing_motor";
+
+        // Miss 1-1: below warn
+        let action = monitor.evaluate_degradation(failing, 1, Some(100.0));
+        assert_eq!(action, DegradationAction::None);
+
+        // Miss 2: warn
+        let action = monitor.evaluate_degradation(failing, 2, Some(100.0));
+        assert_eq!(action, DegradationAction::Warn(failing.to_string()));
+
+        // All healthy nodes remain Normal
+        for h in &healthy_nodes {
+            assert_eq!(monitor.degradation_stage(h), DegradationStage::Normal);
+        }
+
+        // Miss 4: reduce rate
+        let action = monitor.evaluate_degradation(failing, 4, Some(100.0));
+        assert_eq!(
+            action,
+            DegradationAction::ReduceRate {
+                node: failing.to_string(),
+                new_rate_hz: 50.0,
+            }
+        );
+
+        // Miss 8: isolate
+        let action = monitor.evaluate_degradation(failing, 8, Some(100.0));
+        assert_eq!(action, DegradationAction::Isolate(failing.to_string()));
+
+        // Miss 15: kill
+        let action = monitor.evaluate_degradation(failing, 15, Some(100.0));
+        assert_eq!(action, DegradationAction::Kill(failing.to_string()));
+
+        assert_eq!(
+            monitor.degradation_stage(failing),
+            DegradationStage::Killed
+        );
+
+        // Healthy nodes remain Normal throughout
+        for h in &healthy_nodes {
+            assert_eq!(
+                monitor.degradation_stage(h),
+                DegradationStage::Normal,
+                "{} should still be Normal after failing node was killed",
+                h
+            );
+        }
+    }
+
+    /// Recovery after isolation: node gets isolated, then successful ticks bring
+    /// it back through Deisolate -> RateReduced -> RestoreRate -> Normal.
+    #[test]
+    fn test_recovery_after_isolation_full_path() {
+        let mut monitor = SafetyMonitor::new(1000);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 4,
+            kill_after: 100,
+            recovery_ticks: 10,
+        });
+
+        // Escalate to Isolated
+        let _ = monitor.evaluate_degradation("lidar", 1, Some(200.0));
+        let _ = monitor.evaluate_degradation("lidar", 2, Some(200.0));
+        let _ = monitor.evaluate_degradation("lidar", 4, Some(200.0));
+        assert_eq!(
+            monitor.degradation_stage("lidar"),
+            DegradationStage::Isolated
+        );
+
+        // 9 successful ticks: still Isolated
+        for i in 0..9 {
+            let action = monitor.record_successful_tick("lidar");
+            assert_eq!(
+                action,
+                DegradationAction::None,
+                "should not deisolate at tick {}",
+                i
+            );
+        }
+        assert_eq!(
+            monitor.degradation_stage("lidar"),
+            DegradationStage::Isolated
+        );
+
+        // 10th tick: Deisolate -> RateReduced
+        let action = monitor.record_successful_tick("lidar");
+        assert_eq!(
+            action,
+            DegradationAction::Deisolate("lidar".to_string())
+        );
+        assert_eq!(
+            monitor.degradation_stage("lidar"),
+            DegradationStage::RateReduced
+        );
+
+        // 9 more successful ticks: still RateReduced
+        for _ in 0..9 {
+            let action = monitor.record_successful_tick("lidar");
+            assert_eq!(action, DegradationAction::None);
+        }
+        assert_eq!(
+            monitor.degradation_stage("lidar"),
+            DegradationStage::RateReduced
+        );
+
+        // 10th tick at RateReduced: RestoreRate -> Normal
+        let action = monitor.record_successful_tick("lidar");
+        assert_eq!(
+            action,
+            DegradationAction::RestoreRate {
+                node: "lidar".to_string(),
+                original_rate_hz: 200.0,
+            }
+        );
+        assert_eq!(
+            monitor.degradation_stage("lidar"),
+            DegradationStage::Normal
+        );
+    }
+
+    /// Mixed node states: some healthy, some warning, some unhealthy, some isolated
+    /// simultaneously. Verifies full independence across all degradation stages.
+    #[test]
+    fn test_mixed_node_states_simultaneous() {
+        let mut monitor = SafetyMonitor::new(1000);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 2,
+            reduce_after: 4,
+            isolate_after: 8,
+            kill_after: 16,
+            recovery_ticks: 5,
+        });
+
+        // Node A: Normal (no misses)
+        // Node B: Warned (2 misses)
+        let _ = monitor.evaluate_degradation("node_b", 2, Some(100.0));
+        // Node C: RateReduced (4 misses)
+        let _ = monitor.evaluate_degradation("node_c", 2, Some(200.0));
+        let _ = monitor.evaluate_degradation("node_c", 4, Some(200.0));
+        // Node D: Isolated (8 misses)
+        let _ = monitor.evaluate_degradation("node_d", 2, Some(150.0));
+        let _ = monitor.evaluate_degradation("node_d", 4, Some(150.0));
+        let _ = monitor.evaluate_degradation("node_d", 8, Some(150.0));
+        // Node E: Killed (16 misses)
+        let _ = monitor.evaluate_degradation("node_e", 2, Some(50.0));
+        let _ = monitor.evaluate_degradation("node_e", 4, Some(50.0));
+        let _ = monitor.evaluate_degradation("node_e", 8, Some(50.0));
+        let _ = monitor.evaluate_degradation("node_e", 16, Some(50.0));
+
+        // Verify all states coexist
+        assert_eq!(
+            monitor.degradation_stage("node_a"),
+            DegradationStage::Normal
+        );
+        assert_eq!(
+            monitor.degradation_stage("node_b"),
+            DegradationStage::Warned
+        );
+        assert_eq!(
+            monitor.degradation_stage("node_c"),
+            DegradationStage::RateReduced
+        );
+        assert_eq!(
+            monitor.degradation_stage("node_d"),
+            DegradationStage::Isolated
+        );
+        assert_eq!(
+            monitor.degradation_stage("node_e"),
+            DegradationStage::Killed
+        );
+
+        // Recover node B (Warned -> Normal on single success)
+        monitor.record_successful_tick("node_b");
+        assert_eq!(
+            monitor.degradation_stage("node_b"),
+            DegradationStage::Normal
+        );
+
+        // Node D starts recovering but isn't done yet
+        for _ in 0..4 {
+            monitor.record_successful_tick("node_d");
+        }
+        assert_eq!(
+            monitor.degradation_stage("node_d"),
+            DegradationStage::Isolated
+        );
+
+        // Node E stays Killed — no recovery possible
+        for _ in 0..100 {
+            let action = monitor.record_successful_tick("node_e");
+            assert_eq!(action, DegradationAction::None);
+        }
+        assert_eq!(
+            monitor.degradation_stage("node_e"),
+            DegradationStage::Killed
+        );
+
+        // Other nodes unaffected by node_b's recovery
+        assert_eq!(
+            monitor.degradation_stage("node_c"),
+            DegradationStage::RateReduced
+        );
+    }
+
+    /// Watchdog with very short timeout (1ms) — verify it expires after a brief wait.
+    /// Uses 5ms sleep to ensure expiry even on loaded systems.
+    #[test]
+    fn test_watchdog_very_short_timeout_expires() {
+        use std::thread;
+
+        let wd = Watchdog::new(1_u64.ms());
+        wd.feed();
+        thread::sleep(5_u64.ms());
+        assert!(
+            wd.check(),
+            "1ms watchdog should expire after 5ms sleep"
+        );
+        assert!(wd.is_expired());
+    }
+
+    /// Watchdog with very long timeout (1 hour) — verify it does not expire prematurely.
+    #[test]
+    fn test_watchdog_very_long_timeout_no_premature_expiry() {
+        let wd = Watchdog::new(3600_u64.secs()); // 1 hour
+
+        wd.feed();
+        // Check immediately — must not be expired
+        assert!(
+            !wd.check(),
+            "1-hour watchdog should not expire immediately"
+        );
+        assert!(!wd.is_expired());
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
+
+        // Check 1000 times in a tight loop — still not expired
+        for _ in 0..1000 {
+            assert!(!wd.check());
+        }
+        assert!(!wd.is_expired());
+    }
+
+    /// BudgetEnforcer with zero budget: any non-zero tick triggers a violation.
+    #[test]
+    fn test_budget_enforcer_zero_budget() {
+        let mut enforcer = BudgetEnforcer::new();
+        enforcer.set_budget("zero_node".to_string(), Duration::ZERO);
+
+        // A zero-duration tick should not trigger (0 is not > 0)
+        let result = enforcer.check_budget("zero_node", Duration::ZERO);
+        assert!(result.is_ok(), "zero tick against zero budget should be ok");
+
+        // Any non-zero tick should trigger a violation
+        let result = enforcer.check_budget("zero_node", 1_u64.us());
+        assert!(result.is_err(), "1us tick against zero budget should violate");
+        assert_eq!(enforcer.get_overrun_count(), 1);
+
+        // Verify stats recorded both ticks
+        let stats = enforcer.node_stats("zero_node").unwrap();
+        assert_eq!(stats.total_ticks, 2);
+    }
+
+    /// SafetyMonitor with no nodes registered: empty-state operations succeed
+    /// without panics or incorrect state.
+    #[test]
+    fn test_safety_monitor_no_nodes_empty_state() {
+        let monitor = SafetyMonitor::new(100);
+
+        // Stats should show zeroes
+        let stats = monitor.get_stats();
+        assert_eq!(*stats.state(), SafetyState::Normal);
+        assert_eq!(stats.budget_overruns(), 0);
+        assert_eq!(stats.deadline_misses(), 0);
+        assert_eq!(stats.watchdog_expirations(), 0);
+        assert_eq!(stats.degrade_activations(), 0);
+
+        // Watchdog checks on empty map should produce no results
+        let mut expired = Vec::new();
+        monitor.check_watchdogs(&mut expired);
+        assert!(expired.is_empty());
+
+        let mut graduated = Vec::new();
+        monitor.check_watchdogs_graduated(&mut graduated);
+        assert!(graduated.is_empty());
+
+        // No emergency stop
+        assert!(!monitor.is_emergency_stop());
+
+        // All node timing returns empty
+        assert!(monitor.all_node_timing().is_empty());
+
+        // Consecutive misses for unknown node returns 0
+        assert_eq!(monitor.consecutive_misses("nonexistent"), 0);
+
+        // Degradation stage for unknown node returns Normal
+        assert_eq!(
+            monitor.degradation_stage("nonexistent"),
+            DegradationStage::Normal
+        );
+
+        // Successful tick for unknown node returns None action
+        let action = monitor.record_successful_tick("nonexistent");
+        assert_eq!(action, DegradationAction::None);
+    }
+
+    /// 10 nodes with watchdogs: rapid concurrent feed from multiple threads
+    /// while the main thread checks. Verifies no panics or data corruption.
+    #[test]
+    fn test_multi_node_concurrent_watchdog_feed_and_check() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let monitor = Arc::new(SafetyMonitor::new(1000));
+
+        // Register 10 critical nodes with generous timeouts
+        for i in 0..10 {
+            monitor.add_critical_node(format!("wdog_{}", i), 5_u64.secs());
+        }
+
+        // Spawn 10 feeder threads, each feeding its own watchdog 500 times
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let m = monitor.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..500 {
+                    m.feed_watchdog(&format!("wdog_{}", i));
+                }
+            }));
+        }
+
+        // Main thread checks watchdogs concurrently
+        let mut expired_buf = Vec::new();
+        for _ in 0..200 {
+            monitor.check_watchdogs(&mut expired_buf);
+            // With 5s timeout and active feeding, none should expire
+            assert!(
+                expired_buf.is_empty(),
+                "no watchdog should expire while being fed"
+            );
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Final check: no emergency stop
+        assert!(!monitor.is_emergency_stop());
+    }
+
+    /// Budget enforcer stress: 1000+ check_budget calls on a single node.
+    /// Verifies ring buffer wrapping (capacity=1024) and correct stats after wrap.
+    #[test]
+    fn test_budget_enforcer_ring_buffer_stress() {
+        let mut enforcer = BudgetEnforcer::new();
+        enforcer.set_budget("stress_node".to_string(), 1_u64.ms());
+
+        // Record 2000 ticks (wraps ring buffer which has capacity 1024)
+        for i in 0..2000u64 {
+            let tick = Duration::from_micros(100 + i); // 100us to 2099us
+            let _ = enforcer.check_budget("stress_node", tick);
+        }
+
+        let stats = enforcer.node_stats("stress_node").unwrap();
+        assert_eq!(stats.total_ticks, 2000);
+
+        // Ring should contain the last 1024 values: 1076us to 2099us
+        // (indices 976..2000 map to micros 1076..2099)
+        assert_eq!(stats.min_us, 1076);
+        assert_eq!(stats.max_us, 2099);
+
+        // Overruns: budget is 1000us, ticks above 1000us started at tick index 900
+        // (100+900=1000, first overrun at 100+901=1001us, i.e. i=901)
+        // Total overruns = 2000 - 901 = 1099
+        assert_eq!(enforcer.get_overrun_count(), 1099);
+    }
+
+    /// Multiple deadline misses just under max should not trigger emergency stop,
+    /// but the Nth miss (at max) should trigger it.
+    #[test]
+    fn test_deadline_miss_threshold_exact() {
+        let max_misses = 10u64;
+        let monitor = SafetyMonitor::new(max_misses);
+
+        // Record max_misses - 1 misses on non-critical nodes
+        for i in 0..(max_misses - 1) {
+            monitor.record_deadline_miss(&format!("node_{}", i));
+            assert!(
+                !monitor.is_emergency_stop(),
+                "should not estop at miss {} / {}",
+                i + 1,
+                max_misses
+            );
+        }
+
+        // The Nth miss triggers emergency stop
+        monitor.record_deadline_miss("final_node");
+        assert!(
+            monitor.is_emergency_stop(),
+            "should estop at miss {}/{}",
+            max_misses,
+            max_misses
+        );
+    }
+
+    /// Degradation with many nodes (12): verify evaluate_degradation and
+    /// record_successful_tick handle high node counts without crosstalk.
+    #[test]
+    fn test_degradation_12_nodes_independent_lifecycle() {
+        let mut monitor = SafetyMonitor::new(10000);
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 3,
+            reduce_after: 6,
+            isolate_after: 12,
+            kill_after: 24,
+            recovery_ticks: 5,
+        });
+
+        // Push each of 12 nodes to a different degradation stage
+        // Nodes 0-2: Normal (0 misses)
+        // Nodes 3-5: Warned (3 misses)
+        for i in 3..6 {
+            let _ = monitor.evaluate_degradation(&format!("n{}", i), 3, Some(100.0));
+        }
+        // Nodes 6-8: RateReduced (6 misses)
+        for i in 6..9 {
+            let _ = monitor.evaluate_degradation(&format!("n{}", i), 3, Some(100.0));
+            let _ = monitor.evaluate_degradation(&format!("n{}", i), 6, Some(100.0));
+        }
+        // Nodes 9-11: Isolated (12 misses)
+        for i in 9..12 {
+            let _ = monitor.evaluate_degradation(&format!("n{}", i), 3, Some(100.0));
+            let _ = monitor.evaluate_degradation(&format!("n{}", i), 6, Some(100.0));
+            let _ = monitor.evaluate_degradation(&format!("n{}", i), 12, Some(100.0));
+        }
+
+        // Verify all stages correct
+        for i in 0..3 {
+            assert_eq!(
+                monitor.degradation_stage(&format!("n{}", i)),
+                DegradationStage::Normal
+            );
+        }
+        for i in 3..6 {
+            assert_eq!(
+                monitor.degradation_stage(&format!("n{}", i)),
+                DegradationStage::Warned
+            );
+        }
+        for i in 6..9 {
+            assert_eq!(
+                monitor.degradation_stage(&format!("n{}", i)),
+                DegradationStage::RateReduced
+            );
+        }
+        for i in 9..12 {
+            assert_eq!(
+                monitor.degradation_stage(&format!("n{}", i)),
+                DegradationStage::Isolated
+            );
+        }
+
+        // Recover all Warned nodes (single success each)
+        for i in 3..6 {
+            monitor.record_successful_tick(&format!("n{}", i));
+            assert_eq!(
+                monitor.degradation_stage(&format!("n{}", i)),
+                DegradationStage::Normal
+            );
+        }
+
+        // Recover all RateReduced nodes (5 successes each)
+        for i in 6..9 {
+            for _ in 0..5 {
+                monitor.record_successful_tick(&format!("n{}", i));
+            }
+            assert_eq!(
+                monitor.degradation_stage(&format!("n{}", i)),
+                DegradationStage::Normal
+            );
+        }
+
+        // Isolated nodes still isolated (not enough successes yet)
+        for i in 9..12 {
+            for _ in 0..4 {
+                monitor.record_successful_tick(&format!("n{}", i));
+            }
+            assert_eq!(
+                monitor.degradation_stage(&format!("n{}", i)),
+                DegradationStage::Isolated
+            );
+        }
+    }
+
+    /// SafetyMonitor stats reflect degrade_activations count.
+    #[test]
+    fn test_degrade_activation_counter() {
+        let monitor = SafetyMonitor::new(100);
+
+        assert_eq!(monitor.get_stats().degrade_activations(), 0);
+
+        monitor.record_degrade_activation();
+        monitor.record_degrade_activation();
+        monitor.record_degrade_activation();
+
+        assert_eq!(monitor.get_stats().degrade_activations(), 3);
+    }
+
+    /// Budget check on node with no budget set: should always succeed regardless
+    /// of execution time, but still record timing data.
+    #[test]
+    fn test_check_tick_budget_no_budget_set() {
+        let monitor = SafetyMonitor::new(100);
+
+        // Node has no budget — any execution time should pass
+        for i in 0..10 {
+            let result = monitor.check_tick_budget("unbounded", Duration::from_millis(i * 100));
+            assert!(result.is_ok());
+        }
+
+        // But timing data should still be recorded
+        let all = monitor.all_node_timing();
+        let unbounded = all.iter().find(|(n, _, _, _)| n == "unbounded");
+        assert!(unbounded.is_some());
+        let (_, stats, budget, overruns) = unbounded.unwrap();
+        assert_eq!(stats.total_ticks, 10);
+        assert!(budget.is_none());
+        assert_eq!(*overruns, 0);
+    }
+
+    /// Critical node budget violation triggers emergency stop via check_tick_budget.
+    #[test]
+    fn test_critical_node_budget_violation_estop() {
+        let monitor = SafetyMonitor::new(100);
+        monitor.add_critical_node("safety_ctrl".to_string(), 1_u64.secs());
+        monitor.set_tick_budget("safety_ctrl".to_string(), 100_u64.us());
+
+        // Within budget — no estop
+        let _ = monitor.check_tick_budget("safety_ctrl", 50_u64.us());
+        assert!(!monitor.is_emergency_stop());
+
+        // Over budget on critical node — estop
+        let result = monitor.check_tick_budget("safety_ctrl", 200_u64.us());
+        assert!(result.is_err());
+        assert!(monitor.is_emergency_stop());
+    }
+
+    /// Timing ring stats with a single sample.
+    #[test]
+    fn test_timing_ring_single_sample() {
+        let mut ring = TickTimingRing::new();
+        ring.record(42);
+        let stats = ring.stats();
+        assert_eq!(stats.min_us, 42);
+        assert_eq!(stats.max_us, 42);
+        assert_eq!(stats.avg_us, 42);
+        assert_eq!(stats.p99_us, 42);
+        assert_eq!(stats.total_ticks, 1);
+    }
+
+    /// Timing ring stats with zero samples returns default.
+    #[test]
+    fn test_timing_ring_empty_stats() {
+        let ring = TickTimingRing::new();
+        let stats = ring.stats();
+        assert_eq!(stats.min_us, 0);
+        assert_eq!(stats.max_us, 0);
+        assert_eq!(stats.avg_us, 0);
+        assert_eq!(stats.p99_us, 0);
+        assert_eq!(stats.total_ticks, 0);
+    }
+
+    /// NodeTimingState tracks worst_miss_us correctly across multiple misses.
+    #[test]
+    fn test_node_timing_worst_miss_tracking() {
+        let mut state = NodeTimingState::new(None);
+
+        state.record_miss(100);
+        assert_eq!(state.worst_miss_us, 100);
+
+        state.record_miss(500);
+        assert_eq!(state.worst_miss_us, 500);
+
+        // A smaller miss does not overwrite the worst
+        state.record_miss(200);
+        assert_eq!(state.worst_miss_us, 500);
+
+        assert_eq!(state.total_deadline_misses, 3);
+    }
+
+    /// NodeTimingState with zero-duration budget: record_tick returns violation
+    /// for any non-zero actual, tracks worst overrun correctly.
+    #[test]
+    fn test_node_timing_zero_budget_overrun_tracking() {
+        let mut state = NodeTimingState::new(Some(Duration::ZERO));
+
+        // Zero tick vs zero budget: not a violation (0 is not > 0)
+        assert!(state.record_tick(Duration::ZERO).is_none());
+        assert_eq!(state.overrun_count, 0);
+
+        // 1us vs zero budget: violation
+        let v = state.record_tick(1_u64.us());
+        assert!(v.is_some());
+        assert_eq!(state.overrun_count, 1);
+        assert_eq!(state.worst_overrun_us, 1);
+
+        // 10us vs zero budget: bigger violation
+        let v = state.record_tick(10_u64.us());
+        assert!(v.is_some());
+        assert_eq!(state.overrun_count, 2);
+        assert_eq!(state.worst_overrun_us, 10);
+    }
+
+    /// Watchdog graduated check on a freshly-constructed (never fed) watchdog:
+    /// should be Ok immediately since constructor calls now_ns().
+    #[test]
+    fn test_watchdog_freshly_constructed_is_ok() {
+        let wd = Watchdog::new(1_u64.secs());
+        assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
+        assert!(!wd.check());
+        assert!(!wd.is_expired());
+    }
+
+    /// Multiple emergency stop triggers: idempotent — state stays EmergencyStop.
+    #[test]
+    fn test_multiple_emergency_stops_idempotent() {
+        let monitor = SafetyMonitor::new(100);
+
+        monitor.trigger_emergency_stop("first".to_string());
+        assert!(monitor.is_emergency_stop());
+        assert_eq!(monitor.get_state(), SafetyState::EmergencyStop);
+
+        monitor.trigger_emergency_stop("second".to_string());
+        assert!(monitor.is_emergency_stop());
+        assert_eq!(monitor.get_state(), SafetyState::EmergencyStop);
+
+        monitor.trigger_emergency_stop("third".to_string());
+        assert!(monitor.is_emergency_stop());
+        assert_eq!(monitor.get_state(), SafetyState::EmergencyStop);
+    }
+
+    /// SafetyStats reports watchdog expirations correctly across multiple nodes.
+    #[test]
+    fn test_safety_stats_watchdog_expirations() {
+        use std::thread;
+
+        let monitor = SafetyMonitor::new(10000); // high max to avoid global estop
+
+        // 3 nodes: 2 with short timeouts, 1 with long
+        monitor
+            .watchdogs
+            .write()
+            .insert("short_a".to_string(), Watchdog::new(1_u64.ms()));
+        monitor
+            .watchdogs
+            .write()
+            .insert("short_b".to_string(), Watchdog::new(1_u64.ms()));
+        monitor
+            .watchdogs
+            .write()
+            .insert("long_c".to_string(), Watchdog::new(1_u64.secs()));
+
+        // Let the short ones expire
+        thread::sleep(5_u64.ms());
+
+        let mut expired = Vec::new();
+        monitor.check_watchdogs(&mut expired);
+
+        // Should have 2 expired watchdogs
+        let stats = monitor.get_stats();
+        assert_eq!(stats.watchdog_expirations(), 2);
+        assert_eq!(expired.len(), 2);
+        assert!(expired.contains(&"short_a".to_string()));
+        assert!(expired.contains(&"short_b".to_string()));
+    }
+
+    /// Concurrent graduated watchdog checks from multiple threads.
+    #[test]
+    fn test_concurrent_graduated_watchdog_checks() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let monitor = Arc::new(SafetyMonitor::new(10000));
+
+        for i in 0..10 {
+            monitor.add_critical_node(format!("gwd_{}", i), 5_u64.secs());
+        }
+
+        // 5 threads checking graduated watchdogs concurrently
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let m = monitor.clone();
+            handles.push(thread::spawn(move || {
+                let mut results = Vec::new();
+                for _ in 0..100 {
+                    m.check_watchdogs_graduated(&mut results);
+                    // With 5s timeout, all should be Ok (no results returned)
+                    assert!(results.is_empty());
+                }
+            }));
+        }
+
+        // Main thread feeds watchdogs concurrently
+        for _ in 0..100 {
+            for i in 0..10 {
+                monitor.feed_watchdog(&format!("gwd_{}", i));
+            }
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert!(!monitor.is_emergency_stop());
+    }
 }
 
 // ── loom concurrency model test ───────────────────────────────────────────

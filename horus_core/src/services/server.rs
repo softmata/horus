@@ -234,3 +234,381 @@ fn run_server_loop<Req, Res>(
         thread::sleep(poll_interval);
     }
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::types::ServiceError;
+    use serde::{Deserialize, Serialize};
+
+    // ── Test service types ───────────────────────────────────────────────
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct SrvTestReq {
+        input: String,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct SrvTestRes {
+        output: String,
+    }
+
+    struct SrvTestService;
+
+    impl Service for SrvTestService {
+        type Request = SrvTestReq;
+        type Response = SrvTestRes;
+
+        fn name() -> &'static str {
+            "srv_edge_test_svc"
+        }
+    }
+
+    // ── ServiceServerBuilder defaults ────────────────────────────────────
+
+    #[test]
+    fn server_builder_default_poll_interval() {
+        let builder = ServiceServerBuilder::<SrvTestService>::new();
+        assert_eq!(
+            builder.poll_interval,
+            Duration::from_millis(5),
+            "Default poll interval should be 5ms"
+        );
+    }
+
+    #[test]
+    fn server_builder_default_has_no_handler() {
+        let builder = ServiceServerBuilder::<SrvTestService>::new();
+        assert!(
+            builder.handler.is_none(),
+            "Default builder should have no handler"
+        );
+    }
+
+    #[test]
+    fn server_builder_default_trait() {
+        let builder = ServiceServerBuilder::<SrvTestService>::default();
+        assert!(builder.handler.is_none());
+        assert_eq!(builder.poll_interval, Duration::from_millis(5));
+    }
+
+    // ── ServiceServerBuilder configuration ──────────────────────────────
+
+    #[test]
+    fn server_builder_custom_poll_interval() {
+        let builder =
+            ServiceServerBuilder::<SrvTestService>::new().poll_interval(Duration::from_millis(100));
+        assert_eq!(builder.poll_interval, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn server_builder_zero_poll_interval() {
+        let builder =
+            ServiceServerBuilder::<SrvTestService>::new().poll_interval(Duration::ZERO);
+        assert_eq!(builder.poll_interval, Duration::ZERO);
+    }
+
+    #[test]
+    fn server_builder_large_poll_interval() {
+        let builder =
+            ServiceServerBuilder::<SrvTestService>::new().poll_interval(Duration::from_secs(3600));
+        assert_eq!(builder.poll_interval, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn server_builder_on_request_sets_handler() {
+        let builder = ServiceServerBuilder::<SrvTestService>::new().on_request(|req| {
+            Ok(SrvTestRes {
+                output: req.input.to_uppercase(),
+            })
+        });
+        assert!(
+            builder.handler.is_some(),
+            "on_request should set the handler"
+        );
+    }
+
+    #[test]
+    fn server_builder_handler_is_callable() {
+        let builder = ServiceServerBuilder::<SrvTestService>::new().on_request(|req| {
+            Ok(SrvTestRes {
+                output: format!("echo: {}", req.input),
+            })
+        });
+        let handler = builder.handler.unwrap();
+        let result = handler(SrvTestReq {
+            input: "hello".to_string(),
+        });
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().output, "echo: hello");
+    }
+
+    #[test]
+    fn server_builder_handler_can_return_error() {
+        let builder = ServiceServerBuilder::<SrvTestService>::new()
+            .on_request(|_req| Err("service busy".to_string()));
+        let handler = builder.handler.unwrap();
+        let result = handler(SrvTestReq {
+            input: "test".to_string(),
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "service busy");
+    }
+
+    #[test]
+    fn server_builder_chained_configuration() {
+        let builder = ServiceServerBuilder::<SrvTestService>::new()
+            .poll_interval(Duration::from_millis(50))
+            .on_request(|req| {
+                Ok(SrvTestRes {
+                    output: req.input,
+                })
+            });
+        assert_eq!(builder.poll_interval, Duration::from_millis(50));
+        assert!(builder.handler.is_some());
+    }
+
+    // ── ServiceServer build and lifecycle ────────────────────────────────
+
+    #[test]
+    fn server_build_without_handler_uses_default() {
+        // Building without calling on_request should succeed (default handler
+        // returns an error for every request).
+        let server = ServiceServerBuilder::<SrvTestService>::new().build();
+        assert!(server.is_ok(), "Building without handler should succeed");
+        // Clean up
+        drop(server);
+    }
+
+    #[test]
+    fn server_build_with_handler_succeeds() {
+        let server = ServiceServerBuilder::<SrvTestService>::new()
+            .on_request(|req| {
+                Ok(SrvTestRes {
+                    output: req.input,
+                })
+            })
+            .build();
+        assert!(server.is_ok());
+        drop(server);
+    }
+
+    #[test]
+    fn server_name_matches_service() {
+        let server = ServiceServerBuilder::<SrvTestService>::new()
+            .on_request(|req| {
+                Ok(SrvTestRes {
+                    output: req.input,
+                })
+            })
+            .build()
+            .unwrap();
+        assert_eq!(server.name, "srv_edge_test_svc");
+        drop(server);
+    }
+
+    #[test]
+    fn server_stop_is_idempotent() {
+        let server = ServiceServerBuilder::<SrvTestService>::new()
+            .on_request(|_| Ok(SrvTestRes { output: String::new() }))
+            .build()
+            .unwrap();
+        // Calling stop multiple times should not panic
+        server.stop();
+        server.stop();
+        server.stop();
+        drop(server);
+    }
+
+    #[test]
+    fn server_drop_shuts_down_cleanly() {
+        let server = ServiceServerBuilder::<SrvTestService>::new()
+            .on_request(|_| Ok(SrvTestRes { output: String::new() }))
+            .build()
+            .unwrap();
+        // Drop should not hang or panic
+        drop(server);
+    }
+
+    // ── Default handler behavior ─────────────────────────────────────────
+
+    #[test]
+    fn default_handler_returns_error_string() {
+        // Simulate what the unwrap_or_else fallback handler does
+        let handler: RequestHandler<SrvTestReq, SrvTestRes> =
+            Box::new(|_req| Err("no handler registered for this service".to_string()));
+        let result = handler(SrvTestReq {
+            input: "test".to_string(),
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "no handler registered for this service"
+        );
+    }
+
+    // ── ServiceResponse construction used by server loop ─────────────────
+
+    #[test]
+    fn server_loop_success_response_format() {
+        let resp = ServiceResponse::<SrvTestRes>::success(
+            42,
+            SrvTestRes {
+                output: "done".to_string(),
+            },
+        );
+        assert_eq!(resp.request_id, 42);
+        assert!(resp.ok);
+        assert_eq!(resp.payload.as_ref().unwrap().output, "done");
+        assert!(resp.error.is_none());
+    }
+
+    #[test]
+    fn server_loop_failure_response_format() {
+        let resp = ServiceResponse::<SrvTestRes>::failure(99, "handler panicked");
+        assert_eq!(resp.request_id, 99);
+        assert!(!resp.ok);
+        assert!(resp.payload.is_none());
+        assert_eq!(resp.error.as_deref(), Some("handler panicked"));
+    }
+
+    // ── End-to-end: server + client ──────────────────────────────────────
+
+    // A separate service for the E2E test to avoid topic name collisions.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct E2eReq {
+        a: i64,
+        b: i64,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct E2eRes {
+        sum: i64,
+    }
+
+    struct E2eAddService;
+
+    impl Service for E2eAddService {
+        type Request = E2eReq;
+        type Response = E2eRes;
+
+        fn name() -> &'static str {
+            "srv_e2e_add_svc"
+        }
+    }
+
+    #[test]
+    fn server_client_roundtrip() {
+        let _server = ServiceServerBuilder::<E2eAddService>::new()
+            .poll_interval(Duration::from_millis(1))
+            .on_request(|req| Ok(E2eRes { sum: req.a + req.b }))
+            .build()
+            .unwrap();
+
+        let mut client =
+            crate::services::client::ServiceClient::<E2eAddService>::with_poll_interval(
+                Duration::from_millis(1),
+            )
+            .unwrap();
+
+        let result = client.call(E2eReq { a: 3, b: 4 }, Duration::from_secs(5));
+        assert!(result.is_ok(), "E2E call should succeed: {:?}", result.err());
+        assert_eq!(result.unwrap().sum, 7);
+    }
+
+    // A service for the error-returning E2E test.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct E2eFailReq {
+        should_fail: bool,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct E2eFailRes {
+        ok: bool,
+    }
+
+    struct E2eFailService;
+
+    impl Service for E2eFailService {
+        type Request = E2eFailReq;
+        type Response = E2eFailRes;
+
+        fn name() -> &'static str {
+            "srv_e2e_fail_svc"
+        }
+    }
+
+    #[test]
+    fn server_returns_error_to_client() {
+        let _server = ServiceServerBuilder::<E2eFailService>::new()
+            .poll_interval(Duration::from_millis(1))
+            .on_request(|req| {
+                if req.should_fail {
+                    Err("intentional failure".to_string())
+                } else {
+                    Ok(E2eFailRes { ok: true })
+                }
+            })
+            .build()
+            .unwrap();
+
+        let mut client =
+            crate::services::client::ServiceClient::<E2eFailService>::with_poll_interval(
+                Duration::from_millis(1),
+            )
+            .unwrap();
+
+        let result = client.call(
+            E2eFailReq { should_fail: true },
+            Duration::from_secs(2),
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ServiceError::ServiceFailed(msg) => {
+                assert_eq!(msg, "intentional failure");
+            }
+            other => panic!("Expected ServiceFailed, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_optional_returns_some_on_success() {
+        // Separate service to avoid topic collisions.
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct OptReq {
+            v: i32,
+        }
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct OptRes {
+            v: i32,
+        }
+        struct OptService;
+        impl Service for OptService {
+            type Request = OptReq;
+            type Response = OptRes;
+            fn name() -> &'static str {
+                "srv_e2e_opt_svc"
+            }
+        }
+
+        let _server = ServiceServerBuilder::<OptService>::new()
+            .poll_interval(Duration::from_millis(1))
+            .on_request(|req| Ok(OptRes { v: req.v * 2 }))
+            .build()
+            .unwrap();
+
+        let mut client =
+            crate::services::client::ServiceClient::<OptService>::with_poll_interval(
+                Duration::from_millis(1),
+            )
+            .unwrap();
+
+        let result = client.call_optional(OptReq { v: 5 }, Duration::from_secs(2));
+        assert!(result.is_ok());
+        let inner = result.unwrap();
+        assert!(inner.is_some());
+        assert_eq!(inner.unwrap().v, 10);
+    }
+}

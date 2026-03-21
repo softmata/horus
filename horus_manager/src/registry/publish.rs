@@ -518,6 +518,29 @@ impl RegistryClient {
             form = form.text("docs_type", docs_type.clone());
         }
 
+        // Extended metadata from [package.metadata.horus]
+        if let Some(ref pt) = manifest.plugin_type {
+            form = form.text("plugin_type", pt.clone());
+        }
+        if let Some(ref entry) = manifest.plugin_entry {
+            form = form.text("plugin_entry", entry.clone());
+        }
+        if let Some(ref dc) = manifest.driver_category {
+            form = form.text("driver_category", dc.clone());
+        }
+        if let Some(ref bt) = manifest.bus_type {
+            form = form.text("bus_type", bt.clone());
+        }
+        if let Some(ref ot) = manifest.output_type {
+            form = form.text("output_type", ot.clone());
+        }
+        if let Some(ref it) = manifest.input_type {
+            form = form.text("input_type", it.clone());
+        }
+        if let Some(ref pl) = manifest.platforms {
+            form = form.text("platforms", pl.clone());
+        }
+
         if dry_run {
             form = form.text("dry_run", "true");
             println!(

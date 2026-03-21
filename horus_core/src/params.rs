@@ -557,6 +557,7 @@ impl Default for RuntimeParams {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn create_test_params() -> RuntimeParams {
@@ -1339,5 +1340,75 @@ mod tests {
             "value should be from one of the threads, got: {}",
             s
         );
+    }
+
+    // ========================================================================
+    // Params edge case and negative tests
+    // ========================================================================
+
+    #[test]
+    fn test_params_get_nonexistent_key() {
+        let p = create_test_params();
+        let val: Option<Value> = p.get("nonexistent");
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn test_params_empty_key() {
+        let p = create_test_params();
+        p.set("", "empty_key_value").unwrap();
+        let val: Option<Value> = p.get("");
+        assert_eq!(val, Some(json!("empty_key_value")));
+    }
+
+    #[test]
+    fn test_params_overwrite_different_types() {
+        let p = create_test_params();
+        p.set("key", 42).unwrap();
+        assert_eq!(p.get::<Value>("key"), Some(json!(42)));
+
+        // Overwrite int with string
+        p.set("key", "now a string").unwrap();
+        assert_eq!(p.get::<Value>("key"), Some(json!("now a string")));
+
+        // Overwrite string with array
+        p.set("key", vec![1, 2, 3]).unwrap();
+        assert_eq!(p.get::<Value>("key"), Some(json!([1, 2, 3])));
+    }
+
+    #[test]
+    fn test_params_list_keys_empty() {
+        let p = create_test_params();
+        assert!(p.list_keys().is_empty());
+    }
+
+    #[test]
+    fn test_params_list_keys_after_set() {
+        let p = create_test_params();
+        p.set("b", 2).unwrap();
+        p.set("a", 1).unwrap();
+        p.set("c", 3).unwrap();
+        let keys = p.list_keys();
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&"a".to_string()));
+        assert!(keys.contains(&"b".to_string()));
+        assert!(keys.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_params_very_large_value() {
+        let p = create_test_params();
+        let big = "x".repeat(100_000);
+        p.set("big", &big).unwrap();
+        let val: Option<String> = p.get("big");
+        assert_eq!(val.unwrap().len(), 100_000);
+    }
+
+    #[test]
+    fn test_params_unicode_key_and_value() {
+        let p = create_test_params();
+        p.set("robot_name", "HORUS").unwrap();
+        let val: Option<String> = p.get("robot_name");
+        assert_eq!(val, Some("HORUS".to_string()));
     }
 }

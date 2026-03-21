@@ -651,6 +651,480 @@ mod tests {
         let (x, y) = grid.grid_to_world(10, 10).unwrap();
         assert!(grid.is_occupied(x, y));
     }
+
+    // ========================================================================
+    // Navigation message edge case tests
+    // ========================================================================
+
+    #[test]
+    fn test_occupancy_grid_zero_size() {
+        let grid = OccupancyGrid::new(0, 0, 0.1, Pose2D::origin());
+        assert_eq!(grid.data.len(), 0);
+        assert_eq!(grid.occupancy(0, 0), None);
+    }
+
+    #[test]
+    fn test_occupancy_grid_out_of_bounds() {
+        let grid = OccupancyGrid::new(10, 10, 0.1, Pose2D::origin());
+        assert_eq!(grid.occupancy(10, 10), None);
+        assert_eq!(grid.occupancy(100, 100), None);
+    }
+
+    #[test]
+    fn test_occupancy_grid_world_to_grid_outside() {
+        let grid = OccupancyGrid::new(10, 10, 0.1, Pose2D::origin());
+        assert_eq!(grid.world_to_grid(-1.0, -1.0), None);
+        assert_eq!(grid.world_to_grid(100.0, 100.0), None);
+    }
+
+    #[test]
+    fn test_occupancy_grid_clamp_values() {
+        let mut grid = OccupancyGrid::new(5, 5, 0.1, Pose2D::origin());
+        // Set occupancy should clamp to [-1, 100]
+        assert!(grid.set_occupancy(0, 0, 127));
+        assert_eq!(grid.occupancy(0, 0), Some(100)); // Clamped to 100
+        assert!(grid.set_occupancy(0, 0, -2));
+        assert_eq!(grid.occupancy(0, 0), Some(-1)); // Clamped to -1
+    }
+
+    #[test]
+    fn test_path_plan_empty() {
+        let plan = PathPlan::new();
+        assert!(plan.is_empty());
+        assert_eq!(plan.waypoint_count, 0);
+        assert_eq!(plan.waypoint(0), None);
+    }
+
+    #[test]
+    fn test_path_plan_add_max_waypoints() {
+        let mut plan = PathPlan::new();
+        // Add 256 waypoints (max)
+        for i in 0..256 {
+            assert!(plan.add_waypoint(i as f32, 0.0, 0.0));
+        }
+        // 257th should fail
+        assert!(!plan.add_waypoint(256.0, 0.0, 0.0));
+        assert_eq!(plan.waypoint_count, 256);
+    }
+
+    #[test]
+    fn test_nav_goal_reached() {
+        let target = Pose2D::new(5.0, 3.0, 0.0);
+        let goal = NavGoal::new(target, 0.2, 0.1);
+        let close = Pose2D::new(5.1, 3.05, 0.05);
+        assert!(goal.is_reached(&close));
+        let far = Pose2D::new(6.0, 3.0, 0.0);
+        assert!(!goal.is_reached(&far));
+    }
+
+    #[test]
+    fn test_costmap_default_not_empty() {
+        let costmap = CostMap::default();
+        assert_eq!(costmap.inflation_radius, 0.55);
+        assert_eq!(costmap.lethal_cost, 253);
+    }
+
+    // ============================================================================
+    // NavPath (many waypoints) Tests
+    // ============================================================================
+
+    #[test]
+    fn test_nav_path_fill_256_waypoints() {
+        let mut path = NavPath::new();
+        for i in 0..256 {
+            let wp = Waypoint::new(Pose2D::new(i as f64, 0.0, 0.0));
+            assert!(path.add_waypoint(wp).is_ok());
+        }
+        assert_eq!(path.waypoint_count, 256);
+        assert_eq!(path.waypoints().len(), 256);
+    }
+
+    #[test]
+    fn test_nav_path_257th_waypoint_fails() {
+        let mut path = NavPath::new();
+        for i in 0..256 {
+            path.add_waypoint(Waypoint::new(Pose2D::new(i as f64, 0.0, 0.0)))
+                .unwrap();
+        }
+        let result = path.add_waypoint(Waypoint::new(Pose2D::new(256.0, 0.0, 0.0)));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Maximum 256 waypoints supported");
+    }
+
+    #[test]
+    fn test_nav_path_total_length_accumulates() {
+        let mut path = NavPath::new();
+        // Three waypoints forming a right angle: (0,0) -> (3,0) -> (3,4)
+        path.add_waypoint(Waypoint::new(Pose2D::new(0.0, 0.0, 0.0)))
+            .unwrap();
+        path.add_waypoint(Waypoint::new(Pose2D::new(3.0, 0.0, 0.0)))
+            .unwrap();
+        path.add_waypoint(Waypoint::new(Pose2D::new(3.0, 4.0, 0.0)))
+            .unwrap();
+        // Total should be 3 + 4 = 7
+        assert!((path.total_length - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_nav_path_single_waypoint_zero_length() {
+        let mut path = NavPath::new();
+        path.add_waypoint(Waypoint::new(Pose2D::new(5.0, 5.0, 0.0)))
+            .unwrap();
+        assert_eq!(path.waypoint_count, 1);
+        assert!((path.total_length - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_nav_path_closest_waypoint_empty() {
+        let path = NavPath::new();
+        let pose = Pose2D::new(1.0, 1.0, 0.0);
+        assert!(path.closest_waypoint_index(&pose).is_none());
+    }
+
+    #[test]
+    fn test_nav_path_closest_waypoint_finds_nearest() {
+        let mut path = NavPath::new();
+        path.add_waypoint(Waypoint::new(Pose2D::new(0.0, 0.0, 0.0)))
+            .unwrap();
+        path.add_waypoint(Waypoint::new(Pose2D::new(10.0, 0.0, 0.0)))
+            .unwrap();
+        path.add_waypoint(Waypoint::new(Pose2D::new(20.0, 0.0, 0.0)))
+            .unwrap();
+
+        // Closest to (9, 0) should be waypoint 1 at (10, 0)
+        let idx = path.closest_waypoint_index(&Pose2D::new(9.0, 0.0, 0.0));
+        assert_eq!(idx, Some(1));
+
+        // Closest to (21, 0) should be waypoint 2 at (20, 0)
+        let idx2 = path.closest_waypoint_index(&Pose2D::new(21.0, 0.0, 0.0));
+        assert_eq!(idx2, Some(2));
+    }
+
+    #[test]
+    fn test_nav_path_calculate_progress() {
+        let mut path = NavPath::new();
+        for i in 0..10 {
+            path.add_waypoint(Waypoint::new(Pose2D::new(i as f64 * 10.0, 0.0, 0.0)))
+                .unwrap();
+        }
+        // Standing at roughly the 5th waypoint (50, 0)
+        let progress = path.calculate_progress(&Pose2D::new(50.0, 0.0, 0.0));
+        // Closest is index 5, progress = 5/10 = 0.5
+        assert!((progress - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_nav_path_calculate_progress_empty() {
+        let path = NavPath::new();
+        let progress = path.calculate_progress(&Pose2D::new(0.0, 0.0, 0.0));
+        assert!((progress - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_nav_path_with_frame_id() {
+        let path = NavPath::new().with_frame_id("map");
+        let frame_str = std::str::from_utf8(
+            &path.frame_id[..path.frame_id.iter().position(|&b| b == 0).unwrap_or(32)],
+        )
+        .unwrap();
+        assert_eq!(frame_str, "map");
+    }
+
+    // ============================================================================
+    // Waypoint Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_waypoint_with_stop() {
+        let wp = Waypoint::new(Pose2D::new(1.0, 2.0, 0.0)).with_stop();
+        assert_eq!(wp.stop_required, 1);
+        assert_eq!(wp.velocity.linear, [0.0; 3]);
+        assert_eq!(wp.velocity.angular, [0.0; 3]);
+    }
+
+    #[test]
+    fn test_waypoint_with_velocity() {
+        let vel = Twist::new_2d(1.5, 0.0);
+        let wp = Waypoint::new(Pose2D::new(0.0, 0.0, 0.0)).with_velocity(vel);
+        assert!((wp.velocity.linear[0] - 1.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_waypoint_default_curvature() {
+        let wp = Waypoint::new(Pose2D::new(0.0, 0.0, 0.0));
+        assert_eq!(wp.curvature, 0.0);
+        assert_eq!(wp.stop_required, 0);
+        assert_eq!(wp.time_from_start, 0.0);
+    }
+
+    // ============================================================================
+    // NavGoal Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_nav_goal_with_timeout() {
+        let target = Pose2D::new(5.0, 3.0, 0.0);
+        let goal = NavGoal::new(target, 0.1, 0.1).with_timeout(30.0);
+        assert!((goal.timeout_seconds - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_nav_goal_with_priority() {
+        let target = Pose2D::new(5.0, 3.0, 0.0);
+        let goal = NavGoal::new(target, 0.1, 0.1).with_priority(0);
+        assert_eq!(goal.priority, 0);
+    }
+
+    #[test]
+    fn test_nav_goal_orientation_wrapping() {
+        // Test orientation check across the +-PI boundary
+        let target = Pose2D::new(0.0, 0.0, 3.0); // ~171 degrees
+        let goal = NavGoal::new(target, 1.0, 0.5);
+        // Current pose at -3.0 (~-171 degrees), angle diff should be ~0.28 radians
+        let current = Pose2D::new(0.0, 0.0, -3.0);
+        // Raw diff = |3.0 - (-3.0)| = 6.0 > PI, normalized = 2*PI - 6.0 ≈ 0.28
+        assert!(goal.is_orientation_reached(&current));
+    }
+
+    #[test]
+    fn test_nav_goal_exact_position() {
+        let target = Pose2D::new(5.0, 3.0, 0.0);
+        let goal = NavGoal::new(target, 0.0, 0.0);
+        // Exactly at goal
+        let at_goal = Pose2D::new(5.0, 3.0, 0.0);
+        assert!(goal.is_reached(&at_goal));
+    }
+
+    #[test]
+    fn test_nav_goal_serialization() {
+        let target = Pose2D::new(5.0, 3.0, 1.57);
+        let goal = NavGoal::new(target, 0.1, 0.05).with_timeout(60.0).with_priority(2);
+        let json = serde_json::to_string(&goal).unwrap();
+        let recovered: NavGoal = serde_json::from_str(&json).unwrap();
+        assert!((recovered.target_pose.x - 5.0).abs() < 1e-10);
+        assert!((recovered.tolerance_position - 0.1).abs() < 1e-10);
+        assert!((recovered.timeout_seconds - 60.0).abs() < 1e-10);
+        assert_eq!(recovered.priority, 2);
+    }
+
+    // ============================================================================
+    // GoalResult Tests
+    // ============================================================================
+
+    #[test]
+    fn test_goal_result_with_error() {
+        let result = GoalResult::new(42, GoalStatus::Aborted).with_error("Obstacle detected");
+        assert_eq!(result.goal_id, 42);
+        assert_eq!(result.status, GoalStatus::Aborted as u8);
+        let end = result
+            .error_message
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(64);
+        let msg = std::str::from_utf8(&result.error_message[..end]).unwrap();
+        assert_eq!(msg, "Obstacle detected");
+    }
+
+    #[test]
+    fn test_goal_result_long_error_truncated() {
+        let long_msg = "x".repeat(100);
+        let result = GoalResult::new(1, GoalStatus::Aborted).with_error(&long_msg);
+        let end = result
+            .error_message
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(64);
+        assert_eq!(end, 63); // truncated to 63 chars + null terminator
+    }
+
+    #[test]
+    fn test_goal_result_default_pending() {
+        let result = GoalResult::default();
+        assert_eq!(result.status, GoalStatus::Pending as u8);
+        assert_eq!(result.goal_id, 0);
+    }
+
+    // ============================================================================
+    // OccupancyGrid Additional Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_occupancy_grid_1x1() {
+        let mut grid = OccupancyGrid::new(1, 1, 1.0, Pose2D::origin());
+        assert_eq!(grid.data.len(), 1);
+        assert!(grid.set_occupancy(0, 0, 50));
+        assert_eq!(grid.occupancy(0, 0), Some(50));
+        assert!(!grid.set_occupancy(1, 0, 0)); // out of bounds
+    }
+
+    #[test]
+    fn test_occupancy_grid_default_unknown() {
+        let grid = OccupancyGrid::new(5, 5, 0.1, Pose2D::origin());
+        // All cells should initialize to -1 (unknown)
+        for x in 0..5 {
+            for y in 0..5 {
+                assert_eq!(grid.occupancy(x, y), Some(-1));
+            }
+        }
+    }
+
+    #[test]
+    fn test_occupancy_grid_is_free_unknown() {
+        let grid = OccupancyGrid::new(5, 5, 0.1, Pose2D::origin());
+        // Unknown cells (-1) should NOT be considered free
+        let (wx, wy) = grid.grid_to_world(2, 2).unwrap();
+        assert!(!grid.is_free(wx, wy));
+    }
+
+    #[test]
+    fn test_occupancy_grid_is_occupied_threshold() {
+        let mut grid = OccupancyGrid::new(10, 10, 0.1, Pose2D::origin());
+        grid.set_occupancy(5, 5, 49); // just below threshold
+        let (x1, y1) = grid.grid_to_world(5, 5).unwrap();
+        assert!(!grid.is_occupied(x1, y1));
+        assert!(grid.is_free(x1, y1));
+
+        grid.set_occupancy(5, 5, 50); // at threshold
+        let (x2, y2) = grid.grid_to_world(5, 5).unwrap();
+        assert!(grid.is_occupied(x2, y2));
+        assert!(!grid.is_free(x2, y2));
+    }
+
+    #[test]
+    fn test_occupancy_grid_large_map() {
+        let grid = OccupancyGrid::new(1000, 1000, 0.05, Pose2D::origin());
+        assert_eq!(grid.data.len(), 1_000_000);
+        // Test boundary coordinates
+        assert!(grid.world_to_grid(0.0, 0.0).is_some());
+        assert!(grid.world_to_grid(49.9, 49.9).is_some());
+        // world_to_grid uses a 1e-6 epsilon, so go clearly outside the boundary
+        assert!(grid.world_to_grid(50.1, 50.1).is_none());
+    }
+
+    #[test]
+    fn test_occupancy_grid_negative_origin() {
+        let grid = OccupancyGrid::new(10, 10, 0.1, Pose2D::new(-0.5, -0.5, 0.0));
+        // Grid origin is at (-0.5, -0.5), so world (0,0) maps to cell (5,5)
+        let (gx, gy) = grid.world_to_grid(0.0, 0.0).unwrap();
+        assert_eq!(gx, 5);
+        assert_eq!(gy, 5);
+    }
+
+    #[test]
+    fn test_occupancy_grid_grid_to_world_out_of_bounds() {
+        let grid = OccupancyGrid::new(10, 10, 0.1, Pose2D::origin());
+        assert!(grid.grid_to_world(10, 10).is_none());
+        assert!(grid.grid_to_world(0, 0).is_some());
+        assert!(grid.grid_to_world(9, 9).is_some());
+    }
+
+    // ============================================================================
+    // PathPlan Additional Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_path_plan_from_waypoints() {
+        let waypoints = vec![
+            [0.0_f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 1.0, 0.5],
+        ];
+        let goal = [5.0_f32, 5.0, 1.57];
+        let plan = PathPlan::from_waypoints(&waypoints, goal);
+        assert_eq!(plan.waypoint_count, 3);
+        assert_eq!(plan.goal_pose, [5.0, 5.0, 1.57]);
+        assert_eq!(plan.waypoint(0), Some([0.0, 0.0, 0.0]));
+        assert_eq!(plan.waypoint(2), Some([2.0, 1.0, 0.5]));
+        assert_eq!(plan.waypoint(3), None);
+    }
+
+    #[test]
+    fn test_path_plan_from_waypoints_over_256() {
+        let waypoints: Vec<[f32; 3]> = (0..300).map(|i| [i as f32, 0.0, 0.0]).collect();
+        let plan = PathPlan::from_waypoints(&waypoints, [0.0; 3]);
+        // Should clamp to 256
+        assert_eq!(plan.waypoint_count, 256);
+    }
+
+    #[test]
+    fn test_path_plan_waypoint_data_layout() {
+        let mut plan = PathPlan::new();
+        plan.add_waypoint(1.0, 2.0, 3.0);
+        plan.add_waypoint(4.0, 5.0, 6.0);
+        // Verify raw data layout: [x0, y0, theta0, x1, y1, theta1, ...]
+        assert_eq!(plan.waypoint_data[0], 1.0);
+        assert_eq!(plan.waypoint_data[1], 2.0);
+        assert_eq!(plan.waypoint_data[2], 3.0);
+        assert_eq!(plan.waypoint_data[3], 4.0);
+        assert_eq!(plan.waypoint_data[4], 5.0);
+        assert_eq!(plan.waypoint_data[5], 6.0);
+    }
+
+    // ============================================================================
+    // CostMap Tests
+    // ============================================================================
+
+    #[test]
+    fn test_costmap_from_occupancy_grid() {
+        let mut grid = OccupancyGrid::new(10, 10, 0.1, Pose2D::origin());
+        // Set one cell as occupied
+        grid.set_occupancy(5, 5, 100);
+        let costmap = CostMap::from_occupancy_grid(grid, 0.2);
+        assert_eq!(costmap.costs.len(), 100);
+        // The occupied cell should have lethal cost
+        let idx = 5 * 10 + 5;
+        assert_eq!(costmap.costs[idx], costmap.lethal_cost);
+    }
+
+    #[test]
+    fn test_costmap_cost_outside_map() {
+        let grid = OccupancyGrid::new(10, 10, 0.1, Pose2D::origin());
+        let costmap = CostMap::from_occupancy_grid(grid, 0.0);
+        // Outside map should return lethal cost
+        let cost = costmap.cost(-1.0, -1.0);
+        assert_eq!(cost, Some(costmap.lethal_cost));
+    }
+
+    // ============================================================================
+    // VelocityObstacle Tests
+    // ============================================================================
+
+    #[test]
+    fn test_velocity_obstacles_default() {
+        let vobs = VelocityObstacles::default();
+        assert_eq!(vobs.count, 0);
+        assert_eq!(vobs.timestamp_ns, 0);
+    }
+
+    #[test]
+    fn test_velocity_obstacle_default() {
+        let vo = VelocityObstacle::default();
+        assert_eq!(vo.position, [0.0, 0.0]);
+        assert_eq!(vo.velocity, [0.0, 0.0]);
+        assert_eq!(vo.radius, 0.0);
+        assert_eq!(vo.obstacle_id, 0);
+    }
+
+    // ============================================================================
+    // GoalStatus Tests
+    // ============================================================================
+
+    #[test]
+    fn test_goal_status_default_is_pending() {
+        let status = GoalStatus::default();
+        assert_eq!(status, GoalStatus::Pending);
+    }
+
+    #[test]
+    fn test_goal_status_values() {
+        assert_eq!(GoalStatus::Pending as u8, 0);
+        assert_eq!(GoalStatus::Active as u8, 1);
+        assert_eq!(GoalStatus::Succeeded as u8, 2);
+        assert_eq!(GoalStatus::Aborted as u8, 3);
+        assert_eq!(GoalStatus::Cancelled as u8, 4);
+        assert_eq!(GoalStatus::Preempted as u8, 5);
+        assert_eq!(GoalStatus::TimedOut as u8, 6);
+    }
 }
 
 /// Path plan message for navigation

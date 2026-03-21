@@ -909,6 +909,7 @@ impl LogSummary for GoalStatusUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::types::ActionError;
     use serde::{Deserialize, Serialize};
 
     // Test action types
@@ -985,5 +986,808 @@ mod tests {
     fn test_preemption_policy_default() {
         let config = ActionServerConfig::default();
         assert_eq!(config.preemption_policy, PreemptionPolicy::PreemptOld);
+    }
+
+    // ========================================================================
+    // Server negative and edge case tests
+    // ========================================================================
+
+    #[test]
+    fn test_preemption_policy_variants() {
+        assert_eq!(PreemptionPolicy::PreemptOld, PreemptionPolicy::PreemptOld);
+        assert_ne!(PreemptionPolicy::PreemptOld, PreemptionPolicy::RejectNew);
+        assert_ne!(
+            PreemptionPolicy::PreemptOld,
+            PreemptionPolicy::Queue { max_size: 10 }
+        );
+    }
+
+    #[test]
+    fn test_server_config_custom() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(5),
+            feedback_rate_hz: 10.0,
+            goal_timeout: Some(Duration::from_secs(30)),
+            preemption_policy: PreemptionPolicy::Queue { max_size: 10 },
+            result_history_size: 100,
+        };
+        assert_eq!(config.max_concurrent_goals, Some(5));
+        assert_eq!(
+            config.preemption_policy,
+            PreemptionPolicy::Queue { max_size: 10 }
+        );
+        assert_eq!(config.goal_timeout, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_server_config_no_concurrent_limit() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: None,
+            feedback_rate_hz: 10.0,
+            goal_timeout: None,
+            preemption_policy: PreemptionPolicy::RejectNew,
+            result_history_size: 100,
+        };
+        // None means unlimited concurrent goals
+        assert_eq!(config.max_concurrent_goals, None);
+    }
+
+    #[test]
+    fn test_server_metrics_initial() {
+        let metrics = ActionServerMetrics::default();
+        assert_eq!(metrics.goals_received, 0);
+        assert_eq!(metrics.goals_succeeded, 0);
+        assert_eq!(metrics.goals_aborted, 0);
+        assert_eq!(metrics.goals_rejected, 0);
+        assert_eq!(metrics.active_goals, 0);
+    }
+
+    #[test]
+    fn test_server_builder_default() {
+        let server = ActionServerBuilder::<TestAction>::new().build();
+        assert_eq!(server.metrics().goals_received, 0);
+    }
+
+    #[test]
+    fn test_server_builder_with_config() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(3),
+            feedback_rate_hz: 10.0,
+            goal_timeout: Some(Duration::from_secs(10)),
+            preemption_policy: PreemptionPolicy::RejectNew,
+            result_history_size: 100,
+        };
+        let server = ActionServerBuilder::<TestAction>::new()
+            .with_config(config)
+            .build();
+        assert_eq!(server.metrics().goals_received, 0);
+    }
+
+    // ========================================================================
+    // Error path and edge-case tests
+    // ========================================================================
+
+    // --- PreemptionPolicy edge cases ---
+
+    #[test]
+    fn test_preemption_policy_queue_max_size_zero() {
+        // A queue with max_size=0 should never accept anything into the queue
+        let policy = PreemptionPolicy::Queue { max_size: 0 };
+        assert_eq!(policy, PreemptionPolicy::Queue { max_size: 0 });
+        // Verify it's distinct from other policies
+        assert_ne!(policy, PreemptionPolicy::RejectNew);
+        assert_ne!(policy, PreemptionPolicy::PreemptOld);
+        assert_ne!(policy, PreemptionPolicy::Priority);
+    }
+
+    #[test]
+    fn test_preemption_policy_queue_max_size_one() {
+        let policy = PreemptionPolicy::Queue { max_size: 1 };
+        assert_eq!(policy, PreemptionPolicy::Queue { max_size: 1 });
+        assert_ne!(policy, PreemptionPolicy::Queue { max_size: 0 });
+        assert_ne!(policy, PreemptionPolicy::Queue { max_size: 2 });
+    }
+
+    #[test]
+    fn test_preemption_policy_queue_max_size_usize_max() {
+        let policy = PreemptionPolicy::Queue {
+            max_size: usize::MAX,
+        };
+        assert_eq!(
+            policy,
+            PreemptionPolicy::Queue {
+                max_size: usize::MAX
+            }
+        );
+    }
+
+    #[test]
+    fn test_preemption_policy_all_variants_distinct() {
+        let policies = [
+            PreemptionPolicy::RejectNew,
+            PreemptionPolicy::PreemptOld,
+            PreemptionPolicy::Priority,
+            PreemptionPolicy::Queue { max_size: 0 },
+            PreemptionPolicy::Queue { max_size: 10 },
+        ];
+        for i in 0..policies.len() {
+            for j in (i + 1)..policies.len() {
+                assert_ne!(
+                    policies[i], policies[j],
+                    "Policies at index {} and {} should differ",
+                    i, j
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_preemption_policy_debug_format() {
+        assert!(format!("{:?}", PreemptionPolicy::RejectNew).contains("RejectNew"));
+        assert!(format!("{:?}", PreemptionPolicy::PreemptOld).contains("PreemptOld"));
+        assert!(format!("{:?}", PreemptionPolicy::Priority).contains("Priority"));
+        let q = format!("{:?}", PreemptionPolicy::Queue { max_size: 42 });
+        assert!(q.contains("Queue"));
+        assert!(q.contains("42"));
+    }
+
+    // --- ActionServerConfig extreme values ---
+
+    #[test]
+    fn test_config_zero_concurrent_goals() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(0),
+            feedback_rate_hz: 10.0,
+            goal_timeout: None,
+            preemption_policy: PreemptionPolicy::RejectNew,
+            result_history_size: 100,
+        };
+        assert_eq!(config.max_concurrent_goals, Some(0));
+
+        // A server with max_concurrent=0 will reject everything via can_accept_goal
+        let server = ActionServerBuilder::<TestAction>::new()
+            .with_config(config)
+            .build();
+        let metrics = server.metrics();
+        assert_eq!(metrics.active_goals, 0);
+        assert_eq!(metrics.queued_goals, 0);
+    }
+
+    #[test]
+    fn test_config_very_high_feedback_rate() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(1),
+            feedback_rate_hz: 1_000_000.0,
+            goal_timeout: None,
+            preemption_policy: PreemptionPolicy::PreemptOld,
+            result_history_size: 100,
+        };
+        assert_eq!(config.feedback_rate_hz, 1_000_000.0);
+    }
+
+    #[test]
+    fn test_config_zero_feedback_rate() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(1),
+            feedback_rate_hz: 0.0,
+            goal_timeout: None,
+            preemption_policy: PreemptionPolicy::PreemptOld,
+            result_history_size: 100,
+        };
+        assert_eq!(config.feedback_rate_hz, 0.0);
+    }
+
+    #[test]
+    fn test_config_very_short_timeout() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(1),
+            feedback_rate_hz: 10.0,
+            goal_timeout: Some(Duration::from_nanos(1)),
+            preemption_policy: PreemptionPolicy::PreemptOld,
+            result_history_size: 100,
+        };
+        assert_eq!(config.goal_timeout, Some(Duration::from_nanos(1)));
+    }
+
+    #[test]
+    fn test_config_very_long_timeout() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(1),
+            feedback_rate_hz: 10.0,
+            goal_timeout: Some(Duration::from_secs(86400 * 365)),
+            preemption_policy: PreemptionPolicy::PreemptOld,
+            result_history_size: 100,
+        };
+        assert_eq!(
+            config.goal_timeout,
+            Some(Duration::from_secs(86400 * 365))
+        );
+    }
+
+    #[test]
+    fn test_config_zero_result_history() {
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(1),
+            feedback_rate_hz: 10.0,
+            goal_timeout: None,
+            preemption_policy: PreemptionPolicy::PreemptOld,
+            result_history_size: 0,
+        };
+        assert_eq!(config.result_history_size, 0);
+    }
+
+    #[test]
+    fn test_config_builder_methods_chain() {
+        let config = ActionServerConfig::new()
+            .max_goals(5)
+            .feedback_rate(50.0)
+            .timeout(Duration::from_secs(60))
+            .preemption(PreemptionPolicy::Priority)
+            .history_size(200);
+        assert_eq!(config.max_concurrent_goals, Some(5));
+        assert_eq!(config.feedback_rate_hz, 50.0);
+        assert_eq!(config.goal_timeout, Some(Duration::from_secs(60)));
+        assert_eq!(config.preemption_policy, PreemptionPolicy::Priority);
+        assert_eq!(config.result_history_size, 200);
+    }
+
+    #[test]
+    fn test_config_unlimited_goals() {
+        let config = ActionServerConfig::new().unlimited_goals();
+        assert_eq!(config.max_concurrent_goals, None);
+    }
+
+    #[test]
+    fn test_config_default_values() {
+        let config = ActionServerConfig::default();
+        assert_eq!(config.max_concurrent_goals, Some(1));
+        assert_eq!(config.feedback_rate_hz, 10.0);
+        assert_eq!(config.goal_timeout, None);
+        assert_eq!(config.preemption_policy, PreemptionPolicy::PreemptOld);
+        assert_eq!(config.result_history_size, 100);
+    }
+
+    // --- ActionServerMetrics accumulation ---
+
+    #[test]
+    fn test_metrics_all_fields_default_zero() {
+        let m = ActionServerMetrics::default();
+        assert_eq!(m.goals_received, 0);
+        assert_eq!(m.goals_accepted, 0);
+        assert_eq!(m.goals_rejected, 0);
+        assert_eq!(m.goals_succeeded, 0);
+        assert_eq!(m.goals_aborted, 0);
+        assert_eq!(m.goals_canceled, 0);
+        assert_eq!(m.goals_preempted, 0);
+        assert_eq!(m.active_goals, 0);
+        assert_eq!(m.queued_goals, 0);
+    }
+
+    #[test]
+    fn test_metrics_manual_accumulation() {
+        let m = ActionServerMetrics {
+            goals_received: 100,
+            goals_accepted: 80,
+            goals_rejected: 20,
+            goals_succeeded: 50,
+            goals_aborted: 10,
+            goals_canceled: 5,
+            goals_preempted: 15,
+            active_goals: 3,
+            queued_goals: 7,
+        };
+        assert_eq!(m.goals_received, 100);
+        assert_eq!(m.goals_accepted, 80);
+        assert_eq!(m.goals_rejected, 20);
+        assert_eq!(m.goals_succeeded, 50);
+        assert_eq!(m.goals_aborted, 10);
+        assert_eq!(m.goals_canceled, 5);
+        assert_eq!(m.goals_preempted, 15);
+        assert_eq!(m.active_goals, 3);
+        assert_eq!(m.queued_goals, 7);
+        // Verify totals are internally consistent:
+        // received = accepted + rejected
+        assert_eq!(m.goals_received, m.goals_accepted + m.goals_rejected);
+    }
+
+    #[test]
+    fn test_metrics_clone() {
+        let m = ActionServerMetrics {
+            goals_received: 42,
+            goals_accepted: 40,
+            goals_rejected: 2,
+            goals_succeeded: 30,
+            goals_aborted: 5,
+            goals_canceled: 3,
+            goals_preempted: 2,
+            active_goals: 1,
+            queued_goals: 4,
+        };
+        let m2 = m.clone();
+        assert_eq!(m.goals_received, m2.goals_received);
+        assert_eq!(m.goals_accepted, m2.goals_accepted);
+        assert_eq!(m.goals_rejected, m2.goals_rejected);
+        assert_eq!(m.goals_succeeded, m2.goals_succeeded);
+        assert_eq!(m.goals_aborted, m2.goals_aborted);
+        assert_eq!(m.goals_canceled, m2.goals_canceled);
+        assert_eq!(m.goals_preempted, m2.goals_preempted);
+        assert_eq!(m.active_goals, m2.active_goals);
+        assert_eq!(m.queued_goals, m2.queued_goals);
+    }
+
+    #[test]
+    fn test_metrics_debug_format() {
+        let m = ActionServerMetrics::default();
+        let dbg = format!("{:?}", m);
+        assert!(dbg.contains("goals_received"));
+        assert!(dbg.contains("active_goals"));
+        assert!(dbg.contains("queued_goals"));
+    }
+
+    // --- GoalResponse variant coverage ---
+
+    #[test]
+    fn test_goal_response_accept() {
+        let r = GoalResponse::Accept;
+        assert!(r.is_accepted());
+        assert!(!r.is_rejected());
+        assert!(r.rejection_reason().is_none());
+    }
+
+    #[test]
+    fn test_goal_response_reject_with_empty_reason() {
+        let r = GoalResponse::Reject(String::new());
+        assert!(!r.is_accepted());
+        assert!(r.is_rejected());
+        assert_eq!(r.rejection_reason(), Some(""));
+    }
+
+    #[test]
+    fn test_goal_response_reject_with_long_reason() {
+        let long_reason = "x".repeat(10_000);
+        let r = GoalResponse::Reject(long_reason.clone());
+        assert!(r.is_rejected());
+        assert_eq!(r.rejection_reason(), Some(long_reason.as_str()));
+    }
+
+    // --- CancelResponse variant coverage ---
+
+    #[test]
+    fn test_cancel_response_accept() {
+        let r = CancelResponse::Accept;
+        assert!(r.is_accepted());
+        assert!(!r.is_rejected());
+        assert!(r.rejection_reason().is_none());
+    }
+
+    #[test]
+    fn test_cancel_response_reject_with_empty_reason() {
+        let r = CancelResponse::Reject(String::new());
+        assert!(!r.is_accepted());
+        assert!(r.is_rejected());
+        assert_eq!(r.rejection_reason(), Some(""));
+    }
+
+    #[test]
+    fn test_cancel_response_reject_with_reason() {
+        let r = CancelResponse::Reject("Goal is critical".to_string());
+        assert!(!r.is_accepted());
+        assert!(r.is_rejected());
+        assert_eq!(r.rejection_reason(), Some("Goal is critical"));
+    }
+
+    // --- GoalStatus transitions (each state variant) ---
+
+    #[test]
+    fn test_goal_status_pending_is_active_not_terminal() {
+        let s = GoalStatus::Pending;
+        assert!(s.is_active());
+        assert!(!s.is_terminal());
+        assert!(!s.is_success());
+        assert!(!s.is_failure());
+    }
+
+    #[test]
+    fn test_goal_status_active_is_active_not_terminal() {
+        let s = GoalStatus::Active;
+        assert!(s.is_active());
+        assert!(!s.is_terminal());
+        assert!(!s.is_success());
+        assert!(!s.is_failure());
+    }
+
+    #[test]
+    fn test_goal_status_succeeded_is_terminal_success() {
+        let s = GoalStatus::Succeeded;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(s.is_success());
+        assert!(!s.is_failure());
+    }
+
+    #[test]
+    fn test_goal_status_aborted_is_terminal_failure() {
+        let s = GoalStatus::Aborted;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+    }
+
+    #[test]
+    fn test_goal_status_canceled_is_terminal_failure() {
+        let s = GoalStatus::Canceled;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+    }
+
+    #[test]
+    fn test_goal_status_preempted_is_terminal_failure() {
+        let s = GoalStatus::Preempted;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+    }
+
+    #[test]
+    fn test_goal_status_rejected_is_terminal_failure() {
+        let s = GoalStatus::Rejected;
+        assert!(!s.is_active());
+        assert!(s.is_terminal());
+        assert!(!s.is_success());
+        assert!(s.is_failure());
+    }
+
+    #[test]
+    fn test_goal_status_display_all_variants() {
+        assert_eq!(format!("{}", GoalStatus::Pending), "PENDING");
+        assert_eq!(format!("{}", GoalStatus::Active), "ACTIVE");
+        assert_eq!(format!("{}", GoalStatus::Succeeded), "SUCCEEDED");
+        assert_eq!(format!("{}", GoalStatus::Aborted), "ABORTED");
+        assert_eq!(format!("{}", GoalStatus::Canceled), "CANCELED");
+        assert_eq!(format!("{}", GoalStatus::Preempted), "PREEMPTED");
+        assert_eq!(format!("{}", GoalStatus::Rejected), "REJECTED");
+    }
+
+    // --- GoalOutcome into_result extraction ---
+
+    #[test]
+    fn test_goal_outcome_into_result_succeeded() {
+        let outcome: GoalOutcome<TestAction> = GoalOutcome::Succeeded(TestResult { success: true });
+        let result = outcome.into_result();
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_goal_outcome_into_result_aborted() {
+        let outcome: GoalOutcome<TestAction> =
+            GoalOutcome::Aborted(TestResult { success: false });
+        let result = outcome.into_result();
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn test_goal_outcome_into_result_canceled() {
+        let outcome: GoalOutcome<TestAction> =
+            GoalOutcome::Canceled(TestResult { success: false });
+        let result = outcome.into_result();
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn test_goal_outcome_into_result_preempted() {
+        let outcome: GoalOutcome<TestAction> =
+            GoalOutcome::Preempted(TestResult { success: false });
+        let result = outcome.into_result();
+        assert!(!result.success);
+    }
+
+    // --- GoalPriority edge cases ---
+
+    #[test]
+    fn test_goal_priority_constants_ordering() {
+        assert!(GoalPriority::HIGHEST.is_higher_than(&GoalPriority::HIGH));
+        assert!(GoalPriority::HIGH.is_higher_than(&GoalPriority::NORMAL));
+        assert!(GoalPriority::NORMAL.is_higher_than(&GoalPriority::LOW));
+        assert!(GoalPriority::LOW.is_higher_than(&GoalPriority::LOWEST));
+    }
+
+    #[test]
+    fn test_goal_priority_not_higher_than_self() {
+        assert!(!GoalPriority::HIGHEST.is_higher_than(&GoalPriority::HIGHEST));
+        assert!(!GoalPriority::NORMAL.is_higher_than(&GoalPriority::NORMAL));
+        assert!(!GoalPriority::LOWEST.is_higher_than(&GoalPriority::LOWEST));
+    }
+
+    #[test]
+    fn test_goal_priority_lowest_not_higher_than_anything() {
+        assert!(!GoalPriority::LOWEST.is_higher_than(&GoalPriority::HIGHEST));
+        assert!(!GoalPriority::LOWEST.is_higher_than(&GoalPriority::HIGH));
+        assert!(!GoalPriority::LOWEST.is_higher_than(&GoalPriority::NORMAL));
+        assert!(!GoalPriority::LOWEST.is_higher_than(&GoalPriority::LOW));
+        assert!(!GoalPriority::LOWEST.is_higher_than(&GoalPriority::LOWEST));
+    }
+
+    #[test]
+    fn test_goal_priority_boundary_values() {
+        let min = GoalPriority(0);
+        let max = GoalPriority(255);
+        assert!(min.is_higher_than(&max));
+        assert!(!max.is_higher_than(&min));
+        assert_eq!(min, GoalPriority::HIGHEST);
+        assert_eq!(max, GoalPriority::LOWEST);
+    }
+
+    // --- ActionError variant coverage ---
+
+    #[test]
+    fn test_action_error_goal_rejected() {
+        let err = ActionError::GoalRejected("bad target".to_string());
+        assert!(err.to_string().contains("Goal rejected"));
+        assert!(err.to_string().contains("bad target"));
+    }
+
+    #[test]
+    fn test_action_error_goal_canceled() {
+        let err = ActionError::GoalCanceled;
+        assert!(err.to_string().contains("canceled"));
+    }
+
+    #[test]
+    fn test_action_error_goal_preempted() {
+        let err = ActionError::GoalPreempted;
+        assert!(err.to_string().contains("preempted"));
+    }
+
+    #[test]
+    fn test_action_error_goal_timeout() {
+        let err = ActionError::GoalTimeout;
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn test_action_error_server_unavailable() {
+        let err = ActionError::ServerUnavailable;
+        assert!(err.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn test_action_error_communication_error() {
+        let err = ActionError::CommunicationError("link broken".to_string());
+        assert!(err.to_string().contains("Communication error"));
+        assert!(err.to_string().contains("link broken"));
+    }
+
+    #[test]
+    fn test_action_error_execution_error() {
+        let err = ActionError::ExecutionError("panic in callback".to_string());
+        assert!(err.to_string().contains("Execution error"));
+        assert!(err.to_string().contains("panic in callback"));
+    }
+
+    #[test]
+    fn test_action_error_invalid_goal() {
+        let err = ActionError::InvalidGoal("NaN coordinate".to_string());
+        assert!(err.to_string().contains("Invalid goal"));
+        assert!(err.to_string().contains("NaN coordinate"));
+    }
+
+    #[test]
+    fn test_action_error_goal_not_found() {
+        let id = GoalId::new();
+        let err = ActionError::GoalNotFound(id);
+        let msg = err.to_string();
+        assert!(msg.contains("Goal not found"));
+        assert!(msg.contains(&id.to_string()));
+    }
+
+    // --- Server builder with rejection callback ---
+
+    #[test]
+    fn test_server_builder_reject_all_goals() {
+        let server = ActionServerBuilder::<TestAction>::new()
+            .on_goal(|_goal| GoalResponse::Reject("always reject".into()))
+            .build();
+        assert_eq!(server.name(), "test_action_server");
+        let metrics = server.metrics();
+        assert_eq!(metrics.goals_received, 0);
+        assert_eq!(metrics.goals_rejected, 0);
+    }
+
+    #[test]
+    fn test_server_builder_reject_all_cancels() {
+        let server = ActionServerBuilder::<TestAction>::new()
+            .on_cancel(|_id| CancelResponse::Reject("no cancels allowed".into()))
+            .build();
+        assert_eq!(server.name(), "test_action_server");
+    }
+
+    #[test]
+    fn test_server_builder_goal_timeout() {
+        let server = ActionServerBuilder::<TestAction>::new()
+            .goal_timeout(Duration::from_millis(100))
+            .build();
+        assert_eq!(server.config.goal_timeout, Some(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn test_server_builder_preemption_policy() {
+        let server = ActionServerBuilder::<TestAction>::new()
+            .preemption_policy(PreemptionPolicy::Queue { max_size: 5 })
+            .build();
+        assert_eq!(
+            server.config.preemption_policy,
+            PreemptionPolicy::Queue { max_size: 5 }
+        );
+    }
+
+    // --- Server with zero max_concurrent_goals and Queue policy ---
+
+    #[test]
+    fn test_server_config_queue_with_zero_concurrent() {
+        // Queue policy with zero concurrent goals: everything should get queued
+        // or rejected depending on queue capacity
+        let config = ActionServerConfig {
+            max_concurrent_goals: Some(0),
+            feedback_rate_hz: 10.0,
+            goal_timeout: None,
+            preemption_policy: PreemptionPolicy::Queue { max_size: 5 },
+            result_history_size: 100,
+        };
+        let server = ActionServerBuilder::<TestAction>::new()
+            .with_config(config)
+            .build();
+        let m = server.metrics();
+        assert_eq!(m.active_goals, 0);
+        assert_eq!(m.queued_goals, 0);
+    }
+
+    // --- LogSummary coverage ---
+
+    #[test]
+    fn test_log_summary_goal_request() {
+        let req = GoalRequest::new(TestGoal { target: 1.0 });
+        let summary = req.log_summary();
+        assert!(summary.contains("GoalReq"));
+        assert!(summary.contains(&req.goal_id.to_string()));
+    }
+
+    #[test]
+    fn test_log_summary_cancel_request() {
+        let goal_id = GoalId::new();
+        let req = CancelRequest::new(goal_id);
+        let summary = req.log_summary();
+        assert!(summary.contains("CancelReq"));
+        assert!(summary.contains(&goal_id.to_string()));
+    }
+
+    #[test]
+    fn test_log_summary_action_result() {
+        let goal_id = GoalId::new();
+        let result = ActionResult::succeeded(goal_id, TestResult { success: true });
+        let summary = result.log_summary();
+        assert!(summary.contains("Result"));
+        assert!(summary.contains(&goal_id.to_string()));
+        assert!(summary.contains("SUCCEEDED"));
+    }
+
+    #[test]
+    fn test_log_summary_action_feedback() {
+        let goal_id = GoalId::new();
+        let fb = ActionFeedback::new(goal_id, TestFeedback { progress: 0.5 });
+        let summary = fb.log_summary();
+        assert!(summary.contains("Feedback"));
+        assert!(summary.contains(&goal_id.to_string()));
+    }
+
+    #[test]
+    fn test_log_summary_goal_status_update() {
+        let goal_id = GoalId::new();
+        let update = GoalStatusUpdate::new(goal_id, GoalStatus::Aborted);
+        let summary = update.log_summary();
+        assert!(summary.contains("Status"));
+        assert!(summary.contains(&goal_id.to_string()));
+        assert!(summary.contains("ABORTED"));
+    }
+
+    // --- ActionResult factory methods ---
+
+    #[test]
+    fn test_action_result_aborted_status() {
+        let id = GoalId::new();
+        let r = ActionResult::aborted(id, TestResult { success: false });
+        assert_eq!(r.status, GoalStatus::Aborted);
+        assert_eq!(r.goal_id, id);
+        assert!(!r.result.success);
+    }
+
+    #[test]
+    fn test_action_result_canceled_status() {
+        let id = GoalId::new();
+        let r = ActionResult::canceled(id, TestResult { success: false });
+        assert_eq!(r.status, GoalStatus::Canceled);
+        assert_eq!(r.goal_id, id);
+    }
+
+    #[test]
+    fn test_action_result_preempted_status() {
+        let id = GoalId::new();
+        let r = ActionResult::preempted(id, TestResult { success: false });
+        assert_eq!(r.status, GoalStatus::Preempted);
+        assert_eq!(r.goal_id, id);
+    }
+
+    // --- GoalRequest with priority ---
+
+    #[test]
+    fn test_goal_request_with_priority() {
+        let req =
+            GoalRequest::with_priority(TestGoal { target: 5.0 }, GoalPriority::HIGHEST);
+        assert_eq!(req.priority, GoalPriority::HIGHEST);
+        assert_eq!(req.goal.target, 5.0);
+    }
+
+    #[test]
+    fn test_goal_request_default_priority_is_normal() {
+        let req = GoalRequest::new(TestGoal { target: 1.0 });
+        assert_eq!(req.priority, GoalPriority::NORMAL);
+    }
+
+    // --- GoalId edge cases ---
+
+    #[test]
+    fn test_goal_id_uniqueness_batch() {
+        let ids: Vec<GoalId> = (0..100).map(|_| GoalId::new()).collect();
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                assert_ne!(ids[i], ids[j], "GoalIds {} and {} collided", i, j);
+            }
+        }
+    }
+
+    #[test]
+    fn test_goal_id_from_uuid() {
+        let uuid = uuid::Uuid::new_v4();
+        let id = GoalId::from_uuid(uuid);
+        assert_eq!(*id.as_uuid(), uuid);
+    }
+
+    #[test]
+    fn test_goal_id_display_matches_uuid() {
+        let uuid = uuid::Uuid::new_v4();
+        let id = GoalId::from_uuid(uuid);
+        assert_eq!(format!("{}", id), format!("{}", uuid));
+    }
+
+    // --- Server name derivation ---
+
+    #[test]
+    fn test_server_name_derived_from_action_name() {
+        let server = ActionServerBuilder::<TestAction>::new().build();
+        assert_eq!(server.name(), "test_action_server");
+    }
+
+    // --- Builder Default trait ---
+
+    #[test]
+    fn test_builder_default_impl() {
+        let builder = ActionServerBuilder::<TestAction>::default();
+        let server = builder.build();
+        assert_eq!(server.name(), "test_action_server");
+        assert_eq!(server.metrics().goals_received, 0);
+    }
+
+    // --- Action trait topic derivation ---
+
+    #[test]
+    fn test_action_topic_names() {
+        assert_eq!(TestAction::goal_topic(), "test_action.goal");
+        assert_eq!(TestAction::cancel_topic(), "test_action.cancel");
+        assert_eq!(TestAction::result_topic(), "test_action.result");
+        assert_eq!(TestAction::feedback_topic(), "test_action.feedback");
+        assert_eq!(TestAction::status_topic(), "test_action.status");
     }
 }

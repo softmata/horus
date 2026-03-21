@@ -10635,3 +10635,203 @@ fn e2e_zero_sends_zero_messages_total() {
         "no sends should mean 0 messages_total"
     );
 }
+
+// ============================================================================
+// Error path and negative tests
+// ============================================================================
+
+#[test]
+fn test_topic_empty_name_returns_error() {
+    let result = RingTopic::<u32>::new("");
+    assert!(result.is_err(), "empty topic name should fail");
+}
+
+#[test]
+fn test_topic_very_long_name() {
+    let long_name = "a".repeat(1024);
+    let result = RingTopic::<u32>::new(&long_name);
+    // Either works (SHM path may be valid) or fails with path error
+    // The important thing is it doesn't panic
+    let _ = result;
+}
+
+#[test]
+fn test_topic_name_with_null_byte() {
+    let result = RingTopic::<u32>::new("topic\0name");
+    assert!(result.is_err(), "null byte in topic name should fail");
+}
+
+#[test]
+fn test_read_header_nonexistent_file() {
+    use crate::communication::read_topic_header_info;
+    let result = read_topic_header_info(std::path::Path::new("/tmp/nonexistent_horus_topic_12345"));
+    assert!(result.is_none(), "nonexistent file should return None");
+}
+
+#[test]
+fn test_read_header_truncated_file() {
+    use crate::communication::read_topic_header_info;
+    // Create a file smaller than TopicHeader (640 bytes)
+    let path = std::env::temp_dir().join("horus_test_truncated_header");
+    std::fs::write(&path, &[0u8; 100]).unwrap();
+    let result = read_topic_header_info(&path);
+    assert!(result.is_none(), "truncated file should return None");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_read_header_bad_magic() {
+    use crate::communication::read_topic_header_info;
+    // Create a file with wrong magic number
+    let path = std::env::temp_dir().join("horus_test_bad_magic");
+    let mut data = vec![0u8; 1024]; // Large enough for header
+    // Write garbage magic (first 8 bytes)
+    data[0..8].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
+    std::fs::write(&path, &data).unwrap();
+    let result = read_topic_header_info(&path);
+    assert!(result.is_none(), "bad magic should return None");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_read_header_empty_file() {
+    use crate::communication::read_topic_header_info;
+    let path = std::env::temp_dir().join("horus_test_empty_header");
+    std::fs::write(&path, &[]).unwrap();
+    let result = read_topic_header_info(&path);
+    assert!(result.is_none(), "empty file should return None");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_topic_send_after_ring_full_returns() {
+    let name = unique("error_ring_full");
+    // Create topic with very small capacity
+    let t: RingTopic<u64> = RingTopic::with_capacity(&name, 4, Some(64)).expect("create");
+    t.send(1u64);
+    let _ = t.recv();
+
+    // Force SHM dispatch
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            // Fill the ring beyond capacity
+            for i in 0..100 {
+                let _ = t.try_send(i);
+            }
+            // Should not panic — messages are dropped when ring is full
+        }
+        _ => {} // SHM migration may not succeed in all environments
+    }
+}
+
+#[test]
+fn test_topic_recv_on_empty_returns_none() {
+    let name = unique("error_recv_empty");
+    let t: RingTopic<u32> = RingTopic::new(&name).expect("create");
+    // No messages sent
+    assert!(t.recv().is_none(), "recv on empty topic should return None");
+}
+
+#[test]
+// ============================================================================
+// Concurrent contention stress tests
+// ============================================================================
+
+#[test]
+fn test_stress_8_threads_same_topic_send_recv() {
+    let name = unique("stress_8_threads");
+    let t: RingTopic<u64> = RingTopic::new(&name).expect("create");
+    let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let received = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+    // 4 sender threads
+    let mut handles = vec![];
+    for _ in 0..4 {
+        let tc = t.clone();
+        let s = sent.clone();
+        let r = running.clone();
+        handles.push(std::thread::spawn(move || {
+            let mut i = 0u64;
+            while r.load(std::sync::atomic::Ordering::Relaxed) {
+                if tc.try_send(i).is_ok() {
+                    s.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                i += 1;
+            }
+        }));
+    }
+
+    // 4 receiver threads
+    for _ in 0..4 {
+        let tc = t.clone();
+        let r_count = received.clone();
+        let r = running.clone();
+        handles.push(std::thread::spawn(move || {
+            while r.load(std::sync::atomic::Ordering::Relaxed) {
+                if tc.recv().is_some() {
+                    r_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }));
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let total_sent = sent.load(std::sync::atomic::Ordering::Relaxed);
+    let total_recv = received.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(total_sent > 0, "should have sent messages: {}", total_sent);
+    assert!(total_recv > 0, "should have received messages: {}", total_recv);
+    // No crash, no deadlock, no panic = success
+}
+
+#[test]
+fn test_stress_rapid_create_destroy_topics() {
+    // Rapidly create and destroy topics to stress SHM allocation
+    for i in 0..50 {
+        let name = unique(&format!("stress_create_{}", i));
+        let t: RingTopic<u32> = RingTopic::new(&name).expect("create");
+        t.send(42u32);
+        let _ = t.recv();
+        drop(t);
+    }
+    // No leak, no crash = success
+}
+
+#[test]
+fn test_stress_clone_heavy() {
+    let name = unique("stress_clones");
+    let t: RingTopic<u64> = RingTopic::new(&name).expect("create");
+
+    // Create 100 clones, send from each, recv from original
+    let clones: Vec<_> = (0..100).map(|_| t.clone()).collect();
+    for (i, c) in clones.iter().enumerate() {
+        c.send(i as u64);
+    }
+
+    let mut count = 0;
+    while t.recv().is_some() {
+        count += 1;
+    }
+    assert!(count > 0, "should have received from clones");
+    // All 100 clones drop cleanly
+    drop(clones);
+}
+
+fn test_topic_multiple_drops_no_double_free() {
+    let name = unique("error_multi_drop");
+    {
+        let t1: RingTopic<u32> = RingTopic::new(&name).expect("create");
+        let _t2 = t1.clone();
+        // Both drop here — should not double-free SHM
+    }
+    // Create again on same name — should succeed (SHM reused)
+    let _t3: RingTopic<u32> = RingTopic::new(&name).expect("recreate after drop");
+}

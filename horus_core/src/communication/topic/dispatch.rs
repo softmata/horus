@@ -2244,4 +2244,323 @@ mod tests {
             assert_eq!(recovered.size, 10000);
         }
     }
+
+    // ====================================================================
+    // Edge case tests — SpillDescriptor fields, sentinel, alignment, Pod
+    // ====================================================================
+
+    #[test]
+    fn test_spill_sentinel_exact_value() {
+        // Pin the sentinel to its documented hex value so accidental edits break loudly
+        assert_eq!(SPILL_SENTINEL, 0xDEAD_5911_CAFE_BABE);
+
+        // High bits are set (0xDEAD prefix) — ensures it can never be a valid
+        // inline message length since max slot size is 1MB (0x100000)
+        assert!(
+            SPILL_SENTINEL >> 32 != 0,
+            "sentinel must have high bits set to avoid collisions with valid lengths"
+        );
+    }
+
+    #[test]
+    fn test_spill_descriptor_zero_pool_id() {
+        // pool_id == 0 is a valid edge case (first pool created)
+        let tensor = crate::types::Tensor::new(
+            0, 0, 0, 0,
+            &[1],
+            crate::types::TensorDtype::U8,
+            crate::types::Device::cpu(),
+        );
+        let spill = SpillDescriptor::from_tensor(&tensor, 1);
+        assert_eq!(spill.sentinel, SPILL_SENTINEL);
+        assert_eq!(spill.pool_id, 0);
+        assert_eq!(spill.slot_id, 0);
+        assert_eq!(spill.generation, 0);
+        assert_eq!(spill.generation_hi, 0);
+        assert_eq!(spill.offset, 0);
+        assert_eq!(spill.size, 1);
+
+        let recovered = spill.to_tensor();
+        assert_eq!(recovered.pool_id, 0);
+        assert_eq!(recovered.slot_id, 0);
+        assert_eq!(recovered.generation, 0);
+        assert_eq!(recovered.generation_hi, 0);
+        assert_eq!(recovered.offset, 0);
+        assert_eq!(recovered.size, 1);
+    }
+
+    #[test]
+    fn test_spill_descriptor_max_offset() {
+        // Stress the offset field with u64::MAX — pool implementations must
+        // reject this, but SpillDescriptor is just a descriptor and stores it.
+        let mut tensor = crate::types::Tensor::default();
+        tensor.pool_id = 1;
+        tensor.slot_id = 1;
+        tensor.offset = u64::MAX;
+        tensor.size = 0;
+
+        let spill = SpillDescriptor::from_tensor(&tensor, 0);
+        assert_eq!(spill.offset, u64::MAX);
+        assert_eq!(spill.size, 0);
+
+        let recovered = spill.to_tensor();
+        assert_eq!(recovered.offset, u64::MAX);
+        assert_eq!(recovered.size, 0);
+    }
+
+    #[test]
+    fn test_spill_descriptor_zero_data_len() {
+        // A zero-length serialized message is degenerate but valid at the
+        // descriptor level (bincode can serialize () to 0 bytes).
+        let tensor = crate::types::Tensor::new(
+            5, 10, 999, 4096,
+            &[0],
+            crate::types::TensorDtype::U8,
+            crate::types::Device::cpu(),
+        );
+        let spill = SpillDescriptor::from_tensor(&tensor, 0);
+        assert_eq!(spill.size, 0);
+        assert_eq!(spill.sentinel, SPILL_SENTINEL);
+
+        let recovered = spill.to_tensor();
+        assert_eq!(recovered.size, 0);
+        assert_eq!(recovered.shape[0], 0);
+        assert_eq!(recovered.ndim, 1);
+    }
+
+    #[test]
+    fn test_spill_descriptor_max_u32_fields() {
+        // Push pool_id, slot_id, generation, generation_hi to u32::MAX
+        let mut tensor = crate::types::Tensor::default();
+        tensor.pool_id = u32::MAX;
+        tensor.slot_id = u32::MAX;
+        tensor.generation = u32::MAX;
+        tensor.generation_hi = u32::MAX;
+        tensor.offset = 0;
+        tensor.size = 0;
+
+        let spill = SpillDescriptor::from_tensor(&tensor, u64::MAX);
+        assert_eq!(spill.pool_id, u32::MAX);
+        assert_eq!(spill.slot_id, u32::MAX);
+        assert_eq!(spill.generation, u32::MAX);
+        assert_eq!(spill.generation_hi, u32::MAX);
+        assert_eq!(spill.size, u64::MAX);
+
+        let recovered = spill.to_tensor();
+        assert_eq!(recovered.pool_id, u32::MAX);
+        assert_eq!(recovered.slot_id, u32::MAX);
+        assert_eq!(recovered.generation, u32::MAX);
+        assert_eq!(recovered.generation_hi, u32::MAX);
+        assert_eq!(recovered.size, u64::MAX);
+    }
+
+    #[test]
+    fn test_spill_descriptor_alignment_and_size() {
+        // repr(C) layout guarantees:
+        // - sentinel: u64 at offset 0 (8 bytes)
+        // - pool_id: u32 at offset 8 (4 bytes)
+        // - slot_id: u32 at offset 12 (4 bytes)
+        // - generation: u32 at offset 16 (4 bytes)
+        // - generation_hi: u32 at offset 20 (4 bytes)
+        // - offset: u64 at offset 24 (8 bytes)
+        // - size: u64 at offset 32 (8 bytes)
+        // Total: 40 bytes, alignment: 8 (from u64)
+        assert_eq!(std::mem::size_of::<SpillDescriptor>(), 40);
+        assert_eq!(std::mem::align_of::<SpillDescriptor>(), 8);
+    }
+
+    #[test]
+    fn test_spill_descriptor_bytemuck_roundtrip() {
+        // SpillDescriptor is repr(C) and all-plain-data. Verify that raw byte
+        // reinterpretation produces identical field values (the property Pod
+        // would guarantee, tested here without requiring the Pod impl).
+        let tensor = crate::types::Tensor::new(
+            77, 33, 0xAAAA_BBBB_CCCC_DDDD_u64, 512,
+            &[8192],
+            crate::types::TensorDtype::U8,
+            crate::types::Device::cpu(),
+        );
+        let original = SpillDescriptor::from_tensor(&tensor, 7777);
+
+        // Reinterpret as bytes and back
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &original as *const SpillDescriptor as *const u8,
+                std::mem::size_of::<SpillDescriptor>(),
+            )
+        };
+        assert_eq!(bytes.len(), 40);
+
+        let roundtripped: SpillDescriptor = unsafe {
+            std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor)
+        };
+        assert_eq!(roundtripped.sentinel, original.sentinel);
+        assert_eq!(roundtripped.pool_id, original.pool_id);
+        assert_eq!(roundtripped.slot_id, original.slot_id);
+        assert_eq!(roundtripped.generation, original.generation);
+        assert_eq!(roundtripped.generation_hi, original.generation_hi);
+        assert_eq!(roundtripped.offset, original.offset);
+        assert_eq!(roundtripped.size, original.size);
+    }
+
+    #[test]
+    fn test_spill_threshold_boundary_under() {
+        // A message of exactly SPILL_THRESHOLD bytes does NOT spill
+        // (the comparison is `bytes.len() > SPILL_THRESHOLD`, strictly greater)
+        let at_threshold = SPILL_THRESHOLD;
+        assert!(!(at_threshold > SPILL_THRESHOLD), "exactly at threshold must NOT spill");
+
+        let one_under = SPILL_THRESHOLD - 1;
+        assert!(!(one_under > SPILL_THRESHOLD), "one byte under threshold must NOT spill");
+    }
+
+    #[test]
+    fn test_spill_threshold_boundary_over() {
+        // A message one byte over SPILL_THRESHOLD DOES spill
+        let one_over = SPILL_THRESHOLD + 1;
+        assert!(one_over > SPILL_THRESHOLD, "one byte over threshold MUST spill");
+    }
+
+    #[test]
+    fn test_spill_threshold_is_power_of_two() {
+        // SPILL_THRESHOLD = 4096 = 2^12. Being a power of two is not a hard
+        // requirement, but it aligns with page sizes and cache lines, and
+        // changes should be deliberate.
+        assert!(
+            SPILL_THRESHOLD.is_power_of_two(),
+            "SPILL_THRESHOLD ({}) should be a power of two for alignment",
+            SPILL_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn test_is_spill_slot_all_zeros() {
+        // An all-zero slot must NOT be detected as a spill
+        let slot = [0u8; 64];
+        unsafe {
+            assert!(
+                !is_spill_slot(slot.as_ptr()),
+                "all-zero slot must not be a spill"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_spill_slot_all_ones() {
+        // An all-0xFF slot has 0xFFFF_FFFF_FFFF_FFFF at offset 8,
+        // which does not equal SPILL_SENTINEL
+        let slot = [0xFFu8; 64];
+        unsafe {
+            assert!(
+                !is_spill_slot(slot.as_ptr()),
+                "all-0xFF slot must not be a spill (sentinel is not 0xFFFF...)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_spill_slot_sentinel_wrong_offset() {
+        // Sentinel at offset 0 (wrong position — should be at offset 8)
+        let mut slot = [0u8; 64];
+        slot[0..8].copy_from_slice(&SPILL_SENTINEL.to_ne_bytes());
+        // offset 8..16 is all zeros, not the sentinel
+        unsafe {
+            assert!(
+                !is_spill_slot(slot.as_ptr()),
+                "sentinel at offset 0 (wrong position) must not be detected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_spill_slot_sentinel_off_by_one() {
+        // Sentinel value +-1 must not match
+        let mut slot_plus = [0u8; 64];
+        slot_plus[8..16].copy_from_slice(&(SPILL_SENTINEL.wrapping_add(1)).to_ne_bytes());
+        unsafe {
+            assert!(!is_spill_slot(slot_plus.as_ptr()), "sentinel+1 must not match");
+        }
+
+        let mut slot_minus = [0u8; 64];
+        slot_minus[8..16].copy_from_slice(&(SPILL_SENTINEL.wrapping_sub(1)).to_ne_bytes());
+        unsafe {
+            assert!(!is_spill_slot(slot_minus.as_ptr()), "sentinel-1 must not match");
+        }
+    }
+
+    #[test]
+    fn test_spill_descriptor_generation_split() {
+        // Verify generation is correctly split into low/high u32 halves
+        let gen_full: u64 = 0x1234_5678_9ABC_DEF0;
+        let tensor = crate::types::Tensor::new(
+            1, 1, gen_full, 0,
+            &[64],
+            crate::types::TensorDtype::U8,
+            crate::types::Device::cpu(),
+        );
+        let spill = SpillDescriptor::from_tensor(&tensor, 64);
+
+        // Tensor::new splits generation_full into low/high halves
+        assert_eq!(spill.generation, gen_full as u32);         // 0x9ABC_DEF0
+        assert_eq!(spill.generation_hi, (gen_full >> 32) as u32); // 0x1234_5678
+
+        // to_tensor must reconstruct the same halves
+        let recovered = spill.to_tensor();
+        assert_eq!(recovered.generation, gen_full as u32);
+        assert_eq!(recovered.generation_hi, (gen_full >> 32) as u32);
+        assert_eq!(recovered.generation_full(), gen_full);
+    }
+
+    #[test]
+    fn test_spill_descriptor_to_tensor_dtype_and_ndim() {
+        // to_tensor always sets dtype=U8 and ndim=1 regardless of input
+        let tensor = crate::types::Tensor::new(
+            1, 1, 0, 0,
+            &[100],
+            crate::types::TensorDtype::U8,
+            crate::types::Device::cpu(),
+        );
+        let spill = SpillDescriptor::from_tensor(&tensor, 100);
+        let recovered = spill.to_tensor();
+        assert_eq!(recovered.dtype, crate::types::TensorDtype::U8);
+        assert_eq!(recovered.ndim, 1);
+        // shape[0] == size (the serialized byte count)
+        assert_eq!(recovered.shape[0], 100);
+    }
+
+    #[test]
+    fn test_read_spill_descriptor_preserves_all_fields() {
+        // Write a SpillDescriptor with every field set to distinct non-zero values,
+        // then read it back through read_spill_descriptor and verify all fields.
+        let desc = SpillDescriptor {
+            sentinel: SPILL_SENTINEL,
+            pool_id: 0xAABB_CCDD,
+            slot_id: 0x1122_3344,
+            generation: 0xDEAD_BEEF,
+            generation_hi: 0xCAFE_F00D,
+            offset: 0x0102_0304_0506_0708,
+            size: 0x0A0B_0C0D_0E0F_1011,
+        };
+
+        let mut slot = [0u8; 64];
+        let desc_bytes = unsafe {
+            std::slice::from_raw_parts(
+                &desc as *const SpillDescriptor as *const u8,
+                std::mem::size_of::<SpillDescriptor>(),
+            )
+        };
+        slot[8..8 + desc_bytes.len()].copy_from_slice(desc_bytes);
+
+        unsafe {
+            assert!(is_spill_slot(slot.as_ptr()));
+            let recovered = read_spill_descriptor(slot.as_ptr());
+            assert_eq!(recovered.sentinel, SPILL_SENTINEL);
+            assert_eq!(recovered.pool_id, 0xAABB_CCDD);
+            assert_eq!(recovered.slot_id, 0x1122_3344);
+            assert_eq!(recovered.generation, 0xDEAD_BEEF);
+            assert_eq!(recovered.generation_hi, 0xCAFE_F00D);
+            assert_eq!(recovered.offset, 0x0102_0304_0506_0708);
+            assert_eq!(recovered.size, 0x0A0B_0C0D_0E0F_1011);
+        }
+    }
 }

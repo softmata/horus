@@ -688,6 +688,13 @@ pub(crate) struct PackageManifest {
     pub description: Option<String>,
     pub license: Option<String>,
     pub package_type: Option<String>,
+    pub plugin_type: Option<String>,
+    pub plugin_entry: Option<String>,
+    pub driver_category: Option<String>,
+    pub bus_type: Option<String>,
+    pub output_type: Option<String>,
+    pub input_type: Option<String>,
+    pub platforms: Option<String>,
     pub categories: Option<String>,
     pub source_url: Option<String>,
     pub manifest_format: ManifestFormat,
@@ -716,6 +723,13 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
             description: manifest.package.description,
             license: manifest.package.license,
             package_type,
+            plugin_type: None,      // horus.toml doesn't have plugin metadata yet
+            plugin_entry: None,
+            driver_category: None,
+            bus_type: None,
+            output_type: None,
+            input_type: None,
+            platforms: None,
             categories,
             source_url: manifest.package.repository,
             manifest_format: ManifestFormat::HorusToml,
@@ -763,15 +777,26 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
         // Check [package.metadata.horus] for horus-specific fields
         let horus_meta = package.get("metadata").and_then(|m| m.get("horus"));
 
-        let package_type = horus_meta
-            .and_then(|h| h.get("package_type"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        // Helper: read a TOML field supporting both kebab-case and snake_case
+        let read_meta = |keys: &[&str]| -> Option<String> {
+            for key in keys {
+                if let Some(val) = horus_meta.and_then(|h| h.get(*key)).and_then(|v| v.as_str()) {
+                    return Some(val.to_string());
+                }
+            }
+            None
+        };
 
-        let categories = horus_meta
-            .and_then(|h| h.get("categories"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let package_type = read_meta(&["package_type", "package-type"])
+            .or_else(|| read_meta(&["type"])); // "type" is alias for package_type
+        let plugin_type = read_meta(&["plugin-type", "plugin_type"]);
+        let plugin_entry = read_meta(&["entry"]);
+        let driver_category = read_meta(&["driver-category", "driver_category"]);
+        let bus_type = read_meta(&["bus-type", "bus_type"]);
+        let output_type = read_meta(&["output-type", "output_type"]);
+        let input_type = read_meta(&["input-type", "input_type"]);
+        let platforms = read_meta(&["platforms"]);
+        let categories = read_meta(&["categories"]);
 
         return Ok(PackageManifest {
             name,
@@ -779,6 +804,13 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
             description,
             license,
             package_type,
+            plugin_type,
+            plugin_entry,
+            driver_category,
+            bus_type,
+            output_type,
+            input_type,
+            platforms,
             categories,
             source_url,
             manifest_format: ManifestFormat::CargoToml,
@@ -840,6 +872,13 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
             description,
             license,
             package_type,
+            plugin_type: None,      // package.json doesn't have horus plugin metadata
+            plugin_entry: None,
+            driver_category: None,
+            bus_type: None,
+            output_type: None,
+            input_type: None,
+            platforms: None,
             categories,
             source_url,
             manifest_format: ManifestFormat::PackageJson,

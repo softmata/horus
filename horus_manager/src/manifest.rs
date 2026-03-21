@@ -177,6 +177,17 @@ pub struct HorusManifest {
     )]
     pub dev_dependencies: BTreeMap<String, DependencyValue>,
 
+    /// `[sim-dependencies]` -- simulation asset dependencies (auto-installed on `horus sim3d`).
+    ///
+    /// Package types: robot, world, sensor-preset, task, actuator-preset.
+    /// Resolved from horus-registry and cached in `.horus/packages/`.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        rename = "sim-dependencies"
+    )]
+    pub sim_dependencies: BTreeMap<String, DependencyValue>,
+
     /// `[drivers]` -- hardware driver configuration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drivers: BTreeMap<String, DriverValue>,

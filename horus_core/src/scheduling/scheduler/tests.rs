@@ -2968,3 +2968,198 @@ fn test_telemetry_builder() {
         Some("udp://localhost:9999".to_string())
     );
 }
+
+// ============================================================================
+// Error path and negative tests
+// ============================================================================
+
+#[test]
+fn test_scheduler_very_high_tick_rate() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut scheduler = Scheduler::new().tick_rate(100_000.hz());
+    scheduler
+        .add(CounterNode::with_counter("fast_node", counter))
+        .build();
+    // Very high rate should be accepted without panic
+}
+
+#[test]
+fn test_scheduler_add_node_after_stop() {
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(CounterNode::with_counter("node_a", Arc::new(AtomicUsize::new(0))))
+        .build();
+    scheduler.stop();
+    // Adding after stop should still work (for next run)
+    scheduler
+        .add(CounterNode::with_counter("node_b", Arc::new(AtomicUsize::new(0))))
+        .build();
+}
+
+#[test]
+fn test_scheduler_metrics_before_any_run() {
+    let _guard = lock_scheduler();
+    let scheduler = Scheduler::new();
+    let metrics = scheduler.metrics();
+    // No nodes added — metrics should be empty
+    assert!(metrics.is_empty(), "metrics should be empty before adding nodes");
+}
+
+#[test]
+fn test_node_builder_rate_then_budget_same_as_budget_then_rate() {
+    let _guard = lock_scheduler();
+    // Order 1: rate then budget
+    let mut s1 = Scheduler::new();
+    s1.add(CounterNode::with_counter("order1", Arc::new(AtomicUsize::new(0))))
+        .rate(100.hz())
+        .budget(500.us())
+        .build();
+    let node1 = &s1.nodes[0];
+    let rate1 = node1.rate_hz;
+    let budget1 = node1.tick_budget;
+    let class1 = node1.execution_class.clone();
+
+    // Order 2: budget then rate
+    let mut s2 = Scheduler::new();
+    s2.add(CounterNode::with_counter("order2", Arc::new(AtomicUsize::new(0))))
+        .budget(500.us())
+        .rate(100.hz())
+        .build();
+    let node2 = &s2.nodes[0];
+
+    assert_eq!(rate1, node2.rate_hz, "rate must be same regardless of call order");
+    assert_eq!(budget1, node2.tick_budget, "budget must be same regardless of call order");
+    assert_eq!(class1, node2.execution_class, "execution class must be same regardless of call order");
+}
+
+#[test]
+fn test_node_builder_compute_then_rate_stays_compute() {
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(CounterNode::with_counter("compute_rate", Arc::new(AtomicUsize::new(0))))
+        .compute()
+        .rate(100.hz())
+        .build();
+    let node = &scheduler.nodes[0];
+    // Compute with rate should stay Compute (rate doesn't auto-promote to Rt when compute is explicit)
+    assert_eq!(node.execution_class, crate::scheduling::types::ExecutionClass::Compute);
+}
+
+#[test]
+fn test_node_builder_deadline_without_rate() {
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(CounterNode::with_counter("deadline_only", Arc::new(AtomicUsize::new(0))))
+        .deadline(1.ms())
+        .build();
+    // Deadline without rate should work (deadline checked on each tick)
+    assert!(scheduler.nodes[0].deadline.is_some());
+}
+
+// ============================================================================
+// End-to-end robot scenario test
+// ============================================================================
+
+#[test]
+fn test_e2e_sensor_controller_motor_pipeline() {
+    let _guard = lock_scheduler();
+
+    // Simulate: sensor (order 0) → controller (order 1) → motor (order 2)
+    // Each node increments its counter on tick
+    let sensor_count = Arc::new(AtomicUsize::new(0));
+    let controller_count = Arc::new(AtomicUsize::new(0));
+    let motor_count = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100.hz())
+        .deterministic(true); // Deterministic for reproducible ordering
+
+    scheduler
+        .add(CounterNode::with_counter("sensor", sensor_count.clone()))
+        .order(0)
+        .build();
+    scheduler
+        .add(CounterNode::with_counter("controller", controller_count.clone()))
+        .order(1)
+        .build();
+    scheduler
+        .add(CounterNode::with_counter("motor", motor_count.clone()))
+        .order(2)
+        .build();
+
+    // Run 10 ticks
+    for _ in 0..10 {
+        scheduler.tick_once();
+    }
+
+    let s = sensor_count.load(Ordering::Relaxed);
+    let c = controller_count.load(Ordering::Relaxed);
+    let m = motor_count.load(Ordering::Relaxed);
+
+    // All three nodes should have ticked 10 times
+    assert_eq!(s, 10, "sensor should tick 10 times, got {}", s);
+    assert_eq!(c, 10, "controller should tick 10 times, got {}", c);
+    assert_eq!(m, 10, "motor should tick 10 times, got {}", m);
+}
+
+#[test]
+fn test_e2e_graceful_shutdown_all_nodes_cleanup() {
+    let _guard = lock_scheduler();
+
+    let init_count = Arc::new(AtomicUsize::new(0));
+    let tick_count = Arc::new(AtomicUsize::new(0));
+    let shutdown_count = Arc::new(AtomicUsize::new(0));
+
+    struct LifecycleNode {
+        name: &'static str,
+        init_count: Arc<AtomicUsize>,
+        tick_count: Arc<AtomicUsize>,
+        shutdown_count: Arc<AtomicUsize>,
+    }
+
+    impl Node for LifecycleNode {
+        fn name(&self) -> &str { self.name }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            self.init_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn tick(&mut self) { self.tick_count.fetch_add(1, Ordering::Relaxed); }
+        fn shutdown(&mut self) -> crate::error::HorusResult<()> {
+            self.shutdown_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100.hz())
+        .deterministic(true);
+
+    for i in 0..5 {
+        let node = LifecycleNode {
+            name: Box::leak(format!("node_{}", i).into_boxed_str()),
+            init_count: init_count.clone(),
+            tick_count: tick_count.clone(),
+            shutdown_count: shutdown_count.clone(),
+        };
+        scheduler.add(node).build();
+    }
+
+    // Tick a few times then stop
+    for _ in 0..5 {
+        scheduler.tick_once();
+    }
+    scheduler.stop();
+
+    let inits = init_count.load(Ordering::Relaxed);
+    let ticks = tick_count.load(Ordering::Relaxed);
+
+    assert_eq!(inits, 5, "all 5 nodes should init");
+    assert_eq!(ticks, 25, "5 nodes x 5 ticks = 25");
+
+    // Note: tick_once() mode doesn't call shutdown() — that's done by run() or explicit call.
+    // This test verifies the init+tick pipeline works correctly in deterministic mode.
+}
