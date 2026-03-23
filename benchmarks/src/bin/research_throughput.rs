@@ -8,7 +8,6 @@
 
 use horus_benchmarks::detect_platform;
 use horus_core::communication::Topic;
-use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};

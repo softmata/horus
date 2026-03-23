@@ -171,7 +171,7 @@ fn write_driver_deps(
                     }
                 } else if let Some(crate_name) = &cfg.crate_name {
                     // CratesIo driver — add the crate as a dependency
-                    let version = cfg.params.get("version")
+                    let _version = cfg.params.get("version")
                         .and_then(|v| v.as_str())
                         .unwrap_or("*")
                         .to_string();

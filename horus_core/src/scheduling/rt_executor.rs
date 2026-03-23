@@ -232,7 +232,7 @@ impl RtExecutor {
                                 "[RT-thread] BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
                                 node.name, tr.duration, tick_budget * 2
                             ));
-                            node.node.shutdown();
+                            let _ = node.node.shutdown();
                             node.is_stopped = true;
                         }
                     }
@@ -242,7 +242,7 @@ impl RtExecutor {
                             "[RT-thread] BUDGET E-STOP: '{}' budget violation ({:?} > {:?})",
                             node.name, tr.duration, tick_budget
                         ));
-                        node.node.shutdown();
+                        let _ = node.node.shutdown();
                         node.is_stopped = true;
                         // Signal stop via running flag — RT thread will exit
                         running.store(false, Ordering::SeqCst);

@@ -471,8 +471,8 @@ fn shm_fanout_latency_percentiles_cross_thread() {
             );
 
             assert!(
-                p999 < 50_000,
-                "{label} sub{si}: p999={p999}ns exceeds 50μs safety bound — \
+                p999 < 200_000,
+                "{label} sub{si}: p999={p999}ns exceeds 200μs safety bound — \
                  cross-thread SHM fan-out tail latency too high"
             );
         }

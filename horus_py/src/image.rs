@@ -476,7 +476,7 @@ impl PyImage {
     fn to_numpy_internal<'py>(
         &self,
         slf: &Bound<'py, PyImage>,
-        py: Python<'py>,
+        _py: Python<'py>,
         np: &Bound<'py, pyo3::types::PyModule>,
     ) -> PyResult<Bound<'py, PyAny>> {
         np.call_method1("asarray", (slf.as_any(),))

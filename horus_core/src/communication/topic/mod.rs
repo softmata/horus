@@ -1651,14 +1651,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         pool
     }
 
-    /// Get the spill pool if it has been initialized (no lazy creation).
-    ///
-    /// Used on the recv path — if the sender spilled, the receiver needs the pool.
-    /// Creates lazily if needed (receiver may see a spill before sender's pool is cached).
-    pub(crate) fn get_or_create_spill_pool_for_recv(&self) -> Arc<TensorPool> {
-        self.get_or_create_spill_pool()
-    }
-
     /// Periodic migration check — reads migration_epoch from SHM header.
     ///
     /// Uses `self.header_ptr` (stable pointer to the SHM TopicHeader) instead

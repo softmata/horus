@@ -930,6 +930,7 @@ impl PyTensorHandle {
 
     /// Transpose (2D only): t.T or t.transpose()
     #[getter]
+    #[allow(non_snake_case)]
     fn T<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let np_arr = Self::numpy(slf, py)?;
         np_arr.getattr("T")
@@ -1128,7 +1129,7 @@ fn numpy_binop<'py>(
     let a = PyTensorHandle::numpy(slf, py)?;
     // If other is a Tensor, convert to numpy first
     let b = if other.is_instance_of::<PyTensorHandle>() {
-        let other_bound = other.downcast::<PyTensorHandle>()?;
+        let other_bound = other.cast::<PyTensorHandle>()?;
         PyTensorHandle::numpy(other_bound, py)?
     } else {
         other.clone()

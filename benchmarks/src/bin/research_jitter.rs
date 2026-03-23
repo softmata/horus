@@ -101,7 +101,7 @@ fn main() {
 
     let (jitter_node, intervals) = JitterNode::new("jitter_rt");
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
-    scheduler.add(jitter_node).order(0).rate(1000_u64.hz()).build();
+    let _ = scheduler.add(jitter_node).order(0).rate(1000_u64.hz()).build();
     let _ = scheduler.run_for(std::time::Duration::from_secs(duration));
 
     let mut ticks = intervals.lock().unwrap().clone();

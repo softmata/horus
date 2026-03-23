@@ -53,7 +53,7 @@ impl OccupancyGrid {
         let tensor = pool.alloc(&shape, TensorDtype::I8, Device::cpu())?;
         let descriptor = OccupancyGridDescriptor::new(tensor, resolution, width, height);
 
-        let mut grid = Self { descriptor, pool };
+        let grid = Self { descriptor, pool };
 
         // Initialize all cells to -1 (unknown)
         let data = grid.data_mut();

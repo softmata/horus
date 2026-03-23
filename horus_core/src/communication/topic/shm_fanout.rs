@@ -333,13 +333,6 @@ impl ShmSpscChannel {
         Some(data)
     }
 
-    /// Check if data is available without consuming.
-    #[inline(always)]
-    pub(crate) unsafe fn has_data(&self) -> bool {
-        let tail = (*self.tail_ptr).load(Ordering::Relaxed);
-        let head = (*self.head_ptr).load(Ordering::Relaxed);
-        tail < head
-    }
 }
 
 // SAFETY: ShmSpscChannel is a view into mmap'd memory. The SPSC contract
@@ -377,8 +370,6 @@ pub(crate) struct ShmFanoutRing {
     cached_tails: Vec<std::cell::Cell<u64>>,
     /// Whether this is a POD type (determines send/recv path).
     is_pod: bool,
-    /// sizeof(T) for POD copy.
-    type_size: usize,
 }
 
 // SAFETY: ShmFanoutRing manages thread safety through its SPSC channels.
@@ -473,7 +464,7 @@ impl ShmFanoutRing {
     unsafe fn build_views(
         shm_base: *mut u8,
         is_pod: bool,
-        type_size: usize,
+        _type_size: usize,
     ) -> Self {
         let meta = &*(shm_base.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
         let max_pubs = meta.max_publishers as usize;
@@ -509,7 +500,6 @@ impl ShmFanoutRing {
             recv_cursors: [CELL_INIT; MAX_FANOUT_ENDPOINTS],
             cached_tails,
             is_pod,
-            type_size,
         }
     }
 
@@ -658,7 +648,18 @@ impl ShmFanoutRing {
         None
     }
 
+    /// Check if this ring is operating on POD types.
+    #[inline]
+    pub(crate) fn is_pod(&self) -> bool {
+        self.is_pod
+    }
+
+    // ========================================================================
+    // Test-only introspection helpers
+    // ========================================================================
+
     /// Get the number of registered publishers.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn num_publishers(&self) -> usize {
         let meta = unsafe { &*self.meta_ptr };
@@ -666,16 +667,11 @@ impl ShmFanoutRing {
     }
 
     /// Get the number of registered subscribers.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn num_subscribers(&self) -> usize {
         let meta = unsafe { &*self.meta_ptr };
         meta.num_subscribers.load(Ordering::Relaxed) as usize
-    }
-
-    /// Check if this ring is operating on POD types.
-    #[inline]
-    pub(crate) fn is_pod(&self) -> bool {
-        self.is_pod
     }
 
     // ========================================================================
@@ -708,6 +704,7 @@ impl ShmFanoutRing {
     }
 
     /// Total pending messages across all channels for a subscriber.
+    #[cfg(test)]
     pub(crate) fn pending_count_for_sub(&self, sub_id: usize) -> u64 {
         let n_pubs = self.num_publishers();
         let mut total = 0u64;

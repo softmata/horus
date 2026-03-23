@@ -87,7 +87,7 @@ impl CostMap {
             CostMapDescriptor::new(grid_tensor, cost_tensor, resolution, width, height);
         descriptor.set_inflation_radius(inflation_radius);
 
-        let mut costmap = Self { descriptor, pool };
+        let costmap = Self { descriptor, pool };
 
         // Initialize occupancy to -1 (unknown)
         costmap.grid_data_mut().fill(0xFF); // -1 as u8

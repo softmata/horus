@@ -103,13 +103,6 @@ impl<T> SpscChannel<T> {
         Some(msg)
     }
 
-    /// Check if there's data available without consuming it.
-    #[inline(always)]
-    fn has_data(&self) -> bool {
-        let tail = self.tail.0.load(Ordering::Relaxed);
-        let head = self.head.0.load(Ordering::Relaxed);
-        tail < head
-    }
 }
 
 // SAFETY: SpscChannel is used within FanoutRing which ensures

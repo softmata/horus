@@ -79,7 +79,7 @@ fn main() {
             let name: &'static str = Box::leak(format!("scale_n_{i}").into_boxed_str());
             let node = LoadNode::new(name);
             counters.push(node.counter.clone());
-            scheduler.add(node).order(i as u32).build();
+            let _ = scheduler.add(node).order(i as u32).build();
         }
 
         let start = Instant::now();

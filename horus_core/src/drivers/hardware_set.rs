@@ -567,37 +567,6 @@ impl HardwareSet {
         self.robot_name.as_deref().unwrap_or("robot")
     }
 
-    /// Resolve the topic name string for a sensor (internal).
-    ///
-    /// Users should use the naming convention directly:
-    /// `"{robot_name}.{sensor_name}.{data_type}"` (e.g., `"turtlebot.front_lidar.scan"`)
-    ///
-    /// This method exists for internal alignment testing between sim and drivers.
-    pub(crate) fn resolve_topic_name(&self, name: &str, data_type: &str) -> String {
-        // Check explicit TopicMapping first (backwards compat)
-        if let Some(mapping) = self.topic_mapping(name) {
-            if let Some(ref topic) = mapping.topic {
-                return topic.clone();
-            }
-            if let Some(ref topic_state) = mapping.topic_state {
-                return topic_state.clone();
-            }
-        }
-
-        // Shared naming convention
-        let robot = self.robot_name();
-        let mut segments = Vec::with_capacity(3);
-        if !robot.is_empty() {
-            segments.push(robot);
-        }
-        if !name.is_empty() {
-            segments.push(name);
-        }
-        if !data_type.is_empty() {
-            segments.push(data_type);
-        }
-        segments.join(".")
-    }
 
     // ── Sim override ────────────────────────────────────────────────────
 

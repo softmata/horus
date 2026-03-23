@@ -3168,7 +3168,7 @@ impl Scheduler {
                                     " BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
                                     node_name, tick_duration, tick_budget * 2
                                 ));
-                                self.nodes[i].node.shutdown();
+                                let _ = self.nodes[i].node.shutdown();
                                 self.nodes[i].is_stopped = true;
                             }
                         }
@@ -3314,7 +3314,7 @@ impl Scheduler {
             }
             DegradationAction::Kill(ref name) => {
                 self.nodes[i].health_state.store(NodeHealthState::Isolated);
-                self.nodes[i].node.shutdown();
+                let _ = self.nodes[i].node.shutdown();
                 self.nodes[i].is_stopped = true;
                 print_line(&format!(
                     " KILL: '{}' — permanently removed from execution after shutdown()",

@@ -4122,7 +4122,7 @@ impl PyTopic {
             }
             TopicType::Tensor(topic) => {
                 let topic_ref = topic.clone();
-                let topic_name = self.name.clone();
+                let _topic_name = self.name.clone();
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
                 if let Some(descriptor) = msg_opt {
                     // Wrap the received Tensor descriptor in a TensorHandle

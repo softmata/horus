@@ -179,7 +179,7 @@ fn measure_mpsc<T: Copy + Send + Sync + Serialize + serde::de::DeserializeOwned 
     // 3 publisher threads
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let mut producers = Vec::new();
-    for i in 0..3 {
+    for _i in 0..3 {
         let tn = topic_name.clone();
         let r = running.clone();
         producers.push(std::thread::spawn(move || {

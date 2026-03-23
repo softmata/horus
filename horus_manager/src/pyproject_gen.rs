@@ -74,7 +74,7 @@ pub fn generate(
     let mut pypi_deps = collect_python_deps(&manifest.dependencies);
 
     // Add PyPI driver dependencies from [drivers]
-    for (name, value) in &manifest.drivers {
+    for (_name, value) in &manifest.drivers {
         if let crate::manifest::DriverValue::Config(cfg) = value {
             if let Some(ref pip_name) = cfg.pip {
                 let version = cfg.params.get("version")
