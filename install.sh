@@ -213,11 +213,19 @@ else
     BUILD_START=$(date +%s)
     cd "$CLONE_DIR"
     # Force stable toolchain — nightly may have compiler bugs
+    # First try with LTO (smaller binary). If LLVM crashes (SIGILL — known
+    # bug on some CPUs), retry without LTO.
     if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
         echo ""
-        fail "Build failed"
-        echo "    Report issues: https://github.com/${REPO}/issues"
-        exit 1
+        warn "Release build failed (possible LLVM/LTO bug), retrying without LTO..."
+        echo ""
+        export CARGO_PROFILE_RELEASE_LTO=off
+        if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
+            echo ""
+            fail "Build failed"
+            echo "    Report issues: https://github.com/${REPO}/issues"
+            exit 1
+        fi
     fi
     build_elapsed=$(($(date +%s) - BUILD_START))
     echo ""
