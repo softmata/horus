@@ -1,6 +1,18 @@
 use super::helpers::*;
 use super::*;
 
+/// Returns the Rust target triple for the current platform.
+fn current_target_triple() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        _ => "unknown",
+    }
+}
+
 /// Convert a semver `VersionReq` to a pip-compatible version specifier string.
 /// Returns `None` for `*` (any version), or a pip specifier like `>=3.0,<4.0`.
 ///
@@ -347,12 +359,41 @@ impl RegistryClient {
         let version_str = version.unwrap_or("latest");
         // URL-encode scoped package names for API calls
         let encoded_name = url_encode_package_name(package_name);
+
+        // Try pre-built binary first (skip source download + compile)
+        let target_triple = current_target_triple();
+        if target_triple != "unknown" {
+            let bin_url = format!(
+                "{}/api/packages/{}/{}/binaries/{}/download",
+                self.base_url, encoded_name, version_str, target_triple
+            );
+            if let Ok(resp) = self.client.get(&bin_url).send() {
+                if resp.status().is_success() {
+                    // Binary found — fast path
+                    return self.install_binary_artifact(
+                        package_name,
+                        version_str,
+                        &target,
+                        resp,
+                        target_triple,
+                        &spinner,
+                    );
+                }
+                // 404 = no binary for this platform, fall through to source
+                log::debug!(
+                    "No pre-built binary for {} on {}, falling back to source",
+                    package_name,
+                    target_triple
+                );
+            }
+        }
+
         let url = format!(
             "{}/api/packages/{}/{}/download",
             self.base_url, encoded_name, version_str
         );
 
-        // Download package
+        // Download source package
         let response = self.client.get(&url).send()?;
 
         if !response.status().is_success() {
@@ -800,6 +841,19 @@ impl RegistryClient {
         // Pre-compile if installed to global cache and is Rust/C package
         if install_type == "global" {
             if let Err(e) = precompile_package(&package_dir) {
+                // Plugin packages MUST have a working binary — propagate the error
+                let is_plugin = crate::commands::pkg::detect_plugin_metadata(&package_dir).is_some();
+                if is_plugin {
+                    return Err(anyhow!(
+                        "Pre-compilation failed for plugin package '{}': {}\n\
+                         Plugins require a working binary. Install a pre-built binary instead:\n\
+                         horus install {}",
+                        package_name,
+                        e,
+                        package_name
+                    ));
+                }
+                // Non-plugin (library) packages: warn and continue
                 println!("  {} Pre-compilation skipped: {}", "".yellow(), e);
             }
         }
@@ -820,6 +874,339 @@ impl RegistryClient {
         // Fetch and apply driver metadata if this is a driver package
         if let Some(driver_meta) = self.fetch_driver_metadata_opt(package_name) {
             self.apply_driver_requirements(&driver_meta, &target)?;
+        }
+
+        Ok(actual_version)
+    }
+
+    /// Install a pre-built binary artifact from the registry (fast path).
+    /// Skips source download + compilation entirely.
+    fn install_binary_artifact(
+        &self,
+        package_name: &str,
+        version_str: &str,
+        target: &crate::workspace::InstallTarget,
+        response: reqwest::blocking::Response,
+        target_triple: &str,
+        spinner: &indicatif::ProgressBar,
+    ) -> Result<String> {
+        log::info!(
+            "Installing pre-built binary for {} ({}) on {}",
+            package_name,
+            version_str,
+            target_triple
+        );
+
+        // Read checksum from header (optional — registry may or may not provide it)
+        let expected_checksum = response
+            .headers()
+            .get("x-horus-checksum")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        // Maximum download size (100 MB)
+        const MAX_DOWNLOAD_SIZE: u64 = 100 * 1024 * 1024;
+
+        let content_length = response.content_length();
+
+        if let Some(total) = content_length {
+            if total > MAX_DOWNLOAD_SIZE {
+                return Err(anyhow!(
+                    "Binary artifact for {}@{} is too large ({} bytes, max {} MB).",
+                    package_name,
+                    version_str,
+                    total,
+                    MAX_DOWNLOAD_SIZE / (1024 * 1024)
+                ));
+            }
+        }
+
+        // Download with progress bar for large binaries (>512KB)
+        let bytes = if let Some(total) = content_length.filter(|&s| s > 512 * 1024) {
+            spinner.finish_and_clear();
+            println!(
+                "  {} Downloading {} binary ({})...",
+                crate::cli_output::ICON_INFO.cyan(),
+                package_name,
+                progress::format_bytes(total)
+            );
+            use indicatif::{ProgressBar as DlBar, ProgressStyle as DlStyle};
+            use std::io::Read;
+            let pb = DlBar::new(total);
+            pb.set_style(
+                DlStyle::default_bar()
+                    .template("   {bar:30.cyan/dim} {bytes}/{total_bytes} ({eta})")
+                    .unwrap_or_else(|_| DlStyle::default_bar())
+                    .progress_chars("##-"),
+            );
+            let mut downloaded = Vec::with_capacity(total as usize);
+            let mut stream = response;
+            let mut buf = [0u8; 8192];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        downloaded.extend_from_slice(&buf[..n]);
+                        if downloaded.len() as u64 > MAX_DOWNLOAD_SIZE {
+                            return Err(anyhow!(
+                                "Download exceeded maximum size ({} MB)",
+                                MAX_DOWNLOAD_SIZE / (1024 * 1024)
+                            ));
+                        }
+                        pb.set_position(downloaded.len() as u64);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(anyhow::anyhow!("Download interrupted: {}", e)),
+                }
+            }
+            pb.finish_and_clear();
+            downloaded
+        } else {
+            let bytes = response.bytes()?.to_vec();
+            if bytes.len() as u64 > MAX_DOWNLOAD_SIZE {
+                return Err(anyhow!(
+                    "Download exceeded maximum size ({} MB)",
+                    MAX_DOWNLOAD_SIZE / (1024 * 1024)
+                ));
+            }
+            bytes
+        };
+
+        // Verify checksum from X-Horus-Checksum header
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual_checksum = format!("{:x}", hasher.finalize());
+
+        if let Some(ref expected) = expected_checksum {
+            if !expected.is_empty() && expected != &actual_checksum {
+                return Err(anyhow!(
+                    "Checksum mismatch for binary artifact {}@{} ({})!\n\
+                     Expected: {}\n\
+                     Got:      {}\n\n\
+                     The download may be corrupted or tampered with.",
+                    package_name,
+                    version_str,
+                    target_triple,
+                    expected,
+                    actual_checksum
+                ));
+            }
+            log::debug!(
+                "Binary checksum verified for {}@{} ({})",
+                package_name,
+                version_str,
+                target_triple
+            );
+        }
+
+        // Determine installation directory (same logic as source install)
+        let safe_pkg_name = package_name_to_path(package_name);
+
+        use crate::workspace::InstallTarget;
+        let global_cache = crate::paths::cache_dir()?;
+
+        let (install_dir, install_type, local_packages_dir) = match target {
+            InstallTarget::Global => {
+                fs::create_dir_all(&global_cache)?;
+                let current_local = PathBuf::from(".horus/packages");
+                (global_cache.clone(), "global", Some(current_local))
+            }
+            InstallTarget::Local(workspace_path) => {
+                let local_packages = workspace_path.join(".horus/packages");
+                fs::create_dir_all(&local_packages)?;
+
+                let has_global_versions = check_global_versions(&global_cache, &safe_pkg_name)?;
+
+                if has_global_versions {
+                    fs::create_dir_all(&global_cache)?;
+                    (global_cache.clone(), "global", Some(local_packages))
+                } else {
+                    (local_packages.clone(), "local", None)
+                }
+            }
+        };
+
+        // Extract tar.gz to temporary location first
+        let tar = GzDecoder::new(&bytes[..]);
+        let mut archive = Archive::new(tar);
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "horus_bin_{}_{}_{}",
+            safe_pkg_name,
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        fs::create_dir_all(&temp_dir)?;
+        let mut temp_guard = TempDirGuard::new(temp_dir.clone());
+
+        // Safe extraction: validate each entry to prevent path traversal
+        let canonical_temp = temp_dir.canonicalize()?;
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let entry_path = entry.path()?;
+            let entry_str = entry_path.to_string_lossy();
+
+            if entry_str.contains('\0') {
+                log::warn!("Skipping tar entry with null byte in path: {:?}", entry_str);
+                continue;
+            }
+            if entry_path.is_absolute() {
+                log::warn!("Skipping absolute tar entry: {:?}", entry_str);
+                continue;
+            }
+            if entry_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                log::warn!("Skipping tar entry with path traversal: {:?}", entry_str);
+                continue;
+            }
+            if entry.header().entry_type().is_symlink()
+                || entry.header().entry_type().is_hard_link()
+            {
+                if let Ok(Some(link_target)) = entry.link_name() {
+                    let target_path = link_target.to_path_buf();
+                    if target_path.is_absolute()
+                        || target_path
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                    {
+                        log::warn!(
+                            "Skipping symlink with unsafe target: {:?} -> {:?}",
+                            entry_str,
+                            target_path
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            let dest = canonical_temp.join(
+                entry_path
+                    .components()
+                    .filter(|c| !matches!(c, std::path::Component::CurDir))
+                    .collect::<PathBuf>(),
+            );
+            if !dest.starts_with(&canonical_temp) {
+                log::warn!(
+                    "Skipping tar entry escaping extraction dir: {:?}",
+                    entry_str
+                );
+                continue;
+            }
+
+            entry.unpack(&dest)?;
+        }
+
+        // Detect actual version for "latest" downloads
+        let actual_version = if version_str == "latest" {
+            detect_package_version(&temp_dir).ok_or_else(|| {
+                anyhow!(
+                    "Could not detect version for {} binary artifact.",
+                    package_name
+                )
+            })?
+        } else {
+            version_str.to_string()
+        };
+
+        // Move to final location
+        let package_dir = if install_type == "global" {
+            install_dir.join(format!("{}@{}", safe_pkg_name, actual_version))
+        } else {
+            install_dir.join(&safe_pkg_name)
+        };
+
+        // Atomic install via staging directory
+        let staging_dir = package_dir.with_extension("staging");
+        if staging_dir.exists() {
+            fs::remove_dir_all(&staging_dir)?;
+        }
+        fs::create_dir_all(&staging_dir)?;
+
+        copy_dir_all(&temp_dir, &staging_dir)?;
+        temp_guard.disarm();
+        fs::remove_dir_all(&temp_dir)?;
+
+        if package_dir.exists() {
+            fs::remove_dir_all(&package_dir)?;
+        }
+        fs::rename(&staging_dir, &package_dir)?;
+
+        // Create metadata.json
+        let metadata = PackageMetadata {
+            name: package_name.to_string(),
+            version: actual_version.clone(),
+            checksum: Some(actual_checksum),
+        };
+        let metadata_path = package_dir.join("metadata.json");
+        fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
+
+        // Create symlink in local workspace if installed to global cache
+        if install_type == "global" {
+            if let Some(local_pkg_dir) = local_packages_dir {
+                fs::create_dir_all(&local_pkg_dir)?;
+                let local_link = local_pkg_dir.join(&safe_pkg_name);
+
+                if (local_link.exists() || local_link.symlink_metadata().is_ok())
+                    && fs::remove_file(&local_link).is_err()
+                {
+                    fs::remove_dir_all(&local_link)?;
+                }
+
+                #[cfg(unix)]
+                horus_sys::fs::symlink(&package_dir, &local_link)?;
+                #[cfg(windows)]
+                std::os::windows::fs::symlink_dir(&package_dir, &local_link)?;
+
+                finish_success(
+                    spinner,
+                    &format!(
+                        "Installed {} v{} (pre-built for {})",
+                        package_name, actual_version, target_triple
+                    ),
+                );
+                println!(
+                    "   {} Linked: {} -> {}",
+                    "".dimmed(),
+                    local_link.display(),
+                    package_dir.display()
+                );
+            } else {
+                finish_success(
+                    spinner,
+                    &format!(
+                        "Installed {} v{} (pre-built for {})",
+                        package_name, actual_version, target_triple
+                    ),
+                );
+                println!("   {} Location: {}", "".dimmed(), package_dir.display());
+            }
+        } else {
+            finish_success(
+                spinner,
+                &format!(
+                    "Installed {} v{} (pre-built for {})",
+                    package_name, actual_version, target_triple
+                ),
+            );
+            println!("   {} Location: {}", "".dimmed(), package_dir.display());
+        }
+
+        // Resolve transitive dependencies
+        if let Ok(deps) = extract_package_dependencies(&package_dir) {
+            if !deps.is_empty() {
+                println!("  {} Found {} dependencies", "".cyan(), deps.len());
+                for dep in &deps {
+                    println!("    {} {} {}", "".dimmed(), dep.name, dep.requirement);
+                }
+                self.install_dependencies(&deps, target)?;
+            }
+        }
+
+        // Fetch and apply driver metadata if this is a driver package
+        if let Some(driver_meta) = self.fetch_driver_metadata_opt(package_name) {
+            self.apply_driver_requirements(&driver_meta, target)?;
         }
 
         Ok(actual_version)

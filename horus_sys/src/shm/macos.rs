@@ -232,6 +232,47 @@ impl ShmRegion {
     pub fn backing_path(&self) -> Option<&std::path::Path> {
         None
     }
+
+    /// Grow the region to `new_size` bytes without synchronization.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure no other thread is concurrently reading from or
+    /// writing to this memory region via raw pointers derived from `as_ptr()`.
+    pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        anyhow::ensure!(
+            new_size > self.size,
+            "grow_unchecked: new_size ({}) must be > current size ({})",
+            new_size,
+            self.size
+        );
+
+        // Extend the backing POSIX shared memory object
+        let ret = libc::ftruncate(self.fd, new_size as libc::off_t);
+        anyhow::ensure!(ret == 0, "ftruncate failed: {}", std::io::Error::last_os_error());
+
+        // Unmap old region
+        libc::munmap(self.ptr as *mut libc::c_void, self.size);
+
+        // Map the larger region
+        let new_ptr = libc::mmap(
+            std::ptr::null_mut(),
+            new_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            self.fd,
+            0,
+        );
+        anyhow::ensure!(
+            new_ptr != libc::MAP_FAILED,
+            "mmap after grow failed: {}",
+            std::io::Error::last_os_error()
+        );
+
+        self.ptr = new_ptr as *mut u8;
+        self.size = new_size;
+        Ok(())
+    }
 }
 
 impl Drop for ShmRegion {

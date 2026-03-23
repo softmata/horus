@@ -771,6 +771,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dispatch_result_helpers() {
         use std::os::unix::process::ExitStatusExt;
         let results = vec![
@@ -1116,6 +1117,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn all_succeeded_single_success() {
         use std::os::unix::process::ExitStatusExt;
         let results = vec![DispatchResult {
@@ -1128,6 +1130,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn all_succeeded_single_failure() {
         use std::os::unix::process::ExitStatusExt;
         let results = vec![DispatchResult {
@@ -1140,6 +1143,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn worst_exit_code_picks_highest() {
         use std::os::unix::process::ExitStatusExt;
         let results = vec![

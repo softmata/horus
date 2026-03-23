@@ -34,6 +34,7 @@ pub mod security;
 pub mod source_resolver;
 pub mod system_deps;
 pub mod toolchain;
+pub mod urdf;
 pub mod version;
 pub mod workspace;
 

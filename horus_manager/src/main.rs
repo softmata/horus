@@ -207,6 +207,18 @@ enum Commands {
         /// Run a specific workspace member by name
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
+
+        /// Run in simulation mode using horus-sim3d.
+        ///
+        /// Without arguments: simulates ALL drivers that have [sim-drivers] overrides.
+        /// With arguments: simulates only the named drivers (mixed mode).
+        ///
+        /// Examples:
+        ///   horus run --sim              # all drivers simulated
+        ///   horus run --sim lidar        # only lidar simulated
+        ///   horus run --sim lidar camera # lidar + camera simulated
+        #[arg(long = "sim", num_args = 0..)]
+        sim: Option<Vec<String>>,
     },
 
     /// Build the HORUS project without running
@@ -1995,6 +2007,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             record,
             no_hooks,
             package,
+            sim,
         } => {
             // Enable JSON diagnostics mode globally (read by error_wrapper::emit_diagnostic)
             if json_diagnostics {
@@ -2014,6 +2027,64 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 }
             }
 
+            // Handle --sim flag: auto-launch sim3d and set env vars
+            let mut _sim3d_child: Option<std::process::Child> = None;
+            if let Some(ref sim_targets) = sim {
+                if sim_targets.is_empty() {
+                    log::info!("Simulation mode: all drivers with [sim-drivers] overrides will be simulated");
+                } else {
+                    log::info!("Simulation mode (selective): simulating [{}]", sim_targets.join(", "));
+                }
+                std::env::set_var("HORUS_SIM_MODE", "1");
+                if !sim_targets.is_empty() {
+                    std::env::set_var("HORUS_SIM_TARGETS", sim_targets.join(","));
+                }
+
+                // Auto-launch simulator plugin in background
+                let mut sim_args: Vec<String> = vec!["--driver-mode".to_string()];
+                let mut simulator_name = "sim3d".to_string(); // default
+
+                // Pass URDF from [robot].description if available
+                if let Ok(manifest) = horus_manager::manifest::HorusManifest::load_from(
+                    std::path::Path::new("horus.toml"),
+                ) {
+                    if let Some(ref robot) = manifest.robot {
+                        if let Some(ref desc) = robot.description {
+                            sim_args.push("--robot".to_string());
+                            sim_args.push(desc.clone());
+                        }
+                        sim_args.push("--robot-name".to_string());
+                        sim_args.push(robot.name.clone());
+                        // Use configured simulator (default: "sim3d")
+                        if let Some(ref sim) = robot.simulator {
+                            simulator_name = sim.clone();
+                        }
+                    }
+                }
+
+                // Launch simulator plugin via PluginExecutor
+                match horus_manager::plugins::PluginExecutor::new() {
+                    Ok(executor) => {
+                        match executor.spawn_background(&simulator_name, &sim_args, &[]) {
+                            Ok(child) => {
+                                log::info!("{} launched (PID: {}), waiting for startup...", simulator_name, child.id());
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                _sim3d_child = Some(child);
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to auto-launch '{}': {}. Install with: horus install horus-{}",
+                                    simulator_name, e, simulator_name
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Plugin system unavailable: {}. Run sim3d manually.", e);
+                    }
+                }
+            }
+
             // Build and run
             let result = commands::run::execute_run(files, args, release, clean, package);
             if json {
@@ -2027,6 +2098,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     ),
                 }
             }
+            // Clean up sim3d process on exit
+            if let Some(mut child) = _sim3d_child {
+                log::info!("Shutting down sim3d (PID: {})...", child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+
             result.map_err(HorusError::from)
         }
 
@@ -2493,7 +2571,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             let (pkg_name, pkg_ver) = split_name_version(name, ver);
 
             let result = if driver {
-                commands::pkg::run_add(pkg_name.clone(), pkg_ver.clone(), true, false)
+                commands::pkg::run_add(pkg_name.clone(), pkg_ver.clone(), true, false, source)
             } else {
                 commands::pkg::run_add_dep(
                     pkg_name.clone(),

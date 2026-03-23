@@ -49,13 +49,13 @@ jobs:
 
       - name: Test
         run: |
-          # Exclude crates with Linux-specific tests:
+          # Exclude crates with platform-specific dependencies:
           # - horus_py: requires Python headers
           # - horus_benchmarks: timing uses RDTSC/Linux-specific fallbacks
-          # - horus_core: topic tests rely on /dev/shm which doesn't exist on macOS
           cargo test --workspace --no-fail-fast \
-            --exclude horus_py --exclude horus_benchmarks --exclude horus_core
+            --exclude horus_py --exclude horus_benchmarks
         env:
+          HORUS_NAMESPACE: ci_macos_${{ github.run_id }}
           RUST_BACKTRACE: 1
 
   # macOS ARM64 (Apple Silicon)
@@ -88,13 +88,13 @@ jobs:
 
       - name: Test
         run: |
-          # Exclude crates with Linux-specific tests:
+          # Exclude crates with platform-specific dependencies:
           # - horus_py: requires Python headers
           # - horus_benchmarks: timing uses RDTSC/Linux-specific fallbacks
-          # - horus_core: topic tests rely on /dev/shm which doesn't exist on macOS
           cargo test --workspace --no-fail-fast \
-            --exclude horus_py --exclude horus_benchmarks --exclude horus_core
+            --exclude horus_py --exclude horus_benchmarks
         env:
+          HORUS_NAMESPACE: ci_macos_arm64_${{ github.run_id }}
           RUST_BACKTRACE: 1
 
   # Windows Testing
@@ -124,6 +124,14 @@ jobs:
 
       - name: Build (lib only)
         run: cargo build --workspace --lib --no-default-features
+
+      - name: Test (horus_sys + horus_core)
+        run: |
+          cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+          cargo test --no-default-features -p horus_core --lib -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_win_${{ github.run_id }}
+          RUST_BACKTRACE: 1
 
   # Linux ARM64 Cross-Compilation
   linux-arm64:

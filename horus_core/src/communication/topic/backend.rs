@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use super::direct_channel::DirectSlot;
-use super::mpmc_intra::MpmcRing;
+use super::fanout::FanoutRing;
 use super::mpsc_intra::MpscRing;
+use super::shm_fanout::ShmFanoutRing;
 use super::spmc_intra::SpmcRing;
 use super::spsc_intra::SpscRing;
 
@@ -21,7 +22,7 @@ use super::spsc_intra::SpscRing;
 /// - `SpscIntra`: Heap, 2 cache-padded atomics (~18ns)
 /// - `SpmcIntra`: Heap, seqlock broadcast (~24ns)
 /// - `MpscIntra`: Heap, CAS head (~26ns)
-/// - `MpmcIntra`: Heap, CAS head+tail (~36ns)
+/// - `FanoutIntra`: Heap, CAS head+tail (~36ns)
 /// - `ShmData`: Shared memory data region (~50-167ns)
 /// - `Uninitialized`: Before first send/recv
 pub(crate) enum BackendStorage<T> {
@@ -35,8 +36,10 @@ pub(crate) enum BackendStorage<T> {
     SpmcIntra(Arc<SpmcRing<T>>),
     /// Same-process MP-1C — heap, CAS head
     MpscIntra(Arc<MpscRing<T>>),
-    /// Same-process MPMC — heap, CAS head+tail
-    MpmcIntra(Arc<MpmcRing<T>>),
+    /// Same-process MPMC — contention-free fan-out SPSC matrix
+    FanoutIntra(Arc<FanoutRing<T>>),
     /// Cross-process — data lives in the SHM region (accessed via LocalState cached pointers)
     ShmData,
+    /// Cross-process MPMC — contention-free fan-out via SHM-backed SPSC matrix
+    FanoutShm(Box<ShmFanoutRing>),
 }

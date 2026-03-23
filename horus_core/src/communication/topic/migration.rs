@@ -289,14 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn migrate_to_mpmc_intra() {
+    fn migrate_to_fanout() {
         let h = make_header(true);
         h.backend_mode
             .store(BackendMode::SpscIntra as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::MpmcIntra);
+        let result = m.try_migrate(BackendMode::FanoutIntra);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::MpmcIntra);
+        assert_eq!(h.mode(), BackendMode::FanoutIntra);
     }
 
     #[test]
@@ -306,7 +306,7 @@ mod tests {
             BackendMode::MpscShm,
             BackendMode::SpmcShm,
             BackendMode::SpscShm,
-            BackendMode::MpmcShm,
+            BackendMode::FanoutShm,
         ];
         for target in shm_modes {
             let h = make_header(true);
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(r2, MigrationResult::Success { new_epoch: 2 });
         assert_eq!(h.migration_epoch.load(Ordering::Relaxed), 2);
 
-        let r3 = m.try_migrate(BackendMode::MpmcIntra);
+        let r3 = m.try_migrate(BackendMode::FanoutIntra);
         assert_eq!(r3, MigrationResult::Success { new_epoch: 3 });
         assert_eq!(h.migration_epoch.load(Ordering::Relaxed), 3);
     }
@@ -469,7 +469,7 @@ mod tests {
                         0 => BackendMode::SpscIntra,
                         1 => BackendMode::MpscIntra,
                         2 => BackendMode::SpmcIntra,
-                        _ => BackendMode::MpmcIntra,
+                        _ => BackendMode::FanoutIntra,
                     };
                     m.try_migrate(target)
                 })
@@ -514,9 +514,9 @@ mod tests {
             BackendMode::DirectChannel,
             BackendMode::SpscIntra,
             BackendMode::MpscIntra,
-            BackendMode::MpmcIntra,
+            BackendMode::FanoutIntra,
             BackendMode::SpscShm,
-            BackendMode::MpmcShm,
+            BackendMode::FanoutShm,
         ];
 
         for (i, &target) in chain.iter().enumerate() {
@@ -540,7 +540,7 @@ mod tests {
         // Migration from a "higher" mode back to a "lower" one should work
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::MpmcShm as u8, Ordering::Relaxed);
+            .store(BackendMode::FanoutShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
         let result = m.try_migrate(BackendMode::DirectChannel);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });

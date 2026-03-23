@@ -998,7 +998,22 @@ fn inject_horus_path_overrides(package_dir: &Path) -> Result<()> {
         return Err(anyhow!(".cargo/config.toml already exists"));
     }
 
-    let horus_source = crate::commands::run::find_horus_source_dir()?;
+    let horus_source = match crate::commands::run::find_horus_source_dir() {
+        Ok(dir) => dir,
+        Err(_) => {
+            let pkg_name = package_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("this package");
+            return Err(anyhow!(
+                "Cannot find horus source installation. Building {} from source requires horus source code.\n\
+                 Install horus from source: curl -fsSL https://raw.githubusercontent.com/softmata/horus/release/install.sh | bash\n\
+                 Or install a pre-built binary: horus install {}",
+                pkg_name,
+                pkg_name
+            ));
+        }
+    };
 
     // Handle cache vs dev source directory layout:
     // - Cache: ~/.horus/cache/ with crates at horus@0.1.0/horus_core/
@@ -1078,10 +1093,21 @@ pub(crate) fn precompile_package(package_dir: &Path) -> Result<()> {
             log::debug!("Skipping horus path override injection: {}", e);
         }
 
+        // Detect if package has binary targets (plugins need binaries, not just libs)
+        let has_bin_targets = {
+            let cargo_content = fs::read_to_string(package_dir.join(CARGO_TOML)).unwrap_or_default();
+            cargo_content.contains("[[bin]]") || cargo_content.contains("[package.metadata.horus]")
+        };
+
+        // Build both lib and binaries for plugin packages
+        let build_args = if has_bin_targets {
+            vec!["build", "--release"]
+        } else {
+            vec!["build", "--release", "--lib"]
+        };
+
         let status = Command::new("cargo")
-            .arg("build")
-            .arg("--release")
-            .arg("--lib")
+            .args(&build_args)
             .current_dir(package_dir)
             .status();
 
@@ -1095,12 +1121,45 @@ pub(crate) fn precompile_package(package_dir: &Path) -> Result<()> {
             return Err(anyhow!("Cargo build failed"));
         }
 
-        // Copy compiled artifacts to lib/ directory for easy access
         let target_dir = package_dir.join("target/release");
+
+        // Copy compiled binaries to bin/ directory (for plugin discovery)
+        if has_bin_targets && target_dir.exists() {
+            let bin_dir = package_dir.join("bin");
+            fs::create_dir_all(&bin_dir)?;
+
+            for entry in fs::read_dir(&target_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+
+                // Copy executables (not .d, .rlib, .so, .a files)
+                let is_executable = !name_str.contains('.')
+                    || name_str.ends_with(".exe");
+                if is_executable && crate::cargo_utils::is_executable(&path) {
+                    let dest = bin_dir.join(&name);
+                    fs::copy(&path, &dest)?;
+                    // Ensure executable permission on Unix
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mut perms = fs::metadata(&dest)?.permissions();
+                        perms.set_mode(0o755);
+                        fs::set_permissions(&dest, perms)?;
+                    }
+                    log::info!("Copied binary: {} -> {}", path.display(), dest.display());
+                }
+            }
+        }
+
+        // Copy compiled library artifacts to lib/ directory
         let lib_dir = package_dir.join("lib");
         fs::create_dir_all(&lib_dir)?;
 
-        // Copy .rlib and .so files
         if target_dir.exists() {
             for entry in fs::read_dir(&target_dir)? {
                 let entry = entry?;
@@ -1117,7 +1176,6 @@ pub(crate) fn precompile_package(package_dir: &Path) -> Result<()> {
                 }
             }
 
-            // Also check deps directory
             let deps_dir = target_dir.join("deps");
             if deps_dir.exists() {
                 for entry in fs::read_dir(&deps_dir)? {

@@ -191,6 +191,18 @@ impl PyHardwareSet {
                 "driver '{}': legacy driver cannot be instantiated as a node",
                 name
             ))),
+            DriverType::CratesIo(_) | DriverType::PyPI(_) => Err(PyRuntimeError::new_err(format!(
+                "driver '{}': CratesIo/PyPI drivers require build-time adapter code generation",
+                name
+            ))),
+            DriverType::Exec(_) => Err(PyRuntimeError::new_err(format!(
+                "driver '{}': exec drivers are launched as subprocesses, not instantiated as nodes",
+                name
+            ))),
+            DriverType::Simulated => Err(PyRuntimeError::new_err(format!(
+                "driver '{}': simulated drivers are handled by the simulator process",
+                name
+            ))),
         }
     }
 
@@ -272,6 +284,14 @@ impl PyHardwareSet {
         let names = self.inner.list();
         format!("HardwareSet([{}])", names.join(", "))
     }
+
+    // ── Topic resolution ──────────────────────────────────────────────
+
+    /// Get the configured robot name (from ``[robot].name`` in horus.toml, or "robot" default).
+    fn robot_name(&self) -> String {
+        self.inner.robot_name().to_string()
+    }
+
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

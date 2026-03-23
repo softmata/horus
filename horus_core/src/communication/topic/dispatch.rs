@@ -22,14 +22,13 @@
 //! | 2 | `send_spsc_intra` | SpscRing heap |
 //! | 3 | `send_spmc_intra` | SpmcRing heap |
 //! | 4 | `send_mpsc_intra` | MpscRing heap |
-//! | 5 | `send_mpmc_intra` | MpmcRing heap |
 //! | 6 | `send_shm_sp_pod` | SpscShm/SpmcShm POD (separate seq) |
-//! | 7 | `send_shm_mp_pod` | MpscShm/MpmcShm POD (separate seq) |
+//! | 7 | `send_shm_mp_pod` | MpscShm POD (separate seq) |
 //! | 8 | `send_shm_pod_broadcast` | PodShm (separate seq) |
 //! | 9 | `send_shm_sp_serde` | SpscShm/SpmcShm non-POD |
-//! | 10| `send_shm_mp_serde` | MpscShm/MpmcShm non-POD |
+//! | 10| `send_shm_mp_serde` | MpscShm non-POD |
 //! | 11| `send_shm_sp_pod_colo` | SpscShm/SpmcShm POD (co-located) |
-//! | 12| `send_shm_mp_pod_colo` | MpscShm/MpmcShm POD (co-located) |
+//! | 12| `send_shm_mp_pod_colo` | MpscShm POD (co-located) |
 //! | 13| `send_shm_pod_broadcast_colo` | PodShm (co-located) |
 //! | 14| `send_uninitialized` | First call → register + re-dispatch |
 //!
@@ -41,7 +40,6 @@
 //! | 2 | `recv_spsc_intra` | SpscRing heap |
 //! | 3 | `recv_spmc_intra` | SpmcRing heap |
 //! | 4 | `recv_mpsc_intra` | MpscRing heap |
-//! | 5 | `recv_mpmc_intra` | MpmcRing heap |
 //! | 6-10 | SHM POD separate-seq variants | |
 //! | 11-15 | SHM POD co-located variants | |
 //! | 16-19 | SHM serde variants | |
@@ -711,7 +709,159 @@ pub(super) fn recv_direct_channel_cached<
 intra_send_fn!(send_spsc_intra, SpscIntra);
 intra_send_fn!(send_spmc_intra, SpmcIntra);
 intra_send_fn!(send_mpsc_intra, MpscIntra);
-intra_send_fn!(send_mpmc_intra, MpmcIntra);
+
+// ---------------------------------------------------------------------------
+// 5b. FanoutIntra — contention-free MPMC via SPSC matrix
+// ---------------------------------------------------------------------------
+
+/// Send via FanoutRing — registers publisher on first call, then fan-out to all subscribers.
+#[inline(always)]
+pub(super) fn send_fanout_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &RingTopic<T>,
+    msg: T,
+) -> Result<(), T> {
+    epoch_guard_send!(topic, msg);
+
+    let ring = match unsafe { &*topic.backend.get() } {
+        BackendStorage::FanoutIntra(r) => r,
+        _ => debug_unreachable!("dispatch: expected FanoutIntra variant in send"),
+    };
+
+    let local = topic.local();
+
+    // Lazy publisher registration — first send registers this Topic as a publisher
+    let pub_id = match local.fanout_pub_id {
+        Some(id) => id,
+        None => {
+            let id = ring.register_publisher();
+            local.fanout_pub_id = Some(id);
+            id
+        }
+    };
+
+    let result = ring.send_as(msg, pub_id);
+    if result.is_ok() {
+        housekeep_lease!(local, topic);
+    }
+    result
+}
+
+/// Recv via FanoutRing — registers subscriber on first call, then round-robin poll.
+#[inline(always)]
+pub(super) fn recv_fanout_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &RingTopic<T>,
+) -> Option<T> {
+    epoch_guard_recv!(topic);
+
+    let ring = match unsafe { &*topic.backend.get() } {
+        BackendStorage::FanoutIntra(r) => r,
+        _ => debug_unreachable!("dispatch: expected FanoutIntra variant in recv"),
+    };
+
+    let local = topic.local();
+
+    // Lazy subscriber registration — first recv registers this Topic as a subscriber
+    let sub_id = match local.fanout_sub_id {
+        Some(id) => id,
+        None => {
+            let id = ring.register_subscriber();
+            local.fanout_sub_id = Some(id);
+            id
+        }
+    };
+
+    let result = ring.recv_as(sub_id);
+    housekeep_recv!(local, topic, result);
+    result
+}
+
+// ---------------------------------------------------------------------------
+// 5b. FanoutShm — cross-process contention-free MPMC via SHM SPSC matrix
+// ---------------------------------------------------------------------------
+
+/// Send via ShmFanoutRing — registers publisher on first call, fans out to all subscribers.
+#[inline(always)]
+pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &RingTopic<T>,
+    msg: T,
+) -> Result<(), T> {
+    epoch_guard_send!(topic, msg);
+
+    let ring = match unsafe { &*topic.backend.get() } {
+        BackendStorage::FanoutShm(r) => r,
+        _ => debug_unreachable!("dispatch: expected FanoutShm variant in send"),
+    };
+
+    let local = topic.local();
+
+    // Lazy publisher registration — first send registers this Topic as a publisher
+    let pub_id = match local.fanout_shm_pub_id {
+        Some(id) => id,
+        None => {
+            let id = ring.register_publisher();
+            local.fanout_shm_pub_id = Some(id);
+            id
+        }
+    };
+
+    let ok = if ring.is_pod() {
+        // POD path: raw memcpy into SHM slots
+        unsafe { ring.send_pod(&msg, pub_id) }
+    } else {
+        // Serde path: serialize once, send bytes to all subscribers
+        match bincode::serialize(&msg) {
+            Ok(bytes) => unsafe { ring.send_serde(&bytes, pub_id) },
+            Err(_) => false,
+        }
+    };
+
+    if ok {
+        housekeep_lease!(local, topic);
+        Ok(())
+    } else {
+        Err(msg)
+    }
+}
+
+/// Recv via ShmFanoutRing — registers subscriber on first call, round-robin polls publishers.
+#[inline(always)]
+pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &RingTopic<T>,
+) -> Option<T> {
+    epoch_guard_recv!(topic);
+
+    let ring = match unsafe { &*topic.backend.get() } {
+        BackendStorage::FanoutShm(r) => r,
+        _ => debug_unreachable!("dispatch: expected FanoutShm variant in recv"),
+    };
+
+    let local = topic.local();
+
+    // Lazy subscriber registration — first recv registers this Topic as a subscriber
+    let sub_id = match local.fanout_shm_sub_id {
+        Some(id) => id,
+        None => {
+            let id = ring.register_subscriber();
+            local.fanout_shm_sub_id = Some(id);
+            id
+        }
+    };
+
+    let result: Option<T> = if ring.is_pod() {
+        // POD path: raw memcpy from SHM
+        unsafe { ring.recv_pod(sub_id) }
+    } else {
+        // Serde path: deserialize from SHM bytes
+        unsafe {
+            ring.recv_serde(sub_id).and_then(|bytes| {
+                bincode::deserialize(&bytes).ok()
+            })
+        }
+    };
+
+    housekeep_recv!(local, topic, result);
+    result
+}
 
 // ---------------------------------------------------------------------------
 // 6. SHM single-producer POD (SpscShm / SpmcShm)
@@ -753,7 +903,7 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 }
 
 // ---------------------------------------------------------------------------
-// 7. SHM multi-producer POD (MpscShm / MpmcShm)
+// 7. SHM multi-producer POD (MpscShm)
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -784,7 +934,7 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     // Claim slot via fetch_add — always succeeds in a single atomic op.
     // Previous CAS loop could spin for 100s of µs under contention.
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
 
     let index = (seq & mask) as usize;
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
@@ -822,7 +972,7 @@ pub(super) fn send_shm_pod_broadcast<
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
     let index = (seq & mask) as usize;
     // SAFETY: cached_seq_ptr points to per-slot ready-flag array in SHM. index*8 is
     // within bounds (index < capacity). cached_data_ptr points to SHM data region.
@@ -970,7 +1120,7 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
 }
 
 // ---------------------------------------------------------------------------
-// 10. SHM multi-producer serde (MpscShm / MpmcShm, non-POD)
+// 10. SHM multi-producer serde (MpscShm, non-POD)
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -1037,7 +1187,7 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         None // inline path
     };
 
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
     let index = (seq & mask) as usize;
     let slot_offset = index * slot_size;
 
@@ -1147,7 +1297,7 @@ pub(super) fn send_shm_sp_pod_colo<
 }
 
 // ---------------------------------------------------------------------------
-// 12. SHM multi-producer POD co-located (MpscShm / MpmcShm)
+// 12. SHM multi-producer POD co-located (MpscShm)
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -1176,7 +1326,7 @@ pub(super) fn send_shm_mp_pod_colo<
     }
 
     // Claim slot via fetch_add — single atomic op, no CAS retry loop.
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
 
     let index = (seq & mask) as usize;
     // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
@@ -1211,7 +1361,7 @@ pub(super) fn send_shm_pod_broadcast_colo<
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
     let index = (seq & mask) as usize;
     // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
     // (mask). colo_data/colo_seq access the 64-byte slot at index*64. T fits in 56 bytes
@@ -1257,7 +1407,6 @@ pub(super) fn send_uninitialized<
 intra_recv_fn!(recv_spsc_intra, SpscIntra);
 intra_recv_fn!(recv_spmc_intra, SpmcIntra);
 intra_recv_fn!(recv_mpsc_intra, MpscIntra);
-intra_recv_fn!(recv_mpmc_intra, MpmcIntra);
 
 // ---------------------------------------------------------------------------
 // 6. SHM SpscShm POD recv
@@ -1399,7 +1548,7 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
             .compare_exchange_weak(
                 tail,
                 tail.wrapping_add(1),
-                Ordering::AcqRel,
+                Ordering::Relaxed, // Relaxed: ready flag Acquire provides ordering
                 Ordering::Relaxed,
             )
             .is_ok()
@@ -1419,68 +1568,6 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         std::hint::spin_loop();
     }
     housekeep_epoch!(local, topic);
-    None
-}
-
-// ---------------------------------------------------------------------------
-// 9. SHM MpmcShm POD recv — bounded spin + CAS
-// ---------------------------------------------------------------------------
-
-#[inline(always)]
-pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &RingTopic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let local = topic.local();
-    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
-    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
-    let header = unsafe { &*local.cached_header_ptr };
-    let mask = local.cached_capacity_mask;
-
-    let tail = header.tail.load(Ordering::Acquire);
-    if local.local_head.wrapping_sub(tail) == 0 {
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if local.local_head.wrapping_sub(tail) == 0 {
-            housekeep_epoch!(local, topic);
-            return None;
-        }
-    }
-
-    let index = (tail & mask) as usize;
-    // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM.
-    // index*8 is within bounds (index < capacity, array has capacity entries).
-    let ready_ok = unsafe {
-        let ready_ptr =
-            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
-    };
-    if !ready_ok {
-        return None;
-    }
-
-    if header
-        .tail
-        .compare_exchange_weak(
-            tail,
-            tail.wrapping_add(1),
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .is_ok()
-    {
-        // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
-        // CAS success means we own this slot. Ready flag Acquire load above established
-        // happens-before with the producer's Release store. simd_aware_read handles alignment.
-        let msg = unsafe {
-            let base = local.cached_data_ptr as *const T;
-            simd_aware_read(base.add(index))
-        };
-        local.local_tail = tail.wrapping_add(1);
-
-        housekeep_lease!(local, topic);
-        return Some(msg);
-    }
     None
 }
 
@@ -1679,7 +1766,7 @@ pub(super) fn recv_shm_spmc_serde<
         .compare_exchange_weak(
             tail,
             tail.wrapping_add(1),
-            Ordering::AcqRel,
+            Ordering::Relaxed, // Relaxed: ready flag Acquire provides ordering
             Ordering::Relaxed,
         )
         .is_ok()
@@ -1705,78 +1792,6 @@ pub(super) fn recv_shm_spmc_serde<
         return Some(msg);
     }
     housekeep_epoch!(local, topic);
-    None
-}
-
-// ---------------------------------------------------------------------------
-// 14. SHM MpmcShm serde recv — bounded spin + CAS
-// ---------------------------------------------------------------------------
-
-#[inline(always)]
-pub(super) fn recv_shm_mpmc_serde<
-    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
->(
-    topic: &RingTopic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let local = topic.local();
-    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
-    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
-    let header = unsafe { &*local.cached_header_ptr };
-    let mask = local.cached_capacity_mask;
-    let slot_size = local.slot_size;
-
-    let tail = header.tail.load(Ordering::Acquire);
-    if local.local_head.wrapping_sub(tail) == 0 {
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if local.local_head.wrapping_sub(tail) == 0 {
-            housekeep_epoch!(local, topic);
-            return None;
-        }
-    }
-
-    let index = (tail & mask) as usize;
-    let slot_offset = index * slot_size;
-
-    // SAFETY: slot_ptr points to a valid serde slot within SHM data region.
-    // The first 8 bytes are the ready flag (AtomicU64).
-    let ready_ok = unsafe {
-        let slot_ptr = local.cached_data_ptr.add(slot_offset);
-        let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
-        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
-    };
-    if !ready_ok {
-        return None;
-    }
-
-    if header
-        .tail
-        .compare_exchange_weak(
-            tail,
-            tail.wrapping_add(1),
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .is_ok()
-    {
-        // SAFETY: CAS succeeded so we own this slot. Ready flag was verified
-        // above, so the producer has finished writing.
-        let msg = match unsafe {
-            read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size, topic.name())
-        } {
-            Some(m) => m,
-            None => {
-                local.local_tail = tail.wrapping_add(1);
-                return None; // Corrupted length — skip this slot
-            }
-        };
-
-        local.local_tail = tail.wrapping_add(1);
-
-        housekeep_lease!(local, topic);
-        return Some(msg);
-    }
     None
 }
 
@@ -1936,7 +1951,7 @@ pub(super) fn recv_shm_spmc_pod_colo<
             .compare_exchange_weak(
                 tail,
                 tail.wrapping_add(1),
-                Ordering::AcqRel,
+                Ordering::Relaxed, // Relaxed: ready flag Acquire provides ordering
                 Ordering::Relaxed,
             )
             .is_ok()
@@ -1951,67 +1966,6 @@ pub(super) fn recv_shm_spmc_pod_colo<
             return Some(msg);
         }
         std::hint::spin_loop();
-    }
-    housekeep_epoch!(local, topic);
-    None
-}
-
-// ---------------------------------------------------------------------------
-// 18. SHM MpmcShm POD co-located recv — bounded spin + CAS
-// ---------------------------------------------------------------------------
-
-#[inline(always)]
-pub(super) fn recv_shm_mpmc_pod_colo<
-    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
->(
-    topic: &RingTopic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let local = topic.local();
-    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
-    // (set by ensure_consumer). Valid for Topic's lifetime. Single-thread access.
-    let header = unsafe { &*local.cached_header_ptr };
-    let mask = local.cached_capacity_mask;
-
-    let tail = header.tail.load(Ordering::Acquire);
-    if local.local_head.wrapping_sub(tail) == 0 {
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if local.local_head.wrapping_sub(tail) == 0 {
-            housekeep_epoch!(local, topic);
-            return None;
-        }
-    }
-
-    let index = (tail & mask) as usize;
-    // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
-    // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
-    let ready_ok = unsafe {
-        colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) >= tail.wrapping_add(1)
-    };
-    if !ready_ok {
-        housekeep_epoch!(local, topic);
-        return None;
-    }
-
-    if header
-        .tail
-        .compare_exchange_weak(
-            tail,
-            tail.wrapping_add(1),
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .is_ok()
-    {
-        // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
-        // (mask). CAS success means we own this slot. colo_seq Acquire load above
-        // established happens-before with the producer's Release. T fits in 56 bytes.
-        let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
-        local.local_tail = tail.wrapping_add(1);
-
-        housekeep_lease!(local, topic);
-        return Some(msg);
     }
     housekeep_epoch!(local, topic);
     None

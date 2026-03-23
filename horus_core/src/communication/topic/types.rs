@@ -22,8 +22,8 @@ pub(crate) enum BackendMode {
     SpmcIntra = 3,
     /// MpscIntra - same process, MP-1C (~26ns)
     MpscIntra = 4,
-    /// MpmcIntra - same process, MPMC (~36ns)
-    MpmcIntra = 5,
+    /// FanoutIntra - same process, contention-free MPMC via SPSC matrix (~30ns)
+    FanoutIntra = 5,
     /// PodShm - cross process, POD type (~50ns)
     PodShm = 6,
     /// MpscShm - cross process, MP-1C (~65ns)
@@ -32,8 +32,8 @@ pub(crate) enum BackendMode {
     SpmcShm = 8,
     /// SpscShm - cross process, 1P1C (~85ns)
     SpscShm = 9,
-    /// MpmcShm - cross process, MPMC (~167ns)
-    MpmcShm = 10,
+    /// FanoutShm - cross process, contention-free MPMC via SHM SPSC matrix (~40ns)
+    FanoutShm = 11,
 }
 
 impl From<u8> for BackendMode {
@@ -43,12 +43,13 @@ impl From<u8> for BackendMode {
             2 => BackendMode::SpscIntra,
             3 => BackendMode::SpmcIntra,
             4 => BackendMode::MpscIntra,
-            5 => BackendMode::MpmcIntra,
+            5 => BackendMode::FanoutIntra,
             6 => BackendMode::PodShm,
             7 => BackendMode::MpscShm,
             8 => BackendMode::SpmcShm,
             9 => BackendMode::SpscShm,
-            10 => BackendMode::MpmcShm,
+            10 => BackendMode::FanoutShm, // Legacy MpmcShm value maps to FanoutShm
+            11 => BackendMode::FanoutShm,
             _ => BackendMode::Unknown,
         }
     }
@@ -63,7 +64,7 @@ impl BackendMode {
                 | BackendMode::MpscShm
                 | BackendMode::SpmcShm
                 | BackendMode::SpscShm
-                | BackendMode::MpmcShm
+                | BackendMode::FanoutShm
         )
     }
 
@@ -75,7 +76,7 @@ impl BackendMode {
                 | BackendMode::SpscIntra
                 | BackendMode::SpmcIntra
                 | BackendMode::MpscIntra
-                | BackendMode::MpmcIntra
+                | BackendMode::FanoutIntra
         )
     }
 }

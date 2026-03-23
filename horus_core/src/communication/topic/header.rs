@@ -623,8 +623,8 @@ impl TopicHeader {
             (_, true, _, 1, _) if pubs > 1 => BackendMode::MpscIntra,
             // Intra-process: 0 pubs, multiple consumers (anticipating single producer)
             (_, true, 0, _, _) if subs > 1 => BackendMode::SpmcIntra,
-            // Intra-process: MPMC
-            (_, true, _, _, _) if pubs > 1 && subs > 1 => BackendMode::MpmcIntra,
+            // Intra-process: MPMC — use FanoutRing (contention-free SPSC matrix)
+            (_, true, _, _, _) if pubs > 1 && subs > 1 => BackendMode::FanoutIntra,
 
             // Cross-process: 1P↔1C
             (_, false, 1, 1, _) => BackendMode::SpscShm,
@@ -639,7 +639,8 @@ impl TopicHeader {
 
             (_, false, _, _, true) => BackendMode::PodShm,
 
-            _ => BackendMode::MpmcShm,
+            // Cross-process MPMC — use FanoutShm (contention-free SHM SPSC matrix)
+            _ => BackendMode::FanoutShm,
         }
     }
 }
@@ -1596,12 +1597,12 @@ mod tests {
             BackendMode::SpscIntra,
             BackendMode::SpmcIntra,
             BackendMode::MpscIntra,
-            BackendMode::MpmcIntra,
+            BackendMode::FanoutIntra,
             BackendMode::PodShm,
             BackendMode::MpscShm,
             BackendMode::SpmcShm,
             BackendMode::SpscShm,
-            BackendMode::MpmcShm,
+            BackendMode::FanoutShm,
         ];
         for mode in modes {
             h.backend_mode.store(mode as u8, Ordering::Relaxed);

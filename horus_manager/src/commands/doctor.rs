@@ -637,10 +637,31 @@ fn check_drivers() -> CheckResult {
         details.push(detail);
     }
 
+    // Validate driver keys against URDF sensors (if [robot].description exists)
+    let manifest_path = std::path::Path::new("horus.toml");
+    if let Ok(manifest) = crate::manifest::HorusManifest::load_from(manifest_path) {
+        if let Some(ref robot) = manifest.robot {
+            if let Some(ref desc) = robot.description {
+                let urdf_path = std::path::Path::new(desc);
+                let sensors = crate::urdf::extract_sensors_from_urdf(urdf_path);
+                if !sensors.is_empty() {
+                    let driver_keys: Vec<&str> = hw.list();
+                    let warnings = crate::urdf::validate_driver_keys(&driver_keys, &sensors);
+                    for warning in warnings {
+                        details.push(format!("  ⚠ {}", warning));
+                        if worst == Health::Ok {
+                            worst = Health::Warn;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let summary = if worst == Health::Ok {
         format!("{} driver(s) reachable", details.len())
     } else {
-        format!("{} driver(s) checked, some unreachable", details.len())
+        format!("{} driver(s) checked, some issues found", details.len())
     };
 
     CheckResult {
@@ -729,6 +750,10 @@ fn check_driver_device(
         Some(DriverType::Package(p)) => format!("package={}", p),
         Some(DriverType::Local(n)) => format!("node={}", n),
         Some(DriverType::Legacy) => "legacy".into(),
+        Some(DriverType::CratesIo(c)) => format!("crate={}", c),
+        Some(DriverType::PyPI(p)) => format!("pip={}", p),
+        Some(DriverType::Exec(e)) => format!("exec={}", e.display()),
+        Some(DriverType::Simulated) => "simulated".into(),
         None => "unknown".into(),
     };
     (
@@ -765,9 +790,12 @@ mod tests {
                 target_type: crate::manifest::TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: Default::default(),
             enable: vec![],

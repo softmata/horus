@@ -202,6 +202,62 @@ impl PluginExecutor {
         Ok(status.code().unwrap_or(1))
     }
 
+    /// Spawn a plugin as a background process (non-blocking).
+    ///
+    /// Unlike `try_execute()` which blocks until completion, this returns
+    /// a `Child` handle immediately. Used by `horus run --sim` to launch
+    /// sim3d in the background while the user's robot code runs.
+    ///
+    /// Extra environment variables can be passed via `extra_env`.
+    pub fn spawn_background(
+        &self,
+        command: &str,
+        args: &[String],
+        extra_env: &[(String, String)],
+    ) -> Result<std::process::Child> {
+        // Find the plugin binary
+        let binary = if let Some(entry) = self.resolver.resolve(command) {
+            entry.binary.clone()
+        } else if let Some(bin) = self.discover_plugin_binary(command) {
+            bin
+        } else {
+            return Err(anyhow!(
+                "Plugin '{}' not found. Install it with: horus install horus-{}",
+                command,
+                command
+            ));
+        };
+
+        let mut cmd = Command::new(&binary);
+        cmd.args(args);
+
+        // Same environment setup as execute_binary, but non-blocking
+        cmd.env_clear();
+        cmd.env("HORUS_VERSION", HORUS_VERSION);
+        cmd.env("HORUS_PLUGIN", "1");
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", path);
+        }
+        // Pass extra env vars (sim params, driver mode, etc.)
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
+
+        cmd.stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        let child = cmd.spawn()
+            .map_err(|e| anyhow!("Failed to launch plugin '{}' ({}): {}", command, binary.display(), e))?;
+
+        log::info!(
+            "Launched plugin '{}' in background (PID: {})",
+            command,
+            child.id()
+        );
+
+        Ok(child)
+    }
+
     /// Get reference to resolver
     pub fn resolver(&self) -> &PluginResolver {
         &self.resolver

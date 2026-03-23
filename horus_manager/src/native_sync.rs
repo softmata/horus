@@ -423,9 +423,12 @@ serde = "1.0"
                 ..PackageInfo::default()
             },
             workspace: None,
+            robot: None,
             dependencies: std::collections::BTreeMap::new(),
             dev_dependencies: std::collections::BTreeMap::new(),
+            sim_dependencies: std::collections::BTreeMap::new(),
             drivers: std::collections::BTreeMap::new(),
+            sim_drivers: std::collections::BTreeMap::new(),
             scripts: std::collections::BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],

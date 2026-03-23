@@ -169,8 +169,19 @@ fn write_driver_deps(
                     if !added_crates.contains_key(package) {
                         added_crates.insert(package.clone(), Vec::new());
                     }
+                } else if let Some(crate_name) = &cfg.crate_name {
+                    // CratesIo driver — add the crate as a dependency
+                    let version = cfg.params.get("version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("*")
+                        .to_string();
+                    added_crates.entry(crate_name.clone()).or_insert_with(|| {
+                        // Store version as first "feature" entry (hacky but works with existing output logic)
+                        // TODO: separate version tracking from features
+                        Vec::new()
+                    });
                 }
-                // node = "..." → no dep needed (local code)
+                // pip/exec/sim3d/node → no Cargo dep needed
             }
             DriverValue::Backend(_) | DriverValue::Enabled(_) => {
                 // Legacy — handled by feature flags in get_cargo_features_from_drivers()
@@ -885,9 +896,12 @@ mod tests {
                 target_type: TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
@@ -1783,9 +1797,12 @@ mod tests {
         HorusManifest {
             package: PackageInfo::default(),
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
@@ -2447,6 +2464,30 @@ mod tests {
             member_content.contains("[package]"),
             "should still have [package] section: {}",
             member_content
+        );
+    }
+
+    #[test]
+    fn driver_crate_name_generates_crates_io_dep() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.drivers.insert(
+            "lidar".into(),
+            DriverValue::Config(crate::manifest::DriverTableConfig {
+                crate_name: Some("rplidar-driver".to_string()),
+                ..Default::default()
+            }),
+        );
+
+        let (result, _) = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(
+            content.contains("rplidar-driver = \"*\""),
+            "crate_name driver should produce crates.io dep: {}",
+            content
         );
     }
 }

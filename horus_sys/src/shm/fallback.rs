@@ -108,6 +108,48 @@ impl ShmRegion {
     pub fn backing_path(&self) -> &std::path::Path {
         &self.path
     }
+
+    /// Grow the region to `new_size` bytes without synchronization.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure no other thread is concurrently reading from or
+    /// writing to this memory region via raw pointers derived from `as_ptr()`.
+    pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        use memmap2::MmapOptions;
+
+        anyhow::ensure!(
+            new_size > self.size,
+            "grow_unchecked: new_size ({}) must be > current size ({})",
+            new_size,
+            self.size
+        );
+
+        // Extend the backing file
+        self._file.set_len(new_size as u64).with_context(|| {
+            format!(
+                "Failed to grow SHM file to {} bytes: {}",
+                new_size,
+                self.path.display()
+            )
+        })?;
+
+        // Create a new mmap with the larger size
+        let new_mmap = MmapOptions::new()
+            .len(new_size)
+            .map_mut(&self._file)
+            .with_context(|| {
+                format!(
+                    "Failed to remap SHM at new size {}: {}",
+                    new_size,
+                    self.path.display()
+                )
+            })?;
+
+        self.mmap = new_mmap;
+        self.size = new_size;
+        Ok(())
+    }
 }
 
 impl Drop for ShmRegion {

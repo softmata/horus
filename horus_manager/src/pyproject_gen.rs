@@ -71,7 +71,27 @@ pub fn generate(
     }
 
     // ── Dependencies ─────────────────────────────────────────────────────
-    let pypi_deps = collect_python_deps(&manifest.dependencies);
+    let mut pypi_deps = collect_python_deps(&manifest.dependencies);
+
+    // Add PyPI driver dependencies from [drivers]
+    for (name, value) in &manifest.drivers {
+        if let crate::manifest::DriverValue::Config(cfg) = value {
+            if let Some(ref pip_name) = cfg.pip {
+                let version = cfg.params.get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let dep_str = if version.is_empty() {
+                    pip_name.clone()
+                } else {
+                    format!("{}>={}", pip_name, version)
+                };
+                if !pypi_deps.contains(&dep_str) {
+                    pypi_deps.push(dep_str);
+                }
+            }
+        }
+    }
+
     if !pypi_deps.is_empty() {
         writeln!(pyproject, "dependencies = [").unwrap();
         for dep_str in &pypi_deps {
@@ -251,9 +271,12 @@ mod tests {
                 target_type: TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
@@ -1023,6 +1046,29 @@ mod tests {
         assert!(
             content.contains("dependencies = []"),
             "empty deps should produce empty array"
+        );
+    }
+
+    #[test]
+    fn driver_pip_generates_pypi_dep() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.drivers.insert(
+            "imu".into(),
+            crate::manifest::DriverValue::Config(crate::manifest::DriverTableConfig {
+                pip: Some("adafruit-bno055".to_string()),
+                ..Default::default()
+            }),
+        );
+
+        let (result, _) = generate(&manifest, dir.path(), false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(
+            content.contains("adafruit-bno055"),
+            "pip driver should produce PyPI dependency: {}",
+            content
         );
     }
 }

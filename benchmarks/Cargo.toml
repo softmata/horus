@@ -66,6 +66,24 @@ path = "src/bin/competitor_comparison.rs"
 name = "all_paths_latency"
 path = "src/bin/all_paths_latency.rs"
 
+[[bin]]
+name = "fanout_bench"
+path = "src/bin/fanout_bench.rs"
+
+[[bin]]
+name = "fanout_shm_bench"
+path = "src/bin/fanout_shm_bench.rs"
+
+[[bin]]
+name = "ipc_mpmc_bench"
+path = "src/bin/ipc_mpmc_bench.rs"
+required-features = ["iceoryx2"]
+
+[[bin]]
+name = "iceoryx2_comparison"
+path = "src/bin/iceoryx2_comparison.rs"
+required-features = ["iceoryx2"]
+
 [dependencies]
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
@@ -81,6 +99,7 @@ tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 rand = "0.8"
 chrono = { workspace = true }
 num_cpus = "1.16"
+iceoryx2 = { version = "0.8", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -93,6 +112,8 @@ default = []
 dds = []
 # Enable Zenoh comparison (requires zenoh crate)
 zenoh = ["dep:zenoh", "dep:tokio"]
+# Enable iceoryx2 comparison benchmark
+iceoryx2 = ["dep:iceoryx2"]
 
 # =============================================================================
 # CRITERION BENCHMARKS

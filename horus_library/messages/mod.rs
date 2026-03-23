@@ -66,6 +66,9 @@ pub mod keyboard_input_msg;
 // Audio
 pub mod audio;
 
+// Simulation control services (simulator-agnostic)
+pub mod simulation;
+
 // Application-specific messages
 pub mod cmd_vel;
 

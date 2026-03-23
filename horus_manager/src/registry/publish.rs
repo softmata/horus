@@ -58,6 +58,44 @@ fn read_response_body(response: reqwest::blocking::Response) -> (reqwest::Status
     (status, body)
 }
 
+/// Strip `[patch.*]` sections from Cargo.toml content.
+///
+/// Published packages must not contain `[patch.crates-io]` entries with local
+/// path overrides (e.g., `path = "../horus/horus_core"`) because those paths
+/// don't exist on the user's machine. The install system injects correct
+/// overrides via `inject_horus_path_overrides()` at build time.
+fn strip_cargo_patch_sections(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut in_patch_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect start of [patch.*] section
+        if trimmed.starts_with("[patch.") || trimmed.starts_with("[patch]") {
+            in_patch_section = true;
+            continue;
+        }
+
+        // Detect start of a new top-level section (exits patch section)
+        if in_patch_section && trimmed.starts_with('[') && !trimmed.starts_with("[patch") {
+            in_patch_section = false;
+        }
+
+        if !in_patch_section {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    // Remove trailing blank lines left by stripping
+    while result.ends_with("\n\n") {
+        result.pop();
+    }
+
+    result
+}
+
 /// Default patterns excluded from published tarballs (security + size)
 const DEFAULT_EXCLUDES: &[&str] = &[
     ".git",
@@ -371,10 +409,37 @@ impl RegistryClient {
                 }
 
                 if path.is_file() {
-                    let file_size = path.metadata().map(|m| m.len()).unwrap_or(0);
-                    files_list.push((relative.to_string_lossy().to_string(), file_size));
-                    tar_builder.append_path_with_name(path, relative)?;
-                    file_count += 1;
+                    let rel_str = relative.to_string_lossy();
+
+                    // Strip [patch.*] sections from Cargo.toml before packaging.
+                    // These contain local path overrides (e.g., path = "../horus/horus_core")
+                    // that don't exist on the user's machine. The install system injects
+                    // correct overrides via inject_horus_path_overrides() at build time.
+                    if rel_str == "Cargo.toml" {
+                        let content = fs::read_to_string(path)?;
+                        let cleaned = strip_cargo_patch_sections(&content);
+                        let data = cleaned.as_bytes();
+                        let mut header = tar::Header::new_gnu();
+                        header.set_size(data.len() as u64);
+                        header.set_mode(0o644);
+                        header.set_mtime(
+                            path.metadata()
+                                .and_then(|m| m.modified())
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        );
+                        header.set_cksum();
+                        tar_builder.append_data(&mut header, relative, data)?;
+                        files_list.push((rel_str.to_string(), data.len() as u64));
+                        file_count += 1;
+                    } else {
+                        let file_size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                        files_list.push((rel_str.to_string(), file_size));
+                        tar_builder.append_path_with_name(path, relative)?;
+                        file_count += 1;
+                    }
                 } else if path.is_dir() {
                     tar_builder.append_dir(relative, path)?;
                 }
@@ -547,6 +612,28 @@ impl RegistryClient {
                 " {} Running in dry-run mode (no changes will be made)",
                 crate::cli_output::ICON_INFO.cyan()
             );
+
+            // Validate that [patch] sections were stripped from the tarball's Cargo.toml
+            if current_dir.join(CARGO_TOML).exists() {
+                let cargo_content = fs::read_to_string(current_dir.join(CARGO_TOML))?;
+                let cleaned = strip_cargo_patch_sections(&cargo_content);
+                if cleaned.len() < cargo_content.len() {
+                    let stripped_lines = cargo_content.lines().count() - cleaned.lines().count();
+                    println!(
+                        "   {} Stripped [patch] section ({} lines) from Cargo.toml in tarball",
+                        crate::cli_output::ICON_SUCCESS.green(),
+                        stripped_lines
+                    );
+                }
+                // Check for remaining path dependencies that would break remote builds
+                if cleaned.contains("path = \"") {
+                    println!(
+                        "   {} Warning: Cargo.toml still contains path dependencies after stripping [patch].",
+                        crate::cli_output::ICON_WARN.yellow()
+                    );
+                    println!("     These may prevent the package from building on user machines.");
+                }
+            }
 
             // Show file listing in dry-run mode
             println!("\n{}", "   Files to be published:".cyan());

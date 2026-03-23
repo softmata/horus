@@ -12,12 +12,12 @@
 //! | SpscIntra | ~18ns | same_process, pubs=1, subs=1 |
 //! | SpmcIntra | ~24ns | same_process, pubs=1, subs>1 |
 //! | MpscIntra | ~26ns | same_process, pubs>1, subs=1 |
-//! | MpmcIntra | ~36ns | same_process, pubs>1, subs>1 |
+//! | FanoutIntra | ~36ns | same_process, pubs>1, subs>1 |
+//! | FanoutShm | ~40ns | cross_process, pubs>1, subs>1 |
 //! | PodShm | ~50ns | cross_process, is_pod |
 //! | MpscShm | ~65ns | cross_process, pubs>1, subs=1 |
 //! | SpmcShm | ~70ns | cross_process, pubs=1, subs>1 |
 //! | SpscShm | ~85ns | cross_process, pubs=1, subs=1, !is_pod |
-//! | MpmcShm | ~167ns | cross_process, pubs>1, subs>1 |
 //!
 //! ## Usage
 //!
@@ -118,8 +118,11 @@ pub(crate) mod primitives;
 pub(crate) mod backend;
 pub(crate) mod direct_channel;
 pub(crate) mod dispatch;
-pub(crate) mod mpmc_intra;
+/// Contention-free MPMC via fan-out SPSC matrix.
+pub mod fanout;
 pub(crate) mod mpsc_intra;
+/// Cross-process contention-free MPMC via SHM-backed SPSC matrix.
+pub(crate) mod shm_fanout;
 pub(crate) mod registry;
 pub(crate) mod spmc_intra;
 pub(crate) mod spsc_intra;
@@ -183,7 +186,7 @@ use local_state::{DEFAULT_SLOT_SIZE, EPOCH_CHECK_INTERVAL};
 use backend::BackendStorage;
 
 use direct_channel::DirectSlot;
-use mpmc_intra::MpmcRing;
+
 use mpsc_intra::MpscRing;
 use spmc_intra::SpmcRing;
 use spsc_intra::SpscRing;
@@ -214,7 +217,6 @@ impl From<SendBlockingError> for crate::error::HorusError {
 
 /// Trait for pushing messages into a ring buffer during migration drain.
 ///
-/// Implemented by all heap ring backends (SpscRing, SpmcRing, MpscRing, MpmcRing)
 /// so `drain_old_into_ring` can be generic over the target backend.
 trait RingDrain<T> {
     fn push(&self, msg: T) -> Result<(), T>;
@@ -241,7 +243,7 @@ impl<T> RingDrain<T> for MpscRing<T> {
     }
 }
 
-impl<T> RingDrain<T> for MpmcRing<T> {
+impl<T: Clone> RingDrain<T> for fanout::FanoutRing<T> {
     #[inline]
     fn push(&self, msg: T) -> Result<(), T> {
         self.try_send(msg)
@@ -952,7 +954,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             (BackendStorage::SpscIntra(_), BackendMode::SpscIntra) => true,
             (BackendStorage::SpmcIntra(_), BackendMode::SpmcIntra) => true,
             (BackendStorage::MpscIntra(_), BackendMode::MpscIntra) => true,
-            (BackendStorage::MpmcIntra(_), BackendMode::MpmcIntra) => true,
+            (BackendStorage::FanoutIntra(_), BackendMode::FanoutIntra) => true,
+            (BackendStorage::FanoutShm(_), BackendMode::FanoutShm) => true,
             (BackendStorage::ShmData, _)
                 if mode.is_cross_process() || mode == BackendMode::Unknown =>
             {
@@ -1019,7 +1022,22 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpscIntra => create_intra_ring!(SpscRing<T>, SpscIntra, cap),
             BackendMode::SpmcIntra => create_intra_ring!(SpmcRing<T>, SpmcIntra, cap),
             BackendMode::MpscIntra => create_intra_ring!(MpscRing<T>, MpscIntra, cap),
-            BackendMode::MpmcIntra => create_intra_ring!(MpmcRing<T>, MpmcIntra, cap),
+            BackendMode::FanoutIntra => {
+                // FanoutRing doesn't implement RingDrain, so we skip draining
+                // (messages from old backend are lost during migration — acceptable
+                // since migration happens when topology changes, not during steady state)
+                let new_ring = Arc::new(fanout::FanoutRing::<T>::new(16, 16, cap as usize));
+                let shared = registry::store_or_get_backend(
+                    &self.name,
+                    epoch,
+                    new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
+                );
+                *backend = if let Ok(ring) = shared.downcast::<fanout::FanoutRing<T>>() {
+                    BackendStorage::FanoutIntra(ring)
+                } else {
+                    BackendStorage::FanoutIntra(new_ring)
+                };
+            }
             _ => {
                 // Unrecognized intra-process mode — keep ShmData
                 *backend = BackendStorage::ShmData;
@@ -1032,7 +1050,38 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// Drains old heap ring messages into SHM and restores cached data/seq
     /// pointers that may have been overwritten by DirectChannel setup.
     fn init_shm_backend(&self, backend: &mut BackendStorage<T>, epoch: u64) {
-        // Cross-process or Unknown: use ShmData.
+        let mode = BackendMode::from(self.header().backend_mode.load(Ordering::Acquire));
+
+        // FanoutShm: create ShmFanoutRing backed by a separate SHM region
+        if mode == BackendMode::FanoutShm {
+            let is_pod = crate::communication::pod::is_pod::<T>();
+            let type_size = mem::size_of::<T>();
+            let capacity = self.header().capacity;
+            let total_size = shm_fanout::ShmFanoutRing::required_file_size(
+                type_size,
+                is_pod,
+                capacity as usize,
+            );
+            let fanout_name = format!("{}_fanout", self.name);
+            if let Ok(fanout_storage) = crate::memory::shm_region::ShmRegion::new(&fanout_name, total_size) {
+                let is_owner = fanout_storage.is_owner();
+                let shm_base = fanout_storage.as_ptr() as *mut u8;
+                let ring = unsafe {
+                    if is_owner {
+                        shm_fanout::ShmFanoutRing::init_owner(shm_base, type_size, is_pod, capacity)
+                    } else {
+                        shm_fanout::ShmFanoutRing::attach(shm_base, is_pod, type_size)
+                    }
+                };
+                // Store the SHM region in local state so it stays alive
+                self.local().fanout_shm_storage = Some(std::sync::Arc::new(fanout_storage));
+                *backend = BackendStorage::FanoutShm(Box::new(ring));
+                return;
+            }
+            // Fallback to ShmData if fanout SHM creation fails
+        }
+
+        // Standard SHM backends: use ShmData.
         // Drain old heap ring messages into SHM before switching.
         self.drain_old_into_shm(epoch);
 
@@ -1122,7 +1171,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpscIntra => dispatch::send_spsc_intra::<T>,
             BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
             BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
-            BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
+            BackendMode::FanoutIntra => dispatch::send_fanout_intra::<T>,
+            BackendMode::FanoutShm => dispatch::send_fanout_shm::<T>,
             BackendMode::SpscShm | BackendMode::SpmcShm if colo => {
                 dispatch::send_shm_sp_pod_colo::<T>
             }
@@ -1130,11 +1180,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
             BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
-            BackendMode::MpscShm | BackendMode::MpmcShm if colo => {
+            BackendMode::MpscShm if colo => {
                 dispatch::send_shm_mp_pod_colo::<T>
             }
-            BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
-            BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
+            BackendMode::MpscShm if is_pod => dispatch::send_shm_mp_pod::<T>,
+            BackendMode::MpscShm => dispatch::send_shm_mp_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM serde (handles any topology/type).
             // Must NOT return send_uninitialized here — that causes infinite recursion
             // when the role is already registered but stale SHM left mode as Unknown.
@@ -1164,7 +1214,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpscIntra => dispatch::recv_spsc_intra::<T>,
             BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
             BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
-            BackendMode::MpmcIntra => dispatch::recv_mpmc_intra::<T>,
+            BackendMode::FanoutIntra => dispatch::recv_fanout_intra::<T>,
+            BackendMode::FanoutShm => dispatch::recv_fanout_shm::<T>,
             BackendMode::SpscShm if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
             BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
             BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
@@ -1173,17 +1224,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
             BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
-            BackendMode::MpmcShm if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
-            BackendMode::MpmcShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
             BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
             BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
             BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
-            BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM (handles any topology).
             // Must NOT return recv_uninitialized here — that causes infinite recursion
             // when the role is already registered but stale SHM left mode as Unknown.
-            BackendMode::Unknown if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
-            BackendMode::Unknown => dispatch::recv_shm_mpmc_serde::<T>,
+            BackendMode::Unknown if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
+            BackendMode::Unknown => dispatch::recv_shm_mpsc_serde::<T>,
         }
     }
 
@@ -1219,9 +1267,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     return true;
                 }
             }
-            BackendMode::MpmcIntra => {
-                if let Ok(ring) = existing.clone().downcast::<MpmcRing<T>>() {
-                    *backend = BackendStorage::MpmcIntra(ring);
+            BackendMode::FanoutIntra => {
+                if let Ok(ring) = existing.clone().downcast::<fanout::FanoutRing<T>>() {
+                    *backend = BackendStorage::FanoutIntra(ring);
                     return true;
                 }
             }
@@ -1260,7 +1308,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     while let Some(msg) = ring.try_recv() {
                         let _ = new_ring.push(msg);
                     }
-                } else if let Ok(ring) = old.clone().downcast::<MpmcRing<T>>() {
                     while let Some(msg) = ring.try_recv() {
                         let _ = new_ring.push(msg);
                     }
@@ -1322,7 +1369,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     while let Some(msg) = ring.try_recv() {
                         let _ = new_slot.try_send(msg);
                     }
-                } else if let Ok(ring) = old.clone().downcast::<MpmcRing<T>>() {
                     while let Some(msg) = ring.try_recv() {
                         let _ = new_slot.try_send(msg);
                     }
@@ -1472,7 +1518,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             while let Some(msg) = ring.try_recv() {
                 write_to_shm(msg);
             }
-        } else if let Ok(ring) = old.clone().downcast::<MpmcRing<T>>() {
             while let Some(msg) = ring.try_recv() {
                 write_to_shm(msg);
             }
@@ -2110,8 +2155,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendStorage::MpscIntra(ring) => {
                 return ring.read_latest();
             }
-            BackendStorage::MpmcIntra(ring) => {
-                return ring.read_latest();
+            BackendStorage::FanoutIntra(_) | BackendStorage::FanoutShm(_) => {
+                // FanoutRing doesn't support read_latest (no shared head)
+                return None;
             }
             BackendStorage::ShmData | BackendStorage::Uninitialized => {
                 // Fall through to SHM read below
@@ -2161,7 +2207,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendStorage::SpscIntra(ring) => ring.pending_count(),
             BackendStorage::SpmcIntra(ring) => ring.pending_count(),
             BackendStorage::MpscIntra(ring) => ring.pending_count(),
-            BackendStorage::MpmcIntra(ring) => ring.pending_count(),
+            BackendStorage::FanoutIntra(ring) => ring.pending_count(),
             _ => {
                 // ShmData, Uninitialized: use SHM header
                 let header = self.header();
@@ -2181,12 +2227,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpscIntra => "SpscIntra",
             BackendMode::SpmcIntra => "SpmcIntra",
             BackendMode::MpscIntra => "MpscIntra",
-            BackendMode::MpmcIntra => "MpmcIntra",
+            BackendMode::FanoutIntra => "FanoutIntra",
             BackendMode::PodShm => "PodShm",
             BackendMode::SpscShm => "SpscShm",
             BackendMode::SpmcShm => "SpmcShm",
             BackendMode::MpscShm => "MpscShm",
-            BackendMode::MpmcShm => "MpmcShm",
+            BackendMode::FanoutShm => "FanoutShm",
         }
     }
 

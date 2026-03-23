@@ -92,8 +92,9 @@ pub fn hash_content(content: &str) -> String {
 ///
 /// Prevents concurrent proxy instances from overwriting each other's
 /// horus.toml changes. The lock is released when the guard is dropped.
+/// Uses `horus_sys::fs::FileLock` for cross-platform support (Unix flock / Windows LockFileEx).
 pub struct SyncLock {
-    _file: std::fs::File,
+    _lock: horus_sys::fs::FileLock,
 }
 
 impl SyncLock {
@@ -113,37 +114,22 @@ impl SyncLock {
             .ok()?;
 
         // Try non-blocking first
-        if try_flock(&file, false) {
-            return Some(Self { _file: file });
+        if let Some(lock) = horus_sys::fs::FileLock::try_exclusive(&file).ok().flatten() {
+            return Some(Self { _lock: lock });
         }
 
         // Retry with backoff up to timeout
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
             std::thread::sleep(std::time::Duration::from_millis(50));
-            if try_flock(&file, false) {
-                return Some(Self { _file: file });
+            if let Some(lock) = horus_sys::fs::FileLock::try_exclusive(&file).ok().flatten() {
+                return Some(Self { _lock: lock });
             }
         }
 
         log::warn!("Could not acquire sync lock after {:?}, proceeding without lock", timeout);
         None
     }
-}
-
-impl Drop for SyncLock {
-    fn drop(&mut self) {
-        // flock is automatically released when the file descriptor is closed.
-        // The File is dropped here, closing the fd and releasing the lock.
-    }
-}
-
-/// Try to acquire an exclusive flock on the file (non-blocking).
-fn try_flock(file: &std::fs::File, _blocking: bool) -> bool {
-    use std::os::unix::io::AsRawFd;
-    let fd = file.as_raw_fd();
-    let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    result == 0
 }
 
 #[cfg(test)]

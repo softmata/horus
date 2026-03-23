@@ -7,6 +7,7 @@
 pub mod messages;
 #[doc(hidden)]
 pub mod transform_frame;
+pub mod topic_convention;
 
 // Re-export core traits needed for message types
 #[doc(hidden)]

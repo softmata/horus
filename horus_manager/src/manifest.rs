@@ -165,6 +165,10 @@ pub struct HorusManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceConfig>,
 
+    /// `[robot]` -- robot model configuration (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub robot: Option<RobotConfig>,
+
     /// `[dependencies]` -- project dependencies (all sources).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, DependencyValue>,
@@ -191,6 +195,14 @@ pub struct HorusManifest {
     /// `[drivers]` -- hardware driver configuration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drivers: BTreeMap<String, DriverValue>,
+
+    /// `[sim-drivers]` -- simulation driver overrides for `horus run --sim`.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        rename = "sim-drivers"
+    )]
+    pub sim_drivers: BTreeMap<String, DriverValue>,
 
     /// `[scripts]` -- custom project commands (like npm scripts / just).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -267,6 +279,24 @@ impl HorusManifest {
         }
         langs
     }
+}
+
+// ─── [robot] ───────────────────────────────────────────────────────────────
+
+/// Robot model configuration under `[robot]`.
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RobotConfig {
+    /// Robot name used in topic naming (e.g., `"turtlebot"`).
+    pub name: String,
+    /// Path to URDF/Xacro file, relative to project root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Simulator plugin to use with `horus run --sim`.
+    /// When absent, defaults to `"sim3d"` at runtime.
+    /// Examples: `"sim3d"`, `"mujoco"`, `"isaac"`, `"gazebo"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulator: Option<String>,
 }
 
 // ─── [package] ──────────────────────────────────────────────────────────────
@@ -698,7 +728,7 @@ pub enum DriverValue {
 /// baudrate = 57600
 /// ```
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DriverTableConfig {
     /// Terra driver shortname (e.g., `"dynamixel"`, `"rplidar"`, `"realsense"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -718,6 +748,24 @@ pub struct DriverTableConfig {
     /// HORUS topic for command input (e.g., `"arm/joint_commands"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic_command: Option<String>,
+    /// Rust crate name from crates.io — `crate = "rplidar-driver"`.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "crate")]
+    pub crate_name: Option<String>,
+    /// Crate source identifier (e.g., `"crates-io"`). Implied when `crate` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Python package name from PyPI — `pip = "adafruit-bno055"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pip: Option<String>,
+    /// External binary path — `exec = "./realsense_bridge"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec: Option<String>,
+    /// Simulated by a simulator plugin — `simulated = true`.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "sim3d")]
+    pub simulated: Option<bool>,
+    /// CLI arguments for exec drivers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
     /// All remaining keys — passed to the driver factory as `DriverParams`.
     #[serde(flatten)]
     pub params: std::collections::HashMap<String, toml::Value>,
@@ -1201,13 +1249,16 @@ version = "not-semver"
                 target_type: TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: {
                 let mut d = BTreeMap::new();
                 d.insert("camera".into(), DriverValue::Backend("opencv".into()));
                 d
             },
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
@@ -1246,14 +1297,17 @@ version = "not-semver"
                 target_type: TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: {
                 let mut d = BTreeMap::new();
                 d.insert("camera".into(), DriverValue::Enabled(true));
                 d.insert("lidar".into(), DriverValue::Backend("rplidar-a2".into()));
                 d
             },
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
@@ -1696,9 +1750,12 @@ version = "0.1.0"
                 target_type: TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
@@ -2260,6 +2317,7 @@ sys-dep = { source = "system" }
                 target_type: TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: {
                 let mut deps = BTreeMap::new();
                 deps.insert(
@@ -2344,6 +2402,7 @@ sys-dep = { source = "system" }
                 );
                 dd
             },
+            sim_dependencies: BTreeMap::new(),
             drivers: {
                 let mut d = BTreeMap::new();
                 d.insert(
@@ -2353,6 +2412,7 @@ sys-dep = { source = "system" }
                 d.insert("gps".to_string(), DriverValue::Enabled(true));
                 d
             },
+            sim_drivers: BTreeMap::new(),
             scripts: {
                 let mut s = BTreeMap::new();
                 s.insert("build".to_string(), "cargo build --release".to_string());
@@ -2447,9 +2507,12 @@ sys-dep = { source = "system" }
                 target_type: TargetType::default(),
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
@@ -3447,6 +3510,7 @@ version = "0.1.0"
                     deps
                 },
             }),
+            robot: None,
             dependencies: {
                 let mut deps = BTreeMap::new();
                 deps.insert(
@@ -3456,7 +3520,9 @@ version = "0.1.0"
                 deps
             },
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: {
                 let mut s = BTreeMap::new();
                 s.insert("build-all".to_string(), "cargo build --workspace".to_string());
@@ -3525,9 +3591,12 @@ version = "0.1.0"
                 ..PackageInfo::default()
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
@@ -3550,9 +3619,12 @@ version = "0.1.0"
                 ..PackageInfo::default()
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],
@@ -3575,9 +3647,12 @@ version = "0.1.0"
                 ..PackageInfo::default()
             },
             workspace: None,
+            robot: None,
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
             drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
             scripts: BTreeMap::new(),
             ignore: IgnoreConfig::default(),
             enable: vec![],

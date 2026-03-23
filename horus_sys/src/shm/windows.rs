@@ -120,6 +120,72 @@ impl ShmRegion {
     pub fn backing_path(&self) -> Option<&std::path::Path> {
         None
     }
+
+    /// Grow the region to `new_size` bytes without synchronization.
+    ///
+    /// On Windows, file mappings cannot be resized in place. This creates a new
+    /// mapping with the larger size and copies data from the old mapping.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure no other thread is concurrently reading from or
+    /// writing to this memory region via raw pointers derived from `as_ptr()`.
+    pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Memory::{
+            CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
+            MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
+        };
+
+        anyhow::ensure!(
+            new_size > self.size,
+            "grow_unchecked: new_size ({}) must be > current size ({})",
+            new_size,
+            self.size
+        );
+
+        // Create a new file mapping with the larger size
+        let name: Vec<u16> = self
+            .topic_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let new_handle = CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            std::ptr::null(),
+            PAGE_READWRITE,
+            (new_size >> 32) as u32,
+            new_size as u32,
+            name.as_ptr(),
+        );
+        anyhow::ensure!(
+            !new_handle.is_null(),
+            "CreateFileMappingW for grow failed: {}",
+            std::io::Error::last_os_error()
+        );
+
+        let new_ptr = MapViewOfFile(new_handle, FILE_MAP_ALL_ACCESS, 0, 0, new_size);
+        anyhow::ensure!(
+            !new_ptr.Value.is_null(),
+            "MapViewOfFile for grow failed: {}",
+            std::io::Error::last_os_error()
+        );
+
+        // Copy old data to new mapping
+        std::ptr::copy_nonoverlapping(self.ptr, new_ptr.Value as *mut u8, self.size);
+
+        // Unmap and close old resources
+        let old_view = MEMORY_MAPPED_VIEW_ADDRESS {
+            Value: self.ptr as *mut std::ffi::c_void,
+        };
+        UnmapViewOfFile(old_view);
+        CloseHandle(self.handle);
+
+        self.ptr = new_ptr.Value as *mut u8;
+        self.handle = new_handle;
+        self.size = new_size;
+        Ok(())
+    }
 }
 
 impl Drop for ShmRegion {

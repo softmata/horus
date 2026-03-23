@@ -2143,4 +2143,589 @@ mod tests {
         assert!(matches!(hw.driver_type("l"), Some(crate::drivers::DriverType::Local(_))));
         assert!(matches!(hw.driver_type("leg"), Some(crate::drivers::DriverType::Legacy)));
     }
+
+    // ── Topic name alignment tests ──────────────────────────────────────
+
+    #[test]
+    fn resolve_topic_name_follows_convention() {
+        let toml_str = r#"
+[front_lidar]
+terra = "rplidar"
+port = "/dev/ttyUSB0"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+        hw.set_robot_name("turtlebot");
+
+        let topic = hw.resolve_topic_name("front_lidar", "scan");
+        assert_eq!(topic, "turtlebot.front_lidar.scan");
+
+        // This should match what sim3d produces for the same robot+sensor
+        assert_eq!(
+            topic,
+            horus_library::topic_convention::sensor_topic("turtlebot", "front_lidar", "scan")
+        );
+    }
+
+    #[test]
+    fn resolve_topic_name_explicit_mapping_overrides_convention() {
+        let toml_str = r#"
+[arm]
+terra = "dynamixel"
+topic_state = "robot.arm.joint_states"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+        hw.set_robot_name("turtlebot");
+
+        // Explicit topic_state takes priority over convention
+        let topic = hw.resolve_topic_name("arm", "joint_state");
+        assert_eq!(topic, "robot.arm.joint_states");
+    }
+
+    #[test]
+    fn resolve_topic_name_default_robot_name() {
+        let toml_str = r#"
+[imu]
+terra = "bno055"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        // No set_robot_name — should use default "robot"
+        let topic = hw.resolve_topic_name("imu", "imu");
+        assert_eq!(topic, "robot.imu.imu");
+    }
+
+    #[test]
+    fn resolve_topic_name_sim3d_driver_same_as_real() {
+        let toml_str = r#"
+[front_lidar]
+simulated = true
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+        hw.set_robot_name("turtlebot");
+
+        // Sim3d driver resolves to same topic name as a real driver would
+        let topic = hw.resolve_topic_name("front_lidar", "scan");
+        assert_eq!(topic, "turtlebot.front_lidar.scan");
+    }
+
+    #[test]
+    fn resolve_topic_name_all_sensor_types_aligned() {
+        let toml_str = r#"
+[lidar]
+terra = "rplidar"
+[imu]
+terra = "bno055"
+[camera]
+terra = "realsense"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+        hw.set_robot_name("bot");
+
+        let pairs = [
+            ("lidar", "scan", "bot.lidar.scan"),
+            ("imu", "imu", "bot.imu.imu"),
+            ("camera", "image", "bot.camera.image"),
+        ];
+        for (name, suffix, expected) in &pairs {
+            assert_eq!(
+                hw.resolve_topic_name(name, suffix),
+                *expected,
+                "Alignment failed for {}.{}",
+                name,
+                suffix
+            );
+        }
+    }
+
+    // ── New DriverType variant tests ─────────────────────────────────
+
+    #[test]
+    fn parse_crates_io_driver() {
+        let toml_str = r#"
+[lidar]
+crate = "rplidar-driver"
+source = "crates-io"
+adapter = "scan"
+port = "/dev/ttyUSB0"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        assert!(matches!(hw.driver_type("lidar"), Some(crate::drivers::DriverType::CratesIo(s)) if s == "rplidar-driver"));
+        // adapter and port should be in params
+        let params = hw.params("lidar").unwrap();
+        assert_eq!(params.get_or::<String>("adapter", String::new()), "scan");
+        assert_eq!(params.get_or::<String>("port", String::new()), "/dev/ttyUSB0");
+    }
+
+    #[test]
+    fn parse_pypi_driver() {
+        let toml_str = r#"
+[imu]
+pip = "adafruit-bno055"
+adapter = "imu"
+bus = 1
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        assert!(matches!(hw.driver_type("imu"), Some(crate::drivers::DriverType::PyPI(s)) if s == "adafruit-bno055"));
+    }
+
+    #[test]
+    fn parse_exec_driver() {
+        let toml_str = r#"
+[camera]
+exec = "./realsense_bridge"
+args = ["--serial", "12345"]
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        assert!(matches!(hw.driver_type("camera"), Some(crate::drivers::DriverType::Exec(_))));
+        let params = hw.params("camera").unwrap();
+        // args should be in params
+        assert!(params.has("args"));
+    }
+
+    #[test]
+    fn parse_sim3d_driver() {
+        let toml_str = r#"
+[lidar]
+simulated = true
+noise = 0.01
+rate = 10
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        assert!(matches!(hw.driver_type("lidar"), Some(crate::drivers::DriverType::Simulated)));
+        let params = hw.params("lidar").unwrap();
+        assert!((params.get_or::<f64>("noise", 0.0) - 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_mixed_all_driver_types() {
+        let toml_str = r#"
+[t]
+terra = "dynamixel"
+[p]
+package = "horus-driver-ati"
+[l]
+node = "ConveyorDriver"
+[c]
+crate = "rplidar-driver"
+[py]
+pip = "adafruit-bno055"
+[ex]
+exec = "./bridge"
+[s]
+simulated = true
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let hw = HardwareSet::from_toml_table(&table).unwrap();
+        assert_eq!(hw.len(), 7);
+        assert!(matches!(hw.driver_type("t"), Some(crate::drivers::DriverType::Terra(_))));
+        assert!(matches!(hw.driver_type("p"), Some(crate::drivers::DriverType::Package(_))));
+        assert!(matches!(hw.driver_type("l"), Some(crate::drivers::DriverType::Local(_))));
+        assert!(matches!(hw.driver_type("c"), Some(crate::drivers::DriverType::CratesIo(_))));
+        assert!(matches!(hw.driver_type("py"), Some(crate::drivers::DriverType::PyPI(_))));
+        assert!(matches!(hw.driver_type("ex"), Some(crate::drivers::DriverType::Exec(_))));
+        assert!(matches!(hw.driver_type("s"), Some(crate::drivers::DriverType::Simulated)));
+    }
+
+    #[test]
+    fn sim3d_driver_returns_stub_node() {
+        let toml_str = r#"
+[lidar]
+simulated = true
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+        let node = hw.node("lidar").unwrap();
+        assert_eq!(node.name(), "lidar");
+    }
+
+    #[test]
+    fn crates_io_driver_errors_on_node_instantiation() {
+        let toml_str = r#"
+[lidar]
+crate = "rplidar-driver"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+        let result = hw.node("lidar");
+        assert!(result.is_err());
+    }
+
+    // ── Sim override tests ──────────────────────────────────────────
+
+    #[test]
+    fn apply_sim_overrides_replaces_driver_type() {
+        let toml_str = r#"
+[lidar]
+terra = "rplidar"
+port = "/dev/ttyUSB0"
+[imu]
+terra = "bno055"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+
+        // Before override
+        assert!(matches!(hw.driver_type("lidar"), Some(crate::drivers::DriverType::Terra(_))));
+        assert!(matches!(hw.driver_type("imu"), Some(crate::drivers::DriverType::Terra(_))));
+
+        // Apply sim override for lidar only
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert("lidar".to_string(), crate::drivers::DriverType::Simulated);
+        let count = hw.apply_sim_overrides(&overrides);
+
+        assert_eq!(count, 1);
+        assert!(matches!(hw.driver_type("lidar"), Some(crate::drivers::DriverType::Simulated)));
+        assert!(matches!(hw.driver_type("imu"), Some(crate::drivers::DriverType::Terra(_)))); // unchanged
+    }
+
+    #[test]
+    fn apply_sim_overrides_inserts_new_driver() {
+        let toml_str = r#"
+[lidar]
+terra = "rplidar"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+
+        assert_eq!(hw.len(), 1);
+
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert("virtual_camera".to_string(), crate::drivers::DriverType::Simulated);
+        let count = hw.apply_sim_overrides(&overrides);
+
+        assert_eq!(count, 1);
+        assert_eq!(hw.len(), 2);
+        assert!(matches!(hw.driver_type("virtual_camera"), Some(crate::drivers::DriverType::Simulated)));
+    }
+
+    #[test]
+    fn set_robot_name_changes_topic_resolution() {
+        let toml_str = r#"
+[lidar]
+terra = "rplidar"
+"#;
+        let table: toml::value::Table = toml::from_str(toml_str).unwrap();
+        let mut hw = HardwareSet::from_toml_table(&table).unwrap();
+
+        assert_eq!(hw.robot_name(), "robot"); // default
+        assert_eq!(hw.resolve_topic_name("lidar", "scan"), "robot.lidar.scan");
+
+        hw.set_robot_name("turtlebot");
+        assert_eq!(hw.robot_name(), "turtlebot");
+        assert_eq!(hw.resolve_topic_name("lidar", "scan"), "turtlebot.lidar.scan");
+    }
+
+    // ── load_from() + sim override integration tests ───────────────────
+    //
+    // These test the sim-mode override path by calling the lower-level
+    // HardwareSet methods directly, avoiding process-wide env vars that
+    // would be flaky under parallel `cargo test`.
+
+    #[test]
+    fn test_drivers_load_with_sim_mode_all() {
+        // Simulate what load_from() does when HORUS_SIM_MODE=1:
+        // parse [drivers], then apply all [sim-drivers] entries.
+        let drivers_table = parse_toml_table(
+            r#"
+            [lidar]
+            terra = "rplidar"
+            port = "/dev/ttyUSB0"
+
+            [imu]
+            terra = "bno055"
+            bus = "i2c-1"
+        "#,
+        );
+        let sim_table = parse_toml_table(
+            r#"
+            [lidar]
+            simulated = true
+            noise = 0.01
+
+            [imu]
+            simulated = true
+            noise = 0.005
+        "#,
+        );
+
+        let mut hw = HardwareSet::from_toml_table(&drivers_table).unwrap();
+
+        // Before sim override: both are Terra
+        assert!(matches!(
+            hw.driver_type("lidar"),
+            Some(crate::drivers::DriverType::Terra(t)) if t == "rplidar"
+        ));
+        assert!(matches!(
+            hw.driver_type("imu"),
+            Some(crate::drivers::DriverType::Terra(t)) if t == "bno055"
+        ));
+
+        // Apply full sim override (no selective filtering)
+        let count = hw.apply_sim_overrides_from_toml(&sim_table);
+        assert_eq!(count, 2);
+
+        // After override: both are Simulated
+        assert!(matches!(
+            hw.driver_type("lidar"),
+            Some(crate::drivers::DriverType::Simulated)
+        ));
+        assert!(matches!(
+            hw.driver_type("imu"),
+            Some(crate::drivers::DriverType::Simulated)
+        ));
+    }
+
+    #[test]
+    fn test_drivers_load_with_sim_mode_selective() {
+        // Simulate HORUS_SIM_TARGETS=lidar: only override lidar, leave imu as Terra.
+        let drivers_table = parse_toml_table(
+            r#"
+            [lidar]
+            terra = "rplidar"
+            port = "/dev/ttyUSB0"
+
+            [imu]
+            terra = "bno055"
+            bus = "i2c-1"
+        "#,
+        );
+        let full_sim_table = parse_toml_table(
+            r#"
+            [lidar]
+            simulated = true
+            noise = 0.01
+
+            [imu]
+            simulated = true
+            noise = 0.005
+        "#,
+        );
+
+        let mut hw = HardwareSet::from_toml_table(&drivers_table).unwrap();
+
+        // Selective filtering: only keep entries matching targets (like load_from does)
+        let targets = vec!["lidar".to_string()];
+        let filtered_sim_table: toml::value::Table = full_sim_table
+            .iter()
+            .filter(|(k, _)| targets.contains(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let count = hw.apply_sim_overrides_from_toml(&filtered_sim_table);
+        assert_eq!(count, 1);
+
+        // lidar is now Simulated
+        assert!(matches!(
+            hw.driver_type("lidar"),
+            Some(crate::drivers::DriverType::Simulated)
+        ));
+        // imu stays Terra
+        assert!(matches!(
+            hw.driver_type("imu"),
+            Some(crate::drivers::DriverType::Terra(t)) if t == "bno055"
+        ));
+    }
+
+    #[test]
+    fn test_drivers_load_reads_robot_name() {
+        // Write a temp horus.toml with [robot] name and [drivers], call load_from()
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("horus.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[robot]
+name = "turtlebot"
+
+[drivers.lidar]
+terra = "rplidar"
+port = "/dev/ttyUSB0"
+"#,
+        )
+        .unwrap();
+
+        let hw = crate::drivers::load_from(&toml_path).unwrap();
+        assert_eq!(hw.robot_name(), "turtlebot");
+        assert!(hw.has("lidar"));
+    }
+
+    #[test]
+    fn test_drivers_load_no_sim_mode_unchanged() {
+        // Without any sim overrides applied, drivers stay as their original type.
+        let drivers_table = parse_toml_table(
+            r#"
+            [lidar]
+            terra = "rplidar"
+            port = "/dev/ttyUSB0"
+
+            [imu]
+            terra = "bno055"
+            bus = "i2c-1"
+
+            [camera]
+            package = "horus-driver-realsense"
+            serial = "12345"
+        "#,
+        );
+
+        let hw = HardwareSet::from_toml_table(&drivers_table).unwrap();
+
+        // No sim overrides applied -- all stay as original types
+        assert!(matches!(
+            hw.driver_type("lidar"),
+            Some(crate::drivers::DriverType::Terra(t)) if t == "rplidar"
+        ));
+        assert!(matches!(
+            hw.driver_type("imu"),
+            Some(crate::drivers::DriverType::Terra(t)) if t == "bno055"
+        ));
+        assert!(matches!(
+            hw.driver_type("camera"),
+            Some(crate::drivers::DriverType::Package(p)) if p == "horus-driver-realsense"
+        ));
+    }
+
+    #[test]
+    fn test_resolve_topic_name_with_loaded_robot_name() {
+        // Write a temp horus.toml with [robot] name and [drivers], call load_from(),
+        // then verify resolve_topic_name uses the loaded robot name.
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("horus.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[robot]
+name = "bot"
+
+[drivers.lidar]
+terra = "rplidar"
+port = "/dev/ttyUSB0"
+"#,
+        )
+        .unwrap();
+
+        let hw = crate::drivers::load_from(&toml_path).unwrap();
+        assert_eq!(hw.robot_name(), "bot");
+        assert_eq!(hw.resolve_topic_name("lidar", "scan"), "bot.lidar.scan");
+    }
+
+    // ── End-to-end: env var sim mode ────────────────────────────────
+    // NOTE: These tests set/read process-global HORUS_SIM_MODE env var.
+    // They MUST run with --test-threads=1 or be isolated. A shared mutex
+    // ensures they don't interleave with each other.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn test_load_from_applies_sim_overrides_via_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // This tests the FULL --sim pipeline at horus_core level:
+        // horus run --sim → sets HORUS_SIM_MODE=1 → drivers::load_from() reads it
+        // → applies [sim-drivers] → driver types become Simulated
+
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("horus.toml");
+        std::fs::write(&toml_path, r#"
+[robot]
+name = "testbot"
+
+[drivers.lidar]
+terra = "rplidar"
+port = "/dev/ttyUSB0"
+
+[drivers.imu]
+terra = "bno055"
+
+[sim-drivers]
+lidar = { simulated = true, noise = 0.01 }
+imu = { simulated = true }
+"#).unwrap();
+
+        // Set env var (what horus run --sim does)
+        // SAFETY: This test must clean up. Use a unique scope.
+        std::env::set_var("HORUS_SIM_MODE", "1");
+
+        let hw = crate::drivers::load_from(&toml_path).unwrap();
+
+        // Clean up IMMEDIATELY before any assertions can panic
+        std::env::remove_var("HORUS_SIM_MODE");
+        std::env::remove_var("HORUS_SIM_TARGETS");
+
+        // Both drivers should be overridden to Simulated
+        assert!(
+            matches!(hw.driver_type("lidar"), Some(crate::drivers::DriverType::Simulated)),
+            "lidar should be Simulated, got {:?}", hw.driver_type("lidar")
+        );
+        assert!(
+            matches!(hw.driver_type("imu"), Some(crate::drivers::DriverType::Simulated)),
+            "imu should be Simulated, got {:?}", hw.driver_type("imu")
+        );
+
+        // Robot name should still be read
+        assert_eq!(hw.robot_name(), "testbot");
+
+        // Topic resolution should work
+        assert_eq!(hw.resolve_topic_name("lidar", "scan"), "testbot.lidar.scan");
+    }
+
+    #[test]
+    fn test_load_from_selective_sim_via_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("horus.toml");
+        std::fs::write(&toml_path, r#"
+[drivers.lidar]
+terra = "rplidar"
+
+[drivers.imu]
+terra = "bno055"
+
+[sim-drivers]
+lidar = { simulated = true }
+imu = { simulated = true }
+"#).unwrap();
+
+        // Selective: only simulate lidar
+        std::env::set_var("HORUS_SIM_MODE", "1");
+        std::env::set_var("HORUS_SIM_TARGETS", "lidar");
+
+        let hw = crate::drivers::load_from(&toml_path).unwrap();
+
+        std::env::remove_var("HORUS_SIM_MODE");
+        std::env::remove_var("HORUS_SIM_TARGETS");
+
+        // Only lidar should be Simulated
+        assert!(matches!(hw.driver_type("lidar"), Some(crate::drivers::DriverType::Simulated)));
+        // IMU should stay Terra
+        assert!(matches!(hw.driver_type("imu"), Some(crate::drivers::DriverType::Terra(_))));
+    }
+
+    #[test]
+    fn test_load_from_no_sim_mode_leaves_drivers_real() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("horus.toml");
+        std::fs::write(&toml_path, r#"
+[drivers.lidar]
+terra = "rplidar"
+
+[sim-drivers]
+lidar = { simulated = true }
+"#).unwrap();
+
+        // Ensure env var is NOT set
+        std::env::remove_var("HORUS_SIM_MODE");
+
+        let hw = crate::drivers::load_from(&toml_path).unwrap();
+
+        // Without HORUS_SIM_MODE, driver stays real
+        assert!(matches!(hw.driver_type("lidar"), Some(crate::drivers::DriverType::Terra(_))));
+    }
 }

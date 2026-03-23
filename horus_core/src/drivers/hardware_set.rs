@@ -31,7 +31,7 @@ use super::terra_map;
 // ── Driver source type ──────────────────────────────────────────────────────
 
 /// Identifies where a driver comes from.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DriverType {
     /// Terra HAL driver — `terra = "dynamixel"` in config.
     Terra(String),
@@ -41,6 +41,14 @@ pub enum DriverType {
     Local(String),
     /// Legacy simple value — `camera = "opencv"` or `camera = true`.
     Legacy,
+    /// Rust crate from crates.io — `crate = "rplidar-driver", source = "crates-io"`.
+    CratesIo(String),
+    /// Python package from PyPI — `pip = "adafruit-bno055"`.
+    PyPI(String),
+    /// External binary subprocess — `exec = "./realsense_bridge"`.
+    Exec(std::path::PathBuf),
+    /// Simulated by a simulator plugin (sim3d, mujoco, isaac, etc.) — `simulated = true`.
+    Simulated,
 }
 
 // ── Driver handle ───────────────────────────────────────────────────────────
@@ -119,6 +127,27 @@ impl crate::core::Node for TerraStubNode {
     fn tick(&mut self) {}
 }
 
+// ── Sim3d stub node ────────────────────────────────────────────────────────
+
+/// Stub node for sensors simulated by horus-sim3d.
+///
+/// All actual work (physics, sensor data, topic publishing) happens in the
+/// sim3d process. This stub tells the scheduler the sensor exists and
+/// reports healthy status.
+struct SimulatedStubNode {
+    driver_name: String,
+    #[allow(dead_code)]
+    params: DriverParams,
+}
+
+impl crate::core::Node for SimulatedStubNode {
+    fn name(&self) -> &str {
+        &self.driver_name
+    }
+
+    fn tick(&mut self) {}
+}
+
 // ── HardwareSet ─────────────────────────────────────────────────────────────
 
 /// Pre-configured hardware connections loaded from `horus.toml` `[drivers]`.
@@ -128,6 +157,10 @@ impl crate::core::Node for TerraStubNode {
 #[derive(Debug)]
 pub struct HardwareSet {
     entries: HashMap<String, DriverEntry>,
+    /// Robot name for topic name resolution. When set, typed accessors
+    /// like `.scan()` resolve topic names via the shared convention
+    /// `{robot_name}.{sensor_name}.{data_type}`.
+    robot_name: Option<String>,
 }
 
 impl HardwareSet {
@@ -159,11 +192,34 @@ impl HardwareSet {
                         .and_then(|v| v.as_str())
                         .map(String::from);
 
+                    // Extract new driver source keys
+                    let crate_name = cfg
+                        .get("crate")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let pip = cfg.get("pip").and_then(|v| v.as_str()).map(String::from);
+                    let exec = cfg
+                        .get("exec")
+                        .and_then(|v| v.as_str())
+                        .map(|s| std::path::PathBuf::from(s));
+                    let simulated = cfg
+                        .get("simulated")
+                        .or_else(|| cfg.get("sim3d")) // backwards compat
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
                     // Collect remaining keys as params (skip config/bridge keys)
                     const RESERVED: &[&str] = &[
                         "terra",
                         "package",
                         "node",
+                        "crate",
+                        "source",
+                        "pip",
+                        "exec",
+                        "simulated",
+                        "sim3d", // backwards compat
+                        "args",
                         "topic",
                         "topic_state",
                         "topic_command",
@@ -175,15 +231,28 @@ impl HardwareSet {
                         }
                     }
 
+                    // Store args in params for downstream use
+                    if let Some(args) = cfg.get("args") {
+                        params_map.insert("args".to_string(), args.clone());
+                    }
+
                     let driver_type = if let Some(t) = terra {
                         DriverType::Terra(t)
                     } else if let Some(p) = package {
                         DriverType::Package(p)
                     } else if let Some(n) = node {
                         DriverType::Local(n)
+                    } else if let Some(c) = crate_name {
+                        DriverType::CratesIo(c)
+                    } else if let Some(p) = pip {
+                        DriverType::PyPI(p)
+                    } else if let Some(e) = exec {
+                        DriverType::Exec(e)
+                    } else if simulated {
+                        DriverType::Simulated
                     } else {
                         return Err(ConfigError::Other(format!(
-                            "driver '{}': config table must have 'terra', 'package', or 'node' key",
+                            "driver '{}': config table must have 'terra', 'package', 'node', 'crate', 'pip', 'exec', or 'sim3d' key",
                             name
                         ))
                         .into());
@@ -219,7 +288,7 @@ impl HardwareSet {
             entries.insert(name.clone(), entry);
         }
 
-        Ok(Self { entries })
+        Ok(Self { entries, robot_name: None })
     }
 
     // ── Terra typed accessors ────────────────────────────────────────────
@@ -362,6 +431,25 @@ impl HardwareSet {
                 name
             ))
             .into()),
+            DriverType::CratesIo(_) | DriverType::PyPI(_) => Err(ConfigError::Other(format!(
+                "driver '{}': CratesIo/PyPI drivers require build-time adapter code generation. \
+                 Use `horus build` first, then register the adapter via register_driver!.",
+                name
+            ))
+            .into()),
+            DriverType::Exec(path) => {
+                Ok(Box::new(super::exec_driver::ExecDriver::from_params(
+                    name,
+                    path.clone(),
+                    &entry.params,
+                )))
+            }
+            DriverType::Simulated => {
+                Ok(Box::new(SimulatedStubNode {
+                    driver_name: name.to_string(),
+                    params: entry.params.clone(),
+                }))
+            }
         }
     }
 
@@ -461,6 +549,105 @@ impl HardwareSet {
     /// Whether there are no configured drivers.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    // ── Topic resolution ────────────────────────────────────────────────
+
+    /// Set the robot name for topic name resolution.
+    ///
+    /// Called automatically by `drivers::load_from()` when `[robot].name`
+    /// exists in horus.toml. Users should set the name in horus.toml
+    /// rather than calling this directly.
+    pub(crate) fn set_robot_name(&mut self, name: impl Into<String>) {
+        self.robot_name = Some(name.into());
+    }
+
+    /// Get the configured robot name, or "robot" as default.
+    pub fn robot_name(&self) -> &str {
+        self.robot_name.as_deref().unwrap_or("robot")
+    }
+
+    /// Resolve the topic name string for a sensor (internal).
+    ///
+    /// Users should use the naming convention directly:
+    /// `"{robot_name}.{sensor_name}.{data_type}"` (e.g., `"turtlebot.front_lidar.scan"`)
+    ///
+    /// This method exists for internal alignment testing between sim and drivers.
+    pub(crate) fn resolve_topic_name(&self, name: &str, data_type: &str) -> String {
+        // Check explicit TopicMapping first (backwards compat)
+        if let Some(mapping) = self.topic_mapping(name) {
+            if let Some(ref topic) = mapping.topic {
+                return topic.clone();
+            }
+            if let Some(ref topic_state) = mapping.topic_state {
+                return topic_state.clone();
+            }
+        }
+
+        // Shared naming convention
+        let robot = self.robot_name();
+        let mut segments = Vec::with_capacity(3);
+        if !robot.is_empty() {
+            segments.push(robot);
+        }
+        if !name.is_empty() {
+            segments.push(name);
+        }
+        if !data_type.is_empty() {
+            segments.push(data_type);
+        }
+        segments.join(".")
+    }
+
+    // ── Sim override ────────────────────────────────────────────────────
+
+    /// Apply simulation overrides from `[sim-drivers]` section.
+    ///
+    /// For each entry in `sim_overrides`:
+    /// - If the name matches an existing driver: replace its type with `Sim3d`
+    ///   and merge params (noise, rate overrides)
+    /// - If no match: insert as a new `Sim3d` driver entry
+    ///
+    /// Returns the number of drivers overridden.
+    pub fn apply_sim_overrides(&mut self, sim_overrides: &std::collections::BTreeMap<String, DriverType>) -> usize {
+        let mut count = 0;
+        for (name, _) in sim_overrides {
+            if let Some(entry) = self.entries.get_mut(name) {
+                entry.driver_type = DriverType::Simulated;
+                count += 1;
+            } else {
+                // New sim-only driver not in [drivers]
+                self.entries.insert(name.clone(), DriverEntry {
+                    driver_type: DriverType::Simulated,
+                    params: DriverParams::empty(),
+                    topics: TopicMapping::default(),
+                });
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Apply simulation overrides from raw TOML values.
+    ///
+    /// Simpler API that accepts the sim_drivers map directly from the manifest.
+    /// Each entry's driver type is replaced with `Sim3d`.
+    pub fn apply_sim_overrides_from_toml(&mut self, sim_table: &toml::value::Table) -> usize {
+        let mut count = 0;
+        for (name, _value) in sim_table {
+            if let Some(entry) = self.entries.get_mut(name) {
+                entry.driver_type = DriverType::Simulated;
+                count += 1;
+            } else {
+                self.entries.insert(name.clone(), DriverEntry {
+                    driver_type: DriverType::Simulated,
+                    params: DriverParams::empty(),
+                    topics: TopicMapping::default(),
+                });
+                count += 1;
+            }
+        }
+        count
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
