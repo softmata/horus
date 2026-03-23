@@ -768,6 +768,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.check_migration();
         self.initialize_backend();
 
+        // Prime msg_counter so the NEXT send/recv triggers an immediate migration
+        // check. This catches the common case where two processes create Topics
+        // concurrently and one hasn't registered yet when the other calls
+        // check_migration() above. (GitHub issue #37)
+        local.msg_counter = EPOCH_CHECK_INTERVAL.wrapping_sub(1);
+
         Ok(())
     }
 
@@ -1470,24 +1476,49 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let local = self.local();
         let mask = local.cached_capacity_mask;
 
-        // Helper: write one message to SHM at the next available slot
+        // Helper: write one message to SHM at the next available slot.
+        //
+        // IMPORTANT: Data must be fully written BEFORE the sequence is published.
+        // The old code used fetch_add(AcqRel) which made the new sequence visible
+        // to SPSC consumers before the data write completed — causing readers to
+        // see zeroed/stale slot data (GitHub issue #37, pool_id=0 crash).
+        //
+        // Fix: load sequence, write data, then store(Release). For SPSC this is
+        // correct — only one publisher drains. For MPSC consumers we also set the
+        // per-slot ready flag.
+        //
+        // NOTE: If multiple publishers drain concurrently (rare MPSC edge case),
+        // load+store can cause one publisher to overwrite another's slot. This
+        // loses at most a few in-flight messages during migration — acceptable
+        // since drain is best-effort and normal send resumes immediately after.
         let data_off = Self::data_region_offset(local.cached_capacity as usize);
+        let seq_array_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) };
         let write_to_shm = |msg: T| {
             if local.is_pod {
-                let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+                let seq = header.sequence_or_head.load(Ordering::Relaxed);
                 let index = (seq & mask) as usize;
+                // Write data FIRST
                 // SAFETY: data at data_off + index * sizeof(T) is within storage bounds
                 unsafe {
                     let base = self.storage.as_ptr().add(data_off) as *mut T;
                     simd_aware_write(base.add(index), msg);
+                    // Set per-slot ready flag (used by MPSC consumers; harmless for SPSC)
+                    let ready_ptr = &*(seq_array_ptr.add(index * 8)
+                        as *const std::sync::atomic::AtomicU64);
+                    ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                 }
+                // Publish sequence AFTER data — Release ensures data visibility
+                header
+                    .sequence_or_head
+                    .store(seq.wrapping_add(1), Ordering::Release);
             } else {
                 let slot_size = local.slot_size;
                 match bincode::serialize(&msg) {
                     Ok(bytes) => {
-                        let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+                        let seq = header.sequence_or_head.load(Ordering::Relaxed);
                         let index = (seq & mask) as usize;
                         let slot_offset = index * slot_size;
+                        // Write data FIRST
                         // SAFETY: slot_ptr is within storage bounds
                         unsafe {
                             let slot_ptr = self.storage.as_ptr().add(data_off + slot_offset);
@@ -1495,8 +1526,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                             let len_ptr = slot_ptr.add(8) as *mut u64;
                             std::ptr::write_volatile(len_ptr, bytes.len() as u64);
                             let data_ptr = slot_ptr.add(16) as *mut u8;
-                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+                            std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                data_ptr,
+                                bytes.len(),
+                            );
+                            // Per-slot ready flag for MPSC consumers
+                            let ready_ptr = &*(seq_array_ptr.add(index * 8)
+                                as *const std::sync::atomic::AtomicU64);
+                            ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                         }
+                        // Publish sequence AFTER data
+                        header
+                            .sequence_or_head
+                            .store(seq.wrapping_add(1), Ordering::Release);
                     }
                     Err(_) => {
                         // Serialization failure — drop the message
@@ -1904,6 +1947,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[cold]
     #[inline(never)]
     fn send_lossy_retry(&self, mut msg: T) {
+        // Check migration before retrying — if the ring is full because we're
+        // on DirectChannel with no local consumer, a cross-process migration
+        // will switch to SHM where the remote subscriber is waiting.
+        // (GitHub issue #37)
+        self.check_migration_periodic();
+
         // First retry immediately — handles the common "buffer was full for
         // a microsecond" case without any spin overhead.
         match self.try_send(msg) {
@@ -2028,7 +2077,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
             return None;
         }
-        self.try_recv()
+        let result = self.try_recv();
+        if result.is_none() {
+            // Always check SHM migration_epoch on empty recv.
+            //
+            // When another process migrates to SHM, this process's dispatch
+            // function stays on DirectChannel until it detects the epoch change.
+            // The dispatch functions only check every EPOCH_CHECK_INTERVAL
+            // messages — but a subscriber that never receives anything never
+            // reaches that threshold. Checking on every empty recv ensures
+            // cross-process migration is detected within one recv() call.
+            //
+            // Cost: ~50ns (single Acquire load from mmap header). Negligible
+            // on the empty-recv path which is already a "nothing to do" path.
+            // (GitHub issue #37)
+            self.check_migration_periodic();
+        }
+        result
     }
 
     /// Content logging path for recv() — outlined to keep recv() hot path tight.

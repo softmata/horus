@@ -1890,7 +1890,7 @@ pub fn generate_html(port: u16) -> String {
                 }} else {{
                     tooltipContent.innerHTML = data.topics.map(topic => `
                         <div class="tooltip-topic-item">
-                            <span class="tooltip-topic-bullet">•</span>
+                            <span class="tooltip-topic-bullet">-</span>
                             <span class="tooltip-topic-name">${{topic.name}}</span>
                         </div>
                     `).join('');
@@ -2917,7 +2917,7 @@ pub fn generate_html(port: u16) -> String {
                                             </span>
                                         </div>
                                         <div style="color: var(--text-secondary); margin-top: 5px; font-size: 0.85em;">
-                                            ${{env.path}} • ${{pkgCount}} packages
+                                            ${{env.path}} - ${{pkgCount}} packages
                                         </div>
                                     </div>
                                 </div>
@@ -2943,7 +2943,7 @@ pub fn generate_html(port: u16) -> String {
                 const isVisible = detailsDiv.style.display !== 'none';
                 detailsDiv.style.display = isVisible ? 'none' : 'block';
                 if (arrow) {{
-                    arrow.textContent = isVisible ? '▶' : '▼';
+                    arrow.textContent = isVisible ? '>' : 'v';
                 }}
             }}
         }}
@@ -3225,7 +3225,7 @@ pub fn generate_html(port: u16) -> String {
                                             </span>
                                         </div>
                                         <div style="color: var(--text-secondary); margin-top: 5px; font-size: 0.85em;">
-                                            ${{env.path}} • ${{pkgCount}} packages
+                                            ${{env.path}} - ${{pkgCount}} packages
                                         </div>
                                     </div>
                                 </div>

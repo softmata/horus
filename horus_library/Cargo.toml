@@ -1,6 +1,6 @@
 [package]
 name = "horus_library"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 authors = ["HORUS Contributors"]
 description = "Standard library of messages and transforms for HORUS — IMU, LiDAR, camera, odometry, control, navigation, and perception message types with TransformFrame coordinate tracking"
@@ -37,6 +37,8 @@ wait = []
 # Enable async wait_for_transform_async() / wait_for_transform_at_async() using tokio::sync::Notify.
 # Pulls in tokio as a dependency. Zero overhead when disabled.
 async-wait = ["dep:tokio"]
+# Enable From impls between softmata-core canonical types and HORUS messages.
+softmata-compat = []
 
 [dependencies.tokio]
 workspace = true

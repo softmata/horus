@@ -33,10 +33,20 @@ pub fn run_fmt(check: bool, extra_args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
+    // For horus projects (horus.toml without root Cargo.toml), point cargo at .horus/Cargo.toml
+    let horus_manifest = ctx.root.join(".horus/Cargo.toml");
+    let use_horus_manifest = ctx.has_horus_toml
+        && !ctx.root.join("Cargo.toml").exists()
+        && horus_manifest.exists();
+
     let commands: Vec<PrefixedCommand> = tools
         .into_iter()
         .map(|tool| {
             let mut args = tool.default_args.clone();
+            if tool.bin == "cargo" && use_horus_manifest {
+                args.push("--manifest-path".to_string());
+                args.push(horus_manifest.to_string_lossy().to_string());
+            }
             if check {
                 match tool.bin.as_str() {
                     "cargo" => args.push("--check".to_string()),

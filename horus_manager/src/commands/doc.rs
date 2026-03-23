@@ -33,10 +33,20 @@ pub fn run_doc(open: bool, extra_args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
+    // For horus projects (horus.toml without root Cargo.toml), point cargo at .horus/Cargo.toml
+    let horus_manifest = ctx.root.join(".horus/Cargo.toml");
+    let use_horus_manifest = ctx.has_horus_toml
+        && !ctx.root.join("Cargo.toml").exists()
+        && horus_manifest.exists();
+
     let commands: Vec<PrefixedCommand> = tools
         .into_iter()
         .map(|tool| {
             let mut args = tool.default_args.clone();
+            if tool.bin == "cargo" && use_horus_manifest {
+                args.push("--manifest-path".to_string());
+                args.push(horus_manifest.to_string_lossy().to_string());
+            }
             if open && tool.bin == "cargo" {
                 args.push("--open".to_string());
             }
@@ -57,6 +67,43 @@ pub fn run_doc(open: bool, extra_args: Vec<String>) -> Result<()> {
 
     if !run_with_prefix::all_succeeded(&results) {
         std::process::exit(run_with_prefix::worst_exit_code(&results));
+    }
+
+    // Print the path to generated docs
+    if !open {
+        let doc_dir = if use_horus_manifest {
+            ctx.root.join(".horus/target/doc")
+        } else {
+            ctx.root.join("target/doc")
+        };
+        if doc_dir.exists() {
+            // Find the index.html — try package name from horus.toml first
+            let index = ctx
+                .manifest
+                .as_ref()
+                .map(|m| m.package.name.replace('-', "_"))
+                .and_then(|name| {
+                    let p = doc_dir.join(&name).join("index.html");
+                    p.exists().then_some(p)
+                })
+                .or_else(|| {
+                    // Fallback: find first directory with index.html
+                    std::fs::read_dir(&doc_dir).ok().and_then(|entries| {
+                        entries.filter_map(|e| e.ok()).find_map(|e| {
+                            let p = e.path().join("index.html");
+                            (e.path().is_dir() && p.exists()).then_some(p)
+                        })
+                    })
+                });
+
+            if let Some(path) = index {
+                println!(
+                    "\n  {} file://{}",
+                    crate::cli_output::ICON_SUCCESS.green(),
+                    path.display()
+                );
+            }
+        }
     }
 
     Ok(())

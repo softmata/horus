@@ -1,6 +1,6 @@
 [package]
 name = "horus_manager"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "CLI tool for the HORUS robotics framework — project scaffolding, build/run/test, package management, monitoring, deployment, and 46+ commands for Rust, Python, and C++ robotics projects"

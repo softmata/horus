@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "horus"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "horus_core",
  "horus_library",
@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "horus_benchmarks"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1794,7 +1794,7 @@ dependencies = [
 
 [[package]]
 name = "horus_core"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "horus_library"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "horus_macros"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "horus_core",
  "proc-macro2",
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "horus_manager"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "horus_py"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "ctrlc",

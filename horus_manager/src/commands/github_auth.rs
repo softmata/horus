@@ -397,7 +397,7 @@ pub fn logout() -> HorusResult<()> {
         })?;
 
         println!("Successfully logged out!");
-        println!("  {} API key removed from local storage", "•".dimmed());
+        println!("  {} API key removed from local storage", "-".dimmed());
     } else {
         println!(
             "{} Not currently logged in",
@@ -455,7 +455,7 @@ pub fn whoami() -> HorusResult<()> {
                         if let (Some(name), Some(prefix)) =
                             (key["name"].as_str(), key["prefix"].as_str())
                         {
-                            println!("    • {} ({})", name, prefix.dimmed());
+                            println!("    - {} ({})", name, prefix.dimmed());
                         }
                     }
                 }
@@ -526,7 +526,7 @@ pub fn keys_list() -> HorusResult<()> {
         Ok(response) if response.status().is_success() => {
             if let Ok(keys_info) = response.json::<serde_json::Value>() {
                 println!("{}", "API Keys".cyan().bold());
-                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("--------------------------------------");
 
                 if let Some(keys) = keys_info["keys"].as_array() {
                     if keys.is_empty() {
@@ -539,7 +539,7 @@ pub fn keys_list() -> HorusResult<()> {
                             let permissions = key["permissions"].as_array();
 
                             println!();
-                            println!("  {} {}", "•".green(), name.bold());
+                            println!("  {} {}", "-".green(), name.bold());
                             println!("    {} {}", "Key:".dimmed(), prefix);
 
                             if let Some(perms) = permissions {

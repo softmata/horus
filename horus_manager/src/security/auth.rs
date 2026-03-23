@@ -294,7 +294,7 @@ pub fn prompt_for_password_setup() -> Result<String> {
         "\n{} HORUS Monitor - First Time Setup",
         "[SECURITY]".cyan().bold()
     );
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("--------------------------------------");
     println!(
         "Set a monitor password (minimum {} characters, or press Enter for no password):",
         crate::config::MIN_PASSWORD_LENGTH
@@ -375,7 +375,7 @@ pub fn reset_password() -> Result<String> {
         "\n{} HORUS Monitor - Password Reset",
         "[SECURITY]".cyan().bold()
     );
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("--------------------------------------");
     println!("Enter a new monitor password (or press Enter to disable password):");
     println!(
         "{} Without a password, anyone on your network can access the monitor",

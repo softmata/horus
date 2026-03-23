@@ -250,7 +250,7 @@ fn print_cpp_deps_outdated(root: &Path) -> Result<()> {
                     name.cyan(),
                     apt,
                     inst.yellow(),
-                    "→".dimmed(),
+                    "->".dimmed(),
                     cand.green()
                 );
                 any_outdated = true;

@@ -167,7 +167,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     // ═══════════════════════════════════════════════════════════
     if !horus_manifests.is_empty() {
         if !quiet {
-            println!("{}", "━".repeat(60).dimmed());
+            println!("{}", "-".repeat(60).dimmed());
             println!(
                 "{} Phase 1: Validating horus.toml manifests...\n",
                 cli_output::ICON_INFO.cyan().bold()
@@ -177,7 +177,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
         for toml_path in &horus_manifests {
             let rel_path = toml_path.strip_prefix(target_path).unwrap_or(toml_path);
             if !quiet {
-                println!("  {} {}", "▸".cyan(), rel_path.display());
+                println!("  {} {}", ">".cyan(), rel_path.display());
             }
 
             match HorusManifest::load_from(toml_path) {
@@ -189,7 +189,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     match manifest.validate() {
                         Ok(warnings) => {
                             for w in &warnings {
-                                println!("      {} {}", "⚠".yellow(), w);
+                                println!("      {} {}", "!".yellow(), w);
                             }
                         }
                         Err(e) => {
@@ -243,7 +243,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     // ═══════════════════════════════════════════════════════════
     if !cargo_dirs.is_empty() {
         if !quiet {
-            println!("\n{}", "━".repeat(60).dimmed());
+            println!("\n{}", "-".repeat(60).dimmed());
             println!(
                 "{} Phase 2: Deep Rust check (cargo check)...\n",
                 cli_output::ICON_INFO.cyan().bold()
@@ -258,7 +258,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                 rel_path.to_str().unwrap_or(".")
             };
             if !quiet {
-                print!("  {} {} ... ", "▸".cyan(), display_path);
+                print!("  {} {} ... ", ">".cyan(), display_path);
                 std::io::Write::flush(&mut std::io::stdout()).ok();
             }
 
@@ -298,7 +298,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     // ═══════════════════════════════════════════════════════════
     if !python_files.is_empty() {
         if !quiet {
-            println!("\n{}", "━".repeat(60).dimmed());
+            println!("\n{}", "-".repeat(60).dimmed());
             println!(
                 "{} Phase 3: Python validation (syntax + imports)...\n",
                 cli_output::ICON_INFO.cyan().bold()
@@ -309,7 +309,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             if !quiet {
                 print!(
                     "  {} {} ",
-                    "▸".cyan(),
+                    ">".cyan(),
                     py_path
                         .strip_prefix(target_path)
                         .unwrap_or(py_path)
@@ -408,7 +408,7 @@ except ImportError as e:
 
     // Summary
     if !quiet {
-        println!("\n{}", "━".repeat(60).dimmed());
+        println!("\n{}", "-".repeat(60).dimmed());
         println!(
             "{} Workspace Check Summary\n",
             cli_output::ICON_INFO.cyan().bold()
@@ -470,7 +470,7 @@ fn check_rust_file(path: &Path) -> HorusResult<()> {
         path.display()
     );
 
-    print!("  {} Parsing Rust syntax... ", "▸".cyan());
+    print!("  {} Parsing Rust syntax... ", ">".cyan());
     let content = fs::read_to_string(path)?;
 
     match syn::parse_file(&content) {
@@ -503,7 +503,7 @@ fn check_python_file(path: &Path) -> HorusResult<()> {
         path.display()
     );
 
-    print!("  {} Parsing Python syntax... ", "▸".cyan());
+    print!("  {} Parsing Python syntax... ", ">".cyan());
 
     let output = std::process::Command::new("python3")
         .arg("-m")
@@ -555,7 +555,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     let languages = detect_languages(base_dir);
 
     // 1. TOML Syntax Validation
-    print!("  {} Validating TOML syntax... ", "▸".cyan());
+    print!("  {} Validating TOML syntax... ", ">".cyan());
     let manifest = match HorusManifest::load_from(manifest_path) {
         Ok(m) => {
             println!("{}", cli_output::ICON_SUCCESS.green());
@@ -570,7 +570,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
 
     if let Some(ref manifest) = manifest {
         // 2. Manifest Validation (name, version, etc.)
-        print!("  {} Validating manifest fields... ", "▸".cyan());
+        print!("  {} Validating manifest fields... ", ">".cyan());
         match manifest.validate() {
             Ok(warnings) => {
                 println!("{}", cli_output::ICON_SUCCESS.green());
@@ -595,7 +595,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         }
 
         // License warning
-        print!("  {} Checking license field... ", "▸".cyan());
+        print!("  {} Checking license field... ", ">".cyan());
         let missing_license_warning = "No license specified. Consider adding a license field (e.g., Apache-2.0, BSD-3-Clause).";
         if let Some(ref license) = manifest.package.license {
             if license.trim().is_empty() {
@@ -615,7 +615,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
 
         // Dependency source check — warn about Simple deps that are actually well-known
         // crates.io or PyPI packages but aren't tagged with an explicit source.
-        print!("  {} Checking dependency sources... ", "▸".cyan());
+        print!("  {} Checking dependency sources... ", ">".cyan());
         {
             use crate::source_resolver::{Confidence, PackageSourceResolver};
             let resolver = PackageSourceResolver::new(&languages);
@@ -653,7 +653,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         }
 
         // Language detection
-        print!("  {} Detecting project language... ", "▸".cyan());
+        print!("  {} Detecting project language... ", ">".cyan());
         if languages.is_empty() {
             println!("{}", cli_output::ICON_WARN.yellow());
             if !quiet {
@@ -679,7 +679,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         }
 
         // Main file existence check
-        print!("  {} Checking for main file... ", "▸".cyan());
+        print!("  {} Checking for main file... ", ">".cyan());
         if !languages.is_empty() {
             let mut main_files: Vec<&str> = Vec::new();
             if languages.contains(&Language::Rust) {
@@ -714,7 +714,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // 3. Workspace Structure Check
-    print!("\n  {} Checking workspace structure... ", "▸".cyan());
+    print!("\n  {} Checking workspace structure... ", ">".cyan());
     let horus_dir = base_dir.join(".horus");
 
     if horus_dir.exists() && horus_dir.is_dir() {
@@ -729,7 +729,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // 4. Toolchain Check
-    print!("  {} Checking toolchain... ", "▸".cyan());
+    print!("  {} Checking toolchain... ", ">".cyan());
     if !languages.is_empty() {
         let mut all_available = true;
         for lang in &languages {
@@ -759,7 +759,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // 5. Code Validation
-    print!("  {} Validating code syntax... ", "▸".cyan());
+    print!("  {} Validating code syntax... ", ">".cyan());
     if !languages.is_empty() {
         let mut validated = false;
         if languages.contains(&Language::Rust) {
@@ -835,12 +835,12 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // 12. HORUS System Check
-    print!("\n  {} Checking HORUS installation... ", "▸".cyan());
+    print!("\n  {} Checking HORUS installation... ", ">".cyan());
     let horus_version = env!("CARGO_PKG_VERSION");
     println!("v{}", horus_version.dimmed());
 
     // 13. Registry Connectivity
-    print!("  {} Checking registry connectivity... ", "▸".cyan());
+    print!("  {} Checking registry connectivity... ", ">".cyan());
     let registry_available = std::process::Command::new("ping")
         .arg("-c")
         .arg("1")
@@ -861,7 +861,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // 14. System Requirements Check
-    print!("  {} Checking system requirements... ", "▸".cyan());
+    print!("  {} Checking system requirements... ", ">".cyan());
     let mut sys_issues = Vec::new();
 
     {
@@ -885,7 +885,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // Disk Space Check (cross-platform via horus_sys)
-    print!("  {} Checking available disk space... ", "▸".cyan());
+    print!("  {} Checking available disk space... ", ">".cyan());
     if let Some(available_mb) = horus_sys::platform::disk_available_mb(base_dir) {
         if available_mb < 100 {
             println!("{} ({}MB free)", cli_output::ICON_ERROR.red(), available_mb);
@@ -917,7 +917,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     // 9. API Usage Check
-    print!("  {} Checking API usage... ", "▸".cyan());
+    print!("  {} Checking API usage... ", ">".cyan());
     if languages.contains(&Language::Rust) {
         // Check if horus.toml or Cargo.toml references horus
         let uses_horus = {
@@ -983,7 +983,7 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
         }
 
         // Check external Python dependencies
-        print!("  {} Checking Python external dependencies... ", "▸".cyan());
+        print!("  {} Checking Python external dependencies... ", ">".cyan());
         let main_py = base_dir.join("main.py");
         if main_py.exists() {
             match parse_python_imports(&main_py) {

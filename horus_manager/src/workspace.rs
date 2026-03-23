@@ -167,7 +167,7 @@ fn interactive_workspace_selector(
     registry: &WorkspaceRegistry,
     allow_global: bool,
 ) -> Result<InstallTarget> {
-    println!("\n{}", "ℹ Not in a HORUS workspace".cyan());
+    println!("\n{}", "[i] Not in a HORUS workspace".cyan());
     println!("Where should we install the package?\n");
 
     let mut options = Vec::new();
@@ -257,7 +257,7 @@ fn interactive_workspace_selector(
         // Create minimal horus.toml
         let horus_toml = current.join(HORUS_TOML);
         let toml_content = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.9\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.2.0\"\n",
             workspace_name
         );
         fs::write(&horus_toml, toml_content).context("Failed to create horus.toml")?;
@@ -309,7 +309,7 @@ pub fn register_current_workspace(name: Option<String>) -> Result<()> {
     let horus_toml = current.join(HORUS_TOML);
     if !horus_toml.exists() {
         let toml_content = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.9\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.2.0\"\n",
             workspace_name
         );
         fs::write(&horus_toml, toml_content)?;

@@ -6,37 +6,37 @@
 
 use colored::*;
 
-pub const ICON_SUCCESS: &str = "\u{2713}"; // ✓
-pub const ICON_ERROR: &str = "\u{2717}"; // ✗
-pub const ICON_WARN: &str = "\u{26a0}"; // ⚠
-pub const ICON_INFO: &str = "\u{25b6}"; // ▶
-pub const ICON_HINT: &str = "\u{00b7}"; // ·
+pub const ICON_SUCCESS: &str = "*";
+pub const ICON_ERROR: &str = "x";
+pub const ICON_WARN: &str = "!";
+pub const ICON_INFO: &str = ">";
+pub const ICON_HINT: &str = "-";
 
-/// Print a success message: ✓ message (suppressed in quiet mode)
+/// Print a success message (suppressed in quiet mode)
 pub fn success(msg: &str) {
     if !crate::progress::is_quiet() {
         println!("{} {}", ICON_SUCCESS.green(), msg);
     }
 }
 
-/// Print an error message to stderr: ✗ message (always prints)
+/// Print an error message to stderr (always prints)
 pub fn error(msg: &str) {
     eprintln!("{} {}", ICON_ERROR.red(), msg);
 }
 
-/// Print a warning message: ⚠ message (always prints)
+/// Print a warning message (always prints)
 pub fn warn(msg: &str) {
     eprintln!("{} {}", ICON_WARN.yellow(), msg);
 }
 
-/// Print an info/action message: ▶ message (suppressed in quiet mode)
+/// Print an info/action message (suppressed in quiet mode)
 pub fn info(msg: &str) {
     if !crate::progress::is_quiet() {
         eprintln!("{} {}", ICON_INFO.cyan(), msg);
     }
 }
 
-/// Print a dimmed hint: · message (suppressed in quiet mode)
+/// Print a dimmed hint (suppressed in quiet mode)
 pub fn hint(msg: &str) {
     if !crate::progress::is_quiet() {
         println!("  {} {}", ICON_HINT.dimmed(), msg.dimmed());
@@ -91,38 +91,32 @@ mod tests {
     // ── Constants ───────────────────────────────────────────────────────
 
     #[test]
-    fn icon_success_is_checkmark() {
-        assert_eq!(ICON_SUCCESS, "\u{2713}");
-        assert_eq!(ICON_SUCCESS, "✓");
+    fn icon_success_is_ascii() {
+        assert_eq!(ICON_SUCCESS, "*");
     }
 
     #[test]
-    fn icon_error_is_ballot_x() {
-        assert_eq!(ICON_ERROR, "\u{2717}");
-        assert_eq!(ICON_ERROR, "✗");
+    fn icon_error_is_ascii() {
+        assert_eq!(ICON_ERROR, "x");
     }
 
     #[test]
-    fn icon_warn_is_warning_sign() {
-        assert_eq!(ICON_WARN, "\u{26a0}");
-        assert_eq!(ICON_WARN, "⚠");
+    fn icon_warn_is_ascii() {
+        assert_eq!(ICON_WARN, "!");
     }
 
     #[test]
-    fn icon_info_is_right_pointing_triangle() {
-        assert_eq!(ICON_INFO, "\u{25b6}");
-        assert_eq!(ICON_INFO, "▶");
+    fn icon_info_is_ascii() {
+        assert_eq!(ICON_INFO, ">");
     }
 
     #[test]
-    fn icon_hint_is_middle_dot() {
-        assert_eq!(ICON_HINT, "\u{00b7}");
-        assert_eq!(ICON_HINT, "·");
+    fn icon_hint_is_ascii() {
+        assert_eq!(ICON_HINT, "-");
     }
 
     #[test]
     fn all_icons_are_single_char() {
-        // Each icon should be exactly one Unicode character
         assert_eq!(ICON_SUCCESS.chars().count(), 1);
         assert_eq!(ICON_ERROR.chars().count(), 1);
         assert_eq!(ICON_WARN.chars().count(), 1);

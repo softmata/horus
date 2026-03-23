@@ -64,15 +64,15 @@ Once set up, releasing is automatic:
 
 ```bash
 # 1. Update version numbers
-vim horus_py/Cargo.toml      # version = "0.1.9"
-vim horus_py/pyproject.toml  # version = "0.1.9"
+vim horus_py/Cargo.toml      # version = "0.2.0"
+vim horus_py/pyproject.toml  # version = "0.2.0"
 
 # 2. Commit changes
 git add horus_py/Cargo.toml horus_py/pyproject.toml
-git commit -m "Bump version to 0.1.9"
+git commit -m "Bump version to 0.2.0"
 
 # 3. Create and push tag
-git tag v0.1.9
+git tag v0.2.0
 git push origin main --tags
 
 # 4. Wait ~10-15 minutes
@@ -96,7 +96,7 @@ git push origin main --tags
 
 ### Test Installation
 ```bash
-pip install horus-robotics==0.1.9
+pip install horus-robotics==0.2.0
 python -c "import horus; print(horus.__version__)"
 ```
 

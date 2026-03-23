@@ -436,21 +436,21 @@ pub async fn run(port: u16, no_auth: bool) -> anyhow::Result<()> {
     // Display startup info
     println!(
         "\n{}",
-        "╔════════════════════════════════════════════╗".cyan()
+        "+============================================+".cyan()
     );
     println!(
         "{}",
-        "║         HORUS Web Monitor                  ║".cyan()
+        "|         HORUS Web Monitor                  |".cyan()
     );
     println!(
         "{}",
-        "╠════════════════════════════════════════════╣".cyan()
+        "+============================================+".cyan()
     );
-    println!("{}  http://localhost:{}", "║  Local:".green(), port);
+    println!("{}  http://localhost:{}", "|  Local:".green(), port);
 
     if let Some(ip) = get_local_ip() {
         let network_url = format!("http://{}:{}", ip, port);
-        println!("{}  {}", "║  Network:".green(), network_url);
+        println!("{}  {}", "|  Network:".green(), network_url);
 
         // Show QR code for mobile access
         display_qr_code(&network_url);
@@ -459,21 +459,21 @@ pub async fn run(port: u16, no_auth: bool) -> anyhow::Result<()> {
     if auth_disabled {
         println!(
             "{}  {}",
-            "║  Auth:".yellow(),
+            "|  Auth:".yellow(),
             "DISABLED (no password set)".yellow()
         );
     } else {
-        println!("{}  Password protected", "║  Auth:".green());
+        println!("{}  Password protected", "|  Auth:".green());
     }
 
     // Show workspace info
     if let Some(ref ws) = current_workspace {
-        println!("{}  {}", "║  Workspace:".green(), ws.display());
+        println!("{}  {}", "|  Workspace:".green(), ws.display());
     }
 
     println!(
         "{}",
-        "╚════════════════════════════════════════════╝".cyan()
+        "+============================================+".cyan()
     );
     println!("{}", "  Press Ctrl+C to stop the server\n".bright_black());
 

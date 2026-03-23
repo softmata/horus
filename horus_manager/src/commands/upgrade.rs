@@ -22,7 +22,7 @@ pub fn run_upgrade(check_only: bool) -> Result<()> {
         Ok(Some(latest)) => {
             if latest != current_version {
                 println!(
-                    "  {} New version available: {} → {}",
+                    "  {} New version available: {} -> {}",
                     "!".yellow(),
                     current_version.dimmed(),
                     latest.green()
@@ -31,7 +31,7 @@ pub fn run_upgrade(check_only: bool) -> Result<()> {
                     upgrade_horus(&latest)?;
                 }
             } else {
-                println!("  {} horus is up to date", "✓".green());
+                println!("  {} horus is up to date", "*".green());
             }
         }
         Ok(None) => {
@@ -48,7 +48,7 @@ pub fn run_upgrade(check_only: bool) -> Result<()> {
         println!();
         println!("  {}", "Plugins:".bold());
         for plugin in &plugins {
-            println!("    {} {}", "•".dimmed(), plugin);
+            println!("    {} {}", "-".dimmed(), plugin);
         }
         if !check_only {
             upgrade_plugins();
@@ -91,7 +91,7 @@ pub(crate) fn upgrade_horus(version: &str) -> Result<()> {
 
     match status {
         Ok(s) if s.success() => {
-            println!("  {} Upgraded to {}", "✓".green(), version.green());
+            println!("  {} Upgraded to {}", "*".green(), version.green());
         }
         _ => {
             println!(
@@ -190,7 +190,7 @@ fn check_plugin_updates() {
             Some(_) => {
                 println!(
                     "    {} {} ({}) up to date",
-                    "✓".green(),
+                    "*".green(),
                     cmd_name,
                     installed_version.dimmed()
                 );
@@ -226,7 +226,7 @@ fn upgrade_plugins() {
                     Ok(()) => {
                         println!(
                             "    {} {} upgraded to {}",
-                            "✓".green(),
+                            "*".green(),
                             cmd_name,
                             latest.green()
                         );
@@ -239,7 +239,7 @@ fn upgrade_plugins() {
             Some(_) => {
                 println!(
                     "    {} {} already up to date ({})",
-                    "✓".green(),
+                    "*".green(),
                     cmd_name,
                     installed_version.dimmed()
                 );

@@ -277,7 +277,7 @@ pub(crate) fn handle_system_dependencies(deps: &[String]) -> Result<()> {
         // No known package manager, just notify
         println!("  {} System packages required:", "[PKG]".cyan());
         for dep in deps {
-            println!("    • {}", dep);
+            println!("    - {}", dep);
         }
         println!("    Please install these packages manually");
         return Ok(());
@@ -308,7 +308,7 @@ pub(crate) fn handle_system_dependencies(deps: &[String]) -> Result<()> {
         } else {
             format!("{}", "missing".yellow())
         };
-        println!("    • {} [{}]", dep, status);
+        println!("    - {} [{}]", dep, status);
     }
 
     // Build install command
@@ -979,7 +979,7 @@ fn cargo_toml_has_horus_deps(package_dir: &Path) -> bool {
 /// Inject a temporary `.cargo/config.toml` with `[patch.crates-io]` overrides
 /// pointing horus crates to the local HORUS source directory.
 ///
-/// This is needed because installed packages use version deps (e.g. `horus_core = "0.1.9"`)
+/// This is needed because installed packages use version deps (e.g. `horus_core = "0.2.0"`)
 /// which cargo can't resolve from crates.io (horus crates aren't published there).
 /// The patch section redirects resolution to the local HORUS source.
 fn inject_horus_path_overrides(package_dir: &Path) -> Result<()> {
@@ -1313,9 +1313,9 @@ pub(crate) fn prompt_package_metadata(
                 "\n   {} To use local docs, create a /docs folder with .md files:",
                 "[i]".blue()
             );
-            println!("      • Add README.md as the main page");
-            println!("      • Use markdown formatting");
-            println!("      • Organize by topic (getting-started.md, api.md, etc.)");
+            println!("      -Add README.md as the main page");
+            println!("      -Use markdown formatting");
+            println!("      -Organize by topic (getting-started.md, api.md, etc.)");
         }
 
         print!("\n   Choose option (1/2/skip): ");
@@ -1394,9 +1394,9 @@ pub(crate) fn prompt_package_metadata(
                 "   {} Enter the URL where your code is hosted:",
                 "[i]".blue()
             );
-            println!("      • GitHub: https://github.com/username/repo");
-            println!("      • GitLab: https://gitlab.com/username/repo");
-            println!("      • Other: Any public repository URL");
+            println!("      -GitHub: https://github.com/username/repo");
+            println!("      -GitLab: https://gitlab.com/username/repo");
+            println!("      -Other: Any public repository URL");
             print!("\n   Enter source repository URL: ");
             io::stdout().flush()?;
             io::stdin().read_line(&mut source_url)?;

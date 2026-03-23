@@ -160,7 +160,7 @@ async fn status_version_matches_cargo() {
     let json = assert_json_ok(resp).await;
 
     assert_eq!(
-        json["version"], "0.1.9",
+        json["version"], "0.2.0",
         "version should match horus.toml / Cargo.toml"
     );
 }

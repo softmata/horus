@@ -17,7 +17,7 @@
 //! categories = ["robotics", "navigation"]
 //!
 //! [dependencies]
-//! horus_library = "0.1.9"
+//! horus_library = "0.2.0"
 //! serde = { version = "1.0", features = ["derive"], source = "crates.io" }
 //! numpy = { version = ">=1.24", source = "pypi" }
 //!
@@ -1423,14 +1423,14 @@ name = "my-robot"
 version = "0.1.0"
 
 [dependencies]
-horus_library = "0.1.9"
+horus_library = "0.2.0"
 my-sensor = "^2.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
         assert_eq!(manifest.dependencies.len(), 2);
 
         match &manifest.dependencies["horus_library"] {
-            DependencyValue::Simple(v) => assert_eq!(v, "0.1.9"),
+            DependencyValue::Simple(v) => assert_eq!(v, "0.2.0"),
             _ => panic!("expected simple dep"),
         }
     }
@@ -1591,7 +1591,7 @@ name = "mixed-bot"
 version = "0.1.0"
 
 [dependencies]
-horus_library = "0.1.9"
+horus_library = "0.2.0"
 serde = { version = "1.0", source = "crates.io" }
 tokio = { version = "1.0", features = ["full"], source = "crates.io" }
 numpy = { version = ">=1.24", source = "pypi" }
@@ -1832,7 +1832,7 @@ name = "roundtrip-test"
 version = "0.1.0"
 
 [dependencies]
-horus_library = "0.1.9"
+horus_library = "0.2.0"
 serde = { version = "1.0", features = ["derive"], source = "crates.io" }
 "#;
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
@@ -1863,7 +1863,7 @@ package-type = "app"
 categories = ["robotics", "planning", "simulation"]
 
 [dependencies]
-horus_library = "0.1.9"
+horus_library = "0.2.0"
 serde = { version = "1.0", features = ["derive"], source = "crates.io" }
 numpy = { version = ">=1.24", source = "pypi" }
 my-lib = { path = "../my-lib" }
@@ -3136,7 +3136,7 @@ categories = ["robotics"]
 
 [dependencies]
 serde = { version = "1.0", source = "crates.io", features = ["derive"] }
-horus_library = "0.1.9"
+horus_library = "0.2.0"
 
 [dev-dependencies]
 criterion = { version = "0.5", source = "crates.io" }
@@ -3515,7 +3515,7 @@ version = "0.1.0"
                 let mut deps = BTreeMap::new();
                 deps.insert(
                     "horus_library".to_string(),
-                    DependencyValue::Simple("0.1.9".to_string()),
+                    DependencyValue::Simple("0.2.0".to_string()),
                 );
                 deps
             },

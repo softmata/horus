@@ -1,6 +1,6 @@
 [package]
 name = "horus"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 authors = ["HORUS Team"]
 description = "HORUS - Hybrid Optimized Robotics Unified System framework for Rust. 575x faster than ROS2 with sub-microsecond IPC, deterministic scheduling, and zero-copy shared memory."

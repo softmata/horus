@@ -83,9 +83,12 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
     }
 
     // ── Move source files ────────────────────────────────────────────────
+    // Only move files if there's actually an old-layout project to migrate
+    // (i.e. Cargo.toml or pyproject.toml exists in root alongside horus.toml)
+    let has_old_build_files = cargo_path.exists() || pyproject_path.exists() || cmake_path.exists();
     let src_main = cwd.join("src/main.rs");
     let root_main = cwd.join("main.rs");
-    if src_main.exists() && !root_main.exists() {
+    if has_old_build_files && src_main.exists() && !root_main.exists() {
         // Check if src/ only contains main.rs
         let src_count = fs::read_dir(cwd.join("src"))
             .map(|e| e.count())
@@ -128,7 +131,7 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
     if changes.is_empty() {
         println!(
             "{} Nothing to migrate. Project is already in unified format.",
-            "✓".green()
+            "*".green()
         );
         return Ok(());
     }
@@ -150,7 +153,7 @@ pub fn run_migrate(dry_run: bool, _force: bool) -> Result<()> {
         // Save updated manifest
         manifest.save_to(&cwd.join(HORUS_TOML))?;
         println!();
-        println!("{} Migration complete. Old files backed up.", "✓".green());
+        println!("{} Migration complete. Old files backed up.", "*".green());
         println!(
             "  Run {} to verify the project builds.",
             "horus build".cyan()
@@ -701,8 +704,8 @@ name = "test"
 version = "0.1.0"
 
 [dependencies]
-horus_core = "0.1.9"
-horus_library = { version = "0.1.9", path = "../horus_library" }
+horus_core = "0.2.0"
+horus_library = { version = "0.2.0", path = "../horus_library" }
 serde = "1.0"
 "#,
         )
@@ -837,7 +840,7 @@ dependencies = [
 [project]
 name = "my-robot"
 dependencies = [
-    "horus-py>=0.1.9",
+    "horus-py>=0.2.0",
     "numpy>=1.24",
 ]
 "#,

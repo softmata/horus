@@ -17,10 +17,11 @@ pub(crate) const LEASE_REFRESH_INTERVAL: u32 = 1024;
 /// Must be a power of two (used with bitmask).
 ///
 /// Set to 32 (~1ns amortized) to detect cross-process migration promptly.
-/// At 30 Hz this checks every ~1 s; at 1 kHz every ~32 ms.
-/// The previous value of 4096 caused 100+ second detection delays at low
-/// frequencies.
-pub(crate) const EPOCH_CHECK_INTERVAL: u32 = 32;
+/// At 1 Hz this checks every ~4 s; at 30 Hz every ~133 ms; at 1 kHz every ~4 ms.
+/// Lowered from 32 to 4 to fix cross-process discovery at low frequencies
+/// (GitHub issue #37: 1Hz publisher took 32s to detect a new subscriber).
+/// Cost: one Relaxed mmap load (~20ns) every 4 messages ≈ 5ns amortized.
+pub(crate) const EPOCH_CHECK_INTERVAL: u32 = 4;
 
 /// Local state for an Topic participant
 ///

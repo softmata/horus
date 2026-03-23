@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/softmata/horus/actions/workflows/ci.yml"><img src="https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/softmata/horus/releases"><img src="https://img.shields.io/badge/v0.1.9-blue.svg" alt="Version"></a>
+  <a href="https://github.com/softmata/horus/releases"><img src="https://img.shields.io/badge/v0.2.0-blue.svg" alt="Version"></a>
   <a href="https://github.com/softmata/horus/stargazers"><img src="https://img.shields.io/github/stars/softmata/horus?style=flat" alt="Stars"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust" alt="Rust"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white" alt="Python"></a>
@@ -267,9 +267,10 @@ cargo run --example 05_realtime       # RT with deadline enforcement
 
 ## Coming Soon
 
+- **C++ Bindings** — Native C++ API with zero-overhead shared memory access, auto-generated from Rust via `#[horus_api]` annotations
+- **Embedded HORUS** — `no_std` runtime for STM32, ESP32, and other microcontrollers
+- **HORUS–Zenoh Bridge** — Distributed multi-machine deployments over Zenoh for seamless cloud-edge-robot communication
 - **ROS2 Bridge** — Bidirectional topic bridging between HORUS and ROS2
-- **Zenoh Transport** — Distributed multi-machine deployments
-- **Embedded** — `no_std` runtime for STM32, ESP32, and other microcontrollers
 
 ---
 

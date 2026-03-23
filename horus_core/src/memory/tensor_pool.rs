@@ -344,8 +344,11 @@ impl TensorPool {
 
     /// Initialize a newly created pool
     fn initialize(&mut self) -> HorusResult<()> {
-        // Zero the entire region
-        self.mmap.fill(0);
+        // NOTE: We do NOT zero the entire region with mmap.fill(0). The OS
+        // already provides zero-filled pages for newly created files via
+        // ftruncate + mmap. Zeroing a 1GB region takes 200-500ms and creates
+        // a race window where another process sees the file but the header
+        // isn't written yet (GitHub issue #37).
 
         // Copy config values to avoid borrow issues
         let pool_id = self.pool_id;
@@ -353,20 +356,9 @@ impl TensorPool {
         let max_slots = self.config.max_slots as u32;
         let slot_alignment = self.config.slot_alignment as u32;
 
-        // Initialize header
-        let header = self.header_mut();
-        header.magic = POOL_MAGIC;
-        header.version = POOL_VERSION;
-        header.pool_id = pool_id;
-        header.pool_size = pool_size;
-        header.max_slots = max_slots;
-        header.slot_alignment = slot_alignment;
-        header.next_alloc_offset.store(0, Ordering::Release);
-        header
-            .free_stack_head
-            .store(INVALID_SLOT as u64, Ordering::Release);
-
-        // Initialize all slots as free
+        // Initialize all slots as free BEFORE writing the magic.
+        // This ensures that by the time another process sees POOL_MAGIC,
+        // the slot metadata is already valid.
         let max_slots_usize = self.config.max_slots;
         for i in 0..max_slots_usize {
             let slot = self.slot_mut(i as u32);
@@ -378,21 +370,66 @@ impl TensorPool {
             slot.next_free.store(INVALID_SLOT, Ordering::Release);
         }
 
+        // Initialize header fields (except magic — written last as the
+        // "ready" signal for concurrent processes).
+        let header = self.header_mut();
+        header.version = POOL_VERSION;
+        header.pool_id = pool_id;
+        header.pool_size = pool_size;
+        header.max_slots = max_slots;
+        header.slot_alignment = slot_alignment;
+        header.next_alloc_offset.store(0, Ordering::Release);
+        header
+            .free_stack_head
+            .store(INVALID_SLOT as u64, Ordering::Release);
+
+        // Write magic LAST — this is the "initialization complete" signal.
+        // Use volatile write + flush to ensure cross-process visibility.
+        unsafe {
+            std::ptr::write_volatile(&mut header.magic as *mut u64, POOL_MAGIC);
+        }
+
         // Flush to ensure visibility
         self.mmap.flush()?;
 
         Ok(())
     }
 
-    /// Validate an existing pool
+    /// Validate an existing pool.
+    ///
+    /// If the magic is zero, another process just created the file but hasn't
+    /// finished initialize() yet. We spin briefly (up to ~100ms) waiting for
+    /// the magic to appear. This fixes the race where two processes call
+    /// TensorPool::new() concurrently — the loser opens the file before the
+    /// winner writes the header. (GitHub issue #37)
     fn validate(&self) -> HorusResult<()> {
         let header = self.header();
 
         if header.magic != POOL_MAGIC {
+            // The file exists but the header isn't initialized yet.
+            // Spin briefly for the creator to finish initialize().
+            for _ in 0..100 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                // Re-read from mmap (volatile) — the creator's flush makes
+                // the magic visible across processes.
+                let magic =
+                    unsafe { std::ptr::read_volatile(&header.magic as *const u64) };
+                if magic == POOL_MAGIC {
+                    // Re-validate all fields now that the header is initialized
+                    return self.validate_fields();
+                }
+            }
             return Err(HorusError::Config(ConfigError::Other(
                 "Invalid tensor pool magic".to_string(),
             )));
         }
+
+        self.validate_fields()
+    }
+
+    /// Validate header fields (version, pool_id). Called after magic is confirmed.
+    fn validate_fields(&self) -> HorusResult<()> {
+        let header = self.header();
 
         if header.version != POOL_VERSION {
             return Err(HorusError::Config(ConfigError::Other(format!(

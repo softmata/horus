@@ -355,7 +355,7 @@ fn run_cpp_tests(cfg: &TestConfig) -> Result<()> {
 
     let status = cmd.status()?;
     if status.success() {
-        println!("\n  {} C++ tests passed", "✓".green());
+        println!("\n  {} C++ tests passed", "*".green());
     } else {
         anyhow::bail!(
             "C++ tests failed with exit code {}",

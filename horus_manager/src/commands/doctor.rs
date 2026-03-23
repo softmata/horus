@@ -30,9 +30,9 @@ pub(crate) enum Health {
 impl Health {
     fn icon(&self) -> colored::ColoredString {
         match self {
-            Self::Ok => "✓".green(),
+            Self::Ok => "*".green(),
             Self::Warn => "!".yellow(),
-            Self::Fail => "✗".red(),
+            Self::Fail => "x".red(),
         }
     }
 }
@@ -120,9 +120,9 @@ fn run_fix(manifest: &HorusManifest, ctx: &dispatch::ProjectContext) -> Result<(
     for item in &report.items {
         if item.installed {
             let version = item.version.as_deref().unwrap_or("installed");
-            println!("  {} {} ({})", "✓".green(), item.name, version);
+            println!("  {} {} ({})", "*".green(), item.name, version);
         } else {
-            println!("  {} {} — not installed", "✗".red(), item.name);
+            println!("  {} {} -- not installed", "x".red(), item.name);
             if let Some(ref cmd) = item.install_cmd {
                 println!("    Install: {}", cmd.dimmed());
             }
@@ -179,7 +179,7 @@ fn run_fix(manifest: &HorusManifest, ctx: &dispatch::ProjectContext) -> Result<(
     lockfile.save_to(&lock_path)?;
     println!(
         "\n  {} Environment synced — {} updated",
-        "✓".green(),
+        "*".green(),
         HORUS_LOCK.bold()
     );
 
@@ -648,7 +648,7 @@ fn check_drivers() -> CheckResult {
                     let driver_keys: Vec<&str> = hw.list();
                     let warnings = crate::urdf::validate_driver_keys(&driver_keys, &sensors);
                     for warning in warnings {
-                        details.push(format!("  ⚠ {}", warning));
+                        details.push(format!("  ! {}", warning));
                         if worst == Health::Ok {
                             worst = Health::Warn;
                         }
@@ -682,12 +682,12 @@ fn check_driver_device(
         if port.starts_with("/dev/") {
             return if Path::new(&port).exists() {
                 (
-                    format!("  {} driver '{}': {} found", "✓".green(), name, port),
+                    format!("  {} driver '{}': {} found", "*".green(), name, port),
                     Health::Ok,
                 )
             } else {
                 (
-                    format!("  {} driver '{}': {} not found", "✗".red(), name, port),
+                    format!("  {} driver '{}': {} not found", "x".red(), name, port),
                     Health::Fail,
                 )
             };
@@ -704,12 +704,12 @@ fn check_driver_device(
             };
             return if Path::new(&path).exists() {
                 (
-                    format!("  {} driver '{}': {} found", "✓".green(), name, path),
+                    format!("  {} driver '{}': {} found", "*".green(), name, path),
                     Health::Ok,
                 )
             } else {
                 (
-                    format!("  {} driver '{}': {} not found", "✗".red(), name, path),
+                    format!("  {} driver '{}': {} not found", "x".red(), name, path),
                     Health::Fail,
                 )
             };
@@ -727,7 +727,7 @@ fn check_driver_device(
             if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
                 return match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
                     Ok(_) => (
-                        format!("  {} driver '{}': {} reachable", "✓".green(), name, address),
+                        format!("  {} driver '{}': {} reachable", "*".green(), name, address),
                         Health::Ok,
                     ),
                     Err(_) => (
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn health_ok_icon_is_green_check() {
         let icon = Health::Ok.icon();
-        assert!(icon.to_string().contains("✓"));
+        assert!(icon.to_string().contains("*"));
     }
 
     #[test]
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn health_fail_icon_is_red_x() {
         let icon = Health::Fail.icon();
-        assert!(icon.to_string().contains("✗"));
+        assert!(icon.to_string().contains("x"));
     }
 
     #[test]

@@ -394,7 +394,7 @@ fn auto_install_registry_deps(
     let target = crate::workspace::InstallTarget::Local(project_dir.to_path_buf());
 
     for (name, version) in &missing {
-        eprintln!("    {} {}...", "\u{2193}".cyan(), name); // ↓
+        eprintln!("    {} {}...", "v".cyan(), name);
         match client.install_from_registry(name, version.as_deref(), target.clone()) {
             Ok(v) => {
                 eprintln!(

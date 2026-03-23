@@ -292,7 +292,7 @@ impl<'a> DependencyResolver<'a> {
             result.len()
         );
         for dep in &result {
-            println!("    • {} v{}", dep.name.cyan(), dep.version);
+            println!("    - {} v{}", dep.name.cyan(), dep.version);
         }
 
         Ok(result)

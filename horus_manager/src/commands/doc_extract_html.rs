@@ -166,7 +166,7 @@ fn write_topic_graph_svg(html: &mut String, graph: &MessageGraph) {
         let subs = topic.subscribers.join(", ");
         let _ = write!(
             html,
-            r#"<text x="20" y="{y}" class="graph-topic">{} → {}</text>"#,
+            r#"<text x="20" y="{y}" class="graph-topic">{} -&gt; {}</text>"#,
             escape_html(&pubs),
             escape_html(&subs)
         );
@@ -247,7 +247,7 @@ fn write_nodes_section(html: &mut String, doc: &ProjectDoc) {
                 for t in &details.publishes {
                     let _ = write!(
                         html,
-                        "<div>pub → <code>{}: {}</code></div>\n",
+                        "<div>pub -&gt; <code>{}: {}</code></div>\n",
                         escape_html(&t.name),
                         escape_html(&t.message_type)
                     );
@@ -259,7 +259,7 @@ fn write_nodes_section(html: &mut String, doc: &ProjectDoc) {
                 for t in &details.subscribes {
                     let _ = write!(
                         html,
-                        "<div>sub ← <code>{}: {}</code></div>\n",
+                        "<div>sub &lt;- <code>{}: {}</code></div>\n",
                         escape_html(&t.name),
                         escape_html(&t.message_type)
                     );

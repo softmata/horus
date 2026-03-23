@@ -13,7 +13,7 @@ use horus_manager::{monitor, monitor_tui, security};
 #[derive(Parser)]
 #[command(name = "horus")]
 #[command(about = "Real-time robotics framework with zero-copy IPC and deterministic scheduling")]
-#[command(version = "0.1.9")]
+#[command(version = "0.2.0")]
 #[command(propagate_version = true)]
 #[command(disable_help_subcommand = true)]
 #[command(help_template = "\
@@ -103,7 +103,7 @@ Quick Start:
 
 More examples:
   horus init                      Initialize workspace in current directory
-  horus add serde --source crates-io  Add a Rust dependency
+  horus add serde --source crates.io   Add a Rust dependency
   horus install rplidar@1.2.0    Install a standalone package
   horus bb --anomalies            Show crash anomalies
   horus deploy robot@192.168.1.5  Deploy to a remote robot
@@ -552,7 +552,7 @@ enum Commands {
         /// Version requirement (alternative to name@version syntax)
         #[arg(long = "ver", hide = true)]
         ver: Option<String>,
-        /// Dependency source: crates-io, pypi, system, registry, git, path
+        /// Dependency source: crates.io, pypi, system, registry, git, path
         #[arg(short = 's', long = "source")]
         source: Option<String>,
         /// Features to enable (e.g. --features derive,serde)
@@ -2188,7 +2188,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     Ok(lf) => {
                         println!(
                             "{} horus.lock v{} is valid ({} packages, {} system deps)",
-                            "[✓]".green(),
+                            "[ok]".green(),
                             lf.version,
                             lf.packages.len(),
                             lf.system_deps.len(),
@@ -2202,7 +2202,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                         Ok(())
                     }
                     Err(e) => {
-                        println!("{} Failed to parse horus.lock: {}", "[✗]".red(), e);
+                        println!("{} Failed to parse horus.lock: {}", "[x]".red(), e);
                         Err(HorusError::Config(ConfigError::Other(e.to_string())))
                     }
                 }
@@ -2226,7 +2226,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
                 println!(
                     "{} Generated horus.lock v{} ({} packages)",
-                    "[✓]".green(),
+                    "[ok]".green(),
                     lockfile.version,
                     lockfile.packages.len(),
                 );

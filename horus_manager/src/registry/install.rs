@@ -863,7 +863,7 @@ impl RegistryClient {
             if !deps.is_empty() {
                 println!("  {} Found {} dependencies", "".cyan(), deps.len());
                 for dep in &deps {
-                    println!("    • {} {}", dep.name, dep.requirement);
+                    println!("    - {} {}", dep.name, dep.requirement);
                 }
 
                 // Recursively install dependencies
@@ -1231,7 +1231,7 @@ impl RegistryClient {
             if !features.is_empty() {
                 println!("  {} Driver requires features:", "[BUILD]".cyan());
                 for feature in features {
-                    println!("    • {}", feature.yellow());
+                    println!("    - {}", feature.yellow());
                 }
 
                 // Update Cargo.toml if we have a workspace path
@@ -1261,7 +1261,7 @@ impl RegistryClient {
             if !cargo_deps.is_empty() {
                 println!("  {} Cargo dependencies required:", "[PKG]".cyan());
                 for dep in cargo_deps {
-                    println!("    • {}", dep.yellow());
+                    println!("    - {}", dep.yellow());
                 }
 
                 // Update Cargo.toml if we have a workspace path
@@ -1288,7 +1288,7 @@ impl RegistryClient {
             if !py_deps.is_empty() {
                 println!("  {} Python dependencies required:", "[PY]".cyan());
                 for dep in py_deps {
-                    println!("    • {}", dep);
+                    println!("    - {}", dep);
                 }
                 // Auto-install with pip
                 let mut failed_deps = Vec::new();

@@ -80,7 +80,7 @@ assertions_on_result_states = "warn"
 # Catch bare `matches!()` expressions whose bool return is unused
 unused_must_use = "warn"
 # Allow loom cfg in horus_core
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("softmata-compat"))'] }
 
 # Enable LTO for release builds (affects all packages)
 # Use "thin" LTO for faster builds or "fat" for smallest size

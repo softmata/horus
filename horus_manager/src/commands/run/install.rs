@@ -456,7 +456,7 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
             missing_packages.len()
         );
         for pkg in &missing_packages {
-            println!("  • {}", pkg.yellow());
+            println!("  - {}", pkg.yellow());
         }
 
         print!(

@@ -270,9 +270,9 @@ pub fn action_info(name: &str) -> HorusResult<()> {
 
     for (suffix, present, desc) in &topics {
         let status = if *present {
-            "✓".green().to_string()
+            "*".green().to_string()
         } else {
-            "✗".red().to_string()
+            "x".red().to_string()
         };
         println!(
             "    {} {}/{:<12} — {}",

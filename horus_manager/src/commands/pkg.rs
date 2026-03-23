@@ -499,7 +499,7 @@ pub fn register_plugin_after_install(
     if !commands_for_display.is_empty() {
         println!("      Commands:");
         for cmd in &commands_for_display {
-            println!("        • {} - {}", cmd.name, cmd.description.dimmed());
+            println!("        - {} - {}", cmd.name, cmd.description.dimmed());
         }
     }
 
@@ -813,7 +813,7 @@ pub fn run_add_dep(
 
     let dep_source = if let Some(ref s) = source {
         match s.to_lowercase().as_str() {
-            "crates.io" | "crates" | "cargo" => DepSource::CratesIo,
+            "crates.io" | "crates-io" | "crates" | "cargo" => DepSource::CratesIo,
             "pypi" | "pip" | "python" => DepSource::PyPI,
             "path" => DepSource::Path,
             "git" => DepSource::Git,
@@ -1822,9 +1822,9 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
             "Warning:".yellow().bold(),
             "IRREVERSIBLE".red().bold()
         );
-        println!("  • Delete {} v{} from the registry", package, version);
-        println!("  • Make this version unavailable for download");
-        println!("  • Cannot be undone");
+        println!("  - Delete {} v{} from the registry", package, version);
+        println!("  - Make this version unavailable for download");
+        println!("  - Cannot be undone");
         println!(
             "\n{} Consider using 'yank' instead for temporary removal",
             "Tip:".dimmed()
@@ -4799,7 +4799,7 @@ name = "mixed-robot"
 version = "0.1.0"
 
 [dependencies]
-horus_library = "0.1.9"
+horus_library = "0.2.0"
 serde = { version = "1.0", features = ["derive"], source = "crates.io" }
 numpy = { version = ">=1.24", source = "pypi" }
 motor-ctrl = { path = "../motor-ctrl" }
@@ -6214,7 +6214,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
         let result = run_add_dep(
             "horus_library".to_string(),
-            Some("0.1.9".to_string()),
+            Some("0.2.0".to_string()),
             None,
             Some("crates.io".to_string()),
             None,

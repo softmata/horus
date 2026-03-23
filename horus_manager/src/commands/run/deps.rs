@@ -147,9 +147,9 @@ pub(crate) fn detect_language(file: &Path) -> Result<String> {
             "Unsupported file type: {}\n\n{}\n  {} Supported: {}\n  {} Got: {}",
             file.display(),
             "Supported file types:".yellow(),
-            "•".cyan(),
+            "-".cyan(),
             ".rs (Rust), .py (Python)".green(),
-            "•".cyan(),
+            "-".cyan(),
             file.extension()
                 .and_then(|s| s.to_str())
                 .unwrap_or("no extension")

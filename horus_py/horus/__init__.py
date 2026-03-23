@@ -256,7 +256,7 @@ class NodeState(str, enum.Enum):
 try:
     __version__ = get_version().split("v", 1)[-1]
 except Exception:
-    __version__ = "0.1.9"
+    __version__ = "0.2.0"
 
 # Time unit constants for readable budget/deadline values.
 # Usage: sched.add(motor, budget=300 * us, deadline=900 * us)

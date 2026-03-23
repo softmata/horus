@@ -110,7 +110,7 @@ impl TuiDashboard {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("v0.1.9 | "),
+            Span::raw("v0.2.0 | "),
             Span::styled(
                 status.to_string(),
                 Style::default().fg(if self.paused {
@@ -180,7 +180,7 @@ impl TuiDashboard {
             .take(page_size)
             .map(|node| {
                 let is_running = node.status == "active";
-                let status_symbol = if is_running { "●" } else { "○" };
+                let status_symbol = if is_running { "*" } else { "o" };
                 let status_color = if is_running { Color::Green } else { Color::Red };
 
                 Row::new(vec![
@@ -348,7 +348,7 @@ impl TuiDashboard {
                 };
 
                 Row::new(vec![
-                    Cell::from("●").style(Style::default().fg(status_color)),
+                    Cell::from("*").style(Style::default().fg(status_color)),
                     Cell::from(topic.name.clone()),
                 ])
             })
@@ -541,7 +541,7 @@ impl TuiDashboard {
                     type_marker,
                     Span::raw(" "),
                     Span::styled(&data.parent, Style::default().fg(Color::Cyan)),
-                    Span::styled(" → ", Style::default().fg(Color::Gray)),
+                    Span::styled(" -> ", Style::default().fg(Color::Gray)),
                     Span::styled(child, Style::default().fg(Color::White)),
                 ]));
             }
@@ -617,8 +617,8 @@ impl TuiDashboard {
                 is_last: bool,
                 lines: &mut Vec<Line<'static>>,
             ) {
-                let connector = if is_last { "└── " } else { "├── " };
-                let child_prefix = if is_last { "    " } else { "│   " };
+                let connector = if is_last { "+-- " } else { "|-- " };
+                let child_prefix = if is_last { "    " } else { "|   " };
 
                 // Determine color based on frame type
                 let is_static = frame_data.get(frame).map(|d| d.is_static).unwrap_or(false);
@@ -768,9 +768,9 @@ impl TuiDashboard {
                         "Local Workspaces ({}) {}",
                         workspaces.len(),
                         if local_focused {
-                            "[FOCUSED - Press ← →]"
+                            "[FOCUSED - Press Left/Right]"
                         } else {
-                            "[Press → to focus]"
+                            "[Press Right to focus]"
                         }
                     ))
                     .borders(Borders::ALL)
@@ -828,9 +828,9 @@ impl TuiDashboard {
                         "Global Packages ({}) {}",
                         global_packages.len(),
                         if global_focused {
-                            "[FOCUSED - Press ← →]"
+                            "[FOCUSED - Press Left/Right]"
                         } else {
-                            "[Press ← to focus]"
+                            "[Press Left to focus]"
                         }
                     ))
                     .borders(Borders::ALL)
@@ -1038,11 +1038,11 @@ impl TuiDashboard {
             .as_deref()
             .unwrap_or("Unknown");
         let playback_indicator = match self.debugger_state.playback {
-            PlaybackState::Playing => "▶ PLAYING",
-            PlaybackState::Paused => "⏸ PAUSED",
-            PlaybackState::Stopped => "⏹ STOPPED",
-            PlaybackState::SteppingForward => "⏩ STEP FWD",
-            PlaybackState::SteppingBackward => "⏪ STEP BWD",
+            PlaybackState::Playing => "> PLAYING",
+            PlaybackState::Paused => "|| PAUSED",
+            PlaybackState::Stopped => "[] STOPPED",
+            PlaybackState::SteppingForward => ">> STEP FWD",
+            PlaybackState::SteppingBackward => "<< STEP BWD",
         };
         let playback_color = match self.debugger_state.playback {
             PlaybackState::Playing => Color::Green,
@@ -1259,10 +1259,10 @@ impl TuiDashboard {
                         Style::default().fg(Color::Red)
                     };
                     Line::from(vec![
-                        Span::styled("  ● ", style),
+                        Span::styled("  * ", style),
                         Span::styled(format!("Tick {}", tick), style),
                         if is_current {
-                            Span::styled(" ← current", Style::default().fg(Color::Yellow))
+                            Span::styled(" <- current", Style::default().fg(Color::Yellow))
                         } else {
                             Span::raw("")
                         },
@@ -1296,9 +1296,9 @@ impl TuiDashboard {
                 Span::raw(" Exit"),
             ]),
             Line::from(vec![
-                Span::styled("[←/→]", Style::default().fg(Color::Cyan)),
+                Span::styled("[Left/Right]", Style::default().fg(Color::Cyan)),
                 Span::raw(" Switch Panel  "),
-                Span::styled("[↑/↓]", Style::default().fg(Color::Cyan)),
+                Span::styled("[Up/Down]", Style::default().fg(Color::Cyan)),
                 Span::raw(" Navigate"),
             ]),
         ];
@@ -1334,15 +1334,15 @@ impl TuiDashboard {
             let is_current = i == current_pos;
 
             if is_current {
-                timeline.push('▼');
+                timeline.push('v');
             } else if is_breakpoint {
-                timeline.push('●');
+                timeline.push('*');
             } else if i == 0 {
-                timeline.push('├');
+                timeline.push('[');
             } else if i == width - 1 {
-                timeline.push('┤');
+                timeline.push(']');
             } else {
-                timeline.push('─');
+                timeline.push('-');
             }
         }
 
@@ -1398,9 +1398,9 @@ impl TuiDashboard {
                 };
 
                 let type_indicator = match info.recording_type {
-                    RecordingType::ZeroCopy => "⚡",    // Fast zero-copy
-                    RecordingType::Distributed => "🌐", // Distributed/fleet
-                    RecordingType::Standard => "📁",    // Standard
+                    RecordingType::ZeroCopy => "[zc]",
+                    RecordingType::Distributed => "[dist]",
+                    RecordingType::Standard => "[std]",
                 };
 
                 let type_color = match info.recording_type {
@@ -1465,15 +1465,15 @@ impl TuiDashboard {
                 Style::default().add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![
-                Span::styled("  ⚡ ZeroCopy", Style::default().fg(Color::Green)),
+                Span::styled("  [zc] ZeroCopy", Style::default().fg(Color::Green)),
                 Span::raw(" - Memory-mapped, fastest replay"),
             ]),
             Line::from(vec![
-                Span::styled("  🌐 Distributed", Style::default().fg(Color::Cyan)),
+                Span::styled("  [dist] Distributed", Style::default().fg(Color::Cyan)),
                 Span::raw(" - Multi-robot fleet recording"),
             ]),
             Line::from(vec![
-                Span::styled("  📁 Standard", Style::default().fg(Color::Yellow)),
+                Span::styled("  [std] Standard", Style::default().fg(Color::Yellow)),
                 Span::raw(" - Portable JSON format"),
             ]),
             Line::from(""),
@@ -1481,9 +1481,9 @@ impl TuiDashboard {
                 "Debugger Features: ",
                 Style::default().add_modifier(Modifier::BOLD),
             )]),
-            Line::from("  • Step forward/backward through execution"),
-            Line::from("  • Set breakpoints at specific ticks"),
-            Line::from("  • Watch expressions for values"),
+            Line::from("  - Step forward/backward through execution"),
+            Line::from("  - Set breakpoints at specific ticks"),
+            Line::from("  - Watch expressions for values"),
         ];
 
         let legend_block = Paragraph::new(legend_info).block(
@@ -1499,7 +1499,7 @@ impl TuiDashboard {
         let controls = vec![Line::from(vec![
             Span::styled("[Enter]", Style::default().fg(Color::Yellow)),
             Span::raw(" Load into Debugger  "),
-            Span::styled("[↑/↓]", Style::default().fg(Color::Yellow)),
+            Span::styled("[Up/Down]", Style::default().fg(Color::Yellow)),
             Span::raw(" Navigate  "),
             Span::styled("[Tab]", Style::default().fg(Color::Yellow)),
             Span::raw(" Switch Tab"),
@@ -1519,7 +1519,7 @@ impl TuiDashboard {
             .iter()
             .map(|node| {
                 let is_running = node.status == "active";
-                let status_symbol = if is_running { "●" } else { "○" };
+                let status_symbol = if is_running { "*" } else { "o" };
                 let status_color = if is_running { Color::Green } else { Color::Red };
 
                 Row::new(vec![
@@ -1646,7 +1646,7 @@ impl TuiDashboard {
             )]),
             Line::from("  Tab        - Next tab (Overview  Nodes  Topics  TF  Packages  Params)"),
             Line::from("  Shift+Tab  - Previous tab"),
-            Line::from("  ↑/↓        - Navigate lists"),
+            Line::from("  Up/Down    - Navigate lists"),
             Line::from("  PgUp/PgDn  - Scroll quickly"),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -1663,13 +1663,13 @@ impl TuiDashboard {
             )]),
             Line::from("  Enter      - Open log panel for selected node/topic"),
             Line::from("  ESC        - Close log panel"),
-            Line::from("  Shift+↑↓   - Switch between nodes/topics while log panel is open"),
+            Line::from("  Shift+Up/Down - Switch between nodes/topics while log panel is open"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Packages Tab:",
                 Style::default().fg(Color::Cyan),
             )]),
-            Line::from("  ← →        - Switch between Local Workspaces and Global Packages"),
+            Line::from("  Left/Right - Switch between Local Workspaces and Global Packages"),
             Line::from("  Enter      - Drill into selected workspace to view packages"),
             Line::from("  ESC        - Navigate back to workspace list"),
             Line::from(""),
@@ -1697,10 +1697,10 @@ impl TuiDashboard {
                 Span::styled("Data Source: ", Style::default().fg(Color::Yellow)),
                 Span::raw("Real-time from HORUS detect backend"),
             ]),
-            Line::from("  • Nodes from /proc scan + registry"),
-            Line::from(format!("  • Topics from {}", shm_topics_dir().display())),
-            Line::from("  • Packages from ~/.horus/cache + local .horus/ directories"),
-            Line::from("  • Params from ~/.horus/params.yaml (RuntimeParams)"),
+            Line::from("  - Nodes from /proc scan + registry"),
+            Line::from(format!("  - Topics from {}", shm_topics_dir().display())),
+            Line::from("  - Packages from ~/.horus/cache + local .horus/ directories"),
+            Line::from("  - Params from ~/.horus/params.yaml (RuntimeParams)"),
             Line::from(""),
             Line::from("Press any key to close this help..."),
         ];
@@ -1852,15 +1852,15 @@ impl TuiDashboard {
         } else if self.active_tab == Tab::Packages
             && self.package_view_mode == PackageViewMode::List
         {
-            "[ENTER] View Packages | [↑↓] Navigate | [TAB] Switch Tab | [?] Help | [Q] Quit"
+            "[ENTER] View Packages | [Up/Down] Navigate | [TAB] Switch Tab | [?] Help | [Q] Quit"
         } else if self.active_tab == Tab::Packages
             && self.package_view_mode == PackageViewMode::WorkspaceDetails
         {
-            "[ESC] Back to Workspaces | [↑↓] Navigate | [TAB] Switch Tab | [?] Help | [Q] Quit"
+            "[ESC] Back to Workspaces | [Up/Down] Navigate | [TAB] Switch Tab | [?] Help | [Q] Quit"
         } else if self.active_tab == Tab::Nodes || self.active_tab == Tab::Topics {
-            "[ENTER] View Logs | [↑↓] Navigate | [TAB] Switch Tab | [P] Pause | [?] Help | [Q] Quit"
+            "[ENTER] View Logs | [Up/Down] Navigate | [TAB] Switch Tab | [P] Pause | [?] Help | [Q] Quit"
         } else {
-            "[TAB] Switch Tab | [↑↓] Navigate | [P] Pause | [?] Help | [Q] Quit"
+            "[TAB] Switch Tab | [Up/Down] Navigate | [P] Pause | [?] Help | [Q] Quit"
         };
 
         let footer = Paragraph::new(footer_text)

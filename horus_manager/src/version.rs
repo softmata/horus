@@ -146,7 +146,7 @@ mod tests {
     fn test_get_cli_version_returns_valid_semver() {
         let version = get_cli_version();
         assert!(!version.is_empty(), "CLI version should not be empty");
-        // Should be a valid semver-like string (e.g., "0.1.9")
+        // Should be a valid semver-like string (e.g., "0.2.0")
         let parts: Vec<&str> = version.split('.').collect();
         assert!(
             parts.len() >= 2,

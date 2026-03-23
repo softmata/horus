@@ -393,7 +393,7 @@ fn create_workspace_horus_toml(project_path: &Path, name: &str) -> Result<()> {
     let mut ws_deps = BTreeMap::new();
     ws_deps.insert(
         "horus_library".to_string(),
-        DependencyValue::Simple("0.1.9".to_string()),
+        DependencyValue::Simple("0.2.0".to_string()),
     );
 
     let manifest = HorusManifest {

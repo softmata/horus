@@ -544,10 +544,10 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
             let _ = writeln!(out, "{desc}");
             if let Some(ref details) = node.details {
                 for t in &details.publishes {
-                    let _ = writeln!(out, "    pub → {}: {}", t.name, t.message_type);
+                    let _ = writeln!(out, "    pub -> {}: {}", t.name, t.message_type);
                 }
                 for t in &details.subscribes {
-                    let _ = writeln!(out, "    sub ← {}: {}", t.name, t.message_type);
+                    let _ = writeln!(out, "    sub <- {}: {}", t.name, t.message_type);
                 }
             }
         }
@@ -563,7 +563,7 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
                 let subs = topic.subscribers.join(", ");
                 let _ = writeln!(
                     out,
-                    "  {}: {}    {} → {}",
+                    "  {}: {}    {} -> {}",
                     topic.name, topic.message_type, pubs, subs
                 );
             }
@@ -581,7 +581,7 @@ pub fn format_brief(doc: &ProjectDoc) -> String {
         }
         for sym in &module.symbols {
             let dep_marker = if sym.deprecated().is_some() {
-                "⚠ "
+                "[!] "
             } else {
                 ""
             };
@@ -704,7 +704,7 @@ pub fn format_coverage(doc: &ProjectDoc) -> String {
         } else {
             100
         };
-        let flag = if pct < 50 { "  ← needs docs" } else { "" };
+        let flag = if pct < 50 { "  <- needs docs" } else { "" };
         let _ = writeln!(
             out,
             "  {:<40} {}/{} symbols documented  ({}%){flag}",
@@ -1451,8 +1451,8 @@ mod tests {
         let doc = sample_project_doc();
         let brief = format_brief(&doc);
         assert!(
-            brief.contains("⚠ struct Config"),
-            "deprecated should have ⚠ marker: {brief}"
+            brief.contains("[!] struct Config"),
+            "deprecated should have [!] marker: {brief}"
         );
     }
 

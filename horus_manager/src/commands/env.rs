@@ -138,12 +138,12 @@ pub fn run_env_init() -> Result<()> {
     // Write env.sh
     let sh_path = horus_dir.join("env.sh");
     fs::write(&sh_path, ENV_SH).context("Failed to write env.sh")?;
-    println!("{} Wrote {}", "✓".green(), sh_path.display());
+    println!("{} Wrote {}", "*".green(), sh_path.display());
 
     // Write env.fish
     let fish_path = horus_dir.join("env.fish");
     fs::write(&fish_path, ENV_FISH).context("Failed to write env.fish")?;
-    println!("{} Wrote {}", "✓".green(), fish_path.display());
+    println!("{} Wrote {}", "*".green(), fish_path.display());
 
     // Try to add source line to shell RC files
     add_source_line_if_missing()?;
@@ -177,17 +177,17 @@ pub fn run_env_uninstall() -> Result<()> {
 
     if sh_path.exists() {
         fs::remove_file(&sh_path)?;
-        println!("{} Removed {}", "✓".green(), sh_path.display());
+        println!("{} Removed {}", "*".green(), sh_path.display());
     }
     if fish_path.exists() {
         fs::remove_file(&fish_path)?;
-        println!("{} Removed {}", "✓".green(), fish_path.display());
+        println!("{} Removed {}", "*".green(), fish_path.display());
     }
 
     // Remove source lines from shell RC
     remove_source_lines()?;
 
-    println!("{} Shell integration uninstalled.", "✓".green());
+    println!("{} Shell integration uninstalled.", "*".green());
     Ok(())
 }
 
@@ -209,7 +209,7 @@ fn add_source_line_if_missing() -> Result<()> {
                 new_content.push_str(source_line);
                 new_content.push('\n');
                 fs::write(&rc_path, new_content)?;
-                println!("{} Added source line to {}", "✓".green(), rc_name);
+                println!("{} Added source line to {}", "*".green(), rc_name);
             }
         }
     }
@@ -223,7 +223,7 @@ fn add_source_line_if_missing() -> Result<()> {
                 &fish_conf,
                 "# Horus shell integration\ntest -f \"$HOME/.horus/env.fish\"; and source \"$HOME/.horus/env.fish\"\n",
             )?;
-            println!("{} Created {}", "✓".green(), fish_conf.display());
+            println!("{} Created {}", "*".green(), fish_conf.display());
         }
     }
 
@@ -247,7 +247,7 @@ fn remove_source_lines() -> Result<()> {
                     })
                     .collect();
                 fs::write(&rc_path, filtered.join("\n") + "\n")?;
-                println!("{} Removed source line from {}", "✓".green(), rc_name);
+                println!("{} Removed source line from {}", "*".green(), rc_name);
             }
         }
     }
@@ -255,7 +255,7 @@ fn remove_source_lines() -> Result<()> {
     let fish_conf = home.join(".config/fish/conf.d/horus.fish");
     if fish_conf.exists() {
         fs::remove_file(&fish_conf)?;
-        println!("{} Removed {}", "✓".green(), fish_conf.display());
+        println!("{} Removed {}", "*".green(), fish_conf.display());
     }
 
     Ok(())

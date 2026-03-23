@@ -34,22 +34,44 @@ pub fn run_lint(fix: bool, types: bool, extra_args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
+    // For horus projects (horus.toml without root Cargo.toml), point cargo at .horus/Cargo.toml
+    let horus_manifest = ctx.root.join(".horus/Cargo.toml");
+    let use_horus_manifest = ctx.has_horus_toml
+        && !ctx.root.join("Cargo.toml").exists()
+        && horus_manifest.exists();
+
     let mut commands: Vec<PrefixedCommand> = tools
         .into_iter()
         .map(|tool| {
             let mut args = tool.default_args.clone();
+            if tool.bin == "cargo" && use_horus_manifest {
+                // Insert --manifest-path before "--" separator (clippy args come after --)
+                let dash_pos = args.iter().position(|a| a == "--");
+                let insert_at = dash_pos.unwrap_or(args.len());
+                args.insert(insert_at, horus_manifest.to_string_lossy().to_string());
+                args.insert(insert_at, "--manifest-path".to_string());
+            }
             if fix {
                 match tool.bin.as_str() {
                     "cargo" => {
-                        // Replace default args with fix variant
-                        args = vec![
-                            "clippy".to_string(),
+                        // Rebuild args for fix mode, preserving manifest-path if present
+                        let manifest_path = if use_horus_manifest {
+                            Some(horus_manifest.to_string_lossy().to_string())
+                        } else {
+                            None
+                        };
+                        args = vec!["clippy".to_string()];
+                        if let Some(mp) = manifest_path {
+                            args.push("--manifest-path".to_string());
+                            args.push(mp);
+                        }
+                        args.extend([
                             "--fix".to_string(),
                             "--allow-dirty".to_string(),
                             "--".to_string(),
                             "-D".to_string(),
                             "warnings".to_string(),
-                        ];
+                        ]);
                     }
                     "ruff" => args.push("--fix".to_string()),
                     "clang-tidy" => args.push("--fix".to_string()),

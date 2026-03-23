@@ -241,17 +241,17 @@ pub fn format_dependency_report(result: &DependencyCheckResult, features: &[Stri
         return report; // No issues
     }
 
-    report.push_str("\n╔══════════════════════════════════════════════════════════════════╗\n");
-    report.push_str("║              HORUS System Dependency Check                       ║\n");
-    report.push_str("╚══════════════════════════════════════════════════════════════════╝\n\n");
+    report.push_str("\n+==================================================================+\n");
+    report.push_str("|              HORUS System Dependency Check                       |\n");
+    report.push_str("+==================================================================+\n\n");
 
     report.push_str(&format!("Features detected: {}\n\n", features.join(", ")));
 
     // Missing packages
     if !result.missing_packages.is_empty() {
-        report.push_str("❌ Missing System Packages:\n");
+        report.push_str("[X] Missing System Packages:\n");
         for pkg in &result.missing_packages {
-            report.push_str(&format!("   • {}\n", pkg));
+            report.push_str(&format!("   -{}\n", pkg));
         }
         report.push_str("\n   Install with:\n");
         report.push_str(&format!(
@@ -262,9 +262,9 @@ pub fn format_dependency_report(result: &DependencyCheckResult, features: &[Stri
 
     // Missing groups
     if !result.missing_groups.is_empty() {
-        report.push_str("❌ Missing User Group Permissions:\n");
+        report.push_str("[X] Missing User Group Permissions:\n");
         for group in &result.missing_groups {
-            report.push_str(&format!("   • {} group\n", group));
+            report.push_str(&format!("   -{} group\n", group));
         }
         report.push_str("\n   Add yourself to groups:\n");
         report.push_str(&format!(
@@ -276,18 +276,18 @@ pub fn format_dependency_report(result: &DependencyCheckResult, features: &[Stri
 
     // Missing pkg-config libs
     if !result.missing_pkg_config.is_empty() {
-        report.push_str("❌ Missing Development Libraries:\n");
+        report.push_str("[X] Missing Development Libraries:\n");
         for lib in &result.missing_pkg_config {
-            report.push_str(&format!("   • {} (pkg-config)\n", lib));
+            report.push_str(&format!("   -{} (pkg-config)\n", lib));
         }
         report.push('\n');
     }
 
     // Missing device files (hardware not connected - this is a warning, not error)
     if !result.missing_devices.is_empty() {
-        report.push_str("⚠️  Hardware Not Detected (will use simulation mode):\n");
+        report.push_str("[!] Hardware Not Detected (will use simulation mode):\n");
         for device in &result.missing_devices {
-            report.push_str(&format!("   • {}\n", device));
+            report.push_str(&format!("   -{}\n", device));
         }
         report.push_str("\n   Note: Nodes will automatically fall back to simulation mode.\n");
         report.push_str("         Connect hardware or enable interfaces to use real sensors.\n\n");
@@ -295,12 +295,12 @@ pub fn format_dependency_report(result: &DependencyCheckResult, features: &[Stri
 
     // Documentation links
     if !result.docs_links.is_empty() {
-        report.push_str("📚 Documentation:\n");
+        report.push_str("Documentation:\n");
         let mut seen_urls: HashSet<&str> = HashSet::new();
         for (feature, url) in &result.docs_links {
             if !seen_urls.contains(url.as_str()) {
                 seen_urls.insert(url);
-                report.push_str(&format!("   • {}: {}\n", feature, url));
+                report.push_str(&format!("   -{}: {}\n", feature, url));
             }
         }
         report.push('\n');
@@ -308,7 +308,7 @@ pub fn format_dependency_report(result: &DependencyCheckResult, features: &[Stri
 
     // Quick install script
     if result.has_issues() {
-        report.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        report.push_str("----------------------------------------------------------------\n");
         report.push_str("Quick Fix - Run this command:\n\n");
 
         let mut quick_install = String::new();
@@ -332,7 +332,7 @@ pub fn format_dependency_report(result: &DependencyCheckResult, features: &[Stri
 
         report.push_str(&format!("$ {}\n", quick_install));
         report.push_str("\nThen logout and login again for group changes to take effect.\n");
-        report.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        report.push_str("----------------------------------------------------------------\n");
     }
 
     report
@@ -463,13 +463,13 @@ pub fn format_lockfile_report(result: &LockfileVerification) -> String {
     }
 
     for warning in &result.toolchain_warnings {
-        report.push_str(&format!("  ⚠ {}\n", warning));
+        report.push_str(&format!("  ! {}\n", warning));
     }
 
     if !result.missing_system_deps.is_empty() {
         report.push_str("\n  Missing system dependencies:\n");
         for (name, install_cmd) in &result.missing_system_deps {
-            report.push_str(&format!("    ✗ {} — install with: {}\n", name, install_cmd));
+            report.push_str(&format!("    x {} -- install with: {}\n", name, install_cmd));
         }
     }
 
