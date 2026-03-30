@@ -784,9 +784,16 @@ mod tests {
 
         // Register again with v2 — should replace, not duplicate
         registry.register_plugin("foo", entry_v2);
-        assert_eq!(registry.plugins.len(), 1, "should still have exactly 1 entry, not 2");
+        assert_eq!(
+            registry.plugins.len(),
+            1,
+            "should still have exactly 1 entry, not 2"
+        );
         assert_eq!(registry.get_plugin("foo").unwrap().version, "2.0.0");
-        assert_eq!(registry.get_plugin("foo").unwrap().checksum, "sha256:v2hash");
+        assert_eq!(
+            registry.get_plugin("foo").unwrap().checksum,
+            "sha256:v2hash"
+        );
     }
 
     #[test]
@@ -797,7 +804,10 @@ mod tests {
 
         // Remove a plugin that doesn't exist — should not panic
         let removed = registry.unregister_plugin("nonexistent_plugin");
-        assert!(removed.is_none(), "removing nonexistent plugin should return None");
+        assert!(
+            removed.is_none(),
+            "removing nonexistent plugin should return None"
+        );
 
         // The existing plugin should still be there
         assert_eq!(registry.plugins.len(), 1);

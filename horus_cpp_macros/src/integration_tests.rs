@@ -59,10 +59,19 @@ mod tests {
         let impl_binding = parse_impl(&impl_item).unwrap();
 
         // Verify hints parsed correctly
-        assert!(impl_binding.methods[0].hints.returns_unique_ptr, "new returns unique_ptr");
+        assert!(
+            impl_binding.methods[0].hints.returns_unique_ptr,
+            "new returns unique_ptr"
+        );
         assert!(impl_binding.methods[1].hints.raii, "loan has raii");
-        assert!(impl_binding.methods[1].hints.returns_unique_ptr, "loan returns unique_ptr");
-        assert!(impl_binding.methods[2].sig.params[0].hints.move_semantics, "publish param has move");
+        assert!(
+            impl_binding.methods[1].hints.returns_unique_ptr,
+            "loan returns unique_ptr"
+        );
+        assert!(
+            impl_binding.methods[2].sig.params[0].hints.move_semantics,
+            "publish param has move"
+        );
 
         // 3. Generate CXX bridge
         let bridge = generate_cxx_bridge(&BindingItem::Impl(impl_binding.clone()));
@@ -74,7 +83,10 @@ mod tests {
         assert!(bridge_str.contains("publisher_publish"), "publish fn");
         assert!(bridge_str.contains("publisher_data_ptr"), "data_ptr fn");
         assert!(bridge_str.contains("publisher_data_size"), "data_size fn");
-        assert!(!bridge_str.contains("publisher_internal_helper"), "private excluded");
+        assert!(
+            !bridge_str.contains("publisher_internal_helper"),
+            "private excluded"
+        );
         assert!(bridge_str.contains("Box < Publisher >"), "new returns Box");
 
         // 4. Generate C++ header
@@ -83,17 +95,32 @@ mod tests {
         assert!(header.contains("#pragma once"), "pragma");
         assert!(header.contains("namespace horus {"), "namespace");
         assert!(header.contains("class Publisher {"), "class");
-        assert!(header.contains("[[nodiscard]]"), "nodiscard on unique_ptr returns");
+        assert!(
+            header.contains("[[nodiscard]]"),
+            "nodiscard on unique_ptr returns"
+        );
         assert!(header.contains("std::unique_ptr"), "unique_ptr return");
         assert!(header.contains("LoanedSample&& sample"), "move param");
-        assert!(header.contains("std::string_view topic"), "string_view param");
-        assert!(!header.contains("internal_helper"), "private excluded from header");
+        assert!(
+            header.contains("std::string_view topic"),
+            "string_view param"
+        );
+        assert!(
+            !header.contains("internal_helper"),
+            "private excluded from header"
+        );
 
         // 5. Generate struct header
         let struct_header = generate_cpp_header(&BindingItem::Struct(struct_binding));
         assert!(struct_header.contains("~Publisher()"), "RAII destructor");
-        assert!(struct_header.contains("Publisher(Publisher&& other) = default"), "move ctor");
-        assert!(struct_header.contains("Publisher(const Publisher&) = delete"), "no copy");
+        assert!(
+            struct_header.contains("Publisher(Publisher&& other) = default"),
+            "move ctor"
+        );
+        assert!(
+            struct_header.contains("Publisher(const Publisher&) = delete"),
+            "no copy"
+        );
     }
 
     // ─── Full Subscriber Pattern ─────────────────────────────────────
@@ -118,7 +145,10 @@ mod tests {
 
         // C++ header
         let header = generate_cpp_header(&BindingItem::Impl(binding));
-        assert!(header.contains("std::optional<BorrowedSample>"), "optional return");
+        assert!(
+            header.contains("std::optional<BorrowedSample>"),
+            "optional return"
+        );
         assert!(header.contains("bool has_msg()"), "bool return");
         assert!(header.contains("const;"), "const method for &self");
     }
@@ -145,14 +175,23 @@ mod tests {
         assert!(bs.contains("scheduler_tick_rate"), "tick_rate");
         assert!(bs.contains("scheduler_prefer_rt"), "prefer_rt");
         assert!(bs.contains("scheduler_run"), "run");
-        assert!(bs.contains("obj : Box < Scheduler >"), "run takes owned self");
-        assert!(bs.contains("obj : & mut Scheduler"), "tick_rate takes &mut self");
+        assert!(
+            bs.contains("obj : Box < Scheduler >"),
+            "run takes owned self"
+        );
+        assert!(
+            bs.contains("obj : & mut Scheduler"),
+            "tick_rate takes &mut self"
+        );
 
         // C++ header
         let header = generate_cpp_header(&BindingItem::Impl(binding));
         assert!(header.contains("static Self new()"), "static factory");
         assert!(header.contains("void tick_rate(double hz)"), "f64→double");
-        assert!(header.contains("void monitoring(bool enable)"), "bool param");
+        assert!(
+            header.contains("void monitoring(bool enable)"),
+            "bool param"
+        );
         assert!(header.contains("void run()"), "Result<()>→void (throws)");
     }
 
@@ -171,9 +210,21 @@ mod tests {
         let binding = parse_impl(&impl_item).unwrap();
 
         let targets = &[
-            MonomorphTarget { rust_name: "CmdVel", snake_name: "cmd_vel", rust_path: "horus_library::CmdVel" },
-            MonomorphTarget { rust_name: "LaserScan", snake_name: "laser_scan", rust_path: "horus_library::LaserScan" },
-            MonomorphTarget { rust_name: "Imu", snake_name: "imu", rust_path: "horus_library::Imu" },
+            MonomorphTarget {
+                rust_name: "CmdVel",
+                snake_name: "cmd_vel",
+                rust_path: "horus_library::CmdVel",
+            },
+            MonomorphTarget {
+                rust_name: "LaserScan",
+                snake_name: "laser_scan",
+                rust_path: "horus_library::LaserScan",
+            },
+            MonomorphTarget {
+                rust_name: "Imu",
+                snake_name: "imu",
+                rust_path: "horus_library::Imu",
+            },
         ];
 
         let bridge = generate_monomorphized_bridge("Topic", &binding.methods, targets);
@@ -187,10 +238,26 @@ mod tests {
         // 4 methods × 3 types = 12 FFI functions
         for target in targets {
             let prefix = format!("topic_{}", target.snake_name);
-            assert!(bs.contains(&format!("{}_new", prefix)), "{} new", target.rust_name);
-            assert!(bs.contains(&format!("{}_send", prefix)), "{} send", target.rust_name);
-            assert!(bs.contains(&format!("{}_recv", prefix)), "{} recv", target.rust_name);
-            assert!(bs.contains(&format!("{}_read_latest", prefix)), "{} read_latest", target.rust_name);
+            assert!(
+                bs.contains(&format!("{}_new", prefix)),
+                "{} new",
+                target.rust_name
+            );
+            assert!(
+                bs.contains(&format!("{}_send", prefix)),
+                "{} send",
+                target.rust_name
+            );
+            assert!(
+                bs.contains(&format!("{}_recv", prefix)),
+                "{} recv",
+                target.rust_name
+            );
+            assert!(
+                bs.contains(&format!("{}_read_latest", prefix)),
+                "{} read_latest",
+                target.rust_name
+            );
         }
 
         // Result preserved in send
@@ -209,7 +276,8 @@ mod tests {
         };
         let binding = parse_impl(&impl_item).unwrap();
 
-        let bridge = generate_monomorphized_bridge("Topic", &binding.methods, DEFAULT_MONOMORPH_TYPES);
+        let bridge =
+            generate_monomorphized_bridge("Topic", &binding.methods, DEFAULT_MONOMORPH_TYPES);
         let bs = bridge.to_string();
 
         // Should have 25 concrete types
@@ -224,7 +292,10 @@ mod tests {
 
         // Should have 25 × 2 = 50 FFI functions
         let fn_count = bs.matches("fn topic_").count();
-        assert_eq!(fn_count, 50, "25 types × 2 methods = 50 functions, got {fn_count}");
+        assert_eq!(
+            fn_count, 50,
+            "25 types × 2 methods = 50 functions, got {fn_count}"
+        );
     }
 
     // ─── LoanedSample Direct Field Access ────────────────────────────
@@ -247,7 +318,10 @@ mod tests {
         assert!(header.contains("operator->()"), "operator->");
         assert!(header.contains("operator*()"), "operator*");
         assert!(header.contains("~LoanedSample()"), "destructor");
-        assert!(header.contains("LoanedSample(const LoanedSample&) = delete"), "no copy");
+        assert!(
+            header.contains("LoanedSample(const LoanedSample&) = delete"),
+            "no copy"
+        );
         assert!(header.contains("void* data_ptr_"), "raw data pointer");
     }
 
@@ -270,7 +344,10 @@ mod tests {
         assert!(bs.contains("Result <"), "Result return");
 
         let header = generate_cpp_header(&BindingItem::Impl(binding));
-        assert!(header.contains("Response call("), "call returns Response (throws on error)");
+        assert!(
+            header.contains("Response call("),
+            "call returns Response (throws on error)"
+        );
         assert!(header.contains("uint64_t timeout_ms"), "u64→uint64_t");
     }
 
@@ -280,10 +357,21 @@ mod tests {
     fn pipeline_coverage_summary() {
         // This test documents what the codegen pipeline covers
         // as a quick reference for developers.
-        assert_eq!(DEFAULT_MONOMORPH_TYPES.len(), 25, "25 default message types");
+        assert_eq!(
+            DEFAULT_MONOMORPH_TYPES.len(),
+            25,
+            "25 default message types"
+        );
 
         // Count hint types
-        let hints = ["move_semantics", "raii", "direct_field_access", "returns", "name", "namespace"];
+        let hints = [
+            "move_semantics",
+            "raii",
+            "direct_field_access",
+            "returns",
+            "name",
+            "namespace",
+        ];
         assert_eq!(hints.len(), 6, "6 hint types supported");
     }
 }

@@ -87,10 +87,7 @@ pub(crate) fn get_or_create_pool(topic_name: &str) -> Arc<TensorPool> {
 /// let cpu_pool = get_or_create_pool_for_device("camera.image", Device::cpu());
 /// // These are different pools — different memory backends.
 /// ```
-pub(crate) fn get_or_create_pool_for_device(
-    topic_name: &str,
-    device: Device,
-) -> Arc<TensorPool> {
+pub(crate) fn get_or_create_pool_for_device(topic_name: &str, device: Device) -> Arc<TensorPool> {
     // CPU devices use the existing pool (backward compatible).
     if device.is_cpu() {
         return get_or_create_pool(topic_name);

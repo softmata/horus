@@ -21,8 +21,8 @@
 //! interface for all IPC. It uses `ShmRegion` internally for cross-process paths.
 
 pub mod backend;
-pub mod rt_allocator;
 pub(crate) mod platform;
+pub mod rt_allocator;
 pub(crate) mod shm_region;
 pub(crate) mod simd;
 pub(crate) mod tensor_descriptor;
@@ -31,9 +31,9 @@ pub(crate) mod tensor_descriptor;
 #[doc(hidden)]
 pub use platform::{
     cleanup_stale_namespaces, has_native_shm, is_namespace_stale_by_flock, is_shm_file_stale,
-    list_all_horus_namespaces, shm_base_dir, shm_error_logs_path, shm_logs_path,
-    shm_remote_logs_path, shm_namespace,
-    shm_network_dir, shm_scheduler_dir, shm_topics_dir, NamespaceCleanupResult, NamespaceInfo,
+    list_all_horus_namespaces, shm_base_dir, shm_error_logs_path, shm_logs_path, shm_namespace,
+    shm_network_dir, shm_remote_logs_path, shm_scheduler_dir, shm_topics_dir,
+    NamespaceCleanupResult, NamespaceInfo,
 };
 #[doc(hidden)]
 pub mod tensor_handle;
@@ -240,12 +240,12 @@ pub mod image;
 pub mod occupancy_grid;
 pub mod pointcloud;
 
+pub(crate) use backend::MmapBackend;
+pub use backend::{BackendAllocation, PoolBackend};
 #[doc(hidden)]
 pub use tensor_handle::TensorHandle;
 #[doc(hidden)]
 pub use tensor_pool::{PoolAllocator, TensorPool, TensorPoolConfig};
-pub use backend::{BackendAllocation, PoolBackend};
-pub(crate) use backend::MmapBackend;
 
 pub use costmap::CostMap;
 pub use depth_image::DepthImage;

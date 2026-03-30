@@ -10,13 +10,13 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{
-    parse2, Attribute, FnArg, GenericArgument, ImplItem, Item, ItemImpl, ItemStruct,
-    Meta, Pat, PathArguments, Result, ReturnType, Type, TypePath,
+    parse2, Attribute, FnArg, GenericArgument, ImplItem, Item, ItemImpl, ItemStruct, Meta, Pat,
+    PathArguments, Result, ReturnType, Type, TypePath,
 };
 
 use crate::types::{
-    CppHints, FieldBinding, ImplBinding, MethodBinding,
-    MethodSig, ParamBinding, Receiver, StructBinding,
+    CppHints, FieldBinding, ImplBinding, MethodBinding, MethodSig, ParamBinding, Receiver,
+    StructBinding,
 };
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────
@@ -65,7 +65,10 @@ fn parse_struct_with_hints(item: &ItemStruct, struct_hints: CppHints) -> Result<
         syn::Fields::Named(named) => {
             for f in &named.named {
                 let name = f.ident.clone().ok_or_else(|| {
-                    syn::Error::new_spanned(f, "tuple struct fields are not supported by #[horus_api]")
+                    syn::Error::new_spanned(
+                        f,
+                        "tuple struct fields are not supported by #[horus_api]",
+                    )
                 })?;
                 let hints = parse_cpp_hints_from_attrs(&f.attrs)?;
                 fields.push(FieldBinding {
@@ -227,7 +230,12 @@ fn unwrap_type_wrapper(ty: &Type, wrapper_name: &str) -> Option<Type> {
 // ─── #[cpp(...)] Hint Parsing ────────────────────────────────────────────────
 
 const KNOWN_HINTS: &[&str] = &[
-    "move_semantics", "raii", "direct_field_access", "returns", "name", "namespace",
+    "move_semantics",
+    "raii",
+    "direct_field_access",
+    "returns",
+    "name",
+    "namespace",
 ];
 
 /// Parse `#[cpp(...)]` hints from a list of syn Attributes.
@@ -330,12 +338,24 @@ fn strip_cpp_attrs_from_impl(item: &mut ItemImpl) {
 
 /// Merge `other` hints into `target` (other wins on conflict).
 fn merge_hints(target: &mut CppHints, other: &CppHints) {
-    if other.direct_field_access { target.direct_field_access = true; }
-    if other.move_semantics { target.move_semantics = true; }
-    if other.returns_unique_ptr { target.returns_unique_ptr = true; }
-    if other.raii { target.raii = true; }
-    if other.cpp_name.is_some() { target.cpp_name.clone_from(&other.cpp_name); }
-    if other.cpp_namespace.is_some() { target.cpp_namespace.clone_from(&other.cpp_namespace); }
+    if other.direct_field_access {
+        target.direct_field_access = true;
+    }
+    if other.move_semantics {
+        target.move_semantics = true;
+    }
+    if other.returns_unique_ptr {
+        target.returns_unique_ptr = true;
+    }
+    if other.raii {
+        target.raii = true;
+    }
+    if other.cpp_name.is_some() {
+        target.cpp_name.clone_from(&other.cpp_name);
+    }
+    if other.cpp_namespace.is_some() {
+        target.cpp_namespace.clone_from(&other.cpp_namespace);
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -542,10 +562,7 @@ mod tests {
 
     #[test]
     fn non_cpp_attrs_ignored() {
-        let attrs: Vec<Attribute> = vec![
-            parse_quote!(#[derive(Debug)]),
-            parse_quote!(#[repr(C)]),
-        ];
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[derive(Debug)]), parse_quote!(#[repr(C)])];
         let hints = parse_cpp_hints_from_attrs(&attrs).unwrap();
         assert!(!hints.has_any());
     }

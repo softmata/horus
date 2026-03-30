@@ -297,7 +297,8 @@ fn test_node_calls_service_from_tick() {
     assert!(
         s >= 1,
         "Node should make at least 1 successful service call, got {} successes, {} errors",
-        s, e
+        s,
+        e
     );
 }
 
@@ -400,7 +401,8 @@ fn test_two_nodes_call_same_service_per_client_routing() {
     assert!(
         v1 >= 1 && v2 >= 1,
         "Both nodes should get responses via per-client routing: node1={}, node2={}",
-        v1, v2
+        v1,
+        v2
     );
 }
 
@@ -484,10 +486,7 @@ impl Node for ErrorCheckNode {
 
         if let Some(ref mut client) = self.client {
             // Very short timeout, no server running → should get timeout error
-            match client.call(
-                SchedAddRequest { a: 1, b: 2 },
-                Duration::from_millis(100),
-            ) {
+            match client.call(SchedAddRequest { a: 1, b: 2 }, Duration::from_millis(100)) {
                 Err(_) => {
                     self.got_error.store(true, Ordering::SeqCst);
                 }

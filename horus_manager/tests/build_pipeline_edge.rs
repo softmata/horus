@@ -5,7 +5,7 @@
 //! CMakeLists.txt). No running system or network access required.
 
 use horus_manager::manifest::{
-    CppConfig, DepSource, DetailedDependency, DependencyValue, HorusManifest, IgnoreConfig,
+    CppConfig, DepSource, DependencyValue, DetailedDependency, HorusManifest, IgnoreConfig,
     PackageInfo, TargetType,
 };
 use std::collections::BTreeMap;
@@ -379,8 +379,7 @@ fn test_cmake_gen_minimal() {
     deps.insert("my-math-lib".to_string(), cpp_system_dep("MyMathLib"));
 
     let manifest = make_manifest("cpp-project", "0.1.0", deps);
-    let (path, content) =
-        horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (path, content) = horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
 
     // File written to disk
     assert!(path.exists(), "CMakeLists.txt should exist at {:?}", path);
@@ -602,8 +601,7 @@ fn test_cmake_gen_known_dep_resolves() {
     );
 
     let manifest = make_manifest("eigen-proj", "0.1.0", deps);
-    let (_, content) =
-        horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (_, content) = horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
 
     assert!(
         content.contains("find_package(Eigen3 REQUIRED)"),
@@ -623,8 +621,7 @@ fn test_cmake_gen_cpp_standard_override() {
     let mut manifest = make_manifest("std20-proj", "0.1.0", BTreeMap::new());
     manifest.package.standard = Some("c++20".to_string());
 
-    let (_, content) =
-        horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (_, content) = horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
 
     assert!(
         content.contains("set(CMAKE_CXX_STANDARD 20)"),
@@ -644,8 +641,7 @@ fn test_cmake_gen_compiler_override() {
         toolchain: None,
     });
 
-    let (_, content) =
-        horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (_, content) = horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
 
     assert!(
         content.contains("set(CMAKE_CXX_COMPILER clang++)"),
@@ -672,16 +668,12 @@ fn test_generators_are_idempotent() {
         horus_manager::cargo_gen::generate(&manifest, dir.path(), &[], false).unwrap();
     assert_eq!(cargo1, cargo2, "cargo_gen should be idempotent");
 
-    let (_, py1) =
-        horus_manager::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
-    let (_, py2) =
-        horus_manager::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (_, py1) = horus_manager::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (_, py2) = horus_manager::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
     assert_eq!(py1, py2, "pyproject_gen should be idempotent");
 
-    let (_, cmake1) =
-        horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
-    let (_, cmake2) =
-        horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (_, cmake1) = horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
+    let (_, cmake2) = horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();
     assert_eq!(cmake1, cmake2, "cmake_gen should be idempotent");
 }
 

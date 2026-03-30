@@ -177,7 +177,7 @@ fn roundtrip_scalar_tensor() {
 
 #[test]
 fn roundtrip_single_element_tensor() {
-    let data: Vec<f32> = vec![3.14];
+    let data: Vec<f32> = vec![2.75];
     let managed = to_dlpack(
         data.as_ptr() as *mut c_void,
         &[1],

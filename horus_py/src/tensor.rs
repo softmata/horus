@@ -205,7 +205,9 @@ impl PyTensorHandle {
     #[pyo3(signature = (shape, dtype="float32"))]
     fn new(shape: Vec<u64>, dtype: &str) -> PyResult<Self> {
         if shape.is_empty() {
-            return Err(PyValueError::new_err("Tensor shape must have at least one dimension"));
+            return Err(PyValueError::new_err(
+                "Tensor shape must have at least one dimension",
+            ));
         }
         if shape.contains(&0) {
             return Err(PyValueError::new_err("Tensor dimensions must be > 0"));
@@ -260,7 +262,9 @@ impl PyTensorHandle {
         let shape_obj = arr.getattr("shape")?;
         let shape_i64: Vec<i64> = shape_obj.extract()?;
         if shape_i64.iter().any(|&x| x < 0) {
-            return Err(PyValueError::new_err("Tensor shape dimensions must be non-negative"));
+            return Err(PyValueError::new_err(
+                "Tensor shape dimensions must be non-negative",
+            ));
         }
         let shape: Vec<u64> = shape_i64.iter().map(|&x| x as u64).collect();
 
@@ -271,8 +275,13 @@ impl PyTensorHandle {
 
         // Allocate tensor
         let pool = get_or_create_pool(1, None)?;
-        let handle = TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, horus_core::types::Device::cpu())
-            .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
+        let handle = TensorHandle::alloc(
+            Arc::clone(&pool),
+            &shape,
+            dtype,
+            horus_core::types::Device::cpu(),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
 
         // Copy data from numpy to shared memory
         let nbytes = handle.nbytes() as usize;
@@ -850,7 +859,11 @@ impl PyTensorHandle {
     ///
     /// Delegates to numpy for full indexing support. Returns a numpy array
     /// (view when possible, copy for advanced indexing).
-    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    fn __getitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let np_arr = Self::numpy(slf, py)?;
         np_arr.get_item(key)
     }
@@ -858,14 +871,21 @@ impl PyTensorHandle {
     /// Assignment: t[0] = 1.0, t[0:10] = array
     ///
     /// Writes directly into shared memory via numpy view.
-    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+    fn __setitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
         let np_arr = Self::numpy(slf, py)?;
         np_arr.set_item(key, value)
     }
 
     /// Length of first dimension: len(t)
     fn __len__(&self) -> PyResult<usize> {
-        let handle = self.handle.as_ref()
+        let handle = self
+            .handle
+            .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let shape = handle.shape();
         if shape.is_empty() {
@@ -882,56 +902,81 @@ impl PyTensorHandle {
     #[pyo3(signature = (*args))]
     fn reshape(&self, args: &Bound<'_, PyTuple>) -> PyResult<Self> {
         let new_shape = parse_shape_args(args)?;
-        let handle = self.handle.as_ref()
+        let handle = self
+            .handle
+            .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let viewed = handle.view(&new_shape)
             .ok_or_else(|| PyValueError::new_err(
                 "Cannot reshape: tensor must be contiguous and new shape must have same number of elements"
             ))?;
-        Ok(Self { handle: Some(viewed) })
+        Ok(Self {
+            handle: Some(viewed),
+        })
     }
 
     /// Flatten to 1D: t.flatten()
     fn flatten(&self) -> PyResult<Self> {
-        let handle = self.handle.as_ref()
+        let handle = self
+            .handle
+            .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let total = handle.numel();
-        let viewed = handle.view(&[total])
+        let viewed = handle
+            .view(&[total])
             .ok_or_else(|| PyValueError::new_err("Cannot flatten: tensor must be contiguous"))?;
-        Ok(Self { handle: Some(viewed) })
+        Ok(Self {
+            handle: Some(viewed),
+        })
     }
 
     /// Squeeze: remove dimensions of size 1
     fn squeeze(&self) -> PyResult<Self> {
-        let handle = self.handle.as_ref()
+        let handle = self
+            .handle
+            .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let new_shape: Vec<u64> = handle.shape().iter().copied().filter(|&d| d != 1).collect();
         if new_shape.is_empty() {
             // Scalar — keep as [1]
-            let viewed = handle.view(&[1])
+            let viewed = handle
+                .view(&[1])
                 .ok_or_else(|| PyValueError::new_err("Cannot squeeze"))?;
-            Ok(Self { handle: Some(viewed) })
+            Ok(Self {
+                handle: Some(viewed),
+            })
         } else {
-            let viewed = handle.view(&new_shape)
-                .ok_or_else(|| PyValueError::new_err("Cannot squeeze: tensor must be contiguous"))?;
-            Ok(Self { handle: Some(viewed) })
+            let viewed = handle.view(&new_shape).ok_or_else(|| {
+                PyValueError::new_err("Cannot squeeze: tensor must be contiguous")
+            })?;
+            Ok(Self {
+                handle: Some(viewed),
+            })
         }
     }
 
     /// Unsqueeze: add a dimension of size 1 at the given position
     fn unsqueeze(&self, dim: i64) -> PyResult<Self> {
-        let handle = self.handle.as_ref()
+        let handle = self
+            .handle
+            .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let ndim = handle.shape().len() as i64;
         let dim = if dim < 0 { ndim + 1 + dim } else { dim };
         if dim < 0 || dim > ndim {
-            return Err(PyValueError::new_err(format!("dim {} out of range for {}-d tensor", dim, ndim)));
+            return Err(PyValueError::new_err(format!(
+                "dim {} out of range for {}-d tensor",
+                dim, ndim
+            )));
         }
         let mut new_shape: Vec<u64> = handle.shape().to_vec();
         new_shape.insert(dim as usize, 1);
-        let viewed = handle.view(&new_shape)
+        let viewed = handle
+            .view(&new_shape)
             .ok_or_else(|| PyValueError::new_err("Cannot unsqueeze: tensor must be contiguous"))?;
-        Ok(Self { handle: Some(viewed) })
+        Ok(Self {
+            handle: Some(viewed),
+        })
     }
 
     /// Transpose (2D only): t.T or t.transpose()
@@ -947,22 +992,38 @@ impl PyTensorHandle {
     // =================================================================
 
     /// t + other
-    fn __add__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __add__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "add")
     }
 
     /// t - other
-    fn __sub__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __sub__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "subtract")
     }
 
     /// t * other
-    fn __mul__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __mul__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "multiply")
     }
 
     /// t / other
-    fn __truediv__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __truediv__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "divide")
     }
 
@@ -979,27 +1040,47 @@ impl PyTensorHandle {
     // =================================================================
 
     /// t == other
-    fn __eq__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __eq__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "equal")
     }
 
     /// t < other
-    fn __lt__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __lt__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "less")
     }
 
     /// t > other
-    fn __gt__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __gt__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "greater")
     }
 
     /// t <= other
-    fn __le__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __le__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "less_equal")
     }
 
     /// t >= other
-    fn __ge__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Self> {
+    fn __ge__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<Self> {
         numpy_binop(slf, py, other, "greater_equal")
     }
 
@@ -1038,11 +1119,15 @@ impl PyTensorHandle {
     /// Convert dtype: t.astype("float16")
     fn astype<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dtype: &str) -> PyResult<Self> {
         let inner = slf.borrow();
-        let handle = inner.handle.as_ref()
+        let handle = inner
+            .handle
+            .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let new_dtype = parse_dtype(dtype)?;
         if handle.dtype() == new_dtype {
-            return Ok(Self { handle: Some(handle.clone()) });
+            return Ok(Self {
+                handle: Some(handle.clone()),
+            });
         }
         let np = py.import("numpy")?;
         let np_dtype = np.call_method1("dtype", (dtype,))?;
@@ -1169,25 +1254,33 @@ fn parse_shape_args(args: &Bound<'_, PyTuple>) -> PyResult<Vec<u64>> {
         let arg = args.get_item(0)?;
         if let Ok(list) = arg.extract::<Vec<i64>>() {
             if list.iter().any(|&x| x < 0) {
-                return Err(PyValueError::new_err("reshape dimensions must be non-negative"));
+                return Err(PyValueError::new_err(
+                    "reshape dimensions must be non-negative",
+                ));
             }
             return Ok(list.iter().map(|&x| x as u64).collect());
         }
         // Single int — 1D reshape
         if let Ok(val) = arg.extract::<i64>() {
             if val < 0 {
-                return Err(PyValueError::new_err("reshape dimensions must be non-negative"));
+                return Err(PyValueError::new_err(
+                    "reshape dimensions must be non-negative",
+                ));
             }
             return Ok(vec![val as u64]);
         }
-        Err(PyValueError::new_err("reshape expects int dimensions or a list/tuple"))
+        Err(PyValueError::new_err(
+            "reshape expects int dimensions or a list/tuple",
+        ))
     } else {
         // Multiple arguments: reshape(10, 10)
         let mut shape = Vec::with_capacity(args.len());
         for i in 0..args.len() {
             let val: i64 = args.get_item(i)?.extract()?;
             if val < 0 {
-                return Err(PyValueError::new_err("reshape dimensions must be non-negative"));
+                return Err(PyValueError::new_err(
+                    "reshape dimensions must be non-negative",
+                ));
             }
             shape.push(val as u64);
         }
@@ -1229,15 +1322,22 @@ impl PyTensorHandle {
         let shape_obj = arr.getattr("shape")?;
         let shape_i64: Vec<i64> = shape_obj.extract()?;
         if shape_i64.iter().any(|&x| x < 0) {
-            return Err(PyValueError::new_err("Tensor shape dimensions must be non-negative"));
+            return Err(PyValueError::new_err(
+                "Tensor shape dimensions must be non-negative",
+            ));
         }
         let shape: Vec<u64> = shape_i64.iter().map(|&x| x as u64).collect();
         let dtype_obj = arr.getattr("dtype")?;
         let dtype_str = dtype_obj.getattr("str")?.extract::<String>()?;
         let dtype = numpy_typestr_to_dtype(&dtype_str)?;
         let pool = get_or_create_pool(1, None)?;
-        let handle = TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, horus_core::types::Device::cpu())
-            .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
+        let handle = TensorHandle::alloc(
+            Arc::clone(&pool),
+            &shape,
+            dtype,
+            horus_core::types::Device::cpu(),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
         let nbytes = handle.nbytes() as usize;
         let dst_ptr = handle.data_ptr();
         let iface = arr.getattr("__array_interface__")?;
@@ -1246,7 +1346,9 @@ impl PyTensorHandle {
         unsafe {
             std::ptr::copy_nonoverlapping(src_addr as *const u8, dst_ptr, nbytes);
         }
-        Ok(Self { handle: Some(handle) })
+        Ok(Self {
+            handle: Some(handle),
+        })
     }
 }
 

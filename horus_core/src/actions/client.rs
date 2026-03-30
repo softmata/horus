@@ -303,11 +303,26 @@ where
         }
 
         // Create links with proper TopicKind for discovery
-        *self.goal_link.write() = Some(Topic::new_with_kind(A::goal_topic(), TopicKind::ActionGoal as u8)?);
-        *self.cancel_link.write() = Some(Topic::new_with_kind(A::cancel_topic(), TopicKind::ActionCancel as u8)?);
-        *self.result_link.write() = Some(Topic::new_with_kind(A::result_topic(), TopicKind::ActionResult as u8)?);
-        *self.feedback_link.write() = Some(Topic::new_with_kind(A::feedback_topic(), TopicKind::ActionFeedback as u8)?);
-        *self.status_link.write() = Some(Topic::new_with_kind(A::status_topic(), TopicKind::ActionStatus as u8)?);
+        *self.goal_link.write() = Some(Topic::new_with_kind(
+            A::goal_topic(),
+            TopicKind::ActionGoal as u8,
+        )?);
+        *self.cancel_link.write() = Some(Topic::new_with_kind(
+            A::cancel_topic(),
+            TopicKind::ActionCancel as u8,
+        )?);
+        *self.result_link.write() = Some(Topic::new_with_kind(
+            A::result_topic(),
+            TopicKind::ActionResult as u8,
+        )?);
+        *self.feedback_link.write() = Some(Topic::new_with_kind(
+            A::feedback_topic(),
+            TopicKind::ActionFeedback as u8,
+        )?);
+        *self.status_link.write() = Some(Topic::new_with_kind(
+            A::status_topic(),
+            TopicKind::ActionStatus as u8,
+        )?);
 
         self.initialized.store(true, Ordering::Release);
 
@@ -931,10 +946,7 @@ mod tests {
 
     #[test]
     fn test_goal_status_all_active_states() {
-        let actives = [
-            GoalStatus::Pending,
-            GoalStatus::Active,
-        ];
+        let actives = [GoalStatus::Pending, GoalStatus::Active];
         for status in &actives {
             assert!(status.is_active(), "{:?} should be active", status);
             assert!(!status.is_terminal(), "{:?} should not be terminal", status);
@@ -1026,7 +1038,10 @@ mod tests {
         let err = ActionError::GoalRejected("invalid target".into());
         assert!(matches!(err, ActionError::GoalRejected(ref s) if s == "invalid target"));
         let msg = format!("{}", err);
-        assert!(msg.contains("invalid target"), "Display should contain reason");
+        assert!(
+            msg.contains("invalid target"),
+            "Display should contain reason"
+        );
     }
 
     #[test]
@@ -1042,7 +1057,10 @@ mod tests {
         let err = ActionError::GoalPreempted;
         assert!(matches!(err, ActionError::GoalPreempted));
         let msg = format!("{}", err);
-        assert!(msg.contains("preempted"), "Display should mention preempted");
+        assert!(
+            msg.contains("preempted"),
+            "Display should mention preempted"
+        );
     }
 
     #[test]
@@ -1050,7 +1068,10 @@ mod tests {
         let err = ActionError::GoalTimeout;
         assert!(matches!(err, ActionError::GoalTimeout));
         let msg = format!("{}", err);
-        assert!(msg.contains("timed out"), "Display should mention timed out");
+        assert!(
+            msg.contains("timed out"),
+            "Display should mention timed out"
+        );
     }
 
     #[test]
@@ -1058,7 +1079,10 @@ mod tests {
         let err = ActionError::ServerUnavailable;
         assert!(matches!(err, ActionError::ServerUnavailable));
         let msg = format!("{}", err);
-        assert!(msg.contains("unavailable"), "Display should mention unavailable");
+        assert!(
+            msg.contains("unavailable"),
+            "Display should mention unavailable"
+        );
     }
 
     #[test]
@@ -1082,7 +1106,10 @@ mod tests {
         let err = ActionError::InvalidGoal("negative distance".into());
         assert!(matches!(err, ActionError::InvalidGoal(ref s) if s == "negative distance"));
         let msg = format!("{}", err);
-        assert!(msg.contains("negative distance"), "Display should contain reason");
+        assert!(
+            msg.contains("negative distance"),
+            "Display should contain reason"
+        );
     }
 
     #[test]
@@ -1091,7 +1118,10 @@ mod tests {
         let err = ActionError::GoalNotFound(id);
         assert!(matches!(err, ActionError::GoalNotFound(found_id) if found_id == id));
         let msg = format!("{}", err);
-        assert!(msg.contains(&id.to_string()), "Display should contain goal id");
+        assert!(
+            msg.contains(&id.to_string()),
+            "Display should contain goal id"
+        );
     }
 
     #[test]
@@ -1199,14 +1229,19 @@ mod tests {
 
         // Simulate receiving multiple feedback messages
         for i in 1..=5 {
-            state.last_feedback = Some(TestFeedback { progress: i as f32 * 0.2 });
+            state.last_feedback = Some(TestFeedback {
+                progress: i as f32 * 0.2,
+            });
             state.feedback_count += 1;
             state.updated_at = Instant::now();
         }
 
         assert_eq!(state.feedback_count, 5);
         let fb = state.last_feedback.as_ref().unwrap();
-        assert!((fb.progress - 1.0).abs() < f32::EPSILON, "last feedback should be the final one");
+        assert!(
+            (fb.progress - 1.0).abs() < f32::EPSILON,
+            "last feedback should be the final one"
+        );
     }
 
     #[test]
@@ -1274,7 +1309,10 @@ mod tests {
         // Not initialized — should return ServerUnavailable
         let result = inner.send_goal(TestGoal { target: 1.0 }, GoalPriority::NORMAL);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ActionError::ServerUnavailable));
+        assert!(matches!(
+            result.unwrap_err(),
+            ActionError::ServerUnavailable
+        ));
     }
 
     #[test]
@@ -1434,10 +1472,9 @@ mod tests {
         let called = Arc::new(AtomicBool::new(false));
         let called_clone = called.clone();
 
-        *inner.status_callback.write() =
-            Some(Box::new(move |_id, _status| {
-                called_clone.store(true, Ordering::Relaxed);
-            }));
+        *inner.status_callback.write() = Some(Box::new(move |_id, _status| {
+            called_clone.store(true, Ordering::Relaxed);
+        }));
 
         let id = GoalId::new();
         inner.register_goal(id);
@@ -1445,7 +1482,10 @@ mod tests {
         let update = GoalStatusUpdate::new(id, GoalStatus::Active);
         inner.handle_status_update(update);
 
-        assert!(called.load(Ordering::Relaxed), "status callback should fire");
+        assert!(
+            called.load(Ordering::Relaxed),
+            "status callback should fire"
+        );
     }
 
     #[test]
@@ -1454,10 +1494,9 @@ mod tests {
         let called = Arc::new(AtomicBool::new(false));
         let called_clone = called.clone();
 
-        *inner.feedback_callback.write() =
-            Some(Box::new(move |_id, _fb: &TestFeedback| {
-                called_clone.store(true, Ordering::Relaxed);
-            }));
+        *inner.feedback_callback.write() = Some(Box::new(move |_id, _fb: &TestFeedback| {
+            called_clone.store(true, Ordering::Relaxed);
+        }));
 
         let id = GoalId::new();
         inner.register_goal(id);
@@ -1465,7 +1504,10 @@ mod tests {
         let fb = ActionFeedback::new(id, TestFeedback { progress: 0.7 });
         inner.handle_feedback(fb);
 
-        assert!(called.load(Ordering::Relaxed), "feedback callback should fire");
+        assert!(
+            called.load(Ordering::Relaxed),
+            "feedback callback should fire"
+        );
     }
 
     #[test]
@@ -1485,7 +1527,10 @@ mod tests {
         let result_msg = ActionResult::succeeded(id, TestResult { success: true });
         inner.handle_result(result_msg);
 
-        assert!(called.load(Ordering::Relaxed), "result callback should fire");
+        assert!(
+            called.load(Ordering::Relaxed),
+            "result callback should fire"
+        );
     }
 
     // ========================================================================
@@ -1531,7 +1576,10 @@ mod tests {
         // inner is not initialized, so send_goal should return ServerUnavailable
         let result = node.send_goal(TestGoal { target: 42.0 });
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ActionError::ServerUnavailable));
+        assert!(matches!(
+            result.unwrap_err(),
+            ActionError::ServerUnavailable
+        ));
     }
 
     // ========================================================================

@@ -39,7 +39,11 @@ service! { IntentResilient  { request { val: i64 } response { result: i64 } } }
 #[test]
 fn test_service_intent_request_response_correct() {
     let _server = ServiceServerBuilder::<IntentDouble>::new()
-        .on_request(|req| Ok(IntentDoubleResponse { result: req.val * 2 }))
+        .on_request(|req| {
+            Ok(IntentDoubleResponse {
+                result: req.val * 2,
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
@@ -76,7 +80,11 @@ fn test_service_intent_request_response_correct() {
 #[test]
 fn test_service_intent_server_handles_rapid_calls() {
     let _server = ServiceServerBuilder::<IntentRapid>::new()
-        .on_request(|req| Ok(IntentRapidResponse { result: req.val * 2 }))
+        .on_request(|req| {
+            Ok(IntentRapidResponse {
+                result: req.val * 2,
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
@@ -124,7 +132,11 @@ fn test_service_intent_timeout_does_not_corrupt_state() {
 
     // Now start the server
     let _server = ServiceServerBuilder::<IntentTimeout>::new()
-        .on_request(|req| Ok(IntentTimeoutResponse { result: req.val * 2 }))
+        .on_request(|req| {
+            Ok(IntentTimeoutResponse {
+                result: req.val * 2,
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
@@ -163,14 +175,22 @@ fn test_service_intent_timeout_does_not_corrupt_state() {
 fn test_service_intent_multiple_service_types_coexist() {
     // Server A doubles
     let _server_a = ServiceServerBuilder::<IntentCoexistA>::new()
-        .on_request(|req| Ok(IntentCoexistAResponse { result: req.val * 2 }))
+        .on_request(|req| {
+            Ok(IntentCoexistAResponse {
+                result: req.val * 2,
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
 
     // Server B triples
     let _server_b = ServiceServerBuilder::<IntentCoexistB>::new()
-        .on_request(|req| Ok(IntentCoexistBResponse { result: req.val * 3 }))
+        .on_request(|req| {
+            Ok(IntentCoexistBResponse {
+                result: req.val * 3,
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
@@ -242,7 +262,11 @@ fn test_service_call_resilient_retries_on_transient_failure() {
         // Delay enough so the first retry attempt times out
         std::thread::sleep(Duration::from_millis(300));
         let server = ServiceServerBuilder::<IntentResilient>::new()
-            .on_request(|req| Ok(IntentResilientResponse { result: req.val * 2 }))
+            .on_request(|req| {
+                Ok(IntentResilientResponse {
+                    result: req.val * 2,
+                })
+            })
             .poll_interval(1_u64.ms())
             .build()
             .unwrap();
@@ -262,11 +286,8 @@ fn test_service_call_resilient_retries_on_transient_failure() {
     // 20ms + attempt2(100ms) + 40ms + attempt3(100ms)... The server comes
     // up around attempt 2-3 and a subsequent retry succeeds.
     let config = RetryConfig::new(10, 10_u64.ms());
-    let result = client.call_resilient_with(
-        IntentResilientRequest { val: 21 },
-        100_u64.ms(),
-        config,
-    );
+    let result =
+        client.call_resilient_with(IntentResilientRequest { val: 21 }, 100_u64.ms(), config);
 
     assert!(
         result.is_ok(),
@@ -281,5 +302,7 @@ fn test_service_call_resilient_retries_on_transient_failure() {
 
     // Signal server thread to shut down
     server_done.store(2, Ordering::SeqCst);
-    server_handle.join().expect("server thread should not panic");
+    server_handle
+        .join()
+        .expect("server thread should not panic");
 }

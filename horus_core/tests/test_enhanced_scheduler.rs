@@ -38,7 +38,6 @@ impl Node for CpuNode {
         println!("CPU Node {} shutdown", self.name);
         Ok(())
     }
-
 }
 
 /// Test node that simulates I/O operations (camera/sensor)
@@ -68,7 +67,6 @@ impl Node for IoNode {
         println!("I/O Node {} shutdown", self.name);
         Ok(())
     }
-
 }
 
 /// Test node that occasionally fails (to test skip policy)
@@ -101,7 +99,6 @@ impl Node for FlakyNode {
         println!("Flaky Node {} shutdown", self.name);
         Ok(())
     }
-
 }
 
 #[test]

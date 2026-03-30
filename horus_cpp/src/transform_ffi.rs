@@ -31,7 +31,11 @@ pub fn transform_frame_register(
     name: &str,
     parent: &str,
 ) -> Result<u32, String> {
-    let parent_opt = if parent.is_empty() { None } else { Some(parent) };
+    let parent_opt = if parent.is_empty() {
+        None
+    } else {
+        Some(parent)
+    };
     tf.inner
         .register_frame(name, parent_opt)
         .map_err(|e| e.to_string())
@@ -63,8 +67,13 @@ pub fn transform_frame_lookup(
 ) -> Result<[f64; 7], String> {
     let t = tf.inner.tf(source, target).map_err(|e| e.to_string())?;
     Ok([
-        t.translation[0], t.translation[1], t.translation[2],
-        t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3],
+        t.translation[0],
+        t.translation[1],
+        t.translation[2],
+        t.rotation[0],
+        t.rotation[1],
+        t.rotation[2],
+        t.rotation[3],
     ])
 }
 
@@ -75,19 +84,23 @@ pub fn transform_frame_lookup_at(
     target: &str,
     timestamp_ns: u64,
 ) -> Result<[f64; 7], String> {
-    let t = tf.inner.tf_at(source, target, timestamp_ns).map_err(|e| e.to_string())?;
+    let t = tf
+        .inner
+        .tf_at(source, target, timestamp_ns)
+        .map_err(|e| e.to_string())?;
     Ok([
-        t.translation[0], t.translation[1], t.translation[2],
-        t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3],
+        t.translation[0],
+        t.translation[1],
+        t.translation[2],
+        t.rotation[0],
+        t.rotation[1],
+        t.rotation[2],
+        t.rotation[3],
     ])
 }
 
 /// Check if a transform path exists between two frames.
-pub fn transform_frame_can_transform(
-    tf: &FfiTransformFrame,
-    source: &str,
-    target: &str,
-) -> bool {
+pub fn transform_frame_can_transform(tf: &FfiTransformFrame, source: &str, target: &str) -> bool {
     tf.inner.can_transform(source, target)
 }
 
@@ -122,11 +135,13 @@ mod tests {
         transform_frame_register(&tf, "base", "world").unwrap();
 
         transform_frame_update(
-            &tf, "base",
-            [1.0, 2.0, 3.0],           // translation
-            [0.0, 0.0, 0.0, 1.0],       // identity rotation
+            &tf,
+            "base",
+            [1.0, 2.0, 3.0],      // translation
+            [0.0, 0.0, 0.0, 1.0], // identity rotation
             1000,
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = transform_frame_lookup(&tf, "base", "world");
         assert!(result.is_ok(), "lookup: {:?}", result);
@@ -141,7 +156,7 @@ mod tests {
         let tf = transform_frame_new();
         transform_frame_register(&tf, "world", "").unwrap();
         transform_frame_register(&tf, "base", "world").unwrap();
-        transform_frame_update(&tf, "base", [0.0;3], [0.0,0.0,0.0,1.0], 0).unwrap();
+        transform_frame_update(&tf, "base", [0.0; 3], [0.0, 0.0, 0.0, 1.0], 0).unwrap();
         assert!(transform_frame_can_transform(&tf, "base", "world"));
     }
 

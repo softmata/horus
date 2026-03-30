@@ -28,7 +28,10 @@ fn horus_cmd() -> Command {
 fn test_cli_msg_list_with_nonexistent_dir() {
     let result = horus_cmd()
         .args(["msg", "list"])
-        .env("HORUS_SOURCE_DIR", "/tmp/horus_definitely_does_not_exist_9999")
+        .env(
+            "HORUS_SOURCE_DIR",
+            "/tmp/horus_definitely_does_not_exist_9999",
+        )
         .env_remove("HORUS_SOURCE")
         .assert();
 
@@ -82,18 +85,14 @@ fn test_cli_msg_info_with_special_chars() {
         .args(["msg", "info", "../../etc/passwd"])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("panicked at").not()
-        );
+        .stderr(predicate::str::contains("panicked at").not());
 
     // Also test with other adversarial inputs
     horus_cmd()
         .args(["msg", "info", "<script>alert(1)</script>"])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("panicked at").not()
-        );
+        .stderr(predicate::str::contains("panicked at").not());
 }
 
 // ============================================================================

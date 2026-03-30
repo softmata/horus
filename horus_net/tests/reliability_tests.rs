@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use horus_net::fragment::{Fragmenter, Reassembler, MAX_FRAGMENT_PAYLOAD, MAX_REASSEMBLY_SIZE};
 use horus_net::flow_control::FlowController;
+use horus_net::fragment::{Fragmenter, Reassembler, MAX_FRAGMENT_PAYLOAD, MAX_REASSEMBLY_SIZE};
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::reliability::ReliabilityLayer;
 use horus_net::wire::{self, *};
@@ -45,10 +45,10 @@ fn redundant_dedup_3_copies_to_1() {
     let mut layer = ReliabilityLayer::new();
 
     // Send 3 copies of same message (redundant)
-    assert!(layer.is_new_message(0x1234, 100, 42));  // 1st: new
+    assert!(layer.is_new_message(0x1234, 100, 42)); // 1st: new
     assert!(!layer.is_new_message(0x1234, 100, 42)); // 2nd: dup
     assert!(!layer.is_new_message(0x1234, 100, 42)); // 3rd: dup
-    // Next sequence: new
+                                                     // Next sequence: new
     assert!(layer.is_new_message(0x1234, 100, 43));
 }
 
@@ -129,12 +129,18 @@ fn message_over_1mb_rejected() {
 
 #[test]
 fn priority_auto_estop_is_immediate() {
-    assert_eq!(Priority::auto_infer("robot.estop", false, 8), Priority::Immediate);
+    assert_eq!(
+        Priority::auto_infer("robot.estop", false, 8),
+        Priority::Immediate
+    );
 }
 
 #[test]
 fn priority_auto_rt_node_is_realtime() {
-    assert_eq!(Priority::auto_infer("cmd_vel", true, 16), Priority::RealTime);
+    assert_eq!(
+        Priority::auto_infer("cmd_vel", true, 16),
+        Priority::RealTime
+    );
 }
 
 // ─── Sequence Gap Tracking ──────────────────────────────────────────────────

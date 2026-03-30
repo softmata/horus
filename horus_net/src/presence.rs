@@ -190,8 +190,7 @@ impl PresenceReceiver {
 ///
 /// Returns None if no local nodes exist.
 pub fn build_local_presence(peer_id_hash: u16) -> Option<Vec<u8>> {
-    let namespace =
-        std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    let namespace = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
 
     let presences = horus_core::NodePresence::read_all();
     if presences.is_empty() {

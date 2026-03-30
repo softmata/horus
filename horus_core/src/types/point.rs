@@ -68,7 +68,10 @@ mod tests {
     #[test]
     fn test_point_xyz_size() {
         assert_eq!(std::mem::size_of::<PointXYZ>(), 12);
-        assert_eq!(std::mem::size_of::<PointXYZ>(), 3 * std::mem::size_of::<f32>());
+        assert_eq!(
+            std::mem::size_of::<PointXYZ>(),
+            3 * std::mem::size_of::<f32>()
+        );
     }
 
     #[test]

@@ -173,8 +173,14 @@ fn test_replay_missing_topic_returns_none() {
     let snap = replayer.current_snapshot().unwrap();
 
     // Existing topics should return data
-    assert!(snap.outputs.get("topic_a").is_some(), "topic_a should exist");
-    assert!(snap.outputs.get("topic_b").is_some(), "topic_b should exist");
+    assert!(
+        snap.outputs.get("topic_a").is_some(),
+        "topic_a should exist"
+    );
+    assert!(
+        snap.outputs.get("topic_b").is_some(),
+        "topic_b should exist"
+    );
 
     // Missing topic should return None (not panic)
     assert!(
@@ -225,10 +231,18 @@ fn test_replay_extra_topics_no_interference() {
 
         // Recorded topics should have correct data
         let a = snap.outputs.get("topic_a").unwrap();
-        assert!(a.iter().all(|&b| b == 0xAA), "topic_a corrupted at tick {}", snap.tick);
+        assert!(
+            a.iter().all(|&b| b == 0xAA),
+            "topic_a corrupted at tick {}",
+            snap.tick
+        );
 
         let b = snap.outputs.get("topic_b").unwrap();
-        assert!(b.iter().all(|&b| b == 0xBB), "topic_b corrupted at tick {}", snap.tick);
+        assert!(
+            b.iter().all(|&b| b == 0xBB),
+            "topic_b corrupted at tick {}",
+            snap.tick
+        );
 
         // Only 2 topics in recording (no phantom extras)
         assert_eq!(

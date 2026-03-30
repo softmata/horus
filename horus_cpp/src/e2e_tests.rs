@@ -47,8 +47,14 @@ mod tests {
         CPP2_TICKS.store(0, Ordering::Relaxed);
         scheduler_tick_once(&mut sched).unwrap();
 
-        assert!(CPP_TICKS.load(Ordering::Relaxed) >= 1, "cpp_sensor should tick");
-        assert!(CPP2_TICKS.load(Ordering::Relaxed) >= 1, "cpp_actuator should tick");
+        assert!(
+            CPP_TICKS.load(Ordering::Relaxed) >= 1,
+            "cpp_sensor should tick"
+        );
+        assert!(
+            CPP2_TICKS.load(Ordering::Relaxed) >= 1,
+            "cpp_actuator should tick"
+        );
     }
 
     // ─── Pub/Sub Through FFI: Full Pipeline ──────────────────────────
@@ -112,24 +118,34 @@ mod tests {
 
     #[test]
     fn e2e_multiple_message_types() {
-        use horus_library::{CmdVel, Twist, Pose2D};
+        use horus_library::{CmdVel, Pose2D, Twist};
 
         let pid = std::process::id();
 
         // CmdVel round-trip
         let cmd_pub = publisher_cmd_vel_new(&format!("e2e.multi.cmd.{}", pid)).unwrap();
         let cmd_sub = subscriber_cmd_vel_new(&format!("e2e.multi.cmd.{}", pid)).unwrap();
-        publisher_cmd_vel_send(&cmd_pub, CmdVel { timestamp_ns: 1, linear: 1.0, angular: 0.5 });
+        publisher_cmd_vel_send(
+            &cmd_pub,
+            CmdVel {
+                timestamp_ns: 1,
+                linear: 1.0,
+                angular: 0.5,
+            },
+        );
         assert!(subscriber_cmd_vel_recv(&cmd_sub).is_some());
 
         // Twist round-trip
         let twist_pub = publisher_twist_new(&format!("e2e.multi.twist.{}", pid)).unwrap();
         let twist_sub = subscriber_twist_new(&format!("e2e.multi.twist.{}", pid)).unwrap();
-        publisher_twist_send(&twist_pub, Twist {
-            linear: [1.0, 0.0, 0.0],
-            angular: [0.0, 0.0, 0.5],
-            timestamp_ns: 2,
-        });
+        publisher_twist_send(
+            &twist_pub,
+            Twist {
+                linear: [1.0, 0.0, 0.0],
+                angular: [0.0, 0.0, 0.5],
+                timestamp_ns: 2,
+            },
+        );
         let recv = subscriber_twist_recv(&twist_sub);
         assert!(recv.is_some());
         let t = recv.unwrap();
@@ -138,10 +154,15 @@ mod tests {
         // Pose2D round-trip
         let pose_pub = publisher_pose2d_new(&format!("e2e.multi.pose.{}", pid)).unwrap();
         let pose_sub = subscriber_pose2d_new(&format!("e2e.multi.pose.{}", pid)).unwrap();
-        publisher_pose2d_send(&pose_pub, Pose2D {
-            x: 3.0, y: 4.0, theta: 1.57,
-            timestamp_ns: 3,
-        });
+        publisher_pose2d_send(
+            &pose_pub,
+            Pose2D {
+                x: 3.0,
+                y: 4.0,
+                theta: 1.57,
+                timestamp_ns: 3,
+            },
+        );
         let recv = subscriber_pose2d_recv(&pose_sub);
         assert!(recv.is_some());
         let p = recv.unwrap();
@@ -164,7 +185,11 @@ mod tests {
             Ok(_) => panic!("wrong ABI version should fail"),
             Err(err) => {
                 assert!(err.contains("ABI version mismatch"), "error: {}", err);
-                assert!(err.contains("horus build --clean"), "should suggest rebuild: {}", err);
+                assert!(
+                    err.contains("horus build --clean"),
+                    "should suggest rebuild: {}",
+                    err
+                );
             }
         }
     }
@@ -183,10 +208,15 @@ mod tests {
         transform_frame_register(&tf, "camera", "base_link").unwrap();
 
         // Set transforms
-        transform_frame_update(&tf, "base_link",
-            [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1000).unwrap();
-        transform_frame_update(&tf, "camera",
-            [0.0, 0.0, 0.5], [0.0, 0.0, 0.0, 1.0], 1000).unwrap();
+        transform_frame_update(
+            &tf,
+            "base_link",
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            1000,
+        )
+        .unwrap();
+        transform_frame_update(&tf, "camera", [0.0, 0.0, 0.5], [0.0, 0.0, 0.0, 1.0], 1000).unwrap();
 
         // Query chain: camera -> world (should compose: base_link + camera)
         let result = transform_frame_lookup(&tf, "camera", "world");
@@ -216,7 +246,10 @@ mod tests {
         assert_eq!(params_get_f64(&params, "max_speed"), Some(2.5));
         assert_eq!(params_get_i64(&params, "max_retries"), Some(3));
         assert_eq!(params_get_bool(&params, "debug"), Some(true));
-        assert_eq!(params_get_string(&params, "robot_name"), Some("atlas".to_string()));
+        assert_eq!(
+            params_get_string(&params, "robot_name"),
+            Some("atlas".to_string())
+        );
 
         // JSON get
         let json = params_get(&params, "max_speed").unwrap();
@@ -235,9 +268,15 @@ mod tests {
         static PROCESSOR_TICKS: AtomicU32 = AtomicU32::new(0);
         static ACTUATOR_TICKS: AtomicU32 = AtomicU32::new(0);
 
-        extern "C" fn sensor_tick() { SENSOR_TICKS.fetch_add(1, Ordering::Relaxed); }
-        extern "C" fn processor_tick() { PROCESSOR_TICKS.fetch_add(1, Ordering::Relaxed); }
-        extern "C" fn actuator_tick() { ACTUATOR_TICKS.fetch_add(1, Ordering::Relaxed); }
+        extern "C" fn sensor_tick() {
+            SENSOR_TICKS.fetch_add(1, Ordering::Relaxed);
+        }
+        extern "C" fn processor_tick() {
+            PROCESSOR_TICKS.fetch_add(1, Ordering::Relaxed);
+        }
+        extern "C" fn actuator_tick() {
+            ACTUATOR_TICKS.fetch_add(1, Ordering::Relaxed);
+        }
 
         let mut b1 = node_builder_new("sensor");
         node_builder_set_tick(&mut b1, sensor_tick);
@@ -262,8 +301,14 @@ mod tests {
         scheduler_tick_once(&mut sched).unwrap();
 
         assert!(SENSOR_TICKS.load(Ordering::Relaxed) >= 1, "sensor ticked");
-        assert!(PROCESSOR_TICKS.load(Ordering::Relaxed) >= 1, "processor ticked");
-        assert!(ACTUATOR_TICKS.load(Ordering::Relaxed) >= 1, "actuator ticked");
+        assert!(
+            PROCESSOR_TICKS.load(Ordering::Relaxed) >= 1,
+            "processor ticked"
+        );
+        assert!(
+            ACTUATOR_TICKS.load(Ordering::Relaxed) >= 1,
+            "actuator ticked"
+        );
 
         // Verify all nodes in list
         let nodes = scheduler_node_list(&sched);
@@ -275,5 +320,140 @@ mod tests {
         // Clean shutdown
         scheduler_stop(&sched);
         assert!(!scheduler_is_running(&sched));
+    }
+
+    #[test]
+    fn e2e_emergency_stop_roundtrip() {
+        use crate::topic_ffi::*;
+
+        let topic = format!("e2e.estop.{}", std::process::id());
+
+        // EmergencyStop pub/sub roundtrip through FFI
+        let pub_ = publisher_emergency_stop_new(&topic).unwrap();
+        let sub = subscriber_emergency_stop_new(&topic).unwrap();
+
+        let msg = horus_library::EmergencyStop {
+            timestamp_ns: 999,
+            engaged: 1,
+            source: [0u8; 32],
+            reason: [0u8; 64],
+            auto_reset: 0,
+        };
+        publisher_emergency_stop_send(&pub_, msg);
+
+        let received = subscriber_emergency_stop_recv(&sub);
+        assert!(received.is_some(), "should receive EmergencyStop");
+        let r = received.unwrap();
+        assert_eq!(r.timestamp_ns, 999);
+        assert_eq!(r.engaged, 1, "engaged should be 1");
+        assert_eq!(r.auto_reset, 0, "auto_reset should be 0");
+    }
+
+    #[test]
+    fn e2e_scheduler_stop_propagates() {
+        // Verify scheduler_stop works correctly with CppNode
+        let mut sched = scheduler_new();
+        scheduler_name(&mut sched, "estop_sched");
+
+        static TICK_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        extern "C" fn tick() {
+            TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        TICK_COUNT.store(0, Ordering::Relaxed);
+
+        let mut b = node_builder_new("estop_node");
+        node_builder_set_tick(&mut b, tick);
+        node_builder_build(b, &mut sched).unwrap();
+
+        assert!(scheduler_is_running(&sched));
+        scheduler_tick_once(&mut sched).unwrap();
+        assert!(TICK_COUNT.load(Ordering::Relaxed) >= 1);
+
+        scheduler_stop(&sched);
+        assert!(!scheduler_is_running(&sched), "scheduler should be stopped");
+    }
+
+    #[test]
+    fn e2e_cpp_node_with_budget() {
+        let mut sched = scheduler_new();
+
+        extern "C" fn noop() {}
+        let mut b = node_builder_new("budget_node");
+        node_builder_set_tick(&mut b, noop);
+        node_builder_rate(&mut b, 100.0);
+        node_builder_budget(&mut b, 5000); // 5ms budget
+        node_builder_order(&mut b, 0);
+        assert!(
+            node_builder_build(b, &mut sched).is_ok(),
+            "node with budget builds"
+        );
+
+        scheduler_tick_once(&mut sched).unwrap();
+    }
+
+    #[test]
+    fn e2e_cpp_node_with_deadline() {
+        let mut sched = scheduler_new();
+
+        extern "C" fn noop() {}
+        let mut b = node_builder_new("deadline_node");
+        node_builder_set_tick(&mut b, noop);
+        node_builder_rate(&mut b, 50.0);
+        node_builder_deadline(&mut b, 15000); // 15ms deadline
+        node_builder_order(&mut b, 0);
+        assert!(
+            node_builder_build(b, &mut sched).is_ok(),
+            "node with deadline builds"
+        );
+
+        scheduler_tick_once(&mut sched).unwrap();
+    }
+
+    #[test]
+    fn e2e_cpp_node_with_watchdog() {
+        let mut sched = scheduler_new();
+        scheduler_watchdog(&mut sched, 1_000_000); // 1s global watchdog
+
+        extern "C" fn noop() {}
+        let mut b = node_builder_new("watchdog_node");
+        node_builder_set_tick(&mut b, noop);
+        node_builder_watchdog(&mut b, 500_000); // 500ms per-node watchdog
+        node_builder_order(&mut b, 0);
+        assert!(
+            node_builder_build(b, &mut sched).is_ok(),
+            "node with watchdog builds"
+        );
+
+        scheduler_tick_once(&mut sched).unwrap();
+    }
+
+    #[test]
+    fn e2e_cpp_node_miss_policy() {
+        let mut sched = scheduler_new();
+
+        extern "C" fn noop() {}
+        let mut b = node_builder_new("miss_skip_node");
+        node_builder_set_tick(&mut b, noop);
+        node_builder_rate(&mut b, 100.0);
+        node_builder_on_miss(&mut b, 1); // Skip
+        node_builder_order(&mut b, 0);
+        assert!(
+            node_builder_build(b, &mut sched).is_ok(),
+            "node with Miss::Skip builds"
+        );
+
+        let mut b2 = node_builder_new("miss_warn_node");
+        node_builder_set_tick(&mut b2, noop);
+        node_builder_rate(&mut b2, 100.0);
+        node_builder_on_miss(&mut b2, 0); // Warn
+        node_builder_order(&mut b2, 1);
+        assert!(
+            node_builder_build(b2, &mut sched).is_ok(),
+            "node with Miss::Warn builds"
+        );
+
+        scheduler_tick_once(&mut sched).unwrap();
+        let nodes = scheduler_node_list(&sched);
+        assert_eq!(nodes.len(), 2, "both nodes registered");
     }
 }

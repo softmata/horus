@@ -297,21 +297,23 @@ fn detect_python_tools(tools: &mut BTreeMap<(String, String), ResolvedTool>) {
     }
 
     // If no ruff for linting, try pylint or flake8
-    if let std::collections::btree_map::Entry::Vacant(e) = tools.entry((lang.to_string(), Operation::Lint.to_string())) {
+    if let std::collections::btree_map::Entry::Vacant(e) =
+        tools.entry((lang.to_string(), Operation::Lint.to_string()))
+    {
         if tool_exists("pylint") {
             e.insert(ResolvedTool {
-                    bin: "pylint".to_string(),
-                    default_args: vec![".".to_string()],
-                    language: lang,
-                    label: label.clone(),
-                });
+                bin: "pylint".to_string(),
+                default_args: vec![".".to_string()],
+                language: lang,
+                label: label.clone(),
+            });
         } else if tool_exists("flake8") {
             e.insert(ResolvedTool {
-                    bin: "flake8".to_string(),
-                    default_args: vec![".".to_string()],
-                    language: lang,
-                    label: label.clone(),
-                });
+                bin: "flake8".to_string(),
+                default_args: vec![".".to_string()],
+                language: lang,
+                label: label.clone(),
+            });
         }
     }
 
@@ -1411,14 +1413,8 @@ mod tests {
         fs::write(dir.path().join("src/helper.py"), "def helper(): pass").unwrap();
 
         let ctx = detect_context(dir.path());
-        assert!(
-            ctx.has_rust(),
-            "Should detect Rust in mixed project"
-        );
-        assert!(
-            ctx.has_python(),
-            "Should detect Python in mixed project"
-        );
+        assert!(ctx.has_rust(), "Should detect Rust in mixed project");
+        assert!(ctx.has_python(), "Should detect Python in mixed project");
         assert!(
             ctx.is_mixed(),
             "Project with both Rust and Python should be detected as mixed"

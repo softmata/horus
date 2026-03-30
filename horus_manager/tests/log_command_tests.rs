@@ -6,7 +6,7 @@
 use horus_core::core::log_buffer::{
     publish_log, LogEntry, LogType, GLOBAL_ERROR_BUFFER, GLOBAL_LOG_BUFFER,
 };
-use horus_manager::commands::log::{view_logs, clear_logs};
+use horus_manager::commands::log::{clear_logs, view_logs};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,10 @@ fn view_logs_with_nonexistent_node_filter_returns_ok() {
     // Filtering for a node that doesn't exist should succeed (shows "no entries matched")
     let node = uid("nonexistent_node");
     let result = view_logs(Some(&node), None, None, false, None);
-    assert!(result.is_ok(), "view_logs should return Ok even with no matches");
+    assert!(
+        result.is_ok(),
+        "view_logs should return Ok even with no matches"
+    );
 }
 
 #[test]
@@ -67,7 +70,10 @@ fn view_logs_with_entries_returns_ok() {
     push_entry(&node, LogType::Error, "error message", "12:00:01.000");
 
     let result = view_logs(Some(&node), None, None, false, None);
-    assert!(result.is_ok(), "view_logs should succeed with entries present");
+    assert!(
+        result.is_ok(),
+        "view_logs should succeed with entries present"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -129,7 +135,10 @@ fn view_logs_level_filter_invalid_level_shows_all() {
     push_entry(&node, LogType::Info, "should show", "12:00:00.000");
 
     let result = view_logs(Some(&node), Some("bogus"), None, false, None);
-    assert!(result.is_ok(), "invalid level string should not error, just show all");
+    assert!(
+        result.is_ok(),
+        "invalid level string should not error, just show all"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -247,7 +256,7 @@ fn filter_chain_level_excludes_lower_severity() {
         .iter()
         .filter(|e| e.node_name.contains(&node))
         .filter(|e| match &e.log_type {
-            LogType::Debug => false, // Below Info
+            LogType::Debug => false,                        // Below Info
             LogType::Publish | LogType::Subscribe => false, // Trace level
             _ => true,
         })
@@ -267,7 +276,12 @@ fn filter_chain_level_excludes_lower_severity() {
 fn filter_chain_count_limits_output() {
     let node = uid("chain_count");
     for i in 0..20 {
-        push_entry(&node, LogType::Info, &format!("count_{}", i), "12:00:00.000");
+        push_entry(
+            &node,
+            LogType::Info,
+            &format!("count_{}", i),
+            "12:00:00.000",
+        );
     }
 
     let all = GLOBAL_LOG_BUFFER.get_all();
@@ -349,15 +363,24 @@ fn view_logs_pub_sub_excluded_by_info_filter() {
     let info_and_above: Vec<_> = all
         .iter()
         .filter(|e| e.node_name.contains(&node))
-        .filter(|e| !matches!(&e.log_type, LogType::Publish | LogType::Subscribe | LogType::Debug))
+        .filter(|e| {
+            !matches!(
+                &e.log_type,
+                LogType::Publish | LogType::Subscribe | LogType::Debug
+            )
+        })
         .collect();
 
     assert!(
-        info_and_above.iter().all(|e| !matches!(&e.log_type, LogType::Publish | LogType::Subscribe)),
+        info_and_above
+            .iter()
+            .all(|e| !matches!(&e.log_type, LogType::Publish | LogType::Subscribe)),
         "Pub/Sub should be excluded at Info level"
     );
     assert!(
-        info_and_above.iter().any(|e| matches!(&e.log_type, LogType::Info)),
+        info_and_above
+            .iter()
+            .any(|e| matches!(&e.log_type, LogType::Info)),
         "Info should pass Info filter"
     );
 }
@@ -371,12 +394,21 @@ fn follow_delta_detects_new_entries() {
     let node = uid("follow_delta");
     let before = GLOBAL_LOG_BUFFER.write_idx();
     for i in 0..7 {
-        push_entry(&node, LogType::Info, &format!("delta_{}", i), "12:00:00.000");
+        push_entry(
+            &node,
+            LogType::Info,
+            &format!("delta_{}", i),
+            "12:00:00.000",
+        );
     }
     let after = GLOBAL_LOG_BUFFER.write_idx();
     let delta = after.wrapping_sub(before) as usize;
     // >= because other parallel tests may also push entries to the shared buffer
-    assert!(delta >= 7, "write_idx delta must be at least 7, got {}", delta);
+    assert!(
+        delta >= 7,
+        "write_idx delta must be at least 7, got {}",
+        delta
+    );
 }
 
 #[test]
@@ -399,15 +431,17 @@ fn follow_new_entries_found_in_buffer_after_push() {
     let marker = uid("follow_slice_marker");
 
     for i in 0..5 {
-        push_entry(&node, LogType::Info, &format!("{}_{}", marker, i), "12:00:00.000");
+        push_entry(
+            &node,
+            LogType::Info,
+            &format!("{}_{}", marker, i),
+            "12:00:00.000",
+        );
     }
 
     // Search the full buffer for our unique marker — parallel-safe
     let all = GLOBAL_LOG_BUFFER.get_all();
-    let matching: Vec<_> = all
-        .iter()
-        .filter(|e| e.message.contains(&marker))
-        .collect();
+    let matching: Vec<_> = all.iter().filter(|e| e.message.contains(&marker)).collect();
     assert_eq!(
         matching.len(),
         5,
@@ -434,11 +468,12 @@ fn follow_delta_from_background_thread() {
 
     // Search full buffer for our unique marker — parallel-safe
     let all = GLOBAL_LOG_BUFFER.get_all();
-    let matching: Vec<_> = all
-        .iter()
-        .filter(|e| e.message.contains(&marker))
-        .collect();
-    assert_eq!(matching.len(), 20, "all 20 background entries must be in buffer");
+    let matching: Vec<_> = all.iter().filter(|e| e.message.contains(&marker)).collect();
+    assert_eq!(
+        matching.len(),
+        20,
+        "all 20 background entries must be in buffer"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -461,7 +496,12 @@ fn follow_filter_level_excludes_debug_at_info_level() {
     let info_filtered: Vec<_> = all
         .iter()
         .filter(|e| e.node_name == node)
-        .filter(|e| !matches!(e.log_type, LogType::Debug | LogType::Publish | LogType::Subscribe))
+        .filter(|e| {
+            !matches!(
+                e.log_type,
+                LogType::Debug | LogType::Publish | LogType::Subscribe
+            )
+        })
         .collect();
 
     assert!(
@@ -491,12 +531,13 @@ fn follow_filter_node_excludes_other_nodes() {
 
     // Search full buffer — parallel-safe
     let all = GLOBAL_LOG_BUFFER.get_all();
-    let node_filtered: Vec<_> = all
-        .iter()
-        .filter(|e| e.node_name == target)
-        .collect();
+    let node_filtered: Vec<_> = all.iter().filter(|e| e.node_name == target).collect();
 
-    assert!(node_filtered.len() >= 2, "should find at least 2 target entries, found {}", node_filtered.len());
+    assert!(
+        node_filtered.len() >= 2,
+        "should find at least 2 target entries, found {}",
+        node_filtered.len()
+    );
     assert!(node_filtered.iter().any(|e| e.message == target_msg));
     assert!(node_filtered.iter().any(|e| e.message == target_err));
     assert!(
@@ -524,10 +565,19 @@ fn follow_filter_combined_node_and_level() {
     let filtered: Vec<_> = all
         .iter()
         .filter(|e| e.node_name == target)
-        .filter(|e| !matches!(e.log_type, LogType::Debug | LogType::Publish | LogType::Subscribe))
+        .filter(|e| {
+            !matches!(
+                e.log_type,
+                LogType::Debug | LogType::Publish | LogType::Subscribe
+            )
+        })
         .collect();
 
-    assert!(filtered.len() >= 2, "should match at least target+error and target+info, found {}", filtered.len());
+    assert!(
+        filtered.len() >= 2,
+        "should match at least target+error and target+info, found {}",
+        filtered.len()
+    );
     assert!(filtered.iter().any(|e| e.message == target_error));
     assert!(filtered.iter().any(|e| e.message == target_info));
     assert!(filtered.iter().all(|e| e.node_name == target));
@@ -560,7 +610,10 @@ fn view_logs_error_level_reads_from_error_buffer() {
     // Verify it's in the error buffer
     let error_entries = GLOBAL_ERROR_BUFFER.get_all();
     let in_error_buf = error_entries.iter().any(|e| e.message == marker);
-    assert!(in_error_buf, "Error must be in error buffer for test to be valid");
+    assert!(
+        in_error_buf,
+        "Error must be in error buffer for test to be valid"
+    );
 
     // view_logs with level=error should succeed (reads from error buffer)
     let result = view_logs(Some(&node), Some("error"), None, false, None);
@@ -590,7 +643,10 @@ fn view_logs_info_level_still_reads_main_buffer() {
 
     // view_logs with level=info reads from main buffer — should find it
     let result = view_logs(Some(&node), Some("info"), None, false, None);
-    assert!(result.is_ok(), "view_logs(level=info) must succeed reading main buffer");
+    assert!(
+        result.is_ok(),
+        "view_logs(level=info) must succeed reading main buffer"
+    );
 }
 
 #[test]

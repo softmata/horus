@@ -25,7 +25,13 @@ fn test_workflow_rust_new_generates_valid_project() {
 
     // Step 1: Create Rust project
     horus_cmd()
-        .args(["new", "my-robot", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "my-robot",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -36,11 +42,13 @@ fn test_workflow_rust_new_generates_valid_project() {
     let horus_toml_path = proj.join("horus.toml");
     assert!(horus_toml_path.exists(), "horus.toml should exist");
     let horus_toml_content = fs::read_to_string(&horus_toml_path).unwrap();
-    let horus_toml: toml::Value = toml::from_str(&horus_toml_content)
-        .expect("horus.toml must be valid TOML");
+    let horus_toml: toml::Value =
+        toml::from_str(&horus_toml_content).expect("horus.toml must be valid TOML");
 
     // Step 3: Verify [package] section has correct name
-    let package = horus_toml.get("package").expect("horus.toml must have [package]");
+    let package = horus_toml
+        .get("package")
+        .expect("horus.toml must have [package]");
     let name = package
         .get("name")
         .expect("[package] must have name")
@@ -69,7 +77,13 @@ fn test_workflow_rust_generated_cargo_toml_valid() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "cargo-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "cargo-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -202,7 +216,13 @@ fn test_workflow_gitignore_excludes_horus_dir() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "gi-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "gi-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -255,8 +275,14 @@ fn test_workflow_new_rejects_existing_directory() {
     if result.status.success() {
         // If it "succeeds", verify the original files are intact
         let proj = tmp.path().join("existing-proj");
-        assert!(proj.join("horus.toml").exists(), "horus.toml must survive second new");
-        assert!(proj.join("src/main.rs").exists(), "main.rs must survive second new");
+        assert!(
+            proj.join("horus.toml").exists(),
+            "horus.toml must survive second new"
+        );
+        assert!(
+            proj.join("src/main.rs").exists(),
+            "main.rs must survive second new"
+        );
     }
     // If it fails, that's the expected behavior — no assertion needed
 }
@@ -330,7 +356,7 @@ fn test_workflow_all_languages_produce_valid_manifest() {
         let proj = tmp.path().join(&name);
         let content = fs::read_to_string(proj.join("horus.toml"))
             .unwrap_or_else(|_| panic!("horus.toml missing for {}", lang));
-        let _: toml::Value = toml::from_str(&content)
-            .unwrap_or_else(|e| panic!("invalid TOML for {}: {}", lang, e));
+        let _: toml::Value =
+            toml::from_str(&content).unwrap_or_else(|e| panic!("invalid TOML for {}: {}", lang, e));
     }
 }

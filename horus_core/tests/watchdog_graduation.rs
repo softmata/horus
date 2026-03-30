@@ -434,8 +434,18 @@ fn test_stalled_node_tick_count_stabilizes() {
     let mut sched = Scheduler::new()
         .tick_rate(50_u64.hz())
         .watchdog(100_u64.ms());
-    sched.add(stall_node).rate(50_u64.hz()).order(0).build().unwrap();
-    sched.add(healthy_node).rate(50_u64.hz()).order(1).build().unwrap();
+    sched
+        .add(stall_node)
+        .rate(50_u64.hz())
+        .order(0)
+        .build()
+        .unwrap();
+    sched
+        .add(healthy_node)
+        .rate(50_u64.hz())
+        .order(1)
+        .build()
+        .unwrap();
     sched.run_for(Duration::from_secs(1)).unwrap();
 
     let stall_final = stall_ticks.load(Ordering::SeqCst);
@@ -454,7 +464,8 @@ fn test_stalled_node_tick_count_stabilizes() {
     assert!(
         healthy_final >= 2,
         "Healthy node should keep ticking independently, got {} vs stalled {}",
-        healthy_final, stall_final
+        healthy_final,
+        stall_final
     );
 }
 
@@ -511,7 +522,8 @@ fn test_max_deadline_misses_stops_scheduler() {
     assert!(
         elapsed < Duration::from_secs(3),
         "Scheduler should stop after max deadline misses, took {:?}, {} ticks",
-        elapsed, final_ticks
+        elapsed,
+        final_ticks
     );
 }
 

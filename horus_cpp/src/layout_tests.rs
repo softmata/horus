@@ -74,7 +74,11 @@ mod tests {
     fn sensor_laser_scan_size() {
         // ranges: [f32; 360] = 1440 bytes + other fields
         let size = size_of::<horus_library::LaserScan>();
-        assert!(size >= 1440, "LaserScan should be at least 1440 bytes for ranges, got {}", size);
+        assert!(
+            size >= 1440,
+            "LaserScan should be at least 1440 bytes for ranges, got {}",
+            size
+        );
     }
 
     // ─── Diagnostics Types ───────────────────────────────────────────
@@ -82,13 +86,21 @@ mod tests {
     #[test]
     fn diagnostics_heartbeat_size() {
         let size = size_of::<horus_library::Heartbeat>();
-        assert!(size > 0, "Heartbeat should have non-zero size, got {}", size);
+        assert!(
+            size > 0,
+            "Heartbeat should have non-zero size, got {}",
+            size
+        );
     }
 
     #[test]
     fn diagnostics_emergency_stop_size() {
         let size = size_of::<horus_library::EmergencyStop>();
-        assert!(size > 0, "EmergencyStop should have non-zero size, got {}", size);
+        assert!(
+            size > 0,
+            "EmergencyStop should have non-zero size, got {}",
+            size
+        );
     }
 
     // ─── Navigation Types ────────────────────────────────────────────
@@ -104,7 +116,11 @@ mod tests {
     #[test]
     fn control_joint_state_size() {
         let size = size_of::<horus_library::JointState>();
-        assert!(size > 0, "JointState should have non-zero size, got {}", size);
+        assert!(
+            size > 0,
+            "JointState should have non-zero size, got {}",
+            size
+        );
     }
 
     // ─── Alignment ───────────────────────────────────────────────────

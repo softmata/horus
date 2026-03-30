@@ -185,11 +185,7 @@ impl ShmSpscChannel {
     /// - `T` must be POD (no Drop, no heap pointers).
     /// - `cached_tail` must be the caller's local cache of the tail value.
     #[inline(always)]
-    pub(crate) unsafe fn try_send_pod<T>(
-        &self,
-        msg: &T,
-        cached_tail: &mut u64,
-    ) -> bool {
+    pub(crate) unsafe fn try_send_pod<T>(&self, msg: &T, cached_tail: &mut u64) -> bool {
         let head = (*self.head_ptr).load(Ordering::Relaxed);
 
         // Lazy tail cache: only load atomic tail when cached says full
@@ -204,11 +200,7 @@ impl ShmSpscChannel {
         let slot = self.data_ptr.add(index * self.slot_size);
 
         // Write data — raw memcpy for POD types
-        std::ptr::copy_nonoverlapping(
-            msg as *const T as *const u8,
-            slot,
-            std::mem::size_of::<T>(),
-        );
+        std::ptr::copy_nonoverlapping(msg as *const T as *const u8, slot, std::mem::size_of::<T>());
 
         // Release store makes data visible to consumer
         (*self.head_ptr).store(head.wrapping_add(1), Ordering::Release);
@@ -235,11 +227,7 @@ impl ShmSpscChannel {
 
         // Read data — raw memcpy for POD types
         let mut val = std::mem::MaybeUninit::<T>::uninit();
-        std::ptr::copy_nonoverlapping(
-            slot,
-            val.as_mut_ptr() as *mut u8,
-            std::mem::size_of::<T>(),
-        );
+        std::ptr::copy_nonoverlapping(slot, val.as_mut_ptr() as *mut u8, std::mem::size_of::<T>());
 
         // Release store advances tail, making slot reusable by producer
         (*self.tail_ptr).store(tail.wrapping_add(1), Ordering::Release);
@@ -254,11 +242,7 @@ impl ShmSpscChannel {
     ///
     /// Single-producer contract. `bytes.len() + 4` must fit in `slot_size`.
     #[inline(always)]
-    pub(crate) unsafe fn try_send_serde(
-        &self,
-        bytes: &[u8],
-        cached_tail: &mut u64,
-    ) -> bool {
+    pub(crate) unsafe fn try_send_serde(&self, bytes: &[u8], cached_tail: &mut u64) -> bool {
         let needed = 4 + bytes.len();
         if needed > self.slot_size {
             return false; // Message too large for slot
@@ -278,17 +262,9 @@ impl ShmSpscChannel {
 
         // Write length prefix
         let len = bytes.len() as u32;
-        std::ptr::copy_nonoverlapping(
-            &len as *const u32 as *const u8,
-            slot,
-            4,
-        );
+        std::ptr::copy_nonoverlapping(&len as *const u32 as *const u8, slot, 4);
         // Write serialized data
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
-            slot.add(4),
-            bytes.len(),
-        );
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), slot.add(4), bytes.len());
 
         (*self.head_ptr).store(head.wrapping_add(1), Ordering::Release);
         true
@@ -315,24 +291,15 @@ impl ShmSpscChannel {
 
         // Read length prefix
         let mut len: u32 = 0;
-        std::ptr::copy_nonoverlapping(
-            slot,
-            &mut len as *mut u32 as *mut u8,
-            4,
-        );
+        std::ptr::copy_nonoverlapping(slot, &mut len as *mut u32 as *mut u8, 4);
 
         // Read serialized data
         let mut data = vec![0u8; len as usize];
-        std::ptr::copy_nonoverlapping(
-            slot.add(4),
-            data.as_mut_ptr(),
-            len as usize,
-        );
+        std::ptr::copy_nonoverlapping(slot.add(4), data.as_mut_ptr(), len as usize);
 
         (*self.tail_ptr).store(tail.wrapping_add(1), Ordering::Release);
         Some(data)
     }
-
 }
 
 // SAFETY: ShmSpscChannel is a view into mmap'd memory. The SPSC contract
@@ -446,11 +413,7 @@ impl ShmFanoutRing {
     /// # Safety
     ///
     /// `shm_base` must point to a valid mmap'd SHM region.
-    pub(crate) unsafe fn attach(
-        shm_base: *mut u8,
-        is_pod: bool,
-        type_size: usize,
-    ) -> Self {
+    pub(crate) unsafe fn attach(shm_base: *mut u8, is_pod: bool, type_size: usize) -> Self {
         let meta = &*(shm_base.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
 
         // Spin-wait for owner to finish initialization.
@@ -473,11 +436,7 @@ impl ShmFanoutRing {
     }
 
     /// Build channel views from an initialized SHM region.
-    unsafe fn build_views(
-        shm_base: *mut u8,
-        is_pod: bool,
-        _type_size: usize,
-    ) -> Self {
+    unsafe fn build_views(shm_base: *mut u8, is_pod: bool, _type_size: usize) -> Self {
         let meta = &*(shm_base.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
         let max_pubs = meta.max_publishers as usize;
         let max_subs = meta.max_subscribers as usize;
@@ -553,11 +512,7 @@ impl ShmFanoutRing {
     ///
     /// `T` must be POD. Only one thread per process should use a given `pub_id`.
     #[inline(always)]
-    pub(crate) unsafe fn send_pod<T>(
-        &self,
-        msg: &T,
-        pub_id: usize,
-    ) -> bool {
+    pub(crate) unsafe fn send_pod<T>(&self, msg: &T, pub_id: usize) -> bool {
         let meta = &*self.meta_ptr;
         let n_subs = meta.num_subscribers.load(Ordering::Relaxed) as usize;
         if n_subs == 0 {
@@ -612,11 +567,7 @@ impl ShmFanoutRing {
     ///
     /// Single-producer-per-pub_id contract.
     #[inline(always)]
-    pub(crate) unsafe fn send_serde(
-        &self,
-        bytes: &[u8],
-        pub_id: usize,
-    ) -> bool {
+    pub(crate) unsafe fn send_serde(&self, bytes: &[u8], pub_id: usize) -> bool {
         let meta = &*self.meta_ptr;
         let n_subs = meta.num_subscribers.load(Ordering::Relaxed) as usize;
         if n_subs == 0 {
@@ -903,8 +854,12 @@ mod tests {
             let sub = ring.register_subscriber();
 
             // P0 sends 10, 20; P1 sends 30, 40
-            for v in [10u64, 20] { ring.send_pod(&v, p0); }
-            for v in [30u64, 40] { ring.send_pod(&v, p1); }
+            for v in [10u64, 20] {
+                ring.send_pod(&v, p0);
+            }
+            for v in [30u64, 40] {
+                ring.send_pod(&v, p1);
+            }
 
             // Round-robin should alternate: first from P0, then P1, etc.
             let r1: u64 = ring.recv_pod(sub).unwrap();
@@ -978,7 +933,12 @@ mod tests {
             for round in 0u64..20 {
                 for i in 0u64..16 {
                     let val = round * 1000 + i;
-                    assert!(ring.send_pod(&val, p), "send failed round={} i={}", round, i);
+                    assert!(
+                        ring.send_pod(&val, p),
+                        "send failed round={} i={}",
+                        round,
+                        i
+                    );
                 }
                 for i in 0u64..16 {
                     let expected = round * 1000 + i;
@@ -1124,8 +1084,20 @@ mod tests {
         let s1_data = h_s1.join().unwrap();
 
         // Verify both subscribers got all messages
-        assert_eq!(s0_data.len(), msgs * 2, "s0 got {}/{}", s0_data.len(), msgs * 2);
-        assert_eq!(s1_data.len(), msgs * 2, "s1 got {}/{}", s1_data.len(), msgs * 2);
+        assert_eq!(
+            s0_data.len(),
+            msgs * 2,
+            "s0 got {}/{}",
+            s0_data.len(),
+            msgs * 2
+        );
+        assert_eq!(
+            s1_data.len(),
+            msgs * 2,
+            "s1 got {}/{}",
+            s1_data.len(),
+            msgs * 2
+        );
 
         // Verify FIFO per publisher
         for data in [&s0_data, &s1_data] {
@@ -1207,8 +1179,14 @@ mod tests {
                 while let Some(v) = ring.recv_pod::<u64>(sid) {
                     received.push(v);
                 }
-                assert_eq!(received.len(), MAX_FANOUT_ENDPOINTS,
-                    "sub {} got {} (expected {})", sid, received.len(), MAX_FANOUT_ENDPOINTS);
+                assert_eq!(
+                    received.len(),
+                    MAX_FANOUT_ENDPOINTS,
+                    "sub {} got {} (expected {})",
+                    sid,
+                    received.len(),
+                    MAX_FANOUT_ENDPOINTS
+                );
             }
             std::alloc::dealloc(ptr, layout);
         }

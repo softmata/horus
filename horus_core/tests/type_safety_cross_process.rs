@@ -45,12 +45,17 @@ fn type_mismatch_rejected_same_process() {
         Err(e) => {
             let msg = format!("{}", e);
             println!("Correctly rejected type mismatch: {}", msg);
-            assert!(msg.contains("Type mismatch") || msg.contains("type mismatch"),
-                "Error should mention type mismatch, got: {}", msg);
+            assert!(
+                msg.contains("Type mismatch") || msg.contains("type mismatch"),
+                "Error should mention type mismatch, got: {}",
+                msg
+            );
         }
         Ok(_) => {
-            panic!("CRITICAL BUG: Topic<TypeB> was allowed to open a Topic<TypeA> — \
-                    this would cause silent data corruption on a real robot!");
+            panic!(
+                "CRITICAL BUG: Topic<TypeB> was allowed to open a Topic<TypeA> — \
+                    this would cause silent data corruption on a real robot!"
+            );
         }
     }
 }

@@ -58,8 +58,7 @@ pub enum SafetyState {
 /// Policy for handling tick budget violations.
 ///
 /// Controls what happens when a node exceeds its allocated tick budget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BudgetPolicy {
     /// Log the violation but take no corrective action (default).
     /// The graduated degradation path will handle it over time.
@@ -73,7 +72,6 @@ pub enum BudgetPolicy {
     /// Trigger emergency stop on budget violation (for critical nodes).
     EmergencyStop,
 }
-
 
 /// Graduated watchdog severity level.
 ///
@@ -770,8 +768,7 @@ impl SafetyMonitor {
                 node: node_name.to_string(),
                 new_rate_hz: new_rate,
             }
-        } else if consecutive_misses >= policy.warn_after
-            && state.stage == DegradationStage::Normal
+        } else if consecutive_misses >= policy.warn_after && state.stage == DegradationStage::Normal
         {
             state.stage = DegradationStage::Warned;
             DegradationAction::Warn(node_name.to_string())
@@ -1703,10 +1700,7 @@ mod tests {
 
         // 3rd successful tick — Deisolate!
         let action = monitor.record_successful_tick("motor");
-        assert_eq!(
-            action,
-            DegradationAction::Deisolate("motor".to_string())
-        );
+        assert_eq!(action, DegradationAction::Deisolate("motor".to_string()));
         assert_eq!(
             monitor.degradation_stage("motor"),
             DegradationStage::RateReduced
@@ -1818,10 +1812,7 @@ mod tests {
         let _ = monitor.evaluate_degradation("stalled", 5, Some(100.0)); // ReduceRate
         let _ = monitor.evaluate_degradation("stalled", 10, Some(100.0)); // Isolate
         let action = monitor.evaluate_degradation("stalled", 20, Some(100.0)); // Kill
-        assert_eq!(
-            action,
-            DegradationAction::Kill("stalled".to_string())
-        );
+        assert_eq!(action, DegradationAction::Kill("stalled".to_string()));
         assert_eq!(
             monitor.degradation_stage("stalled"),
             DegradationStage::Killed
@@ -1880,10 +1871,7 @@ mod tests {
             monitor.degradation_stage("motor"),
             DegradationStage::Isolated
         );
-        assert_eq!(
-            monitor.degradation_stage("arm"),
-            DegradationStage::Warned
-        );
+        assert_eq!(monitor.degradation_stage("arm"), DegradationStage::Warned);
 
         // Motor recovers while arm stays warned
         for _ in 0..3 {
@@ -1893,18 +1881,12 @@ mod tests {
             monitor.degradation_stage("motor"),
             DegradationStage::RateReduced
         );
-        assert_eq!(
-            monitor.degradation_stage("arm"),
-            DegradationStage::Warned
-        );
+        assert_eq!(monitor.degradation_stage("arm"), DegradationStage::Warned);
 
         // Arm recovers independently
         let action = monitor.record_successful_tick("arm");
         assert_eq!(action, DegradationAction::None);
-        assert_eq!(
-            monitor.degradation_stage("arm"),
-            DegradationStage::Normal
-        );
+        assert_eq!(monitor.degradation_stage("arm"), DegradationStage::Normal);
     }
 
     // ========================================================================
@@ -1981,7 +1963,10 @@ mod tests {
 
         for _ in 0..2000 {
             wd.feed();
-            assert!(!wd.check(), "watchdog must not expire with 1s timeout in a tight loop");
+            assert!(
+                !wd.check(),
+                "watchdog must not expire with 1s timeout in a tight loop"
+            );
             assert!(!wd.is_expired());
             assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
         }
@@ -1994,7 +1979,10 @@ mod tests {
         let mut enforcer = BudgetEnforcer::new();
 
         for i in 0..20 {
-            enforcer.set_budget(format!("node_{:02}", i), Duration::from_micros((i + 1) * 100));
+            enforcer.set_budget(
+                format!("node_{:02}", i),
+                Duration::from_micros((i + 1) * 100),
+            );
         }
 
         // Record 100 ticks for each node at exactly half budget (no overruns)
@@ -2077,10 +2065,7 @@ mod tests {
         let action = monitor.evaluate_degradation(failing, 15, Some(100.0));
         assert_eq!(action, DegradationAction::Kill(failing.to_string()));
 
-        assert_eq!(
-            monitor.degradation_stage(failing),
-            DegradationStage::Killed
-        );
+        assert_eq!(monitor.degradation_stage(failing), DegradationStage::Killed);
 
         // Healthy nodes remain Normal throughout
         for h in &healthy_nodes {
@@ -2132,10 +2117,7 @@ mod tests {
 
         // 10th tick: Deisolate -> RateReduced
         let action = monitor.record_successful_tick("lidar");
-        assert_eq!(
-            action,
-            DegradationAction::Deisolate("lidar".to_string())
-        );
+        assert_eq!(action, DegradationAction::Deisolate("lidar".to_string()));
         assert_eq!(
             monitor.degradation_stage("lidar"),
             DegradationStage::RateReduced
@@ -2160,10 +2142,7 @@ mod tests {
                 original_rate_hz: 200.0,
             }
         );
-        assert_eq!(
-            monitor.degradation_stage("lidar"),
-            DegradationStage::Normal
-        );
+        assert_eq!(monitor.degradation_stage("lidar"), DegradationStage::Normal);
     }
 
     /// Mixed node states: some healthy, some warning, some unhealthy, some isolated
@@ -2259,10 +2238,7 @@ mod tests {
         let wd = Watchdog::new(1_u64.ms());
         wd.feed();
         thread::sleep(5_u64.ms());
-        assert!(
-            wd.check(),
-            "1ms watchdog should expire after 5ms sleep"
-        );
+        assert!(wd.check(), "1ms watchdog should expire after 5ms sleep");
         assert!(wd.is_expired());
     }
 
@@ -2273,10 +2249,7 @@ mod tests {
 
         wd.feed();
         // Check immediately — must not be expired
-        assert!(
-            !wd.check(),
-            "1-hour watchdog should not expire immediately"
-        );
+        assert!(!wd.check(), "1-hour watchdog should not expire immediately");
         assert!(!wd.is_expired());
         assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
 
@@ -2299,7 +2272,10 @@ mod tests {
 
         // Any non-zero tick should trigger a violation
         let result = enforcer.check_budget("zero_node", 1_u64.us());
-        assert!(result.is_err(), "1us tick against zero budget should violate");
+        assert!(
+            result.is_err(),
+            "1us tick against zero budget should violate"
+        );
         assert_eq!(enforcer.get_overrun_count(), 1);
 
         // Verify stats recorded both ticks

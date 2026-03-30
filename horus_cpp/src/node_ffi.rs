@@ -357,9 +357,11 @@ mod tests {
 
         // tick_once should invoke our callback
         crate::scheduler_ffi::scheduler_tick_once(&mut sched).unwrap();
-        assert!(TICK_COUNTER.load(Ordering::Relaxed) >= 1,
+        assert!(
+            TICK_COUNTER.load(Ordering::Relaxed) >= 1,
             "callback should have been invoked at least once, got {}",
-            TICK_COUNTER.load(Ordering::Relaxed));
+            TICK_COUNTER.load(Ordering::Relaxed)
+        );
     }
 
     #[test]

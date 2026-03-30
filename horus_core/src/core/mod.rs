@@ -37,14 +37,17 @@ pub mod timer;
 
 // Log buffer types — pub for hlog! macro expansion and CLI log viewing (horus log)
 #[doc(hidden)]
-pub use log_buffer::{LogEntry, LogType, SharedLogBuffer, GLOBAL_ERROR_BUFFER, GLOBAL_LOG_BUFFER, GLOBAL_REMOTE_LOG_BUFFER, start_log_file_drain};
+pub use log_buffer::{
+    start_log_file_drain, LogEntry, LogType, SharedLogBuffer, GLOBAL_ERROR_BUFFER,
+    GLOBAL_LOG_BUFFER, GLOBAL_REMOTE_LOG_BUFFER,
+};
 
 pub use duration_ext::{DurationExt, Frequency};
 #[doc(hidden)]
 pub use node::NodeInfo;
 pub use node::{HealthStatus, LogSummary, Node, NodeMetrics, NodeState, TopicMetadata};
 #[doc(hidden)]
-pub use presence::{NodePresence, validate_node_name};
+pub use presence::{validate_node_name, NodePresence};
 #[doc(hidden)]
 pub use rt_node::BudgetViolation;
 pub use rt_node::{Miss, RtStats};

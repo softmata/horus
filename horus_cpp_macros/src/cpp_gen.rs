@@ -13,8 +13,7 @@
 //! | `namespace` | custom namespace |
 
 use crate::types::{
-    BindingItem, CppHints, ImplBinding, MethodBinding, MethodSig,
-    Receiver, StructBinding,
+    BindingItem, CppHints, ImplBinding, MethodBinding, MethodSig, Receiver, StructBinding,
 };
 
 /// Generate C++ header content from binding metadata.
@@ -57,27 +56,57 @@ fn generate_struct_header(binding: &StructBinding) -> String {
     // If direct_field_access: operator->
     if binding.hints.direct_field_access {
         out.push('\n');
-        writeln_str(&mut out, "    // Direct field access (zero-copy SHM pointer)");
+        writeln_str(
+            &mut out,
+            "    // Direct field access (zero-copy SHM pointer)",
+        );
         writeln_str(&mut out, "    auto* operator->() { return data_ptr_; }");
-        writeln_str(&mut out, "    const auto* operator->() const { return data_ptr_; }");
+        writeln_str(
+            &mut out,
+            "    const auto* operator->() const { return data_ptr_; }",
+        );
         writeln_str(&mut out, "    auto& operator*() { return *data_ptr_; }");
-        writeln_str(&mut out, "    const auto& operator*() const { return *data_ptr_; }");
+        writeln_str(
+            &mut out,
+            "    const auto& operator*() const { return *data_ptr_; }",
+        );
     }
 
     // Move-only: delete copy, default move
     if binding.hints.move_semantics || binding.hints.raii {
         out.push('\n');
         writeln_str(&mut out, "    // Move-only (no copying)");
-        writeln_str(&mut out, &format!("    {}({}&& other) = default;", class_name, class_name));
-        writeln_str(&mut out, &format!("    {}& operator=({}&& other) = default;", class_name, class_name));
-        writeln_str(&mut out, &format!("    {}(const {}&) = delete;", class_name, class_name));
-        writeln_str(&mut out, &format!("    {}& operator=(const {}&) = delete;", class_name, class_name));
+        writeln_str(
+            &mut out,
+            &format!("    {}({}&& other) = default;", class_name, class_name),
+        );
+        writeln_str(
+            &mut out,
+            &format!(
+                "    {}& operator=({}&& other) = default;",
+                class_name, class_name
+            ),
+        );
+        writeln_str(
+            &mut out,
+            &format!("    {}(const {}&) = delete;", class_name, class_name),
+        );
+        writeln_str(
+            &mut out,
+            &format!(
+                "    {}& operator=(const {}&) = delete;",
+                class_name, class_name
+            ),
+        );
     }
 
     // Private section
     out.push('\n');
     writeln_str(&mut out, "private:");
-    writeln_str(&mut out, &format!("    rust::Box<detail::{}Inner> inner_;", class_name));
+    writeln_str(
+        &mut out,
+        &format!("    rust::Box<detail::{}Inner> inner_;", class_name),
+    );
     if binding.hints.direct_field_access {
         writeln_str(&mut out, "    void* data_ptr_;");
     }
@@ -123,7 +152,10 @@ fn generate_impl_header(binding: &ImplBinding) -> String {
     // Private section with inner Box
     out.push('\n');
     writeln_str(&mut out, "private:");
-    writeln_str(&mut out, &format!("    rust::Box<detail::{}Inner> inner_;", type_name));
+    writeln_str(
+        &mut out,
+        &format!("    rust::Box<detail::{}Inner> inner_;", type_name),
+    );
 
     // Close class
     writeln_str(&mut out, "};");
@@ -142,15 +174,19 @@ fn generate_method_decl(class_name: &str, method: &MethodBinding) -> String {
     let hints = &method.hints;
 
     // Build parameter list
-    let params: Vec<String> = sig.params.iter().map(|p| {
-        let ty = type_to_cpp(&p.ty);
-        let name = p.name.to_string();
-        if p.hints.move_semantics {
-            format!("{}&& {}", ty, name)
-        } else {
-            format!("{} {}", ty, name)
-        }
-    }).collect();
+    let params: Vec<String> = sig
+        .params
+        .iter()
+        .map(|p| {
+            let ty = type_to_cpp(&p.ty);
+            let name = p.name.to_string();
+            if p.hints.move_semantics {
+                format!("{}&& {}", ty, name)
+            } else {
+                format!("{} {}", ty, name)
+            }
+        })
+        .collect();
     let params_str = params.join(", ");
 
     // Build return type
@@ -186,7 +222,11 @@ fn generate_method_decl(class_name: &str, method: &MethodBinding) -> String {
     };
 
     // Const qualifier for &self methods
-    let const_qual = if sig.receiver == Receiver::Ref { " const" } else { "" };
+    let const_qual = if sig.receiver == Receiver::Ref {
+        " const"
+    } else {
+        ""
+    };
 
     // Static keyword for no-self methods
     match sig.receiver {
@@ -194,7 +234,10 @@ fn generate_method_decl(class_name: &str, method: &MethodBinding) -> String {
             format!("{}static {} {}({});", attrs_str, ret, name, params_str)
         }
         _ => {
-            format!("{}{} {}({}){};", attrs_str, ret, name, params_str, const_qual)
+            format!(
+                "{}{} {}({}){};",
+                attrs_str, ret, name, params_str, const_qual
+            )
         }
     }
 }
@@ -478,7 +521,10 @@ mod tests {
 
     #[test]
     fn ref_str_maps_to_string_view() {
-        assert_eq!(type_to_cpp(&syn::parse_str("&str").unwrap()), "std::string_view");
+        assert_eq!(
+            type_to_cpp(&syn::parse_str("&str").unwrap()),
+            "std::string_view"
+        );
     }
 
     #[test]
@@ -512,8 +558,14 @@ mod tests {
         assert_header_contains(&header, "#pragma once");
         assert_header_contains(&header, "namespace horus {");
         assert_header_contains(&header, "class Publisher {");
-        assert_header_contains(&header, "[[nodiscard]] static std::unique_ptr<Self> new(std::string_view topic);");
-        assert_header_contains(&header, "[[nodiscard]] std::unique_ptr<LoanedSample> loan()");
+        assert_header_contains(
+            &header,
+            "[[nodiscard]] static std::unique_ptr<Self> new(std::string_view topic);",
+        );
+        assert_header_contains(
+            &header,
+            "[[nodiscard]] std::unique_ptr<LoanedSample> loan()",
+        );
         assert_header_contains(&header, "void publish(LoanedSample&& sample)");
     }
 }

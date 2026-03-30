@@ -371,7 +371,8 @@ fn test_cross_process_high_volume_integrity() {
     }
 
     assert_eq!(
-        corrupted, 0,
+        corrupted,
+        0,
         "Zero corruption in {} cross-process messages",
         received.len()
     );

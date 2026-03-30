@@ -465,13 +465,15 @@ fn arb_differential_drive() -> impl Strategy<Value = DifferentialDriveCommand> {
         any::<u8>(),
         any::<u64>(),
     )
-        .prop_map(|(left, right, max_acc, enable, ts)| DifferentialDriveCommand {
-            left_velocity: left,
-            right_velocity: right,
-            max_acceleration: max_acc,
-            enable,
-            timestamp_ns: ts,
-        })
+        .prop_map(
+            |(left, right, max_acc, enable, ts)| DifferentialDriveCommand {
+                left_velocity: left,
+                right_velocity: right,
+                max_acceleration: max_acc,
+                enable,
+                timestamp_ns: ts,
+            },
+        )
 }
 
 roundtrip_test!(
@@ -519,9 +521,14 @@ fn arb_bounding_box_2d() -> impl Strategy<Value = BoundingBox2D> {
 }
 
 fn arb_detection() -> impl Strategy<Value = Detection> {
-    (finite_f32(), finite_f32(), finite_f32(), finite_f32(), finite_f32()).prop_map(
-        |(conf, x, y, w, h)| Detection::new("object", conf, x, y, w, h),
+    (
+        finite_f32(),
+        finite_f32(),
+        finite_f32(),
+        finite_f32(),
+        finite_f32(),
     )
+        .prop_map(|(conf, x, y, w, h)| Detection::new("object", conf, x, y, w, h))
 }
 
 // BoundingBox2D and Detection are serde-only (not PodMessage) — use serde-only macro
@@ -539,7 +546,11 @@ macro_rules! serde_roundtrip_test {
     };
 }
 
-serde_roundtrip_test!(bounding_box_2d_roundtrip, BoundingBox2D, arb_bounding_box_2d());
+serde_roundtrip_test!(
+    bounding_box_2d_roundtrip,
+    BoundingBox2D,
+    arb_bounding_box_2d()
+);
 serde_roundtrip_test!(detection_roundtrip, Detection, arb_detection());
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -547,15 +558,20 @@ serde_roundtrip_test!(detection_roundtrip, Detection, arb_detection());
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn arb_wrench_stamped() -> impl Strategy<Value = WrenchStamped> {
-    (arb_vector3(), arb_vector3(), arb_point3(), name_bytes_32(), any::<u64>()).prop_map(
-        |(force, torque, point, frame, ts)| WrenchStamped {
+    (
+        arb_vector3(),
+        arb_vector3(),
+        arb_point3(),
+        name_bytes_32(),
+        any::<u64>(),
+    )
+        .prop_map(|(force, torque, point, frame, ts)| WrenchStamped {
             force,
             torque,
             point_of_application: point,
             frame_id: frame,
             timestamp_ns: ts,
-        },
-    )
+        })
 }
 
 fn arb_force_command() -> impl Strategy<Value = ForceCommand> {
@@ -566,7 +582,14 @@ fn arb_force_command() -> impl Strategy<Value = ForceCommand> {
         arb_vector3(),
         arb_vector3(),
         arb_vector3(),
-        [finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64()],
+        [
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+        ],
         finite_f64(),
         any::<u64>(),
     )
@@ -588,10 +611,38 @@ fn arb_force_command() -> impl Strategy<Value = ForceCommand> {
 
 fn arb_impedance_parameters() -> impl Strategy<Value = ImpedanceParameters> {
     (
-        [finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64()],
-        [finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64()],
-        [finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64()],
-        [finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64(), finite_f64()],
+        [
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+        ],
+        [
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+        ],
+        [
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+        ],
+        [
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+            finite_f64(),
+        ],
         any::<u8>(),
         any::<u64>(),
     )
@@ -628,10 +679,22 @@ fn arb_haptic_feedback() -> impl Strategy<Value = HapticFeedback> {
         )
 }
 
-roundtrip_test!(wrench_stamped_roundtrip, WrenchStamped, arb_wrench_stamped());
+roundtrip_test!(
+    wrench_stamped_roundtrip,
+    WrenchStamped,
+    arb_wrench_stamped()
+);
 roundtrip_test!(force_command_roundtrip, ForceCommand, arb_force_command());
-roundtrip_test!(impedance_parameters_roundtrip, ImpedanceParameters, arb_impedance_parameters());
-roundtrip_test!(haptic_feedback_roundtrip, HapticFeedback, arb_haptic_feedback());
+roundtrip_test!(
+    impedance_parameters_roundtrip,
+    ImpedanceParameters,
+    arb_impedance_parameters()
+);
+roundtrip_test!(
+    haptic_feedback_roundtrip,
+    HapticFeedback,
+    arb_haptic_feedback()
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sensor messages (remaining)
@@ -660,14 +723,14 @@ fn arb_fluid_pressure() -> impl Strategy<Value = FluidPressure> {
 }
 
 fn arb_illuminance() -> impl Strategy<Value = Illuminance> {
-    (finite_f64(), finite_f64(), name_bytes_32(), any::<u64>()).prop_map(
-        |(lux, var, frame, ts)| Illuminance {
+    (finite_f64(), finite_f64(), name_bytes_32(), any::<u64>()).prop_map(|(lux, var, frame, ts)| {
+        Illuminance {
             illuminance: lux,
             variance: var,
             frame_id: frame,
             timestamp_ns: ts,
-        },
-    )
+        }
+    })
 }
 
 fn arb_nav_sat_fix() -> impl Strategy<Value = NavSatFix> {
@@ -701,8 +764,16 @@ fn arb_nav_sat_fix() -> impl Strategy<Value = NavSatFix> {
         )
 }
 
-roundtrip_test!(magnetic_field_roundtrip, MagneticField, arb_magnetic_field());
-roundtrip_test!(fluid_pressure_roundtrip, FluidPressure, arb_fluid_pressure());
+roundtrip_test!(
+    magnetic_field_roundtrip,
+    MagneticField,
+    arb_magnetic_field()
+);
+roundtrip_test!(
+    fluid_pressure_roundtrip,
+    FluidPressure,
+    arb_fluid_pressure()
+);
 roundtrip_test!(illuminance_roundtrip, Illuminance, arb_illuminance());
 roundtrip_test!(nav_sat_fix_roundtrip, NavSatFix, arb_nav_sat_fix());
 
@@ -711,20 +782,32 @@ roundtrip_test!(nav_sat_fix_roundtrip, NavSatFix, arb_nav_sat_fix());
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn arb_waypoint() -> impl Strategy<Value = Waypoint> {
-    (arb_pose2d(), arb_twist(), finite_f64(), finite_f32(), any::<u8>()).prop_map(
-        |(pose, velocity, time, curvature, stop)| Waypoint {
+    (
+        arb_pose2d(),
+        arb_twist(),
+        finite_f64(),
+        finite_f32(),
+        any::<u8>(),
+    )
+        .prop_map(|(pose, velocity, time, curvature, stop)| Waypoint {
             pose,
             velocity,
             time_from_start: time,
             curvature,
             stop_required: stop,
-        },
-    )
+        })
 }
 
 fn arb_goal_result() -> impl Strategy<Value = GoalResult> {
-    (any::<u32>(), any::<u8>(), finite_f64(), finite_f64(), finite_f32(), any::<u64>()).prop_map(
-        |(goal_id, status, dist, eta, progress, ts)| {
+    (
+        any::<u32>(),
+        any::<u8>(),
+        finite_f64(),
+        finite_f64(),
+        finite_f32(),
+        any::<u64>(),
+    )
+        .prop_map(|(goal_id, status, dist, eta, progress, ts)| {
             let mut gr = GoalResult::default();
             gr.goal_id = goal_id;
             gr.status = status;
@@ -733,8 +816,7 @@ fn arb_goal_result() -> impl Strategy<Value = GoalResult> {
             gr.progress = progress;
             gr.timestamp_ns = ts;
             gr
-        },
-    )
+        })
 }
 
 roundtrip_test!(waypoint_roundtrip, Waypoint, arb_waypoint());
@@ -753,15 +835,20 @@ fn name_bytes_128() -> impl Strategy<Value = [u8; 128]> {
 }
 
 fn arb_diagnostic_status() -> impl Strategy<Value = DiagnosticStatus> {
-    (any::<u8>(), any::<u32>(), name_bytes_128(), name_bytes_32(), any::<u64>()).prop_map(
-        |(level, code, message, component, ts)| DiagnosticStatus {
+    (
+        any::<u8>(),
+        any::<u32>(),
+        name_bytes_128(),
+        name_bytes_32(),
+        any::<u64>(),
+    )
+        .prop_map(|(level, code, message, component, ts)| DiagnosticStatus {
             level,
             code,
             message,
             component,
             timestamp_ns: ts,
-        },
-    )
+        })
 }
 
 fn arb_resource_usage() -> impl Strategy<Value = ResourceUsage> {
@@ -847,18 +934,37 @@ fn arb_node_heartbeat() -> impl Strategy<Value = NodeHeartbeat> {
         )
 }
 
-roundtrip_test!(diagnostic_status_roundtrip, DiagnosticStatus, arb_diagnostic_status());
-roundtrip_test!(resource_usage_roundtrip, ResourceUsage, arb_resource_usage());
+roundtrip_test!(
+    diagnostic_status_roundtrip,
+    DiagnosticStatus,
+    arb_diagnostic_status()
+);
+roundtrip_test!(
+    resource_usage_roundtrip,
+    ResourceUsage,
+    arb_resource_usage()
+);
 roundtrip_test!(safety_status_roundtrip, SafetyStatus, arb_safety_status());
-roundtrip_test!(node_heartbeat_roundtrip, NodeHeartbeat, arb_node_heartbeat());
+roundtrip_test!(
+    node_heartbeat_roundtrip,
+    NodeHeartbeat,
+    arb_node_heartbeat()
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Clock messages
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn arb_clock() -> impl Strategy<Value = Clock> {
-    (any::<u64>(), any::<u64>(), finite_f64(), any::<u8>(), any::<u8>(), any::<u64>()).prop_map(
-        |(clock_ns, realtime_ns, sim_speed, paused, source, ts)| {
+    (
+        any::<u64>(),
+        any::<u64>(),
+        finite_f64(),
+        any::<u8>(),
+        any::<u8>(),
+        any::<u64>(),
+    )
+        .prop_map(|(clock_ns, realtime_ns, sim_speed, paused, source, ts)| {
             let mut c = Clock::default();
             c.clock_ns = clock_ns;
             c.realtime_ns = realtime_ns;
@@ -867,8 +973,7 @@ fn arb_clock() -> impl Strategy<Value = Clock> {
             c.source = source;
             c.timestamp_ns = ts;
             c
-        },
-    )
+        })
 }
 
 fn arb_sim_sync() -> impl Strategy<Value = SimSync> {
@@ -940,13 +1045,11 @@ roundtrip_test!(joint_state_roundtrip, JointState, arb_joint_state());
 // ── Geometry: PoseWithCovariance (Pod) ──────────────────────────────────
 
 fn arb_pose_with_covariance() -> impl Strategy<Value = PoseWithCovariance> {
-    (arb_pose3d(), name_bytes_32(), any::<u64>()).prop_map(|(pose, frame, ts)| {
-        PoseWithCovariance {
-            pose,
-            covariance: [0.0; 36],
-            frame_id: frame,
-            timestamp_ns: ts,
-        }
+    (arb_pose3d(), name_bytes_32(), any::<u64>()).prop_map(|(pose, frame, ts)| PoseWithCovariance {
+        pose,
+        covariance: [0.0; 36],
+        frame_id: frame,
+        timestamp_ns: ts,
     })
 }
 
@@ -1105,13 +1208,22 @@ fn arb_occupancy_grid() -> impl Strategy<Value = OccupancyGrid> {
         })
 }
 
-serde_roundtrip_test!(occupancy_grid_roundtrip, OccupancyGrid, arb_occupancy_grid());
+serde_roundtrip_test!(
+    occupancy_grid_roundtrip,
+    OccupancyGrid,
+    arb_occupancy_grid()
+);
 
 // ── Navigation: CostMap (serde-only — Vec fields) ───────────────────────
 
 fn arb_cost_map() -> impl Strategy<Value = CostMap> {
-    (arb_occupancy_grid(), finite_f32(), finite_f32(), any::<u8>()).prop_map(
-        |(grid, inflation, scaling, lethal)| {
+    (
+        arb_occupancy_grid(),
+        finite_f32(),
+        finite_f32(),
+        any::<u8>(),
+    )
+        .prop_map(|(grid, inflation, scaling, lethal)| {
             let data_size = (grid.width * grid.height) as usize;
             CostMap {
                 occupancy_grid: grid,
@@ -1120,8 +1232,7 @@ fn arb_cost_map() -> impl Strategy<Value = CostMap> {
                 cost_scaling_factor: scaling,
                 lethal_cost: lethal,
             }
-        },
-    )
+        })
 }
 
 serde_roundtrip_test!(cost_map_roundtrip, CostMap, arb_cost_map());
@@ -1129,8 +1240,15 @@ serde_roundtrip_test!(cost_map_roundtrip, CostMap, arb_cost_map());
 // ── Vision: CameraInfo (serde-only — no Pod) ───────────────────────────
 
 fn arb_camera_info() -> impl Strategy<Value = CameraInfo> {
-    (any::<u32>(), any::<u32>(), f64_array9(), f64_array9(), name_bytes_32(), any::<u64>()).prop_map(
-        |(w, h, camera_matrix, rect_matrix, frame, ts)| {
+    (
+        any::<u32>(),
+        any::<u32>(),
+        f64_array9(),
+        f64_array9(),
+        name_bytes_32(),
+        any::<u64>(),
+    )
+        .prop_map(|(w, h, camera_matrix, rect_matrix, frame, ts)| {
             let mut ci = CameraInfo::default();
             ci.width = w;
             ci.height = h;
@@ -1139,8 +1257,7 @@ fn arb_camera_info() -> impl Strategy<Value = CameraInfo> {
             ci.frame_id = frame;
             ci.timestamp_ns = ts;
             ci
-        },
-    )
+        })
 }
 
 serde_roundtrip_test!(camera_info_roundtrip, CameraInfo, arb_camera_info());
@@ -1169,15 +1286,20 @@ serde_roundtrip_test!(
 // ── Vision: RegionOfInterest (serde-only — has bool, no Pod) ────────────
 
 fn arb_region_of_interest() -> impl Strategy<Value = RegionOfInterest> {
-    (any::<u32>(), any::<u32>(), any::<u32>(), any::<u32>(), any::<bool>()).prop_map(
-        |(x, y, w, h, rectify)| RegionOfInterest {
+    (
+        any::<u32>(),
+        any::<u32>(),
+        any::<u32>(),
+        any::<u32>(),
+        any::<bool>(),
+    )
+        .prop_map(|(x, y, w, h, rectify)| RegionOfInterest {
             x_offset: x,
             y_offset: y,
             width: w,
             height: h,
             do_rectify: rectify,
-        },
-    )
+        })
 }
 
 serde_roundtrip_test!(
@@ -1189,14 +1311,18 @@ serde_roundtrip_test!(
 // ── Vision: StereoInfo (serde-only) ─────────────────────────────────────
 
 fn arb_stereo_info() -> impl Strategy<Value = StereoInfo> {
-    (arb_camera_info(), arb_camera_info(), finite_f64(), finite_f64()).prop_map(
-        |(left, right, baseline, depth_scale)| StereoInfo {
+    (
+        arb_camera_info(),
+        arb_camera_info(),
+        finite_f64(),
+        finite_f64(),
+    )
+        .prop_map(|(left, right, baseline, depth_scale)| StereoInfo {
             left_camera: left,
             right_camera: right,
             baseline,
             depth_scale,
-        },
-    )
+        })
 }
 
 serde_roundtrip_test!(stereo_info_roundtrip, StereoInfo, arb_stereo_info());
@@ -1213,9 +1339,7 @@ fn arb_bounding_box_3d() -> impl Strategy<Value = BoundingBox3D> {
         finite_f32(),
         finite_f32(),
     )
-        .prop_map(|(cx, cy, cz, l, w, h, yaw)| {
-            BoundingBox3D::new(cx, cy, cz, l, w, h, yaw)
-        })
+        .prop_map(|(cx, cy, cz, l, w, h, yaw)| BoundingBox3D::new(cx, cy, cz, l, w, h, yaw))
 }
 
 serde_roundtrip_test!(
@@ -1237,8 +1361,8 @@ fn arb_detection3d() -> impl Strategy<Value = Detection3D> {
         finite_f32(),
         any::<u32>(),
     )
-        .prop_map(|(bbox, conf, cls_id, cls_name, vx, vy, vz, inst_id)| {
-            Detection3D {
+        .prop_map(
+            |(bbox, conf, cls_id, cls_name, vx, vy, vz, inst_id)| Detection3D {
                 bbox,
                 confidence: conf,
                 class_id: cls_id,
@@ -1247,8 +1371,8 @@ fn arb_detection3d() -> impl Strategy<Value = Detection3D> {
                 velocity_y: vy,
                 velocity_z: vz,
                 instance_id: inst_id,
-            }
-        })
+            },
+        )
 }
 
 serde_roundtrip_test!(detection3d_roundtrip, Detection3D, arb_detection3d());
@@ -1256,13 +1380,11 @@ serde_roundtrip_test!(detection3d_roundtrip, Detection3D, arb_detection3d());
 // ── Landmark: Landmark (Pod) ────────────────────────────────────────────
 
 fn arb_landmark() -> impl Strategy<Value = Landmark> {
-    (finite_f32(), finite_f32(), finite_f32(), any::<u32>()).prop_map(|(x, y, vis, idx)| {
-        Landmark {
-            x,
-            y,
-            visibility: vis,
-            index: idx,
-        }
+    (finite_f32(), finite_f32(), finite_f32(), any::<u32>()).prop_map(|(x, y, vis, idx)| Landmark {
+        x,
+        y,
+        visibility: vis,
+        index: idx,
     })
 }
 
@@ -1271,15 +1393,20 @@ serde_roundtrip_test!(landmark_roundtrip, Landmark, arb_landmark());
 // ── Landmark: Landmark3D (Pod, packed) ──────────────────────────────────
 
 fn arb_landmark3d() -> impl Strategy<Value = Landmark3D> {
-    (finite_f32(), finite_f32(), finite_f32(), finite_f32(), any::<u32>()).prop_map(
-        |(x, y, z, vis, idx)| Landmark3D {
+    (
+        finite_f32(),
+        finite_f32(),
+        finite_f32(),
+        finite_f32(),
+        any::<u32>(),
+    )
+        .prop_map(|(x, y, z, vis, idx)| Landmark3D {
             x,
             y,
             z,
             visibility: vis,
             index: idx,
-        },
-    )
+        })
 }
 
 serde_roundtrip_test!(landmark3d_roundtrip, Landmark3D, arb_landmark3d());
@@ -1313,7 +1440,11 @@ fn arb_landmark_array() -> impl Strategy<Value = LandmarkArray> {
         )
 }
 
-serde_roundtrip_test!(landmark_array_roundtrip, LandmarkArray, arb_landmark_array());
+serde_roundtrip_test!(
+    landmark_array_roundtrip,
+    LandmarkArray,
+    arb_landmark_array()
+);
 
 // ── Tracking: TrackedObject (Pod) ───────────────────────────────────────
 
@@ -1348,7 +1479,11 @@ fn arb_tracked_object() -> impl Strategy<Value = TrackedObject> {
         )
 }
 
-serde_roundtrip_test!(tracked_object_roundtrip, TrackedObject, arb_tracked_object());
+serde_roundtrip_test!(
+    tracked_object_roundtrip,
+    TrackedObject,
+    arb_tracked_object()
+);
 
 // ── Tracking: TrackingHeader (Pod) ──────────────────────────────────────
 
@@ -1461,14 +1596,16 @@ fn arb_rate_request() -> impl Strategy<Value = RateRequest> {
         any::<u64>(),
         any::<u64>(),
     )
-        .prop_map(|(topic_name, desired, min, max, requester, ts)| RateRequest {
-            topic_name,
-            desired_hz: desired,
-            min_hz: min,
-            max_hz: max,
-            requester_id: requester,
-            timestamp_ns: ts,
-        })
+        .prop_map(
+            |(topic_name, desired, min, max, requester, ts)| RateRequest {
+                topic_name,
+                desired_hz: desired,
+                min_hz: min,
+                max_hz: max,
+                requester_id: requester,
+                timestamp_ns: ts,
+            },
+        )
 }
 
 roundtrip_test!(rate_request_roundtrip, RateRequest, arb_rate_request());
@@ -1534,19 +1671,27 @@ roundtrip_test!(
 // ── Audio: AudioFrame (Pod — large fixed-size buffer) ───────────────────
 
 fn arb_audio_frame() -> impl Strategy<Value = Box<AudioFrame>> {
-    (any::<u32>(), any::<u32>(), any::<u8>(), any::<u8>(), any::<u64>(), name_bytes_32()).prop_map(
-        |(num_samples, sample_rate, channels, encoding, ts, frame)| {
-            let mut af = Box::new(AudioFrame::default());
-            af.num_samples = num_samples;
-            af.sample_rate = sample_rate;
-            af.channels = channels;
-            af.encoding = encoding;
-            af.timestamp_ns = ts;
-            af.frame_id = frame;
-            // samples stays zeroed — don't generate 4800 random floats
-            af
-        },
+    (
+        any::<u32>(),
+        any::<u32>(),
+        any::<u8>(),
+        any::<u8>(),
+        any::<u64>(),
+        name_bytes_32(),
     )
+        .prop_map(
+            |(num_samples, sample_rate, channels, encoding, ts, frame)| {
+                let mut af = Box::new(AudioFrame::default());
+                af.num_samples = num_samples;
+                af.sample_rate = sample_rate;
+                af.channels = channels;
+                af.encoding = encoding;
+                af.timestamp_ns = ts;
+                af.frame_id = frame;
+                // samples stays zeroed — don't generate 4800 random floats
+                af
+            },
+        )
 }
 
 proptest! {
@@ -1580,18 +1725,24 @@ fn arb_joystick_input() -> impl Strategy<Value = JoystickInput> {
         any::<u8>(),
         any::<u64>(),
     )
-        .prop_map(|(joy_id, event_type, elem_id, elem_name, value, pressed, ts)| JoystickInput {
-            joystick_id: joy_id,
-            event_type,
-            element_id: elem_id,
-            element_name: elem_name,
-            value,
-            pressed,
-            timestamp_ms: ts,
-        })
+        .prop_map(
+            |(joy_id, event_type, elem_id, elem_name, value, pressed, ts)| JoystickInput {
+                joystick_id: joy_id,
+                event_type,
+                element_id: elem_id,
+                element_name: elem_name,
+                value,
+                pressed,
+                timestamp_ms: ts,
+            },
+        )
 }
 
-roundtrip_test!(joystick_input_roundtrip, JoystickInput, arb_joystick_input());
+roundtrip_test!(
+    joystick_input_roundtrip,
+    JoystickInput,
+    arb_joystick_input()
+);
 
 // ── Input: KeyboardInput (Pod) ──────────────────────────────────────────
 
@@ -1603,14 +1754,16 @@ fn arb_keyboard_input() -> impl Strategy<Value = KeyboardInput> {
         any::<u8>(),
         any::<u64>(),
     )
-        .prop_map(|(key_name, code, modifier_flags, pressed, ts)| KeyboardInput {
-            key_name,
-            code,
-            modifier_flags,
-            pressed,
-            timestamp_ms: ts,
-            _padding: [0; 16],
-        })
+        .prop_map(
+            |(key_name, code, modifier_flags, pressed, ts)| KeyboardInput {
+                key_name,
+                code,
+                modifier_flags,
+                pressed,
+                timestamp_ms: ts,
+                _padding: [0; 16],
+            },
+        )
 }
 
 roundtrip_test!(
@@ -1631,15 +1784,17 @@ fn arb_segmentation_mask() -> impl Strategy<Value = SegmentationMask> {
         any::<u64>(),
         name_bytes_32(),
     )
-        .prop_map(|(w, h, num_classes, mask_type, ts, seq, frame)| SegmentationMask {
-            width: w,
-            height: h,
-            num_classes,
-            mask_type,
-            timestamp_ns: ts,
-            seq,
-            frame_id: frame,
-        })
+        .prop_map(
+            |(w, h, num_classes, mask_type, ts, seq, frame)| SegmentationMask {
+                width: w,
+                height: h,
+                num_classes,
+                mask_type,
+                timestamp_ns: ts,
+                seq,
+                frame_id: frame,
+            },
+        )
 }
 
 serde_roundtrip_test!(
@@ -1661,16 +1816,18 @@ fn arb_plane_detection() -> impl Strategy<Value = PlaneDetection> {
         name_bytes_16(),
         any::<u64>(),
     )
-        .prop_map(|(coeff, center, normal, size, inliers, conf, ptype, ts)| PlaneDetection {
-            coefficients: coeff,
-            center,
-            normal,
-            size,
-            inlier_count: inliers,
-            confidence: conf,
-            plane_type: ptype,
-            timestamp_ns: ts,
-        })
+        .prop_map(
+            |(coeff, center, normal, size, inliers, conf, ptype, ts)| PlaneDetection {
+                coefficients: coeff,
+                center,
+                normal,
+                size,
+                inlier_count: inliers,
+                confidence: conf,
+                plane_type: ptype,
+                timestamp_ns: ts,
+            },
+        )
 }
 
 serde_roundtrip_test!(
@@ -1756,9 +1913,19 @@ fn realistic_quaternion() -> impl Strategy<Value = Quaternion> {
     (finite_f64(), finite_f64(), finite_f64(), finite_f64()).prop_map(|(x, y, z, w)| {
         let norm = (x * x + y * y + z * z + w * w).sqrt();
         if norm < 1e-10 {
-            Quaternion { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } // identity
+            Quaternion {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            } // identity
         } else {
-            Quaternion { x: x / norm, y: y / norm, z: z / norm, w: w / norm }
+            Quaternion {
+                x: x / norm,
+                y: y / norm,
+                z: z / norm,
+                w: w / norm,
+            }
         }
     })
 }
@@ -1785,12 +1952,13 @@ fn realistic_imu() -> impl Strategy<Value = Imu> {
 }
 
 /// LaserScan with valid geometry: angle_min < angle_max, range_min < range_max > 0
+#[allow(clippy::approx_constant)]
 fn realistic_laser_scan() -> impl Strategy<Value = LaserScan> {
     (
-        -3.14159f32..0.0f32,     // angle_min (negative, typically -PI)
-        0.01f32..3.14159f32,     // angle_max (positive)
-        0.05f32..0.5f32,         // range_min (5cm-50cm)
-        1.0f32..100.0f32,        // range_max (1m-100m)
+        -3.2f32..0.0f32, // angle_min (negative, approximately -PI)
+        0.01f32..3.2f32, // angle_max (positive, approximately PI)
+        0.05f32..0.5f32,     // range_min (5cm-50cm)
+        1.0f32..100.0f32,    // range_max (1m-100m)
         any::<u64>(),
     )
         .prop_map(|(amin, amax, rmin, rmax, ts)| {
@@ -1810,18 +1978,24 @@ fn realistic_laser_scan() -> impl Strategy<Value = LaserScan> {
 }
 
 /// Odometry with reasonable velocities and positions
+#[allow(clippy::approx_constant)]
 fn realistic_odometry() -> impl Strategy<Value = Odometry> {
     (
         -1000.0f64..1000.0,   // x position (meters)
         -1000.0f64..1000.0,   // y position
-        -3.14159f64..3.14159, // theta (radians)
+        -3.2f64..3.2, // theta (radians, approximately -PI..PI)
         -10.0f64..10.0,       // linear_x velocity (m/s)
         -5.0f64..5.0,         // angular_z velocity (rad/s)
         any::<u64>(),
     )
         .prop_map(|(x, y, theta, lin_x, ang_z, ts)| {
             let mut odom = Odometry::default();
-            odom.pose = Pose2D { x, y, theta, timestamp_ns: ts };
+            odom.pose = Pose2D {
+                x,
+                y,
+                theta,
+                timestamp_ns: ts,
+            };
             odom.twist = Twist {
                 linear: [lin_x, 0.0, 0.0],
                 angular: [0.0, 0.0, ang_z],
@@ -1835,14 +2009,14 @@ fn realistic_odometry() -> impl Strategy<Value = Odometry> {
 /// NavSatFix with valid GPS coordinates
 fn realistic_nav_sat_fix() -> impl Strategy<Value = NavSatFix> {
     (
-        -90.0f64..90.0,       // latitude
-        -180.0f64..180.0,     // longitude
-        -500.0f64..50000.0,   // altitude (Dead Sea to Everest×5)
-        0u8..4u8,             // status (0=no_fix to 3=gbas)
-        0u16..32u16,          // satellites
-        0.5f32..20.0f32,      // hdop
-        0.5f32..20.0f32,      // vdop
-        0.0f32..100.0f32,     // speed (m/s)
+        -90.0f64..90.0,     // latitude
+        -180.0f64..180.0,   // longitude
+        -500.0f64..50000.0, // altitude (Dead Sea to Everest×5)
+        0u8..4u8,           // status (0=no_fix to 3=gbas)
+        0u16..32u16,        // satellites
+        0.5f32..20.0f32,    // hdop
+        0.5f32..20.0f32,    // vdop
+        0.0f32..100.0f32,   // speed (m/s)
         any::<u64>(),
     )
         .prop_map(|(lat, lon, alt, status, sats, hdop, vdop, speed, ts)| {
@@ -1863,8 +2037,8 @@ fn realistic_nav_sat_fix() -> impl Strategy<Value = NavSatFix> {
 /// CmdVel with typical mobile robot velocity bounds
 fn realistic_cmd_vel() -> impl Strategy<Value = CmdVel> {
     (
-        -3.0f32..3.0,     // linear (m/s) — typical mobile robot
-        -3.14f32..3.14,   // angular (rad/s)
+        -3.0f32..3.0, // linear (m/s) — typical mobile robot
+        -3.2f32..3.2, // angular (rad/s)
         any::<u64>(),
     )
         .prop_map(|(lin, ang, ts)| CmdVel {
@@ -1877,12 +2051,17 @@ fn realistic_cmd_vel() -> impl Strategy<Value = CmdVel> {
 /// BoundingBox2D with valid positive dimensions in typical image coords
 fn realistic_bbox2d() -> impl Strategy<Value = BoundingBox2D> {
     (
-        0.0f32..1920.0,   // x (pixels)
-        0.0f32..1080.0,   // y (pixels)
-        1.0f32..500.0,    // width (positive)
-        1.0f32..500.0,    // height (positive)
+        0.0f32..1920.0, // x (pixels)
+        0.0f32..1080.0, // y (pixels)
+        1.0f32..500.0,  // width (positive)
+        1.0f32..500.0,  // height (positive)
     )
-        .prop_map(|(x, y, w, h)| BoundingBox2D { x, y, width: w, height: h })
+        .prop_map(|(x, y, w, h)| BoundingBox2D {
+            x,
+            y,
+            width: w,
+            height: h,
+        })
 }
 
 // ── Realistic roundtrip tests ────────────────────────────────────────────
@@ -1948,7 +2127,7 @@ proptest! {
     #[test]
     fn realistic_cmd_vel_bounded(cmd in realistic_cmd_vel()) {
         prop_assert!(cmd.linear.abs() <= 3.0, "linear {} > 3 m/s", cmd.linear);
-        prop_assert!(cmd.angular.abs() <= 3.14, "angular {} > pi rad/s", cmd.angular);
+        prop_assert!(cmd.angular.abs() <= 3.2, "angular {} > pi rad/s", cmd.angular);
     }
 
     #[test]
@@ -1962,8 +2141,20 @@ proptest! {
 
 // Realistic roundtrip tests — verify serialization with plausible data
 roundtrip_test!(realistic_imu_roundtrip, Imu, realistic_imu());
-roundtrip_test!(realistic_laser_scan_roundtrip, LaserScan, realistic_laser_scan());
+roundtrip_test!(
+    realistic_laser_scan_roundtrip,
+    LaserScan,
+    realistic_laser_scan()
+);
 roundtrip_test!(realistic_odometry_roundtrip, Odometry, realistic_odometry());
-roundtrip_test!(realistic_nav_sat_fix_roundtrip, NavSatFix, realistic_nav_sat_fix());
+roundtrip_test!(
+    realistic_nav_sat_fix_roundtrip,
+    NavSatFix,
+    realistic_nav_sat_fix()
+);
 roundtrip_test!(realistic_cmd_vel_roundtrip, CmdVel, realistic_cmd_vel());
-serde_roundtrip_test!(realistic_bbox2d_roundtrip, BoundingBox2D, realistic_bbox2d());
+serde_roundtrip_test!(
+    realistic_bbox2d_roundtrip,
+    BoundingBox2D,
+    realistic_bbox2d()
+);

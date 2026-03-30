@@ -9,8 +9,8 @@
 
 use horus_core::communication::topic::Topic;
 use horus_core::core::DurationExt;
-use horus_robotics::CmdVel;
 use horus_robotics::messages::sensor::Imu;
+use horus_robotics::CmdVel;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -24,7 +24,9 @@ const COUNT_ENV: &str = "HORUS_CHAOS_XP_COUNT";
 const ID_ENV: &str = "HORUS_CHAOS_XP_ID";
 const RESULT_DIR: &str = "HORUS_CHAOS_XP_RESULT";
 
-fn child_env(k: &str) -> String { std::env::var(k).unwrap_or_default() }
+fn child_env(k: &str) -> String {
+    std::env::var(k).unwrap_or_default()
+}
 
 fn spawn(test: &str, topic: &str, role: &str, count: u64, id: u64) -> std::process::Child {
     let exe = std::env::current_exe().unwrap();
@@ -71,7 +73,9 @@ fn child_imu_publisher() {
         imu.linear_acceleration = [0.0, 0.0, 9.81];
         imu.angular_velocity[2] = i as f64 * 0.001; // sequence marker
         t.send(imu);
-        if i % 50 == 0 { std::thread::sleep(Duration::from_millis(1)); }
+        if i % 50 == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     // Sentinel
     let mut sentinel = Imu::new();
@@ -131,7 +135,13 @@ fn xp_5_processes_imu_broadcast() {
     // Spawn 4 subscribers first
     let mut subs = vec![];
     for i in 0..4u64 {
-        subs.push(spawn("xp_5_processes_imu_broadcast", &topic, "imu_sub", count, i));
+        subs.push(spawn(
+            "xp_5_processes_imu_broadcast",
+            &topic,
+            "imu_sub",
+            count,
+            i,
+        ));
     }
     std::thread::sleep(Duration::from_millis(500));
 
@@ -140,11 +150,16 @@ fn xp_5_processes_imu_broadcast() {
     let _ = pub_child.wait();
 
     // Wait for subscribers
-    for mut s in subs { let _ = s.wait(); }
+    for mut s in subs {
+        let _ = s.wait();
+    }
 
     // Read results
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║  CROSS-PROCESS: 5 processes, IMU broadcast ({} msgs)       ║", count);
+    println!(
+        "║  CROSS-PROCESS: 5 processes, IMU broadcast ({} msgs)       ║",
+        count
+    );
     println!("╠══════════════════════════════════════════════════════════════╣");
     let mut total_recv = 0u64;
     let mut total_corrupt = 0u64;
@@ -153,18 +168,35 @@ fn xp_5_processes_imu_broadcast() {
         let corrupt: u64 = read_result(i, "corrupt").trim().parse().unwrap_or(0);
         total_recv += recv;
         total_corrupt += corrupt;
-        println!("║  Sub {}: recv={:5} ({:5.1}%) corrupt={}                     ║",
-                 i, recv, recv as f64 / count as f64 * 100.0, corrupt);
+        println!(
+            "║  Sub {}: recv={:5} ({:5.1}%) corrupt={}                     ║",
+            i,
+            recv,
+            recv as f64 / count as f64 * 100.0,
+            corrupt
+        );
     }
     println!("╚══════════════════════════════════════════════════════════════╝");
 
-    assert_eq!(total_corrupt, 0, "DATA CORRUPTION in cross-process broadcast!");
-    assert!(total_recv > count, "At least some subscribers should get most messages");
-    let subs_with_data = (0..4).filter(|&i| {
-        read_result(i, "recv").trim().parse::<u64>().unwrap_or(0) > 0
-    }).count();
-    assert!(subs_with_data >= 2, "At least 2/4 subscribers should get data");
-    println!("✓ xp_5_processes_imu_broadcast — {} total recv, zero corruption", total_recv);
+    assert_eq!(
+        total_corrupt, 0,
+        "DATA CORRUPTION in cross-process broadcast!"
+    );
+    assert!(
+        total_recv > count,
+        "At least some subscribers should get most messages"
+    );
+    let subs_with_data = (0..4)
+        .filter(|&i| read_result(i, "recv").trim().parse::<u64>().unwrap_or(0) > 0)
+        .count();
+    assert!(
+        subs_with_data >= 2,
+        "At least 2/4 subscribers should get data"
+    );
+    println!(
+        "✓ xp_5_processes_imu_broadcast — {} total recv, zero corruption",
+        total_recv
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -188,7 +220,9 @@ fn child_pipeline_controller() {
 
     while Instant::now() < deadline {
         if let Some(imu) = imu_t.recv() {
-            if imu.angular_velocity[0] == f64::MAX { break; }
+            if imu.angular_velocity[0] == f64::MAX {
+                break;
+            }
             imu_recv += 1;
             // P-controller
             let cmd = CmdVel::new(0.5, -imu.angular_velocity[2] as f32 * 2.0);
@@ -199,7 +233,8 @@ fn child_pipeline_controller() {
         }
     }
     // Forward sentinel
-    let mut s = Imu::new(); s.angular_velocity[0] = f64::MAX;
+    let mut s = Imu::new();
+    s.angular_velocity[0] = f64::MAX;
     // Send CmdVel sentinel
     cmd_t.send(CmdVel::new(f32::MAX, f32::MAX));
     std::thread::sleep(Duration::from_millis(200));
@@ -256,15 +291,33 @@ fn xp_3_process_pipeline_imu_ctrl_motor() {
     let _ = std::fs::create_dir_all(&result_dir);
 
     // Start motor first (end of pipeline)
-    let mut motor = spawn("xp_3_process_pipeline_imu_ctrl_motor", &topic, "motor", count, 20);
+    let mut motor = spawn(
+        "xp_3_process_pipeline_imu_ctrl_motor",
+        &topic,
+        "motor",
+        count,
+        20,
+    );
     std::thread::sleep(Duration::from_millis(300));
 
     // Start controller (middle)
-    let mut ctrl = spawn("xp_3_process_pipeline_imu_ctrl_motor", &topic, "controller", count, 10);
+    let mut ctrl = spawn(
+        "xp_3_process_pipeline_imu_ctrl_motor",
+        &topic,
+        "controller",
+        count,
+        10,
+    );
     std::thread::sleep(Duration::from_millis(300));
 
     // Start publisher (source)
-    let mut pub_child = spawn("xp_3_process_pipeline_imu_ctrl_motor", &topic, "imu_pub", count, 99);
+    let mut pub_child = spawn(
+        "xp_3_process_pipeline_imu_ctrl_motor",
+        &topic,
+        "imu_pub",
+        count,
+        99,
+    );
 
     let _ = pub_child.wait();
     let _ = ctrl.wait();
@@ -278,15 +331,33 @@ fn xp_3_process_pipeline_imu_ctrl_motor() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║  CROSS-PROCESS PIPELINE: IMU → Controller → Motor          ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  IMU published:     {:5}                                   ║", count);
-    println!("║  Controller recv:   {:5} IMU → sent {:5} CmdVel           ║", ctrl_imu, ctrl_cmd);
-    println!("║  Motor recv:        {:5} CmdVel, corrupt: {}               ║", motor_cmd, motor_corrupt);
+    println!(
+        "║  IMU published:     {:5}                                   ║",
+        count
+    );
+    println!(
+        "║  Controller recv:   {:5} IMU → sent {:5} CmdVel           ║",
+        ctrl_imu, ctrl_cmd
+    );
+    println!(
+        "║  Motor recv:        {:5} CmdVel, corrupt: {}               ║",
+        motor_cmd, motor_corrupt
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     assert_eq!(motor_corrupt, 0, "Motor received corrupted CmdVel!");
-    assert!(ctrl_imu > 0, "Controller should receive IMU from publisher process");
-    assert!(ctrl_cmd > 0, "Controller should publish CmdVel to motor process");
-    assert!(motor_cmd > 0, "Motor should receive CmdVel from controller process");
+    assert!(
+        ctrl_imu > 0,
+        "Controller should receive IMU from publisher process"
+    );
+    assert!(
+        ctrl_cmd > 0,
+        "Controller should publish CmdVel to motor process"
+    );
+    assert!(
+        motor_cmd > 0,
+        "Motor should receive CmdVel from controller process"
+    );
     println!("✓ xp_3_process_pipeline — data flows across 3 processes, zero corruption");
 }
 
@@ -318,7 +389,9 @@ fn child_surviving_subscriber() {
     while Instant::now() < deadline {
         if let Some(cmd) = t.recv() {
             total += 1;
-            if !cmd.linear.is_finite() { corrupt += 1; }
+            if !cmd.linear.is_finite() {
+                corrupt += 1;
+            }
         } else {
             std::thread::yield_now();
         }
@@ -354,7 +427,9 @@ fn xp_crash_and_reconnect() {
     std::thread::sleep(Duration::from_secs(2));
 
     // Kill publisher 1
-    unsafe { libc::kill(pub1.id() as i32, libc::SIGKILL); }
+    unsafe {
+        libc::kill(pub1.id() as i32, libc::SIGKILL);
+    }
     let _ = pub1.wait();
     println!("Publisher 1 killed");
 
@@ -365,7 +440,9 @@ fn xp_crash_and_reconnect() {
     std::thread::sleep(Duration::from_secs(2));
 
     // Kill publisher 2
-    unsafe { libc::kill(pub2.id() as i32, libc::SIGKILL); }
+    unsafe {
+        libc::kill(pub2.id() as i32, libc::SIGKILL);
+    }
     let _ = pub2.wait();
 
     // Let subscriber's deadline expire naturally (it writes results on timeout)
@@ -377,12 +454,21 @@ fn xp_crash_and_reconnect() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║  CROSS-PROCESS CRASH + RECONNECT                           ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  Subscriber total: {:5} msgs (across 2 publishers)         ║", total);
-    println!("║  Corrupted:        {:5}                                    ║", corrupt);
+    println!(
+        "║  Subscriber total: {:5} msgs (across 2 publishers)         ║",
+        total
+    );
+    println!(
+        "║  Corrupted:        {:5}                                    ║",
+        corrupt
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     assert_eq!(corrupt, 0, "Corruption after crash+reconnect!");
-    assert!(total > 100, "Subscriber should receive from both publishers");
+    assert!(
+        total > 100,
+        "Subscriber should receive from both publishers"
+    );
     println!("✓ xp_crash_and_reconnect — survived SIGKILL, zero corruption");
 }
 
@@ -408,7 +494,9 @@ fn child_multi_publisher() {
         imu.angular_velocity[2] = i as f64;
         imu_t.send(imu);
         cmd_t.send(CmdVel::new(id as f32, i as f32 * 0.01));
-        if i % 20 == 0 { std::thread::sleep(Duration::from_millis(1)); }
+        if i % 20 == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     std::thread::sleep(Duration::from_millis(300));
     write_result(id, "sent", &(count * 2).to_string());
@@ -428,11 +516,15 @@ fn child_multi_subscriber() {
     while Instant::now() < deadline {
         if let Some(imu) = imu_t.recv() {
             recv += 1;
-            if (imu.linear_acceleration[2] - 9.81).abs() > 0.01 { corrupt += 1; }
+            if (imu.linear_acceleration[2] - 9.81).abs() > 0.01 {
+                corrupt += 1;
+            }
         }
         if let Some(cmd) = cmd_t.recv() {
             recv += 1;
-            if !cmd.linear.is_finite() || !cmd.angular.is_finite() { corrupt += 1; }
+            if !cmd.linear.is_finite() || !cmd.angular.is_finite() {
+                corrupt += 1;
+            }
         }
         std::thread::yield_now();
     }
@@ -462,7 +554,13 @@ fn xp_10_processes_chaos() {
     // Spawn 5 subscribers
     let mut children = vec![];
     for i in 0..5u64 {
-        children.push(spawn("xp_10_processes_chaos", &base, "multi_sub", count, 100 + i));
+        children.push(spawn(
+            "xp_10_processes_chaos",
+            &base,
+            "multi_sub",
+            count,
+            100 + i,
+        ));
     }
     std::thread::sleep(Duration::from_millis(500));
 
@@ -472,7 +570,9 @@ fn xp_10_processes_chaos() {
     }
 
     // Wait for all
-    for mut c in children { let _ = c.wait(); }
+    for mut c in children {
+        let _ = c.wait();
+    }
 
     // Collect results
     println!("╔══════════════════════════════════════════════════════════════╗");
@@ -486,19 +586,43 @@ fn xp_10_processes_chaos() {
         let corrupt: u64 = read_result(100 + i, "corrupt").trim().parse().unwrap_or(0);
         total_recv += recv;
         total_corrupt += corrupt;
-        println!("║  Sub {}: recv={:5} corrupt={}                               ║", i, recv, corrupt);
+        println!(
+            "║  Sub {}: recv={:5} corrupt={}                               ║",
+            i, recv, corrupt
+        );
     }
     let mut total_sent = 0u64;
     for i in 0..3u64 {
         let sent: u64 = read_result(i, "sent").trim().parse().unwrap_or(0);
         total_sent += sent;
     }
-    println!("║  Total sent: {:5} | Total recv: {:5} | Corrupt: {}          ║", total_sent, total_recv, total_corrupt);
+    println!(
+        "║  Total sent: {:5} | Total recv: {:5} | Corrupt: {}          ║",
+        total_sent, total_recv, total_corrupt
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     assert_eq!(total_corrupt, 0, "DATA CORRUPTION in 10-process chaos!");
-    assert!(total_recv > 500, "Subscribers should receive significant data");
-    let subs_ok = (0..5).filter(|&i| read_result(100 + i, "recv").trim().parse::<u64>().unwrap_or(0) > 0).count();
-    assert!(subs_ok >= 3, "At least 3/5 subs should get data, got {}", subs_ok);
-    println!("✓ xp_10_processes_chaos — {} recv, zero corruption across 10 processes", total_recv);
+    assert!(
+        total_recv > 500,
+        "Subscribers should receive significant data"
+    );
+    let subs_ok = (0..5)
+        .filter(|&i| {
+            read_result(100 + i, "recv")
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(0)
+                > 0
+        })
+        .count();
+    assert!(
+        subs_ok >= 3,
+        "At least 3/5 subs should get data, got {}",
+        subs_ok
+    );
+    println!(
+        "✓ xp_10_processes_chaos — {} recv, zero corruption across 10 processes",
+        total_recv
+    );
 }

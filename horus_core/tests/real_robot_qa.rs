@@ -37,7 +37,9 @@ struct Lidar {
 }
 
 impl Node for Lidar {
-    fn name(&self) -> &str { "lidar" }
+    fn name(&self) -> &str {
+        "lidar"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.scan_pub = Some(Topic::<f32>::new("scan")?);
         horus_core::hlog!(info, "Lidar initialized");
@@ -57,7 +59,9 @@ struct Camera {
 }
 
 impl Node for Camera {
-    fn name(&self) -> &str { "camera" }
+    fn name(&self) -> &str {
+        "camera"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.image_pub = Some(Topic::<u64>::new("camera.rgb")?);
         horus_core::hlog!(info, "Camera initialized");
@@ -77,7 +81,9 @@ struct Imu {
 }
 
 impl Node for Imu {
-    fn name(&self) -> &str { "imu" }
+    fn name(&self) -> &str {
+        "imu"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu_pub = Some(Topic::<f32>::new("imu.data")?);
         horus_core::hlog!(info, "IMU initialized");
@@ -97,7 +103,9 @@ struct Battery {
 }
 
 impl Node for Battery {
-    fn name(&self) -> &str { "battery" }
+    fn name(&self) -> &str {
+        "battery"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.voltage_pub = Some(Topic::<f32>::new("battery.voltage")?);
         horus_core::hlog!(info, "Battery monitor initialized");
@@ -123,7 +131,9 @@ struct Slam {
 }
 
 impl Node for Slam {
-    fn name(&self) -> &str { "slam" }
+    fn name(&self) -> &str {
+        "slam"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.scan_sub = Some(Topic::<f32>::new("scan")?);
         self.map_pub = Some(Topic::<f32>::new("map")?);
@@ -151,7 +161,9 @@ struct Planner {
 }
 
 impl Node for Planner {
-    fn name(&self) -> &str { "planner" }
+    fn name(&self) -> &str {
+        "planner"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.map_sub = Some(Topic::<f32>::new("map")?);
         self.path_pub = Some(Topic::<f32>::new("path")?);
@@ -178,7 +190,9 @@ struct Controller {
 }
 
 impl Node for Controller {
-    fn name(&self) -> &str { "controller" }
+    fn name(&self) -> &str {
+        "controller"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.path_sub = Some(Topic::<f32>::new("path")?);
         self.cmd_pub = Some(Topic::<f32>::new("cmd_vel")?);
@@ -207,7 +221,9 @@ struct Motor {
 }
 
 impl Node for Motor {
-    fn name(&self) -> &str { &self.node_name }
+    fn name(&self) -> &str {
+        &self.node_name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.cmd_sub = Some(Topic::<f32>::new("cmd_vel")?);
         horus_core::hlog!(info, "{} initialized", self.node_name);
@@ -229,7 +245,9 @@ struct SafetyMonitor {
 }
 
 impl Node for SafetyMonitor {
-    fn name(&self) -> &str { "safety_monitor" }
+    fn name(&self) -> &str {
+        "safety_monitor"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.cmd_sub = Some(Topic::<f32>::new("cmd_vel")?);
         horus_core::hlog!(info, "Safety monitor initialized");
@@ -261,41 +279,123 @@ fn test_10_node_robot_runs() {
         .max_deadline_misses(10000);
 
     // Sensors (order 0-3)
-    sched.add(Lidar { scan_pub: None, count: counts[0].clone() })
-        .order(0).build().unwrap();
-    sched.add(Camera { image_pub: None, count: counts[1].clone() })
-        .order(1).build().unwrap();
-    sched.add(Imu { imu_pub: None, count: counts[2].clone() })
-        .order(2).build().unwrap();
-    sched.add(Battery { voltage_pub: None, voltage: 12.6 })
-        .order(3).build().unwrap();
+    sched
+        .add(Lidar {
+            scan_pub: None,
+            count: counts[0].clone(),
+        })
+        .order(0)
+        .build()
+        .unwrap();
+    sched
+        .add(Camera {
+            image_pub: None,
+            count: counts[1].clone(),
+        })
+        .order(1)
+        .build()
+        .unwrap();
+    sched
+        .add(Imu {
+            imu_pub: None,
+            count: counts[2].clone(),
+        })
+        .order(2)
+        .build()
+        .unwrap();
+    sched
+        .add(Battery {
+            voltage_pub: None,
+            voltage: 12.6,
+        })
+        .order(3)
+        .build()
+        .unwrap();
 
     // Processing (order 10-12)
-    sched.add(Slam { scan_sub: None, map_pub: None, count: counts[4].clone() })
-        .order(10).build().unwrap();
-    sched.add(Planner { map_sub: None, path_pub: None, count: counts[5].clone() })
-        .order(11).build().unwrap();
-    sched.add(Controller { path_sub: None, cmd_pub: None, count: counts[6].clone() })
-        .order(12).build().unwrap();
+    sched
+        .add(Slam {
+            scan_sub: None,
+            map_pub: None,
+            count: counts[4].clone(),
+        })
+        .order(10)
+        .build()
+        .unwrap();
+    sched
+        .add(Planner {
+            map_sub: None,
+            path_pub: None,
+            count: counts[5].clone(),
+        })
+        .order(11)
+        .build()
+        .unwrap();
+    sched
+        .add(Controller {
+            path_sub: None,
+            cmd_pub: None,
+            count: counts[6].clone(),
+        })
+        .order(12)
+        .build()
+        .unwrap();
 
     // Actuators (order 20-22)
-    sched.add(Motor { node_name: "motor_left".into(), cmd_sub: None, count: counts[7].clone() })
-        .order(20).build().unwrap();
-    sched.add(Motor { node_name: "motor_right".into(), cmd_sub: None, count: counts[8].clone() })
-        .order(21).build().unwrap();
-    sched.add(SafetyMonitor { cmd_sub: None, count: counts[9].clone() })
-        .order(22).build().unwrap();
+    sched
+        .add(Motor {
+            node_name: "motor_left".into(),
+            cmd_sub: None,
+            count: counts[7].clone(),
+        })
+        .order(20)
+        .build()
+        .unwrap();
+    sched
+        .add(Motor {
+            node_name: "motor_right".into(),
+            cmd_sub: None,
+            count: counts[8].clone(),
+        })
+        .order(21)
+        .build()
+        .unwrap();
+    sched
+        .add(SafetyMonitor {
+            cmd_sub: None,
+            count: counts[9].clone(),
+        })
+        .order(22)
+        .build()
+        .unwrap();
 
     // Run for 3 seconds
     sched.run_for(3_u64.secs()).unwrap();
 
     // Verify all 10 nodes ticked
-    let names = ["lidar", "camera", "imu", "battery", "slam", "planner",
-                  "controller", "motor_left", "motor_right", "safety_monitor"];
+    let names = [
+        "lidar",
+        "camera",
+        "imu",
+        "battery",
+        "slam",
+        "planner",
+        "controller",
+        "motor_left",
+        "motor_right",
+        "safety_monitor",
+    ];
     for (i, name) in names.iter().enumerate() {
-        if i == 3 { continue; } // battery uses its own counter
+        if i == 3 {
+            continue;
+        } // battery uses its own counter
         let ticks = counts[i].load(Ordering::SeqCst);
-        assert!(ticks > 50, "Node '{}' should have ticked >50 times, got {}", name, ticks);
+        assert!(
+            ticks > 50,
+            "Node '{}' should have ticked >50 times, got {}",
+            name,
+            ticks
+        );
     }
 
     // Verify TopicNodeRegistry was populated
@@ -303,27 +403,43 @@ fn test_10_node_robot_runs() {
     let all = registry.all_topics();
     println!("=== TopicNodeRegistry ===");
     for (topic, assocs) in &all {
-        let nodes: Vec<_> = assocs.iter().map(|a| format!("{} ({:?})", a.node_name, a.role)).collect();
+        let nodes: Vec<_> = assocs
+            .iter()
+            .map(|a| format!("{} ({:?})", a.node_name, a.role))
+            .collect();
         println!("  {} → {}", topic, nodes.join(", "));
     }
 
     // Check specific associations
     let scan_pubs = registry.publishers_of_topic("scan");
-    assert!(scan_pubs.contains(&"lidar".to_string()),
-        "scan publishers should include lidar, got: {:?}", scan_pubs);
+    assert!(
+        scan_pubs.contains(&"lidar".to_string()),
+        "scan publishers should include lidar, got: {:?}",
+        scan_pubs
+    );
 
     let cmd_subs = registry.subscribers_of_topic("cmd_vel");
-    assert!(!cmd_subs.is_empty(),
-        "cmd_vel should have subscribers: {:?}", cmd_subs);
+    assert!(
+        !cmd_subs.is_empty(),
+        "cmd_vel should have subscribers: {:?}",
+        cmd_subs
+    );
 
     // Verify presence files exist
     let presences = horus_core::NodePresence::read_all();
     println!("=== Presence files ===");
     for p in &presences {
-        println!("  {} — pubs: {:?}, subs: {:?}, ticks: {}",
+        println!(
+            "  {} — pubs: {:?}, subs: {:?}, ticks: {}",
             p.name(),
-            p.publishers().iter().map(|t| &t.topic_name).collect::<Vec<_>>(),
-            p.subscribers().iter().map(|t| &t.topic_name).collect::<Vec<_>>(),
+            p.publishers()
+                .iter()
+                .map(|t| &t.topic_name)
+                .collect::<Vec<_>>(),
+            p.subscribers()
+                .iter()
+                .map(|t| &t.topic_name)
+                .collect::<Vec<_>>(),
             p.tick_count()
         );
     }
@@ -340,15 +456,27 @@ fn test_10_node_robot_runs() {
 
     // Verify correct pub/sub roles
     let scan_subs = registry.subscribers_of_topic("scan");
-    assert!(scan_subs.contains(&"slam".to_string()), "slam should subscribe to scan");
+    assert!(
+        scan_subs.contains(&"slam".to_string()),
+        "slam should subscribe to scan"
+    );
 
     let map_pubs = registry.publishers_of_topic("map");
-    assert!(map_pubs.contains(&"slam".to_string()), "slam should publish map");
+    assert!(
+        map_pubs.contains(&"slam".to_string()),
+        "slam should publish map"
+    );
 
     let cmd_pubs = registry.publishers_of_topic("cmd_vel");
-    assert!(cmd_pubs.contains(&"controller".to_string()), "controller should publish cmd_vel");
+    assert!(
+        cmd_pubs.contains(&"controller".to_string()),
+        "controller should publish cmd_vel"
+    );
 
     let cmd_subs_list = registry.subscribers_of_topic("cmd_vel");
-    assert!(cmd_subs_list.len() >= 3,
-        "cmd_vel should have 3+ subscribers (motor_left, motor_right, safety_monitor), got {:?}", cmd_subs_list);
+    assert!(
+        cmd_subs_list.len() >= 3,
+        "cmd_vel should have 3+ subscribers (motor_left, motor_right, safety_monitor), got {:?}",
+        cmd_subs_list
+    );
 }

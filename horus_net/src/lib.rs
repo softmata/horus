@@ -14,18 +14,18 @@
 pub mod config;
 pub mod discovery;
 pub mod encoding;
+pub mod estop;
 pub mod event_loop;
 pub mod flow_control;
 pub mod fragment;
 pub mod guard;
 pub mod heartbeat;
+pub mod log_replication;
 pub mod metrics;
 pub mod optimize;
 pub mod peer;
-pub mod priority;
-pub mod estop;
-pub mod log_replication;
 pub mod presence;
+pub mod priority;
 pub mod registry;
 pub mod reliability;
 pub mod replicator;
@@ -59,7 +59,12 @@ pub fn start_replicator(config: NetConfig) -> Option<ReplicatorHandle> {
     horus_core::communication::set_topic_lifecycle_hook(move |event| {
         use horus_core::communication::TopicLifecycleEvent;
         match event {
-            TopicLifecycleEvent::Created { name, type_name_hash, type_size, is_pod } => {
+            TopicLifecycleEvent::Created {
+                name,
+                type_name_hash,
+                type_size,
+                is_pod,
+            } => {
                 reg_clone.register(
                     &name,
                     type_name_hash,

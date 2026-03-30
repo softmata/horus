@@ -62,9 +62,12 @@ impl GpuImageOps {
             });
         }
         kernels::color_convert(
-            src, dst,
-            width as i32, height as i32,
-            src_fmt as i32, dst_fmt as i32,
+            src,
+            dst,
+            width as i32,
+            height as i32,
+            src_fmt as i32,
+            dst_fmt as i32,
             stream,
         )
     }
@@ -87,9 +90,12 @@ impl GpuImageOps {
             });
         }
         kernels::resize(
-            src, dst,
-            src_w as i32, src_h as i32,
-            dst_w as i32, dst_h as i32,
+            src,
+            dst,
+            src_w as i32,
+            src_h as i32,
+            dst_w as i32,
+            dst_h as i32,
             channels as i32,
             stream,
         )
@@ -109,9 +115,13 @@ impl GpuImageOps {
         stream: *mut c_void,
     ) -> CudaResult<()> {
         kernels::normalize(
-            src, dst,
-            width as i32, height as i32, channels as i32,
-            mean, stddev,
+            src,
+            dst,
+            width as i32,
+            height as i32,
+            channels as i32,
+            mean,
+            stddev,
             stream,
         )
     }
@@ -127,8 +137,12 @@ impl GpuImageOps {
         stream: *mut c_void,
     ) -> CudaResult<()> {
         kernels::transpose_hwc_to_chw(
-            src, dst,
-            width as i32, height as i32, channels as i32, elem_size as i32,
+            src,
+            dst,
+            width as i32,
+            height as i32,
+            channels as i32,
+            elem_size as i32,
             stream,
         )
     }
@@ -148,9 +162,13 @@ impl GpuImageOps {
         stream: *mut c_void,
     ) -> CudaResult<()> {
         kernels::undistort(
-            src, dst,
-            width as i32, height as i32, channels as i32,
-            intrinsics, distortion,
+            src,
+            dst,
+            width as i32,
+            height as i32,
+            channels as i32,
+            intrinsics,
+            distortion,
             stream,
         )
     }
@@ -172,11 +190,18 @@ impl GpuImageOps {
         stream: *mut c_void,
     ) -> CudaResult<()> {
         kernels::crop_pad(
-            src, dst,
-            src_w as i32, src_h as i32,
-            crop_x, crop_y, crop_w as i32, crop_h as i32,
-            dst_w as i32, dst_h as i32,
-            channels as i32, pad_value,
+            src,
+            dst,
+            src_w as i32,
+            src_h as i32,
+            crop_x,
+            crop_y,
+            crop_w as i32,
+            crop_h as i32,
+            dst_w as i32,
+            dst_h as i32,
+            channels as i32,
+            pad_value,
             stream,
         )
     }
@@ -220,11 +245,15 @@ impl GpuImageOps {
             });
         }
         kernels::preprocess_fused(
-            src, dst,
-            src_w as i32, src_h as i32,
-            dst_w as i32, dst_h as i32,
+            src,
+            dst,
+            src_w as i32,
+            src_h as i32,
+            dst_w as i32,
+            dst_h as i32,
             src_fmt as i32,
-            mean, stddev,
+            mean,
+            stddev,
             stream,
         )
     }

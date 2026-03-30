@@ -13,8 +13,12 @@ fn bench_fanout(np: usize, ns: usize) -> (u64, u64, u64, u64) {
 
     let mut pub_ids = Vec::new();
     let mut sub_ids = Vec::new();
-    for _ in 0..np { pub_ids.push(ring.register_publisher()); }
-    for _ in 0..ns { sub_ids.push(ring.register_subscriber()); }
+    for _ in 0..np {
+        pub_ids.push(ring.register_publisher());
+    }
+    for _ in 0..ns {
+        sub_ids.push(ring.register_subscriber());
+    }
 
     let barrier = Arc::new(std::sync::Barrier::new(np + ns));
 
@@ -53,13 +57,19 @@ fn bench_fanout(np: usize, ns: usize) -> (u64, u64, u64, u64) {
         }));
     }
 
-    for h in pub_handles { h.join().unwrap(); }
+    for h in pub_handles {
+        h.join().unwrap();
+    }
     let mut all: Vec<u64> = Vec::new();
-    for h in sub_handles { all.extend(h.join().unwrap()); }
+    for h in sub_handles {
+        all.extend(h.join().unwrap());
+    }
 
     all.sort();
     let n = all.len();
-    if n == 0 { return (0, 0, 0, 0); }
+    if n == 0 {
+        return (0, 0, 0, 0);
+    }
     let avg = all.iter().sum::<u64>() / n as u64;
     let med = all[n / 2];
     let p99 = all[(n as f64 * 0.99) as usize];

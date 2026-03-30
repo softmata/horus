@@ -361,11 +361,7 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
         name.white().bold()
     );
     if resolved_name != name {
-        println!(
-            "  {} resolved to '{}'",
-            "".dimmed(),
-            resolved_name
-        );
+        println!("  {} resolved to '{}'", "".dimmed(), resolved_name);
     }
     println!("  {} {}", "Request:".dimmed(), request_json);
     println!(
@@ -383,13 +379,17 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
         response_topic: None,
     };
     let json_bytes = serde_json::to_vec(&req_msg).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!("Failed to serialize request: {}", e)))
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to serialize request: {}",
+            e
+        )))
     })?;
     let gateway_dir = shm_topics_dir().join(".service_gateway");
     std::fs::create_dir_all(&gateway_dir).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
             "Failed to create service gateway dir '{}': {}\n  Is a HORUS server running?",
-            gateway_dir.display(), e
+            gateway_dir.display(),
+            e
         )))
     })?;
     let req_file = gateway_dir.join(format!("{}.request.json", resolved_name));
@@ -397,7 +397,8 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
     std::fs::write(&req_file, &json_bytes).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
             "Failed to write request file '{}': {}",
-            req_file.display(), e
+            req_file.display(),
+            e
         )))
     })?;
 

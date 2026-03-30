@@ -355,15 +355,15 @@ fn test_5_node_cascade_chain() {
     // All 5 nodes should have ticked
     for (i, count) in counts.iter().enumerate() {
         let ticks = count.load(Ordering::SeqCst);
-        assert!(
-            ticks > 0,
-            "Node {} should tick at least once, got 0",
-            i
-        );
+        assert!(ticks > 0, "Node {} should tick at least once, got 0", i);
     }
 
     // Nodes 1-4 should keep ticking even though node 0 is degraded
-    let fast_min = counts[1..].iter().map(|c| c.load(Ordering::SeqCst)).min().unwrap();
+    let fast_min = counts[1..]
+        .iter()
+        .map(|c| c.load(Ordering::SeqCst))
+        .min()
+        .unwrap();
     assert!(
         fast_min > 10,
         "Fast nodes should have many ticks: min={}",

@@ -246,8 +246,6 @@ impl Node for MotorControllerNode {
         println!("Motor controller shutdown");
         Ok(())
     }
-
-
 }
 
 // ============ Camera Perception Node (Heavy I/O, will use async tier) ============
@@ -331,7 +329,6 @@ impl Node for CameraPerceptionNode {
         println!("Camera {} shutdown", self.camera_id);
         Ok(())
     }
-
 }
 
 // ============ Lidar Processing Node (Heavy I/O, will use async tier) ============
@@ -407,7 +404,6 @@ impl Node for LidarProcessingNode {
         println!("Lidar processor shutdown");
         Ok(())
     }
-
 }
 
 // ============ Sensor Fusion Node (Fast execution tier) ============
@@ -508,8 +504,6 @@ impl Node for SensorFusionNode {
         println!("Sensor fusion shutdown");
         Ok(())
     }
-
-
 }
 
 // ============ Path Planning Node ============
@@ -616,8 +610,6 @@ impl Node for PathPlannerNode {
         println!("Path planner shutdown");
         Ok(())
     }
-
-
 }
 
 // ============ Navigation Controller Node ============
@@ -728,8 +720,6 @@ impl Node for NavigationControllerNode {
         println!("Navigation controller shutdown");
         Ok(())
     }
-
-
 }
 
 // ============ Battery Monitor Node (with fault tolerance) ============
@@ -811,7 +801,6 @@ impl Node for BatteryMonitorNode {
         println!("Battery monitor shutdown");
         Ok(())
     }
-
 }
 
 // ============ IMU Sensor Node ============
@@ -861,7 +850,6 @@ impl Node for IMUSensorNode {
         println!("IMU sensor shutdown");
         Ok(())
     }
-
 }
 
 // ============ Main Test ============

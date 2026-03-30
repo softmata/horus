@@ -842,7 +842,8 @@ impl RegistryClient {
         if install_type == "global" {
             if let Err(e) = precompile_package(&package_dir) {
                 // Plugin packages MUST have a working binary — propagate the error
-                let is_plugin = crate::commands::pkg::detect_plugin_metadata(&package_dir).is_some();
+                let is_plugin =
+                    crate::commands::pkg::detect_plugin_metadata(&package_dir).is_some();
                 if is_plugin {
                     return Err(anyhow!(
                         "Pre-compilation failed for plugin package '{}': {}\n\

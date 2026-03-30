@@ -211,7 +211,11 @@ fn test_log_write_throughput() {
     let start = Instant::now();
 
     for i in 0..count {
-        buffer.push(make_entry("throughput_node", i, "benchmark message payload"));
+        buffer.push(make_entry(
+            "throughput_node",
+            i,
+            "benchmark message payload",
+        ));
     }
 
     let elapsed = start.elapsed();

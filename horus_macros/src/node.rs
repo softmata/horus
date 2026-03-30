@@ -535,7 +535,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
             })
             .collect();
         quote! {
-            fn publishers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
+            pub fn publishers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
                 vec![#(#publishers),*]
             }
         }
@@ -560,7 +560,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
             })
             .collect();
         quote! {
-            fn subscribers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
+            pub fn subscribers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
                 vec![#(#subscribers),*]
             }
         }
@@ -580,6 +580,9 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
                     #(#constructor_fields,)*
                 }
             }
+
+            #publishers_impl
+            #subscribers_impl
         }
 
         impl ::horus::horus_core::core::node::Node for #struct_name {
@@ -590,8 +593,6 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
             #tick_impl
             #init_impl
             #shutdown_impl
-            #publishers_impl
-            #subscribers_impl
         }
 
         impl Default for #struct_name {

@@ -19,7 +19,8 @@ use common::cleanup_stale_shm;
 
 fn horus_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
+        .parent()
+        .unwrap()
         .join("target/debug/horus")
 }
 
@@ -33,8 +34,22 @@ fn horus_bin() -> PathBuf {
 const RUST_PUBLISHER_CODE: &str = r#"
 use horus::prelude::*;
 
+/// Minimal IMU struct matching the wire layout of horus_robotics::messages::sensor::Imu.
+/// Defined locally so the generated project does not need horus_robotics as a dependency.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Imu {
+    pub orientation: [f64; 4],
+    pub orientation_covariance: [f64; 9],
+    pub angular_velocity: [f64; 3],
+    pub angular_velocity_covariance: [f64; 9],
+    pub linear_acceleration: [f64; 3],
+    pub linear_acceleration_covariance: [f64; 9],
+    pub timestamp_ns: u64,
+}
+
 struct ImuPub {
-    topic: Option<Topic<horus_library::messages::sensor::Imu>>,
+    topic: Option<Topic<Imu>>,
     seq: u64,
 }
 
@@ -45,7 +60,8 @@ impl Node for ImuPub {
         Ok(())
     }
     fn tick(&mut self) {
-        let mut imu = horus_library::messages::sensor::Imu::new();
+        let mut imu = Imu::default();
+        imu.orientation = [0.0, 0.0, 0.0, 1.0];
         imu.linear_acceleration = [0.0, 0.0, 9.81];
         imu.angular_velocity[2] = self.seq as f64 * 0.001;
         if let Some(ref t) = self.topic { t.send(imu); }
@@ -67,8 +83,22 @@ use horus::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+/// Minimal IMU struct matching the wire layout of horus_robotics::messages::sensor::Imu.
+/// Defined locally so the generated project does not need horus_robotics as a dependency.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Imu {
+    pub orientation: [f64; 4],
+    pub orientation_covariance: [f64; 9],
+    pub angular_velocity: [f64; 3],
+    pub angular_velocity_covariance: [f64; 9],
+    pub linear_acceleration: [f64; 3],
+    pub linear_acceleration_covariance: [f64; 9],
+    pub timestamp_ns: u64,
+}
+
 struct ImuSub {
-    topic: Option<Topic<horus_library::messages::sensor::Imu>>,
+    topic: Option<Topic<Imu>>,
     received: Arc<AtomicU64>,
     corrupted: Arc<AtomicU64>,
 }
@@ -124,10 +154,13 @@ fn real_rust_projects_ipc() {
     let out = Command::new(horus_bin())
         .args(["new", "imu_publisher", "-r", "-o"])
         .arg(tmpdir.path())
-        .output().expect("horus new pub");
+        .output()
+        .expect("horus new pub");
     if !pub_dir.join("horus.toml").exists() {
-        println!("✓ real_rust_projects_ipc — SKIPPED (horus new failed: {})",
-                 String::from_utf8_lossy(&out.stderr));
+        println!(
+            "✓ real_rust_projects_ipc — SKIPPED (horus new failed: {})",
+            String::from_utf8_lossy(&out.stderr)
+        );
         return;
     }
 
@@ -135,7 +168,8 @@ fn real_rust_projects_ipc() {
     let _ = Command::new(horus_bin())
         .args(["new", "imu_subscriber", "-r", "-o"])
         .arg(tmpdir.path())
-        .output().expect("horus new sub");
+        .output()
+        .expect("horus new sub");
     if !sub_dir.join("horus.toml").exists() {
         println!("✓ real_rust_projects_ipc — SKIPPED (sub project creation failed)");
         return;
@@ -151,10 +185,14 @@ fn real_rust_projects_ipc() {
     let build_pub = Command::new(horus_bin())
         .arg("build")
         .current_dir(&pub_dir)
-        .output().expect("build pub");
+        .output()
+        .expect("build pub");
     if !build_pub.status.success() {
         let stderr = String::from_utf8_lossy(&build_pub.stderr);
-        println!("✓ real_rust_projects_ipc — SKIPPED (pub build failed: {})", stderr.lines().take(5).collect::<Vec<_>>().join("\n"));
+        println!(
+            "✓ real_rust_projects_ipc — SKIPPED (pub build failed: {})",
+            stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+        );
         return;
     }
 
@@ -162,10 +200,14 @@ fn real_rust_projects_ipc() {
     let build_sub = Command::new(horus_bin())
         .arg("build")
         .current_dir(&sub_dir)
-        .output().expect("build sub");
+        .output()
+        .expect("build sub");
     if !build_sub.status.success() {
         let stderr = String::from_utf8_lossy(&build_sub.stderr);
-        println!("✓ real_rust_projects_ipc — SKIPPED (sub build failed: {})", stderr.lines().take(5).collect::<Vec<_>>().join("\n"));
+        println!(
+            "✓ real_rust_projects_ipc — SKIPPED (sub build failed: {})",
+            stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+        );
         return;
     }
 
@@ -177,7 +219,8 @@ fn real_rust_projects_ipc() {
         .env("HORUS_RESULT_FILE", &result_file)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn().expect("run sub");
+        .spawn()
+        .expect("run sub");
 
     std::thread::sleep(Duration::from_millis(500));
 
@@ -188,7 +231,8 @@ fn real_rust_projects_ipc() {
         .current_dir(&pub_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn().expect("run pub");
+        .spawn()
+        .expect("run pub");
 
     let _ = pub_proc.wait();
     println!("Publisher finished");
@@ -200,19 +244,29 @@ fn real_rust_projects_ipc() {
     println!("Result: {}", result);
 
     if result.contains("recv=") {
-        let recv: u64 = result.split("recv=").nth(1)
+        let recv: u64 = result
+            .split("recv=")
+            .nth(1)
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let corrupt: u64 = result.split("corrupt=").nth(1)
+        let corrupt: u64 = result
+            .split("corrupt=")
+            .nth(1)
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
         println!("╔══════════════════════════════════════════════════════════════╗");
         println!("║  REAL RUST PROJECTS IPC                                     ║");
-        println!("║  Subscriber received: {:5} Imu messages                     ║", recv);
-        println!("║  Corrupted:           {:5}                                  ║", corrupt);
+        println!(
+            "║  Subscriber received: {:5} Imu messages                     ║",
+            recv
+        );
+        println!(
+            "║  Corrupted:           {:5}                                  ║",
+            corrupt
+        );
         println!("╚══════════════════════════════════════════════════════════════╝");
 
         assert_eq!(corrupt, 0, "Corruption between real projects!");
@@ -295,7 +349,8 @@ fn real_rust_python_cross_language_ipc() {
         .env("HORUS_RESULT_FILE", &result_file)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn().expect("start python");
+        .spawn()
+        .expect("start python");
 
     std::thread::sleep(Duration::from_secs(2));
 
@@ -310,43 +365,64 @@ fn real_rust_python_cross_language_ipc() {
     use horus_core::scheduling::Scheduler;
     use horus_robotics::messages::sensor::Imu;
 
-    struct RustImuPub { topic: Option<Topic<Imu>>, seq: u64 }
+    struct RustImuPub {
+        topic: Option<Topic<Imu>>,
+        seq: u64,
+    }
     impl Node for RustImuPub {
-        fn name(&self) -> &str { "rust_imu_pub" }
+        fn name(&self) -> &str {
+            "rust_imu_pub"
+        }
         fn init(&mut self) -> horus_core::error::HorusResult<()> {
             // Use "sensor.imu" — matches Python subs={"sensor.imu": horus.Imu}
-            self.topic = Some(Topic::new("sensor.imu")?); Ok(())
+            self.topic = Some(Topic::new("sensor.imu")?);
+            Ok(())
         }
         fn tick(&mut self) {
             let mut imu = Imu::new();
             imu.linear_acceleration = [0.0, 0.0, 9.81];
             imu.angular_velocity[2] = self.seq as f64 * 0.001;
-            if let Some(ref t) = self.topic { t.send(imu); }
+            if let Some(ref t) = self.topic {
+                t.send(imu);
+            }
             self.seq += 1;
         }
     }
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-    let _ = sched.add(RustImuPub { topic: None, seq: 0 })
-        .rate(100_u64.hz()).order(0).build();
+    let _ = sched
+        .add(RustImuPub {
+            topic: None,
+            seq: 0,
+        })
+        .rate(100_u64.hz())
+        .order(0)
+        .build();
     let _ = sched.run_for(Duration::from_secs(3));
     println!("Rust publisher finished");
 
     // Wait for Python subscriber
     let py_out = py_proc.wait_with_output().unwrap();
     let py_stderr = String::from_utf8_lossy(&py_out.stderr);
-    println!("Python stderr: {}", py_stderr.lines().take(5).collect::<Vec<_>>().join("\n"));
+    println!(
+        "Python stderr: {}",
+        py_stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+    );
 
     // Read results
     let result = std::fs::read_to_string(&result_file).unwrap_or_default();
     println!("Python result: {}", result);
 
     if result.contains("recv=") {
-        let recv: u64 = result.split("recv=").nth(1)
+        let recv: u64 = result
+            .split("recv=")
+            .nth(1)
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let corrupt: u64 = result.split("corrupt=").nth(1)
+        let corrupt: u64 = result
+            .split("corrupt=")
+            .nth(1)
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
@@ -355,8 +431,14 @@ fn real_rust_python_cross_language_ipc() {
         println!("║  RUST ↔ PYTHON CROSS-LANGUAGE IPC                           ║");
         println!("║  Rust scheduler published Imu at 100Hz                      ║");
         println!("║  Python horus.run() subscribed to same topic                ║");
-        println!("║  Python received: {:5} Imu messages                         ║", recv);
-        println!("║  Corrupted:       {:5}                                      ║", corrupt);
+        println!(
+            "║  Python received: {:5} Imu messages                         ║",
+            recv
+        );
+        println!(
+            "║  Corrupted:       {:5}                                      ║",
+            corrupt
+        );
         println!("╚══════════════════════════════════════════════════════════════╝");
 
         assert_eq!(corrupt, 0, "Corruption in Rust→Python IPC!");
@@ -448,9 +530,12 @@ fn real_python_to_rust_ipc() {
             recv: Arc<AtomicU64>,
         }
         impl Node for RustSub {
-            fn name(&self) -> &str { "rust_cmd_sub" }
+            fn name(&self) -> &str {
+                "rust_cmd_sub"
+            }
             fn init(&mut self) -> horus_core::error::HorusResult<()> {
-                self.topic = Some(Topic::new("motor.cmd")?); Ok(())
+                self.topic = Some(Topic::new("motor.cmd")?);
+                Ok(())
             }
             fn tick(&mut self) {
                 if let Some(ref t) = self.topic {
@@ -464,8 +549,14 @@ fn real_python_to_rust_ipc() {
         }
 
         let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-        let _ = sched.add(RustSub { topic: None, recv: rc.clone() })
-            .rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(RustSub {
+                topic: None,
+                recv: rc.clone(),
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
         let _ = sched.run_for(Duration::from_secs(4));
 
         let r = rc.load(Ordering::Relaxed);
@@ -480,7 +571,8 @@ fn real_python_to_rust_ipc() {
         .arg(&py_script)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn().expect("start python pub");
+        .spawn()
+        .expect("start python pub");
 
     let py_out = py_proc.wait_with_output().unwrap();
     let py_stderr = String::from_utf8_lossy(&py_out.stderr);
@@ -492,7 +584,9 @@ fn real_python_to_rust_ipc() {
     println!("Rust result: {}", result);
 
     if result.contains("recv=") {
-        let recv: u64 = result.split("recv=").nth(1)
+        let recv: u64 = result
+            .split("recv=")
+            .nth(1)
             .and_then(|s| s.split_whitespace().next())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
@@ -501,7 +595,10 @@ fn real_python_to_rust_ipc() {
         println!("║  PYTHON → RUST CROSS-LANGUAGE IPC                           ║");
         println!("║  Python horus.run() published at 100Hz                      ║");
         println!("║  Rust scheduler subscribed to same topic                    ║");
-        println!("║  Rust received: {:5} messages                               ║", recv);
+        println!(
+            "║  Rust received: {:5} messages                               ║",
+            recv
+        );
         println!("╚══════════════════════════════════════════════════════════════╝");
 
         if recv > 0 {

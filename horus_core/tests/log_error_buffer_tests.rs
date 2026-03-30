@@ -179,7 +179,8 @@ fn errors_survive_pub_sub_flood_in_error_buffer() {
         "Error buffer must retain more errors than main buffer. \
          error_buffer={}/50, main={}/50. \
          If < 50, run with --test-threads=1 to eliminate parallel interference.",
-        error_errors, main_errors
+        error_errors,
+        main_errors
     );
 }
 
@@ -244,10 +245,7 @@ fn error_buffer_for_node_returns_only_errors_for_node() {
         filtered.iter().all(|e| e.node_name == target),
         "for_node on error buffer must filter correctly"
     );
-    assert!(
-        !filtered.is_empty(),
-        "should find errors for target node"
-    );
+    assert!(!filtered.is_empty(), "should find errors for target node");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -448,8 +446,16 @@ fn mixed_error_warning_batch_correct_counts() {
         .filter(|e| e.log_type == LogType::Warning)
         .count();
 
-    assert!(error_count >= 30, "should have 30 errors, found {}", error_count);
-    assert!(warn_count >= 20, "should have 20 warnings, found {}", warn_count);
+    assert!(
+        error_count >= 30,
+        "should have 30 errors, found {}",
+        error_count
+    );
+    assert!(
+        warn_count >= 20,
+        "should have 20 warnings, found {}",
+        warn_count
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -475,7 +481,9 @@ fn error_buffer_for_topic_filtering() {
         "for_topic on error buffer should find the entry with topic"
     );
     assert!(
-        filtered.iter().all(|e| e.topic.as_ref() == Some(&target_topic)),
+        filtered
+            .iter()
+            .all(|e| e.topic.as_ref() == Some(&target_topic)),
         "all filtered entries must have matching topic"
     );
 }
@@ -492,7 +500,9 @@ fn error_buffer_unicode_message_roundtrip() {
     publish_log(make_entry(&node, LogType::Error, &unicode_msg));
 
     let all = GLOBAL_ERROR_BUFFER.get_all();
-    let entry = all.iter().find(|e| e.node_name == node && e.message.contains("héllo"));
+    let entry = all
+        .iter()
+        .find(|e| e.node_name == node && e.message.contains("héllo"));
     assert!(
         entry.is_some(),
         "unicode error message must round-trip through error buffer"

@@ -489,12 +489,16 @@ pub fn send_goal(
     // Write goal as JSON to file gateway (same approach as service call).
     // Avoids type mismatch: CLI uses Value, server uses GoalRequest<PickObjectGoal>.
     let json_bytes = serde_json::to_vec(&goal_request).map_err(|e| {
-        HorusError::Config(ConfigError::Other(format!("Failed to serialize goal: {}", e)))
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to serialize goal: {}",
+            e
+        )))
     })?;
     let gateway_dir = horus_core::memory::shm_topics_dir().join(".service_gateway");
     std::fs::create_dir_all(&gateway_dir).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
-            "Failed to create gateway dir: {}", e
+            "Failed to create gateway dir: {}",
+            e
         )))
     })?;
     let goal_file = gateway_dir.join(format!("{}.goal.json", name));
@@ -1295,9 +1299,7 @@ mod tests {
 
         wait_cache_expire();
         let actions = discover_actions().unwrap_or_default();
-        let found = actions
-            .iter()
-            .find(|a| a.name.contains("test_partial_act"));
+        let found = actions.iter().find(|a| a.name.contains("test_partial_act"));
 
         assert!(
             found.is_some(),
@@ -1319,9 +1321,7 @@ mod tests {
 
         wait_cache_expire();
         let actions = discover_actions().unwrap_or_default();
-        let found = actions
-            .iter()
-            .find(|a| a.name.contains("test_svc_excl"));
+        let found = actions.iter().find(|a| a.name.contains("test_svc_excl"));
 
         assert!(
             found.is_none(),
@@ -1345,12 +1345,8 @@ mod tests {
 
         wait_cache_expire();
         let actions = discover_actions().unwrap_or_default();
-        let found_a = actions
-            .iter()
-            .any(|a| a.name.contains("test_multi_a"));
-        let found_b = actions
-            .iter()
-            .any(|a| a.name.contains("test_multi_b"));
+        let found_a = actions.iter().any(|a| a.name.contains("test_multi_a"));
+        let found_b = actions.iter().any(|a| a.name.contains("test_multi_b"));
 
         assert!(found_a, "should find test_multi_a action");
         assert!(found_b, "should find test_multi_b action");

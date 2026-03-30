@@ -1213,7 +1213,9 @@ impl Node for LargePublisher {
         if let Some(ref topic) = self.topic {
             let seq = self.sent.load(Ordering::SeqCst) as u8;
             // Fill with deterministic pattern: (index + seq) % 256
-            let data: Vec<u8> = (0..self.size).map(|i| (i as u8).wrapping_add(seq)).collect();
+            let data: Vec<u8> = (0..self.size)
+                .map(|i| (i as u8).wrapping_add(seq))
+                .collect();
             topic.send(data);
             self.sent.fetch_add(1, Ordering::SeqCst);
         }
@@ -1315,9 +1317,7 @@ fn rt_scheduler_cross_process() {
     std::thread::sleep(500_u64.ms());
 
     let pub_count = Arc::new(AtomicU64::new(0));
-    let mut scheduler = Scheduler::new()
-        .tick_rate(1000_u64.hz())
-        .prefer_rt();
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).prefer_rt();
     scheduler
         .add(ScheduledPublisher {
             name: "parent_rt_pub",

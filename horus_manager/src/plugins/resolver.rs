@@ -583,7 +583,10 @@ mod tests {
 
         // The resolver should find the plugin by command name
         let resolved = resolver.resolve("localplugin");
-        assert!(resolved.is_some(), "resolver should find the locally-registered plugin");
+        assert!(
+            resolved.is_some(),
+            "resolver should find the locally-registered plugin"
+        );
         let resolved = resolved.unwrap();
         assert_eq!(resolved.package, "local-plugin");
         assert_eq!(resolved.version, "0.1.0");
@@ -591,7 +594,10 @@ mod tests {
         assert!(resolver.is_plugin("localplugin"));
 
         // Also verify the binary exists on disk at the resolved path
-        assert!(resolved.binary.exists(), "binary should exist at the resolved path");
+        assert!(
+            resolved.binary.exists(),
+            "binary should exist at the resolved path"
+        );
     }
 
     #[test]

@@ -79,7 +79,10 @@ mod tests {
     #[test]
     fn list_registered_includes_entry() {
         registry::register("HwListTest", |_| {
-            Ok(Box::new(StubNode::new("list_test", Arc::new(AtomicU32::new(0)))))
+            Ok(Box::new(StubNode::new(
+                "list_test",
+                Arc::new(AtomicU32::new(0)),
+            )))
         });
         let names = registry::list_registered();
         assert!(names.contains(&"HwListTest".to_string()));
@@ -90,7 +93,10 @@ mod tests {
     #[test]
     fn node_params_get_string() {
         let mut map = HashMap::new();
-        map.insert("port".to_string(), toml::Value::String("/dev/ttyUSB0".into()));
+        map.insert(
+            "port".to_string(),
+            toml::Value::String("/dev/ttyUSB0".into()),
+        );
         let params = NodeParams::new(map);
         let port: String = params.get("port").unwrap();
         assert_eq!(port, "/dev/ttyUSB0");
@@ -245,7 +251,9 @@ node = "MyCustomNode"
     fn load_sim_mode_creates_stub() {
         let _guard = SIM_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // SAFETY: guarded by SIM_ENV_LOCK to prevent parallel env var mutation
-        unsafe { std::env::set_var("HORUS_SIM_MODE", "1"); }
+        unsafe {
+            std::env::set_var("HORUS_SIM_MODE", "1");
+        }
 
         let content = r#"
 [hardware.sensor]
@@ -258,18 +266,28 @@ sim = true
         assert_eq!(nodes[0].0, "sensor");
         assert!(nodes[0].1.name().contains("sim_stub"));
 
-        unsafe { std::env::remove_var("HORUS_SIM_MODE"); }
+        unsafe {
+            std::env::remove_var("HORUS_SIM_MODE");
+        }
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn load_sim_mode_selective_targets() {
         let _guard = SIM_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        unsafe { std::env::set_var("HORUS_SIM_MODE", "1"); }
-        unsafe { std::env::set_var("HORUS_SIM_TARGETS", "lidar"); }
+        unsafe {
+            std::env::set_var("HORUS_SIM_MODE", "1");
+        }
+        unsafe {
+            std::env::set_var("HORUS_SIM_TARGETS", "lidar");
+        }
 
-        registry::register("SelectiveTestA", |p| Ok(Box::new(StubNode::from_params(p)?)));
-        registry::register("SelectiveTestB", |p| Ok(Box::new(StubNode::from_params(p)?)));
+        registry::register("SelectiveTestA", |p| {
+            Ok(Box::new(StubNode::from_params(p)?))
+        });
+        registry::register("SelectiveTestB", |p| {
+            Ok(Box::new(StubNode::from_params(p)?))
+        });
 
         let content = r#"
 [hardware.lidar]
@@ -291,8 +309,12 @@ sim = true
         let imu = nodes.iter().find(|(n, _)| n == "imu").unwrap();
         assert_eq!(imu.1.name(), "stub"); // from factory
 
-        unsafe { std::env::remove_var("HORUS_SIM_MODE"); }
-        unsafe { std::env::remove_var("HORUS_SIM_TARGETS"); }
+        unsafe {
+            std::env::remove_var("HORUS_SIM_MODE");
+        }
+        unsafe {
+            std::env::remove_var("HORUS_SIM_TARGETS");
+        }
         std::fs::remove_file(&path).ok();
     }
 

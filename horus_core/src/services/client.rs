@@ -434,8 +434,7 @@ mod tests {
 
     #[test]
     fn service_client_large_poll_interval() {
-        let client =
-            ServiceClient::<CliTestService>::with_poll_interval(Duration::from_secs(3600));
+        let client = ServiceClient::<CliTestService>::with_poll_interval(Duration::from_secs(3600));
         assert!(
             client.is_ok(),
             "ServiceClient with very large poll interval should succeed"
@@ -595,11 +594,8 @@ mod tests {
             ServiceClient::<CliTestService>::with_poll_interval(Duration::from_millis(1)).unwrap();
         // With 0 retries and tiny timeout, should fail on first attempt
         let config = RetryConfig::new(0, Duration::from_millis(1));
-        let result = client.call_resilient_with(
-            CliTestReq { value: 1 },
-            Duration::from_millis(1),
-            config,
-        );
+        let result =
+            client.call_resilient_with(CliTestReq { value: 1 }, Duration::from_millis(1), config);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ServiceError::Timeout));
     }
@@ -613,10 +609,7 @@ mod tests {
 
     #[test]
     fn request_topic_format() {
-        assert_eq!(
-            CliTestService::request_topic(),
-            "cli_edge_test_svc.request"
-        );
+        assert_eq!(CliTestService::request_topic(), "cli_edge_test_svc.request");
     }
 
     #[test]

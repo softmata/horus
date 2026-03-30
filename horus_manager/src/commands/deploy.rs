@@ -1892,11 +1892,7 @@ targets:
         let yaml: DeployYaml = serde_yaml::from_str(yaml_str).unwrap();
         let target = &yaml.targets["robot"];
 
-        assert_eq!(
-            target.port,
-            Some(2222),
-            "Port must be 2222"
-        );
+        assert_eq!(target.port, Some(2222), "Port must be 2222");
         assert_eq!(target.host, "user@host");
         assert_eq!(target.dir.as_deref(), Some("/path"));
     }

@@ -68,8 +68,8 @@ impl Optimizer for DeltaOptimizer {
             // Keyframe counter
             let since = self.since_keyframe.entry(hash).or_insert(0);
             *since += 1;
-            let is_keyframe = *since >= self.keyframe_interval
-                || !self.last_sent.contains_key(&hash);
+            let is_keyframe =
+                *since >= self.keyframe_interval || !self.last_sent.contains_key(&hash);
 
             if is_keyframe {
                 // Send full payload as keyframe
@@ -225,7 +225,11 @@ mod tests {
         opt.on_outgoing(&mut msgs2);
         assert_eq!(msgs2.len(), 1);
         // Delta should be smaller than 400 bytes
-        assert!(msgs2[0].payload.len() < 400, "delta size: {}", msgs2[0].payload.len());
+        assert!(
+            msgs2[0].payload.len() < 400,
+            "delta size: {}",
+            msgs2[0].payload.len()
+        );
     }
 
     #[test]

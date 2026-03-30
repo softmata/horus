@@ -94,6 +94,18 @@ impl Drop for TestTempDir {
     }
 }
 
+/// Current wall-clock time as nanoseconds since the UNIX epoch.
+///
+/// Replacement for `horus_library::transform_frame::timestamp_now()` that
+/// avoids pulling in the `horus_library` crate as a test dependency.
+#[allow(dead_code)]
+pub fn timestamp_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_nanos() as u64
+}
+
 /// RAII guard that cleans up HORUS shared memory on drop.
 ///
 /// Removes SHM topics and nodes directories when the guard is dropped,

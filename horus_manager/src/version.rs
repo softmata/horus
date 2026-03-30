@@ -305,14 +305,8 @@ mod tests {
         let v100 = Version::parse("1.0.0").unwrap();
 
         // Strict ordering: 0.1.0 < 0.2.0 < 1.0.0
-        assert!(
-            v010 < v020,
-            "0.1.0 should be less than 0.2.0"
-        );
-        assert!(
-            v020 < v100,
-            "0.2.0 should be less than 1.0.0"
-        );
+        assert!(v010 < v020, "0.1.0 should be less than 0.2.0");
+        assert!(v020 < v100, "0.2.0 should be less than 1.0.0");
         assert!(
             v010 < v100,
             "0.1.0 should be less than 1.0.0 (transitivity)"
@@ -327,14 +321,8 @@ mod tests {
 
         // Patch ordering
         let v019 = Version::parse("0.1.9").unwrap();
-        assert!(
-            v010 < v019,
-            "0.1.0 should be less than 0.1.9"
-        );
-        assert!(
-            v019 < v020,
-            "0.1.9 should be less than 0.2.0"
-        );
+        assert!(v010 < v019, "0.1.0 should be less than 0.1.9");
+        assert!(v019 < v020, "0.1.9 should be less than 0.2.0");
     }
 
     #[test]

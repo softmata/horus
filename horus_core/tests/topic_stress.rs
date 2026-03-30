@@ -190,9 +190,7 @@ fn test_topic_stress_large_message_serde() {
 
     topic.send(sent.clone());
 
-    let received = topic
-        .recv()
-        .expect("recv should return the large message");
+    let received = topic.recv().expect("recv should return the large message");
 
     assert_eq!(
         received.data.len(),

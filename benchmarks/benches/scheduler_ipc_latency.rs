@@ -89,10 +89,8 @@ fn bench_latency_by_node_count(c: &mut Criterion) {
                 let measurement_topic = unique("bench_measure");
 
                 // Create measurement topics BEFORE scheduler starts
-                let pub_topic: Topic<u64> =
-                    Topic::new(&measurement_topic).expect("pub topic");
-                let sub_topic: Topic<u64> =
-                    Topic::new(&measurement_topic).expect("sub topic");
+                let pub_topic: Topic<u64> = Topic::new(&measurement_topic).expect("pub topic");
+                let sub_topic: Topic<u64> = Topic::new(&measurement_topic).expect("sub topic");
 
                 // Start scheduler with N load nodes in background
                 let running = Arc::new(AtomicBool::new(true));
@@ -162,10 +160,8 @@ fn bench_latency_by_topic_count(c: &mut Criterion) {
                 let measurement_topic = unique("bench_measure_t");
 
                 // Create measurement topics
-                let pub_topic: Topic<u64> =
-                    Topic::new(&measurement_topic).expect("pub topic");
-                let sub_topic: Topic<u64> =
-                    Topic::new(&measurement_topic).expect("sub topic");
+                let pub_topic: Topic<u64> = Topic::new(&measurement_topic).expect("pub topic");
+                let sub_topic: Topic<u64> = Topic::new(&measurement_topic).expect("sub topic");
 
                 // Create N background traffic topics with publisher threads
                 let running = Arc::new(AtomicBool::new(true));
@@ -225,10 +221,8 @@ fn bench_production_load(c: &mut Criterion) {
 
         let measurement_topic = unique("bench_prod_measure");
 
-        let pub_topic: Topic<u64> =
-            Topic::new(&measurement_topic).expect("pub topic");
-        let sub_topic: Topic<u64> =
-            Topic::new(&measurement_topic).expect("sub topic");
+        let pub_topic: Topic<u64> = Topic::new(&measurement_topic).expect("pub topic");
+        let sub_topic: Topic<u64> = Topic::new(&measurement_topic).expect("sub topic");
 
         // Start scheduler with 10 nodes
         let sched_thread = {

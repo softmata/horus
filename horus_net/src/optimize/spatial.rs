@@ -185,6 +185,10 @@ mod tests {
         assert!(within > 0);
         assert!(outside > within); // Most robots are far away
         let reduction = outside as f64 / 200.0;
-        assert!(reduction > 0.8, "expected >80% reduction, got {:.0}%", reduction * 100.0);
+        assert!(
+            reduction > 0.8,
+            "expected >80% reduction, got {:.0}%",
+            reduction * 100.0
+        );
     }
 }

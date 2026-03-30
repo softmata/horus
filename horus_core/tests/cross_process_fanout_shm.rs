@@ -45,7 +45,12 @@ fn child_publisher() {
     let topic_name = std::env::var(TOPIC_ENV).expect("TOPIC_ENV");
     let id_str = std::env::var(ID_ENV).unwrap_or_else(|_| "0".into());
     let child_id: u64 = id_str.parse().unwrap_or_else(|_| {
-        id_str.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
+        id_str
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0)
     });
 
     // Wait for other participants to set up

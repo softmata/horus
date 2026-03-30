@@ -12,7 +12,6 @@
 ///   cargo build --no-default-features -p horus --example launch_test_rust
 ///   HORUS_PARAM_MAX_SPEED=1.5 HORUS_PARAM_ROBOT_ID=42 HORUS_NODE_NAME=ctrl \
 ///     ./target/debug/examples/launch_test_rust
-
 use horus::prelude::*;
 
 struct ParamTestNode {

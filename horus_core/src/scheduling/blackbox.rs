@@ -75,7 +75,10 @@ pub enum BlackBoxEvent {
     /// Emergency stop
     EmergencyStop { reason: String },
     /// Network replication peer discovered
-    NetPeerDiscovered { peer_addr: String, topic_count: usize },
+    NetPeerDiscovered {
+        peer_addr: String,
+        topic_count: usize,
+    },
     /// Network replication peer lost (heartbeat timeout)
     NetPeerLost { peer_addr: String, reason: String },
     /// Network replication started
@@ -577,7 +580,7 @@ mod tests {
     #[test]
     fn test_blackbox_many_records_no_crash() {
         let mut bb = BlackBox::new(1); // 1 MB buffer
-        // Record 1000 events — should handle without panic or crash
+                                       // Record 1000 events — should handle without panic or crash
         for i in 0..1000 {
             bb.record(BlackBoxEvent::DeadlineMiss {
                 name: format!("node_{}", i),
@@ -635,7 +638,10 @@ mod tests {
         assert_eq!(events.len(), 3, "all event types should be recorded");
 
         let anomalies = bb.anomalies();
-        assert!(anomalies.len() >= 2, "panics and misses should be anomalies");
+        assert!(
+            anomalies.len() >= 2,
+            "panics and misses should be anomalies"
+        );
     }
 
     #[test]
@@ -667,7 +673,10 @@ mod tests {
         let bb = bb.lock().unwrap();
         let events = bb.events();
         // Should have some events (up to 256 max)
-        assert!(!events.is_empty(), "should have events from concurrent writes");
+        assert!(
+            !events.is_empty(),
+            "should have events from concurrent writes"
+        );
     }
 
     // ========================================================================
@@ -1017,17 +1026,18 @@ mod tests {
         });
         let events = bb.events();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].tick, 0, "tick counter must reset to 0 after clear");
+        assert_eq!(
+            events[0].tick, 0,
+            "tick counter must reset to 0 after clear"
+        );
     }
 
     /// save() and load() round-trip: buffer contents and loss counter must
     /// survive serialization.
     #[test]
     fn test_save_load_roundtrip_preserves_data() {
-        let dir = std::env::temp_dir().join(format!(
-            "horus_bb_roundtrip_test_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("horus_bb_roundtrip_test_{}", std::process::id()));
 
         let mut bb = BlackBox::new(1).with_path(dir.clone());
         bb.max_size = 5;
@@ -1071,10 +1081,7 @@ mod tests {
     /// load() on a nonexistent file should be a no-op (no error, no data).
     #[test]
     fn test_load_nonexistent_file_is_noop() {
-        let dir = std::env::temp_dir().join(format!(
-            "horus_bb_nofile_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("horus_bb_nofile_test_{}", std::process::id()));
         // Ensure the dir does NOT exist
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -1106,7 +1113,10 @@ mod tests {
             category: "test".to_string(),
             message: "should_be_ignored".to_string(),
         });
-        assert!(bb.is_empty(), "default blackbox is disabled; records ignored");
+        assert!(
+            bb.is_empty(),
+            "default blackbox is disabled; records ignored"
+        );
         assert_eq!(bb.get_loss_count(), 0);
     }
 

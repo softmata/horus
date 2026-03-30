@@ -5,7 +5,7 @@
 //! and C++ header generator.
 
 use proc_macro2::Ident;
-use syn::{Type, Visibility, Generics};
+use syn::{Generics, Type, Visibility};
 
 /// Top-level binding metadata for a single annotated item.
 #[derive(Debug, Clone)]
@@ -132,37 +132,137 @@ pub struct MonomorphTarget {
 /// Covers 95%+ of typical robotics applications.
 pub const DEFAULT_MONOMORPH_TYPES: &[MonomorphTarget] = &[
     // ─── Geometry ────────────────────────
-    MonomorphTarget { rust_name: "Twist",             snake_name: "twist",              rust_path: "horus_library::Twist" },
-    MonomorphTarget { rust_name: "Pose2D",            snake_name: "pose2d",             rust_path: "horus_library::Pose2D" },
-    MonomorphTarget { rust_name: "Pose3D",            snake_name: "pose3d",             rust_path: "horus_library::Pose3D" },
-    MonomorphTarget { rust_name: "PoseStamped",       snake_name: "pose_stamped",       rust_path: "horus_library::PoseStamped" },
-    MonomorphTarget { rust_name: "TransformStamped",  snake_name: "transform_stamped",  rust_path: "horus_library::TransformStamped" },
+    MonomorphTarget {
+        rust_name: "Twist",
+        snake_name: "twist",
+        rust_path: "horus_library::Twist",
+    },
+    MonomorphTarget {
+        rust_name: "Pose2D",
+        snake_name: "pose2d",
+        rust_path: "horus_library::Pose2D",
+    },
+    MonomorphTarget {
+        rust_name: "Pose3D",
+        snake_name: "pose3d",
+        rust_path: "horus_library::Pose3D",
+    },
+    MonomorphTarget {
+        rust_name: "PoseStamped",
+        snake_name: "pose_stamped",
+        rust_path: "horus_library::PoseStamped",
+    },
+    MonomorphTarget {
+        rust_name: "TransformStamped",
+        snake_name: "transform_stamped",
+        rust_path: "horus_library::TransformStamped",
+    },
     // ─── Sensor ──────────────────────────
-    MonomorphTarget { rust_name: "CmdVel",            snake_name: "cmd_vel",            rust_path: "horus_library::CmdVel" },
-    MonomorphTarget { rust_name: "LaserScan",         snake_name: "laser_scan",         rust_path: "horus_library::LaserScan" },
-    MonomorphTarget { rust_name: "Imu",               snake_name: "imu",                rust_path: "horus_library::Imu" },
-    MonomorphTarget { rust_name: "Odometry",          snake_name: "odometry",           rust_path: "horus_library::Odometry" },
-    MonomorphTarget { rust_name: "JointState",        snake_name: "joint_state",        rust_path: "horus_library::JointState" },
-    MonomorphTarget { rust_name: "BatteryState",      snake_name: "battery_state",      rust_path: "horus_library::BatteryState" },
-    MonomorphTarget { rust_name: "NavSatFix",         snake_name: "nav_sat_fix",        rust_path: "horus_library::NavSatFix" },
+    MonomorphTarget {
+        rust_name: "CmdVel",
+        snake_name: "cmd_vel",
+        rust_path: "horus_library::CmdVel",
+    },
+    MonomorphTarget {
+        rust_name: "LaserScan",
+        snake_name: "laser_scan",
+        rust_path: "horus_library::LaserScan",
+    },
+    MonomorphTarget {
+        rust_name: "Imu",
+        snake_name: "imu",
+        rust_path: "horus_library::Imu",
+    },
+    MonomorphTarget {
+        rust_name: "Odometry",
+        snake_name: "odometry",
+        rust_path: "horus_library::Odometry",
+    },
+    MonomorphTarget {
+        rust_name: "JointState",
+        snake_name: "joint_state",
+        rust_path: "horus_library::JointState",
+    },
+    MonomorphTarget {
+        rust_name: "BatteryState",
+        snake_name: "battery_state",
+        rust_path: "horus_library::BatteryState",
+    },
+    MonomorphTarget {
+        rust_name: "NavSatFix",
+        snake_name: "nav_sat_fix",
+        rust_path: "horus_library::NavSatFix",
+    },
     // ─── Control ─────────────────────────
-    MonomorphTarget { rust_name: "MotorCommand",      snake_name: "motor_command",      rust_path: "horus_library::MotorCommand" },
-    MonomorphTarget { rust_name: "ServoCommand",      snake_name: "servo_command",      rust_path: "horus_library::ServoCommand" },
-    MonomorphTarget { rust_name: "TrajectoryPoint",   snake_name: "trajectory_point",   rust_path: "horus_library::TrajectoryPoint" },
-    MonomorphTarget { rust_name: "JointCommand",      snake_name: "joint_command",      rust_path: "horus_library::JointCommand" },
+    MonomorphTarget {
+        rust_name: "MotorCommand",
+        snake_name: "motor_command",
+        rust_path: "horus_library::MotorCommand",
+    },
+    MonomorphTarget {
+        rust_name: "ServoCommand",
+        snake_name: "servo_command",
+        rust_path: "horus_library::ServoCommand",
+    },
+    MonomorphTarget {
+        rust_name: "TrajectoryPoint",
+        snake_name: "trajectory_point",
+        rust_path: "horus_library::TrajectoryPoint",
+    },
+    MonomorphTarget {
+        rust_name: "JointCommand",
+        snake_name: "joint_command",
+        rust_path: "horus_library::JointCommand",
+    },
     // ─── Navigation ──────────────────────
-    MonomorphTarget { rust_name: "NavGoal",           snake_name: "nav_goal",           rust_path: "horus_library::NavGoal" },
-    MonomorphTarget { rust_name: "NavPath",           snake_name: "nav_path",           rust_path: "horus_library::NavPath" },
+    MonomorphTarget {
+        rust_name: "NavGoal",
+        snake_name: "nav_goal",
+        rust_path: "horus_library::NavGoal",
+    },
+    MonomorphTarget {
+        rust_name: "NavPath",
+        snake_name: "nav_path",
+        rust_path: "horus_library::NavPath",
+    },
     // ─── Detection ───────────────────────
-    MonomorphTarget { rust_name: "Detection",         snake_name: "detection",          rust_path: "horus_library::Detection" },
-    MonomorphTarget { rust_name: "Detection3D",       snake_name: "detection3d",        rust_path: "horus_library::Detection3D" },
+    MonomorphTarget {
+        rust_name: "Detection",
+        snake_name: "detection",
+        rust_path: "horus_library::Detection",
+    },
+    MonomorphTarget {
+        rust_name: "Detection3D",
+        snake_name: "detection3d",
+        rust_path: "horus_library::Detection3D",
+    },
     // ─── Vision ──────────────────────────
-    MonomorphTarget { rust_name: "CameraInfo",        snake_name: "camera_info",        rust_path: "horus_library::CameraInfo" },
+    MonomorphTarget {
+        rust_name: "CameraInfo",
+        snake_name: "camera_info",
+        rust_path: "horus_library::CameraInfo",
+    },
     // ─── Diagnostics ─────────────────────
-    MonomorphTarget { rust_name: "Heartbeat",         snake_name: "heartbeat",          rust_path: "horus_library::Heartbeat" },
-    MonomorphTarget { rust_name: "EmergencyStop",     snake_name: "emergency_stop",     rust_path: "horus_library::EmergencyStop" },
+    MonomorphTarget {
+        rust_name: "Heartbeat",
+        snake_name: "heartbeat",
+        rust_path: "horus_library::Heartbeat",
+    },
+    MonomorphTarget {
+        rust_name: "EmergencyStop",
+        snake_name: "emergency_stop",
+        rust_path: "horus_library::EmergencyStop",
+    },
     // ─── Transform ───────────────────────
-    MonomorphTarget { rust_name: "TFMessage",         snake_name: "tf_message",         rust_path: "horus_library::TFMessage" },
+    MonomorphTarget {
+        rust_name: "TFMessage",
+        snake_name: "tf_message",
+        rust_path: "horus_library::TFMessage",
+    },
     // ─── Force ───────────────────────────
-    MonomorphTarget { rust_name: "WrenchStamped",     snake_name: "wrench_stamped",     rust_path: "horus_library::WrenchStamped" },
+    MonomorphTarget {
+        rust_name: "WrenchStamped",
+        snake_name: "wrench_stamped",
+        rust_path: "horus_library::WrenchStamped",
+    },
 ];

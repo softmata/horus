@@ -718,12 +718,10 @@ impl NodeRecorder {
             .node_path(&self.recording.node_name, &self.recording.node_id);
 
         if self.recording.snapshots.is_empty() {
-            return Err(std::io::Error::other(
-                format!(
-                    "Recording for '{}' has no snapshots — nothing to save",
-                    self.recording.node_name
-                ),
-            ));
+            return Err(std::io::Error::other(format!(
+                "Recording for '{}' has no snapshots — nothing to save",
+                self.recording.node_name
+            )));
         }
 
         self.recording
@@ -2398,10 +2396,10 @@ mod tests {
 
     #[test]
     fn test_format_bytes_f64() {
-        let val = 3.14f64;
+        let val = 2.75f64;
         let s = format_bytes_as_value(&val.to_le_bytes());
         assert!(s.contains("f64:"));
-        assert!(s.contains("3.14"));
+        assert!(s.contains("2.75"));
     }
 
     #[test]
@@ -3172,7 +3170,11 @@ mod tests {
         dbg.continue_execution();
         assert_eq!(dbg.current_tick(), 5, "should stop at first breakpoint");
         assert_eq!(
-            dbg.breakpoints().iter().find(|b| b.id == bp1).unwrap().hit_count,
+            dbg.breakpoints()
+                .iter()
+                .find(|b| b.id == bp1)
+                .unwrap()
+                .hit_count,
             1,
             "bp1 should be hit once"
         );
@@ -3181,7 +3183,11 @@ mod tests {
         dbg.continue_execution();
         assert_eq!(dbg.current_tick(), 15, "should stop at second breakpoint");
         assert_eq!(
-            dbg.breakpoints().iter().find(|b| b.id == bp2).unwrap().hit_count,
+            dbg.breakpoints()
+                .iter()
+                .find(|b| b.id == bp2)
+                .unwrap()
+                .hit_count,
             1,
             "bp2 should be hit once"
         );
@@ -3221,7 +3227,11 @@ mod tests {
 
         // Now continue — should hit breakpoint at tick 5
         dbg.continue_execution();
-        assert_eq!(dbg.current_tick(), 5, "continue from tick 2 should hit bp at 5");
+        assert_eq!(
+            dbg.current_tick(),
+            5,
+            "continue from tick 2 should hit bp at 5"
+        );
     }
 
     #[test]
@@ -3240,9 +3250,9 @@ mod tests {
         );
         // Verify at least one event mentions the breakpoint or tick
         let event_strs: Vec<String> = events.iter().map(|e| format!("{:?}", e)).collect();
-        let has_breakpoint_event = event_strs.iter().any(|s| {
-            s.contains("Breakpoint") || s.contains("breakpoint") || s.contains("Hit")
-        });
+        let has_breakpoint_event = event_strs
+            .iter()
+            .any(|s| s.contains("Breakpoint") || s.contains("breakpoint") || s.contains("Hit"));
         assert!(
             has_breakpoint_event,
             "events should contain breakpoint hit event. Events: {:?}",
@@ -3264,14 +3274,15 @@ mod tests {
         assert_eq!(dbg.current_tick(), 3);
 
         let values = dbg.evaluate_watches();
-        assert!(
-            !values.is_empty(),
-            "watch should have a value at tick 3"
-        );
+        assert!(!values.is_empty(), "watch should have a value at tick 3");
         let v = &values[0];
         assert_eq!(v.expression_id, "w1");
         assert_eq!(v.tick, 3);
         // motor output at tick 3 = vec![(3*2) as u8; 8] = vec![6; 8]
-        assert_eq!(v.raw_bytes, vec![6u8; 8], "motor output at tick 3 should be [6; 8]");
+        assert_eq!(
+            v.raw_bytes,
+            vec![6u8; 8],
+            "motor output at tick 3 should be [6; 8]"
+        );
     }
 }

@@ -555,8 +555,7 @@ impl TensorPool {
                 // the magic visible across processes.
                 // SAFETY: header pointer from mmap, valid. Volatile read ensures we see
                 // the creator's write after their mmap flush.
-                let magic =
-                    unsafe { std::ptr::read_volatile(&header.magic as *const u64) };
+                let magic = unsafe { std::ptr::read_volatile(&header.magic as *const u64) };
                 if magic == POOL_MAGIC {
                     // Re-validate all fields now that the header is initialized
                     return self.validate_fields();
@@ -695,7 +694,9 @@ impl TensorPool {
             } else {
                 self.push_free_slot(slot_id);
                 return Err(HorusError::Memory(
-                    "Backend returned allocation with no valid pointer".to_string().into(),
+                    "Backend returned allocation with no valid pointer"
+                        .to_string()
+                        .into(),
                 ));
             };
             self.slot_data_ptrs.lock().insert(slot_id, ptr);
@@ -1011,7 +1012,10 @@ impl TensorPool {
         // Non-mmap backends: look up the stored pointer from alloc()
         if !self.backend.is_shared() {
             let ptrs = self.slot_data_ptrs.lock();
-            return ptrs.get(&tensor.slot_id).copied().unwrap_or(std::ptr::null_mut());
+            return ptrs
+                .get(&tensor.slot_id)
+                .copied()
+                .unwrap_or(std::ptr::null_mut());
         }
 
         // Mmap backends: compute from base + offset
@@ -1071,16 +1075,16 @@ impl TensorPool {
             return Err(HorusError::Memory(
                 format!(
                     "null data pointer in data_slice for slot {} (backend={}, device={})",
-                    tensor.slot_id, self.backend.name(), self.backend.device()
+                    tensor.slot_id,
+                    self.backend.name(),
+                    self.backend.device()
                 )
                 .into(),
             ));
         }
 
         // SAFETY: ptr is valid for `size` bytes — guaranteed by backend.alloc().
-        Ok(unsafe {
-            std::slice::from_raw_parts(ptr, size)
-        })
+        Ok(unsafe { std::slice::from_raw_parts(ptr, size) })
     }
 
     /// Get data as a mutable byte slice.
@@ -1108,16 +1112,16 @@ impl TensorPool {
             return Err(HorusError::Memory(
                 format!(
                     "null data pointer in data_slice_mut for slot {} (backend={}, device={})",
-                    tensor.slot_id, self.backend.name(), self.backend.device()
+                    tensor.slot_id,
+                    self.backend.name(),
+                    self.backend.device()
                 )
                 .into(),
             ));
         }
 
         // SAFETY: ptr is valid for `size` bytes — guaranteed by backend.alloc().
-        Ok(unsafe {
-            std::slice::from_raw_parts_mut(ptr, size)
-        })
+        Ok(unsafe { std::slice::from_raw_parts_mut(ptr, size) })
     }
 
     /// Validate a `Tensor` descriptor received from another process.
@@ -1504,7 +1508,11 @@ impl TensorPool {
         if data_size > 0 {
             // Get the data pointer — works for both mmap and non-mmap backends
             let data_ptr = if !self.backend.is_shared() {
-                self.slot_data_ptrs.lock().get(&slot_id).copied().unwrap_or(std::ptr::null_mut())
+                self.slot_data_ptrs
+                    .lock()
+                    .get(&slot_id)
+                    .copied()
+                    .unwrap_or(std::ptr::null_mut())
             } else {
                 unsafe { self.data_base_ptr().add(slot.offset as usize) as *mut u8 }
             };
@@ -3220,11 +3228,7 @@ mod tests {
         let pool = TensorPool::new(10100, TensorPoolConfig::default()).expect("create pool");
         // Alloc and release 200 tensors (more than pool slots)
         for i in 0..200 {
-            let tensor = pool.alloc(
-                &[100],
-                TensorDtype::F32,
-                Device::cpu(),
-            );
+            let tensor = pool.alloc(&[100], TensorDtype::F32, Device::cpu());
             match tensor {
                 Ok(t) => pool.release(&t),
                 Err(_) => {} // Pool full is OK — previous releases should have freed slots
@@ -3252,15 +3256,18 @@ mod tests {
 
         // Slot should be free now — can alloc again
         let tensor2 = pool.alloc(&[64], TensorDtype::U8, Device::cpu());
-        assert!(tensor2.is_ok(), "slot should be reclaimable after full release");
+        assert!(
+            tensor2.is_ok(),
+            "slot should be reclaimable after full release"
+        );
     }
 
     #[test]
     fn test_pool_alloc_when_full_returns_error() {
         // Create a very small pool
         let config = TensorPoolConfig {
-            pool_size: 4096,     // 4KB — very small
-            max_slots: 4,        // Only 4 slots
+            pool_size: 4096, // 4KB — very small
+            max_slots: 4,    // Only 4 slots
             slot_alignment: 64,
             allocator: PoolAllocator::Mmap,
         };
@@ -3407,7 +3414,10 @@ mod tests {
         }
 
         let stats = pool.stats();
-        assert_eq!(stats.allocated_slots, 4, "4 slots should remain after releasing half");
+        assert_eq!(
+            stats.allocated_slots, 4,
+            "4 slots should remain after releasing half"
+        );
 
         // Reallocate 4 slots — should succeed
         let mut new_tensors: Vec<Tensor> = Vec::new();
@@ -3419,7 +3429,10 @@ mod tests {
         }
 
         let stats = pool.stats();
-        assert_eq!(stats.allocated_slots, 8, "all 8 slots should be allocated again");
+        assert_eq!(
+            stats.allocated_slots, 8,
+            "all 8 slots should be allocated again"
+        );
 
         // Pool should be full again
         assert!(pool.alloc(&[8], TensorDtype::U8, Device::cpu()).is_err());
@@ -3694,7 +3707,9 @@ mod tests {
             assert!(
                 gen > prev_gen,
                 "cycle {}: generation must strictly increase: prev={} curr={}",
-                cycle, prev_gen, gen
+                cycle,
+                prev_gen,
+                gen
             );
             prev_gen = gen;
 
@@ -3704,12 +3719,14 @@ mod tests {
                     pool.refcount(stale),
                     0,
                     "cycle {}: stale descriptor from cycle {} should report refcount 0",
-                    cycle, i
+                    cycle,
+                    i
                 );
                 assert!(
                     pool.try_retain(stale).is_err(),
                     "cycle {}: try_retain on stale descriptor from cycle {} should fail",
-                    cycle, i
+                    cycle,
+                    i
                 );
             }
 
@@ -3734,10 +3751,7 @@ mod tests {
 
         // Any allocation should fail due to data region exhaustion
         let result = pool.alloc(&[1], TensorDtype::U8, Device::cpu());
-        assert!(
-            result.is_err(),
-            "alloc in tiny pool should fail gracefully"
-        );
+        assert!(result.is_err(), "alloc in tiny pool should fail gracefully");
 
         assert_eq!(pool.stats().pool_size, 1);
 

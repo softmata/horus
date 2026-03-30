@@ -172,11 +172,7 @@ mod tests {
     fn fusion_ratio_tracks() {
         let mut opt = FusionOptimizer::with_window(Duration::from_millis(1));
 
-        let mut msgs = vec![
-            make_msg("imu"),
-            make_msg("odom"),
-            make_msg("joints"),
-        ];
+        let mut msgs = vec![make_msg("imu"), make_msg("odom"), make_msg("joints")];
         opt.on_outgoing(&mut msgs);
         std::thread::sleep(Duration::from_millis(5));
 

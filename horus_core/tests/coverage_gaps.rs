@@ -8,7 +8,7 @@
 mod tests {
     use horus_core::core::presence::NodePresence;
     use horus_core::core::DurationExt;
-    
+
     use horus_core::error::RetryConfig;
     use horus_core::service;
     use horus_core::services::{ServiceClient, ServiceError, ServiceServerBuilder};

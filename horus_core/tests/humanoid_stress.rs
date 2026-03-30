@@ -51,7 +51,7 @@
 use horus_core::communication::topic::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -102,13 +102,13 @@ unsafe impl bytemuck::Zeroable for JointState20 {}
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[repr(C)]
 struct RobotState {
-    com_position: [f64; 3],      // center of mass
+    com_position: [f64; 3], // center of mass
     com_velocity: [f64; 3],
-    base_orientation: [f64; 4],  // quaternion
+    base_orientation: [f64; 4], // quaternion
     base_angular_vel: [f64; 3],
     joint_positions: [f64; 20],
     joint_velocities: [f64; 20],
-    zmp: [f64; 2],              // zero moment point
+    zmp: [f64; 2], // zero moment point
     seq: u64,
     stamp_ns: u64,
 }
@@ -119,9 +119,9 @@ unsafe impl bytemuck::Zeroable for RobotState {}
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[repr(C)]
 struct JointCmd20 {
-    targets: [f64; 20],      // position targets
-    velocities: [f64; 20],   // velocity feedforward
-    torques: [f64; 20],      // torque feedforward
+    targets: [f64; 20],    // position targets
+    velocities: [f64; 20], // velocity feedforward
+    torques: [f64; 20],    // torque feedforward
     seq: u64,
 }
 unsafe impl bytemuck::Pod for JointCmd20 {}
@@ -150,9 +150,12 @@ struct ImuNode {
     ticks: Arc<AtomicU64>,
 }
 impl Node for ImuNode {
-    fn name(&self) -> &str { "imu_1khz" }
+    fn name(&self) -> &str {
+        "imu_1khz"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
-        self.topic = Some(Topic::new(&self.name_str)?); Ok(())
+        self.topic = Some(Topic::new(&self.name_str)?);
+        Ok(())
     }
     fn tick(&mut self) {
         let t = self.seq as f64 * 0.001;
@@ -163,7 +166,9 @@ impl Node for ImuNode {
             seq: self.seq,
             stamp_ns: self.seq * 1_000_000, // 1ms intervals
         };
-        if let Some(ref t) = self.topic { t.send(data); }
+        if let Some(ref t) = self.topic {
+            t.send(data);
+        }
         self.seq += 1;
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
@@ -177,9 +182,12 @@ struct ForceTorqueNode {
     ticks: Arc<AtomicU64>,
 }
 impl Node for ForceTorqueNode {
-    fn name(&self) -> &str { &self.node_name }
+    fn name(&self) -> &str {
+        &self.node_name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
-        self.topic = Some(Topic::new(&self.name_str)?); Ok(())
+        self.topic = Some(Topic::new(&self.name_str)?);
+        Ok(())
     }
     fn tick(&mut self) {
         let data = ForceTorque {
@@ -187,7 +195,9 @@ impl Node for ForceTorqueNode {
             torque: [0.0, 0.0, 0.0],
             seq: self.seq,
         };
-        if let Some(ref t) = self.topic { t.send(data); }
+        if let Some(ref t) = self.topic {
+            t.send(data);
+        }
         self.seq += 1;
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
@@ -211,7 +221,9 @@ struct StateEstimatorNode {
     imu_received: Arc<AtomicU64>,
 }
 impl Node for StateEstimatorNode {
-    fn name(&self) -> &str { "state_estimator" }
+    fn name(&self) -> &str {
+        "state_estimator"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu = Some(Topic::new(&self.imu_name)?);
         self.ft_l = Some(Topic::new(&self.ft_l_name)?);
@@ -231,10 +243,14 @@ impl Node for StateEstimatorNode {
             }
         }
         if let Some(ref t) = self.ft_l {
-            while let Some(d) = t.recv() { latest_ft_l = Some(d); }
+            while let Some(d) = t.recv() {
+                latest_ft_l = Some(d);
+            }
         }
         if let Some(ref t) = self.ft_r {
-            while let Some(d) = t.recv() { latest_ft_r = Some(d); }
+            while let Some(d) = t.recv() {
+                latest_ft_r = Some(d);
+            }
         }
 
         // Simple fusion: just forward IMU orientation + compute ZMP from FT
@@ -247,16 +263,15 @@ impl Node for StateEstimatorNode {
         if let (Some(fl), Some(fr)) = (latest_ft_l, latest_ft_r) {
             let total_fz = fl.force[2] + fr.force[2];
             if total_fz > 1.0 {
-                state.zmp = [
-                    (fl.force[2] * (-0.1) + fr.force[2] * 0.1) / total_fz,
-                    0.0,
-                ];
+                state.zmp = [(fl.force[2] * (-0.1) + fr.force[2] * 0.1) / total_fz, 0.0];
             }
         }
         state.seq = self.seq;
         state.stamp_ns = self.seq * 1_000_000;
 
-        if let Some(ref t) = self.state_out { t.send(state); }
+        if let Some(ref t) = self.state_out {
+            t.send(state);
+        }
         self.seq += 1;
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
@@ -276,7 +291,9 @@ struct BalanceControllerNode {
     state_received: Arc<AtomicU64>,
 }
 impl Node for BalanceControllerNode {
-    fn name(&self) -> &str { "balance_ctrl" }
+    fn name(&self) -> &str {
+        "balance_ctrl"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.state_in = Some(Topic::new(&self.state_name)?);
         self.cmd_out = Some(Topic::new(&self.cmd_name)?);
@@ -291,7 +308,9 @@ impl Node for BalanceControllerNode {
                 cmd.targets[14] = -state.zmp[0] * 5.0; // left ankle
                 cmd.targets[19] = -state.zmp[0] * 5.0; // right ankle
                 cmd.seq = self.seq;
-                if let Some(ref out) = self.cmd_out { out.send(cmd); }
+                if let Some(ref out) = self.cmd_out {
+                    out.send(cmd);
+                }
             }
         }
         self.seq += 1;
@@ -308,7 +327,9 @@ struct GaitGeneratorNode {
     ticks: Arc<AtomicU64>,
 }
 impl Node for GaitGeneratorNode {
-    fn name(&self) -> &str { "gait_gen" }
+    fn name(&self) -> &str {
+        "gait_gen"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.state_in = Some(Topic::new(&self.state_name)?);
         self.cmd_out = Some(Topic::new(&self.cmd_name)?);
@@ -325,14 +346,16 @@ impl Node for GaitGeneratorNode {
         for leg in 0..2 {
             let phase = if leg == 0 { 0.0 } else { std::f64::consts::PI };
             let base = leg * 5; // joints 0-4 left, 5-9 right
-            cmd.targets[base + 0] = (t + phase).sin() * 0.3;  // hip pitch
-            cmd.targets[base + 1] = 0.0;                        // hip roll
+            cmd.targets[base + 0] = (t + phase).sin() * 0.3; // hip pitch
+            cmd.targets[base + 1] = 0.0; // hip roll
             cmd.targets[base + 2] = (t + phase).sin().abs() * 0.5; // knee
             cmd.targets[base + 3] = -(t + phase).sin() * 0.15; // ankle pitch
-            cmd.targets[base + 4] = 0.0;                        // ankle roll
+            cmd.targets[base + 4] = 0.0; // ankle roll
         }
         cmd.seq = self.seq;
-        if let Some(ref out) = self.cmd_out { out.send(cmd); }
+        if let Some(ref out) = self.cmd_out {
+            out.send(cmd);
+        }
         self.seq += 1;
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
@@ -347,7 +370,9 @@ struct WbcNode {
     ticks: Arc<AtomicU64>,
 }
 impl Node for WbcNode {
-    fn name(&self) -> &str { "wbc" }
+    fn name(&self) -> &str {
+        "wbc"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.state_in = Some(Topic::new(&self.state_name)?);
         self.cmd_out = Some(Topic::new(&self.cmd_name)?);
@@ -366,7 +391,9 @@ impl Node for WbcNode {
         std::hint::black_box(x);
 
         let cmd = JointCmd20::default();
-        if let Some(ref out) = self.cmd_out { out.send(cmd); }
+        if let Some(ref out) = self.cmd_out {
+            out.send(cmd);
+        }
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -378,7 +405,9 @@ struct LoggerNode {
     logged: Arc<AtomicU64>,
 }
 impl Node for LoggerNode {
-    fn name(&self) -> &str { "logger" }
+    fn name(&self) -> &str {
+        "logger"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.state_in = Some(Topic::new(&self.state_name)?);
         Ok(())
@@ -410,7 +439,9 @@ struct JointMuxNode {
     ticks: Arc<AtomicU64>,
 }
 impl Node for JointMuxNode {
-    fn name(&self) -> &str { "joint_mux" }
+    fn name(&self) -> &str {
+        "joint_mux"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.bal_in = Some(Topic::new(&self.bal_name)?);
         self.gait_in = Some(Topic::new(&self.gait_name)?);
@@ -423,16 +454,30 @@ impl Node for JointMuxNode {
         let mut gait = JointCmd20::default();
         let mut wbc = JointCmd20::default();
 
-        if let Some(ref t) = self.bal_in { while let Some(c) = t.recv() { bal = c; } }
-        if let Some(ref t) = self.gait_in { while let Some(c) = t.recv() { gait = c; } }
-        if let Some(ref t) = self.wbc_in { while let Some(c) = t.recv() { wbc = c; } }
+        if let Some(ref t) = self.bal_in {
+            while let Some(c) = t.recv() {
+                bal = c;
+            }
+        }
+        if let Some(ref t) = self.gait_in {
+            while let Some(c) = t.recv() {
+                gait = c;
+            }
+        }
+        if let Some(ref t) = self.wbc_in {
+            while let Some(c) = t.recv() {
+                wbc = c;
+            }
+        }
 
         // Priority merge: WBC > Balance > Gait
         let mut merged = JointCmd20::default();
         for i in 0..20 {
             merged.targets[i] = gait.targets[i] + bal.targets[i] + wbc.targets[i];
         }
-        if let Some(ref out) = self.out { out.send(merged); }
+        if let Some(ref out) = self.out {
+            out.send(merged);
+        }
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -450,7 +495,9 @@ struct JointPidNode {
     ticks: Arc<AtomicU64>,
 }
 impl Node for JointPidNode {
-    fn name(&self) -> &str { &self.node_name }
+    fn name(&self) -> &str {
+        &self.node_name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.cmd_in = Some(Topic::new(&self.cmd_name)?);
         self.fb_out = Some(Topic::new(&self.fb_name)?);
@@ -475,7 +522,9 @@ impl Node for JointPidNode {
             _pad: 0,
             seq: 0,
         };
-        if let Some(ref out) = self.fb_out { out.send(cmd); }
+        if let Some(ref out) = self.fb_out {
+            out.send(cmd);
+        }
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -520,75 +569,162 @@ fn humanoid_20dof_31_nodes_50_topics() {
     let running_clone = running.clone();
 
     // Clone all counters for the thread
-    let ic = imu_ticks.clone(); let flc = ft_l_ticks.clone(); let frc = ft_r_ticks.clone();
-    let ec = est_ticks.clone(); let bc = bal_ticks.clone(); let gc = gait_ticks.clone();
-    let wc = wbc_ticks.clone(); let mc = mux_ticks.clone(); let lc = log_count.clone();
-    let irc = imu_recv_count.clone(); let src = state_recv_count.clone();
+    let ic = imu_ticks.clone();
+    let flc = ft_l_ticks.clone();
+    let frc = ft_r_ticks.clone();
+    let ec = est_ticks.clone();
+    let bc = bal_ticks.clone();
+    let gc = gait_ticks.clone();
+    let wc = wbc_ticks.clone();
+    let mc = mux_ticks.clone();
+    let lc = log_count.clone();
+    let irc = imu_recv_count.clone();
+    let src = state_recv_count.clone();
     let jc: Vec<_> = joint_ticks.iter().map(Arc::clone).collect();
 
     let handle = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(1000_u64.hz());
 
         // ── Sensors ────────────────────────────────────────────
-        let _ = sched.add(ImuNode {
-            topic: None, name_str: imu_topic.clone(), seq: 0, ticks: ic,
-        }).rate(1000_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuNode {
+                topic: None,
+                name_str: imu_topic.clone(),
+                seq: 0,
+                ticks: ic,
+            })
+            .rate(1000_u64.hz())
+            .order(0)
+            .build();
 
-        let _ = sched.add(ForceTorqueNode {
-            topic: None, name_str: ft_l_topic.clone(), node_name: "ft_left".into(), seq: 0, ticks: flc,
-        }).rate(500_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ForceTorqueNode {
+                topic: None,
+                name_str: ft_l_topic.clone(),
+                node_name: "ft_left".into(),
+                seq: 0,
+                ticks: flc,
+            })
+            .rate(500_u64.hz())
+            .order(0)
+            .build();
 
-        let _ = sched.add(ForceTorqueNode {
-            topic: None, name_str: ft_r_topic.clone(), node_name: "ft_right".into(), seq: 0, ticks: frc,
-        }).rate(500_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ForceTorqueNode {
+                topic: None,
+                name_str: ft_r_topic.clone(),
+                node_name: "ft_right".into(),
+                seq: 0,
+                ticks: frc,
+            })
+            .rate(500_u64.hz())
+            .order(0)
+            .build();
 
         // ── State Estimator ────────────────────────────────────
-        let _ = sched.add(StateEstimatorNode {
-            imu_name: imu_topic, ft_l_name: ft_l_topic, ft_r_name: ft_r_topic,
-            state_name: state_topic.clone(),
-            imu: None, ft_l: None, ft_r: None, state_out: None,
-            seq: 0, ticks: ec, imu_received: irc,
-        }).rate(1000_u64.hz()).order(1).build();
+        let _ = sched
+            .add(StateEstimatorNode {
+                imu_name: imu_topic,
+                ft_l_name: ft_l_topic,
+                ft_r_name: ft_r_topic,
+                state_name: state_topic.clone(),
+                imu: None,
+                ft_l: None,
+                ft_r: None,
+                state_out: None,
+                seq: 0,
+                ticks: ec,
+                imu_received: irc,
+            })
+            .rate(1000_u64.hz())
+            .order(1)
+            .build();
 
         // ── Controllers (all read state, publish commands) ─────
-        let _ = sched.add(BalanceControllerNode {
-            state_name: state_topic.clone(), cmd_name: bal_cmd_topic.clone(),
-            state_in: None, cmd_out: None, seq: 0, ticks: bc, state_received: src,
-        }).rate(500_u64.hz()).order(2).build();
+        let _ = sched
+            .add(BalanceControllerNode {
+                state_name: state_topic.clone(),
+                cmd_name: bal_cmd_topic.clone(),
+                state_in: None,
+                cmd_out: None,
+                seq: 0,
+                ticks: bc,
+                state_received: src,
+            })
+            .rate(500_u64.hz())
+            .order(2)
+            .build();
 
-        let _ = sched.add(GaitGeneratorNode {
-            state_name: state_topic.clone(), cmd_name: gait_cmd_topic.clone(),
-            state_in: None, cmd_out: None, seq: 0, ticks: gc,
-        }).rate(100_u64.hz()).order(2).build();
+        let _ = sched
+            .add(GaitGeneratorNode {
+                state_name: state_topic.clone(),
+                cmd_name: gait_cmd_topic.clone(),
+                state_in: None,
+                cmd_out: None,
+                seq: 0,
+                ticks: gc,
+            })
+            .rate(100_u64.hz())
+            .order(2)
+            .build();
 
-        let _ = sched.add(WbcNode {
-            state_name: state_topic.clone(), cmd_name: wbc_cmd_topic.clone(),
-            state_in: None, cmd_out: None, ticks: wc,
-        }).rate(500_u64.hz()).order(2).build();
+        let _ = sched
+            .add(WbcNode {
+                state_name: state_topic.clone(),
+                cmd_name: wbc_cmd_topic.clone(),
+                state_in: None,
+                cmd_out: None,
+                ticks: wc,
+            })
+            .rate(500_u64.hz())
+            .order(2)
+            .build();
 
-        let _ = sched.add(LoggerNode {
-            state_name: state_topic.clone(), state_in: None, logged: lc,
-        }).rate(50_u64.hz()).order(2).build();
+        let _ = sched
+            .add(LoggerNode {
+                state_name: state_topic.clone(),
+                state_in: None,
+                logged: lc,
+            })
+            .rate(50_u64.hz())
+            .order(2)
+            .build();
 
         // ── Joint Command Mux ──────────────────────────────────
-        let _ = sched.add(JointMuxNode {
-            bal_name: bal_cmd_topic, gait_name: gait_cmd_topic, wbc_name: wbc_cmd_topic,
-            out_name: mux_cmd_topic.clone(),
-            bal_in: None, gait_in: None, wbc_in: None, out: None, ticks: mc,
-        }).rate(500_u64.hz()).order(3).build();
+        let _ = sched
+            .add(JointMuxNode {
+                bal_name: bal_cmd_topic,
+                gait_name: gait_cmd_topic,
+                wbc_name: wbc_cmd_topic,
+                out_name: mux_cmd_topic.clone(),
+                bal_in: None,
+                gait_in: None,
+                wbc_in: None,
+                out: None,
+                ticks: mc,
+            })
+            .rate(500_u64.hz())
+            .order(3)
+            .build();
 
         // ── 20 Joint PIDs ──────────────────────────────────────
         for j in 0..20 {
             let fb_topic = format!("{}.joint_{}_fb", prefix, j);
-            let _ = sched.add(JointPidNode {
-                joint_id: j,
-                cmd_name: mux_cmd_topic.clone(),
-                fb_name: fb_topic,
-                node_name: format!("joint_{}", j),
-                cmd_in: None, fb_out: None,
-                position: 0.0, velocity: 0.0,
-                ticks: jc[j].clone(),
-            }).rate(500_u64.hz()).order(4).build();
+            let _ = sched
+                .add(JointPidNode {
+                    joint_id: j,
+                    cmd_name: mux_cmd_topic.clone(),
+                    fb_name: fb_topic,
+                    node_name: format!("joint_{}", j),
+                    cmd_in: None,
+                    fb_out: None,
+                    position: 0.0,
+                    velocity: 0.0,
+                    ticks: jc[j].clone(),
+                })
+                .rate(500_u64.hz())
+                .order(4)
+                .build();
         }
 
         // ── Run ────────────────────────────────────────────────
@@ -621,38 +757,96 @@ fn humanoid_20dof_31_nodes_50_topics() {
     let secs = elapsed.as_secs_f64();
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║       HUMANOID STRESS TEST — 31 nodes, 50+ topics      ║");
-    println!("║                    {:.1}s elapsed                          ║", secs);
+    println!(
+        "║                    {:.1}s elapsed                          ║",
+        secs
+    );
     println!("╠══════════════════════════════════════════════════════════╣");
     println!("║ SENSORS                                                 ║");
-    println!("║   IMU (1kHz):       {:6} ticks ({:6.1} Hz)              ║", it, it as f64 / secs);
-    println!("║   FT Left (500Hz):  {:6} ticks ({:6.1} Hz)              ║", flt, flt as f64 / secs);
-    println!("║   FT Right (500Hz): {:6} ticks ({:6.1} Hz)              ║", frt, frt as f64 / secs);
+    println!(
+        "║   IMU (1kHz):       {:6} ticks ({:6.1} Hz)              ║",
+        it,
+        it as f64 / secs
+    );
+    println!(
+        "║   FT Left (500Hz):  {:6} ticks ({:6.1} Hz)              ║",
+        flt,
+        flt as f64 / secs
+    );
+    println!(
+        "║   FT Right (500Hz): {:6} ticks ({:6.1} Hz)              ║",
+        frt,
+        frt as f64 / secs
+    );
     println!("║ ESTIMATOR                                               ║");
-    println!("║   State Est (1kHz): {:6} ticks, received {:6} IMU msgs ║", et, ir);
+    println!(
+        "║   State Est (1kHz): {:6} ticks, received {:6} IMU msgs ║",
+        et, ir
+    );
     println!("║ CONTROLLERS                                             ║");
-    println!("║   Balance (500Hz):  {:6} ticks, received {:6} states   ║", bt, sr);
-    println!("║   Gait (100Hz):     {:6} ticks ({:6.1} Hz)              ║", gt, gt as f64 / secs);
-    println!("║   WBC (500Hz):      {:6} ticks ({:6.1} Hz)              ║", wt, wt as f64 / secs);
-    println!("║   Logger (50Hz):    {:6} logged                         ║", ll);
+    println!(
+        "║   Balance (500Hz):  {:6} ticks, received {:6} states   ║",
+        bt, sr
+    );
+    println!(
+        "║   Gait (100Hz):     {:6} ticks ({:6.1} Hz)              ║",
+        gt,
+        gt as f64 / secs
+    );
+    println!(
+        "║   WBC (500Hz):      {:6} ticks ({:6.1} Hz)              ║",
+        wt,
+        wt as f64 / secs
+    );
+    println!(
+        "║   Logger (50Hz):    {:6} logged                         ║",
+        ll
+    );
     println!("║ COMMAND MUX                                             ║");
-    println!("║   Mux (500Hz):      {:6} ticks ({:6.1} Hz)              ║", mt, mt as f64 / secs);
+    println!(
+        "║   Mux (500Hz):      {:6} ticks ({:6.1} Hz)              ║",
+        mt,
+        mt as f64 / secs
+    );
     println!("║ JOINT PIDs (20 joints × 500Hz)                          ║");
     let total_joint_ticks: u64 = joint_ticks.iter().map(|j| j.load(Ordering::Relaxed)).sum();
-    let min_joint = joint_ticks.iter().map(|j| j.load(Ordering::Relaxed)).min().unwrap();
-    let max_joint = joint_ticks.iter().map(|j| j.load(Ordering::Relaxed)).max().unwrap();
-    println!("║   Total ticks:     {:7} ({:.1} Hz per joint avg)       ║",
-             total_joint_ticks, total_joint_ticks as f64 / 20.0 / secs);
-    println!("║   Min/Max spread:  {:6}/{:6} ({:.1}% spread)             ║",
-             min_joint, max_joint,
-             if max_joint > 0 { (max_joint - min_joint) as f64 / max_joint as f64 * 100.0 } else { 0.0 });
+    let min_joint = joint_ticks
+        .iter()
+        .map(|j| j.load(Ordering::Relaxed))
+        .min()
+        .unwrap();
+    let max_joint = joint_ticks
+        .iter()
+        .map(|j| j.load(Ordering::Relaxed))
+        .max()
+        .unwrap();
+    println!(
+        "║   Total ticks:     {:7} ({:.1} Hz per joint avg)       ║",
+        total_joint_ticks,
+        total_joint_ticks as f64 / 20.0 / secs
+    );
+    println!(
+        "║   Min/Max spread:  {:6}/{:6} ({:.1}% spread)             ║",
+        min_joint,
+        max_joint,
+        if max_joint > 0 {
+            (max_joint - min_joint) as f64 / max_joint as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!("╠══════════════════════════════════════════════════════════╣");
 
     // ── Critical checks ────────────────────────────────────────
     let mut failures = vec![];
 
     // 1. Did the pipeline actually flow? (IMU → Estimator → Balance)
-    if ir == 0 { failures.push("State estimator received ZERO IMU messages — IPC broken"); }
-    if sr == 0 { failures.push("Balance controller received ZERO state estimates — fan-out broken"); }
+    if ir == 0 {
+        failures.push("State estimator received ZERO IMU messages — IPC broken");
+    }
+    if sr == 0 {
+        failures.push("Balance controller received ZERO state estimates — fan-out broken");
+    }
 
     // 2. Did the slow logger block fast nodes?
     // If logger blocked others, IMU ticks would be << expected
@@ -663,7 +857,8 @@ fn humanoid_20dof_31_nodes_50_topics() {
     }
 
     // 3. Did all 20 joint PIDs actually run?
-    let joints_running = joint_ticks.iter()
+    let joints_running = joint_ticks
+        .iter()
         .filter(|j| j.load(Ordering::Relaxed) > 0)
         .count();
     if joints_running < 20 {
@@ -673,7 +868,9 @@ fn humanoid_20dof_31_nodes_50_topics() {
     // 4. Is joint tick spread reasonable? (no starvation)
     let spread_pct = if max_joint > 0 {
         (max_joint - min_joint) as f64 / max_joint as f64 * 100.0
-    } else { 100.0 };
+    } else {
+        100.0
+    };
     if spread_pct > 20.0 {
         failures.push("Joint tick spread >20% — some joints starved");
     }
@@ -685,12 +882,52 @@ fn humanoid_20dof_31_nodes_50_topics() {
     }
 
     println!("║ CHECKS                                                  ║");
-    println!("║   IMU→Estimator IPC:      {} ({} msgs)", if ir > 0 { "✓ PASS" } else { "✗ FAIL" }, ir);
-    println!("║   State fan-out (1→5):    {} ({} msgs)", if sr > 0 { "✓ PASS" } else { "✗ FAIL" }, sr);
-    println!("║   Logger not blocking:    {} (IMU={:.0}Hz)", if !logger_blocking { "✓ PASS" } else { "✗ FAIL" }, imu_hz);
-    println!("║   All 20 joints running:  {} ({}/20)", if joints_running == 20 { "✓ PASS" } else { "✗ FAIL" }, joints_running);
-    println!("║   Joint tick fairness:    {} ({:.1}% spread)", if spread_pct <= 20.0 { "✓ PASS" } else { "✗ FAIL" }, spread_pct);
-    println!("║   WBC not stalling:       {} ({:.0}Hz)", if wbc_hz >= 50.0 { "✓ PASS" } else { "✗ FAIL" }, wbc_hz);
+    println!(
+        "║   IMU→Estimator IPC:      {} ({} msgs)",
+        if ir > 0 { "✓ PASS" } else { "✗ FAIL" },
+        ir
+    );
+    println!(
+        "║   State fan-out (1→5):    {} ({} msgs)",
+        if sr > 0 { "✓ PASS" } else { "✗ FAIL" },
+        sr
+    );
+    println!(
+        "║   Logger not blocking:    {} (IMU={:.0}Hz)",
+        if !logger_blocking {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        },
+        imu_hz
+    );
+    println!(
+        "║   All 20 joints running:  {} ({}/20)",
+        if joints_running == 20 {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        },
+        joints_running
+    );
+    println!(
+        "║   Joint tick fairness:    {} ({:.1}% spread)",
+        if spread_pct <= 20.0 {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        },
+        spread_pct
+    );
+    println!(
+        "║   WBC not stalling:       {} ({:.0}Hz)",
+        if wbc_hz >= 50.0 {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        },
+        wbc_hz
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     if !failures.is_empty() {

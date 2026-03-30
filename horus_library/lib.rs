@@ -5,10 +5,10 @@
 
 #[doc(hidden)]
 pub mod messages;
+pub mod simulation;
+pub mod topic_convention;
 #[doc(hidden)]
 pub mod transform_frame;
-pub mod topic_convention;
-pub mod simulation;
 
 // Re-export core traits needed for message types
 #[doc(hidden)]

@@ -15,6 +15,15 @@ use horus_core::services::{ServiceClient, ServiceServerBuilder};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Local test-only Twist type (mirrors TestTwist layout).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+struct TestTwist {
+    linear: [f64; 3],
+    angular: [f64; 3],
+    timestamp_ns: u64,
+}
+
 // ============================================================================
 // Test 6: Full producer-consumer pipeline via scheduler
 // ============================================================================
@@ -35,7 +44,7 @@ fn test_scheduler_topics_nodes_full_pipeline() {
     // Producer: publishes Twist-like data (linear velocity) each tick
     struct TwistProducer {
         counter: u64,
-        topic: Topic<horus_library::messages::Twist>,
+        topic: Topic<TestTwist>,
     }
 
     impl Node for TwistProducer {
@@ -45,7 +54,7 @@ fn test_scheduler_topics_nodes_full_pipeline() {
         fn tick(&mut self) {
             self.counter += 1;
             let vel = self.counter as f64 * 0.1;
-            let twist = horus_library::messages::Twist {
+            let twist = TestTwist {
                 linear: [vel, 0.0, 0.0],
                 angular: [0.0, 0.0, vel * 0.5],
                 timestamp_ns: self.counter,
@@ -56,7 +65,7 @@ fn test_scheduler_topics_nodes_full_pipeline() {
 
     // Consumer: reads Twist messages and records the linear[0] values
     struct TwistConsumer {
-        topic: Topic<horus_library::messages::Twist>,
+        topic: Topic<TestTwist>,
         received: Arc<Mutex<Vec<[f64; 3]>>>,
     }
 
@@ -72,10 +81,8 @@ fn test_scheduler_topics_nodes_full_pipeline() {
     }
 
     // Create topics on the main thread (per test isolation rules)
-    let pub_topic =
-        Topic::<horus_library::messages::Twist>::new(&topic_name).expect("create pub topic");
-    let sub_topic =
-        Topic::<horus_library::messages::Twist>::new(&topic_name).expect("create sub topic");
+    let pub_topic = Topic::<TestTwist>::new(&topic_name).expect("create pub topic");
+    let sub_topic = Topic::<TestTwist>::new(&topic_name).expect("create sub topic");
 
     let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
 
@@ -297,13 +304,9 @@ fn test_scheduler_with_services_inline() {
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     // Call the service while the scheduler is running
-    let mut client =
-        ServiceClient::<CrossModuleAdd>::new().expect("create service client");
+    let mut client = ServiceClient::<CrossModuleAdd>::new().expect("create service client");
     let response = client
-        .call(
-            CrossModuleAddRequest { a: 17, b: 25 },
-            1_u64.secs(),
-        )
+        .call(CrossModuleAddRequest { a: 17, b: 25 }, 1_u64.secs())
         .expect("service call should succeed");
 
     *service_result.lock().unwrap() = Some(response.sum);

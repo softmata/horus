@@ -260,18 +260,29 @@ impl PyPointCloud {
         let pool = std::sync::Arc::clone(self.inner.pool());
         // TensorHandle::new() calls pool.retain() internally — do NOT retain here
         let handle = TensorHandle::new(tensor, pool);
-        Ok(PyTensorHandle { handle: Some(handle) })
+        Ok(PyTensorHandle {
+            handle: Some(handle),
+        })
     }
 
     /// Indexing: cloud[0], cloud[0:100]
-    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    fn __getitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let np = py.import("numpy")?;
         let arr = np.call_method1("asarray", (slf.as_any(),))?;
         arr.get_item(key)
     }
 
     /// Assignment: cloud[0] = [x, y, z]
-    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+    fn __setitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
         let np = py.import("numpy")?;
         let arr = np.call_method1("asarray", (slf.as_any(),))?;
         arr.set_item(key, value)

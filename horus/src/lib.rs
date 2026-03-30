@@ -190,14 +190,12 @@ pub mod time;
 #[ctor::ctor]
 fn __register_network_auto_wire() {
     horus_core::scheduling::set_network_auto_wire(|scheduler: &mut horus_core::Scheduler| {
-        scheduler.on_start(|| {
-            match horus_net::start_replicator_default() {
-                Some(handle) => {
-                    eprintln!("[horus_net] Network replication started");
-                    Some(Box::new(handle))
-                }
-                None => None,
+        scheduler.on_start(|| match horus_net::start_replicator_default() {
+            Some(handle) => {
+                eprintln!("[horus_net] Network replication started");
+                Some(Box::new(handle))
             }
+            None => None,
         });
     });
 }
@@ -260,7 +258,9 @@ pub mod net {
     }
 
     /// Enable network replication with custom config.
-    pub fn enable_with_config(config: horus_net::config::NetConfig) -> Option<horus_net::ReplicatorHandle> {
+    pub fn enable_with_config(
+        config: horus_net::config::NetConfig,
+    ) -> Option<horus_net::ReplicatorHandle> {
         horus_net::start_replicator(config)
     }
 
@@ -291,14 +291,12 @@ pub mod net {
             return;
         }
 
-        scheduler.on_start(|| {
-            match horus_net::start_replicator_default() {
-                Some(handle) => {
-                    eprintln!("[horus_net] Network replication started");
-                    Some(Box::new(handle))
-                }
-                None => None,
+        scheduler.on_start(|| match horus_net::start_replicator_default() {
+            Some(handle) => {
+                eprintln!("[horus_net] Network replication started");
+                Some(Box::new(handle))
             }
+            None => None,
         });
     }
 
@@ -307,19 +305,20 @@ pub mod net {
     /// Same as [`wire()`] but allows passing a custom [`NetConfig`].
     /// When called, the custom config takes precedence over the automatic
     /// default wiring.
-    pub fn wire_with_config(scheduler: &mut horus_core::Scheduler, config: horus_net::config::NetConfig) {
+    pub fn wire_with_config(
+        scheduler: &mut horus_core::Scheduler,
+        config: horus_net::config::NetConfig,
+    ) {
         if !scheduler.network_enabled() {
             return;
         }
 
-        scheduler.on_start(move || {
-            match horus_net::start_replicator(config) {
-                Some(handle) => {
-                    eprintln!("[horus_net] Network replication started (custom config)");
-                    Some(Box::new(handle))
-                }
-                None => None,
+        scheduler.on_start(move || match horus_net::start_replicator(config) {
+            Some(handle) => {
+                eprintln!("[horus_net] Network replication started (custom config)");
+                Some(Box::new(handle))
             }
+            None => None,
         });
     }
 

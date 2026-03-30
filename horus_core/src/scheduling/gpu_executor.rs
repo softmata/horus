@@ -248,9 +248,7 @@ impl GpuExecutor {
 
                 // Compute GPU-side duration from events (more accurate than wall clock)
                 let gpu_duration = match (&end_events[i], &start_events[i]) {
-                    (Some(end), Some(start)) => {
-                        end.elapsed_since(start).unwrap_or(Duration::ZERO)
-                    }
+                    (Some(end), Some(start)) => end.elapsed_since(start).unwrap_or(Duration::ZERO),
                     _ => Duration::ZERO,
                 };
 

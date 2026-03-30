@@ -290,18 +290,29 @@ impl PyDepthImage {
         let pool = std::sync::Arc::clone(self.inner.pool());
         // TensorHandle::new() calls pool.retain() internally — do NOT retain here
         let handle = TensorHandle::new(tensor, pool);
-        Ok(PyTensorHandle { handle: Some(handle) })
+        Ok(PyTensorHandle {
+            handle: Some(handle),
+        })
     }
 
     /// Indexing: depth[y, x]
-    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    fn __getitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let np = py.import("numpy")?;
         let arr = np.call_method1("asarray", (slf.as_any(),))?;
         arr.get_item(key)
     }
 
     /// Assignment: depth[y, x] = value
-    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+    fn __setitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
         let np = py.import("numpy")?;
         let arr = np.call_method1("asarray", (slf.as_any(),))?;
         arr.set_item(key, value)

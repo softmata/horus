@@ -6,8 +6,8 @@
 
 use horus_core::communication::{topic_node_registry, Topic};
 use horus_core::core::{DurationExt, Node};
-use horus_core::scheduling::Scheduler;
 use horus_core::memory::Image;
+use horus_core::scheduling::Scheduler;
 use horus_core::types::ImageEncoding;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

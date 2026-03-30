@@ -274,19 +274,21 @@ fn structured_errors_pattern_match() {
 }
 
 // ============================================================================
-// 9. CmdVel / Twist conversions
+// 9. Twist 2D convenience
 // ============================================================================
+// CmdVel lives in horus-robotics (a git dep, not available here).
+// Test the Twist::new_2d helper which is the prelude-available equivalent.
 
 #[test]
-fn cmdvel_twist_conversions() {
-    let cmd = CmdVel::new(1.5, 0.3);
-    let twist: Twist = cmd.into();
+fn twist_2d_roundtrip() {
+    let twist = Twist::new_2d(1.5, 0.3);
     assert!((twist.linear[0] - 1.5).abs() < 1e-6);
     assert!((twist.angular[2] - 0.3).abs() < 1e-6);
-
-    let back: CmdVel = twist.into();
-    assert!((back.linear - 1.5).abs() < 1e-6);
-    assert!((back.angular - 0.3).abs() < 1e-6);
+    // Other axes are zero for 2D motion
+    assert!((twist.linear[1]).abs() < 1e-6);
+    assert!((twist.linear[2]).abs() < 1e-6);
+    assert!((twist.angular[0]).abs() < 1e-6);
+    assert!((twist.angular[1]).abs() < 1e-6);
 }
 
 // ============================================================================

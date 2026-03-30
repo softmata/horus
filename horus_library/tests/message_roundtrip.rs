@@ -557,7 +557,10 @@ fn roundtrip_audio_encoding_all_variants() {
 #[test]
 fn roundtrip_contact_state_all_variants() {
     json_roundtrip(&ContactState::NoContact, "ContactState::NoContact");
-    json_roundtrip(&ContactState::InitialContact, "ContactState::InitialContact");
+    json_roundtrip(
+        &ContactState::InitialContact,
+        "ContactState::InitialContact",
+    );
     json_roundtrip(&ContactState::StableContact, "ContactState::StableContact");
     json_roundtrip(&ContactState::ContactLoss, "ContactState::ContactLoss");
     json_roundtrip(&ContactState::Sliding, "ContactState::Sliding");

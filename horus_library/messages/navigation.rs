@@ -898,7 +898,9 @@ mod tests {
     #[test]
     fn test_nav_goal_serialization() {
         let target = Pose2D::new(5.0, 3.0, 1.57);
-        let goal = NavGoal::new(target, 0.1, 0.05).with_timeout(60.0).with_priority(2);
+        let goal = NavGoal::new(target, 0.1, 0.05)
+            .with_timeout(60.0)
+            .with_priority(2);
         let json = serde_json::to_string(&goal).unwrap();
         let recovered: NavGoal = serde_json::from_str(&json).unwrap();
         assert!((recovered.target_pose.x - 5.0).abs() < 1e-10);
@@ -1024,11 +1026,7 @@ mod tests {
 
     #[test]
     fn test_path_plan_from_waypoints() {
-        let waypoints = vec![
-            [0.0_f32, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [2.0, 1.0, 0.5],
-        ];
+        let waypoints = vec![[0.0_f32, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 1.0, 0.5]];
         let goal = [5.0_f32, 5.0, 1.57];
         let plan = PathPlan::from_waypoints(&waypoints, goal);
         assert_eq!(plan.waypoint_count, 3);

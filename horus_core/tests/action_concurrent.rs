@@ -123,9 +123,7 @@ fn test_sequential_goals_all_complete_correctly() {
         .on_cancel(|_id| CancelResponse::Accept)
         .on_execute(|handle| {
             let input = handle.goal().value;
-            handle.succeed(SeqDoubleResult {
-                doubled: input * 2,
-            })
+            handle.succeed(SeqDoubleResult { doubled: input * 2 })
         })
         .build();
 
@@ -135,10 +133,7 @@ fn test_sequential_goals_all_complete_correctly() {
     let client = SyncActionClient::<SeqDouble>::new().unwrap();
 
     for i in 0..10 {
-        let result = client.send_goal_and_wait(
-            SeqDoubleGoal { value: i },
-            Duration::from_secs(3),
-        );
+        let result = client.send_goal_and_wait(SeqDoubleGoal { value: i }, Duration::from_secs(3));
         match result {
             Ok(r) => assert_eq!(
                 r.doubled,
@@ -353,9 +348,7 @@ fn test_cancel_during_execution() {
             // Loop checking for cancel — up to 200 iterations of 10ms = 2s max
             for i in 0..200 {
                 if handle.is_cancel_requested() || cancel_flag.load(Ordering::Acquire) {
-                    return handle.canceled(CancelDuringResult {
-                        was_canceled: true,
-                    });
+                    return handle.canceled(CancelDuringResult { was_canceled: true });
                 }
                 handle.publish_feedback(CancelDuringFeedback { iteration: i });
                 std::thread::sleep(Duration::from_millis(10));
@@ -427,10 +420,7 @@ fn test_goal_id_unique_across_goals() {
 
     // Send 5 goals and verify each result matches
     for i in 0..5 {
-        let result = client.send_goal_and_wait(
-            IdUniqueGoal { seq: i },
-            Duration::from_secs(3),
-        );
+        let result = client.send_goal_and_wait(IdUniqueGoal { seq: i }, Duration::from_secs(3));
         assert!(result.is_ok(), "Goal {} should succeed: {:?}", i, result);
         assert_eq!(result.unwrap().seq, i, "Goal {} result seq mismatch", i);
     }

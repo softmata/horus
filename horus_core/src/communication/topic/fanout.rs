@@ -137,7 +137,6 @@ impl<T> SpscChannel<T> {
         self.tail.0.store(tail.wrapping_add(1), Ordering::Release);
         Some(msg)
     }
-
 }
 
 // SAFETY: SpscChannel is used within FanoutRing which ensures
@@ -335,7 +334,10 @@ impl<T: Clone> FanoutRing<T> {
     }
 
     /// Read latest (not supported — FanoutRing has no shared head). Returns None.
-    pub fn read_latest(&self) -> Option<T> where T: Copy {
+    pub fn read_latest(&self) -> Option<T>
+    where
+        T: Copy,
+    {
         None
     }
 
@@ -553,8 +555,13 @@ mod tests {
             }
             for i in 0..16u64 {
                 let expected = round * 1000 + i;
-                assert_eq!(ring.recv_as(s0), Some(expected),
-                    "mismatch at round={} i={}", round, i);
+                assert_eq!(
+                    ring.recv_as(s0),
+                    Some(expected),
+                    "mismatch at round={} i={}",
+                    round,
+                    i
+                );
             }
         }
         // 160 total messages through 16-slot ring = 10 full wraps, all correct
@@ -585,7 +592,9 @@ mod tests {
             for i in 0..msgs as u64 {
                 // Retry with yield to avoid overwhelming slow debug consumers
                 for _ in 0..100 {
-                    if ring_c.send_as(i * 2, p0).is_ok() { break; }
+                    if ring_c.send_as(i * 2, p0).is_ok() {
+                        break;
+                    }
                     std::thread::yield_now();
                 }
             }
@@ -597,7 +606,9 @@ mod tests {
             b_c.wait();
             for i in 0..msgs as u64 {
                 for _ in 0..100 {
-                    if ring_c.send_as(i * 2 + 1, p1).is_ok() { break; }
+                    if ring_c.send_as(i * 2 + 1, p1).is_ok() {
+                        break;
+                    }
                     std::thread::yield_now();
                 }
             }
@@ -641,10 +652,20 @@ mod tests {
         // channels are full. Debug mode (no inlining) has high drop rates — producers
         // outrun consumers. In release mode, >95% delivery is typical.
         let min_expected = msgs * 2 / 4; // >25% in debug, >95% in release
-        assert!(s0_data.len() >= min_expected,
-            "s0 received {}/{} messages (min {})", s0_data.len(), msgs * 2, min_expected);
-        assert!(s1_data.len() >= min_expected,
-            "s1 received {}/{} messages (min {})", s1_data.len(), msgs * 2, min_expected);
+        assert!(
+            s0_data.len() >= min_expected,
+            "s0 received {}/{} messages (min {})",
+            s0_data.len(),
+            msgs * 2,
+            min_expected
+        );
+        assert!(
+            s1_data.len() >= min_expected,
+            "s1 received {}/{} messages (min {})",
+            s1_data.len(),
+            msgs * 2,
+            min_expected
+        );
 
         // Verify FIFO ordering per publisher (within received messages)
         for data in [&s0_data, &s1_data] {
@@ -663,17 +684,21 @@ mod tests {
     #[ignore] // Stress test — too slow in debug mode (4P/4S spin-loop). Run with --release --ignored.
     fn test_4p4s_cross_thread_data_verified() {
         // 4P/4S with actual data integrity checks (not just "didn't deadlock")
+        use std::collections::HashSet;
         use std::sync::Arc;
         use std::thread;
-        use std::collections::HashSet;
 
         let ring = Arc::new(FanoutRing::<u64>::new(8, 8, 256));
         let msgs_per_pub = 10_000;
 
         let mut pids = Vec::new();
         let mut sids = Vec::new();
-        for _ in 0..4 { pids.push(ring.register_publisher()); }
-        for _ in 0..4 { sids.push(ring.register_subscriber()); }
+        for _ in 0..4 {
+            pids.push(ring.register_publisher());
+        }
+        for _ in 0..4 {
+            sids.push(ring.register_subscriber());
+        }
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
 
@@ -686,7 +711,9 @@ mod tests {
                 for i in 0..msgs_per_pub {
                     let val = (pid as u64) * 1_000_000 + i as u64;
                     for _ in 0..100 {
-                        if ring.send_as(val, pid).is_ok() { break; }
+                        if ring.send_as(val, pid).is_ok() {
+                            break;
+                        }
                         std::thread::yield_now();
                     }
                 }
@@ -711,35 +738,58 @@ mod tests {
             }));
         }
 
-        for h in pub_handles { h.join().unwrap(); }
-        let all_results: Vec<Vec<u64>> = sub_handles.into_iter()
-            .map(|h| h.join().unwrap())
-            .collect();
+        for h in pub_handles {
+            h.join().unwrap();
+        }
+        let all_results: Vec<Vec<u64>> =
+            sub_handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         for (sid, data) in all_results.iter().enumerate() {
             let expected = msgs_per_pub * 4;
             let min_expected = expected / 4; // >25% in debug, >80% in release
-            assert!(data.len() >= min_expected,
-                "sub {} received {}/{} (min {})", sid, data.len(), expected, min_expected);
+            assert!(
+                data.len() >= min_expected,
+                "sub {} received {}/{} (min {})",
+                sid,
+                data.len(),
+                expected,
+                min_expected
+            );
 
             // Verify per-publisher FIFO ordering (within received messages)
             for pub_id in 0..4u64 {
-                let from_pub: Vec<u64> = data.iter()
+                let from_pub: Vec<u64> = data
+                    .iter()
                     .filter(|v| *v / 1_000_000 == pub_id)
                     .copied()
                     .collect();
-                assert!(from_pub.len() > 0,
-                    "sub {} got 0 msgs from pub {}", sid, pub_id);
+                assert!(
+                    from_pub.len() > 0,
+                    "sub {} got 0 msgs from pub {}",
+                    sid,
+                    pub_id
+                );
                 for w in from_pub.windows(2) {
-                    assert!(w[0] < w[1],
-                        "sub {} pub {} ordering violated: {} >= {}", sid, pub_id, w[0], w[1]);
+                    assert!(
+                        w[0] < w[1],
+                        "sub {} pub {} ordering violated: {} >= {}",
+                        sid,
+                        pub_id,
+                        w[0],
+                        w[1]
+                    );
                 }
             }
 
             // Verify no duplicate values
             let unique: HashSet<u64> = data.iter().copied().collect();
-            assert_eq!(unique.len(), data.len(),
-                "sub {} has {} duplicates", sid, data.len() - unique.len());
+            assert_eq!(
+                unique.len(),
+                data.len(),
+                "sub {} has {} duplicates",
+                sid,
+                data.len() - unique.len()
+            );
         }
     }
 
@@ -794,8 +844,14 @@ mod tests {
             while let Some(v) = ring.recv_as(sid) {
                 received.push(v);
             }
-            assert_eq!(received.len(), MAX_ENDPOINTS,
-                "sub {} got {} msgs (expected {})", sid, received.len(), MAX_ENDPOINTS);
+            assert_eq!(
+                received.len(),
+                MAX_ENDPOINTS,
+                "sub {} got {} msgs (expected {})",
+                sid,
+                received.len(),
+                MAX_ENDPOINTS
+            );
         }
     }
 

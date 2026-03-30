@@ -116,9 +116,7 @@ fn spawn_child(test_name: &str) -> std::process::Child {
 #[test]
 fn cross_process_service_add_roundtrip() {
     if is_child() {
-        if std::env::var(TEST_ENV).ok().as_deref()
-            == Some("cross_process_service_add_roundtrip")
-        {
+        if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_service_add_roundtrip") {
             child_call_add_service();
         }
         return;
@@ -166,9 +164,7 @@ fn cross_process_service_add_roundtrip() {
 #[test]
 fn cross_process_service_multiple_calls() {
     if is_child() {
-        if std::env::var(TEST_ENV).ok().as_deref()
-            == Some("cross_process_service_multiple_calls")
-        {
+        if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_service_multiple_calls") {
             child_call_add_service_multiple();
         }
         return;
@@ -232,9 +228,7 @@ fn cross_process_service_multiple_calls() {
 #[test]
 fn cross_process_service_echo_string() {
     if is_child() {
-        if std::env::var(TEST_ENV).ok().as_deref()
-            == Some("cross_process_service_echo_string")
-        {
+        if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_service_echo_string") {
             child_call_echo_service();
         }
         return;

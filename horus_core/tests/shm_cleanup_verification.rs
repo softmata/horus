@@ -34,10 +34,8 @@ fn test_cleanup_preserves_current_process() {
     // Our directory should still exist (we're alive)
     // Note: cleanup might not remove our dir because our PID is still running
     // The key assertion: cleanup doesn't panic or error
-    assert!(
-        result.removed >= 0,
-        "Cleanup should report non-negative count"
-    );
+    // result.removed is usize, always >= 0
+    let _ = result.removed;
 }
 
 // ============================================================================
@@ -102,5 +100,6 @@ fn test_topic_creates_cleanable_shm() {
 
     // Cleanup should not panic even with recently-dropped topic SHM
     let result = cleanup_stale_namespaces();
-    assert!(result.removed >= 0);
+    // result.removed is usize, always >= 0
+    let _ = result.removed;
 }

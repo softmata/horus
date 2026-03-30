@@ -164,21 +164,27 @@ fn test_params_intent_save_load_persists() {
     params2.load_from_disk(&file_path).unwrap();
 
     // Verify every value roundtrips through file persistence
-    let kp: f64 = params2.get("pid_kp").expect("pid_kp must survive persistence");
+    let kp: f64 = params2
+        .get("pid_kp")
+        .expect("pid_kp must survive persistence");
     assert!(
         (kp - 2.5).abs() < 1e-10,
         "pid_kp must be 2.5 after load, got {}",
         kp
     );
 
-    let ki: f64 = params2.get("pid_ki").expect("pid_ki must survive persistence");
+    let ki: f64 = params2
+        .get("pid_ki")
+        .expect("pid_ki must survive persistence");
     assert!(
         (ki - 0.01).abs() < 1e-10,
         "pid_ki must be 0.01 after load, got {}",
         ki
     );
 
-    let kd: f64 = params2.get("pid_kd").expect("pid_kd must survive persistence");
+    let kd: f64 = params2
+        .get("pid_kd")
+        .expect("pid_kd must survive persistence");
     assert!(
         (kd - 0.1).abs() < 1e-10,
         "pid_kd must be 0.1 after load, got {}",
@@ -293,10 +299,7 @@ fn test_params_intent_metadata_describes_param() {
     // (metadata is set internally by the framework for known params).
     // Verify get_metadata returns None for an unknown param.
     let meta = params.get_metadata("nonexistent_param");
-    assert!(
-        meta.is_none(),
-        "Metadata for unknown param must be None"
-    );
+    assert!(meta.is_none(), "Metadata for unknown param must be None");
 
     // Verify that get_metadata returns None for a param that exists
     // but has no metadata attached (set via the public API).

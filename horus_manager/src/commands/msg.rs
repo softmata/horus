@@ -933,7 +933,7 @@ pub struct B {
     fn parse_messages_no_structs() {
         let source = r#"
 fn helper() -> u32 { 42 }
-const VALUE: f64 = 3.14;
+const VALUE: f64 = 2.75;
 "#;
         let messages = parse_messages_from_source(source, "util", "util.rs".into());
         assert!(messages.is_empty());

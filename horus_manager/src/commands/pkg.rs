@@ -1124,7 +1124,11 @@ pub fn run_add_dep(
 ///
 /// Does NOT modify horus.toml. Downloads to ~/.horus/cache/ and registers
 /// any CLI plugins found in the package.
-pub fn run_install_standalone(package: &str, ver: Option<&str>, target: Option<String>) -> HorusResult<()> {
+pub fn run_install_standalone(
+    package: &str,
+    ver: Option<&str>,
+    target: Option<String>,
+) -> HorusResult<()> {
     let install_target = if let Some(target_name) = target {
         let registry = workspace::WorkspaceRegistry::load()
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -1443,14 +1447,13 @@ fn remove_from_horus_toml(package: &str) {
     let had_dep = manifest.dependencies.remove(package).is_some();
     let had_dev = manifest.dev_dependencies.remove(package).is_some();
 
-    if (had_dep || had_dev)
-        && manifest.save_to(manifest_path).is_ok() {
-            println!(
-                "  {} Removed {} from horus.toml",
-                cli_output::ICON_SUCCESS.green(),
-                package
-            );
-        }
+    if (had_dep || had_dev) && manifest.save_to(manifest_path).is_ok() {
+        println!(
+            "  {} Removed {} from horus.toml",
+            cli_output::ICON_SUCCESS.green(),
+            package
+        );
+    }
 }
 
 /// Remove a package from horus.lock if the lockfile exists.
@@ -2061,7 +2064,13 @@ pub fn run_owner_reject(id: String) -> HorusResult<()> {
 ///
 /// Detects the project language from CWD and delegates to the native package
 /// manager (`cargo add` for Rust, `pip install` for Python).
-pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool, source: Option<String>) -> HorusResult<()> {
+pub fn run_add(
+    name: String,
+    ver: Option<String>,
+    driver: bool,
+    _plugin: bool,
+    source: Option<String>,
+) -> HorusResult<()> {
     use crate::manifest::{DriverTableConfig, DriverValue};
 
     // ── Write to horus.toml (single source of truth) ─────────────────────
@@ -2087,31 +2096,23 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool, s
         // Create driver value based on source
         let source_str = source.as_deref().unwrap_or("");
         let driver_value = match source_str {
-            "crates-io" | "crate" => {
-                DriverValue::Config(DriverTableConfig {
-                    crate_name: Some(name.clone()),
-                    source: Some("crates-io".to_string()),
-                    ..DriverTableConfig::default()
-                })
-            }
-            "pypi" | "pip" => {
-                DriverValue::Config(DriverTableConfig {
-                    pip: Some(name.clone()),
-                    ..DriverTableConfig::default()
-                })
-            }
-            "exec" => {
-                DriverValue::Config(DriverTableConfig {
-                    exec: Some(name.clone()),
-                    ..DriverTableConfig::default()
-                })
-            }
-            "sim3d" | "simulated" | "sim" => {
-                DriverValue::Config(DriverTableConfig {
-                    simulated: Some(true),
-                    ..DriverTableConfig::default()
-                })
-            }
+            "crates-io" | "crate" => DriverValue::Config(DriverTableConfig {
+                crate_name: Some(name.clone()),
+                source: Some("crates-io".to_string()),
+                ..DriverTableConfig::default()
+            }),
+            "pypi" | "pip" => DriverValue::Config(DriverTableConfig {
+                pip: Some(name.clone()),
+                ..DriverTableConfig::default()
+            }),
+            "exec" => DriverValue::Config(DriverTableConfig {
+                exec: Some(name.clone()),
+                ..DriverTableConfig::default()
+            }),
+            "sim3d" | "simulated" | "sim" => DriverValue::Config(DriverTableConfig {
+                simulated: Some(true),
+                ..DriverTableConfig::default()
+            }),
             "" | "legacy" => {
                 // Legacy behavior: simple backend string or bool
                 let backend = ver.clone().unwrap_or_else(|| "true".to_string());
@@ -2135,7 +2136,11 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, _plugin: bool, s
             .save_to(manifest_path)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
-        let source_display = if source_str.is_empty() { "legacy" } else { source_str };
+        let source_display = if source_str.is_empty() {
+            "legacy"
+        } else {
+            source_str
+        };
         println!(
             "{} Added driver {} ({}) to horus.toml [drivers]",
             cli_output::ICON_SUCCESS.green(),
@@ -2287,13 +2292,17 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
             let mut regenerated = Vec::new();
 
             if ctx.languages.contains(&crate::manifest::Language::Rust) {
-                if let Ok((path, _)) = crate::cargo_gen::generate(&manifest, &project_dir, &[], false) {
+                if let Ok((path, _)) =
+                    crate::cargo_gen::generate(&manifest, &project_dir, &[], false)
+                {
                     regenerated.push(path.display().to_string());
                 }
             }
 
             if ctx.languages.contains(&crate::manifest::Language::Python) {
-                if let Ok((path, _)) = crate::pyproject_gen::generate(&manifest, &project_dir, false) {
+                if let Ok((path, _)) =
+                    crate::pyproject_gen::generate(&manifest, &project_dir, false)
+                {
                     regenerated.push(path.display().to_string());
                 }
             }
@@ -3369,14 +3378,7 @@ existing = "1.0.0"
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
         // No horus.toml => error, but the source detection itself works
-        let result = run_add_dep(
-            "./local/pkg".to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
+        let result = run_add_dep("./local/pkg".to_string(), None, None, None, None, false);
         // Should error about missing horus.toml (not about source detection)
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
@@ -3584,14 +3586,7 @@ existing = "1.0.0"
         )
         .unwrap();
 
-        let result = run_add_dep(
-            "./local-dep".to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
+        let result = run_add_dep("./local-dep".to_string(), None, None, None, None, false);
         // Should succeed — path dependency gets written to horus.toml
         assert!(result.is_ok(), "run_install failed: {:?}", result.err());
 
@@ -4675,7 +4670,8 @@ name = "minimal"
         let horus_path = dir.path().join(HORUS_TOML);
         manifest.save_to(&horus_path).unwrap();
 
-        let (cargo_path, _) = crate::cargo_gen::generate(&manifest, dir.path(), &[], false).unwrap();
+        let (cargo_path, _) =
+            crate::cargo_gen::generate(&manifest, dir.path(), &[], false).unwrap();
         let cargo_content = fs::read_to_string(&cargo_path).unwrap();
 
         // Rust dep should appear in Cargo.toml
@@ -4773,7 +4769,8 @@ name = "minimal"
         let horus_path = dir.path().join(HORUS_TOML);
         manifest.save_to(&horus_path).unwrap();
 
-        let (pyproject_path, _) = crate::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
+        let (pyproject_path, _) =
+            crate::pyproject_gen::generate(&manifest, dir.path(), false).unwrap();
         let content = fs::read_to_string(&pyproject_path).unwrap();
 
         // PyPI dep should appear
@@ -5399,15 +5396,7 @@ lidar = "rplidar-a2"
             "[package]\nname = \"motor-lib\"\nversion = \"0.2.0\"\n",
         )
         .unwrap();
-        run_add_dep(
-            "./motor-lib".to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
-        )
-        .unwrap();
+        run_add_dep("./motor-lib".to_string(), None, None, None, None, false).unwrap();
 
         std::env::set_current_dir(&original_dir).unwrap();
 
@@ -5801,7 +5790,14 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         .unwrap();
 
         // Add a driver via run_add
-        run_add("gps".to_string(), Some("ublox".to_string()), true, false, None).unwrap();
+        run_add(
+            "gps".to_string(),
+            Some("ublox".to_string()),
+            true,
+            false,
+            None,
+        )
+        .unwrap();
 
         std::env::set_current_dir(&original_dir).unwrap();
 
@@ -5828,7 +5824,14 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
         .unwrap();
 
         // Add dep via run_add — smart resolver detects serde as crates.io
-        run_add("serde".to_string(), Some("1.0".to_string()), false, false, None).unwrap();
+        run_add(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            false,
+            None,
+        )
+        .unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
@@ -6506,15 +6509,7 @@ serde = { version = "1.0", source = "crates.io" }
             "[package]\nname = \"sensor-lib\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        run_add_dep(
-            "./sensor-lib".to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
-        )
-        .unwrap();
+        run_add_dep("./sensor-lib".to_string(), None, None, None, None, false).unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies.len(), 3);
@@ -6595,7 +6590,14 @@ serde = { version = "1.0", source = "crates.io" }
         fs::write(temp_dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
         // Step 2: `horus add serde` — user doesn't specify source, system auto-detects
-        run_add("serde".to_string(), Some("1.0".to_string()), false, false, None).unwrap();
+        run_add(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            false,
+            None,
+        )
+        .unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
@@ -6773,7 +6775,14 @@ serde = { version = "1.0", source = "crates.io" }
         fs::write(temp_dir.path().join("src/vision.py"), "import cv2\n").unwrap();
 
         // Step 2: Add Rust deps — should auto-detect as crates.io
-        run_add("serde".to_string(), Some("1.0".to_string()), false, false, None).unwrap();
+        run_add(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            false,
+            None,
+        )
+        .unwrap();
         run_add("nalgebra".to_string(), None, false, false, None).unwrap();
 
         // Step 3: Add Python deps — should auto-detect as PyPI
@@ -7108,7 +7117,13 @@ tokio = "1.0"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
-        let result = run_add("serde".to_string(), Some("1.0".to_string()), false, false, None);
+        let result = run_add(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            false,
+            None,
+        );
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
         // Should fail — no horus.toml
@@ -7129,7 +7144,13 @@ edition = "1"
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
-        let result = run_add("serde".to_string(), Some("1.0".to_string()), false, false, None);
+        let result = run_add(
+            "serde".to_string(),
+            Some("1.0".to_string()),
+            false,
+            false,
+            None,
+        );
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 

@@ -27,8 +27,8 @@ use quote::{format_ident, quote};
 use syn::Type;
 
 use crate::types::{
-    BindingItem, ImplBinding, MethodBinding, MethodSig, MonomorphTarget,
-    ParamBinding, Receiver, StructBinding,
+    BindingItem, ImplBinding, MethodBinding, MethodSig, MonomorphTarget, ParamBinding, Receiver,
+    StructBinding,
 };
 
 /// Generate CXX bridge code from binding metadata.
@@ -121,12 +121,9 @@ pub fn generate_monomorphized_bridge(
             if !is_pub(&method.vis) {
                 continue;
             }
-            if let Some(decl) = generate_monomorphized_method_ffi(
-                &concrete_ident,
-                &prefix,
-                method,
-                target,
-            ) {
+            if let Some(decl) =
+                generate_monomorphized_method_ffi(&concrete_ident, &prefix, method, target)
+            {
                 all_fns.push(decl);
             }
         }
@@ -355,9 +352,18 @@ mod tests {
         let s = bridge.to_string();
 
         // Check function names are mangled
-        assert!(s.contains("publisher_new"), "missing publisher_new in:\n{s}");
-        assert!(s.contains("publisher_loan"), "missing publisher_loan in:\n{s}");
-        assert!(s.contains("publisher_publish"), "missing publisher_publish in:\n{s}");
+        assert!(
+            s.contains("publisher_new"),
+            "missing publisher_new in:\n{s}"
+        );
+        assert!(
+            s.contains("publisher_loan"),
+            "missing publisher_loan in:\n{s}"
+        );
+        assert!(
+            s.contains("publisher_publish"),
+            "missing publisher_publish in:\n{s}"
+        );
 
         // Check type is declared
         assert_contains(&bridge, "type Publisher");
@@ -411,7 +417,10 @@ mod tests {
         let s = bridge.to_string();
         // Should have topic param but no obj param
         assert!(s.contains("topic"), "missing topic param in:\n{s}");
-        assert!(!s.contains("obj :"), "static method should not have obj param:\n{s}");
+        assert!(
+            !s.contains("obj :"),
+            "static method should not have obj param:\n{s}"
+        );
     }
 
     #[test]
@@ -449,7 +458,10 @@ mod tests {
         let bridge = generate_cxx_bridge(&BindingItem::Impl(binding));
         let s = bridge.to_string();
         // Should NOT have -> in the function signature for void return
-        assert!(!s.contains("->"), "void method should not have return type:\n{s}");
+        assert!(
+            !s.contains("->"),
+            "void method should not have return type:\n{s}"
+        );
     }
 
     #[test]
@@ -536,7 +548,10 @@ mod tests {
         let binding = parse_impl(&item).unwrap();
         let bridge = generate_cxx_bridge(&BindingItem::Impl(binding));
         let s = bridge.to_string();
-        assert!(s.contains("Result < Box < Publisher >"), "Result<Box<Publisher>> in:\n{s}");
+        assert!(
+            s.contains("Result < Box < Publisher >"),
+            "Result<Box<Publisher>> in:\n{s}"
+        );
     }
 
     #[test]
@@ -549,7 +564,10 @@ mod tests {
         let binding = parse_impl(&item).unwrap();
         let bridge = generate_cxx_bridge(&BindingItem::Impl(binding));
         let s = bridge.to_string();
-        assert!(s.contains("Message"), "return type should contain Message:\n{s}");
+        assert!(
+            s.contains("Message"),
+            "return type should contain Message:\n{s}"
+        );
     }
 
     #[test]
@@ -561,7 +579,10 @@ mod tests {
         };
         let binding = parse_impl(&item).unwrap();
         let header = crate::cpp_gen::generate_cpp_header(&BindingItem::Impl(binding));
-        assert!(header.contains("void send"), "void return for Result<()>:\n{header}");
+        assert!(
+            header.contains("void send"),
+            "void return for Result<()>:\n{header}"
+        );
     }
 
     // ─── Monomorphization Tests ──────────────────────────────────────
@@ -576,21 +597,25 @@ mod tests {
             }
         };
         let binding = parse_impl(&item).unwrap();
-        let targets = &[
-            MonomorphTarget {
-                rust_name: "CmdVel",
-                snake_name: "cmd_vel",
-                rust_path: "horus_library::CmdVel",
-            },
-        ];
+        let targets = &[MonomorphTarget {
+            rust_name: "CmdVel",
+            snake_name: "cmd_vel",
+            rust_path: "horus_library::CmdVel",
+        }];
         let bridge = generate_monomorphized_bridge("Publisher", &binding.methods, targets);
         let s = bridge.to_string();
 
-        assert!(s.contains("type PublisherCmdVel"), "concrete type decl:\n{s}");
+        assert!(
+            s.contains("type PublisherCmdVel"),
+            "concrete type decl:\n{s}"
+        );
         assert!(s.contains("publisher_cmd_vel_new"), "new fn:\n{s}");
         assert!(s.contains("publisher_cmd_vel_send"), "send fn:\n{s}");
         assert!(s.contains("publisher_cmd_vel_recv"), "recv fn:\n{s}");
-        assert!(s.contains("Box < PublisherCmdVel >"), "new returns box:\n{s}");
+        assert!(
+            s.contains("Box < PublisherCmdVel >"),
+            "new returns box:\n{s}"
+        );
     }
 
     #[test]
@@ -641,14 +666,19 @@ mod tests {
             }
         };
         let binding = parse_impl(&item).unwrap();
-        let targets = &[
-            MonomorphTarget { rust_name: "Bar", snake_name: "bar", rust_path: "Bar" },
-        ];
+        let targets = &[MonomorphTarget {
+            rust_name: "Bar",
+            snake_name: "bar",
+            rust_path: "Bar",
+        }];
         let bridge = generate_monomorphized_bridge("Foo", &binding.methods, targets);
         let s = bridge.to_string();
 
         assert!(s.contains("foo_bar_public_fn"), "public:\n{s}");
-        assert!(!s.contains("foo_bar_private_fn"), "private should be excluded:\n{s}");
+        assert!(
+            !s.contains("foo_bar_private_fn"),
+            "private should be excluded:\n{s}"
+        );
     }
 
     #[test]

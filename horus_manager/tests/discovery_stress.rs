@@ -37,7 +37,10 @@ fn test_discover_100_nodes() {
         );
     }
 
-    assert!(rt.wait_ready(3_u64.secs()), "100 nodes should be discoverable");
+    assert!(
+        rt.wait_ready(3_u64.secs()),
+        "100 nodes should be discoverable"
+    );
 
     let start = Instant::now();
     let nodes = discover_nodes().expect("discovery should succeed");

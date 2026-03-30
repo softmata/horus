@@ -70,7 +70,9 @@ fn bench_horus_xproc_mpmc(num_pubs: usize, num_subs: usize) {
 
     // Wait for children
     for pid in child_pids {
-        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0); }
+        unsafe {
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
     }
 
     if !latencies.is_empty() {
@@ -79,8 +81,10 @@ fn bench_horus_xproc_mpmc(num_pubs: usize, num_subs: usize) {
         let avg = latencies.iter().sum::<u64>() / n as u64;
         let med = latencies[n / 2];
         let p99 = latencies[(n as f64 * 0.99) as usize];
-        println!("  recv={}/{}  avg={}ns  med={}ns  p99={}ns  min={}ns\n",
-            n, total_expected, avg, med, p99, latencies[0]);
+        println!(
+            "  recv={}/{}  avg={}ns  med={}ns  p99={}ns  min={}ns\n",
+            n, total_expected, avg, med, p99, latencies[0]
+        );
     } else {
         println!("  No messages received\n");
     }
@@ -120,12 +124,18 @@ fn bench_horus_xproc_spmc(num_pubs: usize, num_subs: usize) {
     let elapsed = start.elapsed();
 
     for pid in child_pids {
-        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0); }
+        unsafe {
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
     }
 
     let throughput = ITERATIONS as f64 / elapsed.as_secs_f64();
-    println!("  sent={}  time={:.1}ms  throughput={:.2}M/s\n",
-        ITERATIONS, elapsed.as_millis(), throughput / 1e6);
+    println!(
+        "  sent={}  time={:.1}ms  throughput={:.2}M/s\n",
+        ITERATIONS,
+        elapsed.as_millis(),
+        throughput / 1e6
+    );
 }
 
 fn bench_iox2_xproc_mpmc(num_pubs: usize, num_subs: usize) {
@@ -177,12 +187,16 @@ fn bench_iox2_xproc_mpmc(num_pubs: usize, num_subs: usize) {
                 latencies.push(t0.elapsed().as_nanos() as u64);
                 received += 1;
             }
-            _ => { std::hint::spin_loop(); }
+            _ => {
+                std::hint::spin_loop();
+            }
         }
     }
 
     for pid in child_pids {
-        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0); }
+        unsafe {
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
     }
 
     if !latencies.is_empty() {
@@ -191,8 +205,10 @@ fn bench_iox2_xproc_mpmc(num_pubs: usize, num_subs: usize) {
         let avg = latencies.iter().sum::<u64>() / n as u64;
         let med = latencies[n / 2];
         let p99 = latencies[(n as f64 * 0.99) as usize];
-        println!("  recv={}/{}  avg={}ns  med={}ns  p99={}ns  min={}ns\n",
-            n, total_expected, avg, med, p99, latencies[0]);
+        println!(
+            "  recv={}/{}  avg={}ns  med={}ns  p99={}ns  min={}ns\n",
+            n, total_expected, avg, med, p99, latencies[0]
+        );
     } else {
         println!("  No messages received\n");
     }
@@ -218,8 +234,12 @@ fn bench_iox2_xproc_spmc(num_pubs: usize, num_subs: usize) {
             let deadline = Instant::now() + std::time::Duration::from_secs(10);
             while count < ITERATIONS && Instant::now() < deadline {
                 match subscriber.receive() {
-                    Ok(Some(_)) => { count += 1; }
-                    _ => { std::hint::spin_loop(); }
+                    Ok(Some(_)) => {
+                        count += 1;
+                    }
+                    _ => {
+                        std::hint::spin_loop();
+                    }
                 }
             }
             std::process::exit(0);
@@ -247,10 +267,16 @@ fn bench_iox2_xproc_spmc(num_pubs: usize, num_subs: usize) {
     let elapsed = start.elapsed();
 
     for pid in child_pids {
-        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0); }
+        unsafe {
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
     }
 
     let throughput = ITERATIONS as f64 / elapsed.as_secs_f64();
-    println!("  sent={}  time={:.1}ms  throughput={:.2}M/s\n",
-        ITERATIONS, elapsed.as_millis(), throughput / 1e6);
+    println!(
+        "  sent={}  time={:.1}ms  throughput={:.2}M/s\n",
+        ITERATIONS,
+        elapsed.as_millis(),
+        throughput / 1e6
+    );
 }

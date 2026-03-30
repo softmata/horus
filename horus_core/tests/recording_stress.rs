@@ -144,7 +144,7 @@ fn test_record_1mb_images_30hz() {
     let start = Instant::now();
     for tick in 0..90u64 {
         let timestamp_us = tick * 33_333; // ~30Hz
-        // Use unique data per frame (hash the tick into the first 8 bytes)
+                                          // Use unique data per frame (hash the tick into the first 8 bytes)
         let mut frame = image_data.clone();
         frame[0..8].copy_from_slice(&tick.to_le_bytes());
 
@@ -327,14 +327,14 @@ fn test_truncated_recording_no_panic() {
 
     // Test truncation at various points
     let truncation_points = [
-        0,                  // Empty file
-        3,                  // Partial magic
-        6,                  // Magic only, no version
-        10,                 // Header only, no payload
-        file_size / 4,      // 25% through payload
-        file_size / 2,      // 50% through payload
-        file_size * 3 / 4,  // 75% through payload
-        file_size - 1,      // Off by one byte
+        0,                 // Empty file
+        3,                 // Partial magic
+        6,                 // Magic only, no version
+        10,                // Header only, no payload
+        file_size / 4,     // 25% through payload
+        file_size / 2,     // 50% through payload
+        file_size * 3 / 4, // 75% through payload
+        file_size - 1,     // Off by one byte
     ];
 
     for &truncate_at in &truncation_points {
@@ -442,11 +442,17 @@ fn test_two_concurrent_sessions() {
     // Verify data integrity — A has 0xAA, B has 0xBB
     let snap_a = replayer_a.current_snapshot().unwrap();
     let data_a = snap_a.outputs.get("topic_a").unwrap();
-    assert!(data_a.iter().all(|&b| b == 0xAA), "Session A data corrupted");
+    assert!(
+        data_a.iter().all(|&b| b == 0xAA),
+        "Session A data corrupted"
+    );
 
     let snap_b = replayer_b.current_snapshot().unwrap();
     let data_b = snap_b.outputs.get("topic_b").unwrap();
-    assert!(data_b.iter().all(|&b| b == 0xBB), "Session B data corrupted");
+    assert!(
+        data_b.iter().all(|&b| b == 0xBB),
+        "Session B data corrupted"
+    );
 
     // Verify no cross-topic leakage
     assert!(
@@ -544,7 +550,9 @@ fn test_compressed_recording_if_available() {
     recording.finish();
 
     // Save uncompressed
-    recording.save(&uncompressed_path).expect("save uncompressed");
+    recording
+        .save(&uncompressed_path)
+        .expect("save uncompressed");
     let uncompressed_size = std::fs::metadata(&uncompressed_path).unwrap().len();
 
     // Save compressed (uses save_compressed if available, else same as uncompressed)

@@ -77,7 +77,9 @@ pub fn generate(
     for value in manifest.drivers.values() {
         if let crate::manifest::DriverValue::Config(cfg) = value {
             if let Some(ref pip_name) = cfg.pip {
-                let version = cfg.params.get("version")
+                let version = cfg
+                    .params
+                    .get("version")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let dep_str = if version.is_empty() {
@@ -214,9 +216,7 @@ fn format_pypi_dep(name: &str, dep: &DependencyValue) -> String {
         DependencyValue::Detailed(d) => {
             let mut spec = name.to_string();
             if let Some(ref version) = d.version {
-                if version
-                    .starts_with(['>', '<', '=', '!', '~'])
-                {
+                if version.starts_with(['>', '<', '=', '!', '~']) {
                     spec.push_str(version);
                 } else {
                     spec.push_str("==");

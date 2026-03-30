@@ -231,19 +231,22 @@ fn test_safety_scenario_runaway_motor_killed() {
         sensor_ticks > motor_ticks,
         "Sensor should have more ticks than the killed motor. \
          sensor={}, motor={}",
-        sensor_ticks, motor_ticks
+        sensor_ticks,
+        motor_ticks
     );
     assert!(
         planner_ticks > motor_ticks,
         "Planner should have more ticks than the killed motor. \
          planner={}, motor={}",
-        planner_ticks, motor_ticks
+        planner_ticks,
+        motor_ticks
     );
     assert!(
         monitor_ticks > motor_ticks,
         "Monitor should have more ticks than the killed motor. \
          monitor={}, motor={}",
-        monitor_ticks, motor_ticks
+        monitor_ticks,
+        motor_ticks
     );
 
     // Verify degradation was activated (proves the graduated watchdog fired)
@@ -326,18 +329,24 @@ fn test_safety_scenario_healthy_nodes_survive_sibling_kill() {
         sensor_gained >= 10,
         "Sensor should have ticked at least 10 more times after motor kill. \
          gained={} (phase1={}, phase2={})",
-        sensor_gained, sensor_after_phase1, sensor_after_phase2
+        sensor_gained,
+        sensor_after_phase1,
+        sensor_after_phase2
     );
     assert!(
         planner_gained >= 10,
         "Planner should have ticked at least 10 more times after motor kill. \
          gained={} (phase1={}, phase2={})",
-        planner_gained, planner_after_phase1, planner_after_phase2
+        planner_gained,
+        planner_after_phase1,
+        planner_after_phase2
     );
     assert!(
         monitor_gained >= 10,
         "Monitor should have ticked at least 10 more times after motor kill. \
          gained={} (phase1={}, phase2={})",
-        monitor_gained, monitor_after_phase1, monitor_after_phase2
+        monitor_gained,
+        monitor_after_phase1,
+        monitor_after_phase2
     );
 }

@@ -15,8 +15,8 @@ use horus_core::communication::topic::Topic;
 use horus_core::core::DurationExt;
 use horus_core::memory::Image;
 use horus_core::scheduling::Scheduler;
-use horus_core::Node;
 use horus_core::types::ImageEncoding;
+use horus_core::Node;
 
 const CHILD_ENV: &str = "ISSUE37_CHILD";
 const TOPIC_ENV: &str = "ISSUE37_TOPIC";
@@ -54,8 +54,7 @@ impl Node for TestSendNode {
     }
 
     fn tick(&mut self) {
-        let img = Image::new(self.width, self.height, ImageEncoding::Rgb8)
-            .expect("Image::new");
+        let img = Image::new(self.width, self.height, ImageEncoding::Rgb8).expect("Image::new");
         // Fill with recognizable pattern
         let val = ((self.frame_count + 1) * 7 % 256) as u8;
         let data = img.data_mut();
@@ -269,7 +268,10 @@ fn issue_37_large_image_two_schedulers() {
     );
 
     let (received, valid) = parse_output(&stdout);
-    eprintln!("Large image (324x244): received={}, valid={}", received, valid);
+    eprintln!(
+        "Large image (324x244): received={}, valid={}",
+        received, valid
+    );
     assert!(received > 0, "Child received 0 images");
     assert_eq!(received, valid, "Some images had corrupted data");
 }
@@ -321,7 +323,10 @@ fn issue_37_vga_image_two_schedulers() {
     );
 
     let (received, valid) = parse_output(&stdout);
-    eprintln!("VGA image (640x480): received={}, valid={}", received, valid);
+    eprintln!(
+        "VGA image (640x480): received={}, valid={}",
+        received, valid
+    );
     assert!(received > 0, "Child received 0 images");
     assert_eq!(received, valid, "Some images had corrupted data");
 }

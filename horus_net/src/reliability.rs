@@ -47,9 +47,9 @@ impl ReliabilityLayer {
     /// Number of redundant copies to send for a given reliability tier.
     pub fn copies_for(reliability: Reliability) -> u8 {
         match reliability {
-            Reliability::Latched => 3,    // Immediate: 3x + ACK
-            Reliability::Redundant => 2,  // RealTime: 2x
-            Reliability::None => 1,       // Normal/Bulk: 1x
+            Reliability::Latched => 3,   // Immediate: 3x + ACK
+            Reliability::Redundant => 2, // RealTime: 2x
+            Reliability::None => 1,      // Normal/Bulk: 1x
         }
     }
 
@@ -61,18 +61,22 @@ impl ReliabilityLayer {
     /// Start tracking a latched message (resend until ACK).
     pub fn start_latch(&mut self, topic_hash: u32, sequence: u32, payload: Vec<u8>) {
         let key = (topic_hash, sequence);
-        self.latched.insert(key, LatchedEntry {
-            topic_hash,
-            sequence,
-            payload,
-            resend_count: 0,
-            last_sent: Instant::now(),
-        });
+        self.latched.insert(
+            key,
+            LatchedEntry {
+                topic_hash,
+                sequence,
+                payload,
+                resend_count: 0,
+                last_sent: Instant::now(),
+            },
+        );
     }
 
     /// Handle an ACK — remove the latched message.
     pub fn on_ack(&mut self, ack: &AckPayload) {
-        self.latched.remove(&(ack.acked_topic_hash, ack.acked_sequence));
+        self.latched
+            .remove(&(ack.acked_topic_hash, ack.acked_sequence));
     }
 
     /// Get messages that need resending (latched, interval elapsed).
@@ -120,11 +124,7 @@ impl ReliabilityLayer {
     }
 
     /// Filter a list of incoming messages to remove duplicates in-place.
-    pub fn dedup_messages(
-        &mut self,
-        sender_hash: u16,
-        messages: &mut Vec<crate::wire::InMessage>,
-    ) {
+    pub fn dedup_messages(&mut self, sender_hash: u16, messages: &mut Vec<crate::wire::InMessage>) {
         messages.retain(|msg| self.is_new_message(sender_hash, msg.topic_hash, msg.sequence));
     }
 
@@ -154,10 +154,22 @@ mod tests {
 
     #[test]
     fn default_reliability_matches_blueprint() {
-        assert_eq!(ReliabilityLayer::default_reliability(Priority::Immediate), Reliability::Latched);
-        assert_eq!(ReliabilityLayer::default_reliability(Priority::RealTime), Reliability::Redundant);
-        assert_eq!(ReliabilityLayer::default_reliability(Priority::Normal), Reliability::None);
-        assert_eq!(ReliabilityLayer::default_reliability(Priority::Bulk), Reliability::None);
+        assert_eq!(
+            ReliabilityLayer::default_reliability(Priority::Immediate),
+            Reliability::Latched
+        );
+        assert_eq!(
+            ReliabilityLayer::default_reliability(Priority::RealTime),
+            Reliability::Redundant
+        );
+        assert_eq!(
+            ReliabilityLayer::default_reliability(Priority::Normal),
+            Reliability::None
+        );
+        assert_eq!(
+            ReliabilityLayer::default_reliability(Priority::Bulk),
+            Reliability::None
+        );
     }
 
     #[test]
@@ -187,7 +199,7 @@ mod tests {
         let resends = layer.tick_resends();
         assert_eq!(resends.len(), 1);
         assert_eq!(resends[0].0, 100); // topic_hash
-        assert_eq!(resends[0].1, 1);   // sequence
+        assert_eq!(resends[0].1, 1); // sequence
         assert_eq!(resends[0].2, vec![42]); // payload
     }
 

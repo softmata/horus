@@ -378,7 +378,7 @@ mod tests {
         grid.set_origin(0.0, 0.0, 0.0);
         grid.set_cell(0, 0, 0); // free
         grid.set_cell(1, 0, 100); // occupied
-        // Cell (2, 0) is -1 (unknown)
+                                  // Cell (2, 0) is -1 (unknown)
 
         assert!(grid.is_free(0.05, 0.05));
         assert!(grid.is_occupied(0.15, 0.05));

@@ -229,15 +229,7 @@ mod tests {
 
     #[test]
     fn test_occupancy_grid_pod() {
-        let tensor = Tensor::new(
-            1,
-            42,
-            99,
-            0,
-            &[1000, 1000],
-            TensorDtype::I8,
-            Device::cpu(),
-        );
+        let tensor = Tensor::new(1, 42, 99, 0, &[1000, 1000], TensorDtype::I8, Device::cpu());
         let mut grid = OccupancyGridDescriptor::new(tensor, 0.05, 1000, 1000);
         grid.set_frame_id("map");
         grid.set_timestamp_ns(1_000_000_000);
@@ -290,24 +282,24 @@ mod tests {
         let mut grid = OccupancyGridDescriptor::default();
         grid.resolution = f32::NAN;
         grid.sanitize_from_shm();
-        assert_eq!(grid.resolution(), 0.05, "NaN resolution should reset to default");
+        assert_eq!(
+            grid.resolution(),
+            0.05,
+            "NaN resolution should reset to default"
+        );
 
         grid.resolution = -1.0;
         grid.sanitize_from_shm();
-        assert_eq!(grid.resolution(), 0.05, "negative resolution should reset to default");
+        assert_eq!(
+            grid.resolution(),
+            0.05,
+            "negative resolution should reset to default"
+        );
     }
 
     #[test]
     fn test_occupancy_grid_serde_roundtrip() {
-        let tensor = Tensor::new(
-            1,
-            42,
-            1,
-            0,
-            &[500, 500],
-            TensorDtype::I8,
-            Device::cpu(),
-        );
+        let tensor = Tensor::new(1, 42, 1, 0, &[500, 500], TensorDtype::I8, Device::cpu());
         let mut grid = OccupancyGridDescriptor::new(tensor, 0.1, 500, 500);
         grid.set_frame_id("map");
         grid.set_timestamp_ns(123456789);

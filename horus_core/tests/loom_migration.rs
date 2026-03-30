@@ -297,9 +297,7 @@ fn loom_migration_three_threads_no_deadlock() {
 
         let t1 = loom::thread::spawn(move || h1.try_migrate(2));
         let t2 = loom::thread::spawn(move || h2.try_migrate(3));
-        let t_obs = loom::thread::spawn(move || {
-            h_obs.migration_epoch.load(Ordering::Acquire)
-        });
+        let t_obs = loom::thread::spawn(move || h_obs.migration_epoch.load(Ordering::Acquire));
 
         let r1 = t1.join().unwrap();
         let r2 = t2.join().unwrap();
@@ -307,10 +305,7 @@ fn loom_migration_three_threads_no_deadlock() {
 
         // Both threads completed (no deadlock)
         // Lock is released
-        assert!(
-            !header.is_locked(),
-            "migration lock must be released"
-        );
+        assert!(!header.is_locked(), "migration lock must be released");
 
         // At most one migration per attempt (CAS exclusion)
         let successes = [r1, r2].iter().filter(|r| r.is_some()).count();

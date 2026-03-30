@@ -10,10 +10,10 @@ use horus_core::action;
 use horus_core::actions::*;
 use horus_core::core::DurationExt;
 use horus_core::scheduling::Scheduler;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::process::{Command, Stdio};
 
 mod common;
 use common::cleanup_stale_shm;
@@ -44,11 +44,11 @@ fn child_send_goal_and_wait() {
     // Wait for parent's server to be ready
     std::thread::sleep(Duration::from_millis(500));
 
-    let client = SyncActionClient::<XProcNav>::new()
-        .expect("child: failed to create SyncActionClient");
+    let client =
+        SyncActionClient::<XProcNav>::new().expect("child: failed to create SyncActionClient");
 
-    let result = client
-        .send_goal_and_wait(XProcNavGoal { target_x: 42.0 }, Duration::from_secs(10));
+    let result =
+        client.send_goal_and_wait(XProcNavGoal { target_x: 42.0 }, Duration::from_secs(10));
 
     match result {
         Ok(r) => {
@@ -81,9 +81,7 @@ fn spawn_child(test_name: &str) -> std::process::Child {
 #[test]
 fn cross_process_action_goal_lifecycle() {
     if is_child() {
-        if std::env::var(TEST_ENV).ok().as_deref()
-            == Some("cross_process_action_goal_lifecycle")
-        {
+        if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_action_goal_lifecycle") {
             child_send_goal_and_wait();
         }
         return;
@@ -144,10 +142,7 @@ fn cross_process_action_goal_lifecycle() {
             .expect("parse reached");
         assert!(reached, "goal should be reached across process boundary");
     } else if let Some(line) = stdout.lines().find(|l| l.starts_with("ERROR:")) {
-        panic!(
-            "child got action error: {}\nstderr: {}",
-            line, stderr
-        );
+        panic!("child got action error: {}\nstderr: {}", line, stderr);
     } else {
         panic!(
             "child produced no REACHED: or ERROR: line.\nstdout: {}\nstderr: {}",

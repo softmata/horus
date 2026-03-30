@@ -551,8 +551,8 @@ fn test_topics_macro_type_safety_compile_time() {
 
     // Roundtrip: send on cmd_topic and receive back
     let cmd = MotorCommand {
-        velocity: 3.14,
-        torque: 2.71,
+        velocity: 2.75,
+        torque: 1.234,
     };
     cmd_topic.send(cmd.clone());
     let received = cmd_topic.recv();

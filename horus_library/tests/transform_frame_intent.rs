@@ -308,12 +308,8 @@ fn test_transform_with_rotation_composes_correctly() {
         .unwrap();
 
     // base→sensor: 1m along base's X axis, no rotation
-    tf.update_transform(
-        "sensor",
-        &Transform::from_translation([1.0, 0.0, 0.0]),
-        t,
-    )
-    .unwrap();
+    tf.update_transform("sensor", &Transform::from_translation([1.0, 0.0, 0.0]), t)
+        .unwrap();
 
     let result = tf.tf("sensor", "world").unwrap();
 
@@ -325,7 +321,9 @@ fn test_transform_with_rotation_composes_correctly() {
     );
 
     // Verify by transforming the origin of the sensor frame into world
-    let origin_in_world = tf.transform_point("sensor", "world", [0.0, 0.0, 0.0]).unwrap();
+    let origin_in_world = tf
+        .transform_point("sensor", "world", [0.0, 0.0, 0.0])
+        .unwrap();
     assert_point_eq(
         origin_in_world,
         [0.0, 1.0, 0.0],
@@ -334,7 +332,9 @@ fn test_transform_with_rotation_composes_correctly() {
 
     // Verify a point 1m ahead of sensor (+X in sensor frame) ends up
     // at [0,2,0] in world: the sensor's +X is world's +Y after 90° yaw
-    let ahead_in_world = tf.transform_point("sensor", "world", [1.0, 0.0, 0.0]).unwrap();
+    let ahead_in_world = tf
+        .transform_point("sensor", "world", [1.0, 0.0, 0.0])
+        .unwrap();
     assert_point_eq(
         ahead_in_world,
         [0.0, 2.0, 0.0],
@@ -362,10 +362,7 @@ fn test_nonexistent_frame_returns_error() {
     assert!(result.is_err(), "lookup of nonexistent source must fail");
     match &result.unwrap_err() {
         HorusError::NotFound(_) => {} // correct error variant
-        other => panic!(
-            "expected NotFound for missing source, got: {:?}",
-            other
-        ),
+        other => panic!("expected NotFound for missing source, got: {:?}", other),
     }
 
     // Destination frame doesn't exist
@@ -384,7 +381,10 @@ fn test_nonexistent_frame_returns_error() {
 
     // Both frames don't exist
     let result = tf.tf("ghost_a", "ghost_b");
-    assert!(result.is_err(), "lookup of two nonexistent frames must fail");
+    assert!(
+        result.is_err(),
+        "lookup of two nonexistent frames must fail"
+    );
     match &result.unwrap_err() {
         HorusError::NotFound(_) => {}
         other => panic!(

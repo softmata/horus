@@ -1,6 +1,6 @@
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
-use horus::core::{NodeInfo as CoreNodeInfo, TopicMetadata};
+use horus::core::NodeInfo as CoreNodeInfo;
 use horus_core::core::DurationExt;
 use horus_core::core::Miss;
 use horus_core::core::Node as CoreNode;
@@ -89,8 +89,6 @@ struct PyNodeAdapter {
     cached_info: Option<Py<PyNodeInfo>>,
     stop_requested: Arc<AtomicBool>,
     scheduler_running: Arc<AtomicBool>,
-    publishers_list: Vec<TopicMetadata>,
-    subscribers_list: Vec<TopicMetadata>,
 }
 
 impl CoreNode for PyNodeAdapter {
@@ -258,14 +256,6 @@ impl CoreNode for PyNodeAdapter {
                 }
             }
         })
-    }
-
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        self.publishers_list.clone()
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        self.subscribers_list.clone()
     }
 }
 
@@ -576,28 +566,6 @@ impl PyScheduler {
         } = params;
         let name: String = node.getattr(py, "name")?.extract(py)?;
 
-        let publishers: Vec<TopicMetadata> = node
-            .getattr(py, "pub_topics")
-            .and_then(|attr| attr.extract::<Vec<String>>(py))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| TopicMetadata {
-                topic_name: t,
-                type_name: "dynamic".into(),
-            })
-            .collect();
-
-        let subscribers: Vec<TopicMetadata> = node
-            .getattr(py, "sub_topics")
-            .and_then(|attr| attr.extract::<Vec<String>>(py))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| TopicMetadata {
-                topic_name: t,
-                type_name: "dynamic".into(),
-            })
-            .collect();
-
         // Rate precedence: explicit param > node.rate attribute > None (scheduler default)
         let node_rate = rate_hz.or_else(|| {
             node.getattr(py, "rate")
@@ -612,8 +580,6 @@ impl PyScheduler {
             cached_info: None,
             stop_requested: self.stop_requested.clone(),
             scheduler_running: self.scheduler_running.clone(),
-            publishers_list: publishers,
-            subscribers_list: subscribers,
         };
 
         let mut config = NodeRegistration::new(Box::new(adapter)).order(order);
@@ -1233,9 +1199,9 @@ impl PyScheduler {
     ///     sched.run()
     fn start_at_tick(&self, tick: u64) -> PyResult<()> {
         let mut guard = self.inner.lock().map_err(lock_poisoned)?;
-        let inner = guard.take().ok_or_else(|| {
-            PyRuntimeError::new_err("Scheduler not available")
-        })?;
+        let inner = guard
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Scheduler not available"))?;
         *guard = Some(inner.start_at_tick(tick));
         Ok(())
     }
@@ -1248,9 +1214,9 @@ impl PyScheduler {
     ///     sched.run()
     fn stop_at_tick(&self, tick: u64) -> PyResult<()> {
         let mut guard = self.inner.lock().map_err(lock_poisoned)?;
-        let inner = guard.take().ok_or_else(|| {
-            PyRuntimeError::new_err("Scheduler not available")
-        })?;
+        let inner = guard
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Scheduler not available"))?;
         *guard = Some(inner.stop_at_tick(tick));
         Ok(())
     }
@@ -1267,9 +1233,9 @@ impl PyScheduler {
             ));
         }
         let mut guard = self.inner.lock().map_err(lock_poisoned)?;
-        let inner = guard.take().ok_or_else(|| {
-            PyRuntimeError::new_err("Scheduler not available")
-        })?;
+        let inner = guard
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Scheduler not available"))?;
         *guard = Some(inner.with_replay_speed(speed));
         Ok(())
     }
@@ -1281,11 +1247,16 @@ impl PyScheduler {
     /// Example:
     ///     import struct
     ///     sched.set_replay_override("sensor", "temperature", struct.pack('<f', 25.0))
-    fn set_replay_override(&self, node_name: String, output_name: String, value: Vec<u8>) -> PyResult<()> {
+    fn set_replay_override(
+        &self,
+        node_name: String,
+        output_name: String,
+        value: Vec<u8>,
+    ) -> PyResult<()> {
         let mut guard = self.inner.lock().map_err(lock_poisoned)?;
-        let inner = guard.take().ok_or_else(|| {
-            PyRuntimeError::new_err("Scheduler not available")
-        })?;
+        let inner = guard
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("Scheduler not available"))?;
         *guard = Some(inner.with_override(&node_name, &output_name, value));
         Ok(())
     }

@@ -102,10 +102,7 @@ mod tests {
         let mut buf = [0u8; 1024];
         let result = transport.recv_from(&mut buf);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
     }
 
     #[test]

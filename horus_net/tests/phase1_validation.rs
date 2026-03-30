@@ -50,7 +50,10 @@ fn sc3_encode_decode_under_1ms() {
     let elapsed = start.elapsed();
     let per_op = elapsed / 1000;
     // 1000 encode+decode should be well under 1ms each
-    assert!(per_op < Duration::from_millis(1), "encode+decode took {per_op:?} per op");
+    assert!(
+        per_op < Duration::from_millis(1),
+        "encode+decode took {per_op:?} per op"
+    );
 }
 
 // ─── SC4: Zero overhead without remote peers ────────────────────────────────
@@ -88,13 +91,22 @@ fn sc8_estop_latched_delivery() {
     assert_eq!(layer.pending_latches(), 1);
 
     // ACK clears it
-    layer.on_ack(&AckPayload { acked_topic_hash: th, acked_sequence: 1 });
+    layer.on_ack(&AckPayload {
+        acked_topic_hash: th,
+        acked_sequence: 1,
+    });
     assert_eq!(layer.pending_latches(), 0);
 
     // Priority auto-inference confirms e-stop is Immediate
-    assert_eq!(Priority::auto_infer("robot.estop", false, 1), Priority::Immediate);
+    assert_eq!(
+        Priority::auto_infer("robot.estop", false, 1),
+        Priority::Immediate
+    );
     // Immediate → Latched reliability
-    assert_eq!(Reliability::default_for(Priority::Immediate), Reliability::Latched);
+    assert_eq!(
+        Reliability::default_for(Priority::Immediate),
+        Reliability::Latched
+    );
 }
 
 // ─── SC9: Import guard denies unauthorized topics ───────────────────────────
@@ -173,11 +185,15 @@ fn sc12_pod_same_endian_zero_copy() {
 
 #[test]
 fn sc13_endianness_byte_swap_roundtrip() {
-    let val: f64 = 3.14159265;
+    let val: f64 = 1.23456789;
     let mut payload = val.to_ne_bytes().to_vec();
 
     // Simulate receiving from wrong endian
-    let other = if cfg!(target_endian = "little") { Encoding::PodBe } else { Encoding::PodLe };
+    let other = if cfg!(target_endian = "little") {
+        Encoding::PodBe
+    } else {
+        Encoding::PodLe
+    };
     horus_net::encoding::byte_swap_words(&mut payload, 8);
     process_incoming_payload(&mut payload, other, 8);
 
@@ -207,8 +223,22 @@ fn sc15_unicast_peer_config() {
 fn full_discovery_matching_pipeline() {
     // Peer A publishes imu, subscribes cmd_vel
     let entries_a = vec![
-        TopicEntry { name: "imu".into(), type_hash: topic_hash("imu"), type_size: 64, role: TopicRole::Publisher, is_pod: true },
-        TopicEntry { name: "cmd_vel".into(), type_hash: topic_hash("cmd_vel"), type_size: 16, role: TopicRole::Subscriber, is_pod: true },
+        TopicEntry {
+            name: "imu".into(),
+            type_hash: topic_hash("imu"),
+            type_size: 64,
+            role: TopicRole::Publisher,
+            is_pod: true,
+            is_system: false,
+        },
+        TopicEntry {
+            name: "cmd_vel".into(),
+            type_hash: topic_hash("cmd_vel"),
+            type_size: 16,
+            role: TopicRole::Subscriber,
+            is_pod: true,
+            is_system: false,
+        },
     ];
 
     // Encode announcement
@@ -223,8 +253,22 @@ fn full_discovery_matching_pipeline() {
 
     // Peer B subscribes imu, publishes cmd_vel
     let local_b = vec![
-        TopicEntry { name: "imu".into(), type_hash: topic_hash("imu"), type_size: 64, role: TopicRole::Subscriber, is_pod: true },
-        TopicEntry { name: "cmd_vel".into(), type_hash: topic_hash("cmd_vel"), type_size: 16, role: TopicRole::Publisher, is_pod: true },
+        TopicEntry {
+            name: "imu".into(),
+            type_hash: topic_hash("imu"),
+            type_size: 64,
+            role: TopicRole::Subscriber,
+            is_pod: true,
+            is_system: false,
+        },
+        TopicEntry {
+            name: "cmd_vel".into(),
+            type_hash: topic_hash("cmd_vel"),
+            type_size: 16,
+            role: TopicRole::Publisher,
+            is_pod: true,
+            is_system: false,
+        },
     ];
 
     let (matches, warnings) = find_matches(&local_b, &ann.topics);
@@ -270,7 +314,7 @@ fn dedup_redundant_copies() {
     assert!(layer.is_new_message(0x1234, 100, 1));
     assert!(!layer.is_new_message(0x1234, 100, 1)); // dup
     assert!(!layer.is_new_message(0x1234, 100, 1)); // dup
-    assert!(layer.is_new_message(0x1234, 100, 2));  // new
+    assert!(layer.is_new_message(0x1234, 100, 2)); // new
 }
 
 // ─── SC: All existing tests pass (meta-check) ──────────────────────────────

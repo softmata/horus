@@ -33,10 +33,6 @@ fn test_node_macro_minimal() {
     node.tick();
     node.shutdown().unwrap();
 
-    // No publishers or subscribers
-    assert!(node.publishers().is_empty());
-    assert!(node.subscribers().is_empty());
-
     // Default trait works
     let node2 = Minimal::default();
     assert_eq!(node2.name(), "minimal");

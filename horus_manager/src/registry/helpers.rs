@@ -723,7 +723,7 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
             description: manifest.package.description,
             license: manifest.package.license,
             package_type,
-            plugin_type: None,      // horus.toml doesn't have plugin metadata yet
+            plugin_type: None, // horus.toml doesn't have plugin metadata yet
             plugin_entry: None,
             driver_category: None,
             bus_type: None,
@@ -780,15 +780,18 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
         // Helper: read a TOML field supporting both kebab-case and snake_case
         let read_meta = |keys: &[&str]| -> Option<String> {
             for key in keys {
-                if let Some(val) = horus_meta.and_then(|h| h.get(*key)).and_then(|v| v.as_str()) {
+                if let Some(val) = horus_meta
+                    .and_then(|h| h.get(*key))
+                    .and_then(|v| v.as_str())
+                {
                     return Some(val.to_string());
                 }
             }
             None
         };
 
-        let package_type = read_meta(&["package_type", "package-type"])
-            .or_else(|| read_meta(&["type"])); // "type" is alias for package_type
+        let package_type =
+            read_meta(&["package_type", "package-type"]).or_else(|| read_meta(&["type"])); // "type" is alias for package_type
         let plugin_type = read_meta(&["plugin-type", "plugin_type"]);
         let plugin_entry = read_meta(&["entry"]);
         let driver_category = read_meta(&["driver-category", "driver_category"]);
@@ -872,7 +875,7 @@ pub(crate) fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
             description,
             license,
             package_type,
-            plugin_type: None,      // package.json doesn't have horus plugin metadata
+            plugin_type: None, // package.json doesn't have horus plugin metadata
             plugin_entry: None,
             driver_category: None,
             bus_type: None,
@@ -1095,7 +1098,8 @@ pub(crate) fn precompile_package(package_dir: &Path) -> Result<()> {
 
         // Detect if package has binary targets (plugins need binaries, not just libs)
         let has_bin_targets = {
-            let cargo_content = fs::read_to_string(package_dir.join(CARGO_TOML)).unwrap_or_default();
+            let cargo_content =
+                fs::read_to_string(package_dir.join(CARGO_TOML)).unwrap_or_default();
             cargo_content.contains("[[bin]]") || cargo_content.contains("[package.metadata.horus]")
         };
 
@@ -1138,8 +1142,7 @@ pub(crate) fn precompile_package(package_dir: &Path) -> Result<()> {
                 let name_str = name.to_string_lossy();
 
                 // Copy executables (not .d, .rlib, .so, .a files)
-                let is_executable = !name_str.contains('.')
-                    || name_str.ends_with(".exe");
+                let is_executable = !name_str.contains('.') || name_str.ends_with(".exe");
                 if is_executable && crate::cargo_utils::is_executable(&path) {
                     let dest = bin_dir.join(&name);
                     fs::copy(&path, &dest)?;

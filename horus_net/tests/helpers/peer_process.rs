@@ -9,10 +9,10 @@
 use std::time::{Duration, Instant};
 
 use horus_core::communication::{read_latest_slot_bytes, write_topic_slot_bytes, Topic};
-use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
-use horus_types::Pose2D;
 use horus_robotics::messages::vision::CompressedImage;
+use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
 use horus_sys::shm::shm_topics_dir;
+use horus_types::Pose2D;
 
 fn shm_path(name: &str) -> std::path::PathBuf {
     shm_topics_dir().join(format!("horus_{name}"))
@@ -28,10 +28,7 @@ fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeO
     for i in 0..count {
         let msg = make_msg(i);
         let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                &msg as *const T as *const u8,
-                std::mem::size_of::<T>(),
-            )
+            std::slice::from_raw_parts(&msg as *const T as *const u8, std::mem::size_of::<T>())
         };
         write_topic_slot_bytes(&path, bytes);
     }
@@ -70,13 +67,11 @@ fn main() {
                     js.timestamp_ns = i as u64 * 1000;
                     js
                 }),
-                "pose2d" => write_pod::<Pose2D>(topic_name, count, |i| {
-                    Pose2D {
-                        x: i as f64,
-                        y: i as f64 * 0.5,
-                        theta: (i as f64) * 0.01,
-                        timestamp_ns: i as u64 * 1000,
-                    }
+                "pose2d" => write_pod::<Pose2D>(topic_name, count, |i| Pose2D {
+                    x: i as f64,
+                    y: i as f64 * 0.5,
+                    theta: (i as f64) * 0.01,
+                    timestamp_ns: i as u64 * 1000,
                 }),
                 "laserscan" => write_pod::<LaserScan>(topic_name, count, |i| {
                     let mut scan = LaserScan::default();
@@ -130,7 +125,8 @@ fn main() {
                     }
                 }
                 "compressed_image" => {
-                    let topic: Topic<CompressedImage> = Topic::new(topic_name).expect("create topic");
+                    let topic: Topic<CompressedImage> =
+                        Topic::new(topic_name).expect("create topic");
                     for i in 0..count {
                         let mut img_data = vec![0xFFu8; 50_000];
                         img_data[0] = (i % 256) as u8;
@@ -186,7 +182,8 @@ fn main() {
                     }
                 }
                 "compressed_image" => {
-                    let topic: Topic<CompressedImage> = Topic::new(topic_name).expect("create topic");
+                    let topic: Topic<CompressedImage> =
+                        Topic::new(topic_name).expect("create topic");
                     while Instant::now() < deadline {
                         if let Some(img) = topic.recv() {
                             assert_eq!(img.data.len(), 50_000, "image data size mismatch");

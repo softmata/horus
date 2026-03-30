@@ -454,7 +454,6 @@ enum Commands {
         command: MsgCommands,
     },
 
-
     /// View and filter logs
     Log {
         /// Filter by node name
@@ -794,7 +793,6 @@ enum Commands {
         command: SelfCommands,
     },
 
-
     /// View/edit horus.toml settings
     Config {
         #[command(subcommand)]
@@ -878,7 +876,6 @@ enum Commands {
         #[command(subcommand)]
         command: OwnerCommands,
     },
-
 
     /// Deploy project to remote robot(s)
     Deploy {
@@ -2010,8 +2007,15 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 "" // Will use interactive prompt
             };
 
-            commands::new::create_new_project(name, path, language.to_string(), use_macro, workspace, lib)
-                .map_err(HorusError::from)
+            commands::new::create_new_project(
+                name,
+                path,
+                language.to_string(),
+                use_macro,
+                workspace,
+                lib,
+            )
+            .map_err(HorusError::from)
         }
 
         Commands::Run {
@@ -2058,7 +2062,10 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 if sim_targets.is_empty() {
                     log::info!("Simulation mode: all drivers with [sim-drivers] overrides will be simulated");
                 } else {
-                    log::info!("Simulation mode (selective): simulating [{}]", sim_targets.join(", "));
+                    log::info!(
+                        "Simulation mode (selective): simulating [{}]",
+                        sim_targets.join(", ")
+                    );
                 }
                 std::env::set_var("HORUS_SIM_MODE", "1");
                 if !sim_targets.is_empty() {
@@ -2092,7 +2099,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     Ok(executor) => {
                         match executor.spawn_background(&simulator_name, &sim_args, &[]) {
                             Ok(child) => {
-                                log::info!("{} launched (PID: {}), waiting for startup...", simulator_name, child.id());
+                                log::info!(
+                                    "{} launched (PID: {}), waiting for startup...",
+                                    simulator_name,
+                                    child.id()
+                                );
                                 std::thread::sleep(std::time::Duration::from_secs(2));
                                 _sim_child = Some(child);
                             }
@@ -2358,18 +2369,19 @@ fn run_command(command: Commands) -> HorusResult<()> {
             let binary = which_monitor_binary();
             match binary {
                 Some(path) => {
-                    let status = Command::new(&path)
-                        .args(&args)
-                        .status()
-                        .map_err(|e| HorusError::Config(ConfigError::Other(
-                            format!("Failed to run horus-monitor: {}", e)
-                        )))?;
+                    let status = Command::new(&path).args(&args).status().map_err(|e| {
+                        HorusError::Config(ConfigError::Other(format!(
+                            "Failed to run horus-monitor: {}",
+                            e
+                        )))
+                    })?;
                     if status.success() {
                         Ok(())
                     } else {
-                        Err(HorusError::Config(ConfigError::Other(
-                            format!("horus-monitor exited with {}", status)
-                        )))
+                        Err(HorusError::Config(ConfigError::Other(format!(
+                            "horus-monitor exited with {}",
+                            status
+                        ))))
                     }
                 }
                 None => {
@@ -2377,10 +2389,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                         "{} The monitor plugin is not installed.",
                         "Note:".yellow().bold()
                     );
-                    eprintln!(
-                        "  Install with: {}",
-                        "horus install horus-monitor".cyan()
-                    );
+                    eprintln!("  Install with: {}", "horus install horus-monitor".cyan());
                     Err(HorusError::Config(ConfigError::Other(
                         "Monitor plugin not installed. Run: horus install horus-monitor".into(),
                     )))
@@ -2544,7 +2553,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             MsgCommands::Hash { name, json } => commands::msg::message_hash(&name, json),
         },
 
-
         Commands::Log {
             node,
             level,
@@ -2620,11 +2628,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 let local = target.is_some();
                 commands::plugin::run_install(pkg_name.clone(), pkg_ver.clone(), local)
             } else {
-                commands::pkg::run_install_standalone(
-                    &pkg_name,
-                    pkg_ver.as_deref(),
-                    target,
-                )
+                commands::pkg::run_install_standalone(&pkg_name, pkg_ver.as_deref(), target)
             };
             if json {
                 match &result {
@@ -2720,7 +2724,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             OwnerCommands::Accept { id } => commands::pkg::run_owner_accept(id),
             OwnerCommands::Reject { id } => commands::pkg::run_owner_reject(id),
         },
-
 
         Commands::Info { name, json } => commands::plugin::run_info_unified(name, json),
 
@@ -2952,7 +2955,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
         },
 
         // ── Maintenance commands ────────────────────────────────────────
-        Commands::Doctor { verbose, json, fix, rt } => {
+        Commands::Doctor {
+            verbose,
+            json,
+            fix,
+            rt,
+        } => {
             if rt {
                 commands::doctor::run_rt_report().map_err(HorusError::from)
             } else {
@@ -2970,7 +2978,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 Ok(())
             }
         },
-
 
         Commands::Config { command } => match command {
             ConfigCommands::Get { key } => {

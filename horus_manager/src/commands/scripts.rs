@@ -100,24 +100,17 @@ pub fn run_scripts(name: Option<String>, args: Vec<String>) -> HorusResult<()> {
             );
 
             #[cfg(unix)]
-            let status = Command::new("sh")
-                .arg("-c")
-                .arg(&full_cmd)
-                .status();
+            let status = Command::new("sh").arg("-c").arg(&full_cmd).status();
 
             #[cfg(windows)]
-            let status = Command::new("cmd")
-                .arg("/C")
-                .arg(&full_cmd)
-                .status();
+            let status = Command::new("cmd").arg("/C").arg(&full_cmd).status();
 
-            let status = status
-                .map_err(|e| {
-                    HorusError::Config(ConfigError::Other(format!(
-                        "Failed to execute script: {}",
-                        e
-                    )))
-                })?;
+            let status = status.map_err(|e| {
+                HorusError::Config(ConfigError::Other(format!(
+                    "Failed to execute script: {}",
+                    e
+                )))
+            })?;
 
             if !status.success() {
                 return Err(HorusError::Config(ConfigError::Other(format!(

@@ -469,7 +469,10 @@ pub fn format_lockfile_report(result: &LockfileVerification) -> String {
     if !result.missing_system_deps.is_empty() {
         report.push_str("\n  Missing system dependencies:\n");
         for (name, install_cmd) in &result.missing_system_deps {
-            report.push_str(&format!("    x {} -- install with: {}\n", name, install_cmd));
+            report.push_str(&format!(
+                "    x {} -- install with: {}\n",
+                name, install_cmd
+            ));
         }
     }
 

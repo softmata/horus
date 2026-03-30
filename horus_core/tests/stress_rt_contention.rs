@@ -159,7 +159,11 @@ impl std::fmt::Display for JitterReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "=== RT Contention Jitter Report ===")?;
         writeln!(f, "Total ticks:       {}", self.total_ticks)?;
-        writeln!(f, "Expected rate:     {:.0} Hz", 1_000_000.0 / self.expected_interval_us)?;
+        writeln!(
+            f,
+            "Expected rate:     {:.0} Hz",
+            1_000_000.0 / self.expected_interval_us
+        )?;
         writeln!(f, "Effective rate:    {:.1} Hz", self.effective_rate_hz)?;
         writeln!(f, "Mean interval:     {:.1} us", self.mean_interval_us)?;
         writeln!(f, "Jitter (deviation from mean interval):")?;
@@ -206,9 +210,7 @@ fn stress_rt_1khz_under_cpu_contention() {
     let (hog_running, hog_handles) = spawn_cpu_hogs(hog_count);
     std::thread::sleep(Duration::from_millis(100));
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(1000_u64.hz())
-        .verbose(false);
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
 
     let _ = scheduler
         .add(JitterNode {
@@ -276,9 +278,7 @@ fn stress_rt_1khz_baseline_no_contention() {
     let tick_count = Arc::new(AtomicU64::new(0));
     let timestamps = Arc::new(Mutex::new(Vec::with_capacity(4000)));
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(1000_u64.hz())
-        .verbose(false);
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
 
     let _ = scheduler
         .add(JitterNode {
@@ -333,9 +333,7 @@ fn stress_rt_multi_rate_under_contention() {
     let (hog_running, hog_handles) = spawn_cpu_hogs(hog_count);
     std::thread::sleep(Duration::from_millis(100));
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(1000_u64.hz())
-        .verbose(false);
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
 
     let _ = scheduler
         .add(JitterNode {
@@ -386,8 +384,16 @@ fn stress_rt_multi_rate_under_contention() {
 
     // All nodes should tick (accounting for rate aliasing on non-RT kernels)
     assert!(ticks_1k >= 500, "1kHz node should tick (got {})", ticks_1k);
-    assert!(ticks_500 >= 250, "500Hz node should tick (got {})", ticks_500);
-    assert!(ticks_100 >= 100, "100Hz node should tick (got {})", ticks_100);
+    assert!(
+        ticks_500 >= 250,
+        "500Hz node should tick (got {})",
+        ticks_500
+    );
+    assert!(
+        ticks_100 >= 100,
+        "100Hz node should tick (got {})",
+        ticks_100
+    );
 
     // Rate ordering: faster nodes should tick more than slower ones
     assert!(
@@ -425,8 +431,7 @@ fn stress_rt_isolation_from_compute_nodes() {
 
     let rt_count = Arc::new(AtomicU64::new(0));
     let rt_ts = Arc::new(Mutex::new(Vec::with_capacity(6000)));
-    let compute_counts: Vec<Arc<AtomicU64>> =
-        (0..8).map(|_| Arc::new(AtomicU64::new(0))).collect();
+    let compute_counts: Vec<Arc<AtomicU64>> = (0..8).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     /// Compute node that does expensive work each tick.
     struct HeavyComputeNode {
@@ -448,9 +453,7 @@ fn stress_rt_isolation_from_compute_nodes() {
         }
     }
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(1000_u64.hz())
-        .verbose(false);
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
 
     // RT node at 1kHz
     let _ = scheduler
@@ -475,7 +478,10 @@ fn stress_rt_isolation_from_compute_nodes() {
     }
 
     let result = scheduler.run_for(5_u64.secs());
-    assert!(result.is_ok(), "Scheduler with RT + compute should complete");
+    assert!(
+        result.is_ok(),
+        "Scheduler with RT + compute should complete"
+    );
 
     let rt_ticks = rt_count.load(Ordering::SeqCst);
     eprintln!("[rt_isolation] RT ticks: {}", rt_ticks);

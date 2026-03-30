@@ -29,9 +29,8 @@ pub fn run_bench(filter: Option<String>, extra_args: Vec<String>) -> Result<()> 
 
     // For horus projects (horus.toml without root Cargo.toml), point cargo at .horus/Cargo.toml
     let horus_manifest = ctx.root.join(".horus/Cargo.toml");
-    let use_horus_manifest = ctx.has_horus_toml
-        && !ctx.root.join("Cargo.toml").exists()
-        && horus_manifest.exists();
+    let use_horus_manifest =
+        ctx.has_horus_toml && !ctx.root.join("Cargo.toml").exists() && horus_manifest.exists();
 
     // Run benchmarks sequentially to avoid resource contention
     let mut any_failed = false;

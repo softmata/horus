@@ -7,12 +7,15 @@
 ///
 /// Terminal 1: cargo run --no-default-features --example qa_blackbox_record
 /// Terminal 2: horus blackbox --tail, horus log --follow, horus record list
-
 use horus::prelude::*;
 
-struct SlowNode { tick_count: u64 }
+struct SlowNode {
+    tick_count: u64,
+}
 impl Node for SlowNode {
-    fn name(&self) -> &str { "slow_node" }
+    fn name(&self) -> &str {
+        "slow_node"
+    }
     fn tick(&mut self) {
         self.tick_count += 1;
         // Every 10th tick, sleep 8ms to exceed 5ms budget
@@ -22,8 +25,10 @@ impl Node for SlowNode {
     }
 }
 
+// Use Twist from horus_types (available via prelude) instead of CmdVel
+// which lives in horus-robotics (only a dev-dependency, not available for examples).
 struct HealthyNode {
-    pub_topic: Topic<CmdVel>,
+    pub_topic: Topic<Twist>,
     tick_count: u64,
 }
 impl HealthyNode {
@@ -35,10 +40,13 @@ impl HealthyNode {
     }
 }
 impl Node for HealthyNode {
-    fn name(&self) -> &str { "healthy_node" }
+    fn name(&self) -> &str {
+        "healthy_node"
+    }
     fn tick(&mut self) {
         self.tick_count += 1;
-        self.pub_topic.send(CmdVel::new(self.tick_count as f32, 0.0));
+        self.pub_topic
+            .send(Twist::new_2d(self.tick_count as f64, 0.0));
         if self.tick_count % 500 == 0 {
             println!("[healthy] tick {}", self.tick_count);
         }
@@ -51,15 +59,17 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new()
         .name("qa_blackbox")
         .tick_rate(50_u64.hz())
-        .blackbox(1);         // 1 MB flight recorder
+        .blackbox(1); // 1 MB flight recorder
 
-    scheduler.add(SlowNode { tick_count: 0 })
+    scheduler
+        .add(SlowNode { tick_count: 0 })
         .rate(50_u64.hz())
         .budget(5_u64.ms())
         .order(0)
         .build()?;
 
-    scheduler.add(HealthyNode::new()?)
+    scheduler
+        .add(HealthyNode::new()?)
         .rate(50_u64.hz())
         .order(1)
         .build()?;

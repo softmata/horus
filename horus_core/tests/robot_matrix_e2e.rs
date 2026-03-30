@@ -103,7 +103,11 @@ fn test_robot_matrix_4_configs_11_nodes() {
             .deterministic(true)
             .max_deadline_misses(10000);
         s.add(imu).order(0).deadline(1_u64.ms()).build().unwrap();
-        s.add(safety).order(1).deadline(500_u64.us()).build().unwrap();
+        s.add(safety)
+            .order(1)
+            .deadline(500_u64.us())
+            .build()
+            .unwrap();
         while r2.load(Ordering::Relaxed) {
             let _ = s.tick_once();
             std::thread::sleep(Duration::from_micros(500));
@@ -204,9 +208,17 @@ fn test_robot_matrix_4_configs_11_nodes() {
     // At least some nodes should have presence files
     // (depends on whether scheduler writes presence — it does for initialized nodes)
     let expected_nodes = [
-        "lidar", "slam", "motor_left", "imu", "safety_mon",
-        "camera_rgb", "camera_depth", "object_detector", "path_planner",
-        "arm_controller", "battery_monitor",
+        "lidar",
+        "slam",
+        "motor_left",
+        "imu",
+        "safety_mon",
+        "camera_rgb",
+        "camera_depth",
+        "object_detector",
+        "path_planner",
+        "arm_controller",
+        "battery_monitor",
     ];
 
     let found_count = expected_nodes
@@ -247,7 +259,10 @@ fn test_robot_matrix_4_configs_11_nodes() {
 
     // ── Post-shutdown: verify no crashes, all threads joined cleanly ──
     // If we get here, all 4 scheduler threads exited without panic.
-    let total_ticks: u64 = all_counts.iter().map(|(_, c)| c.load(Ordering::SeqCst)).sum();
+    let total_ticks: u64 = all_counts
+        .iter()
+        .map(|(_, c)| c.load(Ordering::SeqCst))
+        .sum();
     assert!(
         total_ticks > 1000,
         "Total ticks across all 11 nodes should be >1000 in 3s, got {}",
@@ -373,7 +388,9 @@ struct SensorWithTopic {
 }
 
 impl Node for SensorWithTopic {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::<u64>::new(&self.topic_name)?);
         Ok(())
@@ -397,7 +414,9 @@ struct ProcessorWithTopics {
 }
 
 impl Node for ProcessorWithTopics {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.input_topic = Some(Topic::<u64>::new(&self.input_name)?);
         self.output_topic = Some(Topic::<u64>::new(&self.output_name)?);
@@ -424,7 +443,9 @@ struct ActuatorWithTopic {
 }
 
 impl Node for ActuatorWithTopic {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::<u64>::new(&self.topic_name)?);
         Ok(())
@@ -450,28 +471,40 @@ fn test_topic_auto_detection_in_registry() {
         .deterministic(true)
         .max_deadline_misses(10000);
 
-    sched.add(SensorWithTopic {
-        name: "lidar_real".into(),
-        count: sensor_count.clone(),
-        topic: None,
-        topic_name: "scan".into(),
-    }).order(0).build().unwrap();
+    sched
+        .add(SensorWithTopic {
+            name: "lidar_real".into(),
+            count: sensor_count.clone(),
+            topic: None,
+            topic_name: "scan".into(),
+        })
+        .order(0)
+        .build()
+        .unwrap();
 
-    sched.add(ProcessorWithTopics {
-        name: "slam_real".into(),
-        count: proc_count.clone(),
-        input_topic: None,
-        output_topic: None,
-        input_name: "scan".into(),
-        output_name: "map".into(),
-    }).order(1).build().unwrap();
+    sched
+        .add(ProcessorWithTopics {
+            name: "slam_real".into(),
+            count: proc_count.clone(),
+            input_topic: None,
+            output_topic: None,
+            input_name: "scan".into(),
+            output_name: "map".into(),
+        })
+        .order(1)
+        .build()
+        .unwrap();
 
-    sched.add(ActuatorWithTopic {
-        name: "motor_real".into(),
-        count: act_count.clone(),
-        topic: None,
-        topic_name: "map".into(),
-    }).order(2).build().unwrap();
+    sched
+        .add(ActuatorWithTopic {
+            name: "motor_real".into(),
+            count: act_count.clone(),
+            topic: None,
+            topic_name: "map".into(),
+        })
+        .order(2)
+        .build()
+        .unwrap();
 
     // Run for 2 seconds
     sched.run_for(2_u64.secs()).unwrap();
@@ -490,7 +523,8 @@ fn test_topic_auto_detection_in_registry() {
     assert!(
         !scan_pubs.is_empty() || !scan_subs.is_empty(),
         "scan topic should have associations. pubs={:?}, subs={:?}",
-        scan_pubs, scan_subs
+        scan_pubs,
+        scan_subs
     );
 
     // "map" topic should have slam_real and motor_real
@@ -499,7 +533,8 @@ fn test_topic_auto_detection_in_registry() {
     assert!(
         !map_pubs.is_empty() || !map_subs.is_empty(),
         "map topic should have associations. pubs={:?}, subs={:?}",
-        map_pubs, map_subs
+        map_pubs,
+        map_subs
     );
 
     // lidar_real should have "scan" as a topic
@@ -507,13 +542,24 @@ fn test_topic_auto_detection_in_registry() {
     // Note: registered as "Both" at Topic::new() time
     println!(
         "lidar_real topics: {:?}",
-        lidar_topics.iter().map(|t| &t.topic_name).collect::<Vec<_>>()
+        lidar_topics
+            .iter()
+            .map(|t| &t.topic_name)
+            .collect::<Vec<_>>()
     );
 
     println!(
         "TopicNodeRegistry: {:?}",
-        registry.all_topics().iter().map(|(k, v)| {
-            format!("{}: {:?}", k, v.iter().map(|a| &a.node_name).collect::<Vec<_>>())
-        }).collect::<Vec<_>>()
+        registry
+            .all_topics()
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{}: {:?}",
+                    k,
+                    v.iter().map(|a| &a.node_name).collect::<Vec<_>>()
+                )
+            })
+            .collect::<Vec<_>>()
     );
 }

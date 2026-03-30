@@ -57,11 +57,23 @@ fn full_pipeline_discovery_to_match() {
 
     let reg_a = TopicRegistry::new();
     reg_a.register("imu", topic_hash("imu"), 64, TopicRole::Publisher, true);
-    reg_a.register("cmd_vel", topic_hash("cmd_vel"), 16, TopicRole::Subscriber, true);
+    reg_a.register(
+        "cmd_vel",
+        topic_hash("cmd_vel"),
+        16,
+        TopicRole::Subscriber,
+        true,
+    );
 
     let reg_b = TopicRegistry::new();
     reg_b.register("imu", topic_hash("imu"), 64, TopicRole::Subscriber, true);
-    reg_b.register("cmd_vel", topic_hash("cmd_vel"), 16, TopicRole::Publisher, true);
+    reg_b.register(
+        "cmd_vel",
+        topic_hash("cmd_vel"),
+        16,
+        TopicRole::Publisher,
+        true,
+    );
 
     // A sends announcement
     let peer_id_a = generate_peer_id();
@@ -156,11 +168,7 @@ fn multiple_topics_in_batch() {
         .unwrap();
     let addr_b = sock_b.local_addr().unwrap();
 
-    let header = PacketHeader::new(
-        PacketFlags::empty().with(PacketFlags::BATCH),
-        0x5555,
-        1,
-    );
+    let header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::BATCH), 0x5555, 1);
     let msgs = vec![
         OutMessage {
             topic_name: "imu".into(),
@@ -263,7 +271,7 @@ fn encoding_same_endian_is_noop() {
 fn encoding_cross_endian_roundtrip() {
     use horus_net::encoding::{byte_swap_words, process_incoming_payload};
 
-    let val: f64 = 3.14159265;
+    let val: f64 = 1.23456789;
     let mut payload = val.to_ne_bytes().to_vec();
 
     // Simulate sender's bytes arriving in wrong endian

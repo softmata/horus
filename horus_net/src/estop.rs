@@ -63,10 +63,7 @@ pub fn decode_estop(data: &[u8]) -> Option<(u16, String, u64)> {
 /// Handle a received e-stop broadcast. Triggers local emergency stop.
 pub fn handle_remote_estop(data: &[u8]) {
     if let Some((host_id, reason, _timestamp)) = decode_estop(data) {
-        let msg = format!(
-            "Remote e-stop from host {:04x}: {}",
-            host_id, reason
-        );
+        let msg = format!("Remote e-stop from host {:04x}: {}", host_id, reason);
         eprintln!("[horus_net] {}", msg);
         horus_core::scheduling::trigger_external_emergency_stop(msg);
     }

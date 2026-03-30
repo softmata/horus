@@ -14,11 +14,19 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     if let Ok(entries) = std::fs::read_dir(&nodes_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "json") { continue; }
+            if path.extension().map_or(true, |e| e != "json") {
+                continue;
+            }
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if fname.starts_with("remote_") || fname.starts_with("bridged_") { continue; }
+            if fname.starts_with("remote_") || fname.starts_with("bridged_") {
+                continue;
+            }
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Some(pid_str) = content.split("\"pid\":").nth(1).and_then(|s| s.split(&[',', '}'][..]).next()) {
+                if let Some(pid_str) = content
+                    .split("\"pid\":")
+                    .nth(1)
+                    .and_then(|s| s.split(&[',', '}'][..]).next())
+                {
                     if let Ok(pid) = pid_str.trim().parse::<i32>() {
                         if pid > 0 && unsafe { libc::kill(pid, 0) != 0 } {
                             let _ = std::fs::remove_file(&path);
@@ -190,9 +198,15 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
                     let after_key = search_pos + name_key_pos + 6; // skip "name"
                     let rest = &nodes_section[after_key..];
                     let rest = rest.trim_start();
-                    if !rest.starts_with(':') { search_pos = after_key; continue; }
+                    if !rest.starts_with(':') {
+                        search_pos = after_key;
+                        continue;
+                    }
                     let rest = rest[1..].trim_start(); // skip : and whitespace
-                    if !rest.starts_with('"') { search_pos = after_key; continue; }
+                    if !rest.starts_with('"') {
+                        search_pos = after_key;
+                        continue;
+                    }
                     let value_start = nodes_section.len() - rest.len() + 1; // +1 to skip opening "
                     let start = value_start;
                     if let Some(end) = nodes_section[start..].find('"') {
@@ -250,8 +264,7 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     for session in &sessions {
         for entry in &session.processes {
             for node in nodes.iter_mut() {
-                if node.process_id == entry.pid
-                    || entry.node_names.iter().any(|n| n == &node.name)
+                if node.process_id == entry.pid || entry.node_names.iter().any(|n| n == &node.name)
                 {
                     node.launch_session = Some(session.session.clone());
                     node.launch_name = Some(entry.name.clone());
@@ -289,7 +302,9 @@ fn extract_json_u64(json: &str, key: &str) -> Option<u64> {
     let pattern = format!("\"{}\":", key);
     let start = json.find(&pattern)? + pattern.len();
     let rest = json[start..].trim_start();
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     rest[..end].parse().ok()
 }
 

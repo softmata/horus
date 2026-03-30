@@ -244,7 +244,9 @@ pub use scheduler::Scheduler;
 #[doc(hidden)]
 pub use crate::core::rt_node::BudgetViolation;
 #[doc(hidden)]
-pub use blackbox::{BlackBox, BlackBoxEvent, BlackBoxRecord, record_external_event, set_blackbox_hook};
+pub use blackbox::{
+    record_external_event, set_blackbox_hook, BlackBox, BlackBoxEvent, BlackBoxRecord,
+};
 #[doc(hidden)]
 pub use config::{RecordingConfigYaml, SchedulerConfig};
 #[doc(hidden)]
@@ -258,14 +260,14 @@ pub use record_replay::{
     RecordingManager, ReplayDebugger, SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 #[doc(hidden)]
-pub use safety_monitor::{
-    BudgetPolicy, SafetyState, SafetyStats,
-    set_emergency_stop_hook, trigger_external_emergency_stop,
-};
-#[doc(hidden)]
 pub use registry::SchedulerRegistry;
 #[doc(hidden)]
-pub use scheduler::{LifecycleStartFn, RtFeatureDegradation, set_network_auto_wire};
+pub use safety_monitor::{
+    set_emergency_stop_hook, trigger_external_emergency_stop, BudgetPolicy, SafetyState,
+    SafetyStats,
+};
+#[doc(hidden)]
+pub use scheduler::{set_network_auto_wire, LifecycleStartFn, RtFeatureDegradation};
 #[doc(hidden)]
 pub use types::ExecutionClass;
 pub use types::StalePolicy;

@@ -103,7 +103,9 @@ impl FlowController {
                 state.gaps += missed;
             }
 
-            if sequence > state.last_sequence || state.last_sequence.wrapping_sub(sequence) > u32::MAX / 2 {
+            if sequence > state.last_sequence
+                || state.last_sequence.wrapping_sub(sequence) > u32::MAX / 2
+            {
                 state.last_sequence = sequence;
             }
         } else {
@@ -173,7 +175,7 @@ mod tests {
         fc.on_received(0x1234, 100, 1);
         fc.on_received(0x1234, 100, 2);
         fc.on_received(0x1234, 100, 5); // Skipped 3,4
-        // gaps=2, total=3 → loss ~66%
+                                        // gaps=2, total=3 → loss ~66%
         let loss = fc.loss_rate(0x1234, 100);
         assert!(loss > 0.5, "loss={loss}, expected > 0.5");
     }
@@ -184,7 +186,7 @@ mod tests {
         fc.on_received(0x1234, 100, 1);
         fc.on_received(0x1234, 100, 4); // gap 2,3
         fc.on_received(0x1234, 100, 8); // gap 5,6,7
-        // gaps=5, total=3
+                                        // gaps=5, total=3
         let loss = fc.loss_rate(0x1234, 100);
         assert!(loss > 0.5);
     }

@@ -148,6 +148,22 @@ fn detect_version() -> String {
             }
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        // Read Windows build number from registry via `ver` command output
+        // or environment. The registry key is:
+        // HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\CurrentBuildNumber
+        if let Ok(output) = std::process::Command::new("cmd")
+            .args(["/C", "ver"])
+            .output()
+        {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            let trimmed = ver.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
     String::new()
 }
 
@@ -159,6 +175,26 @@ fn detect_kernel() -> String {
                 return first_line.to_string();
             }
         }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Windows kernel version from environment or systeminfo
+        if let Ok(output) = std::process::Command::new("cmd")
+            .args(["/C", "wmic os get Version /value"])
+            .output()
+        {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            for line in ver.lines() {
+                if let Some(v) = line.strip_prefix("Version=") {
+                    return format!("Windows NT {}", v.trim());
+                }
+            }
+        }
+        // Fallback
+        return format!(
+            "Windows ({})",
+            std::env::var("OS").unwrap_or_else(|_| "unknown".to_string())
+        );
     }
     String::new()
 }
@@ -284,8 +320,7 @@ pub fn write_script(
     use std::io::Write;
     // Validate interpreter: must be a simple name or path, no arguments or shell metacharacters
     anyhow::ensure!(
-        !interpreter.is_empty()
-            && !interpreter.contains([';', '&', '|', '`', '$', '\n']),
+        !interpreter.is_empty() && !interpreter.contains([';', '&', '|', '`', '$', '\n']),
         "Interpreter '{}' contains invalid characters",
         interpreter
     );

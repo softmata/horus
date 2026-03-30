@@ -3,7 +3,6 @@
 ///   ./launch_ctl_send <session> stop <name>
 ///   ./launch_ctl_send <session> restart <name>
 ///   ./launch_ctl_send <session> stop-all
-
 use horus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +18,10 @@ enum LaunchControlCommand {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("Usage: {} <session> <stop <name>|restart <name>|stop-all>", args[0]);
+        eprintln!(
+            "Usage: {} <session> <stop <name>|restart <name>|stop-all>",
+            args[0]
+        );
         std::process::exit(1);
     }
 

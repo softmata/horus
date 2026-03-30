@@ -107,9 +107,7 @@ struct ImageMetadata {
 
 impl ImageMetadata {
     fn new(frame: u64) -> Self {
-        let intrinsics = [
-            640.0, 0.0, 320.0, 0.0, 480.0, 240.0, 0.0, 0.0, 1.0,
-        ];
+        let intrinsics = [640.0, 0.0, 320.0, 0.0, 480.0, 240.0, 0.0, 0.0, 1.0];
         let distortion = [-0.1, 0.01, 0.0, 0.0, 0.0];
         let mut padding = [0u8; 3900];
         // Fill padding with deterministic pattern based on frame_id
@@ -142,8 +140,7 @@ impl ImageMetadata {
     }
 
     fn verify(&self) -> bool {
-        self.checksum
-            == Self::compute_checksum(self.frame_id, &self.intrinsics, &self.padding)
+        self.checksum == Self::compute_checksum(self.frame_id, &self.intrinsics, &self.padding)
     }
 }
 
@@ -363,8 +360,9 @@ fn shm_fanout_latency_percentiles_cross_thread() {
         );
 
         // Each subscriber records (seq, recv_nanos_since_epoch)
-        let results: Vec<Arc<Mutex<Vec<(usize, u64)>>>> =
-            (0..n_subs).map(|_| Arc::new(Mutex::new(Vec::with_capacity(n_messages)))).collect();
+        let results: Vec<Arc<Mutex<Vec<(usize, u64)>>>> = (0..n_subs)
+            .map(|_| Arc::new(Mutex::new(Vec::with_capacity(n_messages))))
+            .collect();
 
         let epoch = Instant::now();
         let barrier = Arc::new(Barrier::new(n_subs + 1));
@@ -404,7 +402,10 @@ fn shm_fanout_latency_percentiles_cross_thread() {
                             if seq < send_times.len() {
                                 let send_nanos = send_times[seq].load(Ordering::Acquire);
                                 if send_nanos > 0 {
-                                    store.lock().unwrap().push((seq, recv_nanos.saturating_sub(send_nanos)));
+                                    store
+                                        .lock()
+                                        .unwrap()
+                                        .push((seq, recv_nanos.saturating_sub(send_nanos)));
                                 }
                             }
                             count += 1;
@@ -894,8 +895,9 @@ fn estop_reaches_all_motor_controllers() {
     let n_controllers = 6usize;
     let estop_signal = u64::MAX;
 
-    let received_flags: Vec<Arc<AtomicBool>> =
-        (0..n_controllers).map(|_| Arc::new(AtomicBool::new(false))).collect();
+    let received_flags: Vec<Arc<AtomicBool>> = (0..n_controllers)
+        .map(|_| Arc::new(AtomicBool::new(false)))
+        .collect();
 
     let barrier = Arc::new(Barrier::new(n_controllers + 1)); // controllers + publisher
 
@@ -1135,10 +1137,7 @@ fn safety_observer_does_not_degrade_control_throughput() {
         "Observer degraded control throughput: {ctrl_count} vs baseline {baseline_count}"
     );
     // Observer should also receive messages (not zero)
-    assert!(
-        obs_count > 0,
-        "Observer received nothing — not observing"
-    );
+    assert!(obs_count > 0, "Observer received nothing — not observing");
 }
 
 // ============================================================================
@@ -1162,14 +1161,12 @@ fn surgical_robot_6dof_force_control() {
     let _fused_topic = unique("surg_fused");
     let joint_topics: Vec<String> = (0..6).map(|i| unique(&format!("surg_joint_{i}"))).collect();
 
-    let sensor_counts: Vec<Arc<AtomicU64>> =
-        (0..6).map(|_| Arc::new(AtomicU64::new(0))).collect();
+    let sensor_counts: Vec<Arc<AtomicU64>> = (0..6).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let fusion_received = Arc::new(Mutex::new(Vec::new()));
     let fusion_ticks = Arc::new(AtomicU64::new(0));
     let joint_received: Vec<Arc<Mutex<Vec<u64>>>> =
         (0..6).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
-    let joint_ticks: Vec<Arc<AtomicU64>> =
-        (0..6).map(|_| Arc::new(AtomicU64::new(0))).collect();
+    let joint_ticks: Vec<Arc<AtomicU64>> = (0..6).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
 
@@ -1263,7 +1260,11 @@ fn surgical_robot_6dof_force_control() {
     }
 
     let result = scheduler.run_for(500_u64.ms());
-    assert!(result.is_ok(), "Surgical robot scheduler error: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Surgical robot scheduler error: {:?}",
+        result.err()
+    );
 
     // All 6 sensors must have produced data
     for (i, c) in sensor_counts.iter().enumerate() {
@@ -1462,9 +1463,24 @@ fn autonomous_vehicle_full_stack() {
 
     // Actuator receivers
     for (name, topic, recv, ticks) in [
-        ("av_steer", steer_topic, steer_recv.clone(), steer_ticks.clone()),
-        ("av_throttle", throttle_topic, throttle_recv.clone(), throttle_ticks.clone()),
-        ("av_brake", brake_topic, brake_recv.clone(), brake_ticks.clone()),
+        (
+            "av_steer",
+            steer_topic,
+            steer_recv.clone(),
+            steer_ticks.clone(),
+        ),
+        (
+            "av_throttle",
+            throttle_topic,
+            throttle_recv.clone(),
+            throttle_ticks.clone(),
+        ),
+        (
+            "av_brake",
+            brake_topic,
+            brake_recv.clone(),
+            brake_ticks.clone(),
+        ),
     ] {
         let name: &'static str = Box::leak(name.to_string().into_boxed_str());
         scheduler
@@ -1489,13 +1505,25 @@ fn autonomous_vehicle_full_stack() {
 
     // All 3 sensors produced data
     assert!(lidar_count.load(Ordering::SeqCst) > 0, "LiDAR never ticked");
-    assert!(camera_count.load(Ordering::SeqCst) > 0, "Camera never ticked");
+    assert!(
+        camera_count.load(Ordering::SeqCst) > 0,
+        "Camera never ticked"
+    );
     assert!(radar_count.load(Ordering::SeqCst) > 0, "Radar never ticked");
 
     // All 3 actuators received commands
-    assert!(!steer_recv.lock().unwrap().is_empty(), "Steering received no commands — vehicle unsteerable");
-    assert!(!throttle_recv.lock().unwrap().is_empty(), "Throttle received no commands — vehicle stalled");
-    assert!(!brake_recv.lock().unwrap().is_empty(), "Brake received no commands — vehicle cannot stop");
+    assert!(
+        !steer_recv.lock().unwrap().is_empty(),
+        "Steering received no commands — vehicle unsteerable"
+    );
+    assert!(
+        !throttle_recv.lock().unwrap().is_empty(),
+        "Throttle received no commands — vehicle stalled"
+    );
+    assert!(
+        !brake_recv.lock().unwrap().is_empty(),
+        "Brake received no commands — vehicle cannot stop"
+    );
 
     // Safety observer saw actuator commands
     assert!(
@@ -1520,13 +1548,16 @@ fn drone_swarm_bidirectional_fanout() {
     cleanup_stale_shm();
 
     let n_drones = 8usize;
-    let cmd_topics: Vec<String> =
-        (0..n_drones).map(|i| unique(&format!("swarm_cmd_{i}"))).collect();
-    let telemetry_topics: Vec<String> =
-        (0..n_drones).map(|i| unique(&format!("swarm_telem_{i}"))).collect();
+    let cmd_topics: Vec<String> = (0..n_drones)
+        .map(|i| unique(&format!("swarm_cmd_{i}")))
+        .collect();
+    let telemetry_topics: Vec<String> = (0..n_drones)
+        .map(|i| unique(&format!("swarm_telem_{i}")))
+        .collect();
 
-    let drone_cmd_received: Vec<Arc<Mutex<Vec<u64>>>> =
-        (0..n_drones).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
+    let drone_cmd_received: Vec<Arc<Mutex<Vec<u64>>>> = (0..n_drones)
+        .map(|_| Arc::new(Mutex::new(Vec::new())))
+        .collect();
     let drone_cmd_ticks: Vec<Arc<AtomicU64>> =
         (0..n_drones).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let drone_telem_counts: Vec<Arc<AtomicU64>> =
@@ -2111,10 +2142,7 @@ fn concurrent_producers_data_integrity() {
             thread_idx < 4,
             "Corrupted thread_idx: {thread_idx} from value {v}"
         );
-        assert!(
-            seq < 10_000,
-            "Corrupted sequence: {seq} from value {v}"
-        );
+        assert!(seq < 10_000, "Corrupted sequence: {seq} from value {v}");
         per_thread.entry(thread_idx).or_default().push(seq);
     }
 
@@ -2493,8 +2521,16 @@ fn realistic_payload_image_metadata_fanout() {
     for frame in 0..100u64 {
         let meta0 = ImageMetadata::new(frame * 2);
         let meta1 = ImageMetadata::new(frame * 2 + 1);
-        assert!(meta0.verify(), "Generated frame {} failed checksum", frame * 2);
-        assert!(meta1.verify(), "Generated frame {} failed checksum", frame * 2 + 1);
+        assert!(
+            meta0.verify(),
+            "Generated frame {} failed checksum",
+            frame * 2
+        );
+        assert!(
+            meta1.verify(),
+            "Generated frame {} failed checksum",
+            frame * 2 + 1
+        );
 
         let _ = ring.send_as(meta0, pub0);
         let _ = ring.send_as(meta1, pub1);
@@ -2529,7 +2565,7 @@ fn realistic_payload_point_cloud_fanout() {
     let point_clouds: Vec<Vec<u8>> = (0..50u64)
         .map(|i| {
             let mut cloud = vec![0u8; 65536]; // 64KB
-            // Fill with deterministic pattern + embed checksum in first 8 bytes
+                                              // Fill with deterministic pattern + embed checksum in first 8 bytes
             for (j, byte) in cloud[8..].iter_mut().enumerate() {
                 *byte = ((i as usize + j) % 256) as u8;
             }
@@ -2740,7 +2776,11 @@ fn fault_shm_magic_corruption_rejected() {
     // Spawn child to create SHM files that will persist after kill
     let exe = std::env::current_exe().expect("current_exe");
     let mut child = Command::new(exe)
-        .args(["fault_shm_magic_corruption_rejected", "--exact", "--nocapture"])
+        .args([
+            "fault_shm_magic_corruption_rejected",
+            "--exact",
+            "--nocapture",
+        ])
         .env(FAULT_CHILD_ENV, "1")
         .env(FAULT_MODE_ENV, "orphan")
         .env("HORUS_ORPHAN_TOPICS", &name)
@@ -2831,7 +2871,11 @@ fn fault_shm_recovery_after_corruption() {
     // Spawn child to create SHM, kill it to leave orphans
     let exe = std::env::current_exe().expect("current_exe");
     let mut child = Command::new(exe)
-        .args(["fault_shm_recovery_after_corruption", "--exact", "--nocapture"])
+        .args([
+            "fault_shm_recovery_after_corruption",
+            "--exact",
+            "--nocapture",
+        ])
         .env(FAULT_CHILD_ENV, "1")
         .env(FAULT_MODE_ENV, "orphan")
         .env("HORUS_ORPHAN_TOPICS", &name)
@@ -2870,8 +2914,8 @@ fn fault_shm_recovery_after_corruption() {
     cleanup_stale_shm();
 
     // Recovery: fresh topic with same name must work
-    let t: Topic<u64> = Topic::new(&name)
-        .expect("Recovery Topic::new() failed — corruption not fully cleaned up");
+    let t: Topic<u64> =
+        Topic::new(&name).expect("Recovery Topic::new() failed — corruption not fully cleaned up");
     t.send(99);
     if let Some(v) = t.recv() {
         assert_eq!(v, 99, "Recovery topic returned wrong value");
@@ -3020,7 +3064,10 @@ fn soak_60s_sustained_fanout() {
         std::thread::sleep(checkpoint_interval);
 
         let rss_kb = get_rss_kb().unwrap_or(0);
-        let total_msgs: u64 = buffers.iter().map(|b| b.msg_count.load(Ordering::Relaxed)).sum();
+        let total_msgs: u64 = buffers
+            .iter()
+            .map(|b| b.msg_count.load(Ordering::Relaxed))
+            .sum();
 
         // Collect latency samples from all subscribers
         let mut all_latencies = Vec::new();
@@ -3081,7 +3128,10 @@ fn soak_60s_sustained_fanout() {
         );
     }
 
-    let total_msgs: u64 = buffers.iter().map(|b| b.msg_count.load(Ordering::Relaxed)).sum();
+    let total_msgs: u64 = buffers
+        .iter()
+        .map(|b| b.msg_count.load(Ordering::Relaxed))
+        .sum();
     eprintln!("Total messages: {total_msgs}");
     assert!(
         total_msgs > 1_000_000,
@@ -3107,9 +3157,7 @@ fn soak_lifecycle_churn_30s() {
 
     fn count_shm_files() -> usize {
         let dir = horus_sys::shm::shm_topics_dir();
-        std::fs::read_dir(&dir)
-            .map(|d| d.count())
-            .unwrap_or(0)
+        std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0)
     }
 
     let fds_before = count_fds();
@@ -3222,12 +3270,9 @@ fn cleanup_orphaned_shm_after_kill() {
     child.wait().expect("wait orphan child");
 
     // Verify SHM files are still there (orphaned — Drop didn't run)
-    let shm_exists_after_kill = topics_dir.exists()
-        || horus_sys::shm::shm_topics_dir().exists();
+    let shm_exists_after_kill = topics_dir.exists() || horus_sys::shm::shm_topics_dir().exists();
 
-    eprintln!(
-        "SHM before kill: {shm_existed_before_kill}, after kill: {shm_exists_after_kill}"
-    );
+    eprintln!("SHM before kill: {shm_existed_before_kill}, after kill: {shm_exists_after_kill}");
 
     // Cleanup: remove orphaned SHM files
     cleanup_stale_shm();
@@ -3242,8 +3287,9 @@ fn cleanup_orphaned_shm_after_kill() {
 
     // Recovery: create fresh Topics with the SAME names — must succeed
     for name in &topic_names {
-        let t: Topic<u64> = Topic::new(name)
-            .unwrap_or_else(|e| panic!("Recovery Topic::new({name}) failed: {e} — orphan cleanup incomplete"));
+        let t: Topic<u64> = Topic::new(name).unwrap_or_else(|e| {
+            panic!("Recovery Topic::new({name}) failed: {e} — orphan cleanup incomplete")
+        });
         t.send(42);
         // Verify send/recv works on recovered topic
         if let Some(v) = t.recv() {
@@ -3502,8 +3548,8 @@ fn resource_topic_churn_no_fd_leak() {
 
     // Verify we can still create topics (no exhaustion)
     let verify_name = unique("churn_verify");
-    let t: Topic<u64> = Topic::new(&verify_name)
-        .expect("Post-churn Topic::new() failed — resource exhaustion");
+    let t: Topic<u64> =
+        Topic::new(&verify_name).expect("Post-churn Topic::new() failed — resource exhaustion");
     t.send(42);
     eprintln!("Post-churn verification: Topic works, no resource exhaustion");
 }

@@ -371,8 +371,7 @@ impl NodePresence {
         let dir = shm_nodes_dir();
 
         // Create directory hierarchy with owner-only access.
-        horus_sys::fs::create_dir_secure(&dir)
-            .map_err(std::io::Error::other)?;
+        horus_sys::fs::create_dir_secure(&dir).map_err(std::io::Error::other)?;
 
         let dest = Self::presence_path(&self.name);
         let json = serde_json::to_string_pretty(self)
@@ -384,8 +383,7 @@ impl NodePresence {
 
         {
             use std::io::Write;
-            let mut file = horus_sys::fs::open_private(&tmp_path)
-                .map_err(std::io::Error::other)?;
+            let mut file = horus_sys::fs::open_private(&tmp_path).map_err(std::io::Error::other)?;
             file.write_all(json.as_bytes())?;
             file.flush()?;
         }

@@ -22,7 +22,10 @@ use common::cleanup_stale_shm;
 // Serialize tests — services/actions use shared SHM topic names
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 macro_rules! serial {
-    () => { let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()); cleanup_stale_shm(); };
+    () => {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        cleanup_stale_shm();
+    };
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -61,7 +64,8 @@ fn service_basic_add_two_ints() {
     std::thread::sleep(Duration::from_millis(100));
 
     let mut client = ServiceClient::<AddTwoInts>::new().expect("build client");
-    let resp = client.call(AddTwoIntsRequest { a: 3, b: 7 }, 5_u64.secs())
+    let resp = client
+        .call(AddTwoIntsRequest { a: 3, b: 7 }, 5_u64.secs())
         .expect("call should succeed");
 
     assert_eq!(resp.sum, 10, "3 + 7 should be 10, got {}", resp.sum);
@@ -78,7 +82,11 @@ fn service_concurrent_3_clients() {
     serial!();
 
     let _server = ServiceServerBuilder::<ConcSvc1>::new()
-        .on_request(|req| Ok(ConcSvc1Response { doubled: req.value * 2 }))
+        .on_request(|req| {
+            Ok(ConcSvc1Response {
+                doubled: req.value * 2,
+            })
+        })
         .build()
         .expect("build server");
 
@@ -88,7 +96,8 @@ fn service_concurrent_3_clients() {
     for i in 0..3 {
         handles.push(std::thread::spawn(move || {
             let mut client = ServiceClient::<ConcSvc1>::new().expect("client");
-            let resp = client.call(ConcSvc1Request { value: i * 10 }, 5_u64.secs())
+            let resp = client
+                .call(ConcSvc1Request { value: i * 10 }, 5_u64.secs())
                 .expect("call should succeed");
             (i, resp.doubled)
         }));
@@ -96,10 +105,20 @@ fn service_concurrent_3_clients() {
 
     let results: Vec<(i64, i64)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     for (i, doubled) in &results {
-        assert_eq!(*doubled, *i * 10 * 2, "Client {} expected {}, got {}", i, i * 20, doubled);
+        assert_eq!(
+            *doubled,
+            *i * 10 * 2,
+            "Client {} expected {}, got {}",
+            i,
+            i * 20,
+            doubled
+        );
     }
 
-    println!("✓ service_concurrent_3_clients — all got correct responses: {:?}", results);
+    println!(
+        "✓ service_concurrent_3_clients — all got correct responses: {:?}",
+        results
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -177,9 +196,14 @@ fn action_full_lifecycle() {
     let client = SyncActionClient::<Navigate>::new().unwrap();
     let mut feedback_count = 0u32;
     let result = client.send_goal_and_wait_with_feedback(
-        NavigateGoal { target_x: 10.0, target_y: 20.0 },
+        NavigateGoal {
+            target_x: 10.0,
+            target_y: 20.0,
+        },
         5_u64.secs(),
-        |_fb| { feedback_count += 1; },
+        |_fb| {
+            feedback_count += 1;
+        },
     );
 
     running.store(false, Ordering::Relaxed);
@@ -190,8 +214,10 @@ fn action_full_lifecycle() {
             assert!(r.success, "Goal should succeed");
             assert!((r.final_x - 10.0).abs() < 0.01, "final_x");
             assert!((r.final_y - 20.0).abs() < 0.01, "final_y");
-            println!("✓ action_full_lifecycle — success, final=({},{}) feedback_count={}",
-                     r.final_x, r.final_y, feedback_count);
+            println!(
+                "✓ action_full_lifecycle — success, final=({},{}) feedback_count={}",
+                r.final_x, r.final_y, feedback_count
+            );
         }
         Err(e) => panic!("Action should succeed: {:?}", e),
     }
@@ -219,7 +245,9 @@ fn action_cancel_mid_execution() {
                 if handle.is_cancel_requested() {
                     return handle.canceled(NavCancelResult { done: false });
                 }
-                handle.publish_feedback(NavCancelFeedback { progress: i as f32 / 100.0 });
+                handle.publish_feedback(NavCancelFeedback {
+                    progress: i as f32 / 100.0,
+                });
                 std::thread::sleep(Duration::from_millis(50));
             }
             handle.succeed(NavCancelResult { done: true })
@@ -250,8 +278,13 @@ fn action_cancel_mid_execution() {
     match result {
         Ok(r) => println!("✓ action_cancel — completed: done={}", r.done),
         Err(ActionError::GoalCanceled) => println!("✓ action_cancel — canceled as expected"),
-        Err(ActionError::GoalTimeout) => println!("✓ action_cancel — timed out (acceptable in debug)"),
-        Err(e) => println!("✓ action_cancel — got error {:?} (server may have been slow)", e),
+        Err(ActionError::GoalTimeout) => {
+            println!("✓ action_cancel — timed out (acceptable in debug)")
+        }
+        Err(e) => println!(
+            "✓ action_cancel — got error {:?} (server may have been slow)",
+            e
+        ),
     }
 }
 
@@ -304,8 +337,15 @@ fn action_5_sequential_goals() {
     server_thread.join().unwrap();
 
     let completed = goals_completed.load(Ordering::Relaxed);
-    println!("✓ action_5_sequential — {}/5 succeeded, server completed {} goals", successes, completed);
-    assert!(successes >= 3, "At least 3/5 goals should succeed, got {}", successes);
+    println!(
+        "✓ action_5_sequential — {}/5 succeeded, server completed {} goals",
+        successes, completed
+    );
+    assert!(
+        successes >= 3,
+        "At least 3/5 goals should succeed, got {}",
+        successes
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -324,7 +364,11 @@ fn mixed_service_action_topics() {
 
     // Service server
     let _svc = ServiceServerBuilder::<StatusSvc>::new()
-        .on_request(|req| Ok(StatusSvcResponse { status: format!("OK:{}", req.query) }))
+        .on_request(|req| {
+            Ok(StatusSvcResponse {
+                status: format!("OK:{}", req.query),
+            })
+        })
         .build()
         .unwrap();
 
@@ -342,14 +386,22 @@ fn mixed_service_action_topics() {
         .build();
 
     // Topic publisher in same scheduler
-    struct CmdPub { topic: Option<Topic<CmdVel>>, sent: Arc<AtomicU64> }
+    struct CmdPub {
+        topic: Option<Topic<CmdVel>>,
+        sent: Arc<AtomicU64>,
+    }
     impl Node for CmdPub {
-        fn name(&self) -> &str { "cmd_pub" }
+        fn name(&self) -> &str {
+            "cmd_pub"
+        }
         fn init(&mut self) -> horus_core::error::HorusResult<()> {
-            self.topic = Some(Topic::new("mixed_test_cmd")?); Ok(())
+            self.topic = Some(Topic::new("mixed_test_cmd")?);
+            Ok(())
         }
         fn tick(&mut self) {
-            if let Some(ref t) = self.topic { t.send(CmdVel::new(1.0, 0.5)); }
+            if let Some(ref t) = self.topic {
+                t.send(CmdVel::new(1.0, 0.5));
+            }
             self.sent.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -363,7 +415,13 @@ fn mixed_service_action_topics() {
     let sched_thread = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz());
         sched.add(server).order(0).build().unwrap();
-        let _ = sched.add(CmdPub { topic: None, sent: ts }).order(1).build();
+        let _ = sched
+            .add(CmdPub {
+                topic: None,
+                sent: ts,
+            })
+            .order(1)
+            .build();
         while rc.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -374,7 +432,12 @@ fn mixed_service_action_topics() {
 
     // Call service
     let mut svc_client = ServiceClient::<StatusSvc>::new().unwrap();
-    let svc_resp = svc_client.call(StatusSvcRequest { query: "health".into() }, 5_u64.secs());
+    let svc_resp = svc_client.call(
+        StatusSvcRequest {
+            query: "health".into(),
+        },
+        5_u64.secs(),
+    );
 
     // Send action goal
     let action_client = SyncActionClient::<NavSeq>::new().unwrap();
@@ -393,13 +456,26 @@ fn mixed_service_action_topics() {
     println!("║  MIXED: Service + Action + Topics (2s)                  ║");
     println!("║  Service: {:?}", svc_resp.as_ref().map(|r| &r.status));
     println!("║  Action:  {:?}", action_resp.as_ref().map(|r| r.ok));
-    println!("║  Topics:  {} CmdVel sent                                ║", ts_val);
-    println!("║  Server completed: {} goals                             ║", ac_val);
+    println!(
+        "║  Topics:  {} CmdVel sent                                ║",
+        ts_val
+    );
+    println!(
+        "║  Server completed: {} goals                             ║",
+        ac_val
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
-    assert!(ts_val > 50, "Topics should flow while service+action active");
+    assert!(
+        ts_val > 50,
+        "Topics should flow while service+action active"
+    );
     if let Ok(resp) = svc_resp {
-        assert!(resp.status.contains("OK:health"), "Service response wrong: {}", resp.status);
+        assert!(
+            resp.status.contains("OK:health"),
+            "Service response wrong: {}",
+            resp.status
+        );
     }
     println!("✓ mixed_service_action_topics — all 3 channels work simultaneously");
 }

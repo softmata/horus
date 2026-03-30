@@ -237,11 +237,16 @@ impl PluginExecutor {
             cmd.env(key, value);
         }
 
-        cmd.stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
-        let child = cmd.spawn()
-            .map_err(|e| anyhow!("Failed to launch plugin '{}' ({}): {}", command, binary.display(), e))?;
+        let child = cmd.spawn().map_err(|e| {
+            anyhow!(
+                "Failed to launch plugin '{}' ({}): {}",
+                command,
+                binary.display(),
+                e
+            )
+        })?;
 
         log::info!(
             "Launched plugin '{}' in background (PID: {})",

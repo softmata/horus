@@ -12,29 +12,35 @@ use std::net::UdpSocket;
 use std::time::Duration;
 
 use horus_core::communication::Topic;
-use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
-use horus_types::Pose2D;
 use horus_net::discovery::*;
 use horus_net::encoding::{byte_swap_words, process_incoming_payload, DecodeResult};
 use horus_net::fragment::{Fragmenter, Reassembler, MAX_FRAGMENT_PAYLOAD, MAX_REASSEMBLY_SIZE};
 use horus_net::guard::{ExportMode, ImportExportGuard, ImportMode};
-use horus_net::optimize::{Optimizer, OptimizerChain};
 use horus_net::optimize::delta::DeltaOptimizer;
 use horus_net::optimize::fusion::FusionOptimizer;
+use horus_net::optimize::{Optimizer, OptimizerChain};
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::registry::{TopicEntry, TopicRegistry, TopicRole};
 use horus_net::reliability::ReliabilityLayer;
 use horus_net::wire::*;
+use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
+use horus_types::Pose2D;
 
 fn udp_pair() -> (UdpSocket, UdpSocket, std::net::SocketAddr) {
     let a = UdpSocket::bind("127.0.0.1:0").unwrap();
     let b = UdpSocket::bind("127.0.0.1:0").unwrap();
-    b.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    b.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     let addr = b.local_addr().unwrap();
     (a, b, addr)
 }
 
-fn roundtrip_bytes(payload: &[u8], priority: Priority, reliability: Reliability, encoding: Encoding) {
+fn roundtrip_bytes(
+    payload: &[u8],
+    priority: Priority,
+    reliability: Reliability,
+    encoding: Encoding,
+) {
     let (sa, sb, addr) = udp_pair();
     let hdr = PacketHeader::new(PacketFlags::empty(), 0xAA, 1);
     let msg = OutMessage {
@@ -55,7 +61,10 @@ fn roundtrip_bytes(payload: &[u8], priority: Priority, reliability: Reliability,
     let (n, _) = sb.recv_from(&mut recv).unwrap();
     let (_, msgs) = decode_packet(&recv[..n]).unwrap();
     assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].payload, payload, "payload mismatch for {priority:?}/{reliability:?}/{encoding:?}");
+    assert_eq!(
+        msgs[0].payload, payload,
+        "payload mismatch for {priority:?}/{reliability:?}/{encoding:?}"
+    );
     assert_eq!(msgs[0].priority, priority);
     assert_eq!(msgs[0].reliability, reliability);
     assert_eq!(msgs[0].encoding, encoding);
@@ -68,8 +77,15 @@ fn roundtrip_bytes(payload: &[u8], priority: Priority, reliability: Reliability,
 #[test]
 fn msg_type_cmdvel_16b() {
     let cmd = CmdVel::new(1.0, 0.5);
-    let bytes = unsafe { std::slice::from_raw_parts(&cmd as *const _ as *const u8, std::mem::size_of::<CmdVel>()) };
-    roundtrip_bytes(bytes, Priority::RealTime, Reliability::Redundant, Encoding::PodLe);
+    let bytes = unsafe {
+        std::slice::from_raw_parts(&cmd as *const _ as *const u8, std::mem::size_of::<CmdVel>())
+    };
+    roundtrip_bytes(
+        bytes,
+        Priority::RealTime,
+        Reliability::Redundant,
+        Encoding::PodLe,
+    );
 }
 
 #[test]
@@ -104,12 +120,22 @@ fn msg_type_odometry() {
 
 #[test]
 fn msg_size_8_bytes() {
-    roundtrip_bytes(&[42u8; 8], Priority::Normal, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &[42u8; 8],
+        Priority::Normal,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 
 #[test]
 fn msg_size_1_byte() {
-    roundtrip_bytes(&[0xFF], Priority::Normal, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &[0xFF],
+        Priority::Normal,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 
 #[test]
@@ -119,12 +145,22 @@ fn msg_size_0_bytes() {
 
 #[test]
 fn msg_size_1kb() {
-    roundtrip_bytes(&vec![0x11; 1024], Priority::Normal, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &vec![0x11; 1024],
+        Priority::Normal,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 
 #[test]
 fn msg_size_64kb() {
-    roundtrip_bytes(&vec![0x22; 65000], Priority::Bulk, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &vec![0x22; 65000],
+        Priority::Bulk,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -133,51 +169,111 @@ fn msg_size_64kb() {
 
 #[test]
 fn matrix_immediate_none() {
-    roundtrip_bytes(&[1; 16], Priority::Immediate, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &[1; 16],
+        Priority::Immediate,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_immediate_redundant() {
-    roundtrip_bytes(&[2; 16], Priority::Immediate, Reliability::Redundant, Encoding::PodLe);
+    roundtrip_bytes(
+        &[2; 16],
+        Priority::Immediate,
+        Reliability::Redundant,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_immediate_latched() {
-    roundtrip_bytes(&[3; 16], Priority::Immediate, Reliability::Latched, Encoding::PodLe);
+    roundtrip_bytes(
+        &[3; 16],
+        Priority::Immediate,
+        Reliability::Latched,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_realtime_none() {
-    roundtrip_bytes(&[4; 16], Priority::RealTime, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &[4; 16],
+        Priority::RealTime,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_realtime_redundant() {
-    roundtrip_bytes(&[5; 16], Priority::RealTime, Reliability::Redundant, Encoding::PodLe);
+    roundtrip_bytes(
+        &[5; 16],
+        Priority::RealTime,
+        Reliability::Redundant,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_realtime_latched() {
-    roundtrip_bytes(&[6; 16], Priority::RealTime, Reliability::Latched, Encoding::PodLe);
+    roundtrip_bytes(
+        &[6; 16],
+        Priority::RealTime,
+        Reliability::Latched,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_normal_none() {
-    roundtrip_bytes(&[7; 16], Priority::Normal, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &[7; 16],
+        Priority::Normal,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_normal_redundant() {
-    roundtrip_bytes(&[8; 16], Priority::Normal, Reliability::Redundant, Encoding::PodLe);
+    roundtrip_bytes(
+        &[8; 16],
+        Priority::Normal,
+        Reliability::Redundant,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_normal_latched() {
-    roundtrip_bytes(&[9; 16], Priority::Normal, Reliability::Latched, Encoding::PodLe);
+    roundtrip_bytes(
+        &[9; 16],
+        Priority::Normal,
+        Reliability::Latched,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_bulk_none() {
-    roundtrip_bytes(&[10; 16], Priority::Bulk, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &[10; 16],
+        Priority::Bulk,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_bulk_redundant() {
-    roundtrip_bytes(&[11; 16], Priority::Bulk, Reliability::Redundant, Encoding::PodLe);
+    roundtrip_bytes(
+        &[11; 16],
+        Priority::Bulk,
+        Reliability::Redundant,
+        Encoding::PodLe,
+    );
 }
 #[test]
 fn matrix_bulk_latched() {
-    roundtrip_bytes(&[12; 16], Priority::Bulk, Reliability::Latched, Encoding::PodLe);
+    roundtrip_bytes(
+        &[12; 16],
+        Priority::Bulk,
+        Reliability::Latched,
+        Encoding::PodLe,
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -186,24 +282,43 @@ fn matrix_bulk_latched() {
 
 #[test]
 fn encoding_pod_le() {
-    roundtrip_bytes(&[1; 64], Priority::Normal, Reliability::None, Encoding::PodLe);
+    roundtrip_bytes(
+        &[1; 64],
+        Priority::Normal,
+        Reliability::None,
+        Encoding::PodLe,
+    );
 }
 
 #[test]
 fn encoding_pod_be() {
-    roundtrip_bytes(&[2; 64], Priority::Normal, Reliability::None, Encoding::PodBe);
+    roundtrip_bytes(
+        &[2; 64],
+        Priority::Normal,
+        Reliability::None,
+        Encoding::PodBe,
+    );
 }
 
 #[test]
 fn encoding_bincode() {
-    roundtrip_bytes(&[3; 64], Priority::Normal, Reliability::None, Encoding::Bincode);
+    roundtrip_bytes(
+        &[3; 64],
+        Priority::Normal,
+        Reliability::None,
+        Encoding::Bincode,
+    );
 }
 
 #[test]
 fn encoding_forced_swap_roundtrip() {
-    let val = 3.14159265f64;
+    let val = 1.23456789f64;
     let mut payload = val.to_ne_bytes().to_vec();
-    let other = if cfg!(target_endian = "little") { Encoding::PodBe } else { Encoding::PodLe };
+    let other = if cfg!(target_endian = "little") {
+        Encoding::PodBe
+    } else {
+        Encoding::PodLe
+    };
     byte_swap_words(&mut payload, 8);
     process_incoming_payload(&mut payload, other, 8);
     let decoded = f64::from_ne_bytes(payload.try_into().unwrap());
@@ -216,7 +331,11 @@ fn encoding_forced_swap_f32_array() {
     let mut payload: Vec<u8> = vals.iter().flat_map(|v| v.to_ne_bytes()).collect();
     let original = payload.clone();
 
-    let other = if cfg!(target_endian = "little") { Encoding::PodBe } else { Encoding::PodLe };
+    let other = if cfg!(target_endian = "little") {
+        Encoding::PodBe
+    } else {
+        Encoding::PodLe
+    };
     byte_swap_words(&mut payload, 4);
     assert_ne!(payload, original);
     process_incoming_payload(&mut payload, other, 4);
@@ -288,6 +407,7 @@ fn type_hash_mismatch_rejected() {
         type_size: 64,
         role: TopicRole::Subscriber,
         is_pod: true,
+        is_system: false,
     }];
     let remote = vec![WireTopicEntry {
         name: "imu".into(),
@@ -325,8 +445,11 @@ fn fragment_boundary_exact_mtu() {
         topic_name: "t".into(),
         topic_hash: 1,
         payload: vec![0; MAX_FRAGMENT_PAYLOAD],
-        timestamp_ns: 0, sequence: 1,
-        priority: Priority::Normal, reliability: Reliability::None, encoding: Encoding::PodLe,
+        timestamp_ns: 0,
+        sequence: 1,
+        priority: Priority::Normal,
+        reliability: Reliability::None,
+        encoding: Encoding::PodLe,
     };
     let frags = f.fragment(&msg);
     assert_eq!(frags.len(), 1, "exactly MTU should NOT fragment");
@@ -339,15 +462,22 @@ fn fragment_boundary_mtu_plus_1() {
         topic_name: "t".into(),
         topic_hash: 1,
         payload: vec![0; MAX_FRAGMENT_PAYLOAD + 1],
-        timestamp_ns: 0, sequence: 1,
-        priority: Priority::Normal, reliability: Reliability::None, encoding: Encoding::PodLe,
+        timestamp_ns: 0,
+        sequence: 1,
+        priority: Priority::Normal,
+        reliability: Reliability::None,
+        encoding: Encoding::PodLe,
     };
     let frags = f.fragment(&msg);
     assert_eq!(frags.len(), 2, "MTU+1 should produce 2 fragments");
 
     let mut r = Reassembler::new();
     let mut result = None;
-    for frag in frags { if let Some(m) = r.feed(frag) { result = Some(m); } }
+    for frag in frags {
+        if let Some(m) = r.feed(frag) {
+            result = Some(m);
+        }
+    }
     assert_eq!(result.unwrap().payload.len(), MAX_FRAGMENT_PAYLOAD + 1);
 }
 
@@ -358,8 +488,11 @@ fn fragment_boundary_max_size() {
         topic_name: "t".into(),
         topic_hash: 1,
         payload: vec![0; MAX_REASSEMBLY_SIZE],
-        timestamp_ns: 0, sequence: 1,
-        priority: Priority::Normal, reliability: Reliability::None, encoding: Encoding::PodLe,
+        timestamp_ns: 0,
+        sequence: 1,
+        priority: Priority::Normal,
+        reliability: Reliability::None,
+        encoding: Encoding::PodLe,
     };
     let frags = f.fragment(&msg);
     assert!(!frags.is_empty());
@@ -368,7 +501,11 @@ fn fragment_boundary_max_size() {
 
     let mut r = Reassembler::new();
     let mut result = None;
-    for frag in frags { if let Some(m) = r.feed(frag) { result = Some(m); } }
+    for frag in frags {
+        if let Some(m) = r.feed(frag) {
+            result = Some(m);
+        }
+    }
     assert_eq!(result.unwrap().payload.len(), MAX_REASSEMBLY_SIZE);
 }
 
@@ -379,8 +516,11 @@ fn fragment_boundary_over_max_rejected() {
         topic_name: "t".into(),
         topic_hash: 1,
         payload: vec![0; MAX_REASSEMBLY_SIZE + 1],
-        timestamp_ns: 0, sequence: 1,
-        priority: Priority::Normal, reliability: Reliability::None, encoding: Encoding::PodLe,
+        timestamp_ns: 0,
+        sequence: 1,
+        priority: Priority::Normal,
+        reliability: Reliability::None,
+        encoding: Encoding::PodLe,
     };
     assert!(f.fragment(&msg).is_empty());
 }
@@ -421,7 +561,11 @@ fn discovery_100_topics() {
             &format!("robot.t_{i}"),
             topic_hash(&format!("Type{i}")),
             32,
-            if i % 2 == 0 { TopicRole::Publisher } else { TopicRole::Subscriber },
+            if i % 2 == 0 {
+                TopicRole::Publisher
+            } else {
+                TopicRole::Subscriber
+            },
             true,
         );
     }
@@ -497,7 +641,11 @@ fn optimizer_chain_100_messages_no_crash() {
             payload: vec![i as u8; 64],
             timestamp_ns: i as u64 * 1000,
             sequence: i,
-            priority: if i == 50 { Priority::Immediate } else { Priority::Normal },
+            priority: if i == 50 {
+                Priority::Immediate
+            } else {
+                Priority::Normal
+            },
             reliability: Reliability::None,
             encoding: Encoding::PodLe,
         }];
@@ -518,26 +666,38 @@ fn delta_with_real_jointstate_pattern() {
         topic_name: "joints".into(),
         topic_hash: topic_hash("joints"),
         payload: payload.clone(),
-        timestamp_ns: 0, sequence: 1,
-        priority: Priority::Normal, reliability: Reliability::None, encoding: Encoding::PodLe,
+        timestamp_ns: 0,
+        sequence: 1,
+        priority: Priority::Normal,
+        reliability: Reliability::None,
+        encoding: Encoding::PodLe,
     }];
     opt.on_outgoing(&mut m1);
     assert_eq!(m1.len(), 1);
 
     // Change only joints 0 and 1 (first 32 bytes)
-    for b in &mut payload[0..32] { *b = 0xFF; }
+    for b in &mut payload[0..32] {
+        *b = 0xFF;
+    }
 
     let mut m2 = vec![OutMessage {
         topic_name: "joints".into(),
         topic_hash: topic_hash("joints"),
         payload: payload.clone(),
-        timestamp_ns: 0, sequence: 2,
-        priority: Priority::Normal, reliability: Reliability::None, encoding: Encoding::PodLe,
+        timestamp_ns: 0,
+        sequence: 2,
+        priority: Priority::Normal,
+        reliability: Reliability::None,
+        encoding: Encoding::PodLe,
     }];
     opt.on_outgoing(&mut m2);
     assert_eq!(m2.len(), 1);
     // Delta should be much smaller than 512 bytes
-    assert!(m2[0].payload.len() < 512, "delta={} should be < 512", m2[0].payload.len());
+    assert!(
+        m2[0].payload.len() < 512,
+        "delta={} should be < 512",
+        m2[0].payload.len()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -549,12 +709,26 @@ fn fnv1a_no_collisions_robotics_topics() {
     use std::collections::HashSet;
     let mut hashes = HashSet::new();
     let topics = [
-        "robot.imu", "robot.odom", "robot.cmd_vel", "robot.scan",
-        "robot.camera.rgb", "robot.camera.depth", "robot.camera.compressed",
-        "robot.joint_state", "robot.battery", "robot.estop",
-        "robot.tf", "robot.tf_static", "robot.nav_goal", "robot.nav_path",
-        "robot.wrench", "robot.force", "robot.temperature",
-        "fleet.pose", "fleet.status", "fleet.command",
+        "robot.imu",
+        "robot.odom",
+        "robot.cmd_vel",
+        "robot.scan",
+        "robot.camera.rgb",
+        "robot.camera.depth",
+        "robot.camera.compressed",
+        "robot.joint_state",
+        "robot.battery",
+        "robot.estop",
+        "robot.tf",
+        "robot.tf_static",
+        "robot.nav_goal",
+        "robot.nav_path",
+        "robot.wrench",
+        "robot.force",
+        "robot.temperature",
+        "fleet.pose",
+        "fleet.status",
+        "fleet.command",
     ];
     for t in &topics {
         let h = topic_hash(t);

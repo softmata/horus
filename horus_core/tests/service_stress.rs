@@ -341,10 +341,7 @@ fn test_call_resilient_retries() {
     std::thread::sleep(Duration::from_millis(50));
 
     let mut client = ServiceClient::<StressRetry>::new().unwrap();
-    let result = client.call_resilient(
-        StressRetryRequest { attempt: 0 },
-        5_u64.secs(),
-    );
+    let result = client.call_resilient(StressRetryRequest { attempt: 0 }, 5_u64.secs());
 
     // call_resilient should retry and eventually succeed
     match result {

@@ -2,7 +2,7 @@
 //!
 //! This module contains the public types used by the scheduler.
 
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -470,27 +470,41 @@ impl NodeControlMap {
     }
 
     pub fn is_paused(&self, name: &str) -> bool {
-        self.inner.read().unwrap_or_else(|e| e.into_inner())
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
             .get(name)
             .map(|c| c.paused.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(false)
     }
 
     pub fn is_stopped(&self, name: &str) -> bool {
-        self.inner.read().unwrap_or_else(|e| e.into_inner())
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
             .get(name)
             .map(|c| c.stopped.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(false)
     }
 
     pub fn set_paused(&self, name: &str, paused: bool) {
-        if let Some(c) = self.inner.read().unwrap_or_else(|e| e.into_inner()).get(name) {
+        if let Some(c) = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
             c.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
     pub fn set_stopped(&self, name: &str) {
-        if let Some(c) = self.inner.read().unwrap_or_else(|e| e.into_inner()).get(name) {
+        if let Some(c) = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
             c.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }

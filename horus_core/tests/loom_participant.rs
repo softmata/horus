@@ -83,12 +83,7 @@ impl LoomParticipantTable {
     }
 
     /// Shared registration logic matching production code.
-    fn register_role(
-        &self,
-        pid: u32,
-        role_bit: u8,
-        counter: &AtomicU32,
-    ) -> Option<usize> {
+    fn register_role(&self, pid: u32, role_bit: u8, counter: &AtomicU32) -> Option<usize> {
         // Phase 1: Check for existing entry for this pid
         // (simplified: production also checks thread_id_hash)
         for (i, p) in self.slots.iter().enumerate() {
@@ -112,19 +107,13 @@ impl LoomParticipantTable {
             }
 
             let is_active = active_val != 0;
-            let is_expired =
-                is_active && p.lease_expires.load(Ordering::Acquire) < now_ms;
+            let is_expired = is_active && p.lease_expires.load(Ordering::Acquire) < now_ms;
 
             if !is_active || is_expired {
                 // CAS: claim the slot by setting active to 2 (initializing)
                 let claimed = p
                     .active
-                    .compare_exchange(
-                        active_val,
-                        2,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
+                    .compare_exchange(active_val, 2, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok();
 
                 if claimed {
@@ -142,8 +131,7 @@ impl LoomParticipantTable {
                     // Initialize slot fields
                     p.pid.store(pid, Ordering::Release);
                     p.role.store(role_bit, Ordering::Release);
-                    p.lease_expires
-                        .store(now_ms + 5000, Ordering::Release);
+                    p.lease_expires.store(now_ms + 5000, Ordering::Release);
                     counter.fetch_add(1, Ordering::AcqRel);
                     self.total_participants.fetch_add(1, Ordering::AcqRel);
 
@@ -190,11 +178,7 @@ fn loom_participant_no_double_claim() {
 
         // Publisher count must be exactly 2
         let pub_count = table.publisher_count.load(Ordering::Acquire);
-        assert_eq!(
-            pub_count, 2,
-            "publisher_count must be 2, got {}",
-            pub_count
-        );
+        assert_eq!(pub_count, 2, "publisher_count must be 2, got {}", pub_count);
 
         // Total participants must be 2
         let total = table.total_participants.load(Ordering::Acquire);

@@ -44,10 +44,10 @@
 
 use proc_macro::TokenStream;
 
+mod cpp_gen;
+mod cxx_gen;
 mod parser;
 mod types;
-mod cxx_gen;
-mod cpp_gen;
 
 #[cfg(test)]
 mod integration_tests;

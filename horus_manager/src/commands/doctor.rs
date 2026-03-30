@@ -166,8 +166,14 @@ fn run_fix(manifest: &HorusManifest, ctx: &dispatch::ProjectContext) -> Result<(
         if system_dep_names.contains(&item.name) {
             if let Some(ver) = &item.version {
                 // Find the manifest dep for cross-platform package names
-                let manifest_dep = manifest.system_deps().into_iter().find(|d| d.name == item.name);
-                let existing = lockfile.system_deps.iter_mut().find(|s| s.name == item.name);
+                let manifest_dep = manifest
+                    .system_deps()
+                    .into_iter()
+                    .find(|d| d.name == item.name);
+                let existing = lockfile
+                    .system_deps
+                    .iter_mut()
+                    .find(|s| s.name == item.name);
                 if let Some(existing) = existing {
                     existing.version = ver.clone();
                 } else {
@@ -355,7 +361,8 @@ fn check_rt() -> CheckResult {
     if caps.preempt_rt {
         details.push("PREEMPT_RT kernel active".to_string());
     } else {
-        details.push("PREEMPT_RT not detected — jitter may be higher (~200μs vs ~20μs)".to_string());
+        details
+            .push("PREEMPT_RT not detected — jitter may be higher (~200μs vs ~20μs)".to_string());
         details.push("For lower jitter, run: horus setup-rt".to_string());
     }
 
@@ -645,10 +652,7 @@ fn check_system_deps(manifest: &HorusManifest) -> CheckResult {
 
     let found = report.items.iter().filter(|i| i.installed).count();
     let hint = if !missing.is_empty() {
-        format!(
-            " — run {} to install",
-            "horus doctor --fix".cyan()
-        )
+        format!(" — run {} to install", "horus doctor --fix".cyan())
     } else {
         String::new()
     };
@@ -717,14 +721,14 @@ fn check_drivers() -> CheckResult {
         };
         let params = NodeParams::new(params_map.clone());
         let use_name = match value {
-            crate::manifest::DriverValue::Config(cfg) => {
-                cfg.use_name.as_deref()
-                    .or(cfg.terra.as_deref())
-                    .or(cfg.node.as_deref())
-                    .or(cfg.package.as_deref())
-                    .or(cfg.exec.as_deref())
-                    .unwrap_or("unknown")
-            }
+            crate::manifest::DriverValue::Config(cfg) => cfg
+                .use_name
+                .as_deref()
+                .or(cfg.terra.as_deref())
+                .or(cfg.node.as_deref())
+                .or(cfg.package.as_deref())
+                .or(cfg.exec.as_deref())
+                .unwrap_or("unknown"),
             crate::manifest::DriverValue::Backend(s) => s.as_str(),
             crate::manifest::DriverValue::Enabled(_) => "enabled",
         };
@@ -759,7 +763,10 @@ fn check_drivers() -> CheckResult {
     let summary = if worst == Health::Ok {
         format!("{} hardware node(s) reachable", details.len())
     } else {
-        format!("{} hardware node(s) checked, some issues found", details.len())
+        format!(
+            "{} hardware node(s) checked, some issues found",
+            details.len()
+        )
     };
 
     CheckResult {
@@ -770,11 +777,7 @@ fn check_drivers() -> CheckResult {
     }
 }
 
-fn check_hardware_device(
-    name: &str,
-    params: &NodeParams,
-    use_name: &str,
-) -> (String, Health) {
+fn check_hardware_device(name: &str, params: &NodeParams, use_name: &str) -> (String, Health) {
     // Check serial port / device file
     if let Ok(port) = params.get::<String>("port") {
         if port.starts_with("/dev/") {
@@ -829,12 +832,7 @@ fn check_hardware_device(
                         Health::Ok,
                     ),
                     Err(_) => (
-                        format!(
-                            "  {} '{}': {} unreachable",
-                            "!".yellow(),
-                            name,
-                            address
-                        ),
+                        format!("  {} '{}': {} unreachable", "!".yellow(), name, address),
                         Health::Warn,
                     ),
                 };
@@ -844,10 +842,7 @@ fn check_hardware_device(
 
     // No checkable params — report node type
     (
-        format!(
-            "  - '{}': use={} (no device path to check)",
-            name, use_name
-        ),
+        format!("  - '{}': use={} (no device path to check)", name, use_name),
         Health::Ok,
     )
 }
@@ -1677,13 +1672,19 @@ mod tests {
                 category: "System Deps".to_string(),
                 health: Health::Fail,
                 summary: "2 missing dependencies".to_string(),
-                details: vec!["libssl-dev: not found".to_string(), "cmake: not found".to_string()],
+                details: vec![
+                    "libssl-dev: not found".to_string(),
+                    "cmake: not found".to_string(),
+                ],
             },
         ];
 
         for cr in &cases {
             assert!(!cr.category.is_empty(), "category must be non-empty");
-            assert!(!cr.summary.is_empty(), "summary must be non-empty (acts as display)");
+            assert!(
+                !cr.summary.is_empty(),
+                "summary must be non-empty (acts as display)"
+            );
             // details act as the description — at least one entry for each case above
             assert!(
                 !cr.details.is_empty(),
@@ -1703,11 +1704,7 @@ mod tests {
         // We cannot call check_dep_sources/check_manifest without a real context,
         // but the categories are deterministic string literals, so we gather
         // the ones we can call plus the known constant categories.
-        let callable_results = vec![
-            check_toolchains(),
-            check_shm(),
-            check_plugins(),
-        ];
+        let callable_results = vec![check_toolchains(), check_shm(), check_plugins()];
 
         // Known categories from code inspection (check_manifest, check_languages,
         // check_dep_sources, check_disk, check_drivers, check_system_deps):
@@ -1846,10 +1843,11 @@ fn check_network() -> CheckResult {
 
 /// Run the RT readiness report: system audit + jitter benchmark + IPC benchmark.
 pub fn run_rt_report() -> Result<()> {
-    println!("{}", "Running RT Readiness Report (3-second benchmark)...\n".bold());
-    let report = horus_core::scheduling::rt_report::RtReport::generate(
-        Duration::from_secs(3),
+    println!(
+        "{}",
+        "Running RT Readiness Report (3-second benchmark)...\n".bold()
     );
+    let report = horus_core::scheduling::rt_report::RtReport::generate(Duration::from_secs(3));
     report.print();
     Ok(())
 }

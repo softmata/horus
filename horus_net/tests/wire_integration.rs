@@ -13,8 +13,10 @@ fn loopback_pair() -> (UdpSocket, UdpSocket, std::net::SocketAddr) {
     let b = UdpSocket::bind("127.0.0.1:0").unwrap();
     a.set_nonblocking(false).unwrap();
     b.set_nonblocking(false).unwrap();
-    a.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
-    b.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    a.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    b.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     let b_addr = b.local_addr().unwrap();
     (a, b, b_addr)
 }
@@ -64,11 +66,7 @@ fn single_message_over_udp_loopback() {
 fn batch_5_messages_over_udp_loopback() {
     let (sender, receiver, recv_addr) = loopback_pair();
 
-    let header = PacketHeader::new(
-        PacketFlags::empty().with(PacketFlags::BATCH),
-        0x1111,
-        99,
-    );
+    let header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::BATCH), 0x1111, 99);
     let msgs: Vec<OutMessage> = (0..5u32)
         .map(|i| OutMessage {
             topic_name: format!("sensor.{i}"),
@@ -262,11 +260,7 @@ fn fragment_header_roundtrip_over_udp() {
     let (sender, receiver, recv_addr) = loopback_pair();
 
     // Simulate a fragment packet: packet header + message header + fragment header + payload
-    let pkt_header = PacketHeader::new(
-        PacketFlags::empty().with(PacketFlags::FRAGMENT),
-        0x5555,
-        1,
-    );
+    let pkt_header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::FRAGMENT), 0x5555, 1);
     let frag = FragmentHeader {
         fragment_id: 42,
         fragment_index: 0,

@@ -22,15 +22,15 @@ use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
 use horus_core::service;
 use horus_core::services::*;
-use horus_robotics::CmdVel;
 use horus_robotics::messages::sensor::Imu;
+use horus_robotics::CmdVel;
 use horus_tf::{Transform, TransformFrame};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 mod common;
-use common::{cleanup_stale_shm, unique};
+use common::{cleanup_stale_shm, timestamp_now, unique};
 
 // ── Service + Action definitions ──────────────────────────────────────
 service! { GetConfig { request { key: String } response { value: String } } }
@@ -52,10 +52,14 @@ struct Counters {
 impl Counters {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            imu_pub: AtomicU64::new(0), cmd_pub: AtomicU64::new(0),
-            cmd_recv: AtomicU64::new(0), lidar_ticks: AtomicU64::new(0),
-            tf_updates: AtomicU64::new(0), tf_reads: AtomicU64::new(0),
-            svc_calls: AtomicU64::new(0), action_goals: AtomicU64::new(0),
+            imu_pub: AtomicU64::new(0),
+            cmd_pub: AtomicU64::new(0),
+            cmd_recv: AtomicU64::new(0),
+            lidar_ticks: AtomicU64::new(0),
+            tf_updates: AtomicU64::new(0),
+            tf_reads: AtomicU64::new(0),
+            svc_calls: AtomicU64::new(0),
+            action_goals: AtomicU64::new(0),
             corrupted: AtomicU64::new(0),
         })
     }
@@ -64,24 +68,34 @@ impl Counters {
 // ── Sched1 Nodes: RT Control ──────────────────────────────────────────
 
 struct ImuDriverNode {
-    topic: Option<Topic<Imu>>, name: String,
-    tf: Arc<TransformFrame>, c: Arc<Counters>, seq: u64,
+    topic: Option<Topic<Imu>>,
+    name: String,
+    tf: Arc<TransformFrame>,
+    c: Arc<Counters>,
+    seq: u64,
 }
 impl Node for ImuDriverNode {
-    fn name(&self) -> &str { "imu_driver" }
+    fn name(&self) -> &str {
+        "imu_driver"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
-        self.topic = Some(Topic::new(&self.name)?); Ok(())
+        self.topic = Some(Topic::new(&self.name)?);
+        Ok(())
     }
     fn tick(&mut self) {
         let mut imu = Imu::new();
         imu.linear_acceleration = [0.0, 0.0, 9.81];
         imu.angular_velocity = [(self.seq as f64 * 0.01).sin() * 0.05, 0.0, 0.0];
-        if let Some(ref t) = self.topic { t.send(imu); }
+        if let Some(ref t) = self.topic {
+            t.send(imu);
+        }
         // Update TF: robot moves forward slowly
         let x = self.seq as f64 * 0.001;
-        let _ = self.tf.update_transform("base_link",
+        let _ = self.tf.update_transform(
+            "base_link",
             &Transform::from_translation([x, 0.0, 0.0]),
-            horus_library::transform_frame::timestamp_now());
+            timestamp_now(),
+        );
         self.c.imu_pub.fetch_add(1, Ordering::Relaxed);
         self.c.tf_updates.fetch_add(1, Ordering::Relaxed);
         self.seq += 1;
@@ -89,12 +103,16 @@ impl Node for ImuDriverNode {
 }
 
 struct ControllerNode {
-    imu_name: String, cmd_name: String,
-    imu_topic: Option<Topic<Imu>>, cmd_topic: Option<Topic<CmdVel>>,
+    imu_name: String,
+    cmd_name: String,
+    imu_topic: Option<Topic<Imu>>,
+    cmd_topic: Option<Topic<CmdVel>>,
     c: Arc<Counters>,
 }
 impl Node for ControllerNode {
-    fn name(&self) -> &str { "controller" }
+    fn name(&self) -> &str {
+        "controller"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu_topic = Some(Topic::new(&self.imu_name)?);
         self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
@@ -111,18 +129,25 @@ impl Node for ControllerNode {
             }
         }
         let cmd = CmdVel::new(0.5, -latest_gz as f32 * 2.0);
-        if let Some(ref t) = self.cmd_topic { t.send(cmd); }
+        if let Some(ref t) = self.cmd_topic {
+            t.send(cmd);
+        }
         self.c.cmd_pub.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 struct MotorDriverNode {
-    cmd_name: String, cmd_topic: Option<Topic<CmdVel>>, c: Arc<Counters>,
+    cmd_name: String,
+    cmd_topic: Option<Topic<CmdVel>>,
+    c: Arc<Counters>,
 }
 impl Node for MotorDriverNode {
-    fn name(&self) -> &str { "motor_driver" }
+    fn name(&self) -> &str {
+        "motor_driver"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
-        self.cmd_topic = Some(Topic::new(&self.cmd_name)?); Ok(())
+        self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
+        Ok(())
     }
     fn tick(&mut self) {
         if let Some(ref t) = self.cmd_topic {
@@ -139,10 +164,13 @@ impl Node for MotorDriverNode {
 // ── Sched2 Nodes: Perception ──────────────────────────────────────────
 
 struct LidarProcessorNode {
-    tf: Arc<TransformFrame>, c: Arc<Counters>,
+    tf: Arc<TransformFrame>,
+    c: Arc<Counters>,
 }
 impl Node for LidarProcessorNode {
-    fn name(&self) -> &str { "lidar_proc" }
+    fn name(&self) -> &str {
+        "lidar_proc"
+    }
     fn tick(&mut self) {
         // Read TF to get robot position (cross-scheduler TF sharing)
         if let Ok(result) = self.tf.tf("base_link", "world") {
@@ -170,10 +198,18 @@ fn full_robot_3_schedulers_service_action_tf() {
     tf.register_frame("world", None).unwrap();
     tf.register_frame("base_link", Some("world")).unwrap();
     tf.register_frame("lidar_link", Some("base_link")).unwrap();
-    tf.update_transform("base_link", &Transform::from_translation([0.0, 0.0, 0.0]),
-        horus_library::transform_frame::timestamp_now()).unwrap();
-    tf.update_transform("lidar_link", &Transform::from_translation([0.2, 0.0, 0.3]),
-        horus_library::transform_frame::timestamp_now()).unwrap();
+    tf.update_transform(
+        "base_link",
+        &Transform::from_translation([0.0, 0.0, 0.0]),
+        timestamp_now(),
+    )
+    .unwrap();
+    tf.update_transform(
+        "lidar_link",
+        &Transform::from_translation([0.2, 0.0, 0.3]),
+        timestamp_now(),
+    )
+    .unwrap();
 
     let c = Counters::new();
     let running = Arc::new(AtomicBool::new(true));
@@ -183,9 +219,12 @@ fn full_robot_3_schedulers_service_action_tf() {
     let _svc = ServiceServerBuilder::<GetConfig>::new()
         .on_request(move |req| {
             svc_count.svc_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(GetConfigResponse { value: format!("val_{}", req.key) })
+            Ok(GetConfigResponse {
+                value: format!("val_{}", req.key),
+            })
         })
-        .build().unwrap();
+        .build()
+        .unwrap();
 
     // ── Action: NavigateToGoal ────────────────────────────────────
     let action_count = c.clone();
@@ -200,22 +239,47 @@ fn full_robot_3_schedulers_service_action_tf() {
         .build();
 
     // ── Sched1: RT Control (200Hz) ───────────────────────────────
-    let c1 = c.clone(); let c2 = c.clone(); let c3 = c.clone();
+    let c1 = c.clone();
+    let c2 = c.clone();
+    let c3 = c.clone();
     let tf1 = tf.clone();
-    let it = imu_topic.clone(); let ct = cmd_topic.clone(); let ct2 = cmd_topic.clone();
+    let it = imu_topic.clone();
+    let ct = cmd_topic.clone();
+    let ct2 = cmd_topic.clone();
     let r1 = running.clone();
     let h1 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(200_u64.hz()).name("rt_control");
-        let _ = sched.add(ImuDriverNode {
-            topic: None, name: it, tf: tf1, c: c1, seq: 0,
-        }).rate(200_u64.hz()).order(0).build();
-        let _ = sched.add(ControllerNode {
-            imu_name: imu_topic.clone(), cmd_name: ct,
-            imu_topic: None, cmd_topic: None, c: c2,
-        }).rate(200_u64.hz()).order(1).build();
-        let _ = sched.add(MotorDriverNode {
-            cmd_name: ct2, cmd_topic: None, c: c3,
-        }).rate(200_u64.hz()).order(2).build();
+        let _ = sched
+            .add(ImuDriverNode {
+                topic: None,
+                name: it,
+                tf: tf1,
+                c: c1,
+                seq: 0,
+            })
+            .rate(200_u64.hz())
+            .order(0)
+            .build();
+        let _ = sched
+            .add(ControllerNode {
+                imu_name: imu_topic.clone(),
+                cmd_name: ct,
+                imu_topic: None,
+                cmd_topic: None,
+                c: c2,
+            })
+            .rate(200_u64.hz())
+            .order(1)
+            .build();
+        let _ = sched
+            .add(MotorDriverNode {
+                cmd_name: ct2,
+                cmd_topic: None,
+                c: c3,
+            })
+            .rate(200_u64.hz())
+            .order(2)
+            .build();
         // Action server also in sched1
         sched.add(action_server).order(3).build().unwrap();
         while r1.load(Ordering::Relaxed) {
@@ -225,12 +289,17 @@ fn full_robot_3_schedulers_service_action_tf() {
     });
 
     // ── Sched2: Perception (30Hz) ────────────────────────────────
-    let c4 = c.clone(); let tf2 = tf.clone();
+    let c4 = c.clone();
+    let tf2 = tf.clone();
     let r2 = running.clone();
     let h2 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(30_u64.hz()).name("perception");
-        let _ = sched.add(LidarProcessorNode { tf: tf2, c: c4 })
-            .compute().rate(30_u64.hz()).order(0).build();
+        let _ = sched
+            .add(LidarProcessorNode { tf: tf2, c: c4 })
+            .compute()
+            .rate(30_u64.hz())
+            .order(0)
+            .build();
         while r2.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(30));
@@ -248,8 +317,8 @@ fn full_robot_3_schedulers_service_action_tf() {
 
     // ── Action client sends goal ─────────────────────────────────
     let action_client = SyncActionClient::<NavGoal>::new().unwrap();
-    let action_result = action_client.send_goal_and_wait(
-        NavGoalGoal { x: 5.0, y: 3.0 }, 5_u64.secs());
+    let action_result =
+        action_client.send_goal_and_wait(NavGoalGoal { x: 5.0, y: 3.0 }, 5_u64.secs());
 
     // ── Let it run ───────────────────────────────────────────────
     std::thread::sleep(Duration::from_secs(8));
@@ -273,21 +342,55 @@ fn full_robot_3_schedulers_service_action_tf() {
     println!("║    FULL ROBOT INTEGRATION — ALL FEATURES (10s)              ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
     println!("║  SCHED1 (RT 200Hz):                                        ║");
-    println!("║    IMU published:    {:6}  ({:5.0} Hz)                      ║", ip, ip as f64/10.0);
-    println!("║    CmdVel published: {:6}  ({:5.0} Hz)                      ║", cp, cp as f64/10.0);
-    println!("║    CmdVel received:  {:6}  ({:5.0}%)                        ║", cr, cr as f64/cp.max(1) as f64*100.0);
+    println!(
+        "║    IMU published:    {:6}  ({:5.0} Hz)                      ║",
+        ip,
+        ip as f64 / 10.0
+    );
+    println!(
+        "║    CmdVel published: {:6}  ({:5.0} Hz)                      ║",
+        cp,
+        cp as f64 / 10.0
+    );
+    println!(
+        "║    CmdVel received:  {:6}  ({:5.0}%)                        ║",
+        cr,
+        cr as f64 / cp.max(1) as f64 * 100.0
+    );
     println!("║  SCHED2 (Compute 30Hz):                                    ║");
-    println!("║    LiDAR ticks:      {:6}  ({:5.0} Hz)                      ║", lt, lt as f64/10.0);
+    println!(
+        "║    LiDAR ticks:      {:6}  ({:5.0} Hz)                      ║",
+        lt,
+        lt as f64 / 10.0
+    );
     println!("║  TRANSFORM FRAME:                                          ║");
-    println!("║    TF updates:       {:6}  (writer)                        ║", tu);
-    println!("║    TF reads:         {:6}  (cross-sched reader)            ║", tr);
+    println!(
+        "║    TF updates:       {:6}  (writer)                        ║",
+        tu
+    );
+    println!(
+        "║    TF reads:         {:6}  (cross-sched reader)            ║",
+        tr
+    );
     println!("║  SERVICE:                                                  ║");
-    println!("║    Config calls:     {:6}                                  ║", sc);
+    println!(
+        "║    Config calls:     {:6}                                  ║",
+        sc
+    );
     println!("║  ACTION:                                                   ║");
-    println!("║    Goals completed:  {:6}                                  ║", ag);
-    println!("║    Result:           {:?}", action_result.as_ref().map(|r| r.ok));
+    println!(
+        "║    Goals completed:  {:6}                                  ║",
+        ag
+    );
+    println!(
+        "║    Result:           {:?}",
+        action_result.as_ref().map(|r| r.ok)
+    );
     println!("║  DATA INTEGRITY:                                           ║");
-    println!("║    Corrupted msgs:   {:6}                                  ║", co);
+    println!(
+        "║    Corrupted msgs:   {:6}                                  ║",
+        co
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     // ── Assertions ───────────────────────────────────────────────

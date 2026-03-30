@@ -81,13 +81,7 @@ pub fn create_new_project(
         fs::create_dir_all(&member_dir).context("Failed to create member directory")?;
 
         // Create the member's horus.toml with proper PackageInfo
-        create_horus_toml_with_target(
-            &member_dir,
-            &name,
-            &description,
-            &author,
-            TargetType::Bin,
-        )?;
+        create_horus_toml_with_target(&member_dir, &name, &description, &author, TargetType::Bin)?;
 
         // Create the member's src/main.rs
         match language.as_str() {
@@ -118,13 +112,7 @@ pub fn create_new_project(
         };
 
         // Generate horus.toml (deps added later via `horus add`)
-        create_horus_toml_with_target(
-            &project_path,
-            &name,
-            &description,
-            &author,
-            target_type,
-        )?;
+        create_horus_toml_with_target(&project_path, &name, &description, &author, target_type)?;
 
         // Generate main source file based on language
         // Note: native build files (Cargo.toml, pyproject.toml) are generated

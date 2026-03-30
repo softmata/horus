@@ -165,17 +165,21 @@ fn runtime_topic_list() {
 fn runtime_topic_echo() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_topic_echo");
 
-    let (output, ok) = run_and_capture(
-        &mut sched
-            .horus()
-            .args(["topic", "echo", "sensor.cmd_vel", "--count", "3"]),
-    );
+    let (output, ok) = run_and_capture(&mut sched.horus().args([
+        "topic",
+        "echo",
+        "sensor.cmd_vel",
+        "--count",
+        "3",
+    ]));
     println!("topic echo output:\n{}", output);
 
     assert!(ok, "topic echo should exit 0");
     // Should contain message data (linear/angular values)
     assert!(
-        output.contains("linear") || output.contains("angular") || output.contains("CmdVel")
+        output.contains("linear")
+            || output.contains("angular")
+            || output.contains("CmdVel")
             || output.len() > 20,
         "should show message content: {}",
         output
@@ -188,16 +192,20 @@ fn runtime_topic_hz() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_topic_hz");
 
     // topic hz needs a few seconds to measure
-    let (output, _ok) = run_and_capture(
-        &mut sched
-            .horus()
-            .args(["topic", "hz", "sensor.cmd_vel", "--window", "10"]),
-    );
+    let (output, _ok) = run_and_capture(&mut sched.horus().args([
+        "topic",
+        "hz",
+        "sensor.cmd_vel",
+        "--window",
+        "10",
+    ]));
     println!("topic hz output:\n{}", output);
 
     // May timeout or show Hz — either is acceptable for test
     assert!(
-        output.contains("Hz") || output.contains("hz") || output.contains("rate")
+        output.contains("Hz")
+            || output.contains("hz")
+            || output.contains("rate")
             || output.contains("sensor.cmd_vel"),
         "should show frequency info: {}",
         output
@@ -292,11 +300,7 @@ fn runtime_action_list() {
 fn runtime_action_info() {
     let sched = BackgroundScheduler::start("qa_action_server", "cli_rt_action_info");
 
-    let (output, ok) = run_and_capture(
-        &mut sched
-            .horus()
-            .args(["action", "info", "pick_object"]),
-    );
+    let (output, ok) = run_and_capture(&mut sched.horus().args(["action", "info", "pick_object"]));
     println!("action info output:\n{}", output);
 
     assert!(ok, "action info should exit 0");
@@ -317,11 +321,8 @@ fn runtime_param_crud() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_param_crud");
 
     // Set a parameter
-    let (output, ok) = run_and_capture(
-        &mut sched
-            .horus()
-            .args(["param", "set", "test.speed", "2.5"]),
-    );
+    let (output, ok) =
+        run_and_capture(&mut sched.horus().args(["param", "set", "test.speed", "2.5"]));
     println!("param set output: {}", output);
     assert!(ok, "param set should exit 0");
 
@@ -341,11 +342,7 @@ fn runtime_param_crud() {
     assert!(ok, "param list should exit 0");
 
     // Delete
-    let (output, ok) = run_and_capture(
-        &mut sched
-            .horus()
-            .args(["param", "delete", "test.speed"]),
-    );
+    let (output, ok) = run_and_capture(&mut sched.horus().args(["param", "delete", "test.speed"]));
     println!("param delete output: {}", output);
     assert!(ok, "param delete should exit 0");
 
@@ -437,7 +434,9 @@ fn runtime_recording_pipeline() {
     let session = "rt_test_session";
 
     // Clean any prior session
-    let _ = horus_cmd().args(["record", "delete", session, "--force"]).output();
+    let _ = horus_cmd()
+        .args(["record", "delete", session, "--force"])
+        .output();
 
     // Start scheduler with recording enabled
     let mut sched = BackgroundScheduler::start_with_record("qa_pubsub", namespace, session);
@@ -473,9 +472,8 @@ fn runtime_recording_pipeline() {
     );
 
     // record replay — replay first 5 ticks
-    let (output, ok) = run_and_capture(
-        &mut horus_cmd().args(["record", "replay", session, "--stop-tick", "5"]),
-    );
+    let (output, ok) =
+        run_and_capture(&mut horus_cmd().args(["record", "replay", session, "--stop-tick", "5"]));
     println!("record replay:\n{}", output);
     assert!(ok, "record replay should exit 0");
     assert!(
@@ -486,17 +484,15 @@ fn runtime_recording_pipeline() {
 
     // record export — JSON
     let export_path = format!("/tmp/horus_rt_test_{}.json", std::process::id());
-    let (output, ok) = run_and_capture(
-        &mut horus_cmd().args([
-            "record",
-            "export",
-            session,
-            "--output",
-            &export_path,
-            "--format",
-            "json",
-        ]),
-    );
+    let (output, ok) = run_and_capture(&mut horus_cmd().args([
+        "record",
+        "export",
+        session,
+        "--output",
+        &export_path,
+        "--format",
+        "json",
+    ]));
     println!("record export:\n{}", output);
     assert!(ok, "record export should exit 0");
 
@@ -548,11 +544,8 @@ session: test_launch
     let launch_file = tmpdir.path().join("robot.yaml");
     std::fs::write(&launch_file, yaml).unwrap();
 
-    let (output, ok) = run_and_capture(
-        &mut horus_cmd()
-            .args(["launch", "--dry-run"])
-            .arg(&launch_file),
-    );
+    let (output, ok) =
+        run_and_capture(&mut horus_cmd().args(["launch", "--dry-run"]).arg(&launch_file));
     println!("launch dry-run:\n{}", output);
 
     assert!(ok, "dry-run should exit 0");

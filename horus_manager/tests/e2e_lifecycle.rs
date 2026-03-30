@@ -32,7 +32,13 @@ fn test_rust_project_full_lifecycle() {
 
     // Step 1: Create project
     horus_cmd()
-        .args(["new", proj_name, "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            proj_name,
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -44,8 +50,8 @@ fn test_rust_project_full_lifecycle() {
 
     // Step 3: Verify horus.toml content
     let toml_content = fs::read_to_string(proj.join("horus.toml")).unwrap();
-    let toml_val: toml::Value = toml::from_str(&toml_content)
-        .expect("horus.toml must be valid TOML");
+    let toml_val: toml::Value =
+        toml::from_str(&toml_content).expect("horus.toml must be valid TOML");
     assert!(
         toml_val.get("package").is_some(),
         "horus.toml must have [package] section"
@@ -87,7 +93,13 @@ fn test_rust_build_generates_cargo_toml() {
     let proj_name = "build-gen-test";
 
     horus_cmd()
-        .args(["new", proj_name, "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            proj_name,
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -105,8 +117,8 @@ fn test_rust_build_generates_cargo_toml() {
         let cargo_toml_path = proj.join(".horus/Cargo.toml");
         if cargo_toml_path.exists() {
             let content = fs::read_to_string(&cargo_toml_path).unwrap();
-            let cargo_toml: toml::Value = toml::from_str(&content)
-                .expect(".horus/Cargo.toml must be valid TOML");
+            let cargo_toml: toml::Value =
+                toml::from_str(&content).expect(".horus/Cargo.toml must be valid TOML");
 
             assert!(
                 cargo_toml.get("package").is_some(),
@@ -135,7 +147,13 @@ fn test_rust_incremental_build_faster() {
     let proj_name = "incr-build-test";
 
     horus_cmd()
-        .args(["new", proj_name, "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            proj_name,
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -206,8 +224,7 @@ fn test_python_project_full_lifecycle() {
 
     // Step 3: Verify horus.toml
     let toml_content = fs::read_to_string(proj.join("horus.toml")).unwrap();
-    let _: toml::Value = toml::from_str(&toml_content)
-        .expect("horus.toml must be valid TOML");
+    let _: toml::Value = toml::from_str(&toml_content).expect("horus.toml must be valid TOML");
 
     // Step 4: Verify main.py content
     let main_path = if proj.join("main.py").exists() {
@@ -240,7 +257,13 @@ fn test_check_validates_manifest() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "check-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "check-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -270,7 +293,13 @@ fn test_clean_removes_build_artifacts() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "clean-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "clean-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -308,7 +337,13 @@ fn test_clean_dry_run_does_not_delete() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "dry-run-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "dry-run-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -338,7 +373,13 @@ fn test_lock_generate_and_check() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "lock-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "lock-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -390,7 +431,13 @@ fn test_add_remove_dependency() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "dep-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "dep-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -421,8 +468,7 @@ fn test_add_remove_dependency() {
     // Verify it's gone
     let content = fs::read_to_string(&toml_path).unwrap();
     assert!(
-        !content.contains("[dependencies]")
-            || !content.contains("serde"),
+        !content.contains("[dependencies]") || !content.contains("serde"),
         "serde should be removed from horus.toml"
     );
 }
@@ -433,7 +479,13 @@ fn test_add_dev_dependency() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "dev-dep-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "dev-dep-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -466,7 +518,13 @@ fn test_config_get_set() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "config-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "config-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -503,10 +561,7 @@ fn test_doctor_health_check() {
     // Doctor can run anywhere — doesn't need a project.
     // It may exit non-zero if it finds issues (e.g., missing manifest),
     // but it should always produce output and not panic.
-    let output = horus_cmd()
-        .args(["doctor"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["doctor"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -574,7 +629,13 @@ fn test_new_invalid_name_error() {
 
     // Reserved name
     let output = horus_cmd()
-        .args(["new", "horus", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "horus",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .output()
         .unwrap();
 
@@ -602,7 +663,13 @@ fn test_horus_test_workflow() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "test-wf", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "test-wf",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -648,7 +715,13 @@ fn test_fmt_on_scaffolded_project() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "fmt-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "fmt-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -663,10 +736,7 @@ fn test_fmt_on_scaffolded_project() {
 
     // Should not panic even if rustfmt not found
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("panic"),
-        "horus fmt should not panic"
-    );
+    assert!(!stderr.contains("panic"), "horus fmt should not panic");
 }
 
 /// horus fmt --check detects unformatted code.
@@ -675,7 +745,13 @@ fn test_fmt_check_detects_unformatted() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "fmt-check-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "fmt-check-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -701,7 +777,10 @@ fn test_fmt_check_detects_unformatted() {
     // If rustfmt is available and ran, it should fail on unformatted code
     // If not available, it may succeed with a warning — both are OK
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panic"), "horus fmt --check should not panic");
+    assert!(
+        !stderr.contains("panic"),
+        "horus fmt --check should not panic"
+    );
 }
 
 /// horus lint runs without panicking.
@@ -710,7 +789,13 @@ fn test_lint_on_scaffolded_project() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "lint-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "lint-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -723,10 +808,7 @@ fn test_lint_on_scaffolded_project() {
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("panic"),
-        "horus lint should not panic"
-    );
+    assert!(!stderr.contains("panic"), "horus lint should not panic");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -739,7 +821,13 @@ fn test_scripts_workflow() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "scripts-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "scripts-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -791,7 +879,13 @@ fn test_deploy_dry_run() {
     let tmp = TempDir::new().unwrap();
 
     horus_cmd()
-        .args(["new", "deploy-test", "--rust", "-o", &tmp.path().to_string_lossy()])
+        .args([
+            "new",
+            "deploy-test",
+            "--rust",
+            "-o",
+            &tmp.path().to_string_lossy(),
+        ])
         .assert()
         .success();
 
@@ -833,10 +927,7 @@ fn test_deploy_dry_run() {
 #[test]
 fn test_package_search_offline_safe() {
     // Search should not panic if registry is unreachable
-    let output = horus_cmd()
-        .args(["search", "lidar"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["search", "lidar"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -849,10 +940,7 @@ fn test_package_search_offline_safe() {
 /// horus list works even with nothing installed.
 #[test]
 fn test_package_list_empty() {
-    let output = horus_cmd()
-        .args(["list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["list"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -864,10 +952,7 @@ fn test_package_list_empty() {
 /// horus cache info shows cache stats.
 #[test]
 fn test_cache_info() {
-    let output = horus_cmd()
-        .args(["cache", "info"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["cache", "info"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

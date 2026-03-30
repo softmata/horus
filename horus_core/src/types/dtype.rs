@@ -74,7 +74,9 @@ impl TensorDtype {
         if v <= Self::MAX_DISCRIMINANT {
             // SAFETY: v is in the valid discriminant range 0..=12
             #[allow(clippy::missing_transmute_annotations)]
-            unsafe { std::mem::transmute(v) }
+            unsafe {
+                std::mem::transmute(v)
+            }
         } else {
             Self::F32
         }

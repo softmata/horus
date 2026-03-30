@@ -8,8 +8,8 @@
 
 use horus_core::communication::topic::Topic;
 use horus_core::core::DurationExt;
-use horus_core::scheduling::{BlackBox, BlackBoxEvent};
 use horus_core::scheduling::registry::SchedulerRegistry;
+use horus_core::scheduling::{BlackBox, BlackBoxEvent};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -131,9 +131,7 @@ fn spawn_child_with_envs(test_name: &str, envs: &[(&str, &str)]) -> std::process
 #[test]
 fn cross_process_blackbox_wal_readable() {
     if is_child() {
-        if std::env::var(TEST_ENV).ok().as_deref()
-            == Some("cross_process_blackbox_wal_readable")
-        {
+        if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_blackbox_wal_readable") {
             child_read_blackbox_wal();
         }
         return;
@@ -204,9 +202,7 @@ fn cross_process_blackbox_wal_readable() {
 #[test]
 fn cross_process_registry_readable() {
     if is_child() {
-        if std::env::var(TEST_ENV).ok().as_deref()
-            == Some("cross_process_registry_readable")
-        {
+        if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_registry_readable") {
             child_read_registry();
         }
         return;
@@ -221,9 +217,9 @@ fn cross_process_registry_readable() {
     let slot0 = registry.register_node("sensor_driver", 0, 100.0, 0);
     let slot1 = registry.register_node("controller", 1, 1000.0, 0);
 
-    // Update some metrics (health, tick_count, error_count, budget_misses, deadline_misses, last_tick_ns, avg_tick_ns, max_tick_ns)
-    registry.update_node(slot0, 0, 50, 0, 0, 0, 1000, 500, 800);
-    registry.update_node(slot1, 0, 100, 0, 0, 0, 2000, 1000, 1500);
+    // Update some metrics (health, tick_count, error_count, budget_misses, deadline_misses, watchdog_severity, last_tick_ns, avg_tick_ns, max_tick_ns, p99_tick_ns)
+    registry.update_node(slot0, 0, 50, 0, 0, 0, 0, 1000, 500, 800, 750);
+    registry.update_node(slot1, 0, 100, 0, 0, 0, 0, 2000, 1000, 1500, 1400);
 
     // Spawn child to read the registry
     let child = spawn_child_with_envs(
@@ -280,9 +276,7 @@ fn cross_process_registry_readable() {
 #[test]
 fn cross_process_transform_pod_topic() {
     if is_child() {
-        if std::env::var(TEST_ENV).ok().as_deref()
-            == Some("cross_process_transform_pod_topic")
-        {
+        if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_transform_pod_topic") {
             child_recv_transform_pod();
         }
         return;

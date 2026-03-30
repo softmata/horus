@@ -172,10 +172,7 @@ fn test_reject_new_policy_rejects_when_server_busy() {
     // A second client sending a goal with a SHORT timeout should time out,
     // because the server cannot even dequeue it.
     let client2 = SyncActionClient::<PreemptSlow>::new().unwrap();
-    let result2 = client2.send_goal_and_wait(
-        PreemptSlowGoal { id: 2 },
-        Duration::from_millis(300),
-    );
+    let result2 = client2.send_goal_and_wait(PreemptSlowGoal { id: 2 }, Duration::from_millis(300));
 
     assert!(
         matches!(result2, Err(ActionError::GoalTimeout)),
@@ -189,8 +186,7 @@ fn test_reject_new_policy_rejects_when_server_busy() {
 
     // Server is now free. A third goal should succeed immediately.
     let client3 = SyncActionClient::<PreemptSlow>::new().unwrap();
-    let result3 =
-        client3.send_goal_and_wait(PreemptSlowGoal { id: 3 }, Duration::from_secs(3));
+    let result3 = client3.send_goal_and_wait(PreemptSlowGoal { id: 3 }, Duration::from_secs(3));
     assert!(
         result3.is_ok(),
         "Third goal should succeed after server is free: {:?}",
@@ -311,10 +307,7 @@ fn test_queue_policy_queues_goals() {
 
     let mut results = Vec::new();
     for seq in 1..=4 {
-        let result = client.send_goal_and_wait(
-            QueueActionGoal { seq },
-            Duration::from_secs(5),
-        );
+        let result = client.send_goal_and_wait(QueueActionGoal { seq }, Duration::from_secs(5));
         assert!(
             result.is_ok(),
             "Goal seq={} should succeed: {:?}",
@@ -335,11 +328,7 @@ fn test_queue_policy_queues_goals() {
     // Verify monotonic execution counter
     for (i, r) in results.iter().enumerate() {
         assert_eq!(r.seq, (i + 1) as u64, "Result seq mismatch at index {}", i);
-        assert_eq!(
-            r.order, i as u64,
-            "Execution order mismatch at index {}",
-            i
-        );
+        assert_eq!(r.order, i as u64, "Execution order mismatch at index {}", i);
     }
 
     stop_server(running, server_handle);
@@ -377,10 +366,7 @@ fn test_preempt_old_cancels_existing_goal() {
                 // Slow goal: loop checking for preemption (cooperative pattern)
                 for _ in 0..20 {
                     if handle.should_abort() {
-                        return handle.preempted(PreemptFastResult {
-                            goal_id,
-                            ok: false,
-                        });
+                        return handle.preempted(PreemptFastResult { goal_id, ok: false });
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -388,10 +374,7 @@ fn test_preempt_old_cancels_existing_goal() {
 
             // Goal completes normally — preemption was NOT requested because
             // in the synchronous model no other goal is contending.
-            handle.succeed(PreemptFastResult {
-                goal_id,
-                ok: true,
-            })
+            handle.succeed(PreemptFastResult { goal_id, ok: true })
         })
         .build();
 
@@ -405,7 +388,10 @@ fn test_preempt_old_cancels_existing_goal() {
     assert!(r1.is_ok(), "First goal should succeed: {:?}", r1);
     let r1_val = r1.unwrap();
     assert_eq!(r1_val.goal_id, 1);
-    assert!(r1_val.ok, "First goal should not be preempted in sequential mode");
+    assert!(
+        r1_val.ok,
+        "First goal should not be preempted in sequential mode"
+    );
 
     // Send the fast goal (id=2) — should also succeed
     let r2 = client.send_goal_and_wait(PreemptFastGoal { id: 2 }, Duration::from_secs(3));

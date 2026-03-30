@@ -7,7 +7,7 @@
 //!        --test tensorpool_matrix -- --ignored --nocapture
 
 use horus_core::communication::topic::Topic;
-use horus_core::memory::{Image, PointCloud, DepthImage};
+use horus_core::memory::{DepthImage, Image, PointCloud};
 use horus_core::types::{ImageEncoding, TensorDtype};
 
 mod common;
@@ -31,9 +31,9 @@ fn image_roundtrip_640x480() {
     assert_eq!(img.height(), 480);
 
     // Set some pixels with known values
-    img.set_pixel(0, 0, &[255, 0, 0]);      // top-left red
-    img.set_pixel(639, 0, &[0, 255, 0]);    // top-right green
-    img.set_pixel(0, 479, &[0, 0, 255]);    // bottom-left blue
+    img.set_pixel(0, 0, &[255, 0, 0]); // top-left red
+    img.set_pixel(639, 0, &[0, 255, 0]); // top-right green
+    img.set_pixel(0, 479, &[0, 0, 255]); // bottom-left blue
     img.set_pixel(320, 240, &[128, 128, 128]); // center gray
 
     // Fill a stripe pattern for bulk verification
@@ -42,7 +42,13 @@ fn image_roundtrip_640x480() {
     }
 
     let data_size = img.data().len();
-    println!("Image: {}x{} {:?}, {} bytes", img.width(), img.height(), img.encoding(), data_size);
+    println!(
+        "Image: {}x{} {:?}, {} bytes",
+        img.width(),
+        img.height(),
+        img.encoding(),
+        data_size
+    );
 
     topic.send(&img);
     let recv = topic.recv().expect("should receive image");
@@ -53,21 +59,47 @@ fn image_roundtrip_640x480() {
     assert_eq!(recv.encoding(), ImageEncoding::Rgb8, "encoding mismatch");
 
     // Verify specific pixels
-    assert_eq!(recv.pixel(0, 0).unwrap(), &[255, 0, 0], "top-left should be red");
-    assert_eq!(recv.pixel(639, 0).unwrap(), &[0, 255, 0], "top-right should be green");
-    assert_eq!(recv.pixel(0, 479).unwrap(), &[0, 0, 255], "bottom-left should be blue");
-    assert_eq!(recv.pixel(320, 240).unwrap(), &[128, 128, 128], "center should be gray");
+    assert_eq!(
+        recv.pixel(0, 0).unwrap(),
+        &[255, 0, 0],
+        "top-left should be red"
+    );
+    assert_eq!(
+        recv.pixel(639, 0).unwrap(),
+        &[0, 255, 0],
+        "top-right should be green"
+    );
+    assert_eq!(
+        recv.pixel(0, 479).unwrap(),
+        &[0, 0, 255],
+        "bottom-left should be blue"
+    );
+    assert_eq!(
+        recv.pixel(320, 240).unwrap(),
+        &[128, 128, 128],
+        "center should be gray"
+    );
 
     // Verify stripe pattern
     let mut stripe_ok = 0;
     for x in 0..640 {
         let expected = [(x % 256) as u8, 0, 0];
-        if recv.pixel(x, 100).unwrap() == expected { stripe_ok += 1; }
+        if recv.pixel(x, 100).unwrap() == expected {
+            stripe_ok += 1;
+        }
     }
-    assert_eq!(stripe_ok, 640, "Stripe pattern: {}/640 pixels match", stripe_ok);
+    assert_eq!(
+        stripe_ok, 640,
+        "Stripe pattern: {}/640 pixels match",
+        stripe_ok
+    );
 
-    println!("✓ image_roundtrip_640x480 — {}x{}, all pixels verified ({} bytes zero-copy)",
-             recv.width(), recv.height(), data_size);
+    println!(
+        "✓ image_roundtrip_640x480 — {}x{}, all pixels verified ({} bytes zero-copy)",
+        recv.width(),
+        recv.height(),
+        data_size
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -93,13 +125,17 @@ fn pointcloud_roundtrip_1000_points() {
         let x = i as f32 * 0.01;
         let y = (i as f32 * 0.1).sin();
         let z = (i as f32 * 0.1).cos();
-        data[offset..offset+4].copy_from_slice(&x.to_le_bytes());
-        data[offset+4..offset+8].copy_from_slice(&y.to_le_bytes());
-        data[offset+8..offset+12].copy_from_slice(&z.to_le_bytes());
+        data[offset..offset + 4].copy_from_slice(&x.to_le_bytes());
+        data[offset + 4..offset + 8].copy_from_slice(&y.to_le_bytes());
+        data[offset + 8..offset + 12].copy_from_slice(&z.to_le_bytes());
     }
 
     let data_size = pc.data().len();
-    println!("PointCloud: {} points, {} bytes", pc.point_count(), data_size);
+    println!(
+        "PointCloud: {} points, {} bytes",
+        pc.point_count(),
+        data_size
+    );
 
     topic.send(&pc);
     let recv = topic.recv().expect("should receive pointcloud");
@@ -111,19 +147,29 @@ fn pointcloud_roundtrip_1000_points() {
     let mut points_ok = 0;
     for i in 0..1000 {
         let offset = i * 12;
-        let x = f32::from_le_bytes(recv_data[offset..offset+4].try_into().unwrap());
-        let y = f32::from_le_bytes(recv_data[offset+4..offset+8].try_into().unwrap());
-        let z = f32::from_le_bytes(recv_data[offset+8..offset+12].try_into().unwrap());
+        let x = f32::from_le_bytes(recv_data[offset..offset + 4].try_into().unwrap());
+        let y = f32::from_le_bytes(recv_data[offset + 4..offset + 8].try_into().unwrap());
+        let z = f32::from_le_bytes(recv_data[offset + 8..offset + 12].try_into().unwrap());
         let expected_x = i as f32 * 0.01;
         let expected_y = (i as f32 * 0.1).sin();
         let expected_z = (i as f32 * 0.1).cos();
-        if (x - expected_x).abs() < 1e-6 && (y - expected_y).abs() < 1e-6 && (z - expected_z).abs() < 1e-6 {
+        if (x - expected_x).abs() < 1e-6
+            && (y - expected_y).abs() < 1e-6
+            && (z - expected_z).abs() < 1e-6
+        {
             points_ok += 1;
         }
     }
-    assert_eq!(points_ok, 1000, "PointCloud: {}/1000 points match", points_ok);
+    assert_eq!(
+        points_ok, 1000,
+        "PointCloud: {}/1000 points match",
+        points_ok
+    );
 
-    println!("✓ pointcloud_roundtrip_1000_points — 1000 points verified ({} bytes zero-copy)", data_size);
+    println!(
+        "✓ pointcloud_roundtrip_1000_points — 1000 points verified ({} bytes zero-copy)",
+        data_size
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -149,13 +195,18 @@ fn depthimage_roundtrip_320x240() {
             let d = ((x * x + y * y) as f32).sqrt() * 0.01;
             let offset = (y * 320 + x) as usize * 4; // f32 = 4 bytes
             if offset + 4 <= data.len() {
-                data[offset..offset+4].copy_from_slice(&d.to_le_bytes());
+                data[offset..offset + 4].copy_from_slice(&d.to_le_bytes());
             }
         }
     }
 
     let data_size = depth.data().len();
-    println!("DepthImage: {}x{}, {} bytes", depth.width(), depth.height(), data_size);
+    println!(
+        "DepthImage: {}x{}, {} bytes",
+        depth.width(),
+        depth.height(),
+        data_size
+    );
 
     topic.send(&depth);
     let recv = topic.recv().expect("should receive depth image");
@@ -166,14 +217,30 @@ fn depthimage_roundtrip_320x240() {
     // Verify corners
     let recv_data = recv.data();
     let d00 = f32::from_le_bytes(recv_data[0..4].try_into().unwrap());
-    assert!((d00 - 0.0).abs() < 0.01, "depth[0,0] should be ~0, got {}", d00);
+    assert!(
+        (d00 - 0.0).abs() < 0.01,
+        "depth[0,0] should be ~0, got {}",
+        d00
+    );
 
     let offset_319_0 = 319 * 4;
-    let d319 = f32::from_le_bytes(recv_data[offset_319_0..offset_319_0+4].try_into().unwrap());
+    let d319 = f32::from_le_bytes(
+        recv_data[offset_319_0..offset_319_0 + 4]
+            .try_into()
+            .unwrap(),
+    );
     let expected = (319.0f32 * 319.0).sqrt() * 0.01;
-    assert!((d319 - expected).abs() < 0.01, "depth[319,0] should be ~{:.2}, got {:.2}", expected, d319);
+    assert!(
+        (d319 - expected).abs() < 0.01,
+        "depth[319,0] should be ~{:.2}, got {:.2}",
+        expected,
+        d319
+    );
 
-    println!("✓ depthimage_roundtrip_320x240 — verified ({} bytes zero-copy)", data_size);
+    println!(
+        "✓ depthimage_roundtrip_320x240 — verified ({} bytes zero-copy)",
+        data_size
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -201,29 +268,44 @@ fn mixed_tensor_and_pod_topics() {
     let cmd_recv = Arc::new(AtomicU64::new(0));
     let corrupted = Arc::new(AtomicU64::new(0));
 
-    struct ImgPubNode { name: String, topic: Option<Topic<Image>>, sent: Arc<AtomicU64> }
+    struct ImgPubNode {
+        name: String,
+        topic: Option<Topic<Image>>,
+        sent: Arc<AtomicU64>,
+    }
     impl Node for ImgPubNode {
-        fn name(&self) -> &str { "img_pub" }
+        fn name(&self) -> &str {
+            "img_pub"
+        }
         fn init(&mut self) -> horus_core::error::HorusResult<()> {
-            self.topic = Some(Topic::new(&self.name)?); Ok(())
+            self.topic = Some(Topic::new(&self.name)?);
+            Ok(())
         }
         fn tick(&mut self) {
             // Small image to keep test fast
             if let Ok(mut img) = Image::new(16, 16, ImageEncoding::Rgb8) {
                 img.set_pixel(0, 0, &[42, 0, 0]);
-                if let Some(ref t) = self.topic { t.send(&img); }
+                if let Some(ref t) = self.topic {
+                    t.send(&img);
+                }
                 self.sent.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
     struct MixSubNode {
-        img_name: String, cmd_name: String,
-        img_topic: Option<Topic<Image>>, cmd_topic: Option<Topic<CmdVel>>,
-        img_recv: Arc<AtomicU64>, cmd_recv: Arc<AtomicU64>, corrupted: Arc<AtomicU64>,
+        img_name: String,
+        cmd_name: String,
+        img_topic: Option<Topic<Image>>,
+        cmd_topic: Option<Topic<CmdVel>>,
+        img_recv: Arc<AtomicU64>,
+        cmd_recv: Arc<AtomicU64>,
+        corrupted: Arc<AtomicU64>,
     }
     impl Node for MixSubNode {
-        fn name(&self) -> &str { "mix_sub" }
+        fn name(&self) -> &str {
+            "mix_sub"
+        }
         fn init(&mut self) -> horus_core::error::HorusResult<()> {
             self.img_topic = Some(Topic::new(&self.img_name)?);
             self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
@@ -232,7 +314,7 @@ fn mixed_tensor_and_pod_topics() {
         fn tick(&mut self) {
             if let Some(ref t) = self.img_topic {
                 while let Some(img) = t.recv() {
-                    if img.pixel(0, 0).unwrap_or(&[0,0,0]) != &[42, 0, 0] {
+                    if img.pixel(0, 0).unwrap_or(&[0, 0, 0]) != &[42, 0, 0] {
                         self.corrupted.fetch_add(1, Ordering::Relaxed);
                     }
                     self.img_recv.fetch_add(1, Ordering::Relaxed);
@@ -249,34 +331,67 @@ fn mixed_tensor_and_pod_topics() {
         }
     }
 
-    struct CmdPubNode { name: String, topic: Option<Topic<CmdVel>>, sent: Arc<AtomicU64> }
+    struct CmdPubNode {
+        name: String,
+        topic: Option<Topic<CmdVel>>,
+        sent: Arc<AtomicU64>,
+    }
     impl Node for CmdPubNode {
-        fn name(&self) -> &str { "cmd_pub" }
+        fn name(&self) -> &str {
+            "cmd_pub"
+        }
         fn init(&mut self) -> horus_core::error::HorusResult<()> {
-            self.topic = Some(Topic::new(&self.name)?); Ok(())
+            self.topic = Some(Topic::new(&self.name)?);
+            Ok(())
         }
         fn tick(&mut self) {
-            if let Some(ref t) = self.topic { t.send(CmdVel::new(1.0, 0.0)); }
+            if let Some(ref t) = self.topic {
+                t.send(CmdVel::new(1.0, 0.0));
+            }
             self.sent.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    let is = img_sent.clone(); let cs = cmd_sent.clone();
-    let ir = img_recv.clone(); let cr = cmd_recv.clone(); let co = corrupted.clone();
+    let is = img_sent.clone();
+    let cs = cmd_sent.clone();
+    let ir = img_recv.clone();
+    let cr = cmd_recv.clone();
+    let co = corrupted.clone();
     let running = Arc::new(AtomicBool::new(true));
     let rc = running.clone();
 
     let h = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(30_u64.hz());
-        let _ = sched.add(ImgPubNode { name: img_name.clone(), topic: None, sent: is })
-            .rate(30_u64.hz()).order(0).build();
-        let _ = sched.add(CmdPubNode { name: cmd_name.clone(), topic: None, sent: cs })
-            .rate(100_u64.hz()).order(1).build();
-        let _ = sched.add(MixSubNode {
-            img_name: img_name, cmd_name: cmd_name,
-            img_topic: None, cmd_topic: None,
-            img_recv: ir, cmd_recv: cr, corrupted: co,
-        }).order(2).build();
+        let _ = sched
+            .add(ImgPubNode {
+                name: img_name.clone(),
+                topic: None,
+                sent: is,
+            })
+            .rate(30_u64.hz())
+            .order(0)
+            .build();
+        let _ = sched
+            .add(CmdPubNode {
+                name: cmd_name.clone(),
+                topic: None,
+                sent: cs,
+            })
+            .rate(100_u64.hz())
+            .order(1)
+            .build();
+        let _ = sched
+            .add(MixSubNode {
+                img_name: img_name,
+                cmd_name: cmd_name,
+                img_topic: None,
+                cmd_topic: None,
+                img_recv: ir,
+                cmd_recv: cr,
+                corrupted: co,
+            })
+            .order(2)
+            .build();
         while rc.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -295,9 +410,22 @@ fn mixed_tensor_and_pod_topics() {
 
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  MIXED TENSOR + POD (3s)                                ║");
-    println!("║  Image:  sent={:4} recv={:4} ({:.0}%)                   ║", isv, irv, irv as f64/isv.max(1) as f64*100.0);
-    println!("║  CmdVel: sent={:4} recv={:4} ({:.0}%)                   ║", csv, crv, crv as f64/csv.max(1) as f64*100.0);
-    println!("║  Corrupted: {}                                          ║", cov);
+    println!(
+        "║  Image:  sent={:4} recv={:4} ({:.0}%)                   ║",
+        isv,
+        irv,
+        irv as f64 / isv.max(1) as f64 * 100.0
+    );
+    println!(
+        "║  CmdVel: sent={:4} recv={:4} ({:.0}%)                   ║",
+        csv,
+        crv,
+        crv as f64 / csv.max(1) as f64 * 100.0
+    );
+    println!(
+        "║  Corrupted: {}                                          ║",
+        cov
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     assert_eq!(cov, 0, "DATA CORRUPTION in mixed tensor+pod!");

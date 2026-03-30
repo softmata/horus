@@ -6,8 +6,8 @@
 //! Run: cargo test --no-default-features -p horus_core \
 //!        --test cli_user_api -- --ignored --nocapture
 
-use std::process::Command;
 use std::path::PathBuf;
+use std::process::Command;
 
 mod common;
 use common::cleanup_stale_shm;
@@ -18,10 +18,13 @@ fn horus_bin() -> PathBuf {
     path.pop(); // remove test binary name
     path.pop(); // remove deps/
     path.push("horus");
-    if path.exists() { return path; }
+    if path.exists() {
+        return path;
+    }
     // Fallback: look in workspace target
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
+        .parent()
+        .unwrap()
         .join("target/debug/horus")
 }
 
@@ -43,7 +46,11 @@ fn cli_version() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "horus --version should exit 0");
-    assert!(stdout.contains("horus"), "should contain 'horus': {}", stdout);
+    assert!(
+        stdout.contains("horus"),
+        "should contain 'horus': {}",
+        stdout
+    );
     println!("✓ cli_version — {}", stdout.trim());
 }
 
@@ -68,14 +75,22 @@ fn cli_new_rust_project() {
     println!("stdout: {}", stdout);
     println!("stderr: {}", stderr);
 
-    assert!(output.status.success() || proj_dir.join("horus.toml").exists(),
-        "horus new should create project");
+    assert!(
+        output.status.success() || proj_dir.join("horus.toml").exists(),
+        "horus new should create project"
+    );
 
     // Verify project structure
     if proj_dir.exists() {
-        assert!(proj_dir.join("horus.toml").exists(), "horus.toml should exist");
+        assert!(
+            proj_dir.join("horus.toml").exists(),
+            "horus.toml should exist"
+        );
         let toml = std::fs::read_to_string(proj_dir.join("horus.toml")).unwrap_or_default();
-        assert!(toml.contains("[package]") || toml.contains("name"), "horus.toml should have package info");
+        assert!(
+            toml.contains("[package]") || toml.contains("name"),
+            "horus.toml should have package info"
+        );
         println!("✓ cli_new_rust_project — horus.toml created with [package]");
     } else {
         // Some versions output to current dir
@@ -128,9 +143,15 @@ fn cli_doctor() {
     let combined = format!("{}{}", stdout, stderr);
 
     // Doctor should run and produce diagnostic output
-    println!("Doctor output: {}", combined.lines().take(10).collect::<Vec<_>>().join("\n"));
+    println!(
+        "Doctor output: {}",
+        combined.lines().take(10).collect::<Vec<_>>().join("\n")
+    );
     // Don't assert exit code — doctor may report issues on CI
-    println!("✓ cli_doctor — ran without crash (exit: {})", output.status.code().unwrap_or(-1));
+    println!(
+        "✓ cli_doctor — ran without crash (exit: {})",
+        output.status.code().unwrap_or(-1)
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -190,7 +211,10 @@ fn cli_check_valid_project() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     println!("Check output: {}{}", stdout, stderr);
-    println!("✓ cli_check_valid_project — exit: {}", output.status.code().unwrap_or(-1));
+    println!(
+        "✓ cli_check_valid_project — exit: {}",
+        output.status.code().unwrap_or(-1)
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -211,10 +235,15 @@ fn cli_msg_list() {
     let combined = format!("{}{}", stdout, stderr);
 
     // Should list message types like CmdVel, Imu, etc.
-    let has_messages = combined.contains("CmdVel") || combined.contains("Imu") ||
-                       combined.contains("msg") || combined.len() > 50;
-    println!("Msg list ({} chars): {}", combined.len(),
-             combined.lines().take(5).collect::<Vec<_>>().join("\n"));
+    let has_messages = combined.contains("CmdVel")
+        || combined.contains("Imu")
+        || combined.contains("msg")
+        || combined.len() > 50;
+    println!(
+        "Msg list ({} chars): {}",
+        combined.len(),
+        combined.lines().take(5).collect::<Vec<_>>().join("\n")
+    );
     println!("✓ cli_msg_list — ran, output {} chars", combined.len());
 }
 
@@ -246,7 +275,10 @@ fn cli_param_set_get() {
         .output()
         .expect("failed to run horus param set");
 
-    println!("Set output: {}", String::from_utf8_lossy(&set_output.stdout));
+    println!(
+        "Set output: {}",
+        String::from_utf8_lossy(&set_output.stdout)
+    );
 
     // Get it back
     let get_output = horus_cmd()

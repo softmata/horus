@@ -473,7 +473,11 @@ pub fn run_launch(
                     &LaunchEvent::NodeSpawned {
                         name: node.name.clone(),
                         pid,
-                        command: node.command.clone().or(node.package.clone()).unwrap_or_default(),
+                        command: node
+                            .command
+                            .clone()
+                            .or(node.package.clone())
+                            .unwrap_or_default(),
                         timestamp_ns: now_ns(),
                     },
                 );
@@ -574,10 +578,7 @@ pub fn run_launch(
 
     // Subscribe to e-stop topic for safety propagation.
     let estop_topic =
-        horus_core::communication::Topic::<horus_types::EmergencyStop>::new(
-            "_horus.estop",
-        )
-        .ok();
+        horus_core::communication::Topic::<horus_types::EmergencyStop>::new("_horus.estop").ok();
 
     // Launch control topic: accepts LaunchControlCommand from CLI tools.
     let launch_ctl_topic_name = format!("horus.launch.ctl.{}", session_name);
@@ -602,17 +603,16 @@ pub fn run_launch(
                         // Find the process and send GracefulShutdown to its Scheduler
                         if let Some(entry) = session.processes.iter().find(|e| &e.name == name) {
                             if let Some(ref ctl_name) = entry.control_topic {
-                                if let Ok(sched_ctl) = horus_core::communication::Topic::<
-                                    horus_core::scheduling::control::ControlCommand,
-                                >::new(ctl_name)
+                                if let Ok(sched_ctl) =
+                                    horus_core::communication::Topic::<
+                                        horus_core::scheduling::control::ControlCommand,
+                                    >::new(ctl_name)
                                 {
                                     sched_ctl.send(horus_core::scheduling::control::ControlCommand::GracefulShutdown);
                                 }
                             }
                             // Fallback: SIGTERM the process directly
-                            if let Some(proc_entry) =
-                                processes.iter().find(|e| e.name == *name)
-                            {
+                            if let Some(proc_entry) = processes.iter().find(|e| e.name == *name) {
                                 let _ = horus_sys::process::ProcessHandle::from_pid(
                                     proc_entry.child.id(),
                                 )
@@ -622,27 +622,24 @@ pub fn run_launch(
                     }
                     LaunchControlCommand::RestartNode { ref name } => {
                         println!("{} RestartNode '{}' received", "ctl".cyan(), name);
-                        if let Some(proc_entry) =
-                            processes.iter_mut().find(|e| e.name == *name)
-                        {
+                        if let Some(proc_entry) = processes.iter_mut().find(|e| e.name == *name) {
                             // Send GracefulShutdown via Scheduler control topic first
-                            if let Some(ref se) =
-                                session.processes.iter().find(|e| &e.name == name)
+                            if let Some(ref se) = session.processes.iter().find(|e| &e.name == name)
                             {
                                 if let Some(ref ctl_name) = se.control_topic {
-                                    if let Ok(ctl) = horus_core::communication::Topic::<
-                                        horus_core::scheduling::control::ControlCommand,
-                                    >::new(ctl_name)
+                                    if let Ok(ctl) =
+                                        horus_core::communication::Topic::<
+                                            horus_core::scheduling::control::ControlCommand,
+                                        >::new(ctl_name)
                                     {
                                         ctl.send(horus_core::scheduling::control::ControlCommand::GracefulShutdown);
                                     }
                                 }
                             }
                             // SIGTERM (not SIGKILL) so topics clean up gracefully
-                            let _ = horus_sys::process::ProcessHandle::from_child(
-                                &proc_entry.child,
-                            )
-                            .signal(horus_sys::process::Signal::Terminate);
+                            let _ =
+                                horus_sys::process::ProcessHandle::from_child(&proc_entry.child)
+                                    .signal(horus_sys::process::Signal::Terminate);
                             // Force restart policy for this cycle
                             proc_entry.node.restart = "always".to_string();
                         }
@@ -720,8 +717,7 @@ pub fn run_launch(
                             backoff,
                         );
                         std::thread::sleep(backoff);
-                        entry.next_backoff =
-                            (backoff * 2).min(MAX_BACKOFF);
+                        entry.next_backoff = (backoff * 2).min(MAX_BACKOFF);
 
                         let old_pid = entry.child.id();
                         match launch_node(&entry.node, &config.env, &global_namespace) {
@@ -839,11 +835,7 @@ pub fn run_launch(
             println!("  {} {} stopped cleanly", "✓".green(), entry.name);
             continue;
         }
-        println!(
-            "  {} {} still running → SIGTERM",
-            "⏹".yellow(),
-            entry.name
-        );
+        println!("  {} {} still running → SIGTERM", "⏹".yellow(), entry.name);
         let _ = horus_sys::process::ProcessHandle::from_child(&entry.child)
             .signal(horus_sys::process::Signal::Terminate);
     }
@@ -856,11 +848,7 @@ pub fn run_launch(
         if entry.child.try_wait().map(|s| s.is_some()).unwrap_or(true) {
             continue;
         }
-        println!(
-            "  {} {} still alive → SIGKILL",
-            "✗".red(),
-            entry.name
-        );
+        println!("  {} {} still alive → SIGKILL", "✗".red(), entry.name);
         let _ = entry.child.kill();
     }
 
@@ -919,11 +907,7 @@ pub fn show_launch_status() -> HorusResult<()> {
             session.processes.len(),
             uptime.dimmed()
         );
-        println!(
-            "    {} {}",
-            "File:".dimmed(),
-            session.launch_file.dimmed()
-        );
+        println!("    {} {}", "File:".dimmed(), session.launch_file.dimmed());
         if let Some(ref ns) = session.namespace {
             println!("    {} {}", "Namespace:".dimmed(), ns.dimmed());
         }
@@ -950,10 +934,7 @@ pub fn show_launch_status() -> HorusResult<()> {
                 entry.name,
                 entry.pid,
                 status_colored,
-                entry
-                    .scheduler_name
-                    .as_deref()
-                    .unwrap_or("-"),
+                entry.scheduler_name.as_deref().unwrap_or("-"),
                 entry.restart_count
             );
         }
@@ -1179,7 +1160,10 @@ fn launch_node(
         let env_key = format!("HORUS_PARAM_{}", k.to_uppercase().replace('-', "_"));
         let env_value = match v {
             serde_yaml::Value::String(s) => s.clone(),
-            other => serde_yaml::to_string(other).unwrap_or_default().trim().to_string(),
+            other => serde_yaml::to_string(other)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
         };
         cmd.env(env_key, env_value);
     }
@@ -1972,10 +1956,7 @@ nodes:
         for _ in 0..10 {
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
-        assert_eq!(
-            backoff, MAX_BACKOFF,
-            "backoff should cap at MAX_BACKOFF"
-        );
+        assert_eq!(backoff, MAX_BACKOFF, "backoff should cap at MAX_BACKOFF");
     }
 
     #[test]
@@ -2064,7 +2045,10 @@ command: /usr/bin/motor
     fn launch_start_delay_edge_cases() {
         // NaN, negative, zero, very large
         for delay_str in ["0", "0.0", "-1.0", "999999.0"] {
-            let yaml = format!("name: delay_node\nstart_delay: {}\ncommand: /bin/true", delay_str);
+            let yaml = format!(
+                "name: delay_node\nstart_delay: {}\ncommand: /bin/true",
+                delay_str
+            );
             let node: LaunchNode = serde_yaml::from_str(&yaml).unwrap();
             assert!(node.start_delay.is_some());
         }
@@ -2144,14 +2128,12 @@ nodes:
 
     #[test]
     fn sort_missing_dependency_target_errors() {
-        let nodes = vec![
-            LaunchNode {
-                name: "motor".to_string(),
-                depends_on: vec!["nonexistent_sensor".to_string()],
-                command: Some("/bin/true".to_string()),
-                ..serde_yaml::from_str("name: x").unwrap()
-            },
-        ];
+        let nodes = vec![LaunchNode {
+            name: "motor".to_string(),
+            depends_on: vec!["nonexistent_sensor".to_string()],
+            command: Some("/bin/true".to_string()),
+            ..serde_yaml::from_str("name: x").unwrap()
+        }];
         let result = sort_by_dependencies(&nodes);
         // Should either error or place the node (implementation-dependent)
         // The important thing is it doesn't panic
@@ -2240,7 +2222,10 @@ nodes:
         assert_eq!(config.nodes.len(), 2);
 
         let node_a = &config.nodes[0];
-        assert!(node_a.depends_on.is_empty(), "node_a should have no dependencies");
+        assert!(
+            node_a.depends_on.is_empty(),
+            "node_a should have no dependencies"
+        );
 
         let node_b = &config.nodes[1];
         assert_eq!(node_b.depends_on.len(), 1);

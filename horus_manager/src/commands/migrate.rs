@@ -248,7 +248,10 @@ fn parse_cargo_inline_dep(t: &toml_edit::InlineTable) -> DependencyValue {
     let branch = t.get("branch").and_then(|v| v.as_str()).map(String::from);
     let tag = t.get("tag").and_then(|v| v.as_str()).map(String::from);
     let rev = t.get("rev").and_then(|v| v.as_str()).map(String::from);
-    let workspace = t.get("workspace").and_then(|v| v.as_bool()).unwrap_or(false);
+    let workspace = t
+        .get("workspace")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let source = if path.is_some() {
         Some(DepSource::Path)
@@ -292,7 +295,10 @@ fn parse_cargo_table_dep(t: &toml_edit::Table) -> DependencyValue {
     let branch = t.get("branch").and_then(|v| v.as_str()).map(String::from);
     let tag = t.get("tag").and_then(|v| v.as_str()).map(String::from);
     let rev = t.get("rev").and_then(|v| v.as_str()).map(String::from);
-    let workspace = t.get("workspace").and_then(|v| v.as_bool()).unwrap_or(false);
+    let workspace = t
+        .get("workspace")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let source = if path.is_some() {
         Some(DepSource::Path)
@@ -368,9 +374,7 @@ pub(crate) fn extract_pyproject_deps(path: &Path) -> Result<BTreeMap<String, Dep
 fn parse_pep_dep(spec: &str) -> (String, Option<String>) {
     let spec = spec.trim();
     // Find first version operator character
-    let split_at = spec
-        .find(['>', '<', '=', '!', '~'])
-        .unwrap_or(spec.len());
+    let split_at = spec.find(['>', '<', '=', '!', '~']).unwrap_or(spec.len());
 
     let name = spec[..split_at].trim().to_string();
     let version = if split_at < spec.len() {
@@ -411,7 +415,9 @@ pub(crate) fn extract_cmake_deps(path: &Path) -> Result<BTreeMap<String, Depende
         }
 
         // ── FetchContent_Declare( ──────────────────────────────────────────
-        if trimmed.starts_with("FetchContent_Declare(") || trimmed.starts_with("ExternalProject_Add(") {
+        if trimmed.starts_with("FetchContent_Declare(")
+            || trimmed.starts_with("ExternalProject_Add(")
+        {
             let block = trimmed.to_string();
             if trimmed.contains(')') {
                 parse_fetch_content_block(&block, &mut deps);
@@ -430,7 +436,10 @@ pub(crate) fn extract_cmake_deps(path: &Path) -> Result<BTreeMap<String, Depende
             let tokens: Vec<&str> = inner.split_whitespace().collect();
             // First token is the prefix variable, rest are package names (skip REQUIRED/QUIET/IMPORTED_TARGET)
             for tok in tokens.iter().skip(1) {
-                if matches!(*tok, "REQUIRED" | "QUIET" | "IMPORTED_TARGET" | "NO_CMAKE_PATH") {
+                if matches!(
+                    *tok,
+                    "REQUIRED" | "QUIET" | "IMPORTED_TARGET" | "NO_CMAKE_PATH"
+                ) {
                     continue;
                 }
                 if !tok.is_empty() && !crate::native_sync::is_horus_internal(tok) {

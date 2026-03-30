@@ -12,7 +12,8 @@ use std::process::Command;
 
 fn horus_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
+        .parent()
+        .unwrap()
         .join("target/debug/horus")
 }
 
@@ -65,13 +66,25 @@ session_name: test_session
 
     println!("Launch dry-run output:\n{}", combined);
 
-    assert!(output.status.success(), "dry-run should exit 0, got {}", output.status);
+    assert!(
+        output.status.success(),
+        "dry-run should exit 0, got {}",
+        output.status
+    );
     // Verify both nodes appear in the plan
-    assert!(combined.contains("imu_driver"), "should show imu_driver node");
-    assert!(combined.contains("controller"), "should show controller node");
+    assert!(
+        combined.contains("imu_driver"),
+        "should show imu_driver node"
+    );
+    assert!(
+        combined.contains("controller"),
+        "should show controller node"
+    );
     // Verify namespace
-    assert!(combined.contains("robot1") || combined.contains("namespace"),
-        "should show namespace");
+    assert!(
+        combined.contains("robot1") || combined.contains("namespace"),
+        "should show namespace"
+    );
     println!("✓ launch_yaml_dry_run_2_nodes — both nodes in plan, namespace shown");
 }
 
@@ -103,9 +116,11 @@ nodes:
         .output()
         .expect("failed to run horus launch");
 
-    let combined = format!("{}{}",
+    let combined = format!(
+        "{}{}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     println!("Params output:\n{}", combined);
     assert!(output.status.success(), "should exit 0");
@@ -136,7 +151,10 @@ fn launch_yaml_invalid_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{}{}", stdout, stderr);
-    println!("Error output: {}", combined.lines().take(3).collect::<Vec<_>>().join("\n"));
+    println!(
+        "Error output: {}",
+        combined.lines().take(3).collect::<Vec<_>>().join("\n")
+    );
     println!("✓ launch_yaml_invalid_error — graceful error on bad YAML");
 }
 
@@ -153,11 +171,18 @@ fn launch_file_not_found() {
         .expect("failed to run horus launch");
 
     assert!(!output.status.success(), "missing file should fail");
-    let combined = format!("{}{}",
+    let combined = format!(
+        "{}{}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr));
-    assert!(combined.contains("not found") || combined.contains("No such file") || combined.contains("error"),
-        "should mention file not found: {}", combined);
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("not found")
+            || combined.contains("No such file")
+            || combined.contains("error"),
+        "should mention file not found: {}",
+        combined
+    );
     println!("✓ launch_file_not_found — clear error message");
 }
 
@@ -179,7 +204,9 @@ fn full_workflow_new_check_param() {
 
     let proj_dir = tmpdir.path().join("workflow_test");
     if !proj_dir.join("horus.toml").exists() {
-        println!("✓ full_workflow — skipped (horus new didn't create project in expected location)");
+        println!(
+            "✓ full_workflow — skipped (horus new didn't create project in expected location)"
+        );
         return;
     }
     println!("Step 1: horus new → project created ✓");
@@ -190,7 +217,10 @@ fn full_workflow_new_check_param() {
         .current_dir(&proj_dir)
         .output()
         .expect("horus check failed");
-    println!("Step 2: horus check → exit {}", check_out.status.code().unwrap_or(-1));
+    println!(
+        "Step 2: horus check → exit {}",
+        check_out.status.code().unwrap_or(-1)
+    );
 
     // Step 3: horus param set
     let _ = horus_cmd()

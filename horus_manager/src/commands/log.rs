@@ -6,11 +6,11 @@
 
 use crate::cli_output;
 use colored::*;
+use horus_core::core::DurationExt;
 use horus_core::core::{
     LogEntry, LogType, SharedLogBuffer, GLOBAL_ERROR_BUFFER, GLOBAL_LOG_BUFFER,
     GLOBAL_REMOTE_LOG_BUFFER,
 };
-use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::{shm_error_logs_path, shm_logs_path};
 use std::time::SystemTime;

@@ -7,8 +7,8 @@
 //!        --test message_type_matrix -- --ignored --nocapture
 
 use horus_core::communication::topic::Topic;
-use horus_robotics::CmdVel;
 use horus_robotics::messages::sensor::*;
+use horus_robotics::CmdVel;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -34,10 +34,21 @@ fn roundtrip_cmdvel() {
     t.send(sent);
     let recv = t.recv().expect("should receive CmdVel");
 
-    assert!((recv.linear - 1.5).abs() < 1e-6, "linear mismatch: {}", recv.linear);
-    assert!((recv.angular - (-0.75)).abs() < 1e-6, "angular mismatch: {}", recv.angular);
+    assert!(
+        (recv.linear - 1.5).abs() < 1e-6,
+        "linear mismatch: {}",
+        recv.linear
+    );
+    assert!(
+        (recv.angular - (-0.75)).abs() < 1e-6,
+        "angular mismatch: {}",
+        recv.angular
+    );
     assert!(recv.timestamp_ns > 0, "timestamp should be set");
-    println!("✓ roundtrip_cmdvel — linear={}, angular={}, ts={}", recv.linear, recv.angular, recv.timestamp_ns);
+    println!(
+        "✓ roundtrip_cmdvel — linear={}, angular={}, ts={}",
+        recv.linear, recv.angular, recv.timestamp_ns
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -67,16 +78,49 @@ fn roundtrip_imu() {
     let recv = t.recv().expect("should receive Imu");
 
     // Verify every field
-    for i in 0..4 { assert!((recv.orientation[i] - sent.orientation[i]).abs() < 1e-10, "orientation[{}]", i); }
-    for i in 0..3 { assert!((recv.angular_velocity[i] - sent.angular_velocity[i]).abs() < 1e-10, "gyro[{}]", i); }
-    for i in 0..3 { assert!((recv.linear_acceleration[i] - sent.linear_acceleration[i]).abs() < 1e-10, "accel[{}]", i); }
-    assert!((recv.orientation_covariance[0] - 0.001).abs() < 1e-10, "orient_cov[0]");
-    assert!((recv.orientation_covariance[4] - 0.002).abs() < 1e-10, "orient_cov[4]");
-    assert!((recv.angular_velocity_covariance[3] - 0.0042).abs() < 1e-10, "gyro_cov[3]");
-    assert!((recv.linear_acceleration_covariance[6] - 0.0099).abs() < 1e-10, "accel_cov[6]");
+    for i in 0..4 {
+        assert!(
+            (recv.orientation[i] - sent.orientation[i]).abs() < 1e-10,
+            "orientation[{}]",
+            i
+        );
+    }
+    for i in 0..3 {
+        assert!(
+            (recv.angular_velocity[i] - sent.angular_velocity[i]).abs() < 1e-10,
+            "gyro[{}]",
+            i
+        );
+    }
+    for i in 0..3 {
+        assert!(
+            (recv.linear_acceleration[i] - sent.linear_acceleration[i]).abs() < 1e-10,
+            "accel[{}]",
+            i
+        );
+    }
+    assert!(
+        (recv.orientation_covariance[0] - 0.001).abs() < 1e-10,
+        "orient_cov[0]"
+    );
+    assert!(
+        (recv.orientation_covariance[4] - 0.002).abs() < 1e-10,
+        "orient_cov[4]"
+    );
+    assert!(
+        (recv.angular_velocity_covariance[3] - 0.0042).abs() < 1e-10,
+        "gyro_cov[3]"
+    );
+    assert!(
+        (recv.linear_acceleration_covariance[6] - 0.0099).abs() < 1e-10,
+        "accel_cov[6]"
+    );
     assert_eq!(recv.timestamp_ns, 1234567890, "timestamp");
 
-    println!("✓ roundtrip_imu — all 38 fields verified ({} bytes)", std::mem::size_of::<Imu>());
+    println!(
+        "✓ roundtrip_imu — all 38 fields verified ({} bytes)",
+        std::mem::size_of::<Imu>()
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -92,7 +136,14 @@ fn roundtrip_jointstate() {
 
     let mut sent = JointState::default();
     // Add 6 joints (typical robot arm)
-    let joint_names = ["shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"];
+    let joint_names = [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow",
+        "wrist_1",
+        "wrist_2",
+        "wrist_3",
+    ];
     let positions = [0.0, -1.57, 1.57, 0.0, 1.57, 0.0];
     let velocities = [0.1, -0.2, 0.3, -0.1, 0.05, 0.0];
     let efforts = [10.0, 25.0, 15.0, 5.0, 3.0, 1.0];
@@ -114,9 +165,21 @@ fn roundtrip_jointstate() {
     assert_eq!(recv.joint_count, 6, "joint_count");
     assert_eq!(recv.timestamp_ns, 9999, "timestamp");
     for i in 0..6 {
-        assert!((recv.positions[i] - positions[i]).abs() < 1e-10, "position[{}]", i);
-        assert!((recv.velocities[i] - velocities[i]).abs() < 1e-10, "velocity[{}]", i);
-        assert!((recv.efforts[i] - efforts[i]).abs() < 1e-10, "effort[{}]", i);
+        assert!(
+            (recv.positions[i] - positions[i]).abs() < 1e-10,
+            "position[{}]",
+            i
+        );
+        assert!(
+            (recv.velocities[i] - velocities[i]).abs() < 1e-10,
+            "velocity[{}]",
+            i
+        );
+        assert!(
+            (recv.efforts[i] - efforts[i]).abs() < 1e-10,
+            "effort[{}]",
+            i
+        );
         // Verify joint name
         let recv_name = std::str::from_utf8(&recv.names[i])
             .unwrap_or("")
@@ -153,15 +216,27 @@ fn roundtrip_laserscan() {
     t.send(sent);
     let recv = t.recv().expect("should receive LaserScan");
 
-    assert!((recv.angle_min - (-std::f32::consts::PI)).abs() < 1e-6, "angle_min");
+    assert!(
+        (recv.angle_min - (-std::f32::consts::PI)).abs() < 1e-6,
+        "angle_min"
+    );
     assert!((recv.range_max - 25.0).abs() < 1e-6, "range_max");
     assert_eq!(recv.timestamp_ns, 42, "timestamp");
     for i in 0..360 {
         let expected = 3.0 + (i as f32 * std::f32::consts::TAU / 360.0).sin();
-        assert!((recv.ranges[i] - expected).abs() < 1e-5, "range[{}]: {} vs {}", i, recv.ranges[i], expected);
+        assert!(
+            (recv.ranges[i] - expected).abs() < 1e-5,
+            "range[{}]: {} vs {}",
+            i,
+            recv.ranges[i],
+            expected
+        );
     }
 
-    println!("✓ roundtrip_laserscan — 360 ranges verified ({} bytes)", std::mem::size_of::<LaserScan>());
+    println!(
+        "✓ roundtrip_laserscan — 360 ranges verified ({} bytes)",
+        std::mem::size_of::<LaserScan>()
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -200,7 +275,10 @@ fn roundtrip_batterystate() {
         assert!((recv.cell_voltages[i] - 4.2).abs() < 1e-5, "cell[{}]", i);
     }
 
-    println!("✓ roundtrip_batterystate — all fields verified ({} bytes)", std::mem::size_of::<BatteryState>());
+    println!(
+        "✓ roundtrip_batterystate — all fields verified ({} bytes)",
+        std::mem::size_of::<BatteryState>()
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -227,17 +305,36 @@ fn extreme_values_survive_transport() {
     t.send(sent);
     let recv = t.recv().expect("should receive extreme values");
 
-    assert!(recv.orientation_covariance[0].is_nan(), "NaN should survive");
-    assert!(recv.orientation_covariance[1].is_infinite() && recv.orientation_covariance[1] > 0.0, "+Inf");
-    assert!(recv.orientation_covariance[2].is_infinite() && recv.orientation_covariance[2] < 0.0, "-Inf");
+    assert!(
+        recv.orientation_covariance[0].is_nan(),
+        "NaN should survive"
+    );
+    assert!(
+        recv.orientation_covariance[1].is_infinite() && recv.orientation_covariance[1] > 0.0,
+        "+Inf"
+    );
+    assert!(
+        recv.orientation_covariance[2].is_infinite() && recv.orientation_covariance[2] < 0.0,
+        "-Inf"
+    );
     assert_eq!(recv.orientation_covariance[3], f64::MAX, "MAX");
     assert_eq!(recv.orientation_covariance[4], f64::MIN, "MIN");
-    assert_eq!(recv.orientation_covariance[5], f64::MIN_POSITIVE, "MIN_POSITIVE");
+    assert_eq!(
+        recv.orientation_covariance[5],
+        f64::MIN_POSITIVE,
+        "MIN_POSITIVE"
+    );
     // Negative zero: bit pattern must match
-    assert_eq!(recv.orientation_covariance[6].to_bits(), (-0.0_f64).to_bits(), "-0.0 bit pattern");
+    assert_eq!(
+        recv.orientation_covariance[6].to_bits(),
+        (-0.0_f64).to_bits(),
+        "-0.0 bit pattern"
+    );
     assert_eq!(recv.orientation_covariance[7], f64::EPSILON, "EPSILON");
 
-    println!("✓ extreme_values_survive_transport — NaN, Inf, MAX, MIN, -0.0, EPSILON all preserved");
+    println!(
+        "✓ extreme_values_survive_transport — NaN, Inf, MAX, MIN, -0.0, EPSILON all preserved"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -276,7 +373,9 @@ fn child_cmdvel_echo() {
     while Instant::now() < deadline {
         if let Some(cmd) = t.recv() {
             // Skip init message (zeros)
-            if cmd.linear == 0.0 && cmd.angular == 0.0 { continue; }
+            if cmd.linear == 0.0 && cmd.angular == 0.0 {
+                continue;
+            }
             let result = format!("CHILD_RECV:lin={:.10}:ang={:.10}", cmd.linear, cmd.angular);
             let _ = std::fs::write(&result_file, &result);
             return;
@@ -337,10 +436,25 @@ fn cross_process_imu() {
     let _ = std::fs::remove_file(&result_file);
     println!("Child result: {}", child_out);
 
-    assert!(!child_out.contains("TIMEOUT"), "Child timed out — no message received");
-    assert!(child_out.contains("gz=0.1234567800"), "angular_velocity[2] corrupted: {}", child_out);
-    assert!(child_out.contains("az=9.8100000000"), "linear_acceleration[2] corrupted: {}", child_out);
-    assert!(child_out.contains("ts=9876543210"), "timestamp corrupted: {}", child_out);
+    assert!(
+        !child_out.contains("TIMEOUT"),
+        "Child timed out — no message received"
+    );
+    assert!(
+        child_out.contains("gz=0.1234567800"),
+        "angular_velocity[2] corrupted: {}",
+        child_out
+    );
+    assert!(
+        child_out.contains("az=9.8100000000"),
+        "linear_acceleration[2] corrupted: {}",
+        child_out
+    );
+    assert!(
+        child_out.contains("ts=9876543210"),
+        "timestamp corrupted: {}",
+        child_out
+    );
     println!("✓ cross_process_imu — field values verified across process boundary");
 }
 
@@ -348,7 +462,9 @@ fn cross_process_imu() {
 #[ignore]
 fn cross_process_cmdvel() {
     if std::env::var(CHILD_FLAG).is_ok() {
-        if std::env::var(TYPE_ENV).unwrap_or_default() == "cmdvel" { child_cmdvel_echo(); }
+        if std::env::var(TYPE_ENV).unwrap_or_default() == "cmdvel" {
+            child_cmdvel_echo();
+        }
         return;
     }
 
@@ -374,9 +490,20 @@ fn cross_process_cmdvel() {
     let _ = std::fs::remove_file(&result_file);
     println!("Child result: {}", child_out);
 
-    assert!(!child_out.contains("TIMEOUT"), "Child timed out — no message received");
-    assert!(child_out.contains("lin=1.23"), "linear corrupted: {}", child_out);
-    assert!(child_out.contains("ang=-0.67"), "angular corrupted: {}", child_out);
+    assert!(
+        !child_out.contains("TIMEOUT"),
+        "Child timed out — no message received"
+    );
+    assert!(
+        child_out.contains("lin=1.23"),
+        "linear corrupted: {}",
+        child_out
+    );
+    assert!(
+        child_out.contains("ang=-0.67"),
+        "angular corrupted: {}",
+        child_out
+    );
     println!("✓ cross_process_cmdvel — field values verified across process boundary");
 }
 
@@ -393,11 +520,15 @@ struct MixedPublisher {
     imu_t: Option<Topic<Imu>>,
     cmd_t: Option<Topic<CmdVel>>,
     bat_t: Option<Topic<BatteryState>>,
-    imu_n: String, cmd_n: String, bat_n: String,
+    imu_n: String,
+    cmd_n: String,
+    bat_n: String,
     sent: Arc<AtomicU64>,
 }
 impl Node for MixedPublisher {
-    fn name(&self) -> &str { "mixed_pub" }
+    fn name(&self) -> &str {
+        "mixed_pub"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu_t = Some(Topic::new(&self.imu_n)?);
         self.cmd_t = Some(Topic::new(&self.cmd_n)?);
@@ -405,11 +536,20 @@ impl Node for MixedPublisher {
         Ok(())
     }
     fn tick(&mut self) {
-        let mut imu = Imu::new(); imu.linear_acceleration[2] = 9.81;
-        if let Some(ref t) = self.imu_t { t.send(imu); }
-        if let Some(ref t) = self.cmd_t { t.send(CmdVel::new(0.5, 0.1)); }
-        let mut bat = BatteryState::default(); bat.voltage = 12.0; bat.percentage = 80.0;
-        if let Some(ref t) = self.bat_t { t.send(bat); }
+        let mut imu = Imu::new();
+        imu.linear_acceleration[2] = 9.81;
+        if let Some(ref t) = self.imu_t {
+            t.send(imu);
+        }
+        if let Some(ref t) = self.cmd_t {
+            t.send(CmdVel::new(0.5, 0.1));
+        }
+        let mut bat = BatteryState::default();
+        bat.voltage = 12.0;
+        bat.percentage = 80.0;
+        if let Some(ref t) = self.bat_t {
+            t.send(bat);
+        }
         self.sent.fetch_add(3, Ordering::Relaxed);
     }
 }
@@ -418,14 +558,18 @@ struct MixedSubscriber {
     imu_t: Option<Topic<Imu>>,
     cmd_t: Option<Topic<CmdVel>>,
     bat_t: Option<Topic<BatteryState>>,
-    imu_n: String, cmd_n: String, bat_n: String,
+    imu_n: String,
+    cmd_n: String,
+    bat_n: String,
     imu_ok: Arc<AtomicU64>,
     cmd_ok: Arc<AtomicU64>,
     bat_ok: Arc<AtomicU64>,
     corrupted: Arc<AtomicU64>,
 }
 impl Node for MixedSubscriber {
-    fn name(&self) -> &str { "mixed_sub" }
+    fn name(&self) -> &str {
+        "mixed_sub"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu_t = Some(Topic::new(&self.imu_n)?);
         self.cmd_t = Some(Topic::new(&self.cmd_n)?);
@@ -480,21 +624,45 @@ fn mixed_sensor_suite_simultaneous() {
     let running = Arc::new(AtomicBool::new(true));
     let rc = running.clone();
 
-    let s = sent.clone(); let io = imu_ok.clone(); let co = cmd_ok.clone();
-    let bo = bat_ok.clone(); let cr = corrupted.clone();
-    let in1 = imu_n.clone(); let cn1 = cmd_n.clone(); let bn1 = bat_n.clone();
+    let s = sent.clone();
+    let io = imu_ok.clone();
+    let co = cmd_ok.clone();
+    let bo = bat_ok.clone();
+    let cr = corrupted.clone();
+    let in1 = imu_n.clone();
+    let cn1 = cmd_n.clone();
+    let bn1 = bat_n.clone();
 
     let h = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-        let _ = sched.add(MixedPublisher {
-            imu_t: None, cmd_t: None, bat_t: None,
-            imu_n: in1.clone(), cmd_n: cn1.clone(), bat_n: bn1.clone(), sent: s,
-        }).rate(100_u64.hz()).order(0).build();
-        let _ = sched.add(MixedSubscriber {
-            imu_t: None, cmd_t: None, bat_t: None,
-            imu_n: in1, cmd_n: cn1, bat_n: bn1,
-            imu_ok: io, cmd_ok: co, bat_ok: bo, corrupted: cr,
-        }).order(1).build();
+        let _ = sched
+            .add(MixedPublisher {
+                imu_t: None,
+                cmd_t: None,
+                bat_t: None,
+                imu_n: in1.clone(),
+                cmd_n: cn1.clone(),
+                bat_n: bn1.clone(),
+                sent: s,
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
+        let _ = sched
+            .add(MixedSubscriber {
+                imu_t: None,
+                cmd_t: None,
+                bat_t: None,
+                imu_n: in1,
+                cmd_n: cn1,
+                bat_n: bn1,
+                imu_ok: io,
+                cmd_ok: co,
+                bat_ok: bo,
+                corrupted: cr,
+            })
+            .order(1)
+            .build();
         while rc.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -513,9 +681,19 @@ fn mixed_sensor_suite_simultaneous() {
 
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  MIXED SENSOR SUITE (3 types, 3s)                       ║");
-    println!("║  Sent: {} total ({} per type)                           ║", sv, sv/3);
-    println!("║  IMU ok:     {} | CmdVel ok: {} | Battery ok: {}        ║", iv, cv, bv);
-    println!("║  Corrupted:  {}                                         ║", crv);
+    println!(
+        "║  Sent: {} total ({} per type)                           ║",
+        sv,
+        sv / 3
+    );
+    println!(
+        "║  IMU ok:     {} | CmdVel ok: {} | Battery ok: {}        ║",
+        iv, cv, bv
+    );
+    println!(
+        "║  Corrupted:  {}                                         ║",
+        crv
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     assert_eq!(crv, 0, "DATA CORRUPTION in mixed sensor suite!");

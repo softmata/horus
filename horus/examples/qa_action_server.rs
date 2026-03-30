@@ -2,7 +2,6 @@
 ///
 /// Terminal 1: cargo run --no-default-features --example qa_action_server
 /// Terminal 2: horus action list, horus action send-goal pick_object '{"object_id":"box1"}'
-
 use horus::prelude::*;
 
 action! {
@@ -24,7 +23,9 @@ action! {
 
 struct KeepAlive;
 impl Node for KeepAlive {
-    fn name(&self) -> &str { "keep_alive" }
+    fn name(&self) -> &str {
+        "keep_alive"
+    }
     fn tick(&mut self) {}
 }
 
@@ -45,10 +46,7 @@ fn main() -> Result<()> {
                 let progress = (step + 1) as f32 / 5.0;
                 let status = format!("step {}/5", step + 1);
                 println!("  [action] feedback: {:.0}% — {}", progress * 100.0, status);
-                handle.publish_feedback(PickObjectFeedback {
-                    progress,
-                    status,
-                });
+                handle.publish_feedback(PickObjectFeedback { progress, status });
 
                 if handle.is_cancel_requested() {
                     return GoalOutcome::Canceled(PickObjectResult {
@@ -67,9 +65,7 @@ fn main() -> Result<()> {
 
     println!("Action 'pick_object' ready");
 
-    let mut scheduler = Scheduler::new()
-        .name("qa_action")
-        .tick_rate(50_u64.hz());
+    let mut scheduler = Scheduler::new().name("qa_action").tick_rate(50_u64.hz());
 
     scheduler.add(server).rate(50_u64.hz()).order(0).build()?;
     scheduler.add(KeepAlive).order(99).build()?;

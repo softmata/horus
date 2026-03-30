@@ -118,7 +118,14 @@ impl KqueueLoop {
             udata: std::ptr::null_mut(),
         };
         let ret = unsafe {
-            libc::kevent(self.kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null())
+            libc::kevent(
+                self.kq,
+                &change,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
         };
         if ret < 0 {
             return Err(io::Error::last_os_error());
@@ -137,7 +144,11 @@ impl KqueueLoop {
     pub fn signal_shm(&self) -> io::Result<()> {
         let byte: u8 = 1;
         let ret = unsafe {
-            libc::write(self.pipe_write, &byte as *const u8 as *const libc::c_void, 1)
+            libc::write(
+                self.pipe_write,
+                &byte as *const u8 as *const libc::c_void,
+                1,
+            )
         };
         if ret < 0 {
             let err = io::Error::last_os_error();
@@ -199,8 +210,13 @@ impl KqueueLoop {
                 // Drain the pipe to re-arm
                 let mut drain = [0u8; 64];
                 while unsafe {
-                    libc::read(self.pipe_read, drain.as_mut_ptr() as *mut libc::c_void, drain.len())
-                } > 0 {}
+                    libc::read(
+                        self.pipe_read,
+                        drain.as_mut_ptr() as *mut libc::c_void,
+                        drain.len(),
+                    )
+                } > 0
+                {}
                 EventSource::ShmNotify
             } else if self.udp_fd == Some(ev.ident as RawFd) {
                 EventSource::UdpSocket

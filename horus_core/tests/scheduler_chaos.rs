@@ -353,9 +353,7 @@ fn test_deterministic_consistent_ordering() {
     }
 
     // Run 1: deterministic mode
-    let mut sched1 = Scheduler::new()
-        .tick_rate(100_u64.hz())
-        .deterministic(true);
+    let mut sched1 = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
 
     sched1
         .add(OrderedNode {
@@ -399,7 +397,9 @@ fn test_deterministic_consistent_ordering() {
     assert!(
         !a_seqs.is_empty() && !b_seqs.is_empty() && !c_seqs.is_empty(),
         "All nodes should tick: A={}, B={}, C={}",
-        a_seqs.len(), b_seqs.len(), c_seqs.len()
+        a_seqs.len(),
+        b_seqs.len(),
+        c_seqs.len()
     );
 
     // Verify A's sequence numbers are always less than B's within each cycle
@@ -458,7 +458,8 @@ fn test_best_effort_not_starved_by_10_rt() {
     assert!(
         be_final >= 1,
         "BestEffort node should tick at least once despite 10 RT nodes, got {} (RT total: {})",
-        be_final, rt_final
+        be_final,
+        rt_final
     );
 }
 

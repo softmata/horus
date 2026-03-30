@@ -197,15 +197,22 @@ mod tests {
     }
 
     fn arb_realtime_config() -> impl Strategy<Value = RealTimeConfig> {
-        (0u64..60_000, 1u64..10_000, any::<bool>(), any::<bool>(), any::<bool>()).prop_map(
-            |(timeout, max_miss, memlock, rt_class, require)| RealTimeConfig {
-                watchdog_timeout_ms: timeout,
-                max_deadline_misses: max_miss,
-                memory_locking: memlock,
-                rt_scheduling_class: rt_class,
-                require_mode: require,
-            },
+        (
+            0u64..60_000,
+            1u64..10_000,
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
         )
+            .prop_map(
+                |(timeout, max_miss, memlock, rt_class, require)| RealTimeConfig {
+                    watchdog_timeout_ms: timeout,
+                    max_deadline_misses: max_miss,
+                    memory_locking: memlock,
+                    rt_scheduling_class: rt_class,
+                    require_mode: require,
+                },
+            )
     }
 
     fn arb_monitoring_config() -> impl Strategy<Value = MonitoringConfig> {
@@ -729,11 +736,26 @@ mod tests {
     #[test]
     fn test_scheduler_config_defaults_are_sane() {
         let config = SchedulerConfig::default();
-        assert!(config.timing.global_rate_hz > 0.0, "default rate must be positive");
-        assert!(config.timing.global_rate_hz <= 10_000.0, "default rate must be reasonable");
-        assert!(!config.timing.deterministic_order, "default should not be deterministic");
-        assert_eq!(config.realtime.watchdog_timeout_ms, 0, "default watchdog should be disabled");
-        assert!(config.realtime.max_deadline_misses > 0, "default max misses must be positive");
+        assert!(
+            config.timing.global_rate_hz > 0.0,
+            "default rate must be positive"
+        );
+        assert!(
+            config.timing.global_rate_hz <= 10_000.0,
+            "default rate must be reasonable"
+        );
+        assert!(
+            !config.timing.deterministic_order,
+            "default should not be deterministic"
+        );
+        assert_eq!(
+            config.realtime.watchdog_timeout_ms, 0,
+            "default watchdog should be disabled"
+        );
+        assert!(
+            config.realtime.max_deadline_misses > 0,
+            "default max misses must be positive"
+        );
     }
 
     #[test]
@@ -741,7 +763,10 @@ mod tests {
         let config = RecordingConfigYaml::default();
         assert!(!config.enabled, "recording should be off by default");
         // max_size_mb = 0 means unlimited — valid default
-        assert_eq!(config.max_size_mb, 0, "default max size should be 0 (unlimited)");
+        assert_eq!(
+            config.max_size_mb, 0,
+            "default max size should be 0 (unlimited)"
+        );
         assert!(config.compress, "compression should be on by default");
         assert_eq!(config.interval, 1, "default interval should be 1");
     }
@@ -1140,10 +1165,7 @@ mod tests {
             output_dir: Some("/tmp/horus_recordings".to_string()),
             ..Default::default()
         };
-        assert_eq!(
-            config.output_dir.as_deref(),
-            Some("/tmp/horus_recordings")
-        );
+        assert_eq!(config.output_dir.as_deref(), Some("/tmp/horus_recordings"));
     }
 
     #[test]
@@ -1209,7 +1231,10 @@ mod tests {
     #[test]
     fn recording_config_interval_one_means_every_tick() {
         let config = RecordingConfigYaml::default();
-        assert_eq!(config.interval, 1, "Default interval should record every tick");
+        assert_eq!(
+            config.interval, 1,
+            "Default interval should record every tick"
+        );
         let full = RecordingConfigYaml::full();
         assert_eq!(full.interval, 1, "Full recording should record every tick");
     }
@@ -1370,7 +1395,10 @@ mod tests {
             deterministic_order: false,
         };
         let period = 1.0 / config.global_rate_hz;
-        assert!((period - 0.03).abs() < 0.001, "33.33 Hz should be ~30ms period");
+        assert!(
+            (period - 0.03).abs() < 0.001,
+            "33.33 Hz should be ~30ms period"
+        );
     }
 
     #[test]
@@ -1381,7 +1409,10 @@ mod tests {
         };
         assert!(config.global_rate_hz > 0.0);
         let period = 1.0 / config.global_rate_hz;
-        assert!(period.is_finite(), "Period of epsilon rate should be finite");
+        assert!(
+            period.is_finite(),
+            "Period of epsilon rate should be finite"
+        );
     }
 
     #[test]

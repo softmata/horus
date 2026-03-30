@@ -210,7 +210,10 @@ mod tests {
     fn namespace_breaks_alignment_intentionally() {
         let sim_with_ns = sensor_topic_with_namespace("sim", "bot", "lidar", "scan");
         let driver = sensor_topic("bot", "lidar", "scan");
-        assert_ne!(sim_with_ns, driver, "namespace prefix should differ from driver");
+        assert_ne!(
+            sim_with_ns, driver,
+            "namespace prefix should differ from driver"
+        );
         assert_eq!(sim_with_ns, "sim.bot.lidar.scan");
         assert_eq!(driver, "bot.lidar.scan");
     }
@@ -218,9 +221,17 @@ mod tests {
     #[test]
     fn all_sensor_suffixes_produce_aligned_names() {
         let suffixes = [
-            suffix::IMU, suffix::SCAN, suffix::GPS, suffix::WRENCH,
-            suffix::SONAR, suffix::ENCODER, suffix::RADAR, suffix::ODOMETRY,
-            suffix::IMAGE, suffix::DEPTH, suffix::CAMERA_INFO,
+            suffix::IMU,
+            suffix::SCAN,
+            suffix::GPS,
+            suffix::WRENCH,
+            suffix::SONAR,
+            suffix::ENCODER,
+            suffix::RADAR,
+            suffix::ODOMETRY,
+            suffix::IMAGE,
+            suffix::DEPTH,
+            suffix::CAMERA_INFO,
         ];
         for s in &suffixes {
             let sim = sensor_topic_with_namespace("", "robot", "sensor", s);
@@ -232,11 +243,23 @@ mod tests {
     #[test]
     fn suffix_constants_are_unique() {
         let suffixes = [
-            suffix::IMU, suffix::SCAN, suffix::GPS, suffix::WRENCH,
-            suffix::SONAR, suffix::ENCODER, suffix::RADAR, suffix::ODOMETRY,
-            suffix::JOINT_STATE, suffix::IMAGE, suffix::DEPTH,
-            suffix::CAMERA_INFO, suffix::SEGMENTATION, suffix::THERMAL,
-            suffix::EVENT_CAMERA, suffix::POINTCLOUD, suffix::CMD_VEL,
+            suffix::IMU,
+            suffix::SCAN,
+            suffix::GPS,
+            suffix::WRENCH,
+            suffix::SONAR,
+            suffix::ENCODER,
+            suffix::RADAR,
+            suffix::ODOMETRY,
+            suffix::JOINT_STATE,
+            suffix::IMAGE,
+            suffix::DEPTH,
+            suffix::CAMERA_INFO,
+            suffix::SEGMENTATION,
+            suffix::THERMAL,
+            suffix::EVENT_CAMERA,
+            suffix::POINTCLOUD,
+            suffix::CMD_VEL,
             suffix::JOINT_CMD,
         ];
         let mut seen = std::collections::HashSet::new();
@@ -285,9 +308,15 @@ mod tests {
     #[test]
     fn service_names_are_unique() {
         let names = [
-            service::SPAWN, service::DESPAWN, service::TELEPORT,
-            service::PAUSE, service::RESUME, service::RAYCAST,
-            service::GET_STATE, service::SET_STATE, service::SET_PARAM,
+            service::SPAWN,
+            service::DESPAWN,
+            service::TELEPORT,
+            service::PAUSE,
+            service::RESUME,
+            service::RAYCAST,
+            service::GET_STATE,
+            service::SET_STATE,
+            service::SET_PARAM,
         ];
         let mut seen = std::collections::HashSet::new();
         for name in &names {
@@ -298,33 +327,65 @@ mod tests {
     #[test]
     fn service_names_follow_sim_prefix_convention() {
         let names = [
-            service::SPAWN, service::DESPAWN, service::TELEPORT,
-            service::PAUSE, service::RESUME, service::RAYCAST,
-            service::GET_STATE, service::SET_STATE, service::SET_PARAM,
+            service::SPAWN,
+            service::DESPAWN,
+            service::TELEPORT,
+            service::PAUSE,
+            service::RESUME,
+            service::RAYCAST,
+            service::GET_STATE,
+            service::SET_STATE,
+            service::SET_PARAM,
         ];
         for name in &names {
-            assert!(name.starts_with("sim."), "Service '{}' must start with 'sim.'", name);
+            assert!(
+                name.starts_with("sim."),
+                "Service '{}' must start with 'sim.'",
+                name
+            );
         }
     }
 
     #[test]
     fn service_names_dont_collide_with_sensor_suffixes() {
         let suffixes = [
-            suffix::IMU, suffix::SCAN, suffix::GPS, suffix::WRENCH,
-            suffix::SONAR, suffix::ENCODER, suffix::RADAR, suffix::ODOMETRY,
-            suffix::JOINT_STATE, suffix::IMAGE, suffix::DEPTH,
-            suffix::CAMERA_INFO, suffix::SEGMENTATION, suffix::THERMAL,
-            suffix::EVENT_CAMERA, suffix::POINTCLOUD, suffix::CMD_VEL,
+            suffix::IMU,
+            suffix::SCAN,
+            suffix::GPS,
+            suffix::WRENCH,
+            suffix::SONAR,
+            suffix::ENCODER,
+            suffix::RADAR,
+            suffix::ODOMETRY,
+            suffix::JOINT_STATE,
+            suffix::IMAGE,
+            suffix::DEPTH,
+            suffix::CAMERA_INFO,
+            suffix::SEGMENTATION,
+            suffix::THERMAL,
+            suffix::EVENT_CAMERA,
+            suffix::POINTCLOUD,
+            suffix::CMD_VEL,
             suffix::JOINT_CMD,
         ];
         let services = [
-            service::SPAWN, service::DESPAWN, service::TELEPORT,
-            service::PAUSE, service::RESUME, service::RAYCAST,
-            service::GET_STATE, service::SET_STATE, service::SET_PARAM,
+            service::SPAWN,
+            service::DESPAWN,
+            service::TELEPORT,
+            service::PAUSE,
+            service::RESUME,
+            service::RAYCAST,
+            service::GET_STATE,
+            service::SET_STATE,
+            service::SET_PARAM,
         ];
         for svc in &services {
             for sfx in &suffixes {
-                assert_ne!(*svc, *sfx, "Service name '{}' collides with suffix '{}'", svc, sfx);
+                assert_ne!(
+                    *svc, *sfx,
+                    "Service name '{}' collides with suffix '{}'",
+                    svc, sfx
+                );
             }
         }
     }
@@ -333,9 +394,14 @@ mod tests {
     fn sensor_topic_and_service_names_use_dot_separator() {
         // All names use dots, never slashes (SHM constraint)
         let all_names: Vec<&str> = [
-            suffix::IMU, suffix::SCAN, suffix::CMD_VEL,
-            service::SPAWN, service::RAYCAST, service::GET_STATE,
-        ].to_vec();
+            suffix::IMU,
+            suffix::SCAN,
+            suffix::CMD_VEL,
+            service::SPAWN,
+            service::RAYCAST,
+            service::GET_STATE,
+        ]
+        .to_vec();
         for name in &all_names {
             assert!(!name.contains('/'), "'{}' contains slash", name);
         }

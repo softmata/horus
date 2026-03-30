@@ -17,18 +17,26 @@ use std::time::Instant;
 
 #[repr(C)]
 #[derive(Copy, Clone, Serialize, Deserialize)]
-struct Msg8 { data: [u8; 8] }
+struct Msg8 {
+    data: [u8; 8],
+}
 unsafe impl Send for Msg8 {}
 unsafe impl Sync for Msg8 {}
 
 fn unique(prefix: &str) -> String {
     static C: AtomicU64 = AtomicU64::new(0);
-    format!("{}_{}_{}",prefix,std::process::id(),C.fetch_add(1,Ordering::Relaxed))
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        C.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn cleanup_shm() {
     let _ = std::fs::remove_dir_all(horus_core::memory::shm_topics_dir());
-    let mut n = horus_core::memory::shm_base_dir(); n.push("nodes");
+    let mut n = horus_core::memory::shm_base_dir();
+    n.push("nodes");
     let _ = std::fs::remove_dir_all(n);
 }
 
@@ -43,12 +51,21 @@ struct JitterNode {
 impl JitterNode {
     fn new(name: &str) -> (Self, Arc<Mutex<Vec<u64>>>) {
         let intervals = Arc::new(Mutex::new(Vec::with_capacity(20_000)));
-        (Self { name: name.to_string(), intervals: intervals.clone(), last_tick: None }, intervals)
+        (
+            Self {
+                name: name.to_string(),
+                intervals: intervals.clone(),
+                last_tick: None,
+            },
+            intervals,
+        )
     }
 }
 
 impl Node for JitterNode {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     fn tick(&mut self) {
         let now = Instant::now();
         if let Some(last) = self.last_tick {
@@ -77,9 +94,15 @@ fn spawn_cpu_load(running: Arc<std::sync::atomic::AtomicBool>) -> std::thread::J
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let duration: u64 = args.iter().position(|a| a == "--duration")
-        .map(|i| args[i+1].parse().unwrap_or(5)).unwrap_or(5);
-    let csv_path = args.iter().position(|a| a == "--csv").map(|i| args[i+1].clone());
+    let duration: u64 = args
+        .iter()
+        .position(|a| a == "--duration")
+        .map(|i| args[i + 1].parse().unwrap_or(5))
+        .unwrap_or(5);
+    let csv_path = args
+        .iter()
+        .position(|a| a == "--csv")
+        .map(|i| args[i + 1].clone());
 
     let platform = detect_platform();
     cleanup_shm();
@@ -88,7 +111,10 @@ fn main() {
     println!("║          Research Jitter — RT Tick + IPC Contention         ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
-    println!("Platform: {}, {} cores", platform.cpu.model, platform.cpu.logical_cores);
+    println!(
+        "Platform: {}, {} cores",
+        platform.cpu.model, platform.cpu.logical_cores
+    );
     println!("Duration: {}s per test", duration);
     println!();
 
@@ -101,7 +127,11 @@ fn main() {
 
     let (jitter_node, intervals) = JitterNode::new("jitter_rt");
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
-    let _ = scheduler.add(jitter_node).order(0).rate(1000_u64.hz()).build();
+    let _ = scheduler
+        .add(jitter_node)
+        .order(0)
+        .rate(1000_u64.hz())
+        .build();
     let _ = scheduler.run_for(std::time::Duration::from_secs(duration));
 
     let mut ticks = intervals.lock().unwrap().clone();
@@ -111,11 +141,11 @@ fn main() {
         let expected_us = 1000; // 1kHz = 1000μs period
         println!("  Samples: {}", n);
         println!("  Expected: {}μs", expected_us);
-        println!("  p50:  {}μs", ticks[n/2] / 1000);
-        println!("  p95:  {}μs", ticks[n*95/100] / 1000);
-        println!("  p99:  {}μs", ticks[n*99/100] / 1000);
-        println!("  p999: {}μs", ticks[n*999/1000] / 1000);
-        println!("  max:  {}μs", ticks[n-1] / 1000);
+        println!("  p50:  {}μs", ticks[n / 2] / 1000);
+        println!("  p95:  {}μs", ticks[n * 95 / 100] / 1000);
+        println!("  p99:  {}μs", ticks[n * 99 / 100] / 1000);
+        println!("  p999: {}μs", ticks[n * 999 / 1000] / 1000);
+        println!("  max:  {}μs", ticks[n - 1] / 1000);
         for (i, &v) in ticks.iter().enumerate() {
             csv_rows.push(("rt_tick_1khz".into(), i as u64, v));
         }
@@ -149,17 +179,19 @@ fn main() {
     }
 
     running.store(false, Ordering::SeqCst);
-    for h in load_threads { let _ = h.join(); }
+    for h in load_threads {
+        let _ = h.join();
+    }
 
     if !ipc_samples.is_empty() {
         ipc_samples.sort_unstable();
         let n = ipc_samples.len();
         println!("  Samples: {}", n);
-        println!("  p50:  {}ns", ipc_samples[n/2]);
-        println!("  p95:  {}ns", ipc_samples[n*95/100]);
-        println!("  p99:  {}ns", ipc_samples[n*99/100]);
-        println!("  p999: {}ns", ipc_samples[n*999/1000]);
-        println!("  max:  {}ns", ipc_samples[n-1]);
+        println!("  p50:  {}ns", ipc_samples[n / 2]);
+        println!("  p95:  {}ns", ipc_samples[n * 95 / 100]);
+        println!("  p99:  {}ns", ipc_samples[n * 99 / 100]);
+        println!("  p999: {}ns", ipc_samples[n * 999 / 1000]);
+        println!("  max:  {}ns", ipc_samples[n - 1]);
         for (i, &v) in ipc_samples.iter().enumerate() {
             csv_rows.push(("ipc_under_contention".into(), i as u64, v));
         }

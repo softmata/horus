@@ -249,7 +249,11 @@ impl ShmRegion {
 
         // Extend the backing POSIX shared memory object
         let ret = libc::ftruncate(self.fd, new_size as libc::off_t);
-        anyhow::ensure!(ret == 0, "ftruncate failed: {}", std::io::Error::last_os_error());
+        anyhow::ensure!(
+            ret == 0,
+            "ftruncate failed: {}",
+            std::io::Error::last_os_error()
+        );
 
         // Unmap old region
         libc::munmap(self.ptr as *mut libc::c_void, self.size);

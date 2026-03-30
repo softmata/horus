@@ -120,8 +120,14 @@ mod tests {
         byte_swap_words(&mut payload, 4);
 
         // Each 4-byte word should now be byte-reversed
-        assert_eq!(&payload[0..4], &original_a.iter().rev().copied().collect::<Vec<_>>());
-        assert_eq!(&payload[4..8], &original_b.iter().rev().copied().collect::<Vec<_>>());
+        assert_eq!(
+            &payload[0..4],
+            &original_a.iter().rev().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            &payload[4..8],
+            &original_b.iter().rev().copied().collect::<Vec<_>>()
+        );
 
         // Swap back
         byte_swap_words(&mut payload, 4);

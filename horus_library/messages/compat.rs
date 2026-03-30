@@ -116,7 +116,8 @@ mod tests {
 
     #[test]
     fn imu_roundtrip() {
-        let sc_imu = sc::ImuReading::new([1.0, 2.0, 9.81], [0.0, 0.0, 0.1], [0.0, 0.0, 0.0, 1.0], 42);
+        let sc_imu =
+            sc::ImuReading::new([1.0, 2.0, 9.81], [0.0, 0.0, 0.1], [0.0, 0.0, 0.0, 1.0], 42);
         let horus_imu: Imu = (&sc_imu).into();
         let back: sc::ImuReading = (&horus_imu).into();
         assert_eq!(back.linear_acceleration, sc_imu.linear_acceleration);

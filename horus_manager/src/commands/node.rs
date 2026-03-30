@@ -115,11 +115,7 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
             }
             if let Some(bm) = node.live_budget_misses {
                 if bm > 0 {
-                    println!(
-                        "    {} {}",
-                        "Budget misses:".dimmed(),
-                        bm.to_string().red()
-                    );
+                    println!("    {} {}", "Budget misses:".dimmed(), bm.to_string().red());
                 }
             }
             if let Some(dm) = node.live_deadline_misses {
@@ -312,14 +308,22 @@ pub fn node_info(name: &str) -> HorusResult<()> {
         println!(
             "    {} {}",
             "Budget Misses:".dimmed(),
-            if bm == 0 { "0".green() } else { bm.to_string().red() }
+            if bm == 0 {
+                "0".green()
+            } else {
+                bm.to_string().red()
+            }
         );
     }
     if let Some(dm) = node.live_deadline_misses {
         println!(
             "    {} {}",
             "Deadline Misses:".dimmed(),
-            if dm == 0 { "0".green() } else { dm.to_string().red() }
+            if dm == 0 {
+                "0".green()
+            } else {
+                dm.to_string().red()
+            }
         );
     }
     if let Some(ws) = node.live_watchdog_severity {
@@ -335,11 +339,7 @@ pub fn node_info(name: &str) -> HorusResult<()> {
     }
     if let Some(p99) = node.live_p99_tick_ns {
         if p99 > 0 {
-            println!(
-                "    {} {}us",
-                "P99 Tick:".dimmed(),
-                p99 / 1000
-            );
+            println!("    {} {}us", "P99 Tick:".dimmed(), p99 / 1000);
         }
     }
 
@@ -433,9 +433,7 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
     if let Some(ref session) = node.launch_session {
         let launch_name = node.launch_name.as_deref().unwrap_or(name);
         let ctl_topic = format!("horus.launch.ctl.{}", session);
-        if let Ok(topic) = horus_core::Topic::<
-            super::launch::LaunchControlCommand,
-        >::new(&ctl_topic)
+        if let Ok(topic) = horus_core::Topic::<super::launch::LaunchControlCommand>::new(&ctl_topic)
         {
             println!(
                 "  {} Routing via launch session '{}'",

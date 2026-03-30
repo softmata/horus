@@ -10,7 +10,7 @@
 //! Each backend creates a CUDA context on construction that lives for the
 //! pool's lifetime.
 
-use super::cuda_ffi::{self, CudaContext, CUdeviceptr};
+use super::cuda_ffi::{self, CUdeviceptr, CudaContext};
 use crate::memory::backend::{BackendAllocation, PoolBackend};
 use crate::types::Device;
 use std::sync::Mutex;
@@ -80,8 +80,8 @@ impl PoolBackend for CudaManagedBackend {
             .push(dptr);
 
         Ok(BackendAllocation {
-            cpu_ptr: ptr,     // Managed memory is CPU-accessible
-            device_ptr: ptr,  // Same pointer works on GPU
+            cpu_ptr: ptr,    // Managed memory is CPU-accessible
+            device_ptr: ptr, // Same pointer works on GPU
             size,
         })
     }
@@ -195,8 +195,8 @@ impl PoolBackend for CudaPinnedBackend {
             .push(ptr);
 
         Ok(BackendAllocation {
-            cpu_ptr: ptr,                       // Pinned host memory is CPU-accessible
-            device_ptr: std::ptr::null_mut(),    // Not directly GPU-accessible (needs memcpy)
+            cpu_ptr: ptr,                     // Pinned host memory is CPU-accessible
+            device_ptr: std::ptr::null_mut(), // Not directly GPU-accessible (needs memcpy)
             size,
         })
     }
@@ -296,8 +296,8 @@ impl PoolBackend for CudaDeviceBackend {
             .push(dptr);
 
         Ok(BackendAllocation {
-            cpu_ptr: std::ptr::null_mut(),   // NOT CPU-accessible
-            device_ptr: dptr as *mut u8,     // GPU device pointer
+            cpu_ptr: std::ptr::null_mut(), // NOT CPU-accessible
+            device_ptr: dptr as *mut u8,   // GPU device pointer
             size,
         })
     }
@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(backend.name(), "cuda_device");
 
         let alloc = backend.alloc(4096).unwrap();
-        assert!(alloc.cpu_ptr.is_null());     // Device-only: no CPU pointer
+        assert!(alloc.cpu_ptr.is_null()); // Device-only: no CPU pointer
         assert!(!alloc.device_ptr.is_null());
         assert_eq!(alloc.size, 4096);
 
@@ -428,12 +428,7 @@ mod tests {
 
         // Verify by copying to host
         let mut host = vec![0xFFu8; 4096];
-        cuda_ffi::memcpy_dtoh(
-            host.as_mut_ptr(),
-            alloc.device_ptr as CUdeviceptr,
-            4096,
-        )
-        .unwrap();
+        cuda_ffi::memcpy_dtoh(host.as_mut_ptr(), alloc.device_ptr as CUdeviceptr, 4096).unwrap();
         assert!(host.iter().all(|&b| b == 0));
 
         backend.free(&alloc);
@@ -473,21 +468,11 @@ mod tests {
 
         // Host → Device
         let data: Vec<u8> = (0..=255).collect();
-        cuda_ffi::memcpy_htod(
-            alloc.device_ptr as CUdeviceptr,
-            data.as_ptr(),
-            256,
-        )
-        .unwrap();
+        cuda_ffi::memcpy_htod(alloc.device_ptr as CUdeviceptr, data.as_ptr(), 256).unwrap();
 
         // Device → Host
         let mut result = vec![0u8; 256];
-        cuda_ffi::memcpy_dtoh(
-            result.as_mut_ptr(),
-            alloc.device_ptr as CUdeviceptr,
-            256,
-        )
-        .unwrap();
+        cuda_ffi::memcpy_dtoh(result.as_mut_ptr(), alloc.device_ptr as CUdeviceptr, 256).unwrap();
 
         assert_eq!(data, result);
         backend.free(&alloc);

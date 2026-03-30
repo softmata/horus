@@ -32,13 +32,16 @@ fn test_5_sensors_concurrent_no_crosstalk() {
     const SENSOR_COUNT: usize = 5;
     const TICK_COUNT: usize = 50;
 
-    let sensor_names = ["sensor.imu", "sensor.odom", "sensor.lidar", "sensor.cam", "sensor.gps"];
+    let sensor_names = [
+        "sensor.imu",
+        "sensor.odom",
+        "sensor.lidar",
+        "sensor.cam",
+        "sensor.gps",
+    ];
 
     // Create unique topic names
-    let topic_names: Vec<String> = sensor_names
-        .iter()
-        .map(|s| common::unique(s))
-        .collect();
+    let topic_names: Vec<String> = sensor_names.iter().map(|s| common::unique(s)).collect();
 
     // Shared receive buffers — one per sensor
     let received: Vec<Arc<Mutex<Vec<u64>>>> = (0..SENSOR_COUNT)

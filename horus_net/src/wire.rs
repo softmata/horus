@@ -424,11 +424,7 @@ pub struct InMessage {
 
 /// Encode a single data message into a packet buffer.
 /// Returns the number of bytes written.
-pub fn encode_single(
-    header: &PacketHeader,
-    msg: &OutMessage,
-    buf: &mut [u8],
-) -> usize {
+pub fn encode_single(header: &PacketHeader, msg: &OutMessage, buf: &mut [u8]) -> usize {
     let total = PacketHeader::SIZE + MessageHeader::SIZE + msg.payload.len();
     assert!(buf.len() >= total, "buffer too small for packet");
 
@@ -455,11 +451,7 @@ pub fn encode_single(
 
 /// Encode multiple messages into a single batched packet.
 /// Returns the number of bytes written.
-pub fn encode_batch(
-    header: &PacketHeader,
-    msgs: &[OutMessage],
-    buf: &mut [u8],
-) -> usize {
+pub fn encode_batch(header: &PacketHeader, msgs: &[OutMessage], buf: &mut [u8]) -> usize {
     debug_assert!(header.flags.batch() || msgs.len() <= 1);
 
     let mut offset = PacketHeader::SIZE;
@@ -556,11 +548,7 @@ mod tests {
 
     #[test]
     fn packet_header_roundtrip() {
-        let header = PacketHeader::new(
-            PacketFlags::empty().with(PacketFlags::BATCH),
-            0xABCD,
-            42,
-        );
+        let header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::BATCH), 0xABCD, 42);
         let mut buf = [0u8; PacketHeader::SIZE];
         header.encode(&mut buf);
         let decoded = PacketHeader::decode(&buf).unwrap();
@@ -618,7 +606,12 @@ mod tests {
 
     #[test]
     fn message_header_all_priorities() {
-        for p in [Priority::Immediate, Priority::RealTime, Priority::Normal, Priority::Bulk] {
+        for p in [
+            Priority::Immediate,
+            Priority::RealTime,
+            Priority::Normal,
+            Priority::Bulk,
+        ] {
             let mh = MessageHeader {
                 topic_hash: 0,
                 payload_len: 0,
@@ -695,11 +688,7 @@ mod tests {
 
     #[test]
     fn encode_decode_batch() {
-        let header = PacketHeader::new(
-            PacketFlags::empty().with(PacketFlags::BATCH),
-            0x5678,
-            10,
-        );
+        let header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::BATCH), 0x5678, 10);
         let msgs: Vec<OutMessage> = (0..5)
             .map(|i| OutMessage {
                 topic_name: format!("topic_{i}"),
@@ -760,11 +749,8 @@ mod tests {
 
     #[test]
     fn heartbeat_packet_no_messages() {
-        let header = PacketHeader::new(
-            PacketFlags::empty().with(PacketFlags::HEARTBEAT),
-            0x1111,
-            5,
-        );
+        let header =
+            PacketHeader::new(PacketFlags::empty().with(PacketFlags::HEARTBEAT), 0x1111, 5);
         let mut buf = [0u8; 64];
         header.encode(&mut buf);
         // Add heartbeat payload after header (not parsed as messages)

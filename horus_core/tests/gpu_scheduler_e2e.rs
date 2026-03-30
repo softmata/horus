@@ -3,10 +3,10 @@
 //! This is the critical missing test — a Scheduler with .gpu() nodes
 //! that actually tick and produce output.
 
-use horus_core::core::{Node, DurationExt};
+use horus_core::communication::Topic;
+use horus_core::core::{DurationExt, Node};
 use horus_core::gpu::cuda_available;
 use horus_core::scheduling::Scheduler;
-use horus_core::communication::Topic;
 use horus_core::types::Device;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -96,7 +96,9 @@ fn test_scheduler_with_gpu_node() {
     assert!(
         ratio < 3.0,
         "CPU/GPU tick ratio too skewed: {} (cpu={}, gpu={})",
-        ratio, cpu_ticks, gpu_ticks
+        ratio,
+        cpu_ticks,
+        gpu_ticks
     );
 }
 
@@ -174,16 +176,28 @@ fn test_scheduler_gpu_rate_limited() {
     sched = sched.tick_rate(200_u64.hz()); // Scheduler at 200Hz
 
     // GPU node at 30Hz (rate limited)
-    sched.add(node).order(0).gpu().rate(30_u64.hz()).build().unwrap();
+    sched
+        .add(node)
+        .order(0)
+        .gpu()
+        .rate(30_u64.hz())
+        .build()
+        .unwrap();
 
     sched
         .run_for(std::time::Duration::from_millis(500))
         .unwrap();
 
     let ticks = count.load(Ordering::Relaxed);
-    eprintln!("Rate-limited GPU node ticks: {} (expected ~15 at 30Hz for 500ms)", ticks);
+    eprintln!(
+        "Rate-limited GPU node ticks: {} (expected ~15 at 30Hz for 500ms)",
+        ticks
+    );
 
     // Should be approximately 15 ticks (30Hz * 0.5s), allow wide margin
     assert!(ticks >= 5, "Should tick at least 5 times in 500ms at 30Hz");
-    assert!(ticks <= 50, "Should not exceed 50 ticks (30Hz * 0.5s + margin)");
+    assert!(
+        ticks <= 50,
+        "Should not exceed 50 ticks (30Hz * 0.5s + margin)"
+    );
 }

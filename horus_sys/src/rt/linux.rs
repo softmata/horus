@@ -159,9 +159,7 @@ pub(super) fn has_deadline_capability() -> bool {
     let result = unsafe { libc::syscall(SYS_SCHED_SETATTR, 0i32, &attr as *const _, 0u32) };
     if result == 0 {
         // Unexpectedly succeeded — restore to SCHED_OTHER
-        let normal = libc::sched_param {
-            sched_priority: 0,
-        };
+        let normal = libc::sched_param { sched_priority: 0 };
         unsafe {
             libc::sched_setscheduler(0, libc::SCHED_OTHER, &normal);
         }

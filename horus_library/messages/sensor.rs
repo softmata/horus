@@ -240,7 +240,10 @@ impl Odometry {
         // Copy child_frame_id string
         let child_bytes = child_frame.as_bytes();
         if child_bytes.len() > 31 {
-            eprintln!("[WARN] Odometry child_frame_id '{}' truncated to 31 bytes", child_frame);
+            eprintln!(
+                "[WARN] Odometry child_frame_id '{}' truncated to 31 bytes",
+                child_frame
+            );
         }
         let len = child_bytes.len().min(31);
         self.child_frame_id[..len].copy_from_slice(&child_bytes[..len]);
@@ -1232,7 +1235,7 @@ mod tests {
     fn test_battery_state_time_remaining_discharging() {
         let mut bat = BatteryState::new(12.0, 50.0);
         bat.current = -2.0; // discharging at 2A
-        bat.charge = 4.0;   // 4Ah remaining
+        bat.charge = 4.0; // 4Ah remaining
         let time = bat.time_remaining().unwrap();
         // 4Ah / 2A = 2 hours = 7200 seconds
         assert!((time - 7200.0).abs() < 1.0);
@@ -1315,7 +1318,10 @@ mod tests {
         let recovered: BatteryState = serde_json::from_str(&json).unwrap();
         assert!((recovered.voltage - 12.0).abs() < 1e-6);
         assert!((recovered.percentage - 75.0).abs() < 1e-6);
-        assert_eq!(recovered.power_supply_status, BatteryState::STATUS_DISCHARGING);
+        assert_eq!(
+            recovered.power_supply_status,
+            BatteryState::STATUS_DISCHARGING
+        );
         assert!((recovered.temperature - 35.0).abs() < 1e-6);
         assert!((recovered.charge - 4.0).abs() < 1e-6);
         assert!((recovered.capacity - 5.0).abs() < 1e-6);
@@ -1396,8 +1402,8 @@ mod tests {
     #[test]
     fn test_joint_state_negative_values() {
         let mut js = JointState::new();
-        js.add_joint("revolute", -3.14, -1.0, -50.0).unwrap();
-        assert!((js.positions[0] - (-3.14)).abs() < 1e-10);
+        js.add_joint("revolute", -2.75, -1.0, -50.0).unwrap();
+        assert!((js.positions[0] - (-2.75)).abs() < 1e-10);
         assert!((js.velocities[0] - (-1.0)).abs() < 1e-10);
         assert!((js.efforts[0] - (-50.0)).abs() < 1e-10);
     }

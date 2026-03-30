@@ -23,7 +23,9 @@ macro_rules! define_msg {
     ($name:ident, $size:expr) => {
         #[repr(C)]
         #[derive(Copy, Clone, Serialize, Deserialize)]
-        struct $name { data: [u8; $size] }
+        struct $name {
+            data: [u8; $size],
+        }
         unsafe impl Send for $name {}
         unsafe impl Sync for $name {}
     };
@@ -34,12 +36,18 @@ define_msg!(Bench32, 32);
 
 fn unique(prefix: &str) -> String {
     static C: AtomicU64 = AtomicU64::new(0);
-    format!("{}_{}_{}",prefix,std::process::id(),C.fetch_add(1,Ordering::Relaxed))
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        C.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn cleanup_shm() {
     let _ = std::fs::remove_dir_all(horus_core::memory::shm_topics_dir());
-    let mut n = horus_core::memory::shm_base_dir(); n.push("nodes");
+    let mut n = horus_core::memory::shm_base_dir();
+    n.push("nodes");
     let _ = std::fs::remove_dir_all(n);
 }
 
@@ -48,21 +56,37 @@ fn cleanup_shm() {
 // ============================================================================
 
 struct Stats {
-    count: usize, p50: u64, p95: u64, p99: u64, p999: u64, max: u64, mean: u64,
+    count: usize,
+    p50: u64,
+    p95: u64,
+    p99: u64,
+    p999: u64,
+    max: u64,
+    mean: u64,
 }
 
 fn compute_stats(samples: &mut [u64]) -> Stats {
     samples.sort_unstable();
     let n = samples.len();
-    if n == 0 { return Stats { count:0, p50:0, p95:0, p99:0, p999:0, max:0, mean:0 }; }
+    if n == 0 {
+        return Stats {
+            count: 0,
+            p50: 0,
+            p95: 0,
+            p99: 0,
+            p999: 0,
+            max: 0,
+            mean: 0,
+        };
+    }
     let sum: u64 = samples.iter().sum();
     Stats {
         count: n,
-        p50: samples[n/2],
-        p95: samples[n*95/100],
-        p99: samples[n*99/100],
-        p999: samples[n*999/1000],
-        max: samples[n-1],
+        p50: samples[n / 2],
+        p95: samples[n * 95 / 100],
+        p99: samples[n * 99 / 100],
+        p999: samples[n * 999 / 1000],
+        max: samples[n - 1],
         mean: sum / n as u64,
     }
 }
@@ -81,7 +105,10 @@ fn bench_horus(size: usize, duration_secs: u64) -> Vec<u64> {
             let sub_t: Topic<Bench8> = Topic::new(&topic_name).expect("horus sub");
             let msg = Bench8 { data: [0u8; 8] };
             // Warmup
-            for _ in 0..5000 { pub_t.send(msg); while sub_t.recv().is_none() {} }
+            for _ in 0..5000 {
+                pub_t.send(msg);
+                while sub_t.recv().is_none() {}
+            }
             // Measure
             let deadline = Instant::now() + std::time::Duration::from_secs(duration_secs);
             let mut samples = Vec::with_capacity(2_000_000);
@@ -97,7 +124,10 @@ fn bench_horus(size: usize, duration_secs: u64) -> Vec<u64> {
             let pub_t: Topic<Bench32> = Topic::new(&topic_name).expect("horus pub");
             let sub_t: Topic<Bench32> = Topic::new(&topic_name).expect("horus sub");
             let msg = Bench32 { data: [0u8; 32] };
-            for _ in 0..5000 { pub_t.send(msg); while sub_t.recv().is_none() {} }
+            for _ in 0..5000 {
+                pub_t.send(msg);
+                while sub_t.recv().is_none() {}
+            }
             let deadline = Instant::now() + std::time::Duration::from_secs(duration_secs);
             let mut samples = Vec::with_capacity(2_000_000);
             while Instant::now() < deadline {
@@ -189,9 +219,15 @@ fn bench_zenoh(_size: usize, _duration_secs: u64) -> Vec<u64> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let duration: u64 = args.iter().position(|a| a == "--duration")
-        .map(|i| args[i+1].parse().unwrap_or(5)).unwrap_or(5);
-    let csv_path = args.iter().position(|a| a == "--csv").map(|i| args[i+1].clone());
+    let duration: u64 = args
+        .iter()
+        .position(|a| a == "--duration")
+        .map(|i| args[i + 1].parse().unwrap_or(5))
+        .unwrap_or(5);
+    let csv_path = args
+        .iter()
+        .position(|a| a == "--csv")
+        .map(|i| args[i + 1].clone());
 
     let platform = detect_platform();
     let has_zenoh = cfg!(feature = "zenoh");
@@ -200,17 +236,29 @@ fn main() {
     println!("║          Competitor Comparison                              ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
-    println!("Platform: {}, {} cores", platform.cpu.model, platform.cpu.logical_cores);
+    println!(
+        "Platform: {}, {} cores",
+        platform.cpu.model, platform.cpu.logical_cores
+    );
     println!("Duration: {}s per test", duration);
-    println!("Zenoh: {}", if has_zenoh { "enabled" } else { "not available (compile with --features zenoh)" });
+    println!(
+        "Zenoh: {}",
+        if has_zenoh {
+            "enabled"
+        } else {
+            "not available (compile with --features zenoh)"
+        }
+    );
     println!();
 
     let sizes = [8usize, 32];
     let mut csv_rows: Vec<(String, usize, Stats)> = Vec::new();
 
     // Header
-    println!("{:<16} {:>6} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Competitor", "Size", "Samples", "p50", "p95", "p99", "p999", "max");
+    println!(
+        "{:<16} {:>6} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Competitor", "Size", "Samples", "p50", "p95", "p99", "p999", "max"
+    );
     println!("{}", "─".repeat(80));
 
     for &size in &sizes {
@@ -218,26 +266,50 @@ fn main() {
         let mut horus_samples = bench_horus(size, duration);
         let horus_stats = compute_stats(&mut horus_samples);
         let label = format!("{}B", size);
-        println!("{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-            "HORUS SHM", label, horus_stats.count / 1000,
-            horus_stats.p50, horus_stats.p95, horus_stats.p99, horus_stats.p999, horus_stats.max);
+        println!(
+            "{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
+            "HORUS SHM",
+            label,
+            horus_stats.count / 1000,
+            horus_stats.p50,
+            horus_stats.p95,
+            horus_stats.p99,
+            horus_stats.p999,
+            horus_stats.max
+        );
         csv_rows.push(("HORUS_SHM".into(), size, horus_stats));
 
         // Raw UDP
         let mut udp_samples = bench_raw_udp(size, duration);
         let udp_stats = compute_stats(&mut udp_samples);
-        println!("{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-            "Raw UDP", label, udp_stats.count / 1000,
-            udp_stats.p50, udp_stats.p95, udp_stats.p99, udp_stats.p999, udp_stats.max);
+        println!(
+            "{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
+            "Raw UDP",
+            label,
+            udp_stats.count / 1000,
+            udp_stats.p50,
+            udp_stats.p95,
+            udp_stats.p99,
+            udp_stats.p999,
+            udp_stats.max
+        );
         csv_rows.push(("Raw_UDP".into(), size, udp_stats));
 
         // Zenoh
         let mut zenoh_samples = bench_zenoh(size, duration);
         if !zenoh_samples.is_empty() {
             let zenoh_stats = compute_stats(&mut zenoh_samples);
-            println!("{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-                "Zenoh", label, zenoh_stats.count / 1000,
-                zenoh_stats.p50, zenoh_stats.p95, zenoh_stats.p99, zenoh_stats.p999, zenoh_stats.max);
+            println!(
+                "{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
+                "Zenoh",
+                label,
+                zenoh_stats.count / 1000,
+                zenoh_stats.p50,
+                zenoh_stats.p95,
+                zenoh_stats.p99,
+                zenoh_stats.p999,
+                zenoh_stats.max
+            );
             csv_rows.push(("Zenoh".into(), size, zenoh_stats));
         }
 
@@ -251,19 +323,39 @@ fn main() {
         let horus = &csv_rows[i];
         let udp = &csv_rows[i + 1];
         if udp.2.p50 > 0 {
-            println!("  {}B: {:.0}x faster ({}ns vs {}ns p50)",
-                horus.1, udp.2.p50 as f64 / horus.2.p50.max(1) as f64,
-                horus.2.p50, udp.2.p50);
+            println!(
+                "  {}B: {:.0}x faster ({}ns vs {}ns p50)",
+                horus.1,
+                udp.2.p50 as f64 / horus.2.p50.max(1) as f64,
+                horus.2.p50,
+                udp.2.p50
+            );
         }
     }
 
     // CSV
     if let Some(path) = csv_path {
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
-        writeln!(f, "competitor,msg_size_bytes,samples,p50_ns,p95_ns,p99_ns,p999_ns,max_ns,mean_ns").unwrap();
+        writeln!(
+            f,
+            "competitor,msg_size_bytes,samples,p50_ns,p95_ns,p99_ns,p999_ns,max_ns,mean_ns"
+        )
+        .unwrap();
         for (name, size, stats) in &csv_rows {
-            writeln!(f, "{},{},{},{},{},{},{},{},{}", name, size, stats.count,
-                stats.p50, stats.p95, stats.p99, stats.p999, stats.max, stats.mean).unwrap();
+            writeln!(
+                f,
+                "{},{},{},{},{},{},{},{},{}",
+                name,
+                size,
+                stats.count,
+                stats.p50,
+                stats.p95,
+                stats.p99,
+                stats.p999,
+                stats.max,
+                stats.mean
+            )
+            .unwrap();
         }
         f.flush().unwrap();
         println!("\nCSV written: {path}");

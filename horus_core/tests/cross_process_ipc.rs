@@ -334,17 +334,20 @@ fn cross_process_reversed_roles_u64() {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct LargePod {
-    data: [f64; 90],  // 720 bytes
-    tag: u64,         // 8 bytes
-    seq: u64,         // 8 bytes
-}                     // total: 736 bytes
+    data: [f64; 90], // 720 bytes
+    tag: u64,        // 8 bytes
+    seq: u64,        // 8 bytes
+} // total: 736 bytes
 
 // Manual serde impl to avoid [f64; 90] Deserialize bound issue
 impl serde::Serialize for LargePod {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         // Serialize as raw bytes for POD type
         let bytes = unsafe {
-            std::slice::from_raw_parts(self as *const Self as *const u8, std::mem::size_of::<Self>())
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
+            )
         };
         serde::Serialize::serialize(bytes, s)
     }
@@ -362,7 +365,11 @@ impl<'de> serde::Deserialize<'de> for LargePod {
 
 impl Default for LargePod {
     fn default() -> Self {
-        Self { data: [0.0; 90], tag: 0, seq: 0 }
+        Self {
+            data: [0.0; 90],
+            tag: 0,
+            seq: 0,
+        }
     }
 }
 
@@ -378,7 +385,9 @@ fn child_send_large_pod() {
 
     let deadline = Instant::now() + 5_u64.secs();
     for i in 1..=msg_count as u64 {
-        if Instant::now() > deadline { break; }
+        if Instant::now() > deadline {
+            break;
+        }
         let mut msg = LargePod::default();
         msg.tag = 0xDEADBEEF;
         msg.seq = i;
@@ -409,7 +418,11 @@ fn cross_process_reversed_roles_large_pod() {
     // Parent: consumer for LargePod (736 bytes — same size as Odometry)
     let t: Topic<LargePod> = Topic::new(&topic_name).expect("parent: Topic::new");
 
-    let child = spawn_child("cross_process_reversed_roles_large_pod", &topic_name, msg_count);
+    let child = spawn_child(
+        "cross_process_reversed_roles_large_pod",
+        &topic_name,
+        msg_count,
+    );
 
     std::thread::sleep(500_u64.ms());
     t.check_migration_now();
@@ -425,11 +438,17 @@ fn cross_process_reversed_roles_large_pod() {
     }
 
     let output = child.wait_with_output().expect("child wait failed");
-    assert!(output.status.success(), "Child failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Child failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     eprintln!(
         "Reversed roles large POD (736B): received {}/{} messages (size={})",
-        received.len(), msg_count, std::mem::size_of::<LargePod>()
+        received.len(),
+        msg_count,
+        std::mem::size_of::<LargePod>()
     );
     assert!(
         received.len() > 0,
@@ -454,27 +473,35 @@ macro_rules! sized_pod {
             _pad: [u8; $n - 8],
         }
         impl Default for $name {
-            fn default() -> Self { Self { seq: 0, _pad: [0; $n - 8] } }
+            fn default() -> Self {
+                Self {
+                    seq: 0,
+                    _pad: [0; $n - 8],
+                }
+            }
         }
         impl serde::Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                let bytes = unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, $n) };
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, $n) };
                 serde::Serialize::serialize(bytes, s)
             }
         }
         impl<'de> serde::Deserialize<'de> for $name {
             fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
                 let bytes: Vec<u8> = serde::Deserialize::deserialize(d)?;
-                if bytes.len() != $n { return Err(serde::de::Error::custom("wrong size")); }
+                if bytes.len() != $n {
+                    return Err(serde::de::Error::custom("wrong size"));
+                }
                 Ok(unsafe { std::ptr::read(bytes.as_ptr() as *const Self) })
             }
         }
     };
 }
 
-sized_pod!(Pod40, 40);    // Clock size
-sized_pod!(Pod304, 304);  // Imu size
-sized_pod!(Pod912, 912);  // JointState size
+sized_pod!(Pod40, 40); // Clock size
+sized_pod!(Pod304, 304); // Imu size
+sized_pod!(Pod912, 912); // JointState size
 
 // TFMessage (6152B) — too large for the macro's [u8; N-8], use nested arrays
 #[repr(C)]
@@ -484,7 +511,12 @@ struct Pod6152 {
     _pad1: [u64; 768], // 768 * 8 = 6144 bytes
 }
 impl Default for Pod6152 {
-    fn default() -> Self { Self { seq: 0, _pad1: [0; 768] } }
+    fn default() -> Self {
+        Self {
+            seq: 0,
+            _pad1: [0; 768],
+        }
+    }
 }
 impl serde::Serialize for Pod6152 {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -495,14 +527,21 @@ impl serde::Serialize for Pod6152 {
 impl<'de> serde::Deserialize<'de> for Pod6152 {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let bytes: Vec<u8> = serde::Deserialize::deserialize(d)?;
-        if bytes.len() != 6152 { return Err(serde::de::Error::custom("wrong size")); }
+        if bytes.len() != 6152 {
+            return Err(serde::de::Error::custom("wrong size"));
+        }
         Ok(unsafe { std::ptr::read(bytes.as_ptr() as *const Self) })
     }
 }
 
 /// Generic child: send N POD messages at 5ms pace (slow enough for cross-process migration).
-fn child_send_pod_generic<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static>(
-    topic_name: &str, msg_count: usize, make_msg: impl Fn(u64) -> T, sentinel: T,
+fn child_send_pod_generic<
+    T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+>(
+    topic_name: &str,
+    msg_count: usize,
+    make_msg: impl Fn(u64) -> T,
+    sentinel: T,
 ) {
     let t: Topic<T> = Topic::new(topic_name).expect("child: Topic::new");
     for i in 1..=msg_count as u64 {
@@ -514,9 +553,15 @@ fn child_send_pod_generic<T: Clone + Send + Sync + serde::Serialize + serde::de:
 
 /// Generic parent: recv and count, verify delivery rate.
 /// Starts reading immediately (no sleep) — concurrent with producer.
-fn parent_recv_pod_generic<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static>(
-    test_name: &str, topic_name: &str, msg_count: usize, min_pct: usize,
-    get_seq: impl Fn(&T) -> u64, is_sentinel: impl Fn(&T) -> bool,
+fn parent_recv_pod_generic<
+    T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+>(
+    test_name: &str,
+    topic_name: &str,
+    msg_count: usize,
+    min_pct: usize,
+    get_seq: impl Fn(&T) -> u64,
+    is_sentinel: impl Fn(&T) -> bool,
 ) {
     let t: Topic<T> = Topic::new(topic_name).expect("parent: Topic::new");
     let child = spawn_child(test_name, topic_name, msg_count);
@@ -528,7 +573,9 @@ fn parent_recv_pod_generic<T: Clone + Send + Sync + serde::Serialize + serde::de
             Some(msg) if is_sentinel(&msg) => break,
             Some(msg) => {
                 let seq = get_seq(&msg);
-                if seq > 0 { received.push(seq); }
+                if seq > 0 {
+                    received.push(seq);
+                }
             }
             None => std::thread::yield_now(),
         }
@@ -539,10 +586,16 @@ fn parent_recv_pod_generic<T: Clone + Send + Sync + serde::Serialize + serde::de
 
     let min_expected = msg_count * min_pct / 100;
     let size = std::mem::size_of::<T>();
-    eprintln!("Pod {size}B: {}/{msg_count} received ({}%)",
-        received.len(), received.len() * 100 / msg_count.max(1));
-    assert!(received.len() >= min_expected,
-        "Pod {size}B: {}<{min_expected} minimum", received.len());
+    eprintln!(
+        "Pod {size}B: {}/{msg_count} received ({}%)",
+        received.len(),
+        received.len() * 100 / msg_count.max(1)
+    );
+    assert!(
+        received.len() >= min_expected,
+        "Pod {size}B: {}<{min_expected} minimum",
+        received.len()
+    );
 
     for &seq in &received {
         assert!(seq >= 1 && seq <= msg_count as u64, "corrupted seq {seq}");
@@ -556,16 +609,33 @@ fn cross_process_pod_40b() {
     if is_child() {
         if std::env::var(TEST_NAME_ENV).unwrap_or_default() == "cross_process_pod_40b" {
             let tn = std::env::var(TOPIC_NAME_ENV).unwrap();
-            child_send_pod_generic(&tn, 200,
-                |i| { let mut m = Pod40::default(); m.seq = i; m },
-                { let mut s = Pod40::default(); s.seq = SENTINEL; s });
+            child_send_pod_generic(
+                &tn,
+                200,
+                |i| {
+                    let mut m = Pod40::default();
+                    m.seq = i;
+                    m
+                },
+                {
+                    let mut s = Pod40::default();
+                    s.seq = SENTINEL;
+                    s
+                },
+            );
             return;
         }
         return;
     }
     let tn = format!("xp40_{}", std::process::id());
-    parent_recv_pod_generic::<Pod40>("cross_process_pod_40b", &tn, 200, 80,
-        |m| m.seq, |m| m.seq == SENTINEL);
+    parent_recv_pod_generic::<Pod40>(
+        "cross_process_pod_40b",
+        &tn,
+        200,
+        80,
+        |m| m.seq,
+        |m| m.seq == SENTINEL,
+    );
 }
 
 // --- 304 bytes (Imu size) ---
@@ -575,16 +645,33 @@ fn cross_process_pod_304b() {
     if is_child() {
         if std::env::var(TEST_NAME_ENV).unwrap_or_default() == "cross_process_pod_304b" {
             let tn = std::env::var(TOPIC_NAME_ENV).unwrap();
-            child_send_pod_generic(&tn, 200,
-                |i| { let mut m = Pod304::default(); m.seq = i; m },
-                { let mut s = Pod304::default(); s.seq = SENTINEL; s });
+            child_send_pod_generic(
+                &tn,
+                200,
+                |i| {
+                    let mut m = Pod304::default();
+                    m.seq = i;
+                    m
+                },
+                {
+                    let mut s = Pod304::default();
+                    s.seq = SENTINEL;
+                    s
+                },
+            );
             return;
         }
         return;
     }
     let tn = format!("xp304_{}", std::process::id());
-    parent_recv_pod_generic::<Pod304>("cross_process_pod_304b", &tn, 200, 50,
-        |m| m.seq, |m| m.seq == SENTINEL);
+    parent_recv_pod_generic::<Pod304>(
+        "cross_process_pod_304b",
+        &tn,
+        200,
+        50,
+        |m| m.seq,
+        |m| m.seq == SENTINEL,
+    );
 }
 
 // --- 912 bytes (JointState size) ---
@@ -594,16 +681,33 @@ fn cross_process_pod_912b() {
     if is_child() {
         if std::env::var(TEST_NAME_ENV).unwrap_or_default() == "cross_process_pod_912b" {
             let tn = std::env::var(TOPIC_NAME_ENV).unwrap();
-            child_send_pod_generic(&tn, 200,
-                |i| { let mut m = Pod912::default(); m.seq = i; m },
-                { let mut s = Pod912::default(); s.seq = SENTINEL; s });
+            child_send_pod_generic(
+                &tn,
+                200,
+                |i| {
+                    let mut m = Pod912::default();
+                    m.seq = i;
+                    m
+                },
+                {
+                    let mut s = Pod912::default();
+                    s.seq = SENTINEL;
+                    s
+                },
+            );
             return;
         }
         return;
     }
     let tn = format!("xp912_{}", std::process::id());
-    parent_recv_pod_generic::<Pod912>("cross_process_pod_912b", &tn, 200, 50,
-        |m| m.seq, |m| m.seq == SENTINEL);
+    parent_recv_pod_generic::<Pod912>(
+        "cross_process_pod_912b",
+        &tn,
+        200,
+        50,
+        |m| m.seq,
+        |m| m.seq == SENTINEL,
+    );
 }
 
 // --- 6152 bytes (TFMessage size) ---
@@ -613,16 +717,33 @@ fn cross_process_pod_6152b() {
     if is_child() {
         if std::env::var(TEST_NAME_ENV).unwrap_or_default() == "cross_process_pod_6152b" {
             let tn = std::env::var(TOPIC_NAME_ENV).unwrap();
-            child_send_pod_generic(&tn, 100,
-                |i| { let mut m = Pod6152::default(); m.seq = i; m },
-                { let mut s = Pod6152::default(); s.seq = SENTINEL; s });
+            child_send_pod_generic(
+                &tn,
+                100,
+                |i| {
+                    let mut m = Pod6152::default();
+                    m.seq = i;
+                    m
+                },
+                {
+                    let mut s = Pod6152::default();
+                    s.seq = SENTINEL;
+                    s
+                },
+            );
             return;
         }
         return;
     }
     let tn = format!("xp6152_{}", std::process::id());
-    parent_recv_pod_generic::<Pod6152>("cross_process_pod_6152b", &tn, 100, 30,
-        |m| m.seq, |m| m.seq == SENTINEL);
+    parent_recv_pod_generic::<Pod6152>(
+        "cross_process_pod_6152b",
+        &tn,
+        100,
+        30,
+        |m| m.seq,
+        |m| m.seq == SENTINEL,
+    );
 }
 
 // ============================================================================
@@ -669,7 +790,9 @@ fn cross_process_sustained_60s() {
             Some(SENTINEL) => break,
             Some(v) if v > 0 => {
                 received += 1;
-                if v <= last_seq { out_of_order += 1; }
+                if v <= last_seq {
+                    out_of_order += 1;
+                }
                 last_seq = v;
             }
             _ => std::thread::yield_now(),
@@ -678,7 +801,8 @@ fn cross_process_sustained_60s() {
 
     let output = child.wait_with_output().expect("child wait");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let sent: u64 = stdout.lines()
+    let sent: u64 = stdout
+        .lines()
         .find_map(|l| l.strip_prefix("SENT_SUSTAINED:"))
         .and_then(|n| n.parse().ok())
         .unwrap_or(6000);
@@ -687,10 +811,14 @@ fn cross_process_sustained_60s() {
     eprintln!("Sustained 60s: {received}/{sent} received ({pct}%), out_of_order={out_of_order}");
 
     assert!(output.status.success(), "Child failed");
-    assert!(received > sent * 95 / 100,
-        "Sustained delivery <95%: {received}/{sent} ({pct}%)");
-    assert!(out_of_order < received / 100,
-        "Too many out-of-order: {out_of_order}/{received}");
+    assert!(
+        received > sent * 95 / 100,
+        "Sustained delivery <95%: {received}/{sent} ({pct}%)"
+    );
+    assert!(
+        out_of_order < received / 100,
+        "Too many out-of-order: {out_of_order}/{received}"
+    );
 }
 
 // ============================================================================
@@ -701,7 +829,9 @@ fn cross_process_sustained_60s() {
 fn child_send_then_die() {
     let topic_name = std::env::var(TOPIC_NAME_ENV).expect("HORUS_IPC_TOPIC not set");
     let msg_count: usize = std::env::var(MSG_COUNT_ENV)
-        .unwrap_or("500".into()).parse().unwrap_or(500);
+        .unwrap_or("500".into())
+        .parse()
+        .unwrap_or(500);
     let t: Topic<u64> = Topic::new(&topic_name).expect("child: Topic::new");
 
     for i in 1..=msg_count as u64 {
@@ -733,7 +863,9 @@ fn cross_process_crash_recovery() {
     let deadline1 = Instant::now() + 5_u64.secs();
     while Instant::now() < deadline1 {
         match t.recv() {
-            Some(v) if v > 0 && v != SENTINEL => { phase1_received += 1; }
+            Some(v) if v > 0 && v != SENTINEL => {
+                phase1_received += 1;
+            }
             _ => std::thread::yield_now(),
         }
         // Kill after receiving some messages
@@ -745,7 +877,10 @@ fn cross_process_crash_recovery() {
     let _ = child1.wait();
 
     eprintln!("Phase 1: received {phase1_received} before kill");
-    assert!(phase1_received >= 10, "Should receive some messages before kill");
+    assert!(
+        phase1_received >= 10,
+        "Should receive some messages before kill"
+    );
 
     // Phase 2: consumer keeps polling (should NOT crash on stale producer)
     let mut stale_reads = 0u64;
@@ -765,14 +900,20 @@ fn cross_process_crash_recovery() {
     let deadline3 = Instant::now() + 10_u64.secs();
     while Instant::now() < deadline3 {
         match t.recv() {
-            Some(v) if v > 0 && v != SENTINEL => { phase3_received += 1; }
+            Some(v) if v > 0 && v != SENTINEL => {
+                phase3_received += 1;
+            }
             _ => std::thread::yield_now(),
         }
-        if phase3_received >= 50 { break; }
+        if phase3_received >= 50 {
+            break;
+        }
     }
     let _ = child2.wait();
 
     eprintln!("Phase 3: received {phase3_received} from new producer");
-    assert!(phase3_received > 0,
-        "Consumer must receive messages from restarted producer (got 0)");
+    assert!(
+        phase3_received > 0,
+        "Consumer must receive messages from restarted producer (got 0)"
+    );
 }

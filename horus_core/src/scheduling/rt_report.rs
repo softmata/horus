@@ -92,25 +92,36 @@ impl RtReport {
             recs.push("Add to /etc/security/limits.conf: * - memlock unlimited".into());
         }
         if isolated.is_empty() {
-            recs.push("Isolate CPUs for RT: add 'isolcpus=2,3 nohz_full=2,3' to kernel cmdline".into());
+            recs.push(
+                "Isolate CPUs for RT: add 'isolcpus=2,3 nohz_full=2,3' to kernel cmdline".into(),
+            );
         }
         if jitter.p99 > 500.0 {
-            issues.push(format!("P99 jitter {:.0}μs exceeds 500μs threshold", jitter.p99));
-            recs.push("Check for CPU frequency scaling: cpupower frequency-set -g performance".into());
+            issues.push(format!(
+                "P99 jitter {:.0}μs exceeds 500μs threshold",
+                jitter.p99
+            ));
+            recs.push(
+                "Check for CPU frequency scaling: cpupower frequency-set -g performance".into(),
+            );
         }
         if jitter.p99 > 50.0 && caps.preempt_rt {
-            issues.push(format!("P99 jitter {:.0}μs high for PREEMPT_RT (expected <50μs)", jitter.p99));
+            issues.push(format!(
+                "P99 jitter {:.0}μs high for PREEMPT_RT (expected <50μs)",
+                jitter.p99
+            ));
             recs.push("Check for SMI interrupts: sudo rdmsr 0x34".into());
         }
 
-        let grade = if caps.preempt_rt && caps.memory_locking && caps.max_priority > 0
-            && jitter.p99 < 50.0 {
-            RtGrade::Production
-        } else if caps.max_priority > 0 && jitter.p99 < 500.0 {
-            RtGrade::Standard
-        } else {
-            RtGrade::Development
-        };
+        let grade =
+            if caps.preempt_rt && caps.memory_locking && caps.max_priority > 0 && jitter.p99 < 50.0
+            {
+                RtGrade::Production
+            } else if caps.max_priority > 0 && jitter.p99 < 500.0 {
+                RtGrade::Standard
+            } else {
+                RtGrade::Development
+            };
 
         RtReport {
             kernel: caps.kernel_version,
@@ -153,32 +164,83 @@ impl RtReport {
         println!("║               Grade: {:20}                  ║", grade_str);
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║  SYSTEM                                                     ║");
-        println!("║    Kernel:         {}",
-                 if self.kernel.len() > 40 { &self.kernel[..40] } else { &self.kernel });
-        println!("║    PREEMPT_RT:     {}                                        ║", check(self.preempt_rt));
-        println!("║    SCHED_FIFO:     {}                                        ║", check(self.sched_fifo));
-        println!("║    Memory lock:    {}                                        ║", check(self.memory_locking));
-        println!("║    CPUs:           {} total, {} isolated                     ║",
-                 self.cpu_count, self.isolated_cpus.len());
+        println!(
+            "║    Kernel:         {}",
+            if self.kernel.len() > 40 {
+                &self.kernel[..40]
+            } else {
+                &self.kernel
+            }
+        );
+        println!(
+            "║    PREEMPT_RT:     {}                                        ║",
+            check(self.preempt_rt)
+        );
+        println!(
+            "║    SCHED_FIFO:     {}                                        ║",
+            check(self.sched_fifo)
+        );
+        println!(
+            "║    Memory lock:    {}                                        ║",
+            check(self.memory_locking)
+        );
+        println!(
+            "║    CPUs:           {} total, {} isolated                     ║",
+            self.cpu_count,
+            self.isolated_cpus.len()
+        );
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║  JITTER BENCHMARK @ 1kHz ({} samples)                       ║", self.jitter_samples);
-        println!("║    Min:    {:8.1} μs                                       ║", self.jitter_min_us);
-        println!("║    Mean:   {:8.1} μs                                       ║", self.jitter_mean_us);
-        println!("║    P50:    {:8.1} μs                                       ║", self.jitter_p50_us);
-        println!("║    P99:    {:8.1} μs                                       ║", self.jitter_p99_us);
-        println!("║    P999:   {:8.1} μs                                       ║", self.jitter_p999_us);
-        println!("║    Max:    {:8.1} μs                                       ║", self.jitter_max_us);
-        println!("║    Rate:   {:8.1} Hz (target: 1000 Hz)                     ║", self.actual_rate_hz);
+        println!(
+            "║  JITTER BENCHMARK @ 1kHz ({} samples)                       ║",
+            self.jitter_samples
+        );
+        println!(
+            "║    Min:    {:8.1} μs                                       ║",
+            self.jitter_min_us
+        );
+        println!(
+            "║    Mean:   {:8.1} μs                                       ║",
+            self.jitter_mean_us
+        );
+        println!(
+            "║    P50:    {:8.1} μs                                       ║",
+            self.jitter_p50_us
+        );
+        println!(
+            "║    P99:    {:8.1} μs                                       ║",
+            self.jitter_p99_us
+        );
+        println!(
+            "║    P999:   {:8.1} μs                                       ║",
+            self.jitter_p999_us
+        );
+        println!(
+            "║    Max:    {:8.1} μs                                       ║",
+            self.jitter_max_us
+        );
+        println!(
+            "║    Rate:   {:8.1} Hz (target: 1000 Hz)                     ║",
+            self.actual_rate_hz
+        );
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║  IPC BENCHMARK                                              ║");
-        println!("║    Latency:    {:8.0} ns per message                       ║", self.ipc_latency_ns);
-        println!("║    Throughput: {:8.0} msg/sec                              ║", self.ipc_throughput_msg_per_sec);
+        println!(
+            "║    Latency:    {:8.0} ns per message                       ║",
+            self.ipc_latency_ns
+        );
+        println!(
+            "║    Throughput: {:8.0} msg/sec                              ║",
+            self.ipc_throughput_msg_per_sec
+        );
         println!("╠══════════════════════════════════════════════════════════════╣");
 
         if self.issues.is_empty() {
             println!("║  No issues found — system is RT-ready.                     ║");
         } else {
-            println!("║  ISSUES ({})                                                ║", self.issues.len());
+            println!(
+                "║  ISSUES ({})                                                ║",
+                self.issues.len()
+            );
             for issue in &self.issues {
                 println!("║    ✗ {}", issue);
             }
@@ -210,7 +272,8 @@ struct JitterResult {
 
 fn measure_jitter(target_hz: u64, duration: Duration) -> JitterResult {
     let period = Duration::from_nanos(1_000_000_000 / target_hz);
-    let mut timestamps = Vec::with_capacity((target_hz as usize) * (duration.as_secs() as usize + 1));
+    let mut timestamps =
+        Vec::with_capacity((target_hz as usize) * (duration.as_secs() as usize + 1));
 
     let start = Instant::now();
     let mut next_tick = start + period;
@@ -226,12 +289,19 @@ fn measure_jitter(target_hz: u64, duration: Duration) -> JitterResult {
 
     if timestamps.len() < 2 {
         return JitterResult {
-            samples: 0, min: 0.0, mean: 0.0, p50: 0.0,
-            p99: 0.0, p999: 0.0, max: 0.0, actual_hz: 0.0,
+            samples: 0,
+            min: 0.0,
+            mean: 0.0,
+            p50: 0.0,
+            p99: 0.0,
+            p999: 0.0,
+            max: 0.0,
+            actual_hz: 0.0,
         };
     }
 
-    let mut deltas_us: Vec<f64> = timestamps.windows(2)
+    let mut deltas_us: Vec<f64> = timestamps
+        .windows(2)
         .map(|w| w[1].duration_since(w[0]).as_nanos() as f64 / 1000.0)
         .collect();
     deltas_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -264,7 +334,9 @@ fn measure_ipc() -> (f64, f64) {
     match topic {
         Ok(t) => {
             // Warmup
-            for i in 0..100u64 { t.send(i); }
+            for i in 0..100u64 {
+                t.send(i);
+            }
             while t.recv().is_some() {}
 
             // Measure

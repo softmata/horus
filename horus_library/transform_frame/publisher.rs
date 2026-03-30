@@ -359,12 +359,8 @@ mod tests {
         let tf = TransformFrame::new();
         tf.register_frame("world", None).unwrap();
         tf.register_frame("robot", Some("world")).unwrap();
-        tf.update_transform(
-            "robot",
-            &Transform::from_translation([2.0, 1.0, 0.0]),
-            5000,
-        )
-        .unwrap();
+        tf.update_transform("robot", &Transform::from_translation([2.0, 1.0, 0.0]), 5000)
+            .unwrap();
 
         let publisher = TransformFramePublisher::new(&tf).unwrap();
         assert!(publisher.publish_dynamic().is_ok());

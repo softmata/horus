@@ -3,12 +3,15 @@
 /// slow_node:    tick takes 15ms but budget is 5ms (triggers budget violation)
 /// crash_node:   panics after 200 ticks (tests node isolation)
 /// healthy_node: runs normally at 50Hz (should survive others' failures)
-
 use horus::prelude::*;
 
-struct SlowNode { tick_count: u64 }
+struct SlowNode {
+    tick_count: u64,
+}
 impl Node for SlowNode {
-    fn name(&self) -> &str { "slow_node" }
+    fn name(&self) -> &str {
+        "slow_node"
+    }
     fn tick(&mut self) {
         self.tick_count += 1;
         // Deliberately slow — exceeds budget
@@ -16,9 +19,13 @@ impl Node for SlowNode {
     }
 }
 
-struct CrashNode { tick_count: u64 }
+struct CrashNode {
+    tick_count: u64,
+}
 impl Node for CrashNode {
-    fn name(&self) -> &str { "crash_node" }
+    fn name(&self) -> &str {
+        "crash_node"
+    }
     fn tick(&mut self) {
         self.tick_count += 1;
         if self.tick_count == 200 {
@@ -27,8 +34,10 @@ impl Node for CrashNode {
     }
 }
 
+// Use Twist from horus_types (available via prelude) instead of CmdVel
+// which lives in horus-robotics (only a dev-dependency, not available for examples).
 struct HealthyNode {
-    pub_topic: Topic<CmdVel>,
+    pub_topic: Topic<Twist>,
     tick_count: u64,
 }
 impl HealthyNode {
@@ -40,10 +49,13 @@ impl HealthyNode {
     }
 }
 impl Node for HealthyNode {
-    fn name(&self) -> &str { "healthy_node" }
+    fn name(&self) -> &str {
+        "healthy_node"
+    }
     fn tick(&mut self) {
         self.tick_count += 1;
-        self.pub_topic.send(CmdVel::new(self.tick_count as f32, 0.0));
+        self.pub_topic
+            .send(Twist::new_2d(self.tick_count as f64, 0.0));
     }
 }
 
@@ -55,7 +67,8 @@ fn main() -> Result<()> {
         .tick_rate(50_u64.hz())
         .watchdog(200_u64.ms());
 
-    scheduler.add(SlowNode { tick_count: 0 })
+    scheduler
+        .add(SlowNode { tick_count: 0 })
         .rate(50_u64.hz())
         .budget(5_u64.ms())
         .order(0)
@@ -64,7 +77,8 @@ fn main() -> Result<()> {
     // crash_node removed — its panic triggers emergency stop which exits the scheduler.
     // Budget violations from slow_node are sufficient to test safety monitoring.
 
-    scheduler.add(HealthyNode::new()?)
+    scheduler
+        .add(HealthyNode::new()?)
         .rate(50_u64.hz())
         .order(2)
         .build()?;

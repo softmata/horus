@@ -543,7 +543,6 @@ pub enum DepSource {
     Git,
 }
 
-
 impl std::fmt::Display for DepSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -561,8 +560,7 @@ impl std::fmt::Display for DepSource {
 ///
 /// Used when a dependency needs more than just a version string.
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DetailedDependency {
     /// Version requirement (e.g., "1.0", ">=1.24", "^2.0").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -620,7 +618,6 @@ pub struct DetailedDependency {
 fn is_false(b: &bool) -> bool {
     !*b
 }
-
 
 impl DetailedDependency {
     /// Resolve the effective source of this dependency.
@@ -3256,9 +3253,7 @@ files = ["*.tmp"]
         let reparsed: HorusManifest = toml::from_str(&serialized).unwrap();
         assert_eq!(reparsed.package.name, original.package.name);
         assert_eq!(reparsed.package.version, original.package.version);
-        assert_eq!(
-            reparsed.package.description, original.package.description
-        );
+        assert_eq!(reparsed.package.description, original.package.description);
         assert_eq!(reparsed.dependencies.len(), original.dependencies.len());
         assert_eq!(
             reparsed.dev_dependencies.len(),
@@ -3369,8 +3364,15 @@ version = "0.1.0"
         let members = resolve_workspace_members(ws, root).unwrap();
 
         assert_eq!(members.len(), 2, "Should find 2 members, got {:?}", members);
-        let names: Vec<&str> = members.iter().map(|(_, m)| m.package.name.as_str()).collect();
-        assert!(names.contains(&"messages"), "Missing 'messages' in {:?}", names);
+        let names: Vec<&str> = members
+            .iter()
+            .map(|(_, m)| m.package.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"messages"),
+            "Missing 'messages' in {:?}",
+            names
+        );
         assert!(names.contains(&"driver"), "Missing 'driver' in {:?}", names);
     }
 
@@ -3569,7 +3571,10 @@ version = "0.1.0"
             sim_drivers: BTreeMap::new(),
             scripts: {
                 let mut s = BTreeMap::new();
-                s.insert("build-all".to_string(), "cargo build --workspace".to_string());
+                s.insert(
+                    "build-all".to_string(),
+                    "cargo build --workspace".to_string(),
+                );
                 s
             },
             ignore: IgnoreConfig::default(),
@@ -3803,7 +3808,10 @@ features = ["full"]
                 assert_eq!(d.version.as_deref(), Some("1.0"));
                 assert_eq!(d.features, vec!["full"]);
             }
-            other => panic!("expected Detailed with version and features, got {:?}", other),
+            other => panic!(
+                "expected Detailed with version and features, got {:?}",
+                other
+            ),
         }
     }
 

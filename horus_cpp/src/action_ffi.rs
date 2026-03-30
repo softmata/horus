@@ -11,25 +11,28 @@
 //!
 //! The FFI layer provides opaque client/server types with lifecycle management.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use horus_core::communication::Topic;
 use crate::types_ffi::JsonWireMessage;
+use horus_core::communication::Topic;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Goal status — matches Rust GoalStatus enum.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FfiGoalStatus {
-    Pending   = 0,
-    Active    = 1,
+    Pending = 0,
+    Active = 1,
     Succeeded = 2,
-    Aborted   = 3,
-    Canceled  = 4,
-    Rejected  = 5,
+    Aborted = 3,
+    Canceled = 4,
+    Rejected = 5,
 }
 
 impl FfiGoalStatus {
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Aborted | Self::Canceled | Self::Rejected)
+        matches!(
+            self,
+            Self::Succeeded | Self::Aborted | Self::Canceled | Self::Rejected
+        )
     }
 
     pub fn is_active(self) -> bool {
@@ -97,8 +100,8 @@ pub fn action_client_send_goal(
     client: &FfiActionClient,
     goal_json: &str,
 ) -> Result<Box<FfiGoalHandle>, String> {
-    let _: serde_json::Value = serde_json::from_str(goal_json)
-        .map_err(|e| format!("Invalid goal JSON: {}", e))?;
+    let _: serde_json::Value =
+        serde_json::from_str(goal_json).map_err(|e| format!("Invalid goal JSON: {}", e))?;
 
     let goal_id = client.next_goal_id.fetch_add(1, Ordering::Relaxed);
 
@@ -169,7 +172,11 @@ pub fn action_server_set_accept_handler(
 ) {
     server.accept_handler = Some(Box::new(move |goal_bytes: &[u8]| -> FfiGoalResponse {
         let result = handler(goal_bytes.as_ptr(), goal_bytes.len());
-        if result == 0 { FfiGoalResponse::Accept } else { FfiGoalResponse::Reject }
+        if result == 0 {
+            FfiGoalResponse::Accept
+        } else {
+            FfiGoalResponse::Reject
+        }
     }));
 }
 
@@ -275,7 +282,9 @@ mod tests {
     fn server_accept_handler() {
         let mut server = action_server_new("nav");
 
-        extern "C" fn always_accept(_: *const u8, _: usize) -> u8 { 0 }
+        extern "C" fn always_accept(_: *const u8, _: usize) -> u8 {
+            0
+        }
         action_server_set_accept_handler(&mut server, always_accept);
 
         assert!(server.accept_handler.is_some());
@@ -287,7 +296,9 @@ mod tests {
     fn server_reject_handler() {
         let mut server = action_server_new("nav");
 
-        extern "C" fn always_reject(_: *const u8, _: usize) -> u8 { 1 }
+        extern "C" fn always_reject(_: *const u8, _: usize) -> u8 {
+            1
+        }
         action_server_set_accept_handler(&mut server, always_reject);
 
         let handler = server.accept_handler.as_ref().unwrap();
@@ -357,7 +368,9 @@ mod tests {
         assert!(!action_server_is_ready(&server)); // Only execute handler, no accept
 
         // Set accept too
-        extern "C" fn accept(_: *const u8, _: usize) -> u8 { 0 }
+        extern "C" fn accept(_: *const u8, _: usize) -> u8 {
+            0
+        }
         action_server_set_accept_handler(&mut server, accept);
         assert!(action_server_is_ready(&server)); // Both handlers set
 

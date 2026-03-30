@@ -172,5 +172,5 @@ fn test_log_replication_malformed_no_panic() {
     handle_remote_logs(&[]); // empty
     handle_remote_logs(&[0, 1]); // too short
     handle_remote_logs(&[0, 0, 0xFF, 0xFF]); // huge host_id_len
-    // None should panic
+                                             // None should panic
 }

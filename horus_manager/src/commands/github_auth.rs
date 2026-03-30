@@ -1881,7 +1881,10 @@ mod tests {
 
         // Invalid tokens — wrong or missing prefix
         assert!(!validate_token(""), "empty string is invalid");
-        assert!(!validate_token("horus_key_"), "bare prefix with no content is invalid");
+        assert!(
+            !validate_token("horus_key_"),
+            "bare prefix with no content is invalid"
+        );
         assert!(!validate_token("horus_key"), "missing trailing underscore");
         assert!(!validate_token("invalid_token_abc123"), "wrong prefix");
         assert!(!validate_token("HORUS_KEY_abc123"), "case-sensitive prefix");

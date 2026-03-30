@@ -155,12 +155,7 @@ fn test_async_client_check_returns_none_without_server() {
     // which works correctly regardless.
 
     let mut client = AsyncServiceClient::<EdgeAsyncChk>::new().unwrap();
-    let mut pending = client.call_async(
-        EdgeAsyncChkRequest {
-            msg: "ping".into(),
-        },
-        500_u64.ms(),
-    );
+    let mut pending = client.call_async(EdgeAsyncChkRequest { msg: "ping".into() }, 500_u64.ms());
 
     // Immediately after call_async — not expired, no response
     assert!(
@@ -293,7 +288,11 @@ fn test_two_clients_responses_isolated() {
 
     // Server doubles the input
     let _server = ServiceServerBuilder::<EdgeIsoA>::new()
-        .on_request(|req| Ok(EdgeIsoAResponse { doubled: req.val * 2 }))
+        .on_request(|req| {
+            Ok(EdgeIsoAResponse {
+                doubled: req.val * 2,
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
@@ -306,7 +305,10 @@ fn test_two_clients_responses_isolated() {
 
     // Warmup — retry until server is responsive
     for _ in 0..5 {
-        if client_a.call(EdgeIsoARequest { val: 0 }, 2_u64.secs()).is_ok() {
+        if client_a
+            .call(EdgeIsoARequest { val: 0 }, 2_u64.secs())
+            .is_ok()
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -375,7 +377,11 @@ fn test_two_clients_concurrent_isolation() {
     cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<EdgeIsoB>::new()
-        .on_request(|req| Ok(EdgeIsoBResponse { tripled: req.val * 3 }))
+        .on_request(|req| {
+            Ok(EdgeIsoBResponse {
+                tripled: req.val * 3,
+            })
+        })
         .poll_interval(1_u64.ms())
         .build()
         .unwrap();
@@ -428,6 +434,10 @@ fn test_two_clients_concurrent_isolation() {
         }
     });
 
-    handle_a.join().expect("thread A panicked — response mismatch detected");
-    handle_b.join().expect("thread B panicked — response mismatch detected");
+    handle_a
+        .join()
+        .expect("thread A panicked — response mismatch detected");
+    handle_b
+        .join()
+        .expect("thread B panicked — response mismatch detected");
 }

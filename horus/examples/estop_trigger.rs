@@ -2,7 +2,6 @@
 /// Used for E2E testing of launch e-stop propagation.
 ///
 /// Usage: ./estop_trigger
-
 use horus::prelude::*;
 use horus_types::EmergencyStop;
 

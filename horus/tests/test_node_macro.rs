@@ -36,9 +36,6 @@ fn test_minimal_node_compiles_and_implements_node() {
     node.tick();
     // shutdown should succeed
     node.shutdown().unwrap();
-    // No publishers or subscribers
-    assert!(node.publishers().is_empty());
-    assert!(node.subscribers().is_empty());
 }
 
 #[test]

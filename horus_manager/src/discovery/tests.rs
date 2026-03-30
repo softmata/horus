@@ -615,7 +615,9 @@ fn test_discover_shared_memory_with_real_topic() {
     // Call the uncached version directly to avoid cache issues in parallel tests
     let result = discover_shared_memory_uncached();
     if let Ok(topics) = result {
-        let found = topics.iter().any(|t| t.topic_name.contains("_test.discover"));
+        let found = topics
+            .iter()
+            .any(|t| t.topic_name.contains("_test.discover"));
         assert!(
             found,
             "Should discover _test.discover topic, found: {:?}",
@@ -747,8 +749,8 @@ fn test_discovery_cache_update_nodes() {
         host_id: String::new(),
         is_bridged: false,
         bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+        launch_session: None,
+        launch_name: None,
     }];
 
     cache.update_nodes(nodes);
@@ -956,8 +958,8 @@ fn test_health_status_variants() {
             host_id: String::new(),
             is_bridged: false,
             bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+            launch_session: None,
+            launch_name: None,
         };
         let debug = format!("{:?}", node.health);
         assert!(!debug.is_empty(), "Health debug should not be empty");
@@ -1070,8 +1072,8 @@ fn test_cache_update_replaces_data() {
             host_id: String::new(),
             is_bridged: false,
             bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+            launch_session: None,
+            launch_name: None,
         },
         NodeStatus {
             name: "node_b".to_string(),
@@ -1103,8 +1105,8 @@ fn test_cache_update_replaces_data() {
             host_id: String::new(),
             is_bridged: false,
             bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+            launch_session: None,
+            launch_name: None,
         },
     ];
     cache.update_nodes(nodes1);
@@ -1141,8 +1143,8 @@ fn test_cache_update_replaces_data() {
         host_id: String::new(),
         is_bridged: false,
         bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+        launch_session: None,
+        launch_name: None,
     }];
     cache.update_nodes(nodes2);
     assert_eq!(cache.nodes.len(), 1, "update should replace, not append");
@@ -1208,8 +1210,8 @@ fn test_cache_concurrent_read_write_safety() {
                     host_id: String::new(),
                     is_bridged: false,
                     bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+                    launch_session: None,
+                    launch_name: None,
                 }]);
                 drop(c);
                 std::thread::yield_now();
@@ -1264,8 +1266,8 @@ fn test_cache_miss_refresh_hit_cycle() {
         host_id: String::new(),
         is_bridged: false,
         bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+        launch_session: None,
+        launch_name: None,
     }]);
 
     // Step 3: Cache hit (fresh)
@@ -1312,8 +1314,8 @@ fn test_stale_data_dead_node_replaced_on_refresh() {
         host_id: String::new(),
         is_bridged: false,
         bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+        launch_session: None,
+        launch_name: None,
     }]);
     assert_eq!(cache.nodes.len(), 1);
     assert_eq!(cache.nodes[0].name, "dead_node");
@@ -1349,8 +1351,8 @@ fn test_stale_data_dead_node_replaced_on_refresh() {
         host_id: String::new(),
         is_bridged: false,
         bridge_protocol: String::new(),
-                launch_session: None,
-                launch_name: None,
+        launch_session: None,
+        launch_name: None,
     }]);
     assert_eq!(cache.nodes.len(), 1);
     assert_eq!(cache.nodes[0].name, "live_node");
@@ -2617,7 +2619,11 @@ fn test_topic_status_classification_comprehensive() {
 
     // Active: processes exist, recent modification
     let (active_status, _) = compute_topic_status(&live_procs, Some(SystemTime::now()));
-    assert_eq!(active_status, TopicStatus::Active, "recent + alive = Active");
+    assert_eq!(
+        active_status,
+        TopicStatus::Active,
+        "recent + alive = Active"
+    );
 
     // Idle: processes exist, old modification (> 30s)
     let (idle_status, _) = compute_topic_status(
@@ -2628,25 +2634,41 @@ fn test_topic_status_classification_comprehensive() {
 
     // Idle: no processes but recent modification (process just exited)
     let (idle_recent, _) = compute_topic_status(&no_procs, Some(SystemTime::now()));
-    assert_eq!(idle_recent, TopicStatus::Idle, "no procs + recent = Idle (just exited)");
+    assert_eq!(
+        idle_recent,
+        TopicStatus::Idle,
+        "no procs + recent = Idle (just exited)"
+    );
 
     // Stale: no processes, old modification (> 5 min)
     let (stale_status, _) = compute_topic_status(
         &no_procs,
         Some(SystemTime::now() - Duration::from_secs(600)),
     );
-    assert_eq!(stale_status, TopicStatus::Stale, "no procs + 10min old = Stale");
+    assert_eq!(
+        stale_status,
+        TopicStatus::Stale,
+        "no procs + 10min old = Stale"
+    );
 
     // Stale: no processes, no modification time
     let (stale_none, _) = compute_topic_status(&no_procs, None);
-    assert_eq!(stale_none, TopicStatus::Stale, "no processes + no time = Stale");
+    assert_eq!(
+        stale_none,
+        TopicStatus::Stale,
+        "no processes + no time = Stale"
+    );
 }
 
 #[test]
 fn test_format_age_edge_cases() {
     // Just now (0 seconds)
     let age = format_age(0);
-    assert!(!age.is_empty(), "0s should produce non-empty string, got: '{}'", age);
+    assert!(
+        !age.is_empty(),
+        "0s should produce non-empty string, got: '{}'",
+        age
+    );
 
     // 1 hour
     let age = format_age(3600);

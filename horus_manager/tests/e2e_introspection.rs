@@ -26,15 +26,19 @@ fn horus_cmd() -> Command {
 fn test_node_list_discovers_simulated_nodes() {
     let mut rt = HorusTestRuntime::new();
     rt.add_node(TestNodeConfig::sensor("e2e_lidar", "e2e_scan", "LaserScan"))
-        .add_node(TestNodeConfig::actuator("e2e_motor", "e2e_cmd_vel", "CmdVel"))
+        .add_node(TestNodeConfig::actuator(
+            "e2e_motor",
+            "e2e_cmd_vel",
+            "CmdVel",
+        ))
         .add_node(TestNodeConfig::bare("e2e_planner"));
 
-    assert!(rt.wait_ready(2_u64.secs()), "nodes should become discoverable");
+    assert!(
+        rt.wait_ready(2_u64.secs()),
+        "nodes should become discoverable"
+    );
 
-    let output = horus_cmd()
-        .args(["node", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["node", "list"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -93,10 +97,7 @@ fn test_node_list_detects_removal() {
     assert!(rt.wait_ready(2_u64.secs()));
 
     // Verify it's there
-    let output = horus_cmd()
-        .args(["node", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["node", "list"]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -114,10 +115,7 @@ fn test_node_list_detects_removal() {
     rt.refresh_discovery();
 
     // Now it should be gone
-    let output = horus_cmd()
-        .args(["node", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["node", "list"]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -133,15 +131,16 @@ fn test_node_list_detects_removal() {
 #[test]
 fn test_topic_list_discovers_topics() {
     let mut rt = HorusTestRuntime::new();
-    rt.add_node(TestNodeConfig::sensor("e2e_imu_node", "e2e_imu_data", "Imu"))
-        .add_topic("e2e_imu_data", 4096);
+    rt.add_node(TestNodeConfig::sensor(
+        "e2e_imu_node",
+        "e2e_imu_data",
+        "Imu",
+    ))
+    .add_topic("e2e_imu_data", 4096);
 
     assert!(rt.wait_ready(2_u64.secs()));
 
-    let output = horus_cmd()
-        .args(["topic", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["topic", "list"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -159,24 +158,32 @@ fn test_topic_list_discovers_topics() {
 #[test]
 fn test_multi_node_system_discovery() {
     let mut rt = HorusTestRuntime::new();
-    rt.add_node(TestNodeConfig::sensor("e2e_lidar_2", "e2e_scan_2", "LaserScan"))
-        .add_node(TestNodeConfig::sensor("e2e_imu_2", "e2e_imu_2", "Imu"))
-        .add_node(TestNodeConfig::processor(
-            "e2e_planner_2",
-            "e2e_scan_2",
-            "LaserScan",
-            "e2e_path_2",
-            "NavPath",
-        ))
-        .add_node(TestNodeConfig::actuator("e2e_motor_2", "e2e_cmd_2", "CmdVel"))
-        .add_node(TestNodeConfig::bare("e2e_logger_2"));
+    rt.add_node(TestNodeConfig::sensor(
+        "e2e_lidar_2",
+        "e2e_scan_2",
+        "LaserScan",
+    ))
+    .add_node(TestNodeConfig::sensor("e2e_imu_2", "e2e_imu_2", "Imu"))
+    .add_node(TestNodeConfig::processor(
+        "e2e_planner_2",
+        "e2e_scan_2",
+        "LaserScan",
+        "e2e_path_2",
+        "NavPath",
+    ))
+    .add_node(TestNodeConfig::actuator(
+        "e2e_motor_2",
+        "e2e_cmd_2",
+        "CmdVel",
+    ))
+    .add_node(TestNodeConfig::bare("e2e_logger_2"));
 
-    assert!(rt.wait_ready(2_u64.secs()), "all 5 nodes should be discoverable");
+    assert!(
+        rt.wait_ready(2_u64.secs()),
+        "all 5 nodes should be discoverable"
+    );
 
-    let output = horus_cmd()
-        .args(["node", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["node", "list"]).output().unwrap();
 
     let combined = format!(
         "{}{}",
@@ -184,7 +191,13 @@ fn test_multi_node_system_discovery() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    for name in &["e2e_lidar_2", "e2e_imu_2", "e2e_planner_2", "e2e_motor_2", "e2e_logger_2"] {
+    for name in &[
+        "e2e_lidar_2",
+        "e2e_imu_2",
+        "e2e_planner_2",
+        "e2e_motor_2",
+        "e2e_logger_2",
+    ] {
         assert!(
             combined.contains(name),
             "node list should contain '{}', got: {}",
@@ -202,10 +215,7 @@ fn test_multi_node_system_discovery() {
 #[test]
 fn test_service_list_runs() {
     // Service list should work even with no services running
-    let output = horus_cmd()
-        .args(["service", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["service", "list"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -218,10 +228,7 @@ fn test_service_list_runs() {
 /// Action list command runs without panic.
 #[test]
 fn test_action_list_runs() {
-    let output = horus_cmd()
-        .args(["action", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["action", "list"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -234,10 +241,7 @@ fn test_action_list_runs() {
 /// Param list command runs without panic.
 #[test]
 fn test_param_list_runs() {
-    let output = horus_cmd()
-        .args(["param", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["param", "list"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -261,10 +265,7 @@ fn test_log_shows_injected_entries() {
     rt.inject_log("e2e_planner_log", "warn", "Path near obstacle");
     rt.inject_log("e2e_motor_log", "error", "Motor timeout");
 
-    let output = horus_cmd()
-        .args(["log"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["log"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -273,8 +274,11 @@ fn test_log_shows_injected_entries() {
     // Should show at least some of the injected logs
     // (log buffer may have entries from other tests too)
     assert!(
-        combined.contains("Planning") || combined.contains("planner") || combined.contains("Motor")
-            || combined.contains("log") || output.status.success(),
+        combined.contains("Planning")
+            || combined.contains("planner")
+            || combined.contains("Motor")
+            || combined.contains("log")
+            || output.status.success(),
         "horus log should show entries or succeed, got: {}",
         combined
     );
@@ -340,10 +344,7 @@ fn test_blackbox_shows_injected_events() {
     rt.inject_blackbox_custom("deadline_miss", "Motor node exceeded 1ms deadline");
     rt.inject_blackbox_custom("error", "Sensor read failed");
 
-    let output = horus_cmd()
-        .args(["blackbox"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["blackbox"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -359,7 +360,9 @@ fn test_blackbox_shows_injected_events() {
     let combined = format!("{}{}", stdout, stderr);
     if output.status.success() && !combined.contains("No blackbox") {
         assert!(
-            combined.contains("deadline") || combined.contains("Motor") || combined.contains("error")
+            combined.contains("deadline")
+                || combined.contains("Motor")
+                || combined.contains("error")
                 || combined.contains("event"),
             "blackbox should show injected events, got: {}",
             combined
@@ -389,10 +392,7 @@ fn test_blackbox_anomalies() {
 /// Transform frame list runs without panic.
 #[test]
 fn test_frame_list_runs() {
-    let output = horus_cmd()
-        .args(["frame", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["frame", "list"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -405,10 +405,7 @@ fn test_frame_list_runs() {
 /// Transform frame tree runs without panic.
 #[test]
 fn test_frame_tree_runs() {
-    let output = horus_cmd()
-        .args(["frame", "tree"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["frame", "tree"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -421,19 +418,13 @@ fn test_frame_tree_runs() {
 /// Message list shows known message types.
 #[test]
 fn test_msg_list_shows_types() {
-    let output = horus_cmd()
-        .args(["msg", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["msg", "list"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{}{}", stdout, stderr);
 
-    assert!(
-        !stderr.contains("panic"),
-        "horus msg list should not panic"
-    );
+    assert!(!stderr.contains("panic"), "horus msg list should not panic");
 
     // Should list some standard types
     if output.status.success() {
@@ -452,16 +443,10 @@ fn test_msg_list_shows_types() {
 /// Message show displays field layout for a type.
 #[test]
 fn test_msg_show_displays_fields() {
-    let output = horus_cmd()
-        .args(["msg", "show", "Imu"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["msg", "show", "Imu"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("panic"),
-        "horus msg show should not panic"
-    );
+    assert!(!stderr.contains("panic"), "horus msg show should not panic");
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -480,10 +465,7 @@ fn test_msg_show_displays_fields() {
 /// Record list runs without panic (may show no recordings).
 #[test]
 fn test_record_list_runs() {
-    let output = horus_cmd()
-        .args(["record", "list"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["record", "list"]).output().unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

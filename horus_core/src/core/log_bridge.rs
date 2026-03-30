@@ -192,7 +192,12 @@ mod tests {
             "log::Error should produce LogType::Error in buffer. \
              Before: {before}, after: {}, entries: {:?}",
             entries.len(),
-            entries.iter().rev().take(3).map(|e| &e.message).collect::<Vec<_>>()
+            entries
+                .iter()
+                .rev()
+                .take(3)
+                .map(|e| &e.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -212,8 +217,7 @@ mod tests {
         log_via_bridge(Level::Info, "bridge_info_test_unique_44");
         let entries = GLOBAL_LOG_BUFFER.get_all();
         let found = entries.iter().any(|e| {
-            e.message.contains("bridge_info_test_unique_44")
-                && matches!(e.log_type, LogType::Info)
+            e.message.contains("bridge_info_test_unique_44") && matches!(e.log_type, LogType::Info)
         });
         assert!(found, "log::Info should produce LogType::Info");
     }
@@ -233,10 +237,13 @@ mod tests {
     fn test_bridge_node_name_is_target() {
         log_via_bridge(Level::Info, "bridge_target_test_unique_46");
         let entries = GLOBAL_LOG_BUFFER.get_all();
-        let found = entries.iter().find(|e| e.message.contains("bridge_target_test_unique_46"));
+        let found = entries
+            .iter()
+            .find(|e| e.message.contains("bridge_target_test_unique_46"));
         assert!(found.is_some(), "should find the entry");
         assert_eq!(
-            found.unwrap().node_name, "test::log_bridge",
+            found.unwrap().node_name,
+            "test::log_bridge",
             "node_name should be the log target"
         );
     }

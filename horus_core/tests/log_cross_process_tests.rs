@@ -115,11 +115,7 @@ fn cross_process_child_logs_visible_to_parent() {
 
     let marker = uid("child_visible");
     let count = 10;
-    let child = spawn_log_child(
-        "cross_process_child_logs_visible_to_parent",
-        &marker,
-        count,
-    );
+    let child = spawn_log_child("cross_process_child_logs_visible_to_parent", &marker, count);
     let stdout = wait_and_get_stdout(child);
     assert!(
         stdout.contains("PUSHED:10"),
@@ -129,10 +125,7 @@ fn cross_process_child_logs_visible_to_parent() {
 
     // Parent reads the shared buffer — child's entries should be visible
     let all = GLOBAL_LOG_BUFFER.get_all();
-    let found: Vec<_> = all
-        .iter()
-        .filter(|e| e.message.contains(&marker))
-        .collect();
+    let found: Vec<_> = all.iter().filter(|e| e.message.contains(&marker)).collect();
 
     assert!(
         found.len() >= count,
@@ -211,8 +204,12 @@ fn cross_process_concurrent_writes_no_corruption() {
         assert!(
             matches!(
                 e.log_type,
-                LogType::Info | LogType::Warning | LogType::Error | LogType::Debug
-                    | LogType::Publish | LogType::Subscribe
+                LogType::Info
+                    | LogType::Warning
+                    | LogType::Error
+                    | LogType::Debug
+                    | LogType::Publish
+                    | LogType::Subscribe
             ),
             "corrupted log_type in entry: {:?}",
             e.log_type
@@ -250,10 +247,7 @@ fn crash_survival_entries_persist_after_child_exit() {
 
     // Entries written before crash must persist in SHM buffer
     let all = GLOBAL_LOG_BUFFER.get_all();
-    let found: Vec<_> = all
-        .iter()
-        .filter(|e| e.message.contains(&marker))
-        .collect();
+    let found: Vec<_> = all.iter().filter(|e| e.message.contains(&marker)).collect();
 
     assert!(
         found.len() >= count,
@@ -284,18 +278,11 @@ fn cross_process_node_name_contains_child_pid() {
     }
 
     let marker = uid("node_attr");
-    let child = spawn_log_child(
-        "cross_process_node_name_contains_child_pid",
-        &marker,
-        5,
-    );
+    let child = spawn_log_child("cross_process_node_name_contains_child_pid", &marker, 5);
     let _stdout = wait_and_get_stdout(child);
 
     let all = GLOBAL_LOG_BUFFER.get_all();
-    let found: Vec<_> = all
-        .iter()
-        .filter(|e| e.message.contains(&marker))
-        .collect();
+    let found: Vec<_> = all.iter().filter(|e| e.message.contains(&marker)).collect();
 
     assert!(!found.is_empty(), "should find child entries");
 
@@ -376,11 +363,7 @@ fn cross_process_error_buffer_visibility() {
 
     let marker = uid("xproc_errbuf");
     let count = 10;
-    let child = spawn_log_child(
-        "cross_process_error_buffer_visibility",
-        &marker,
-        count,
-    );
+    let child = spawn_log_child("cross_process_error_buffer_visibility", &marker, count);
     let stdout = wait_and_get_stdout(child);
     assert!(stdout.contains("PUSHED:10"), "child should push 10 entries");
 

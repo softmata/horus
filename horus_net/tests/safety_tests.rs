@@ -22,7 +22,13 @@ fn import_deny_rejects_remote_cmd_vel() {
 #[test]
 fn import_auto_allows_sub_only_topics() {
     let reg = Arc::new(TopicRegistry::new());
-    reg.register("cmd_vel", topic_hash("cmd_vel"), 16, TopicRole::Subscriber, true);
+    reg.register(
+        "cmd_vel",
+        topic_hash("cmd_vel"),
+        16,
+        TopicRole::Subscriber,
+        true,
+    );
     reg.register("imu", topic_hash("imu"), 64, TopicRole::Publisher, true);
 
     let guard = ImportExportGuard::new_default(reg);
@@ -87,7 +93,7 @@ fn heartbeat_detects_link_loss_within_200ms() {
     let mut hb = SafetyHeartbeat::with_config(
         [0xAA; 16],
         Duration::from_millis(10), // 10ms interval for fast test
-        3,                          // 3 missed
+        3,                         // 3 missed
         LinkLostAction::SafeState,
     );
     let peer_id = [1u8; 16];

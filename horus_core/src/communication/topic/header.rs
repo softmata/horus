@@ -653,7 +653,7 @@ impl TopicHeader {
                         (1, _) if subs <= 1 => BackendMode::SpscShm,
                         (_, 1) if pubs > 1 => BackendMode::MpscShm,
                         (1, _) if subs > 1 => BackendMode::SpmcShm,
-                        (_, _, ) if is_pod => BackendMode::PodShm,
+                        (_, _) if is_pod => BackendMode::PodShm,
                         _ => BackendMode::FanoutShm,
                     }
                 } else {
@@ -662,7 +662,7 @@ impl TopicHeader {
                         (p, s) if p <= 1 && s <= 1 => BackendMode::SpscShm,
                         (1, _) if subs > 1 => BackendMode::SpmcShm,
                         (_, _) if pubs > 1 && subs <= 1 => BackendMode::MpscShm,
-                        (_, _, ) if is_pod => BackendMode::PodShm,
+                        (_, _) if is_pod => BackendMode::PodShm,
                         _ => BackendMode::FanoutShm,
                     }
                 }

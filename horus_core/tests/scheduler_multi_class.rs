@@ -244,9 +244,7 @@ fn test_tick_once_all_vs_tick_for_filtered() {
     );
 
     // Phase 2: tick_for with only "tf_alpha" — run for 100ms
-    scheduler
-        .tick_for(&["tf_alpha"], 100_u64.ms())
-        .unwrap();
+    scheduler.tick_for(&["tf_alpha"], 100_u64.ms()).unwrap();
 
     let alpha_final = alpha_count.load(Ordering::SeqCst);
     let beta_final = beta_count.load(Ordering::SeqCst);

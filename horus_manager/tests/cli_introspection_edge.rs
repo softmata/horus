@@ -451,10 +451,7 @@ fn test_msg_list_returns_all_message_types() {
 
     // Spot-check a few known types are present
     let items = json["items"].as_array().expect("items should be an array");
-    let names: Vec<&str> = items
-        .iter()
-        .filter_map(|i| i["name"].as_str())
-        .collect();
+    let names: Vec<&str> = items.iter().filter_map(|i| i["name"].as_str()).collect();
 
     for expected in &[
         "CmdVel",
@@ -473,8 +470,6 @@ fn test_msg_list_returns_all_message_types() {
             "expected message type '{expected}' not found in list. Got: {names:?}"
         );
     }
-
-
 }
 
 // ============================================================================
@@ -531,8 +526,6 @@ fn test_msg_show_unknown_type_returns_error() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("NonexistentType"));
-
-
 }
 
 // ============================================================================
@@ -550,8 +543,6 @@ fn test_msg_info_case_insensitive() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"name\""));
-
-
 }
 
 // ============================================================================
@@ -568,8 +559,6 @@ fn test_msg_info_module_qualified() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"name\""));
-
-
 }
 
 // ============================================================================
@@ -610,8 +599,6 @@ fn test_msg_list_filter_narrows_results() {
             name
         );
     }
-
-
 }
 
 // ============================================================================
@@ -634,8 +621,6 @@ fn test_msg_list_filter_no_match() {
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let count = json["count"].as_u64().unwrap();
     assert_eq!(count, 0, "nonsensical filter should return 0 items");
-
-
 }
 
 // ============================================================================
@@ -652,8 +637,6 @@ fn test_msg_list_verbose_succeeds() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Message Type"));
-
-
 }
 
 // ============================================================================
@@ -673,11 +656,7 @@ fn test_msg_hash_known_type() {
     assert!(output.status.success());
 
     let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    assert_eq!(
-        hash.len(),
-        16,
-        "hash should be 16 hex chars, got '{hash}'"
-    );
+    assert_eq!(hash.len(), 16, "hash should be 16 hex chars, got '{hash}'");
     assert!(
         hash.chars().all(|c| c.is_ascii_hexdigit()),
         "hash should be valid hex, got '{hash}'"
@@ -698,8 +677,6 @@ fn test_msg_hash_unknown_type_returns_error() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("DoesNotExist"));
-
-
 }
 
 // ============================================================================
@@ -735,10 +712,7 @@ fn test_msg_hash_json_output() {
 
 #[test]
 fn test_msg_info_empty_struct() {
-    let files = vec![(
-        "empty.rs",
-        "pub struct Marker {}\n",
-    )];
+    let files = vec![("empty.rs", "pub struct Marker {}\n")];
     let (_tmp, root) = setup_temp_messages(&files);
 
     let output = horus_cmd()
@@ -759,8 +733,6 @@ fn test_msg_info_empty_struct() {
         "Marker should have no fields, got {:?}",
         fields
     );
-
-
 }
 
 // ============================================================================
@@ -778,8 +750,6 @@ fn test_msg_list_empty_dir() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No message types found"));
-
-
 }
 
 // ============================================================================
@@ -790,10 +760,7 @@ fn test_msg_list_empty_dir() {
 fn test_msg_list_skips_mod_rs() {
     let files = vec![
         ("mod.rs", "pub mod sensor;\npub mod control;\n"),
-        (
-            "sensor.rs",
-            "pub struct OnlyType { pub x: f64, }\n",
-        ),
+        ("sensor.rs", "pub struct OnlyType { pub x: f64, }\n"),
     ];
     let (_tmp, root) = setup_temp_messages(&files);
 
@@ -814,8 +781,6 @@ fn test_msg_list_skips_mod_rs() {
 
     let items = json["items"].as_array().unwrap();
     assert_eq!(items[0]["name"].as_str(), Some("OnlyType"));
-
-
 }
 
 // ============================================================================
@@ -842,8 +807,6 @@ fn test_msg_hash_deterministic() {
         hash1, hash2,
         "hash should be deterministic across invocations"
     );
-
-
 }
 
 // ============================================================================
@@ -852,12 +815,7 @@ fn test_msg_hash_deterministic() {
 
 #[test]
 fn test_msg_list_ignores_non_rs_files() {
-    let files = vec![
-        (
-            "real.rs",
-            "pub struct RealMsg { pub value: f64, }\n",
-        ),
-    ];
+    let files = vec![("real.rs", "pub struct RealMsg { pub value: f64, }\n")];
     let (_tmp, root) = setup_temp_messages(&files);
 
     // Add a non-.rs file manually
@@ -877,8 +835,6 @@ fn test_msg_list_ignores_non_rs_files() {
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let count = json["count"].as_u64().unwrap();
     assert_eq!(count, 1, "only .rs files should be parsed, got {count}");
-
-
 }
 
 // ============================================================================
@@ -919,8 +875,6 @@ fn test_msg_info_field_types_present() {
             "field should have a type: {field:?}"
         );
     }
-
-
 }
 
 // ============================================================================
@@ -958,8 +912,6 @@ fn test_msg_list_json_schema() {
         "item should have 'fields' count"
     );
     assert!(first["hash"].is_string(), "item should have 'hash'");
-
-
 }
 
 // ============================================================================
@@ -997,8 +949,6 @@ pub struct DocTest {
         doc.contains("well-documented"),
         "doc should contain the doc comment text, got: '{doc}'"
     );
-
-
 }
 
 // ============================================================================
@@ -1015,8 +965,6 @@ fn test_msg_list_compact_mode() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Total:"));
-
-
 }
 
 // ============================================================================
@@ -1041,9 +989,16 @@ fn test_msg_hash_differs_across_types() {
     let hash_imu = get_hash("Imu");
     let hash_cmdvel = get_hash("CmdVel");
 
-    assert_ne!(hash_twist, hash_imu, "Twist and Imu should have different hashes");
-    assert_ne!(hash_twist, hash_cmdvel, "Twist and CmdVel should have different hashes");
-    assert_ne!(hash_imu, hash_cmdvel, "Imu and CmdVel should have different hashes");
-
-
+    assert_ne!(
+        hash_twist, hash_imu,
+        "Twist and Imu should have different hashes"
+    );
+    assert_ne!(
+        hash_twist, hash_cmdvel,
+        "Twist and CmdVel should have different hashes"
+    );
+    assert_ne!(
+        hash_imu, hash_cmdvel,
+        "Imu and CmdVel should have different hashes"
+    );
 }

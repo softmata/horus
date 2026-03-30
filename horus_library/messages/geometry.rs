@@ -1443,7 +1443,10 @@ mod tests {
     fn test_quaternion_from_euler_90_yaw_is_unit() {
         let q = Quaternion::from_euler(0.0, 0.0, std::f64::consts::FRAC_PI_2);
         let norm = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
-        assert!((norm - 1.0).abs() < 1e-10, "from_euler must produce unit quaternion");
+        assert!(
+            (norm - 1.0).abs() < 1e-10,
+            "from_euler must produce unit quaternion"
+        );
     }
 
     #[test]
@@ -1482,7 +1485,10 @@ mod tests {
 
     #[test]
     fn test_twist_max_values() {
-        let twist = Twist::new([f64::MAX, f64::MAX, f64::MAX], [f64::MAX, f64::MAX, f64::MAX]);
+        let twist = Twist::new(
+            [f64::MAX, f64::MAX, f64::MAX],
+            [f64::MAX, f64::MAX, f64::MAX],
+        );
         assert!(twist.is_valid());
     }
 
@@ -1626,7 +1632,12 @@ mod tests {
     fn test_transform_stamped_serialization_with_rotation() {
         let tf = TransformStamped::new(
             [1.0, 2.0, 3.0],
-            [0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2],
+            [
+                0.0,
+                0.0,
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ],
         );
         let json = serde_json::to_string(&tf).unwrap();
         let recovered: TransformStamped = serde_json::from_str(&json).unwrap();
@@ -1801,10 +1812,7 @@ mod tests {
 
     #[test]
     fn test_pose3d_invalid_position() {
-        let pose = Pose3D::new(
-            Point3::new(f64::INFINITY, 0.0, 0.0),
-            Quaternion::identity(),
-        );
+        let pose = Pose3D::new(Point3::new(f64::INFINITY, 0.0, 0.0), Quaternion::identity());
         assert!(!pose.is_valid());
     }
 
@@ -1816,10 +1824,10 @@ mod tests {
     fn test_pose_with_covariance_diagonal_variance() {
         let mut pwc = PoseWithCovariance::new(Pose3D::identity());
         // Set diagonal entries for position variance
-        pwc.covariance[0] = 0.01;  // var_x
-        pwc.covariance[7] = 0.02;  // var_y
+        pwc.covariance[0] = 0.01; // var_x
+        pwc.covariance[7] = 0.02; // var_y
         pwc.covariance[14] = 0.03; // var_z
-        // Set diagonal entries for orientation variance
+                                   // Set diagonal entries for orientation variance
         pwc.covariance[21] = 0.001; // var_roll
         pwc.covariance[28] = 0.002; // var_pitch
         pwc.covariance[35] = 0.003; // var_yaw
@@ -1851,8 +1859,8 @@ mod tests {
     #[test]
     fn test_twist_with_covariance_variance() {
         let mut twc = TwistWithCovariance::new(Twist::new_2d(1.0, 0.5));
-        twc.covariance[0] = 0.1;  // var_vx
-        twc.covariance[7] = 0.2;  // var_vy
+        twc.covariance[0] = 0.1; // var_vx
+        twc.covariance[7] = 0.2; // var_vy
         twc.covariance[14] = 0.3; // var_vz
         twc.covariance[21] = 0.01; // var_wx
         twc.covariance[28] = 0.02; // var_wy
@@ -1997,7 +2005,10 @@ mod tests {
         // 90 degree roll
         let q = Quaternion::from_euler(PI / 2.0, 0.0, 0.0);
         let norm = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
-        assert!((norm - 1.0).abs() < 1e-10, "euler rotation must produce unit quaternion");
+        assert!(
+            (norm - 1.0).abs() < 1e-10,
+            "euler rotation must produce unit quaternion"
+        );
 
         // 90 degree pitch
         let q2 = Quaternion::from_euler(0.0, PI / 2.0, 0.0);

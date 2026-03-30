@@ -365,10 +365,7 @@ pub fn list_frames(verbose: bool, json: bool) -> HorusResult<()> {
             "    publisher.publish()?;  // call in your tick loop".dimmed()
         );
         println!();
-        println!(
-            "  {}",
-            "  Or spawn a background publisher:".dimmed()
-        );
+        println!("  {}", "  Or spawn a background publisher:".dimmed());
         println!(
             "  {}",
             "    let _handle = TransformFramePublisher::spawn(&tf, 10.0)?;".dimmed()
@@ -858,7 +855,9 @@ pub fn can_transform(source_frame: &str, target_frame: &str) -> HorusResult<()> 
     for _ in 0..5 {
         reader.read_from_shm();
         can = reader.tf.can_transform(source_frame, target_frame);
-        if can { break; }
+        if can {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 

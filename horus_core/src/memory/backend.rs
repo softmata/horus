@@ -298,4 +298,3 @@ impl PoolBackend for MmapBackend {
     // (volatile byte writes + compiler fence), which matches the existing
     // TensorPool::volatile_zero + compiler_fence pattern exactly.
 }
-

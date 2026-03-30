@@ -330,11 +330,14 @@ mod tests {
     #[test]
     fn topic_config_exact_match() {
         let mut config = make_config();
-        config.topic_overrides.insert("cmd_vel".into(), TopicNetConfig {
-            priority: Some("realtime".into()),
-            redundant_copies: Some(2),
-            ..Default::default()
-        });
+        config.topic_overrides.insert(
+            "cmd_vel".into(),
+            TopicNetConfig {
+                priority: Some("realtime".into()),
+                redundant_copies: Some(2),
+                ..Default::default()
+            },
+        );
         let tc = config.topic_config("cmd_vel").unwrap();
         assert_eq!(tc.priority.as_deref(), Some("realtime"));
         assert_eq!(tc.redundant_copies, Some(2));
@@ -344,11 +347,14 @@ mod tests {
     #[test]
     fn topic_config_glob_match() {
         let mut config = make_config();
-        config.topic_overrides.insert("fleet.*".into(), TopicNetConfig {
-            optimizers: Some(vec!["spatial".into()]),
-            spatial_radius: Some(15.0),
-            ..Default::default()
-        });
+        config.topic_overrides.insert(
+            "fleet.*".into(),
+            TopicNetConfig {
+                optimizers: Some(vec!["spatial".into()]),
+                spatial_radius: Some(15.0),
+                ..Default::default()
+            },
+        );
         let tc = config.topic_config("fleet.pose").unwrap();
         assert_eq!(tc.spatial_radius, Some(15.0));
         assert!(config.topic_config("sensor.imu").is_none());

@@ -438,7 +438,7 @@ mod tests {
             use rand::Rng;
             rng.gen::<u64>()
         });
-        assert!(val != 0 || true); // just verify it doesn't panic
+        let _ = val; // just verify it doesn't panic
     }
 
     #[test]

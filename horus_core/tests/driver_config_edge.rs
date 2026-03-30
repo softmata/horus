@@ -39,9 +39,9 @@ fn test_node_params_type_coercion_int_to_f32() {
 #[test]
 fn test_node_params_type_coercion_float_to_f32() {
     // TOML float to f32 (lossy but valid via FromToml).
-    let params = make_params(&[("val", toml::Value::Float(3.14159))]);
+    let params = make_params(&[("val", toml::Value::Float(2.5))]);
     let val: f32 = params.get("val").unwrap();
-    assert!((val - 3.14159_f32).abs() < 1e-4, "f64 -> f32 coercion failed");
+    assert!((val - 2.5_f32).abs() < 1e-4, "f64 -> f32 coercion failed");
 }
 
 #[test]

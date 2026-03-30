@@ -1258,7 +1258,9 @@ mod tests {
         // Set 1000 params
         let start = std::time::Instant::now();
         for i in 0..1000 {
-            params.set(&format!("scale_key_{}", i), &(i as f64)).unwrap();
+            params
+                .set(&format!("scale_key_{}", i), &(i as f64))
+                .unwrap();
         }
         let set_elapsed = start.elapsed();
 
@@ -1275,7 +1277,11 @@ mod tests {
         let all = params.get_all();
         let list_elapsed = start.elapsed();
 
-        assert!(all.len() >= 1000, "should have at least 1000 params, got {}", all.len());
+        assert!(
+            all.len() >= 1000,
+            "should have at least 1000 params, got {}",
+            all.len()
+        );
 
         println!(
             "1000 params: set={:?}, get={:?}, list={:?}",
@@ -1283,9 +1289,18 @@ mod tests {
         );
 
         // CI bounds: each operation < 500ms
-        assert!(set_elapsed.as_millis() < 500, "1000 sets should complete in < 500ms");
-        assert!(get_elapsed.as_millis() < 500, "1000 gets should complete in < 500ms");
-        assert!(list_elapsed.as_millis() < 100, "list 1000+ params should complete in < 100ms");
+        assert!(
+            set_elapsed.as_millis() < 500,
+            "1000 sets should complete in < 500ms"
+        );
+        assert!(
+            get_elapsed.as_millis() < 500,
+            "1000 gets should complete in < 500ms"
+        );
+        assert!(
+            list_elapsed.as_millis() < 100,
+            "list 1000+ params should complete in < 100ms"
+        );
     }
 
     #[test]
@@ -1335,7 +1350,7 @@ mod tests {
         // Set some diverse params
         params.set("string_param", &"hello world").unwrap();
         params.set("int_param", &42).unwrap();
-        params.set("float_param", &3.14).unwrap();
+        params.set("float_param", &2.75).unwrap();
         params.set("bool_param", &true).unwrap();
 
         // Use save_to_disk which writes to the configured path
@@ -1359,7 +1374,7 @@ mod tests {
         let v: Option<Value> = params2.get("int_param");
         assert_eq!(v.unwrap().as_i64(), Some(42));
         let v: Option<Value> = params2.get("float_param");
-        assert!((v.unwrap().as_f64().unwrap() - 3.14).abs() < 0.001);
+        assert!((v.unwrap().as_f64().unwrap() - 2.75).abs() < 0.001);
         let v: Option<Value> = params2.get("bool_param");
         assert_eq!(v.unwrap().as_bool(), Some(true));
     }
@@ -1395,7 +1410,8 @@ mod tests {
         assert!(
             v2 > v1,
             "version should advance after concurrent writes: {} -> {}",
-            v1, v2
+            v1,
+            v2
         );
 
         // Value should be from one of the threads (not corrupted)

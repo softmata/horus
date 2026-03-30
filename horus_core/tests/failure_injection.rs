@@ -129,9 +129,7 @@ fn test_node_crash_system_survives() {
 fn test_multiple_node_crashes_still_stable() {
     cleanup_stale_shm();
 
-    let tick_counts: Vec<Arc<AtomicU64>> = (0..5)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let tick_counts: Vec<Arc<AtomicU64>> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     struct CountingNode {
         label: String,
@@ -156,11 +154,11 @@ fn test_multiple_node_crashes_still_stable() {
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
     let configs: Vec<(&str, Option<u64>)> = vec![
-        ("nav_node", None),          // healthy
-        ("crash_early", Some(5)),    // crashes at tick 5
-        ("perception", None),        // healthy
-        ("crash_late", Some(15)),    // crashes at tick 15
-        ("motor_ctrl", None),        // healthy
+        ("nav_node", None),       // healthy
+        ("crash_early", Some(5)), // crashes at tick 5
+        ("perception", None),     // healthy
+        ("crash_late", Some(15)), // crashes at tick 15
+        ("motor_ctrl", None),     // healthy
     ];
 
     for (i, (label, crash_at)) in configs.iter().enumerate() {
@@ -178,7 +176,10 @@ fn test_multiple_node_crashes_still_stable() {
     // Run for 300ms — enough for all crashes to happen and survivors to keep going
     let _ = scheduler.run_for(300_u64.ms());
 
-    let counts: Vec<u64> = tick_counts.iter().map(|c| c.load(Ordering::SeqCst)).collect();
+    let counts: Vec<u64> = tick_counts
+        .iter()
+        .map(|c| c.load(Ordering::SeqCst))
+        .collect();
 
     // Healthy nodes (indices 0, 2, 4) should have ticked well past crash points
     for &healthy_idx in &[0usize, 2, 4] {

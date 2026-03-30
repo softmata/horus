@@ -9,15 +9,18 @@
 use horus_core::communication::topic::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
-use horus_robotics::CmdVel;
-use horus_robotics::messages::sensor::{BatteryState, Imu, JointState, LaserScan, Odometry,
-    MagneticField, Temperature, FluidPressure, Illuminance, RangeSensor, NavSatFix};
-use horus_robotics::messages::control::{MotorCommand, ServoCommand, DifferentialDriveCommand,
-    PidConfig, TrajectoryPoint, JointCommand};
-use horus_types::*;
-use horus_types::*;
-use horus_robotics::messages::navigation::*;
+use horus_robotics::messages::control::{
+    DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand, TrajectoryPoint,
+};
 use horus_robotics::messages::force::*;
+use horus_robotics::messages::navigation::*;
+use horus_robotics::messages::sensor::{
+    BatteryState, FluidPressure, Illuminance, Imu, JointState, LaserScan, MagneticField, NavSatFix,
+    Odometry, RangeSensor, Temperature,
+};
+use horus_robotics::CmdVel;
+use horus_types::*;
+use horus_types::*;
 use horus_types::*;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,15 +31,23 @@ mod common;
 use common::cleanup_stale_shm;
 
 fn python_available() -> bool {
-    Command::new("python3").args(["-c", "import horus; print('OK')"])
-        .output().map(|o| String::from_utf8_lossy(&o.stdout).contains("OK")).unwrap_or(false)
+    Command::new("python3")
+        .args(["-c", "import horus; print('OK')"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("OK"))
+        .unwrap_or(false)
 }
 
-fn result_dir() -> std::path::PathBuf { std::env::temp_dir().join("horus_rp_full") }
+fn result_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("horus_rp_full")
+}
 
 fn read_result(key: &str) -> u64 {
-    std::fs::read_to_string(result_dir().join(key)).unwrap_or_default()
-        .trim().parse().unwrap_or(0)
+    std::fs::read_to_string(result_dir().join(key))
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0)
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -45,14 +56,23 @@ fn read_result(key: &str) -> u64 {
 
 macro_rules! pub_node {
     ($name:ident, $type:ty, $make:expr) => {
-        struct $name { t: Option<Topic<$type>>, n: String, c: Arc<AtomicU64> }
+        struct $name {
+            t: Option<Topic<$type>>,
+            n: String,
+            c: Arc<AtomicU64>,
+        }
         impl Node for $name {
-            fn name(&self) -> &str { stringify!($name) }
+            fn name(&self) -> &str {
+                stringify!($name)
+            }
             fn init(&mut self) -> horus_core::error::HorusResult<()> {
-                self.t = Some(Topic::new(&self.n)?); Ok(())
+                self.t = Some(Topic::new(&self.n)?);
+                Ok(())
             }
             fn tick(&mut self) {
-                if let Some(ref t) = self.t { t.send($make); }
+                if let Some(ref t) = self.t {
+                    t.send($make);
+                }
                 self.c.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -61,15 +81,24 @@ macro_rules! pub_node {
 
 macro_rules! sub_node {
     ($name:ident, $type:ty) => {
-        struct $name { t: Option<Topic<$type>>, n: String, r: Arc<AtomicU64> }
+        struct $name {
+            t: Option<Topic<$type>>,
+            n: String,
+            r: Arc<AtomicU64>,
+        }
         impl Node for $name {
-            fn name(&self) -> &str { stringify!($name) }
+            fn name(&self) -> &str {
+                stringify!($name)
+            }
             fn init(&mut self) -> horus_core::error::HorusResult<()> {
-                self.t = Some(Topic::new(&self.n)?); Ok(())
+                self.t = Some(Topic::new(&self.n)?);
+                Ok(())
             }
             fn tick(&mut self) {
                 if let Some(ref t) = self.t {
-                    while let Some(_) = t.recv() { self.r.fetch_add(1, Ordering::Relaxed); }
+                    while let Some(_) = t.recv() {
+                        self.r.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -80,21 +109,37 @@ macro_rules! sub_node {
 // TEST: 3 Rust schedulers + 2 Python schedulers, ALL types
 // ════════════════════════════════════════════════════════════════════════
 
-pub_node!(PubImu, Imu, { let mut m = Imu::new(); m.linear_acceleration[2] = 9.81; m });
+pub_node!(PubImu, Imu, {
+    let mut m = Imu::new();
+    m.linear_acceleration[2] = 9.81;
+    m
+});
 pub_node!(PubCmd, CmdVel, CmdVel::new(1.0, 0.5));
 pub_node!(PubOdom, Odometry, Odometry::default());
 pub_node!(PubScan, LaserScan, LaserScan::default());
 pub_node!(PubJoint, JointState, JointState::default());
-pub_node!(PubBat, BatteryState, { let mut b = BatteryState::default(); b.voltage = 12.0; b });
+pub_node!(PubBat, BatteryState, {
+    let mut b = BatteryState::default();
+    b.voltage = 12.0;
+    b
+});
 pub_node!(PubPose2, Pose2D, Pose2D::default());
 pub_node!(PubPose3, Pose3D, Pose3D::default());
 pub_node!(PubTwist, Twist, Twist::default());
 pub_node!(PubVec3, Vector3, Vector3::default());
 pub_node!(PubPt3, Point3, Point3::default());
-pub_node!(PubQuat, Quaternion, { let mut q = Quaternion::default(); q.w = 1.0; q });
+pub_node!(PubQuat, Quaternion, {
+    let mut q = Quaternion::default();
+    q.w = 1.0;
+    q
+});
 pub_node!(PubMotor, MotorCommand, MotorCommand::default());
 pub_node!(PubServo, ServoCommand, ServoCommand::default());
-pub_node!(PubDiff, DifferentialDriveCommand, DifferentialDriveCommand::default());
+pub_node!(
+    PubDiff,
+    DifferentialDriveCommand,
+    DifferentialDriveCommand::default()
+);
 pub_node!(PubHeart, Heartbeat, Heartbeat::default());
 pub_node!(PubDiag, DiagnosticStatus, DiagnosticStatus::default());
 pub_node!(PubEstop, EmergencyStop, EmergencyStop::default());
@@ -114,22 +159,51 @@ pub_node!(PubJCmd, JointCommand, JointCommand::default());
 #[test]
 #[ignore]
 fn full_matrix_3_rust_2_python_all_types() {
-    if !python_available() { println!("✓ SKIPPED (no horus python)"); return; }
+    if !python_available() {
+        println!("✓ SKIPPED (no horus python)");
+        return;
+    }
     cleanup_stale_shm();
     let _ = std::fs::remove_dir_all(result_dir());
     let _ = std::fs::create_dir_all(result_dir());
 
     // All 30 topic names
     let types = [
-        "imu", "cmdvel", "odometry", "laserscan", "jointstate", "battery",
-        "pose2d", "pose3d", "twist", "vector3", "point3", "quaternion",
-        "motor", "servo", "diffdrive", "heartbeat", "diagnostic", "estop",
-        "magnetic", "temperature", "pressure", "illuminance", "range",
-        "navsatfix", "navgoal", "wrench", "clock", "pid", "trajectory", "jointcmd",
+        "imu",
+        "cmdvel",
+        "odometry",
+        "laserscan",
+        "jointstate",
+        "battery",
+        "pose2d",
+        "pose3d",
+        "twist",
+        "vector3",
+        "point3",
+        "quaternion",
+        "motor",
+        "servo",
+        "diffdrive",
+        "heartbeat",
+        "diagnostic",
+        "estop",
+        "magnetic",
+        "temperature",
+        "pressure",
+        "illuminance",
+        "range",
+        "navsatfix",
+        "navgoal",
+        "wrench",
+        "clock",
+        "pid",
+        "trajectory",
+        "jointcmd",
     ];
 
     // Python subscriber for ALL types
-    let py_sub_code = format!(r#"
+    let py_sub_code = format!(
+        r#"
 import horus, os
 
 type_map = {{
@@ -168,7 +242,8 @@ def shutdown(node):
 
 sub = horus.Node("py_all_sub1", tick=tick, subs=subs_dict, rate=200, shutdown=shutdown)
 horus.run(sub, duration=6.0, tick_rate=200)
-"#);
+"#
+    );
 
     // Second Python subscriber (different rate — tests multi-Python-scheduler)
     let py_sub2_code = py_sub_code
@@ -181,12 +256,20 @@ horus.run(sub, duration=6.0, tick_rate=200)
     std::fs::write(tmpdir.path().join("sub2.py"), &py_sub2_code).unwrap();
 
     // Start 2 Python subscribers
-    let mut py1 = Command::new("python3").arg(tmpdir.path().join("sub1.py"))
+    let mut py1 = Command::new("python3")
+        .arg(tmpdir.path().join("sub1.py"))
         .env("RESULT_DIR", result_dir().to_str().unwrap())
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let mut py2 = Command::new("python3").arg(tmpdir.path().join("sub2.py"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut py2 = Command::new("python3")
+        .arg(tmpdir.path().join("sub2.py"))
         .env("RESULT_DIR", result_dir().to_str().unwrap())
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
 
     std::thread::sleep(Duration::from_secs(2));
 
@@ -195,8 +278,15 @@ horus.run(sub, duration=6.0, tick_rate=200)
 
     macro_rules! add_pub {
         ($sched:expr, $idx:expr, $Node:ident, $name:expr) => {
-            let _ = $sched.add($Node { t: None, n: format!("fm.{}", $name), c: counters[$idx].clone() })
-                .rate(100_u64.hz()).order($idx as u32).build();
+            let _ = $sched
+                .add($Node {
+                    t: None,
+                    n: format!("fm.{}", $name),
+                    c: counters[$idx].clone(),
+                })
+                .rate(100_u64.hz())
+                .order($idx as u32)
+                .build();
         };
     }
 
@@ -240,12 +330,21 @@ horus.run(sub, duration=6.0, tick_rate=200)
     add_pub!(s3, 29, PubJCmd, "jointcmd");
 
     // Run all 3 Rust schedulers in parallel threads
-    let h1 = std::thread::spawn(move || { let _ = s1.run_for(Duration::from_secs(3)); });
-    let h2 = std::thread::spawn(move || { let _ = s2.run_for(Duration::from_secs(3)); });
-    let h3 = std::thread::spawn(move || { let _ = s3.run_for(Duration::from_secs(3)); });
+    let h1 = std::thread::spawn(move || {
+        let _ = s1.run_for(Duration::from_secs(3));
+    });
+    let h2 = std::thread::spawn(move || {
+        let _ = s2.run_for(Duration::from_secs(3));
+    });
+    let h3 = std::thread::spawn(move || {
+        let _ = s3.run_for(Duration::from_secs(3));
+    });
 
-    h1.join().unwrap(); h2.join().unwrap(); h3.join().unwrap();
-    let _ = py1.wait(); let _ = py2.wait();
+    h1.join().unwrap();
+    h2.join().unwrap();
+    h3.join().unwrap();
+    let _ = py1.wait();
+    let _ = py2.wait();
 
     // Results
     println!("╔══════════════════════════════════════════════════════════════╗");
@@ -266,22 +365,46 @@ horus.run(sub, duration=6.0, tick_rate=200)
         total_sent += sent;
         total_py1 += r1;
         total_py2 += r2;
-        if r1 > 0 { types_delivered_py1 += 1; }
-        if r2 > 0 { types_delivered_py2 += 1; }
+        if r1 > 0 {
+            types_delivered_py1 += 1;
+        }
+        if r2 > 0 {
+            types_delivered_py2 += 1;
+        }
         if sent > 0 || r1 > 0 || r2 > 0 {
-            println!("║  {:15} sent:{:5} py1:{:5} py2:{:5}                ║", name, sent, r1, r2);
+            println!(
+                "║  {:15} sent:{:5} py1:{:5} py2:{:5}                ║",
+                name, sent, r1, r2
+            );
         }
     }
 
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  TOTALS: sent={:5} py1={:5} ({}/30) py2={:5} ({}/30)      ║",
-             total_sent, total_py1, types_delivered_py1, total_py2, types_delivered_py2);
+    println!(
+        "║  TOTALS: sent={:5} py1={:5} ({}/30) py2={:5} ({}/30)      ║",
+        total_sent, total_py1, types_delivered_py1, total_py2, types_delivered_py2
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
-    assert!(total_sent > 1000, "Rust should send >1000 total, got {}", total_sent);
+    assert!(
+        total_sent > 1000,
+        "Rust should send >1000 total, got {}",
+        total_sent
+    );
     let total_py = total_py1 + total_py2;
     let max_types = types_delivered_py1.max(types_delivered_py2);
-    assert!(max_types >= 20, "At least one Python sub should get >=20/30 types, got {}", max_types);
-    assert!(total_py > 1000, "Total Python recv should be >1000, got {}", total_py);
-    println!("✓ full_matrix — py1:{}/30 py2:{}/30 types, {} total msgs", types_delivered_py1, types_delivered_py2, total_py);
+    assert!(
+        max_types >= 20,
+        "At least one Python sub should get >=20/30 types, got {}",
+        max_types
+    );
+    assert!(
+        total_py > 1000,
+        "Total Python recv should be >1000, got {}",
+        total_py
+    );
+    println!(
+        "✓ full_matrix — py1:{}/30 py2:{}/30 types, {} total msgs",
+        types_delivered_py1, types_delivered_py2, total_py
+    );
 }

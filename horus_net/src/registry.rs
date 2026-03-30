@@ -97,9 +97,7 @@ pub const SYSTEM_TOPIC_ESTOP: &str = "_horus.estop";
 
 /// Check if a topic name is a reserved system topic.
 pub fn is_system_topic(name: &str) -> bool {
-    name == SYSTEM_TOPIC_PRESENCE
-        || name == SYSTEM_TOPIC_LOGS
-        || name == SYSTEM_TOPIC_ESTOP
+    name == SYSTEM_TOPIC_PRESENCE || name == SYSTEM_TOPIC_LOGS || name == SYSTEM_TOPIC_ESTOP
 }
 
 /// Callback type for topology change notifications.
@@ -241,12 +239,24 @@ impl Default for TopicRegistry {
 
 /// Convenience: register a publisher topic.
 pub fn register_publisher(name: &str, type_name: &str, type_size: u32, is_pod: bool) {
-    global_registry().register(name, topic_hash(type_name), type_size, TopicRole::Publisher, is_pod);
+    global_registry().register(
+        name,
+        topic_hash(type_name),
+        type_size,
+        TopicRole::Publisher,
+        is_pod,
+    );
 }
 
 /// Convenience: register a subscriber topic.
 pub fn register_subscriber(name: &str, type_name: &str, type_size: u32, is_pod: bool) {
-    global_registry().register(name, topic_hash(type_name), type_size, TopicRole::Subscriber, is_pod);
+    global_registry().register(
+        name,
+        topic_hash(type_name),
+        type_size,
+        TopicRole::Subscriber,
+        is_pod,
+    );
 }
 
 /// Convenience: unregister a publisher topic.

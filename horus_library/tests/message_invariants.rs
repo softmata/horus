@@ -394,7 +394,7 @@ proptest! {
     // ── ServoCommand ─────────────────────────────────────────────────────
 
     #[test]
-    fn test_servo_speed_in_01_valid(pos in -3.14f32..3.14, speed in 0.0f32..1.0) {
+    fn test_servo_speed_in_01_valid(pos in -3.2f32..3.2, speed in 0.0f32..1.0) {
         let cmd = ServoCommand { servo_id: 0, position: pos, speed, enable: 1, timestamp_ns: 0 };
         prop_assert!(cmd.is_valid());
     }

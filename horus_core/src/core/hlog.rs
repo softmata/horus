@@ -384,8 +384,12 @@ mod tests {
         crate::hlog_once!(info, "once_site_b_9903");
 
         let entries = GLOBAL_LOG_BUFFER.get_all();
-        let has_a = entries.iter().any(|e| e.message.contains("once_site_a_9902"));
-        let has_b = entries.iter().any(|e| e.message.contains("once_site_b_9903"));
+        let has_a = entries
+            .iter()
+            .any(|e| e.message.contains("once_site_a_9902"));
+        let has_b = entries
+            .iter()
+            .any(|e| e.message.contains("once_site_b_9903"));
 
         assert!(has_a, "first callsite should fire");
         assert!(has_b, "second callsite should fire independently");

@@ -102,7 +102,7 @@ impl CostMap {
 
         // Initialize occupancy to -1 (unknown)
         costmap.grid_data_mut().fill(0xFF); // -1 as u8
-        // Initialize costs to 0 (free)
+                                            // Initialize costs to 0 (free)
         costmap.cost_data_mut().fill(0);
 
         Ok(costmap)

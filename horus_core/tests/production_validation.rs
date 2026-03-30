@@ -38,7 +38,9 @@ struct SoakSensorNode {
 }
 
 impl Node for SoakSensorNode {
-    fn name(&self) -> &str { "soak_sensor" }
+    fn name(&self) -> &str {
+        "soak_sensor"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -46,8 +48,11 @@ impl Node for SoakSensorNode {
     fn tick(&mut self) {
         let imu_data = [
             self.tick_count as f64 * 0.01, // accel_x
-            0.0, 9.81,                      // accel_y, accel_z
-            0.0, 0.0, 0.0,                  // gyro
+            0.0,
+            9.81, // accel_y, accel_z
+            0.0,
+            0.0,
+            0.0, // gyro
         ];
         if let Some(ref t) = self.topic {
             t.send(imu_data);
@@ -65,7 +70,9 @@ struct SoakProcessNode {
 }
 
 impl Node for SoakProcessNode {
-    fn name(&self) -> &str { "soak_process" }
+    fn name(&self) -> &str {
+        "soak_process"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.input = Some(Topic::new(&self.input_name)?);
         self.output = Some(Topic::new(&self.output_name)?);
@@ -92,7 +99,9 @@ struct SoakActuatorNode {
 }
 
 impl Node for SoakActuatorNode {
-    fn name(&self) -> &str { "soak_actuator" }
+    fn name(&self) -> &str {
+        "soak_actuator"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -129,25 +138,35 @@ fn soak_30s_no_leaks_no_drift() {
     let handle = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz());
 
-        let _ = sched.add(SoakSensorNode {
-            tick_count: 0,
-            topic_name: sensor_topic.clone(),
-            topic: None,
-        }).rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(SoakSensorNode {
+                tick_count: 0,
+                topic_name: sensor_topic.clone(),
+                topic: None,
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
 
-        let _ = sched.add(SoakProcessNode {
-            input_name: sensor_topic,
-            output_name: cmd_topic.clone(),
-            input: None,
-            output: None,
-            messages_processed: 0,
-        }).order(1).build();
+        let _ = sched
+            .add(SoakProcessNode {
+                input_name: sensor_topic,
+                output_name: cmd_topic.clone(),
+                input: None,
+                output: None,
+                messages_processed: 0,
+            })
+            .order(1)
+            .build();
 
-        let _ = sched.add(SoakActuatorNode {
-            topic_name: cmd_topic,
-            topic: None,
-            commands_received: commands_clone,
-        }).order(2).build();
+        let _ = sched
+            .add(SoakActuatorNode {
+                topic_name: cmd_topic,
+                topic: None,
+                commands_received: commands_clone,
+            })
+            .order(2)
+            .build();
 
         while running_clone.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
@@ -168,23 +187,39 @@ fn soak_30s_no_leaks_no_drift() {
     // ── Assertions ──────────────────────────────────────────────────
     println!("=== SOAK TEST RESULTS ({:.1}s) ===", elapsed.as_secs_f64());
     println!("Commands processed: {}", total_commands);
-    println!("RSS before: {} KB, after: {} KB, delta: {} KB",
-             rss_before, rss_after, rss_after as i64 - rss_before as i64);
-    println!("SHM files before: {}, after: {}", shm_count_before, shm_count_after);
+    println!(
+        "RSS before: {} KB, after: {} KB, delta: {} KB",
+        rss_before,
+        rss_after,
+        rss_after as i64 - rss_before as i64
+    );
+    println!(
+        "SHM files before: {}, after: {}",
+        shm_count_before, shm_count_after
+    );
 
     // Must have processed messages (pipeline actually worked)
-    assert!(total_commands > 100,
-        "Pipeline should process >100 commands in 30s, got {}", total_commands);
+    assert!(
+        total_commands > 100,
+        "Pipeline should process >100 commands in 30s, got {}",
+        total_commands
+    );
 
     // Memory growth < 10MB (no leak)
     let rss_growth = rss_after.saturating_sub(rss_before);
-    assert!(rss_growth < 10_000,
-        "RSS grew by {} KB in 30s — possible memory leak", rss_growth);
+    assert!(
+        rss_growth < 10_000,
+        "RSS grew by {} KB in 30s — possible memory leak",
+        rss_growth
+    );
 
     // SHM files should not accumulate (≤ 10 more than before)
     let shm_growth = shm_count_after.saturating_sub(shm_count_before);
-    assert!(shm_growth <= 10,
-        "SHM file count grew by {} — files not being cleaned up", shm_growth);
+    assert!(
+        shm_growth <= 10,
+        "SHM file count grew by {} — files not being cleaned up",
+        shm_growth
+    );
 
     println!("SOAK TEST PASSED ✓");
 }
@@ -200,7 +235,9 @@ struct JitterProbeNode {
 }
 
 impl Node for JitterProbeNode {
-    fn name(&self) -> &str { "jitter_probe" }
+    fn name(&self) -> &str {
+        "jitter_probe"
+    }
     fn tick(&mut self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -244,9 +281,13 @@ fn jitter_histogram_100hz_under_load() {
 
     let handle = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(target_hz.hz());
-        let _ = sched.add(JitterProbeNode {
-            timestamps: timestamps_clone,
-        }).rate(target_hz.hz()).order(0).build();
+        let _ = sched
+            .add(JitterProbeNode {
+                timestamps: timestamps_clone,
+            })
+            .rate(target_hz.hz())
+            .order(0)
+            .build();
 
         while running_clone.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
@@ -259,13 +300,16 @@ fn jitter_histogram_100hz_under_load() {
     running.store(false, Ordering::Relaxed);
     stress_running.store(false, Ordering::Relaxed);
     handle.join().unwrap();
-    for h in stress_handles { let _ = h.join(); }
+    for h in stress_handles {
+        let _ = h.join();
+    }
 
     // ── Analyze jitter ──────────────────────────────────────────────
     let ts = timestamps.lock().unwrap();
     assert!(ts.len() > 100, "Should have >100 samples, got {}", ts.len());
 
-    let mut deltas_us: Vec<f64> = ts.windows(2)
+    let mut deltas_us: Vec<f64> = ts
+        .windows(2)
         .map(|w| (w[1] - w[0]) as f64 / 1000.0)
         .collect();
     deltas_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -278,7 +322,10 @@ fn jitter_histogram_100hz_under_load() {
     let p99 = deltas_us[(n as f64 * 0.99) as usize];
     let p999 = deltas_us[std::cmp::min((n as f64 * 0.999) as usize, n - 1)];
 
-    println!("=== JITTER HISTOGRAM @ {}Hz ({} samples, 2 stress threads) ===", target_hz, n);
+    println!(
+        "=== JITTER HISTOGRAM @ {}Hz ({} samples, 2 stress threads) ===",
+        target_hz, n
+    );
     println!("Target period: {} μs", target_period_us);
     println!("Min:  {:.1} μs", min);
     println!("Mean: {:.1} μs", mean);
@@ -290,19 +337,39 @@ fn jitter_histogram_100hz_under_load() {
     // Compute jitter (deviation from target period)
     let jitter_p99 = (p99 - target_period_us as f64).abs();
     let jitter_max = (max - target_period_us as f64).abs();
-    println!("Jitter P99:  {:.1} μs ({:.1}% of period)", jitter_p99, jitter_p99 / target_period_us as f64 * 100.0);
-    println!("Jitter Max:  {:.1} μs ({:.1}% of period)", jitter_max, jitter_max / target_period_us as f64 * 100.0);
+    println!(
+        "Jitter P99:  {:.1} μs ({:.1}% of period)",
+        jitter_p99,
+        jitter_p99 / target_period_us as f64 * 100.0
+    );
+    println!(
+        "Jitter Max:  {:.1} μs ({:.1}% of period)",
+        jitter_max,
+        jitter_max / target_period_us as f64 * 100.0
+    );
 
     // P99 jitter should be < 2x period (generous for debug mode + stress)
-    assert!(p99 < (target_period_us * 3) as f64,
+    assert!(
+        p99 < (target_period_us * 3) as f64,
         "P99 period ({:.0} μs) exceeds 3x target ({} μs) — scheduler cannot maintain rate",
-        p99, target_period_us);
+        p99,
+        target_period_us
+    );
 
     // Must have reasonable throughput (at least 50% of target rate)
     let actual_hz = n as f64 / test_duration.as_secs_f64();
-    println!("Actual rate: {:.1} Hz (target: {} Hz, {:.0}%)", actual_hz, target_hz, actual_hz / target_hz as f64 * 100.0);
-    assert!(actual_hz > target_hz as f64 * 0.5,
-        "Actual rate {:.1} Hz is less than 50% of target {} Hz", actual_hz, target_hz);
+    println!(
+        "Actual rate: {:.1} Hz (target: {} Hz, {:.0}%)",
+        actual_hz,
+        target_hz,
+        actual_hz / target_hz as f64 * 100.0
+    );
+    assert!(
+        actual_hz > target_hz as f64 * 0.5,
+        "Actual rate {:.1} Hz is less than 50% of target {} Hz",
+        actual_hz,
+        target_hz
+    );
 
     println!("JITTER TEST PASSED ✓");
 }
@@ -347,7 +414,12 @@ fn crash_recovery_kill9_and_reconnect() {
     // Spawn child publisher
     let exe = std::env::current_exe().unwrap();
     let mut child = std::process::Command::new(&exe)
-        .args(["crash_recovery_kill9_and_reconnect", "--exact", "--nocapture", "--ignored"])
+        .args([
+            "crash_recovery_kill9_and_reconnect",
+            "--exact",
+            "--nocapture",
+            "--ignored",
+        ])
         .env(CRASH_CHILD_ENV, "1")
         .env(CRASH_TOPIC_ENV, &topic_name)
         .stdout(std::process::Stdio::null())
@@ -360,13 +432,20 @@ fn crash_recovery_kill9_and_reconnect() {
 
     // Drain messages before kill
     let mut pre_kill_count = 0u64;
-    while t.recv().is_some() { pre_kill_count += 1; }
+    while t.recv().is_some() {
+        pre_kill_count += 1;
+    }
 
     println!("Pre-kill messages received: {}", pre_kill_count);
-    assert!(pre_kill_count > 10, "Should receive messages from child before kill");
+    assert!(
+        pre_kill_count > 10,
+        "Should receive messages from child before kill"
+    );
 
     // Kill -9 the child (simulates hard crash)
-    unsafe { libc::kill(child.id() as i32, libc::SIGKILL); }
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGKILL);
+    }
     let _ = child.wait();
 
     println!("Child killed with SIGKILL");
@@ -379,7 +458,12 @@ fn crash_recovery_kill9_and_reconnect() {
 
     // Spawn a NEW child on the same topic
     let mut child2 = std::process::Command::new(&exe)
-        .args(["crash_recovery_kill9_and_reconnect", "--exact", "--nocapture", "--ignored"])
+        .args([
+            "crash_recovery_kill9_and_reconnect",
+            "--exact",
+            "--nocapture",
+            "--ignored",
+        ])
         .env(CRASH_CHILD_ENV, "1")
         .env(CRASH_TOPIC_ENV, &topic_name)
         .stdout(std::process::Stdio::null())
@@ -398,10 +482,14 @@ fn crash_recovery_kill9_and_reconnect() {
     std::thread::sleep(Duration::from_millis(500));
 
     let mut post_recovery_count = 0u64;
-    while t.recv().is_some() { post_recovery_count += 1; }
+    while t.recv().is_some() {
+        post_recovery_count += 1;
+    }
 
     // Kill child2 cleanly
-    unsafe { libc::kill(child2.id() as i32, libc::SIGKILL); }
+    unsafe {
+        libc::kill(child2.id() as i32, libc::SIGKILL);
+    }
     let _ = child2.wait();
 
     println!("Post-recovery messages received: {}", post_recovery_count);
@@ -409,8 +497,11 @@ fn crash_recovery_kill9_and_reconnect() {
     // The core assertion: SHM is NOT corrupted after kill -9.
     // A new process CAN connect and communicate.
     // Even getting 1 message proves the channel recovered.
-    assert!(post_recovery_count >= 1,
-        "SHM should not be corrupted after kill -9: got {} msgs", post_recovery_count);
+    assert!(
+        post_recovery_count >= 1,
+        "SHM should not be corrupted after kill -9: got {} msgs",
+        post_recovery_count
+    );
 
     println!("CRASH RECOVERY TEST PASSED ✓");
 }
@@ -482,7 +573,12 @@ fn scale_10_processes_3pub_7sub() {
     let mut sub_children = vec![];
     for i in 0..7u64 {
         let child = std::process::Command::new(&exe)
-            .args(["scale_10_processes_3pub_7sub", "--exact", "--nocapture", "--ignored"])
+            .args([
+                "scale_10_processes_3pub_7sub",
+                "--exact",
+                "--nocapture",
+                "--ignored",
+            ])
             .env(SCALE_CHILD_ENV, "1")
             .env(SCALE_TOPIC_ENV, &topic_name)
             .env(SCALE_ROLE_ENV, "sub")
@@ -502,7 +598,12 @@ fn scale_10_processes_3pub_7sub() {
     let mut pub_children = vec![];
     for i in 0..3u64 {
         let child = std::process::Command::new(&exe)
-            .args(["scale_10_processes_3pub_7sub", "--exact", "--nocapture", "--ignored"])
+            .args([
+                "scale_10_processes_3pub_7sub",
+                "--exact",
+                "--nocapture",
+                "--ignored",
+            ])
             .env(SCALE_CHILD_ENV, "1")
             .env(SCALE_TOPIC_ENV, &topic_name)
             .env(SCALE_ROLE_ENV, "pub")
@@ -530,7 +631,8 @@ fn scale_10_processes_3pub_7sub() {
     for (i, mut c) in sub_children.into_iter().enumerate() {
         let output = c.wait_with_output().expect("wait sub");
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let received: u64 = stdout.lines()
+        let received: u64 = stdout
+            .lines()
             .filter_map(|line| {
                 if line.starts_with("SUB_RESULT:") {
                     line.split(':').nth(2).and_then(|s| s.parse::<u64>().ok())
@@ -539,18 +641,31 @@ fn scale_10_processes_3pub_7sub() {
                 }
             })
             .sum();
-        println!("Subscriber {}: received {}/{} msgs ({:.0}%)",
-                 i, received, total_expected,
-                 received as f64 / total_expected as f64 * 100.0);
+        println!(
+            "Subscriber {}: received {}/{} msgs ({:.0}%)",
+            i,
+            received,
+            total_expected,
+            received as f64 / total_expected as f64 * 100.0
+        );
         sub_totals.push(received);
     }
 
     // At least 50% of subscribers should get at least 50% of messages
     // (MPMC ring buffer may drop under contention — that's OK, but not zero)
-    let subs_with_data = sub_totals.iter().filter(|&&r| r > total_expected / 4).count();
-    println!("\n{}/7 subscribers received >25% of messages", subs_with_data);
-    assert!(subs_with_data >= 3,
-        "At least 3/7 subscribers should receive significant data, got {}", subs_with_data);
+    let subs_with_data = sub_totals
+        .iter()
+        .filter(|&&r| r > total_expected / 4)
+        .count();
+    println!(
+        "\n{}/7 subscribers received >25% of messages",
+        subs_with_data
+    );
+    assert!(
+        subs_with_data >= 3,
+        "At least 3/7 subscribers should receive significant data, got {}",
+        subs_with_data
+    );
 
     println!("SCALE TEST PASSED ✓");
 }
@@ -567,22 +682,24 @@ struct PipelineSensorNode {
     seq: u32,
 }
 impl Node for PipelineSensorNode {
-    fn name(&self) -> &str { "pipeline_imu" }
+    fn name(&self) -> &str {
+        "pipeline_imu"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.name_str)?);
         Ok(())
     }
     fn tick(&mut self) {
         let t = self.seq as f32 * 0.005; // 200Hz → 5ms period
-        // Simulate IMU with slight oscillation
+                                         // Simulate IMU with slight oscillation
         let data = [
-            (t * 2.0).sin() * 0.1,  // accel_x
-            0.0,                      // accel_y
+            (t * 2.0).sin() * 0.1,         // accel_x
+            0.0,                           // accel_y
             9.81 + (t * 0.5).cos() * 0.02, // accel_z
-            (t * 3.0).sin() * 0.01, // gyro_x
-            0.0,                      // gyro_y
-            (t * 1.5).cos() * 0.005, // gyro_z
-            25.0 + t * 0.001,         // temperature
+            (t * 3.0).sin() * 0.01,        // gyro_x
+            0.0,                           // gyro_y
+            (t * 1.5).cos() * 0.005,       // gyro_z
+            25.0 + t * 0.001,              // temperature
         ];
         if let Some(ref topic) = self.topic {
             topic.send(data);
@@ -601,7 +718,9 @@ struct PipelineControllerNode {
     msgs_out: u64,
 }
 impl Node for PipelineControllerNode {
-    fn name(&self) -> &str { "pipeline_controller" }
+    fn name(&self) -> &str {
+        "pipeline_controller"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu_topic = Some(Topic::new(&self.imu_name)?);
         self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
@@ -636,7 +755,9 @@ struct PipelineActuatorNode {
     last_cmd: [f32; 2],
 }
 impl Node for PipelineActuatorNode {
-    fn name(&self) -> &str { "pipeline_actuator" }
+    fn name(&self) -> &str {
+        "pipeline_actuator"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
         Ok(())
@@ -670,28 +791,38 @@ fn robot_pipeline_sensor_process_actuate_10s() {
     let handle = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(200_u64.hz());
 
-        let _ = sched.add(PipelineSensorNode {
-            topic: None,
-            name_str: imu_topic.clone(),
-            seq: 0,
-        }).rate(200_u64.hz()).order(0).build();
+        let _ = sched
+            .add(PipelineSensorNode {
+                topic: None,
+                name_str: imu_topic.clone(),
+                seq: 0,
+            })
+            .rate(200_u64.hz())
+            .order(0)
+            .build();
 
-        let _ = sched.add(PipelineControllerNode {
-            imu_name: imu_topic,
-            cmd_name: cmd_topic.clone(),
-            imu_topic: None,
-            cmd_topic: None,
-            integral: [0.0; 2],
-            msgs_in: 0,
-            msgs_out: 0,
-        }).order(1).build();
+        let _ = sched
+            .add(PipelineControllerNode {
+                imu_name: imu_topic,
+                cmd_name: cmd_topic.clone(),
+                imu_topic: None,
+                cmd_topic: None,
+                integral: [0.0; 2],
+                msgs_in: 0,
+                msgs_out: 0,
+            })
+            .order(1)
+            .build();
 
-        let _ = sched.add(PipelineActuatorNode {
-            cmd_name: cmd_topic,
-            cmd_topic: None,
-            total_cmds: total_cmds_clone,
-            last_cmd: [0.0; 2],
-        }).order(2).build();
+        let _ = sched
+            .add(PipelineActuatorNode {
+                cmd_name: cmd_topic,
+                cmd_topic: None,
+                total_cmds: total_cmds_clone,
+                last_cmd: [0.0; 2],
+            })
+            .order(2)
+            .build();
 
         while running_clone.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
@@ -707,17 +838,27 @@ fn robot_pipeline_sensor_process_actuate_10s() {
     let cmds = total_cmds.load(Ordering::Relaxed);
     let rate = cmds as f64 / elapsed.as_secs_f64();
 
-    println!("=== ROBOT PIPELINE RESULTS ({:.1}s) ===", elapsed.as_secs_f64());
+    println!(
+        "=== ROBOT PIPELINE RESULTS ({:.1}s) ===",
+        elapsed.as_secs_f64()
+    );
     println!("Total commands: {}", cmds);
     println!("Command rate:   {:.1} Hz", rate);
     println!("Expected:       ~200 Hz");
     println!("Achievement:    {:.0}%", rate / 200.0 * 100.0);
 
     // Pipeline must sustain at least 50Hz (25% of target — generous for debug)
-    assert!(rate > 50.0,
-        "Pipeline rate {:.1} Hz is too low (expected >50 Hz in debug mode)", rate);
-    assert!(cmds > 500,
-        "Pipeline produced only {} commands in {}s", cmds, elapsed.as_secs());
+    assert!(
+        rate > 50.0,
+        "Pipeline rate {:.1} Hz is too low (expected >50 Hz in debug mode)",
+        rate
+    );
+    assert!(
+        cmds > 500,
+        "Pipeline produced only {} commands in {}s",
+        cmds,
+        elapsed.as_secs()
+    );
 
     println!("ROBOT PIPELINE TEST PASSED ✓");
 }
@@ -735,7 +876,9 @@ struct DeterministicCounterNode {
     output: Arc<std::sync::Mutex<Vec<u64>>>,
 }
 impl Node for DeterministicCounterNode {
-    fn name(&self) -> &str { "det_counter" }
+    fn name(&self) -> &str {
+        "det_counter"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -757,7 +900,9 @@ struct DeterministicReceiverNode {
     received: Arc<std::sync::Mutex<Vec<u64>>>,
 }
 impl Node for DeterministicReceiverNode {
-    fn name(&self) -> &str { "det_receiver" }
+    fn name(&self) -> &str {
+        "det_receiver"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -780,18 +925,24 @@ fn run_deterministic_session(n_ticks: usize) -> (Vec<u64>, Vec<u64>) {
         .tick_rate(1000_u64.hz())
         .deterministic(true);
 
-    let _ = sched.add(DeterministicCounterNode {
-        topic: None,
-        topic_name: topic_name.clone(),
-        counter: 0,
-        output: sent.clone(),
-    }).order(0).build();
+    let _ = sched
+        .add(DeterministicCounterNode {
+            topic: None,
+            topic_name: topic_name.clone(),
+            counter: 0,
+            output: sent.clone(),
+        })
+        .order(0)
+        .build();
 
-    let _ = sched.add(DeterministicReceiverNode {
-        topic: None,
-        topic_name,
-        received: received.clone(),
-    }).order(1).build();
+    let _ = sched
+        .add(DeterministicReceiverNode {
+            topic: None,
+            topic_name,
+            received: received.clone(),
+        })
+        .order(1)
+        .build();
 
     for _ in 0..n_ticks {
         let _ = sched.tick_once();
@@ -819,20 +970,42 @@ fn determinism_proof_identical_runs() {
     let (sent2, recv2) = run_deterministic_session(n_ticks);
 
     println!("=== DETERMINISM PROOF ===");
-    println!("Session 1: sent={} values, received={} values", sent1.len(), recv1.len());
-    println!("Session 2: sent={} values, received={} values", sent2.len(), recv2.len());
+    println!(
+        "Session 1: sent={} values, received={} values",
+        sent1.len(),
+        recv1.len()
+    );
+    println!(
+        "Session 2: sent={} values, received={} values",
+        sent2.len(),
+        recv2.len()
+    );
 
     // Sent sequences must be identical (same node, same computation)
-    assert_eq!(sent1.len(), sent2.len(),
-        "Sent count differs: {} vs {}", sent1.len(), sent2.len());
-    assert_eq!(sent1, sent2,
-        "Sent sequences differ — determinism violated!");
+    assert_eq!(
+        sent1.len(),
+        sent2.len(),
+        "Sent count differs: {} vs {}",
+        sent1.len(),
+        sent2.len()
+    );
+    assert_eq!(
+        sent1, sent2,
+        "Sent sequences differ — determinism violated!"
+    );
 
     // Received sequences must be identical (same scheduling order)
-    assert_eq!(recv1.len(), recv2.len(),
-        "Received count differs: {} vs {}", recv1.len(), recv2.len());
-    assert_eq!(recv1, recv2,
-        "Received sequences differ — determinism violated!");
+    assert_eq!(
+        recv1.len(),
+        recv2.len(),
+        "Received count differs: {} vs {}",
+        recv1.len(),
+        recv2.len()
+    );
+    assert_eq!(
+        recv1, recv2,
+        "Received sequences differ — determinism violated!"
+    );
 
     // Verify the actual values are correct
     for (i, &v) in sent1.iter().enumerate() {

@@ -348,8 +348,7 @@ print(f"CHILD_SENT:{sent}")
     std::thread::sleep(1_u64.secs());
 
     // Rust subscribes to the same generic topic
-    let topic: Topic<GenericMessage> =
-        Topic::new("test_dict_xproc").expect("create generic topic");
+    let topic: Topic<GenericMessage> = Topic::new("test_dict_xproc").expect("create generic topic");
     let start = Instant::now();
     let mut received = 0u64;
     let mut last_data_len = 0usize;
@@ -535,7 +534,10 @@ sys.exit(1)  # Simulate crash
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    assert!(sent > 100, "Rust should continue publishing after Python crash: {sent}");
+    assert!(
+        sent > 100,
+        "Rust should continue publishing after Python crash: {sent}"
+    );
 
     let output = child.wait_with_output().expect("child wait");
     assert!(
@@ -1144,7 +1146,7 @@ t = Topic(Pose2D)
 sent = 0
 deadline = time.time() + 4.0
 while time.time() < deadline:
-    t.send(Pose2D(1.0, 2.0, 3.14))
+    t.send(Pose2D(1.0, 2.0, 2.75))
     sent += 1
     time.sleep(0.01)
 print(f"CHILD_SENT:{sent}")

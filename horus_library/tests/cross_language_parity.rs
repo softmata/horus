@@ -230,7 +230,12 @@ fn parity_cmd_vel_values_roundtrip() {
 
 #[test]
 fn parity_nav_goal_values_roundtrip() {
-    let pose = Pose2D { x: 5.0, y: 10.0, theta: 1.0, timestamp_ns: 100 };
+    let pose = Pose2D {
+        x: 5.0,
+        y: 10.0,
+        theta: 1.0,
+        timestamp_ns: 100,
+    };
     let original = NavGoal::new(pose, 0.3, 0.1);
     let json = serde_json::to_string(&original).unwrap();
     let back: NavGoal = serde_json::from_str(&json).unwrap();

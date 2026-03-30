@@ -31,10 +31,7 @@ impl Priority {
     /// Auto-infer priority from topic name.
     pub fn infer_from_topic(name: &str) -> Self {
         let lower = name.to_ascii_lowercase();
-        if lower.contains("estop")
-            || lower.contains("emergency")
-            || lower.contains("safety")
-        {
+        if lower.contains("estop") || lower.contains("emergency") || lower.contains("safety") {
             Self::Immediate
         } else {
             Self::Normal
@@ -192,17 +189,35 @@ mod tests {
 
     #[test]
     fn priority_infer_estop() {
-        assert_eq!(Priority::infer_from_topic("robot.estop"), Priority::Immediate);
-        assert_eq!(Priority::infer_from_topic("emergency_stop"), Priority::Immediate);
-        assert_eq!(Priority::infer_from_topic("safety.status"), Priority::Immediate);
+        assert_eq!(
+            Priority::infer_from_topic("robot.estop"),
+            Priority::Immediate
+        );
+        assert_eq!(
+            Priority::infer_from_topic("emergency_stop"),
+            Priority::Immediate
+        );
+        assert_eq!(
+            Priority::infer_from_topic("safety.status"),
+            Priority::Immediate
+        );
         assert_eq!(Priority::infer_from_topic("robot.imu"), Priority::Normal);
     }
 
     #[test]
     fn reliability_defaults() {
-        assert_eq!(Reliability::default_for(Priority::Immediate), Reliability::Latched);
-        assert_eq!(Reliability::default_for(Priority::RealTime), Reliability::Redundant);
-        assert_eq!(Reliability::default_for(Priority::Normal), Reliability::None);
+        assert_eq!(
+            Reliability::default_for(Priority::Immediate),
+            Reliability::Latched
+        );
+        assert_eq!(
+            Reliability::default_for(Priority::RealTime),
+            Reliability::Redundant
+        );
+        assert_eq!(
+            Reliability::default_for(Priority::Normal),
+            Reliability::None
+        );
         assert_eq!(Reliability::default_for(Priority::Bulk), Reliability::None);
     }
 
@@ -217,18 +232,30 @@ mod tests {
 
     #[test]
     fn auto_infer_estop_always_immediate() {
-        assert_eq!(Priority::auto_infer("robot.estop", false, 8), Priority::Immediate);
-        assert_eq!(Priority::auto_infer("robot.estop", true, 100_000), Priority::Immediate);
+        assert_eq!(
+            Priority::auto_infer("robot.estop", false, 8),
+            Priority::Immediate
+        );
+        assert_eq!(
+            Priority::auto_infer("robot.estop", true, 100_000),
+            Priority::Immediate
+        );
     }
 
     #[test]
     fn auto_infer_budget_means_realtime() {
-        assert_eq!(Priority::auto_infer("cmd_vel", true, 16), Priority::RealTime);
+        assert_eq!(
+            Priority::auto_infer("cmd_vel", true, 16),
+            Priority::RealTime
+        );
     }
 
     #[test]
     fn auto_infer_large_msg_means_bulk() {
-        assert_eq!(Priority::auto_infer("camera.image", false, 100_000), Priority::Bulk);
+        assert_eq!(
+            Priority::auto_infer("camera.image", false, 100_000),
+            Priority::Bulk
+        );
     }
 
     #[test]

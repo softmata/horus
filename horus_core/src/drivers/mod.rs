@@ -102,7 +102,19 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
     };
 
     // Reserved keys that are NOT passed as NodeParams
-    const RESERVED: &[&str] = &["use", "sim", "args", "terra", "package", "node", "crate", "source", "pip", "exec", "simulated"];
+    const RESERVED: &[&str] = &[
+        "use",
+        "sim",
+        "args",
+        "terra",
+        "package",
+        "node",
+        "crate",
+        "source",
+        "pip",
+        "exec",
+        "simulated",
+    ];
 
     let mut nodes: Vec<(String, Box<dyn Node>)> = Vec::new();
 
@@ -117,10 +129,7 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
         };
 
         // Check sim override
-        let is_sim_target = config
-            .get("sim")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let is_sim_target = config.get("sim").and_then(|v| v.as_bool()).unwrap_or(false);
 
         if sim_mode && is_sim_target {
             let should_sim = match &selective_targets {
@@ -145,10 +154,30 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
             .and_then(|v| v.as_str())
             .map(String::from)
             // Legacy fallback: check old source keys
-            .or_else(|| config.get("terra").and_then(|v| v.as_str()).map(String::from))
-            .or_else(|| config.get("node").and_then(|v| v.as_str()).map(String::from))
-            .or_else(|| config.get("package").and_then(|v| v.as_str()).map(String::from))
-            .or_else(|| config.get("exec").and_then(|v| v.as_str()).map(|s| format!("exec:{s}")))
+            .or_else(|| {
+                config
+                    .get("terra")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                config
+                    .get("node")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                config
+                    .get("package")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                config
+                    .get("exec")
+                    .and_then(|v| v.as_str())
+                    .map(|s| format!("exec:{s}"))
+            })
             .or_else(|| config.get("pip").and_then(|v| v.as_str()).map(String::from))
             .or_else(|| {
                 config
@@ -201,10 +230,7 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
                     let suggestion = if registered.is_empty() {
                         "No node types are registered. Call register!() or terra_horus::register_all() first.".to_string()
                     } else {
-                        format!(
-                            "Registered types: {}",
-                            registered.join(", ")
-                        )
+                        format!("Registered types: {}", registered.join(", "))
                     };
                     return Err(ConfigError::Other(format!(
                         "hardware.{name}: unknown node type '{use_name}'. {suggestion}"
@@ -226,7 +252,9 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
 
 /// Parse the `[hardware]`/`[drivers]` config and return `(name, use_name, params)` tuples
 /// without creating nodes. Used by Python bindings which handle node instantiation themselves.
-pub fn load_config_entries<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, String, NodeParams)>> {
+pub fn load_config_entries<P: AsRef<Path>>(
+    path: P,
+) -> HorusResult<Vec<(String, String, NodeParams)>> {
     let path = path.as_ref();
     let content = std::fs::read_to_string(path)
         .map_err(|e| ConfigError::Other(format!("failed to read {}: {}", path.display(), e)))?;
@@ -241,7 +269,19 @@ pub fn load_config_entries<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, 
         .cloned()
         .unwrap_or_default();
 
-    const RESERVED: &[&str] = &["use", "sim", "args", "terra", "package", "node", "crate", "source", "pip", "exec", "simulated"];
+    const RESERVED: &[&str] = &[
+        "use",
+        "sim",
+        "args",
+        "terra",
+        "package",
+        "node",
+        "crate",
+        "source",
+        "pip",
+        "exec",
+        "simulated",
+    ];
 
     let mut entries = Vec::new();
 
@@ -252,13 +292,41 @@ pub fn load_config_entries<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, 
         };
 
         // Match the same fallback chain as load() — use, terra, node, package, exec, pip, crate
-        let use_name = config.get("use").and_then(|v| v.as_str()).map(String::from)
-            .or_else(|| config.get("terra").and_then(|v| v.as_str()).map(String::from))
-            .or_else(|| config.get("node").and_then(|v| v.as_str()).map(String::from))
-            .or_else(|| config.get("package").and_then(|v| v.as_str()).map(String::from))
-            .or_else(|| config.get("exec").and_then(|v| v.as_str()).map(|s| format!("exec:{s}")))
+        let use_name = config
+            .get("use")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                config
+                    .get("terra")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                config
+                    .get("node")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                config
+                    .get("package")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                config
+                    .get("exec")
+                    .and_then(|v| v.as_str())
+                    .map(|s| format!("exec:{s}"))
+            })
             .or_else(|| config.get("pip").and_then(|v| v.as_str()).map(String::from))
-            .or_else(|| config.get("crate").and_then(|v| v.as_str()).map(String::from));
+            .or_else(|| {
+                config
+                    .get("crate")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            });
 
         let use_name = match use_name {
             Some(n) => n,

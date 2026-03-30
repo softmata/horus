@@ -128,7 +128,8 @@ fn glob_match(topic: &str, pattern: &str) -> bool {
         // Single wildcard: prefix*suffix
         let prefix = parts[0];
         let suffix = parts[1];
-        return topic.starts_with(prefix) && topic.ends_with(suffix)
+        return topic.starts_with(prefix)
+            && topic.ends_with(suffix)
             && topic.len() >= prefix.len() + suffix.len();
     }
 
@@ -173,7 +174,13 @@ mod tests {
     fn make_registry() -> Arc<TopicRegistry> {
         let reg = Arc::new(TopicRegistry::new());
         // We subscribe to cmd_vel (but don't publish it) — should allow import
-        reg.register("cmd_vel", topic_hash("cmd_vel"), 16, TopicRole::Subscriber, true);
+        reg.register(
+            "cmd_vel",
+            topic_hash("cmd_vel"),
+            16,
+            TopicRole::Subscriber,
+            true,
+        );
         // We publish imu (and also subscribe) — should deny import
         reg.register("imu", topic_hash("imu"), 64, TopicRole::Both, true);
         // We publish odom only — import irrelevant
@@ -247,7 +254,11 @@ mod tests {
     fn export_denylist() {
         let guard = ImportExportGuard::new(
             ImportMode::Deny,
-            ExportMode::DenyList(vec!["camera.*".into(), "debug.*".into(), "internal.*".into()]),
+            ExportMode::DenyList(vec![
+                "camera.*".into(),
+                "debug.*".into(),
+                "internal.*".into(),
+            ]),
             None,
         );
         assert!(guard.allow_export("imu"));

@@ -25,7 +25,8 @@ fn test_mmap_pool_stress_10k_cycles() {
 
     let stats = pool.stats();
     assert_eq!(
-        stats.allocated_slots, 0,
+        stats.allocated_slots,
+        0,
         "All slots must be freed. Stats: {}",
         stats.summary()
     );
@@ -90,7 +91,12 @@ fn test_gpu_image_transfer_stress() {
         assert!(gpu.is_cuda(), "cycle {}: should be CUDA", cycle);
         let back = gpu.to_cpu().unwrap();
         assert!(back.is_cpu(), "cycle {}: should be CPU", cycle);
-        assert_eq!(back.data(), expected.as_slice(), "cycle {}: data mismatch", cycle);
+        assert_eq!(
+            back.data(),
+            expected.as_slice(),
+            "cycle {}: data mismatch",
+            cycle
+        );
     }
 }
 

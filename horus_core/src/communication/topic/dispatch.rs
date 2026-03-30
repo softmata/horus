@@ -525,7 +525,6 @@ unsafe fn read_spilled_message<T: DeserializeOwned>(
     }
 
     // Deserialize from pool bytes
-    
 
     // NOTE: We intentionally do NOT release the pool slot here.
     //
@@ -876,9 +875,8 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
     } else {
         // SAFETY: same as recv_pod — reads serialized bytes from SHM, then deserializes.
         unsafe {
-            ring.recv_serde(sub_id).and_then(|bytes| {
-                bincode::deserialize(&bytes).ok()
-            })
+            ring.recv_serde(sub_id)
+                .and_then(|bytes| bincode::deserialize(&bytes).ok())
         }
     };
 
@@ -1062,7 +1060,8 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
             None => {
                 log::warn!(
                     "Topic '{}': spill to pool failed for {} bytes, falling back to auto-grow",
-                    topic.name(), bytes.len()
+                    topic.name(),
+                    bytes.len()
                 );
                 // Fall back to auto-grow if pool alloc fails
                 if bytes.len() > max_data_len {
@@ -1189,7 +1188,8 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
             None => {
                 log::warn!(
                     "Topic '{}': spill to pool failed for {} bytes, falling back to auto-grow",
-                    topic.name(), bytes.len()
+                    topic.name(),
+                    bytes.len()
                 );
                 if bytes.len() > max_data_len {
                     let _ = topic.auto_grow_slot_size(bytes.len());
@@ -1316,7 +1316,11 @@ pub(super) fn send_shm_sp_pod_colo<
     // Batch header.sequence_or_head updates. Interval must be < capacity
     // to avoid backpressure when the consumer has read but not flushed tail.
     let flush_interval = (local.cached_capacity / 2).max(1);
-    let flush_mask = if flush_interval.is_power_of_two() { flush_interval - 1 } else { flush_interval.next_power_of_two() - 1 };
+    let flush_mask = if flush_interval.is_power_of_two() {
+        flush_interval - 1
+    } else {
+        flush_interval.next_power_of_two() - 1
+    };
     if new_seq & flush_mask == 0 {
         header.sequence_or_head.store(new_seq, Ordering::Release);
     }
@@ -1541,7 +1545,11 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // Batch header.tail updates. Interval must be < capacity to avoid
     // backpressure when the producer has written but consumer hasn't flushed.
     let flush_interval = (local.cached_capacity / 2).max(1);
-    let flush_mask = if flush_interval.is_power_of_two() { flush_interval - 1 } else { flush_interval.next_power_of_two() - 1 };
+    let flush_mask = if flush_interval.is_power_of_two() {
+        flush_interval - 1
+    } else {
+        flush_interval.next_power_of_two() - 1
+    };
     if new_tail & flush_mask == 0 {
         header.tail.store(new_tail, Ordering::Release);
     }
@@ -1706,7 +1714,13 @@ pub(super) fn recv_shm_spsc_serde<
 
     // SAFETY: slot_ptr is valid for slot_size bytes within SHM. The producer's
     // sequence store (Release) was observed via our Acquire load on sequence_or_head.
-    let msg = unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size, topic.name()) }?;
+    let msg = unsafe {
+        read_serde_slot::<T>(
+            local.cached_data_ptr.add(slot_offset),
+            slot_size,
+            topic.name(),
+        )
+    }?;
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
@@ -1761,7 +1775,13 @@ pub(super) fn recv_shm_mpsc_serde<
 
     // SAFETY: slot_ptr is valid for slot_size bytes within SHM. Ready flag
     // was verified above, so the producer has finished writing this slot.
-    let msg = unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size, topic.name()) }?;
+    let msg = unsafe {
+        read_serde_slot::<T>(
+            local.cached_data_ptr.add(slot_offset),
+            slot_size,
+            topic.name(),
+        )
+    }?;
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
@@ -1815,7 +1835,11 @@ pub(super) fn recv_shm_spmc_serde<
         // SAFETY: CAS succeeded so we own this slot. slot_ptr is valid for
         // slot_size bytes within the SHM data region.
         let msg = match unsafe {
-            read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size, topic.name())
+            read_serde_slot::<T>(
+                local.cached_data_ptr.add(slot_offset),
+                slot_size,
+                topic.name(),
+            )
         } {
             Some(m) => m,
             None => {
@@ -1891,7 +1915,11 @@ pub(super) fn recv_shm_spsc_pod_colo<
     // Batch header.tail updates. Interval must be < capacity to avoid
     // backpressure when the producer has written but consumer hasn't flushed.
     let flush_interval = (local.cached_capacity / 2).max(1);
-    let flush_mask = if flush_interval.is_power_of_two() { flush_interval - 1 } else { flush_interval.next_power_of_two() - 1 };
+    let flush_mask = if flush_interval.is_power_of_two() {
+        flush_interval - 1
+    } else {
+        flush_interval.next_power_of_two() - 1
+    };
     if new_tail & flush_mask == 0 {
         let header = unsafe { &*local.cached_header_ptr };
         header.tail.store(new_tail, Ordering::Release);
@@ -2163,8 +2191,14 @@ mod tests {
     #[test]
     fn test_spill_threshold_sane() {
         assert_eq!(SPILL_THRESHOLD, 4096);
-        assert!(SPILL_THRESHOLD >= 1024, "threshold too small — would spill tiny messages");
-        assert!(SPILL_THRESHOLD <= 65536, "threshold too large — defeats purpose");
+        assert!(
+            SPILL_THRESHOLD >= 1024,
+            "threshold too small — would spill tiny messages"
+        );
+        assert!(
+            SPILL_THRESHOLD <= 65536,
+            "threshold too large — defeats purpose"
+        );
     }
 
     #[test]
@@ -2207,7 +2241,11 @@ mod tests {
         let mut slot = [0u8; 64];
 
         let tensor = crate::types::Tensor::new(
-            99, 3, 42, 2048, &[10000],
+            99,
+            3,
+            42,
+            2048,
+            &[10000],
             crate::types::TensorDtype::U8,
             crate::types::Device::cpu(),
         );
@@ -2255,7 +2293,10 @@ mod tests {
     fn test_spill_descriptor_zero_pool_id() {
         // pool_id == 0 is a valid edge case (first pool created)
         let tensor = crate::types::Tensor::new(
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             &[1],
             crate::types::TensorDtype::U8,
             crate::types::Device::cpu(),
@@ -2302,7 +2343,10 @@ mod tests {
         // A zero-length serialized message is degenerate but valid at the
         // descriptor level (bincode can serialize () to 0 bytes).
         let tensor = crate::types::Tensor::new(
-            5, 10, 999, 4096,
+            5,
+            10,
+            999,
+            4096,
             &[0],
             crate::types::TensorDtype::U8,
             crate::types::Device::cpu(),
@@ -2364,7 +2408,10 @@ mod tests {
         // reinterpretation produces identical field values (the property Pod
         // would guarantee, tested here without requiring the Pod impl).
         let tensor = crate::types::Tensor::new(
-            77, 33, 0xAAAA_BBBB_CCCC_DDDD_u64, 512,
+            77,
+            33,
+            0xAAAA_BBBB_CCCC_DDDD_u64,
+            512,
             &[8192],
             crate::types::TensorDtype::U8,
             crate::types::Device::cpu(),
@@ -2380,9 +2427,8 @@ mod tests {
         };
         assert_eq!(bytes.len(), 40);
 
-        let roundtripped: SpillDescriptor = unsafe {
-            std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor)
-        };
+        let roundtripped: SpillDescriptor =
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor) };
         assert_eq!(roundtripped.sentinel, original.sentinel);
         assert_eq!(roundtripped.pool_id, original.pool_id);
         assert_eq!(roundtripped.slot_id, original.slot_id);
@@ -2397,17 +2443,26 @@ mod tests {
         // A message of exactly SPILL_THRESHOLD bytes does NOT spill
         // (the comparison is `bytes.len() > SPILL_THRESHOLD`, strictly greater)
         let at_threshold = SPILL_THRESHOLD;
-        assert!(!(at_threshold > SPILL_THRESHOLD), "exactly at threshold must NOT spill");
+        assert!(
+            !(at_threshold > SPILL_THRESHOLD),
+            "exactly at threshold must NOT spill"
+        );
 
         let one_under = SPILL_THRESHOLD - 1;
-        assert!(!(one_under > SPILL_THRESHOLD), "one byte under threshold must NOT spill");
+        assert!(
+            !(one_under > SPILL_THRESHOLD),
+            "one byte under threshold must NOT spill"
+        );
     }
 
     #[test]
     fn test_spill_threshold_boundary_over() {
         // A message one byte over SPILL_THRESHOLD DOES spill
         let one_over = SPILL_THRESHOLD + 1;
-        assert!(one_over > SPILL_THRESHOLD, "one byte over threshold MUST spill");
+        assert!(
+            one_over > SPILL_THRESHOLD,
+            "one byte over threshold MUST spill"
+        );
     }
 
     #[test]
@@ -2467,13 +2522,19 @@ mod tests {
         let mut slot_plus = [0u8; 64];
         slot_plus[8..16].copy_from_slice(&(SPILL_SENTINEL.wrapping_add(1)).to_ne_bytes());
         unsafe {
-            assert!(!is_spill_slot(slot_plus.as_ptr()), "sentinel+1 must not match");
+            assert!(
+                !is_spill_slot(slot_plus.as_ptr()),
+                "sentinel+1 must not match"
+            );
         }
 
         let mut slot_minus = [0u8; 64];
         slot_minus[8..16].copy_from_slice(&(SPILL_SENTINEL.wrapping_sub(1)).to_ne_bytes());
         unsafe {
-            assert!(!is_spill_slot(slot_minus.as_ptr()), "sentinel-1 must not match");
+            assert!(
+                !is_spill_slot(slot_minus.as_ptr()),
+                "sentinel-1 must not match"
+            );
         }
     }
 
@@ -2482,7 +2543,10 @@ mod tests {
         // Verify generation is correctly split into low/high u32 halves
         let gen_full: u64 = 0x1234_5678_9ABC_DEF0;
         let tensor = crate::types::Tensor::new(
-            1, 1, gen_full, 0,
+            1,
+            1,
+            gen_full,
+            0,
             &[64],
             crate::types::TensorDtype::U8,
             crate::types::Device::cpu(),
@@ -2490,7 +2554,7 @@ mod tests {
         let spill = SpillDescriptor::from_tensor(&tensor, 64);
 
         // Tensor::new splits generation_full into low/high halves
-        assert_eq!(spill.generation, gen_full as u32);         // 0x9ABC_DEF0
+        assert_eq!(spill.generation, gen_full as u32); // 0x9ABC_DEF0
         assert_eq!(spill.generation_hi, (gen_full >> 32) as u32); // 0x1234_5678
 
         // to_tensor must reconstruct the same halves
@@ -2504,7 +2568,10 @@ mod tests {
     fn test_spill_descriptor_to_tensor_dtype_and_ndim() {
         // to_tensor always sets dtype=U8 and ndim=1 regardless of input
         let tensor = crate::types::Tensor::new(
-            1, 1, 0, 0,
+            1,
+            1,
+            0,
+            0,
             &[100],
             crate::types::TensorDtype::U8,
             crate::types::Device::cpu(),

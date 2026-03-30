@@ -84,24 +84,35 @@ pub fn sync_from_native(
             let extracted = crate::commands::migrate::extract_cargo_all_deps(&native_path)?;
             (extracted.deps, Some(extracted.dev_deps))
         }
-        NativeFileType::Pyproject => {
-            (crate::commands::migrate::extract_pyproject_deps(&native_path)?, None)
-        }
-        NativeFileType::Cmake => {
-            (crate::commands::migrate::extract_cmake_deps(&native_path)?, None)
-        }
+        NativeFileType::Pyproject => (
+            crate::commands::migrate::extract_pyproject_deps(&native_path)?,
+            None,
+        ),
+        NativeFileType::Cmake => (
+            crate::commands::migrate::extract_cmake_deps(&native_path)?,
+            None,
+        ),
     };
 
     // Build set of driver-generated crate names to exclude
     let driver_crates = collect_driver_crates(manifest);
 
     // Sync regular deps
-    let (added, modified, removed) =
-        sync_dep_map(&native_deps, &mut manifest.dependencies, &driver_crates, file_type);
+    let (added, modified, removed) = sync_dep_map(
+        &native_deps,
+        &mut manifest.dependencies,
+        &driver_crates,
+        file_type,
+    );
 
     // Sync dev deps (Cargo only)
     let (dev_added, dev_modified, dev_removed) = if let Some(ref dev) = native_dev_deps {
-        sync_dep_map(dev, &mut manifest.dev_dependencies, &driver_crates, file_type)
+        sync_dep_map(
+            dev,
+            &mut manifest.dev_dependencies,
+            &driver_crates,
+            file_type,
+        )
     } else {
         (0, 0, 0)
     };
@@ -399,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_sync_from_native_no_changes_when_fingerprints_match() {
-        use crate::manifest::{HorusManifest, PackageInfo, IgnoreConfig};
+        use crate::manifest::{HorusManifest, IgnoreConfig, PackageInfo};
 
         let tmp = tempfile::tempdir().unwrap();
         let horus_dir = tmp.path().join(".horus");
@@ -474,7 +485,15 @@ serde = "1.0"
         }
 
         // External crates must return false
-        let external = ["serde", "tokio", "bevy", "rand", "anyhow", "horus-nav", "horus_slam"];
+        let external = [
+            "serde",
+            "tokio",
+            "bevy",
+            "rand",
+            "anyhow",
+            "horus-nav",
+            "horus_slam",
+        ];
         for name in &external {
             assert!(
                 !is_horus_internal(name),

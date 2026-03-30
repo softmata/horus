@@ -49,7 +49,12 @@ impl SmallPod {
         let value_a = (seq as f64 * 0.123).sin();
         let value_b = (seq as f64 * 0.456).cos();
         let checksum = seq ^ value_a.to_bits() ^ value_b.to_bits();
-        Self { seq, value_a, value_b, checksum }
+        Self {
+            seq,
+            value_a,
+            value_b,
+            checksum,
+        }
     }
     fn verify(&self) -> bool {
         self.checksum == (self.seq ^ self.value_a.to_bits() ^ self.value_b.to_bits())
@@ -70,9 +75,15 @@ unsafe impl bytemuck::Zeroable for LargePod {}
 impl LargePod {
     fn new(seq: u64) -> Self {
         let mut data = [0.0f64; 30];
-        for i in 0..30 { data[i] = (seq as f64 + i as f64) * 0.01; }
+        for i in 0..30 {
+            data[i] = (seq as f64 + i as f64) * 0.01;
+        }
         let checksum = data.iter().fold(seq, |acc, &v| acc ^ v.to_bits());
-        Self { seq, data, checksum }
+        Self {
+            seq,
+            data,
+            checksum,
+        }
     }
     fn verify(&self) -> bool {
         self.checksum == self.data.iter().fold(self.seq, |acc, &v| acc ^ v.to_bits())
@@ -90,10 +101,17 @@ struct SerdeMsg {
 
 impl SerdeMsg {
     fn new(seq: u64) -> Self {
-        let payload: Vec<u32> = (0..20).map(|i| (seq as u32).wrapping_mul(7).wrapping_add(i)).collect();
+        let payload: Vec<u32> = (0..20)
+            .map(|i| (seq as u32).wrapping_mul(7).wrapping_add(i))
+            .collect();
         let tag = format!("msg_{}", seq);
         let checksum = payload.iter().fold(seq, |acc, &v| acc ^ v as u64);
-        Self { seq, payload, tag, checksum }
+        Self {
+            seq,
+            payload,
+            tag,
+            checksum,
+        }
     }
     fn verify(&self) -> bool {
         self.checksum == self.payload.iter().fold(self.seq, |acc, &v| acc ^ v as u64)
@@ -106,8 +124,8 @@ impl SerdeMsg {
 
 const CHILD_FLAG: &str = "HORUS_MATRIX_CHILD";
 const TOPIC_ENV: &str = "HORUS_MATRIX_TOPIC";
-const ROLE_ENV: &str = "HORUS_MATRIX_ROLE";    // "pub" or "sub"
-const MSGTYPE_ENV: &str = "HORUS_MATRIX_TYPE";  // "small", "large", "serde"
+const ROLE_ENV: &str = "HORUS_MATRIX_ROLE"; // "pub" or "sub"
+const MSGTYPE_ENV: &str = "HORUS_MATRIX_TYPE"; // "small", "large", "serde"
 const COUNT_ENV: &str = "HORUS_MATRIX_COUNT";
 const ID_ENV: &str = "HORUS_MATRIX_ID";
 
@@ -121,22 +139,44 @@ fn child_publisher() {
             let t: Topic<SmallPod> = Topic::new(&topic).unwrap();
             t.send(SmallPod::default()); // init
             std::thread::sleep(Duration::from_millis(50));
-            for i in 1..=count { t.send(SmallPod::new(i)); }
-            t.send(SmallPod { seq: u64::MAX, ..Default::default() }); // sentinel
+            for i in 1..=count {
+                t.send(SmallPod::new(i));
+            }
+            t.send(SmallPod {
+                seq: u64::MAX,
+                ..Default::default()
+            }); // sentinel
         }
         "large" => {
             let t: Topic<LargePod> = Topic::new(&topic).unwrap();
             t.send(LargePod::default());
             std::thread::sleep(Duration::from_millis(50));
-            for i in 1..=count { t.send(LargePod::new(i)); }
-            t.send(LargePod { seq: u64::MAX, ..Default::default() });
+            for i in 1..=count {
+                t.send(LargePod::new(i));
+            }
+            t.send(LargePod {
+                seq: u64::MAX,
+                ..Default::default()
+            });
         }
         "serde" => {
             let t: Topic<SerdeMsg> = Topic::new(&topic).unwrap();
-            t.send(SerdeMsg { seq: 0, payload: vec![], tag: String::new(), checksum: 0 });
+            t.send(SerdeMsg {
+                seq: 0,
+                payload: vec![],
+                tag: String::new(),
+                checksum: 0,
+            });
             std::thread::sleep(Duration::from_millis(50));
-            for i in 1..=count { t.send(SerdeMsg::new(i)); }
-            t.send(SerdeMsg { seq: u64::MAX, payload: vec![], tag: String::new(), checksum: 0 });
+            for i in 1..=count {
+                t.send(SerdeMsg::new(i));
+            }
+            t.send(SerdeMsg {
+                seq: u64::MAX,
+                payload: vec![],
+                tag: String::new(),
+                checksum: 0,
+            });
         }
         _ => panic!("unknown type: {}", msg_type),
     }
@@ -158,7 +198,12 @@ fn child_subscriber() {
                 match t.recv() {
                     Some(m) if m.seq == u64::MAX => break,
                     Some(m) if m.seq == 0 => continue,
-                    Some(m) => { received += 1; if !m.verify() { corrupted += 1; } }
+                    Some(m) => {
+                        received += 1;
+                        if !m.verify() {
+                            corrupted += 1;
+                        }
+                    }
                     None => std::thread::yield_now(),
                 }
             }
@@ -169,7 +214,12 @@ fn child_subscriber() {
                 match t.recv() {
                     Some(m) if m.seq == u64::MAX => break,
                     Some(m) if m.seq == 0 => continue,
-                    Some(m) => { received += 1; if !m.verify() { corrupted += 1; } }
+                    Some(m) => {
+                        received += 1;
+                        if !m.verify() {
+                            corrupted += 1;
+                        }
+                    }
                     None => std::thread::yield_now(),
                 }
             }
@@ -180,7 +230,12 @@ fn child_subscriber() {
                 match t.recv() {
                     Some(m) if m.seq == u64::MAX => break,
                     Some(m) if m.seq == 0 => continue,
-                    Some(m) => { received += 1; if !m.verify() { corrupted += 1; } }
+                    Some(m) => {
+                        received += 1;
+                        if !m.verify() {
+                            corrupted += 1;
+                        }
+                    }
                     None => std::thread::yield_now(),
                 }
             }
@@ -190,7 +245,14 @@ fn child_subscriber() {
     println!("RESULT:{}:{}:{}", id, received, corrupted);
 }
 
-fn spawn_child(test_name: &str, topic: &str, role: &str, msg_type: &str, count: u64, id: u64) -> std::process::Child {
+fn spawn_child(
+    test_name: &str,
+    topic: &str,
+    role: &str,
+    msg_type: &str,
+    count: u64,
+    id: u64,
+) -> std::process::Child {
     let exe = std::env::current_exe().unwrap();
     Command::new(exe)
         .args([test_name, "--exact", "--nocapture", "--ignored"])
@@ -217,18 +279,39 @@ fn test_same_thread(msg_type: &str, n_pubs: usize, n_subs: usize, count: u64) ->
     match msg_type {
         "small" => {
             let t: Topic<SmallPod> = Topic::new(&name).unwrap();
-            for i in 1..=count { t.send(SmallPod::new(i)); }
-            while let Some(m) = t.recv() { received += 1; if !m.verify() { corrupted += 1; } }
+            for i in 1..=count {
+                t.send(SmallPod::new(i));
+            }
+            while let Some(m) = t.recv() {
+                received += 1;
+                if !m.verify() {
+                    corrupted += 1;
+                }
+            }
         }
         "large" => {
             let t: Topic<LargePod> = Topic::new(&name).unwrap();
-            for i in 1..=count { t.send(LargePod::new(i)); }
-            while let Some(m) = t.recv() { received += 1; if !m.verify() { corrupted += 1; } }
+            for i in 1..=count {
+                t.send(LargePod::new(i));
+            }
+            while let Some(m) = t.recv() {
+                received += 1;
+                if !m.verify() {
+                    corrupted += 1;
+                }
+            }
         }
         "serde" => {
             let t: Topic<SerdeMsg> = Topic::new(&name).unwrap();
-            for i in 1..=count { t.send(SerdeMsg::new(i)); }
-            while let Some(m) = t.recv() { received += 1; if !m.verify() { corrupted += 1; } }
+            for i in 1..=count {
+                t.send(SerdeMsg::new(i));
+            }
+            while let Some(m) = t.recv() {
+                received += 1;
+                if !m.verify() {
+                    corrupted += 1;
+                }
+            }
         }
         _ => {}
     }
@@ -261,13 +344,17 @@ fn test_cross_thread(msg_type: &str, n_pubs: usize, n_subs: usize, count: u64) -
                     while !d.load(Ordering::Relaxed) && Instant::now() < deadline {
                         if let Some(m) = t.recv() {
                             r.fetch_add(1, Ordering::Relaxed);
-                            if !m.verify() { c.fetch_add(1, Ordering::Relaxed); }
+                            if !m.verify() {
+                                c.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
                     // Drain remaining
                     while let Some(m) = t.recv() {
                         r.fetch_add(1, Ordering::Relaxed);
-                        if !m.verify() { c.fetch_add(1, Ordering::Relaxed); }
+                        if !m.verify() {
+                            c.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
                 "large" => {
@@ -275,12 +362,16 @@ fn test_cross_thread(msg_type: &str, n_pubs: usize, n_subs: usize, count: u64) -
                     while !d.load(Ordering::Relaxed) && Instant::now() < deadline {
                         if let Some(m) = t.recv() {
                             r.fetch_add(1, Ordering::Relaxed);
-                            if !m.verify() { c.fetch_add(1, Ordering::Relaxed); }
+                            if !m.verify() {
+                                c.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
                     while let Some(m) = t.recv() {
                         r.fetch_add(1, Ordering::Relaxed);
-                        if !m.verify() { c.fetch_add(1, Ordering::Relaxed); }
+                        if !m.verify() {
+                            c.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
                 "serde" => {
@@ -288,12 +379,16 @@ fn test_cross_thread(msg_type: &str, n_pubs: usize, n_subs: usize, count: u64) -
                     while !d.load(Ordering::Relaxed) && Instant::now() < deadline {
                         if let Some(m) = t.recv() {
                             r.fetch_add(1, Ordering::Relaxed);
-                            if !m.verify() { c.fetch_add(1, Ordering::Relaxed); }
+                            if !m.verify() {
+                                c.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
                     while let Some(m) = t.recv() {
                         r.fetch_add(1, Ordering::Relaxed);
-                        if !m.verify() { c.fetch_add(1, Ordering::Relaxed); }
+                        if !m.verify() {
+                            c.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
                 _ => {}
@@ -309,45 +404,68 @@ fn test_cross_thread(msg_type: &str, n_pubs: usize, n_subs: usize, count: u64) -
         let n = name.clone();
         let mt = msg_type.to_string();
         let per_pub = count / n_pubs as u64;
-        pub_handles.push(std::thread::spawn(move || {
-            match mt.as_str() {
-                "small" => {
-                    let t: Topic<SmallPod> = Topic::new(&n).unwrap();
-                    for i in 0..per_pub { t.send(SmallPod::new(pub_id as u64 * 100_000 + i + 1)); }
+        pub_handles.push(std::thread::spawn(move || match mt.as_str() {
+            "small" => {
+                let t: Topic<SmallPod> = Topic::new(&n).unwrap();
+                for i in 0..per_pub {
+                    t.send(SmallPod::new(pub_id as u64 * 100_000 + i + 1));
                 }
-                "large" => {
-                    let t: Topic<LargePod> = Topic::new(&n).unwrap();
-                    for i in 0..per_pub { t.send(LargePod::new(pub_id as u64 * 100_000 + i + 1)); }
-                }
-                "serde" => {
-                    let t: Topic<SerdeMsg> = Topic::new(&n).unwrap();
-                    for i in 0..per_pub { t.send(SerdeMsg::new(pub_id as u64 * 100_000 + i + 1)); }
-                }
-                _ => {}
             }
+            "large" => {
+                let t: Topic<LargePod> = Topic::new(&n).unwrap();
+                for i in 0..per_pub {
+                    t.send(LargePod::new(pub_id as u64 * 100_000 + i + 1));
+                }
+            }
+            "serde" => {
+                let t: Topic<SerdeMsg> = Topic::new(&n).unwrap();
+                for i in 0..per_pub {
+                    t.send(SerdeMsg::new(pub_id as u64 * 100_000 + i + 1));
+                }
+            }
+            _ => {}
         }));
     }
 
-    for h in pub_handles { h.join().unwrap(); }
+    for h in pub_handles {
+        h.join().unwrap();
+    }
     std::thread::sleep(Duration::from_millis(100));
     done.store(true, Ordering::Relaxed);
-    for h in sub_handles { h.join().unwrap(); }
+    for h in sub_handles {
+        h.join().unwrap();
+    }
 
-    (total_recv.load(Ordering::Relaxed), total_corrupt.load(Ordering::Relaxed))
+    (
+        total_recv.load(Ordering::Relaxed),
+        total_corrupt.load(Ordering::Relaxed),
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════════
 // Cross-process test helper
 // ════════════════════════════════════════════════════════════════════════
 
-fn test_cross_process(test_name: &str, msg_type: &str, n_pubs: usize, n_subs: usize, count: u64) -> (u64, u64) {
+fn test_cross_process(
+    test_name: &str,
+    msg_type: &str,
+    n_pubs: usize,
+    n_subs: usize,
+    count: u64,
+) -> (u64, u64) {
     let name = unique(&format!("cp_{}_{}{}", msg_type, n_pubs, n_subs));
 
     // Init topic from parent
     match msg_type {
-        "small" => { let _: Topic<SmallPod> = Topic::new(&name).unwrap(); }
-        "large" => { let _: Topic<LargePod> = Topic::new(&name).unwrap(); }
-        "serde" => { let _: Topic<SerdeMsg> = Topic::new(&name).unwrap(); }
+        "small" => {
+            let _: Topic<SmallPod> = Topic::new(&name).unwrap();
+        }
+        "large" => {
+            let _: Topic<LargePod> = Topic::new(&name).unwrap();
+        }
+        "serde" => {
+            let _: Topic<SerdeMsg> = Topic::new(&name).unwrap();
+        }
         _ => {}
     }
 
@@ -365,7 +483,9 @@ fn test_cross_process(test_name: &str, msg_type: &str, n_pubs: usize, n_subs: us
         pubs.push(spawn_child(test_name, &name, "pub", msg_type, per_pub, i));
     }
 
-    for mut p in pubs { let _ = p.wait(); }
+    for mut p in pubs {
+        let _ = p.wait();
+    }
 
     let mut total_recv = 0u64;
     let mut total_corrupt = 0u64;
@@ -417,7 +537,10 @@ fn matrix_sweep_all_combinations() {
     let mut completed = 0;
 
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║         MATRIX SWEEP — {} combinations                      ║", total);
+    println!(
+        "║         MATRIX SWEEP — {} combinations                      ║",
+        total
+    );
     println!("║  3 msg types × 4 topologies × 3 process models             ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
 
@@ -429,7 +552,10 @@ fn matrix_sweep_all_combinations() {
 
                 // Skip same-thread for multi-pub/sub (not meaningful — needs threads)
                 if proc_model == "same_thread" && (n_pubs > 1 || n_subs > 1) {
-                    println!("║ [{:2}/{}] {} — SKIP (N/A)              ║", completed, total, label);
+                    println!(
+                        "║ [{:2}/{}] {} — SKIP (N/A)              ║",
+                        completed, total, label
+                    );
                     results.push((label, 0, 0, "SKIP"));
                     continue;
                 }
@@ -440,7 +566,12 @@ fn matrix_sweep_all_combinations() {
                     "same_thread" => test_same_thread(msg_type, n_pubs, n_subs, count),
                     "cross_thread" => test_cross_thread(msg_type, n_pubs, n_subs, count),
                     "cross_process" => test_cross_process(
-                        "matrix_sweep_all_combinations", msg_type, n_pubs, n_subs, count),
+                        "matrix_sweep_all_combinations",
+                        msg_type,
+                        n_pubs,
+                        n_subs,
+                        count,
+                    ),
                     _ => (0, 0),
                 };
 
@@ -452,8 +583,10 @@ fn matrix_sweep_all_combinations() {
                     "OK"
                 };
 
-                println!("║ [{:2}/{}] {} recv={:4} corrupt={} {}  ║",
-                         completed, total, label, recv, corrupt, status);
+                println!(
+                    "║ [{:2}/{}] {} recv={:4} corrupt={} {}  ║",
+                    completed, total, label, recv, corrupt, status
+                );
                 results.push((label, recv, corrupt, status));
             }
         }
@@ -466,8 +599,10 @@ fn matrix_sweep_all_combinations() {
     let corrupt_count = results.iter().filter(|r| r.3 == "CORRUPT").count();
     let nodata_count = results.iter().filter(|r| r.3 == "NO_DATA").count();
 
-    println!("║ RESULTS: {} OK, {} SKIP, {} CORRUPT, {} NO_DATA            ║",
-             ok_count, skip_count, corrupt_count, nodata_count);
+    println!(
+        "║ RESULTS: {} OK, {} SKIP, {} CORRUPT, {} NO_DATA            ║",
+        ok_count, skip_count, corrupt_count, nodata_count
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     // ── Failures ───────────────────────────────────────────────────
@@ -482,12 +617,20 @@ fn matrix_sweep_all_combinations() {
     }
 
     if nodata_count > 0 {
-        eprintln!("\nWARNING — NO DATA received in {} combinations:", nodata_count);
+        eprintln!(
+            "\nWARNING — NO DATA received in {} combinations:",
+            nodata_count
+        );
         for (label, _, _, status) in &results {
-            if *status == "NO_DATA" { eprintln!("  {}", label); }
+            if *status == "NO_DATA" {
+                eprintln!("  {}", label);
+            }
         }
     }
 
     assert_eq!(corrupt_count, 0, "Data corruption detected!");
-    println!("\nMATRIX SWEEP PASSED ✓ — zero corruption across {} tested combinations", ok_count);
+    println!(
+        "\nMATRIX SWEEP PASSED ✓ — zero corruption across {} tested combinations",
+        ok_count
+    );
 }

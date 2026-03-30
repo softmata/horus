@@ -49,9 +49,12 @@ fn test_topic_intent_no_data_loss_under_normal_load() {
 
         // Drain everything available
         while next_recv < next_send {
-            let msg = topic
-                .recv()
-                .unwrap_or_else(|| panic!("recv returned None at index {} (sent up to {})", next_recv, next_send));
+            let msg = topic.recv().unwrap_or_else(|| {
+                panic!(
+                    "recv returned None at index {} (sent up to {})",
+                    next_recv, next_send
+                )
+            });
             received.push(msg);
             next_recv += 1;
         }

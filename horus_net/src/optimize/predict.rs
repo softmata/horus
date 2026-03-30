@@ -219,7 +219,10 @@ mod tests {
                 suppressed += 1;
             }
         }
-        assert!(suppressed > 15, "expected >75% suppression for stationary, got {suppressed}/20");
+        assert!(
+            suppressed > 15,
+            "expected >75% suppression for stationary, got {suppressed}/20"
+        );
     }
 
     #[test]
@@ -259,7 +262,10 @@ mod tests {
             }
         }
         // Freshness: at least one message sent after MAX_SUPPRESS_COUNT
-        assert!(last_sent >= MAX_SUPPRESS_COUNT, "freshness guarantee: last sent at {last_sent}");
+        assert!(
+            last_sent >= MAX_SUPPRESS_COUNT,
+            "freshness guarantee: last sent at {last_sent}"
+        );
     }
 
     #[test]
@@ -276,6 +282,10 @@ mod tests {
             opt.on_outgoing(&mut msgs);
         }
 
-        assert!(opt.suppression_ratio() > 0.5, "ratio: {}", opt.suppression_ratio());
+        assert!(
+            opt.suppression_ratio() > 0.5,
+            "ratio: {}",
+            opt.suppression_ratio()
+        );
     }
 }

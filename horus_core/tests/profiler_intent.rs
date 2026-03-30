@@ -202,11 +202,7 @@ fn test_profiler_intent_idle_node_fast_profile() {
 
     let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
 
-    scheduler
-        .add(IdleNode)
-        .order(0)
-        .build()
-        .unwrap();
+    scheduler.add(IdleNode).order(0).build().unwrap();
 
     // Run for 200ms to collect enough ticks
     scheduler.run_for(200_u64.ms()).unwrap();

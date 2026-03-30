@@ -92,7 +92,10 @@ fn test_occupancy_grid_world_to_grid_roundtrip() {
     //   x = 5.0 + (25 + 0.5) * 0.1 = 5.0 + 2.55 = 7.55
     //   y = 10.0 + (30 + 0.5) * 0.1 = 10.0 + 3.05 = 13.05
     let (wx, wy) = grid.grid_to_world(25, 30).expect("valid cell");
-    assert!((wx - 7.55).abs() < 1e-6, "world x: expected ~7.55, got {wx}");
+    assert!(
+        (wx - 7.55).abs() < 1e-6,
+        "world x: expected ~7.55, got {wx}"
+    );
     assert!(
         (wy - 13.05).abs() < 1e-6,
         "world y: expected ~13.05, got {wy}"
@@ -143,10 +146,7 @@ fn test_occupancy_grid_free_occupied_unknown() {
     // Cell (0,0) center = (0.05, 0.05), cell (1,0) center = (0.15, 0.05), etc.
 
     // Unknown cell: neither free nor occupied
-    assert!(
-        !grid.is_free(0.05, 0.05),
-        "unknown cell should not be free"
-    );
+    assert!(!grid.is_free(0.05, 0.05), "unknown cell should not be free");
     assert!(
         !grid.is_occupied(0.05, 0.05),
         "unknown cell (-1) should not be occupied (threshold is >= 50)"
@@ -160,14 +160,8 @@ fn test_occupancy_grid_free_occupied_unknown() {
     );
 
     // Occupied cell (value 100): is_occupied threshold is >= 50
-    assert!(
-        !grid.is_free(0.25, 0.05),
-        "cell 100 should not be free"
-    );
-    assert!(
-        grid.is_occupied(0.25, 0.05),
-        "cell 100 should be occupied"
-    );
+    assert!(!grid.is_free(0.25, 0.05), "cell 100 should not be free");
+    assert!(grid.is_occupied(0.25, 0.05), "cell 100 should be occupied");
 
     // Cell value 49: within free range (0..50)
     assert!(grid.is_free(0.35, 0.05), "cell 49 should be free");
@@ -181,10 +175,7 @@ fn test_occupancy_grid_free_occupied_unknown() {
         !grid.is_free(0.45, 0.05),
         "cell 50 should not be free (free range is 0..50)"
     );
-    assert!(
-        grid.is_occupied(0.45, 0.05),
-        "cell 50 should be occupied"
-    );
+    assert!(grid.is_occupied(0.45, 0.05), "cell 50 should be occupied");
 }
 
 #[test]

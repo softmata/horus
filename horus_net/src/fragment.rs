@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::priority::{Encoding, Priority, Reliability};
 use crate::wire::{FragmentHeader, MessageHeader, OutMessage};
-use crate::priority::{Priority, Reliability, Encoding};
 
 /// Maximum payload per fragment (leave room for UDP/IP headers + our headers).
 pub const MAX_FRAGMENT_PAYLOAD: usize = 1400;
@@ -44,7 +44,9 @@ pub struct Fragmenter {
 
 impl Fragmenter {
     pub fn new() -> Self {
-        Self { next_fragment_id: 0 }
+        Self {
+            next_fragment_id: 0,
+        }
     }
 
     /// Fragment a message. Returns a single-element vec if no fragmentation needed.
@@ -71,7 +73,9 @@ impl Fragmenter {
             eprintln!(
                 "[horus_net] Message on '{}' is {}B (max {}B for horus_net). \
                  Use horus-zenoh for large data.",
-                msg.topic_name, msg.payload.len(), MAX_REASSEMBLY_SIZE
+                msg.topic_name,
+                msg.payload.len(),
+                MAX_REASSEMBLY_SIZE
             );
             return vec![];
         }
@@ -221,7 +225,8 @@ impl Reassembler {
     /// Returns number of entries discarded.
     pub fn gc_stale(&mut self) -> usize {
         let before = self.pending.len();
-        self.pending.retain(|_, p| p.first_seen.elapsed() < FRAGMENT_TIMEOUT);
+        self.pending
+            .retain(|_, p| p.first_seen.elapsed() < FRAGMENT_TIMEOUT);
         before - self.pending.len()
     }
 

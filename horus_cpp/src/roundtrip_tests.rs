@@ -10,8 +10,12 @@ mod tests {
     fn unique_topic(prefix: &str) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        format!("roundtrip.{}.{}.{}", prefix, std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed))
+        format!(
+            "roundtrip.{}.{}.{}",
+            prefix,
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     #[test]
@@ -20,12 +24,16 @@ mod tests {
         let t = unique_topic("cmd_vel");
         let pub_ = publisher_cmd_vel_new(&t).unwrap();
         let sub = subscriber_cmd_vel_new(&t).unwrap();
-        let msg = CmdVel { timestamp_ns: 999, linear: -1.5, angular: 3.14 };
+        let msg = CmdVel {
+            timestamp_ns: 999,
+            linear: -1.5,
+            angular: 3.25,
+        };
         publisher_cmd_vel_send(&pub_, msg);
         let r = subscriber_cmd_vel_recv(&sub).unwrap();
         assert_eq!(r.timestamp_ns, 999);
         assert!((r.linear - (-1.5)).abs() < f32::EPSILON);
-        assert!((r.angular - 3.14).abs() < 0.001);
+        assert!((r.angular - 3.25).abs() < 0.001);
     }
 
     #[test]
@@ -52,7 +60,12 @@ mod tests {
         let t = unique_topic("pose2d");
         let pub_ = publisher_pose2d_new(&t).unwrap();
         let sub = subscriber_pose2d_new(&t).unwrap();
-        let msg = Pose2D { x: -100.5, y: 200.3, theta: std::f64::consts::PI, timestamp_ns: 7 };
+        let msg = Pose2D {
+            x: -100.5,
+            y: 200.3,
+            theta: std::f64::consts::PI,
+            timestamp_ns: 7,
+        };
         publisher_pose2d_send(&pub_, msg);
         let r = subscriber_pose2d_recv(&sub).unwrap();
         assert!((r.x - (-100.5)).abs() < f64::EPSILON);
@@ -83,7 +96,12 @@ mod tests {
         let pub_ = publisher_nav_goal_new(&t).unwrap();
         let sub = subscriber_nav_goal_new(&t).unwrap();
         let mut msg = NavGoal::default();
-        msg.target_pose = Pose2D { x: 5.0, y: 10.0, theta: 1.57, timestamp_ns: 55 };
+        msg.target_pose = Pose2D {
+            x: 5.0,
+            y: 10.0,
+            theta: 1.57,
+            timestamp_ns: 55,
+        };
         msg.tolerance_position = 0.1;
         publisher_nav_goal_send(&pub_, msg);
         let r = subscriber_nav_goal_recv(&sub).unwrap();
@@ -141,9 +159,14 @@ mod tests {
         let sub = subscriber_cmd_vel_new(&t).unwrap();
 
         for i in 0..5u64 {
-            publisher_cmd_vel_send(&pub_, CmdVel {
-                timestamp_ns: i, linear: i as f32, angular: 0.0
-            });
+            publisher_cmd_vel_send(
+                &pub_,
+                CmdVel {
+                    timestamp_ns: i,
+                    linear: i as f32,
+                    angular: 0.0,
+                },
+            );
         }
 
         // First recv should get earliest message

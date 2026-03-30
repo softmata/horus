@@ -384,7 +384,12 @@ mod tests {
         let freq = original.hz();
         let period = freq.period();
         let recovered = 1.0 / period.as_secs_f64();
-        assert!((recovered - original).abs() < 0.001, "roundtrip error: {} vs {}", recovered, original);
+        assert!(
+            (recovered - original).abs() < 0.001,
+            "roundtrip error: {} vs {}",
+            recovered,
+            original
+        );
     }
 
     #[test]
@@ -617,8 +622,8 @@ mod tests {
         let freq = 0.01_f64.hz();
         let budget = freq.budget_default();
         let deadline = freq.deadline_default();
-        assert_eq!(budget, Duration::from_secs(80));     // 80% of 100s
-        assert_eq!(deadline.as_millis(), 95_000);         // 95% of 100s
+        assert_eq!(budget, Duration::from_secs(80)); // 80% of 100s
+        assert_eq!(deadline.as_millis(), 95_000); // 95% of 100s
     }
 
     // ── Very large frequency budget/deadline ──
@@ -708,8 +713,12 @@ mod tests {
         let original = 0.1_f64;
         let freq = original.hz();
         let recovered = 1.0 / freq.period().as_secs_f64();
-        assert!((recovered - original).abs() < 1e-9,
-            "low freq roundtrip: {} vs {}", recovered, original);
+        assert!(
+            (recovered - original).abs() < 1e-9,
+            "low freq roundtrip: {} vs {}",
+            recovered,
+            original
+        );
     }
 
     #[test]
@@ -717,8 +726,12 @@ mod tests {
         let original = 10_000.0_f64;
         let freq = original.hz();
         let recovered = 1.0 / freq.period().as_secs_f64();
-        assert!((recovered - original).abs() < 0.01,
-            "high freq roundtrip: {} vs {}", recovered, original);
+        assert!(
+            (recovered - original).abs() < 0.01,
+            "high freq roundtrip: {} vs {}",
+            recovered,
+            original
+        );
     }
 
     // ── i32 secs and ns convenience ──

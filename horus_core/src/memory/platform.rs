@@ -9,9 +9,9 @@
 
 pub use horus_sys::shm::{
     cleanup_stale_namespaces, has_native_shm, is_namespace_stale_by_flock, is_shm_file_stale,
-    list_all_horus_namespaces, shm_base_dir, shm_error_logs_path, shm_logs_path,
-    shm_remote_logs_path, shm_namespace, shm_network_dir,
-    shm_nodes_dir, shm_scheduler_dir, shm_topics_dir, NamespaceCleanupResult, NamespaceInfo,
+    list_all_horus_namespaces, shm_base_dir, shm_error_logs_path, shm_logs_path, shm_namespace,
+    shm_network_dir, shm_nodes_dir, shm_remote_logs_path, shm_scheduler_dir, shm_topics_dir,
+    NamespaceCleanupResult, NamespaceInfo,
 };
 
 // Re-export for tests and internal use
@@ -77,10 +77,8 @@ mod tests {
     fn test_cleanup_stale_namespaces_doesnt_crash() {
         // Should not panic even if there are no stale namespaces
         let result = cleanup_stale_namespaces();
-        assert!(
-            result.removed >= 0 || result.removed == 0,
-            "cleanup should report non-negative removed count"
-        );
+        // removed is usize (always non-negative); just verify the call succeeded
+        let _ = result.removed;
     }
 
     #[test]

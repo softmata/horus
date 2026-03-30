@@ -1,30 +1,21 @@
-<p align="center">
-  <img src="assets/logo.png" alt="HORUS" width="120">
-</p>
+# HORUS
 
-<h1 align="center">HORUS</h1>
+**Real-time distributed middleware for Rust, Python, and C++. 575x faster than ROS2.**
 
-<p align="center">
-  <strong>Real-time robotics middleware for Rust and Python. 575x faster than ROS2.</strong>
-</p>
+[![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/v0.2.0-blue.svg)](https://github.com/softmata/horus/releases)
+[![Stars](https://img.shields.io/github/stars/softmata/horus?style=flat)](https://github.com/softmata/horus/stargazers)
+[![Rust](https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus&logoColor=white)](https://isocpp.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-Join-7289da?logo=discord&logoColor=white)](https://discord.gg/hEZC3ev2Nf)
 
-<p align="center">
-  <a href="https://github.com/softmata/horus/actions/workflows/ci.yml"><img src="https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/softmata/horus/releases"><img src="https://img.shields.io/badge/v0.2.0-blue.svg" alt="Version"></a>
-  <a href="https://github.com/softmata/horus/stargazers"><img src="https://img.shields.io/github/stars/softmata/horus?style=flat" alt="Stars"></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust" alt="Rust"></a>
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white" alt="Python"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License"></a>
-  <a href="https://discord.gg/hEZC3ev2Nf"><img src="https://img.shields.io/badge/Discord-Join-7289da?logo=discord&logoColor=white" alt="Discord"></a>
-</p>
-
-<p align="center">
-  <a href="https://docs.horusrobotics.dev"><strong>Docs</strong></a> &middot;
-  <a href="https://docs.horusrobotics.dev/getting-started/quick-start"><strong>Quick Start</strong></a> &middot;
-  <a href="https://docs.horusrobotics.dev/performance/benchmarks"><strong>Benchmarks</strong></a> &middot;
-  <a href="https://docs.horusrobotics.dev/learn/coming-from-ros2"><strong>Coming from ROS2?</strong></a> &middot;
-  <a href="https://discord.gg/hEZC3ev2Nf"><strong>Discord</strong></a>
-</p>
+[**Docs**](https://docs.horusrobotics.dev) &middot;
+[**Quick Start**](https://docs.horusrobotics.dev/getting-started/quick-start) &middot;
+[**Benchmarks**](https://docs.horusrobotics.dev/performance/benchmarks) &middot;
+[**Coming from ROS2?**](https://docs.horusrobotics.dev/learn/coming-from-ros2) &middot;
+[**Discord**](https://discord.gg/hEZC3ev2Nf)
 
 ---
 
@@ -41,13 +32,13 @@ Or install manually:
 git clone https://github.com/softmata/horus.git && cd horus && ./install.sh
 ```
 
-Python bindings: `pip install horus-robotics`
+Python: `pip install horus-robotics` · C++: link against `libhorus_cpp` and `#include <horus/horus.hpp>`
 
 ---
 
 ## Why HORUS?
 
-HORUS replaces DDS with shared-memory ring buffers and lock-free synchronization. The result: sub-microsecond IPC, deterministic execution, and a simpler developer experience.
+HORUS is a real-time distributed middleware that replaces DDS with shared-memory ring buffers and lock-free synchronization. Built for any system where latency, determinism, and safety matter — robotics, industrial automation, autonomous vehicles, trading systems, game engines, and more.
 
 | | **HORUS** | **ROS2** |
 |---|---|---|
@@ -57,7 +48,7 @@ HORUS replaces DDS with shared-memory ring buffers and lock-free synchronization
 | Safety | Graduated watchdog, auto safe-state, BlackBox | Application-level |
 | AI + RT | Same process — AsyncIo for GPU, RT for motors | Separate processes |
 | GPU tensors | DLPack zero-copy (PyTorch/JAX native) | Serialize → deserialize |
-| Languages | Rust + Python + C++ (same shared memory) | C++ + Python (DDS serialization) |
+| Languages | **Rust + Python + C++** (same shared memory) | C++ + Python (DDS serialization) |
 | Config | Single `horus.toml` | package.xml + CMakeLists.txt + launch files |
 | Setup | `horus new && horus run` | colcon build + source install + launch |
 
@@ -128,7 +119,41 @@ horus.run(
 )
 ```
 
-Both share the same topics over shared memory — zero overhead between languages.
+**C++** — same robot, idiomatic API:
+
+```cpp
+#include <horus/horus.hpp>
+using namespace horus::literals;
+
+int main() {
+    auto sched = horus::Scheduler().tick_rate(1000_hz);
+
+    auto sensor_pub = sched.advertise<horus::msg::CmdVel>("sensor.data");
+    auto sensor_sub = sched.subscribe<horus::msg::CmdVel>("sensor.data");
+    auto motor_pub  = sched.advertise<horus::msg::CmdVel>("motor.cmd");
+
+    sched.add("sensor").order(0).rate(1000_hz)
+        .tick([&] {
+            auto out = sensor_pub.loan();
+            out->linear = 0.5f;
+            sensor_pub.publish(std::move(out));
+        }).build();
+
+    sched.add("controller").order(1).rate(1000_hz)
+        .on_miss(horus::Miss::SafeMode)
+        .tick([&] {
+            auto s = sensor_sub.recv();
+            if (!s) return;
+            auto cmd = motor_pub.loan();
+            cmd->linear = (1.0f - s->linear) * 0.5f;
+            motor_pub.publish(std::move(cmd));
+        }).build();
+
+    sched.spin();
+}
+```
+
+All three languages share the same topics over shared memory — zero overhead between Rust, Python, and C++.
 
 ---
 
@@ -212,10 +237,11 @@ baudrate = 1000000
 ### CLI
 
 ```bash
-horus new my_robot              # scaffold Rust, Python, or C++ project
+horus new my_robot              # scaffold project (Rust, Python, or C++)
+horus new my_bot --lang cpp     # scaffold C++ project
 horus run                       # build and run
 horus topic list                # inspect live topics
-horus topic echo camera.rgb     # watch messages
+horus topic echo camera.rgb     # watch messages (works across all languages)
 horus monitor -t                # TUI system dashboard
 horus deploy pi@192.168.1.50    # deploy to robot
 horus doctor                    # ecosystem health check
@@ -267,7 +293,6 @@ cargo run --example 05_realtime       # RT with deadline enforcement
 
 ## Coming Soon
 
-- **C++ Bindings** — Native C++ API with zero-overhead shared memory access, auto-generated from Rust via `#[horus_api]` annotations
 - **Embedded HORUS** — `no_std` runtime for STM32, ESP32, and other microcontrollers
 - **HORUS–Zenoh Bridge** — Distributed multi-machine deployments over Zenoh for seamless cloud-edge-robot communication
 - **ROS2 Bridge** — Bidirectional topic bridging between HORUS and ROS2
@@ -280,9 +305,10 @@ cargo run --example 05_realtime       # RT with deadline enforcement
 horus/          Umbrella crate — prelude, universal types
 horus_core/     Runtime — scheduler, nodes, topics, services, actions, safety monitor
 horus_types/    Universal IPC types — math, diagnostics, time, generic
-horus_manager/  CLI — build, run, test, deploy, monitor (40+ commands)
+horus_cpp/      C++ bindings — extern "C" FFI, idiomatic C++17 headers (pool, params, TF, services, actions)
 horus_py/       Python bindings (PyO3)
-horus_sys/      Platform HAL — Linux, macOS, Windows
+horus_manager/  CLI — build, run, test, deploy, monitor (40+ commands)
+horus_sys/      Platform HAL — Linux, macOS
 horus_net/      LAN replication — transparent cross-machine topics
 
 # Separate packages (install via `horus install`):

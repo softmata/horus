@@ -44,7 +44,10 @@ impl EpollLoop {
 
         // Create timerfd for periodic tasks
         let timer_fd = unsafe {
-            libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK | libc::TFD_CLOEXEC)
+            libc::timerfd_create(
+                libc::CLOCK_MONOTONIC,
+                libc::TFD_NONBLOCK | libc::TFD_CLOEXEC,
+            )
         };
         if timer_fd < 0 {
             unsafe {
@@ -67,9 +70,7 @@ impl EpollLoop {
                 tv_nsec: nsecs,
             },
         };
-        let ret = unsafe {
-            libc::timerfd_settime(timer_fd, 0, &timer_spec, std::ptr::null_mut())
-        };
+        let ret = unsafe { libc::timerfd_settime(timer_fd, 0, &timer_spec, std::ptr::null_mut()) };
         if ret < 0 {
             unsafe {
                 libc::close(timer_fd);
@@ -109,13 +110,8 @@ impl EpollLoop {
     /// Signal the SHM eventfd (wake the event loop for export).
     pub fn signal_shm(&self) -> io::Result<()> {
         let val: u64 = 1;
-        let ret = unsafe {
-            libc::write(
-                self.event_fd,
-                &val as *const u64 as *const libc::c_void,
-                8,
-            )
-        };
+        let ret =
+            unsafe { libc::write(self.event_fd, &val as *const u64 as *const libc::c_void, 8) };
         if ret < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -155,11 +151,7 @@ impl EpollLoop {
                     // Consume the eventfd counter to re-arm it
                     let mut val: u64 = 0;
                     unsafe {
-                        libc::read(
-                            self.event_fd,
-                            &mut val as *mut u64 as *mut libc::c_void,
-                            8,
-                        );
+                        libc::read(self.event_fd, &mut val as *mut u64 as *mut libc::c_void, 8);
                     }
                     EventSource::ShmNotify
                 }
@@ -167,11 +159,7 @@ impl EpollLoop {
                     // Consume the timerfd expiration count to re-arm it
                     let mut val: u64 = 0;
                     unsafe {
-                        libc::read(
-                            self.timer_fd,
-                            &mut val as *mut u64 as *mut libc::c_void,
-                            8,
-                        );
+                        libc::read(self.timer_fd, &mut val as *mut u64 as *mut libc::c_void, 8);
                     }
                     EventSource::Timer
                 }
@@ -188,9 +176,7 @@ impl EpollLoop {
             events: (libc::EPOLLIN | libc::EPOLLET) as u32,
             u64: token,
         };
-        let ret = unsafe {
-            libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev)
-        };
+        let ret = unsafe { libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev) };
         if ret < 0 {
             Err(io::Error::last_os_error())
         } else {

@@ -64,7 +64,6 @@ impl std::ops::Sub for ClockInstant {
     }
 }
 
-
 // ─── Clock Trait ─────────────────────────────────────────────────────────────
 
 /// Clock source for the scheduler and all timing operations.

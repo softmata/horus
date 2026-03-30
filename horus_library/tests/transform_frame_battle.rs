@@ -190,12 +190,14 @@ fn test_16_writers_32_readers_no_corruption() {
 
     tf.register_frame("world", None).unwrap();
     for i in 0..16 {
-        tf.register_frame(&format!("big_s{}", i), Some("world")).unwrap();
+        tf.register_frame(&format!("big_s{}", i), Some("world"))
+            .unwrap();
         tf.update_transform(
             &format!("big_s{}", i),
             &Transform::from_translation([i as f64, 0.0, 0.0]),
             0,
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     let running = Arc::new(AtomicBool::new(true));
@@ -251,7 +253,11 @@ fn test_16_writers_32_readers_no_corruption() {
     let total = total_reads.load(Ordering::SeqCst);
     let corrupt = corruptions.load(Ordering::SeqCst);
 
-    assert!(total > 1000, "Should complete >1000 reads in 2s, got {}", total);
+    assert!(
+        total > 1000,
+        "Should complete >1000 reads in 2s, got {}",
+        total
+    );
     assert_eq!(corrupt, 0, "Zero corruptions in {} reads (16W+32R)", total);
 }
 
@@ -266,9 +272,15 @@ fn test_chain_lookup_during_writes() {
 
     // Set up chain: world -> A -> B -> C -> D
     tf.register_frame("chain_world", None).unwrap();
-    for (name, parent) in [("cA", "chain_world"), ("cB", "cA"), ("cC", "cB"), ("cD", "cC")] {
+    for (name, parent) in [
+        ("cA", "chain_world"),
+        ("cB", "cA"),
+        ("cC", "cB"),
+        ("cD", "cC"),
+    ] {
         tf.register_frame(name, Some(parent)).unwrap();
-        tf.update_transform(name, &Transform::from_translation([1.0, 0.0, 0.0]), 0).unwrap();
+        tf.update_transform(name, &Transform::from_translation([1.0, 0.0, 0.0]), 0)
+            .unwrap();
     }
 
     let running = Arc::new(AtomicBool::new(true));
@@ -312,6 +324,14 @@ fn test_chain_lookup_during_writes() {
     let total = total_reads.load(Ordering::SeqCst);
     let corrupt = corruptions.load(Ordering::SeqCst);
 
-    assert!(total > 100, "Should complete >100 chain lookups, got {}", total);
-    assert_eq!(corrupt, 0, "Zero corruption in {} chain lookups during concurrent writes", total);
+    assert!(
+        total > 100,
+        "Should complete >100 chain lookups, got {}",
+        total
+    );
+    assert_eq!(
+        corrupt, 0,
+        "Zero corruption in {} chain lookups during concurrent writes",
+        total
+    );
 }

@@ -146,9 +146,7 @@ fn bench_horus_throughput_u64() -> f64 {
 // ---------------------------------------------------------------------------
 
 fn bench_iox2_u64() -> (u64, u64, u64, u64, u64) {
-    let node = NodeBuilder::new()
-        .create::<ipc::Service>()
-        .expect("node");
+    let node = NodeBuilder::new().create::<ipc::Service>().expect("node");
 
     let service = node
         .service_builder(&"bench/iox2/u64".try_into().unwrap())
@@ -182,13 +180,17 @@ fn bench_iox2_u64() -> (u64, u64, u64, u64, u64) {
 fn bench_iox2_1kb() -> (u64, u64, u64, u64, u64) {
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
-    struct Data1K { data: [u64; 128] }
-    impl Default for Data1K { fn default() -> Self { Self { data: [0u64; 128] } } }
+    struct Data1K {
+        data: [u64; 128],
+    }
+    impl Default for Data1K {
+        fn default() -> Self {
+            Self { data: [0u64; 128] }
+        }
+    }
     unsafe impl ZeroCopySend for Data1K {}
 
-    let node = NodeBuilder::new()
-        .create::<ipc::Service>()
-        .expect("node");
+    let node = NodeBuilder::new().create::<ipc::Service>().expect("node");
 
     let service = node
         .service_builder(&"bench/iox2/1kb".try_into().unwrap())
@@ -223,13 +225,17 @@ fn bench_iox2_1kb() -> (u64, u64, u64, u64, u64) {
 fn bench_iox2_4kb() -> (u64, u64, u64, u64, u64) {
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
-    struct Data4K { data: [u64; 512] }
-    impl Default for Data4K { fn default() -> Self { Self { data: [0u64; 512] } } }
+    struct Data4K {
+        data: [u64; 512],
+    }
+    impl Default for Data4K {
+        fn default() -> Self {
+            Self { data: [0u64; 512] }
+        }
+    }
     unsafe impl ZeroCopySend for Data4K {}
 
-    let node = NodeBuilder::new()
-        .create::<ipc::Service>()
-        .expect("node");
+    let node = NodeBuilder::new().create::<ipc::Service>().expect("node");
 
     let service = node
         .service_builder(&"bench/iox2/4kb".try_into().unwrap())
@@ -262,9 +268,7 @@ fn bench_iox2_4kb() -> (u64, u64, u64, u64, u64) {
 }
 
 fn bench_iox2_throughput_u64() -> f64 {
-    let node = NodeBuilder::new()
-        .create::<ipc::Service>()
-        .expect("node");
+    let node = NodeBuilder::new().create::<ipc::Service>().expect("node");
 
     let service = node
         .service_builder(&"bench/iox2/tp/u64".try_into().unwrap())
@@ -857,7 +861,11 @@ fn main() {
     print_row("horus  Topic<u64>", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   PubSub<u64>", imin, iavg, imed, ip99, imax);
     let winner8 = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio8 = if havg <= iavg { iavg as f64 / havg.max(1) as f64 } else { havg as f64 / iavg.max(1) as f64 };
+    let ratio8 = if havg <= iavg {
+        iavg as f64 / havg.max(1) as f64
+    } else {
+        havg as f64 / iavg.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", winner8, ratio8);
 
     // --- 1KB ---
@@ -867,7 +875,11 @@ fn main() {
     print_row("horus  Topic<[u64;128]>", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   PubSub<[u64;128]>", imin, iavg, imed, ip99, imax);
     let winner1k = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio1k = if havg <= iavg { iavg as f64 / havg.max(1) as f64 } else { havg as f64 / iavg.max(1) as f64 };
+    let ratio1k = if havg <= iavg {
+        iavg as f64 / havg.max(1) as f64
+    } else {
+        havg as f64 / iavg.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", winner1k, ratio1k);
 
     // --- 4KB ---
@@ -877,7 +889,11 @@ fn main() {
     print_row("horus  Topic<[u64;512]>", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   PubSub<[u64;512]>", imin, iavg, imed, ip99, imax);
     let winner4k = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio4k = if havg <= iavg { iavg as f64 / havg.max(1) as f64 } else { havg as f64 / iavg.max(1) as f64 };
+    let ratio4k = if havg <= iavg {
+        iavg as f64 / havg.max(1) as f64
+    } else {
+        havg as f64 / iavg.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", winner4k, ratio4k);
 
     // --- Cross-thread (forces atomic/SHM backend) ---
@@ -889,7 +905,11 @@ fn main() {
     print_row("horus  cross-thread u64", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   cross-thread u64", imin, iavg, imed, ip99, imax);
     let winner_ct = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio_ct = if havg <= iavg { iavg as f64 / havg.max(1) as f64 } else { havg as f64 / iavg.max(1) as f64 };
+    let ratio_ct = if havg <= iavg {
+        iavg as f64 / havg.max(1) as f64
+    } else {
+        havg as f64 / iavg.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", winner_ct, ratio_ct);
 
     // --- Cross-process (true IPC via SHM) ---
@@ -902,7 +922,11 @@ fn main() {
     print_row("horus  2P/2S", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   2P/2S", imin, iavg, imed, ip99, imax);
     let w22 = if havg <= iavg { "horus" } else { "iox2" };
-    let r22 = if havg <= iavg { iavg as f64 / havg.max(1) as f64 } else { havg as f64 / iavg.max(1) as f64 };
+    let r22 = if havg <= iavg {
+        iavg as f64 / havg.max(1) as f64
+    } else {
+        havg as f64 / iavg.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", w22, r22);
 
     println!("--- MPMC: 4 publishers, 4 subscribers ---");
@@ -911,7 +935,11 @@ fn main() {
     print_row("horus  4P/4S", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   4P/4S", imin, iavg, imed, ip99, imax);
     let w44 = if havg <= iavg { "horus" } else { "iox2" };
-    let r44 = if havg <= iavg { iavg as f64 / havg.max(1) as f64 } else { havg as f64 / iavg.max(1) as f64 };
+    let r44 = if havg <= iavg {
+        iavg as f64 / havg.max(1) as f64
+    } else {
+        havg as f64 / iavg.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", w44, r44);
 
     // --- FanoutRing (contention-free MPMC) ---
@@ -920,7 +948,11 @@ fn main() {
     print_row("horus  fanout 2P/2S", fmin, favg, fmed, fp99, fmax);
     print_row("iox2   2P/2S (from above)", imin, iavg, imed, ip99, imax);
     let fw22 = if favg <= iavg { "horus-fanout" } else { "iox2" };
-    let fr22 = if favg <= iavg { iavg as f64 / favg.max(1) as f64 } else { favg as f64 / iavg.max(1) as f64 };
+    let fr22 = if favg <= iavg {
+        iavg as f64 / favg.max(1) as f64
+    } else {
+        favg as f64 / iavg.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", fw22, fr22);
 
     println!("--- FanoutRing (NEW): 4 publishers, 4 subscribers ---");
@@ -929,8 +961,16 @@ fn main() {
     print_row("horus  OLD mpmc 4P/4S", hmin, havg, hmed, hp99, hmax);
     print_row("horus  fanout 4P/4S", fmin, favg, fmed, fp99, fmax);
     print_row("iox2   4P/4S", imin4, iavg4, imed4, ip994, imax4);
-    let fw44 = if favg <= iavg4 { "horus-fanout" } else { "iox2" };
-    let fr44 = if favg <= iavg4 { iavg4 as f64 / favg.max(1) as f64 } else { favg as f64 / iavg4.max(1) as f64 };
+    let fw44 = if favg <= iavg4 {
+        "horus-fanout"
+    } else {
+        "iox2"
+    };
+    let fr44 = if favg <= iavg4 {
+        iavg4 as f64 / favg.max(1) as f64
+    } else {
+        favg as f64 / iavg4.max(1) as f64
+    };
     println!("  Winner: {} ({:.1}x faster)\n", fw44, fr44);
 
     // 8P/4S removed — iceoryx2 hits connection limits and hangs

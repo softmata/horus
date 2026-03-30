@@ -1,6 +1,8 @@
 use crate::cli_output;
 use crate::config::CARGO_TOML;
-use crate::manifest::{DriverValue, HorusManifest, IgnoreConfig, PackageInfo, TargetType, HORUS_TOML};
+use crate::manifest::{
+    DriverValue, HorusManifest, IgnoreConfig, PackageInfo, TargetType, HORUS_TOML,
+};
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
 use colored::*;
@@ -116,9 +118,7 @@ pub fn execute_build_only(
     if files.is_empty() {
         let manifest_path = std::path::Path::new(HORUS_TOML);
         if manifest_path.exists() {
-            if let Ok(manifest) =
-                crate::manifest::HorusManifest::load_from(manifest_path)
-            {
+            if let Ok(manifest) = crate::manifest::HorusManifest::load_from(manifest_path) {
                 if manifest.is_workspace() {
                     let project_dir = std::env::current_dir()?;
                     cli_output::info("Generating workspace build files...");

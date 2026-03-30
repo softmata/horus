@@ -157,11 +157,7 @@ fn run_test(test_name: &str, test_id: &str, width: u32, height: u32, count: u32,
         errs.len()
     );
 
-    assert!(
-        received > 0,
-        "Child received 0 images. stdout:\n{}",
-        stdout
-    );
+    assert!(received > 0, "Child received 0 images. stdout:\n{}", stdout);
 
     if !errs.is_empty() {
         panic!("Errors: {:?}", errs);

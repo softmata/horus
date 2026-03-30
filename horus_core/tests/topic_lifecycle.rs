@@ -39,8 +39,16 @@ fn test_topic_recreate_after_drop() {
     let a = topic.recv();
     let b = topic.recv();
 
-    assert_eq!(a, Some(333), "First recv on recreated topic should return 333");
-    assert_eq!(b, Some(444), "Second recv on recreated topic should return 444");
+    assert_eq!(
+        a,
+        Some(333),
+        "First recv on recreated topic should return 333"
+    );
+    assert_eq!(
+        b,
+        Some(444),
+        "Second recv on recreated topic should return 444"
+    );
 }
 
 /// Test 2: Send and receive through topics typed with several basic types.
@@ -106,7 +114,11 @@ fn test_topic_multiple_messages_fifo_order() {
         let msg = topic
             .recv()
             .unwrap_or_else(|| panic!("recv returned None at index {}", i));
-        assert_eq!(msg, i, "FIFO violation at index {}: expected {}, got {}", i, i, msg);
+        assert_eq!(
+            msg, i,
+            "FIFO violation at index {}: expected {}, got {}",
+            i, i, msg
+        );
     }
 
     // Verify no extra messages remain
@@ -125,7 +137,11 @@ fn test_topic_recv_returns_none_when_empty() {
     let name = unique_topic("lifecycle.empty");
     let topic = Topic::<u64>::new(&name).expect("create empty topic");
 
-    assert_eq!(topic.recv(), None, "First recv on empty topic should be None");
+    assert_eq!(
+        topic.recv(),
+        None,
+        "First recv on empty topic should be None"
+    );
     assert_eq!(
         topic.recv(),
         None,
@@ -166,14 +182,12 @@ fn test_topic_high_throughput_same_thread() {
 
         // Drain everything available
         while next_recv < next_send {
-            let msg = topic
-                .recv()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "recv returned None at index {} (sent up to {})",
-                        next_recv, next_send
-                    )
-                });
+            let msg = topic.recv().unwrap_or_else(|| {
+                panic!(
+                    "recv returned None at index {} (sent up to {})",
+                    next_recv, next_send
+                )
+            });
             assert_eq!(msg, next_recv, "Data mismatch at index {}", next_recv);
             next_recv += 1;
         }
@@ -181,7 +195,11 @@ fn test_topic_high_throughput_same_thread() {
 
     let elapsed = start.elapsed();
 
-    assert_eq!(next_recv, total, "Should have received all {} messages", total);
+    assert_eq!(
+        next_recv, total,
+        "Should have received all {} messages",
+        total
+    );
     assert!(
         elapsed.as_millis() < 100,
         "10,000 send/recv should complete in < 100ms, took {}ms",

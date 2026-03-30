@@ -412,7 +412,7 @@ fn mpsc_ring_multiple_producers() {
 
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn mpmc_ring_concurrent_producers_and_consumers() {
+fn mpmc_ring_concurrent_producers_and_consumers() {
     let ring = Arc::new(fanout::FanoutRing::<u64>::new(4, 4, 256));
     let n_per_producer = 500u64;
     let n_producers = 4;
@@ -596,7 +596,7 @@ fn topic_same_thread_uses_direct_channel() {
 
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn topic_read_latest() {
+fn topic_read_latest() {
     // Test read_latest on the raw ring buffers where behavior is well-defined
     // (Topic-level read_latest has complex interactions with migration and role tracking)
 
@@ -1024,7 +1024,7 @@ fn stress_mpsc_contention() {
 
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn stress_mpmc_high_contention() {
+fn stress_mpmc_high_contention() {
     let ring = Arc::new(fanout::FanoutRing::<u64>::new(4, 4, 256));
     let n_per = 5_000u64;
     let n_threads = 4;
@@ -1342,7 +1342,7 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
 fn concurrent_migration_no_livelock_16_threads() {
     use std::sync::atomic::AtomicU32;
     use std::sync::{Arc, Barrier};
-    
+
     use std::time::Instant;
 
     const THREADS: usize = 16;
@@ -2097,7 +2097,7 @@ fn mpsc_ring_drop_pending_messages() {
 
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn mpmc_ring_drop_pending_messages() {
+fn mpmc_ring_drop_pending_messages() {
     let counter = Arc::new(AtomicU64::new(0));
     {
         let ring = fanout::FanoutRing::<DropCounter>::new(4, 4, 16);
@@ -3599,7 +3599,10 @@ fn auto_grow_small_messages_still_work_after_grow() {
             trigger_shm_dispatch(&name);
 
             // Small messages should still work
-            assert!(t.try_send("hi".to_string()).is_ok(), "Small send after grow");
+            assert!(
+                t.try_send("hi".to_string()).is_ok(),
+                "Small send after grow"
+            );
             let got = t.try_recv();
             assert_eq!(got, Some("hi".to_string()), "Small recv after grow");
         }
@@ -3623,9 +3626,13 @@ fn auto_grow_boundary_exact_fit() {
 
             // 40 chars → bincode 48 bytes = max_data_len (64 - 16). Exact fit.
             let result = t.try_send("F".repeat(40));
-            assert!(result.is_ok(), "Exact-fit message should succeed without grow");
+            assert!(
+                result.is_ok(),
+                "Exact-fit message should succeed without grow"
+            );
             assert_eq!(
-                t.header().slot_size, old_slot,
+                t.header().slot_size,
+                old_slot,
                 "Slot size should NOT change for exact-fit message"
             );
         }
@@ -3709,7 +3716,10 @@ fn auto_grow_vec_u8_large_payload() {
             let mut sent = false;
             for _ in 0..5 {
                 match t.try_send(large_msg.clone()) {
-                    Ok(()) => { sent = true; break; }
+                    Ok(()) => {
+                        sent = true;
+                        break;
+                    }
                     Err(_) => continue,
                 }
             }
@@ -3773,7 +3783,10 @@ fn auto_grow_cross_thread_no_crash() {
     running.store(false, Ordering::Relaxed);
 
     let count = handle.join().expect("thread should not crash during grow");
-    assert!(count > 0, "Thread should have processed messages without crash");
+    assert!(
+        count > 0,
+        "Thread should have processed messages without crash"
+    );
 }
 
 // ---- DC→SHM pointer restoration (regression test for cached_data_ptr bug) ----
@@ -3877,7 +3890,7 @@ fn ring_saturation_mpsc_full_then_drain() {
 
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn ring_saturation_mpmc_full_then_drain() {
+fn ring_saturation_mpmc_full_then_drain() {
     let ring = fanout::FanoutRing::<u64>::new(4, 4, 16);
     for i in 0..16u64 {
         ring.try_send(i).unwrap();
@@ -4011,7 +4024,7 @@ fn read_latest_full_ring_mpsc_returns_newest() {
 
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn read_latest_full_ring_mpmc_returns_newest() {
+fn read_latest_full_ring_mpmc_returns_newest() {
     let ring = fanout::FanoutRing::<u64>::new(4, 4, 8);
     for i in 0..8u64 {
         ring.try_send(i).unwrap();
@@ -6625,7 +6638,6 @@ fn migration_lock_acquire_release_roundtrip() {
 #[test]
 fn migration_lock_concurrent_one_winner() {
     use std::sync::{Arc, Barrier};
-    
 
     let name = unique("mig_lock_race");
     let t1: Topic<u64> = Topic::new(&name).expect("create t1");
@@ -6700,8 +6712,6 @@ fn migration_lock_concurrent_one_winner() {
 /// to MPSC — the sequential migration must work.
 #[test]
 fn migration_lock_sequential_different_threads() {
-    
-
     let name = unique("mig_seq");
     let t1: Topic<u64> = Topic::new(&name).expect("create");
     t1.send(0);
@@ -6758,7 +6768,6 @@ fn migration_lock_rapid_acquire_release_no_deadlock() {
 #[test]
 fn migration_lock_data_flows_during_migration() {
     use std::sync::{Arc, Barrier};
-    
 
     let name = unique("mig_data");
     let t1: Topic<u64> = Topic::new(&name).expect("create t1");
@@ -9069,7 +9078,7 @@ fn mpmc_ring_single_slot() {
 /// MPMC: exact capacity fill and drain.
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn mpmc_ring_exact_capacity_fill_drain() {
+fn mpmc_ring_exact_capacity_fill_drain() {
     let cap = 16u32;
     let ring = fanout::FanoutRing::<u64>::new(4, 4, cap as usize);
 
@@ -9108,7 +9117,7 @@ fn mpmc_ring_multi_wraparound_fifo() {
 /// MPMC: read_latest returns most recent without consuming.
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn mpmc_ring_read_latest_non_consuming() {
+fn mpmc_ring_read_latest_non_consuming() {
     let ring = fanout::FanoutRing::<u64>::new(4, 4, 4);
     ring.try_send(10).unwrap();
     ring.try_send(20).unwrap();
@@ -9123,7 +9132,7 @@ fn mpmc_ring_multi_wraparound_fifo() {
 /// All rings round capacity to next power of 2.
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn all_rings_round_capacity_to_power_of_two() {
+fn all_rings_round_capacity_to_power_of_two() {
     // Request 3 slots — should get 4 (next power of 2)
     let spsc = spsc_intra::SpscRing::<u64>::new(3);
     let mpsc = mpsc_intra::MpscRing::<u64>::new(3);
@@ -9247,7 +9256,7 @@ fn spsc_ring_fast_producer_slow_consumer() {
 /// MPMC: multiple producers and consumers — total received equals total sent.
 #[test]
 #[ignore] // MpmcRing removed — FanoutRing has different semantics
-    fn mpmc_ring_multi_producer_multi_consumer_no_loss() {
+fn mpmc_ring_multi_producer_multi_consumer_no_loss() {
     let ring = Arc::new(fanout::FanoutRing::<u64>::new(4, 4, 128));
     let num_producers = 2usize;
     let num_consumers = 2usize;
@@ -10719,7 +10728,7 @@ fn test_read_header_bad_magic() {
     // Create a file with wrong magic number
     let path = std::env::temp_dir().join("horus_test_bad_magic");
     let mut data = vec![0u8; 1024]; // Large enough for header
-    // Write garbage magic (first 8 bytes)
+                                    // Write garbage magic (first 8 bytes)
     data[0..8].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
     std::fs::write(&path, &data).unwrap();
     let result = read_topic_header_info(&path);
@@ -10771,7 +10780,6 @@ fn test_topic_recv_on_empty_returns_none() {
 // ============================================================================
 // Concurrent contention stress tests
 // ============================================================================
-
 #[test]
 #[ignore] // Stress test — 8 spin-loop threads too slow in debug mode. Run with --release --ignored.
 fn test_stress_8_threads_same_topic_send_recv() {
@@ -10823,7 +10831,11 @@ fn test_stress_8_threads_same_topic_send_recv() {
     let total_sent = sent.load(std::sync::atomic::Ordering::Relaxed);
     let total_recv = received.load(std::sync::atomic::Ordering::Relaxed);
     assert!(total_sent > 0, "should have sent messages: {}", total_sent);
-    assert!(total_recv > 0, "should have received messages: {}", total_recv);
+    assert!(
+        total_recv > 0,
+        "should have received messages: {}",
+        total_recv
+    );
     // No crash, no deadlock, no panic = success
 }
 

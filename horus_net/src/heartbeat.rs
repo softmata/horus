@@ -145,7 +145,10 @@ impl SafetyHeartbeat {
             if !state.link_alive {
                 state.link_alive = true;
                 state.action_fired = false;
-                eprintln!("[horus_net] Link restored to peer {:02X?}...", &peer_id[..4]);
+                eprintln!(
+                    "[horus_net] Link restored to peer {:02X?}...",
+                    &peer_id[..4]
+                );
             }
         }
     }
@@ -209,7 +212,10 @@ impl SafetyHeartbeat {
 
     /// Check if a specific peer's link is alive.
     pub fn is_link_alive(&self, peer_id: &PeerId) -> bool {
-        self.peers.get(peer_id).map(|s| s.link_alive).unwrap_or(false)
+        self.peers
+            .get(peer_id)
+            .map(|s| s.link_alive)
+            .unwrap_or(false)
     }
 
     /// Number of tracked peers.
@@ -268,8 +274,8 @@ pub mod tests_support {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::tests_support::MockTransport;
+    use super::*;
 
     fn peer_addr() -> SocketAddr {
         "192.168.1.10:9100".parse().unwrap()
@@ -318,7 +324,7 @@ mod tests {
         let mut hb = SafetyHeartbeat::with_config(
             [0xAA; 16],
             Duration::from_millis(10), // 10ms interval
-            3,                          // 3 missed
+            3,                         // 3 missed
             LinkLostAction::Warn,
         );
         hb.add_peer([1; 16], peer_addr());
@@ -417,8 +423,14 @@ mod tests {
     #[test]
     fn link_lost_action_from_str() {
         assert_eq!(LinkLostAction::from_str("warn"), LinkLostAction::Warn);
-        assert_eq!(LinkLostAction::from_str("safe_state"), LinkLostAction::SafeState);
-        assert_eq!(LinkLostAction::from_str("safestate"), LinkLostAction::SafeState);
+        assert_eq!(
+            LinkLostAction::from_str("safe_state"),
+            LinkLostAction::SafeState
+        );
+        assert_eq!(
+            LinkLostAction::from_str("safestate"),
+            LinkLostAction::SafeState
+        );
         assert_eq!(LinkLostAction::from_str("stop"), LinkLostAction::Stop);
         assert_eq!(LinkLostAction::from_str("unknown"), LinkLostAction::Warn);
     }

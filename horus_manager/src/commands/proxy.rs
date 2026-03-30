@@ -44,8 +44,18 @@ pub fn run_is_project() -> bool {
 /// Everything else gets it — this handles third-party subcommands (cargo-audit,
 /// cargo-watch, cargo-expand, etc.) automatically.
 const CARGO_NO_MANIFEST_PATH: &[&str] = &[
-    "install", "uninstall", "login", "logout", "search", "help",
-    "version", "new", "init", "+stable", "+nightly", "+beta",
+    "install",
+    "uninstall",
+    "login",
+    "logout",
+    "search",
+    "help",
+    "version",
+    "new",
+    "init",
+    "+stable",
+    "+nightly",
+    "+beta",
 ];
 
 /// Find the real native tool binary, skipping any horus shim.
@@ -66,10 +76,7 @@ fn find_real_tool(tool_name: &str) -> Result<PathBuf> {
         if candidate.exists() {
             // Make sure it's not horus itself
             if let Ok(resolved) = std::fs::canonicalize(&candidate) {
-                let resolved_name = resolved
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let resolved_name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if resolved_name == "horus" {
                     continue;
                 }
@@ -78,10 +85,7 @@ fn find_real_tool(tool_name: &str) -> Result<PathBuf> {
         }
     }
 
-    bail!(
-        "Could not find `{}` in PATH. Is it installed?",
-        tool_name
-    )
+    bail!("Could not find `{}` in PATH. Is it installed?", tool_name)
 }
 
 /// Run the sync-before/after cycle: generate, fingerprint, exec, sync-back.
@@ -92,8 +96,7 @@ fn run_with_sync(
     mut cmd: Command,
 ) -> Result<i32> {
     let manifest_path = project_dir.join(HORUS_TOML);
-    let manifest = HorusManifest::load_from(&manifest_path)
-        .context("Failed to load horus.toml")?;
+    let manifest = HorusManifest::load_from(&manifest_path).context("Failed to load horus.toml")?;
 
     // 1. Generate native file from horus.toml
     let mut fingerprints = Fingerprints::load(project_dir).unwrap_or_default();
@@ -134,15 +137,20 @@ fn run_with_sync(
         let mut manifest = HorusManifest::load_from(&manifest_path)
             .context("Failed to reload horus.toml for sync")?;
 
-        match native_sync::sync_from_native(project_dir, &mut manifest, file_type, &mut fingerprints)? {
-            SyncResult::Synced { added, removed, modified } => {
+        match native_sync::sync_from_native(
+            project_dir,
+            &mut manifest,
+            file_type,
+            &mut fingerprints,
+        )? {
+            SyncResult::Synced {
+                added,
+                removed,
+                modified,
+            } => {
                 manifest.save_to(&manifest_path)?;
                 if added > 0 {
-                    eprintln!(
-                        "  {} Synced {} new dep(s) to horus.toml",
-                        "⟳".cyan(),
-                        added
-                    );
+                    eprintln!("  {} Synced {} new dep(s) to horus.toml", "⟳".cyan(), added);
                 }
                 if removed > 0 {
                     eprintln!(
@@ -152,11 +160,7 @@ fn run_with_sync(
                     );
                 }
                 if modified > 0 {
-                    eprintln!(
-                        "  {} Updated {} dep(s) in horus.toml",
-                        "⟳".cyan(),
-                        modified
-                    );
+                    eprintln!("  {} Updated {} dep(s) in horus.toml", "⟳".cyan(), modified);
                 }
                 // Re-generate to normalize the file
                 let content = generate_native(&manifest, project_dir, file_type)?;
@@ -257,7 +261,11 @@ pub fn run_cargo_proxy(args: Vec<String>) -> Result<i32> {
         if manifest.is_workspace() {
             let mut fingerprints = Fingerprints::load(&project_dir).unwrap_or_default();
             match native_sync::sync_workspace_members(&project_dir, &manifest, &mut fingerprints) {
-                Ok(SyncResult::Synced { added, removed, modified }) => {
+                Ok(SyncResult::Synced {
+                    added,
+                    removed,
+                    modified,
+                }) => {
                     if added > 0 {
                         eprintln!("  {} Synced {} new member dep(s)", "⟳".cyan(), added);
                     }
@@ -310,11 +318,7 @@ pub fn run_pip_proxy(args: Vec<String>) -> Result<i32> {
 }
 
 /// Handle `pip install` — add installed packages to horus.toml.
-fn run_pip_install(
-    project_dir: &Path,
-    real_pip: &Path,
-    args: &[String],
-) -> Result<i32> {
+fn run_pip_install(project_dir: &Path, real_pip: &Path, args: &[String]) -> Result<i32> {
     let mut cmd = Command::new(real_pip);
 
     // Rewrite `pip install -e .` → `pip install -e .horus/`
@@ -325,10 +329,7 @@ fn run_pip_install(
         if (rewritten_args[i] == "-e" || rewritten_args[i] == "--editable")
             && rewritten_args.get(i + 1).map(|s| s.as_str()) == Some(".")
         {
-            rewritten_args[i + 1] = project_dir
-                .join(".horus")
-                .to_string_lossy()
-                .to_string();
+            rewritten_args[i + 1] = project_dir.join(".horus").to_string_lossy().to_string();
         }
     }
 
@@ -353,10 +354,12 @@ fn run_pip_install(
                             e.insert(dep_value);
                             synced += 1;
                         }
-                        std::collections::btree_map::Entry::Occupied(mut e) => if is_upgrade {
-                            // Update existing dep on --upgrade
-                            e.insert(dep_value);
-                            synced += 1;
+                        std::collections::btree_map::Entry::Occupied(mut e) => {
+                            if is_upgrade {
+                                // Update existing dep on --upgrade
+                                e.insert(dep_value);
+                                synced += 1;
+                            }
                         }
                     }
                 }
@@ -376,11 +379,7 @@ fn run_pip_install(
 }
 
 /// Handle `pip uninstall` — remove uninstalled packages from horus.toml.
-fn run_pip_uninstall(
-    project_dir: &Path,
-    real_pip: &Path,
-    args: &[String],
-) -> Result<i32> {
+fn run_pip_uninstall(project_dir: &Path, real_pip: &Path, args: &[String]) -> Result<i32> {
     // Collect package names before running uninstall
     let packages: Vec<String> = args[1..]
         .iter()
@@ -449,10 +448,7 @@ fn collect_pip_specs(args: &[String]) -> Vec<String> {
                     if let Ok(content) = std::fs::read_to_string(req_file) {
                         for line in content.lines() {
                             let line = line.trim();
-                            if line.is_empty()
-                                || line.starts_with('#')
-                                || line.starts_with('-')
-                            {
+                            if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
                                 continue;
                             }
                             specs.push(line.to_string());
@@ -463,9 +459,12 @@ fn collect_pip_specs(args: &[String]) -> Vec<String> {
             } else if matches!(
                 arg.as_str(),
                 "-c" | "--constraint"
-                    | "-e" | "--editable"
-                    | "-t" | "--target"
-                    | "-i" | "--index-url"
+                    | "-e"
+                    | "--editable"
+                    | "-t"
+                    | "--target"
+                    | "-i"
+                    | "--index-url"
                     | "--extra-index-url"
                     | "--prefix"
                     | "--root"
@@ -489,7 +488,8 @@ fn parse_pip_to_dep(spec: &str) -> Option<(String, crate::manifest::DependencyVa
 
     // Git URL: git+https://github.com/org/repo
     if spec.starts_with("git+") || spec.starts_with("hg+") || spec.starts_with("svn+") {
-        let url = spec.strip_prefix("git+")
+        let url = spec
+            .strip_prefix("git+")
             .or_else(|| spec.strip_prefix("hg+"))
             .or_else(|| spec.strip_prefix("svn+"))
             .unwrap_or(spec);
@@ -611,19 +611,14 @@ pub fn run_cmake_proxy(args: Vec<String>) -> Result<i32> {
         if rewritten_args[i] == "-S" {
             if let Some(next) = rewritten_args.get(i + 1) {
                 if next == "." {
-                    rewritten_args[i + 1] = project_dir
-                        .join(".horus")
-                        .to_string_lossy()
-                        .to_string();
+                    rewritten_args[i + 1] =
+                        project_dir.join(".horus").to_string_lossy().to_string();
                 }
             }
         }
         // Bare "." as source directory
         if rewritten_args[i] == "." && (i == 0 || !rewritten_args[i - 1].starts_with('-')) {
-            rewritten_args[i] = project_dir
-                .join(".horus")
-                .to_string_lossy()
-                .to_string();
+            rewritten_args[i] = project_dir.join(".horus").to_string_lossy().to_string();
         }
     }
 
@@ -670,22 +665,28 @@ pub fn run_conan_proxy(args: Vec<String>) -> Result<i32> {
                 }
                 // Conan reference: name/version@user/channel or name/version@
                 if let Some((name, version)) = parse_conan_ref(arg) {
-                    if let std::collections::btree_map::Entry::Vacant(e) = manifest.dependencies.entry(name) {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        manifest.dependencies.entry(name)
+                    {
                         e.insert(crate::manifest::DependencyValue::Detailed(
-                                crate::manifest::DetailedDependency {
-                                    version: Some(version),
-                                    source: Some(crate::manifest::DepSource::System),
-                                    lang: Some("cpp".to_string()),
-                                    ..crate::manifest::DetailedDependency::default()
-                                },
-                            ));
+                            crate::manifest::DetailedDependency {
+                                version: Some(version),
+                                source: Some(crate::manifest::DepSource::System),
+                                lang: Some("cpp".to_string()),
+                                ..crate::manifest::DetailedDependency::default()
+                            },
+                        ));
                         synced += 1;
                     }
                 }
             }
             if synced > 0 {
                 let _ = manifest.save_to(&manifest_path);
-                eprintln!("  {} Synced {} conan dep(s) to horus.toml", "⟳".cyan(), synced);
+                eprintln!(
+                    "  {} Synced {} conan dep(s) to horus.toml",
+                    "⟳".cyan(),
+                    synced
+                );
             }
         }
     }
@@ -750,7 +751,11 @@ pub fn run_vcpkg_proxy(args: Vec<String>) -> Result<i32> {
             }
             if synced > 0 {
                 let _ = manifest.save_to(&manifest_path);
-                eprintln!("  {} Synced {} vcpkg dep(s) to horus.toml", "⟳".cyan(), synced);
+                eprintln!(
+                    "  {} Synced {} vcpkg dep(s) to horus.toml",
+                    "⟳".cyan(),
+                    synced
+                );
             }
         }
     }
@@ -771,8 +776,15 @@ mod tests {
     #[test]
     fn find_project_root_found() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("horus.toml"), "[package]\nname = \"test\"\nversion = \"0.1.0\"").unwrap();
-        assert_eq!(find_project_root(tmp.path()), Some(tmp.path().to_path_buf()));
+        std::fs::write(
+            tmp.path().join("horus.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"",
+        )
+        .unwrap();
+        assert_eq!(
+            find_project_root(tmp.path()),
+            Some(tmp.path().to_path_buf())
+        );
     }
 
     #[test]

@@ -23,8 +23,8 @@
 
 use std::time::Duration;
 
-use horus_core::communication::Topic;
 use crate::types_ffi::JsonWireMessage;
+use horus_core::communication::Topic;
 
 /// Opaque service client using Pod-based JsonWireMessage transport.
 pub struct FfiServiceClient {
@@ -82,15 +82,21 @@ pub fn service_client_call(
     timeout_us: u64,
 ) -> Result<String, String> {
     // Validate JSON
-    let _: serde_json::Value = serde_json::from_str(request_json)
-        .map_err(|e| format!("Invalid request JSON: {}", e))?;
+    let _: serde_json::Value =
+        serde_json::from_str(request_json).map_err(|e| format!("Invalid request JSON: {}", e))?;
 
-    let req_topic = client.req_topic.as_ref()
+    let req_topic = client
+        .req_topic
+        .as_ref()
         .ok_or_else(|| format!("Service '{}' request topic not initialized", client.name))?;
-    let res_topic = client.res_topic.as_ref()
+    let res_topic = client
+        .res_topic
+        .as_ref()
         .ok_or_else(|| format!("Service '{}' response topic not initialized", client.name))?;
 
-    let msg_id = client.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let msg_id = client
+        .next_id
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Send request as JsonWireMessage (Pod — works through any Topic backend)
     let wire_msg = JsonWireMessage::from_json(request_json, msg_id, 0)
@@ -103,11 +109,16 @@ pub fn service_client_call(
     loop {
         if let Some(resp) = res_topic.recv() {
             if resp.msg_id == msg_id {
-                return resp.to_json().ok_or_else(|| "Invalid response encoding".to_string());
+                return resp
+                    .to_json()
+                    .ok_or_else(|| "Invalid response encoding".to_string());
             }
         }
         if std::time::Instant::now() > deadline {
-            return Err(format!("Service '{}' call timed out after {}µs", client.name, timeout_us));
+            return Err(format!(
+                "Service '{}' call timed out after {}µs",
+                client.name, timeout_us
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -200,16 +211,21 @@ mod tests {
         let svc = format!("svc_roundtrip.{}", std::process::id());
 
         // Create server-side req topic and client-side topics
-        let server_req = horus_core::communication::Topic::<JsonWireMessage>::new(
-            &format!("{}.request", svc)).unwrap();
+        let server_req =
+            horus_core::communication::Topic::<JsonWireMessage>::new(&format!("{}.request", svc))
+                .unwrap();
         let client_id = std::process::id();
-        let client_res = horus_core::communication::Topic::<JsonWireMessage>::new(
-            &format!("{}.response.{}", svc, client_id)).unwrap();
+        let client_res = horus_core::communication::Topic::<JsonWireMessage>::new(&format!(
+            "{}.response.{}",
+            svc, client_id
+        ))
+        .unwrap();
 
         // Client sends request
         let req = JsonWireMessage::from_json(r#"{"a":3,"b":4}"#, 1, 0).unwrap();
-        let client_req = horus_core::communication::Topic::<JsonWireMessage>::new(
-            &format!("{}.request", svc)).unwrap();
+        let client_req =
+            horus_core::communication::Topic::<JsonWireMessage>::new(&format!("{}.request", svc))
+                .unwrap();
         client_req.send(req);
 
         // Server receives
@@ -220,10 +236,13 @@ mod tests {
         let sum = req_val["a"].as_i64().unwrap() + req_val["b"].as_i64().unwrap();
 
         // Server sends response
-        let resp = JsonWireMessage::from_json(
-            &serde_json::json!({"sum": sum}).to_string(), 1, 1).unwrap();
-        let server_res = horus_core::communication::Topic::<JsonWireMessage>::new(
-            &format!("{}.response.{}", svc, client_id)).unwrap();
+        let resp =
+            JsonWireMessage::from_json(&serde_json::json!({"sum": sum}).to_string(), 1, 1).unwrap();
+        let server_res = horus_core::communication::Topic::<JsonWireMessage>::new(&format!(
+            "{}.response.{}",
+            svc, client_id
+        ))
+        .unwrap();
         server_res.send(resp);
 
         // Client receives response

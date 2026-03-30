@@ -361,7 +361,11 @@ impl Scheduler {
         // Auto-enable recording if HORUS_RECORD_SESSION env var is set.
         // This is how `horus run --record <session>` triggers recording
         // without requiring user code to call .with_recording().
-        if std::env::var("HORUS_RECORD_SESSION").ok().filter(|s| !s.is_empty()).is_some() {
+        if std::env::var("HORUS_RECORD_SESSION")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
             s = s.with_recording();
         }
 
@@ -679,7 +683,10 @@ impl Scheduler {
     ///     Some(Box::new(handle))
     /// });
     /// ```
-    pub fn on_start(&mut self, hook: impl FnOnce() -> Option<Box<dyn Any + Send>> + Send + 'static) {
+    pub fn on_start(
+        &mut self,
+        hook: impl FnOnce() -> Option<Box<dyn Any + Send>> + Send + 'static,
+    ) {
         self.lifecycle_start_hooks.push(Box::new(hook));
     }
 
@@ -1075,9 +1082,7 @@ impl Scheduler {
                     "[SCHEDULER] require_rt() FAILED: {}",
                     failed.join("; ")
                 ));
-                print_line(
-                    "  Use .prefer_rt() to run with graceful degradation instead.",
-                );
+                print_line("  Use .prefer_rt() to run with graceful degradation instead.");
                 // Store the failure — run() will check and return Err
                 self.rt_require_failed = true;
             }
@@ -1212,7 +1217,11 @@ impl Scheduler {
     /// Apply monitoring configuration (profiling, blackbox, telemetry).
     fn apply_monitoring_config(&mut self, monitoring: &super::config::MonitoringConfig) {
         // Profiling is always on (negligible overhead: ~microsecond per tick via Welford's algorithm)
-        self.monitor.profiler.lock().unwrap_or_else(|p| p.into_inner()).enable();
+        self.monitor
+            .profiler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .enable();
 
         // Black box flight recorder
         if monitoring.black_box_size_mb > 0 {
@@ -1857,7 +1866,9 @@ impl Scheduler {
         if self.tick.current == 1 || self.tick.current % ticks_per_sec == 0 {
             for node in &self.nodes {
                 if node.initialized && !node.is_stopped {
-                    let tick_count = node.context.as_ref()
+                    let tick_count = node
+                        .context
+                        .as_ref()
                         .map(|c| c.metrics().total_ticks())
                         .unwrap_or(0);
                     // Update presence file with live tick count
@@ -1875,7 +1886,9 @@ impl Scheduler {
                     ) {
                         p.set_tick_count(tick_count);
                         // Derive health from context metrics
-                        let error_count = node.context.as_ref()
+                        let error_count = node
+                            .context
+                            .as_ref()
                             .map(|c| c.metrics().errors_count())
                             .unwrap_or(0);
                         let health = if error_count > 10 {
@@ -1897,7 +1910,11 @@ impl Scheduler {
                             caps.is_some_and(|c| c.preempt_rt),
                             node.tick_budget.map(|b| b.as_micros() as u64),
                             node.deadline.map(|d| d.as_micros() as u64),
-                            self.rt.degradations.iter().map(|d| d.reason.clone()).collect(),
+                            self.rt
+                                .degradations
+                                .iter()
+                                .map(|d| d.reason.clone())
+                                .collect(),
                         );
                         let _ = p.write();
                     }
@@ -2028,7 +2045,11 @@ impl Scheduler {
         } else {
             // Blackbox already exists (from .blackbox() builder), only apply profiling/telemetry
             if monitoring_config.verbose {
-                self.monitor.profiler.lock().unwrap_or_else(|p| p.into_inner()).enable();
+                self.monitor
+                    .profiler
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .enable();
             }
             if let Some(ref endpoint_str) = monitoring_config.telemetry_endpoint {
                 if self.monitor.telemetry.is_none() {
@@ -2526,7 +2547,8 @@ impl Scheduler {
 
                             // Write presence file for monitor detection
                             // Use per-node rate if set, otherwise scheduler global rate
-                            let effective_rate = registered.rate_hz
+                            let effective_rate = registered
+                                .rate_hz
                                 .or(Some(1.0 / self.tick.period.as_secs_f64()));
                             let presence = match NodePresence::new(
                                 node_name,
@@ -2751,11 +2773,11 @@ impl Scheduler {
             if monitor.is_emergency_stop() {
                 print_line(" Emergency stop activated - shutting down scheduler");
                 if let Some(ref bb) = self.monitor.blackbox {
-                    bb.lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .record(super::blackbox::BlackBoxEvent::EmergencyStop {
+                    bb.lock().unwrap_or_else(|p| p.into_inner()).record(
+                        super::blackbox::BlackBoxEvent::EmergencyStop {
                             reason: "Safety monitor triggered emergency stop".to_string(),
-                        });
+                        },
+                    );
                 }
 
                 return true;
@@ -2775,12 +2797,12 @@ impl Scheduler {
             let stopped_count = self.nodes.iter().filter(|n| n.is_stopped).count();
             if stopped_count > 0 {
                 if let Some(ref bb) = self.monitor.blackbox {
-                    bb.lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .record(super::blackbox::BlackBoxEvent::Custom {
+                    bb.lock().unwrap_or_else(|p| p.into_inner()).record(
+                        super::blackbox::BlackBoxEvent::Custom {
                             category: "safety".to_string(),
                             message: format!("{} nodes stopped", stopped_count),
-                        });
+                        },
+                    );
                 }
             }
         }
@@ -2795,7 +2817,11 @@ impl Scheduler {
         // Telemetry export (if interval elapsed)
         if let Some(ref mut tm) = self.monitor.telemetry {
             if tm.should_export() {
-                let profiler = self.monitor.profiler.lock().unwrap_or_else(|p| p.into_inner());
+                let profiler = self
+                    .monitor
+                    .profiler
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 let total_ticks = profiler
                     .node_stats
                     .values()
@@ -2848,7 +2874,9 @@ impl Scheduler {
             let registry = crate::communication::topic_node_registry();
             for node in &self.nodes {
                 if node.initialized && !node.is_stopped {
-                    let tick_count = node.context.as_ref()
+                    let tick_count = node
+                        .context
+                        .as_ref()
                         .map(|c| c.metrics().total_ticks())
                         .unwrap_or(0);
                     let pubs = registry.publishers_for_node(&node.name);
@@ -2863,7 +2891,9 @@ impl Scheduler {
                     ) {
                         p.set_tick_count(tick_count);
                         // Derive health from context metrics
-                        let err_count = node.context.as_ref()
+                        let err_count = node
+                            .context
+                            .as_ref()
                             .map(|c| c.metrics().errors_count())
                             .unwrap_or(0);
                         let health_str = if err_count > 10 {
@@ -2885,7 +2915,11 @@ impl Scheduler {
                             caps.is_some_and(|c| c.preempt_rt),
                             node.tick_budget.map(|b| b.as_micros() as u64),
                             node.deadline.map(|d| d.as_micros() as u64),
-                            self.rt.degradations.iter().map(|d| d.reason.clone()).collect(),
+                            self.rt
+                                .degradations
+                                .iter()
+                                .map(|d| d.reason.clone())
+                                .collect(),
                         );
                         let _ = p.write();
                     }
@@ -3016,7 +3050,11 @@ impl Scheduler {
     /// Zero runtime cost — only runs on shutdown. Output goes to stderr
     /// to avoid polluting stdout piping.
     fn print_timing_report(&self) {
-        let profiler = self.monitor.profiler.lock().unwrap_or_else(|p| p.into_inner());
+        let profiler = self
+            .monitor
+            .profiler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         if profiler.node_stats.is_empty() {
             return;
         }
@@ -3270,7 +3308,8 @@ impl Scheduler {
                     }
                     ControlCommand::GracefulShutdown => {
                         // Stop the entire scheduler
-                        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+                        self.running
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
                     }
                     _ => {} // Other commands (SetNodeRate, etc.) — not yet implemented
                 }
@@ -3466,8 +3505,8 @@ impl Scheduler {
                 } = self.nodes[i];
                 if let Some(recorder) = recorder.as_mut() {
                     if recorder.is_active_tick() {
-                        let subscribers = crate::communication::topic_node_registry()
-                            .subscribers_for_node(name);
+                        let subscribers =
+                            crate::communication::topic_node_registry().subscribers_for_node(name);
                         if !subscribers.is_empty() {
                             let topics_dir = crate::memory::platform::shm_topics_dir();
                             for sub in &subscribers {
@@ -3583,7 +3622,11 @@ impl Scheduler {
         // Profiling and monitoring
         {
             let node_name = self.nodes[i].name.as_ref();
-            let mut profiler = self.monitor.profiler.lock().unwrap_or_else(|p| p.into_inner());
+            let mut profiler = self
+                .monitor
+                .profiler
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             if tick_result.is_err() {
                 profiler.record_node_failure(node_name);
                 print_line(&format!("Node '{}' panicked during execution", node_name));
@@ -3606,8 +3649,8 @@ impl Scheduler {
             } = self.nodes[i];
             if let Some(recorder) = recorder.as_mut() {
                 if recorder.is_active_tick() {
-                    let publishers = crate::communication::topic_node_registry()
-                        .publishers_for_node(name);
+                    let publishers =
+                        crate::communication::topic_node_registry().publishers_for_node(name);
                     if !publishers.is_empty() {
                         let topics_dir = crate::memory::platform::shm_topics_dir();
                         for pub_topic in &publishers {
@@ -3669,7 +3712,9 @@ impl Scheduler {
                         .as_nanos() as u64;
 
                     for sf in &self.nodes[i].subscription_freshness {
-                        let last = sf.last_received_ns.load(std::sync::atomic::Ordering::Relaxed);
+                        let last = sf
+                            .last_received_ns
+                            .load(std::sync::atomic::Ordering::Relaxed);
                         let elapsed_ns = now_ns.saturating_sub(last);
                         let timeout_ns = sf.timeout.as_nanos() as u64;
 
@@ -3683,7 +3728,8 @@ impl Scheduler {
                                         sf.topic, node_name, elapsed_ns as f64 / 1_000_000.0
                                     );
                                 }
-                                p @ (super::types::StalePolicy::SafeState | super::types::StalePolicy::Stop) => {
+                                p @ (super::types::StalePolicy::SafeState
+                                | super::types::StalePolicy::Stop) => {
                                     crate::hlog!(
                                         error,
                                         "Subscription stale: topic '{}' on node '{}' — triggering {:?}",
@@ -3821,13 +3867,13 @@ impl Scheduler {
 
                     // Record in blackbox
                     if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .record(super::blackbox::BlackBoxEvent::DeadlineMiss {
+                        bb.lock().unwrap_or_else(|p| p.into_inner()).record(
+                            super::blackbox::BlackBoxEvent::DeadlineMiss {
                                 name: node_name.to_string(),
                                 deadline_us: dm.deadline.as_micros() as u64,
                                 actual_us: dm.elapsed.as_micros() as u64,
-                            });
+                            },
+                        );
                     }
 
                     // Graduated degradation: evaluate and apply corrective action

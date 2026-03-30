@@ -43,7 +43,9 @@ struct NoOpOptimizer;
 impl Optimizer for NoOpOptimizer {
     fn on_outgoing(&mut self, _: &mut Vec<OutMessage>) {}
     fn on_incoming(&mut self, _: &mut Vec<InMessage>) {}
-    fn name(&self) -> &str { "noop" }
+    fn name(&self) -> &str {
+        "noop"
+    }
 }
 
 #[test]
@@ -94,15 +96,51 @@ fn all_priority_tiers_work() {
 fn production_scenario_bidirectional_discovery() {
     // Robot A: publishes Imu@100Hz, CmdVel@50Hz, CompressedImage@30Hz
     let reg_a = TopicRegistry::new();
-    reg_a.register("robot_a.imu", topic_hash("robot_a.imu"), 64, TopicRole::Publisher, true);
-    reg_a.register("robot_a.cmd_vel", topic_hash("robot_a.cmd_vel"), 16, TopicRole::Subscriber, true);
-    reg_a.register("robot_a.camera.compressed", topic_hash("robot_a.camera.compressed"), 0, TopicRole::Publisher, false);
+    reg_a.register(
+        "robot_a.imu",
+        topic_hash("robot_a.imu"),
+        64,
+        TopicRole::Publisher,
+        true,
+    );
+    reg_a.register(
+        "robot_a.cmd_vel",
+        topic_hash("robot_a.cmd_vel"),
+        16,
+        TopicRole::Subscriber,
+        true,
+    );
+    reg_a.register(
+        "robot_a.camera.compressed",
+        topic_hash("robot_a.camera.compressed"),
+        0,
+        TopicRole::Publisher,
+        false,
+    );
 
     // Robot B: subscribes to A's sensors, publishes cmd_vel back
     let reg_b = TopicRegistry::new();
-    reg_b.register("robot_a.imu", topic_hash("robot_a.imu"), 64, TopicRole::Subscriber, true);
-    reg_b.register("robot_a.cmd_vel", topic_hash("robot_a.cmd_vel"), 16, TopicRole::Publisher, true);
-    reg_b.register("robot_a.camera.compressed", topic_hash("robot_a.camera.compressed"), 0, TopicRole::Subscriber, false);
+    reg_b.register(
+        "robot_a.imu",
+        topic_hash("robot_a.imu"),
+        64,
+        TopicRole::Subscriber,
+        true,
+    );
+    reg_b.register(
+        "robot_a.cmd_vel",
+        topic_hash("robot_a.cmd_vel"),
+        16,
+        TopicRole::Publisher,
+        true,
+    );
+    reg_b.register(
+        "robot_a.camera.compressed",
+        topic_hash("robot_a.camera.compressed"),
+        0,
+        TopicRole::Subscriber,
+        false,
+    );
 
     // A announces
     let peer_id_a = generate_peer_id();
@@ -119,11 +157,17 @@ fn production_scenario_bidirectional_discovery() {
     // B imports imu + camera.compressed from A
     let imu_match = matches.iter().find(|m| m.topic == "robot_a.imu").unwrap();
     assert!(imu_match.import);
-    let cam_match = matches.iter().find(|m| m.topic == "robot_a.camera.compressed").unwrap();
+    let cam_match = matches
+        .iter()
+        .find(|m| m.topic == "robot_a.camera.compressed")
+        .unwrap();
     assert!(cam_match.import);
 
     // B exports cmd_vel to A
-    let cmd_match = matches.iter().find(|m| m.topic == "robot_a.cmd_vel").unwrap();
+    let cmd_match = matches
+        .iter()
+        .find(|m| m.topic == "robot_a.cmd_vel")
+        .unwrap();
     assert!(cmd_match.export);
 }
 
@@ -238,7 +282,11 @@ fn spatial_200_robot_fleet_reduction() {
 
     let outside = 200 - within;
     let reduction = outside as f64 / 200.0;
-    assert!(reduction > 0.80, "expected >80% reduction, got {:.0}%", reduction * 100.0);
+    assert!(
+        reduction > 0.80,
+        "expected >80% reduction, got {:.0}%",
+        reduction * 100.0
+    );
 }
 
 // ─── Delta bandwidth reduction ──────────────────────────────────────────────

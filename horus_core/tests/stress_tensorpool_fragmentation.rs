@@ -133,8 +133,8 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
                 // Random small-medium tensor sizes (64B to 64KB)
                 let size = match rng.range(0, 100) {
                     0..=59 => rng.range(16, 256),    // 60%: 64B-1KB
-                    60..=84 => rng.range(256, 4096),  // 25%: 1KB-16KB
-                    _ => rng.range(4096, 16384),       // 15%: 16KB-64KB
+                    60..=84 => rng.range(256, 4096), // 25%: 1KB-16KB
+                    _ => rng.range(4096, 16384),     // 15%: 16KB-64KB
                 };
 
                 let alloc_start = Instant::now();
@@ -330,7 +330,8 @@ fn stress_tensorpool_multithread_exhaust() {
     running.store(false, Ordering::SeqCst);
 
     for h in handles {
-        h.join().expect("Thread panicked during multithread exhaust test");
+        h.join()
+            .expect("Thread panicked during multithread exhaust test");
     }
 
     let allocs = total_allocs.load(Ordering::SeqCst);
@@ -401,7 +402,11 @@ fn stress_tensorpool_alternating_free_pattern() {
             kept.push(t);
         }
     }
-    eprintln!("[alternating] Phase 2: freed {}, kept {}", freed, kept.len());
+    eprintln!(
+        "[alternating] Phase 2: freed {}, kept {}",
+        freed,
+        kept.len()
+    );
 
     // Phase 3: Allocate into the freed slots — slots should recycle,
     // but each alloc still consumes NEW data space (bump allocator)
@@ -456,7 +461,7 @@ fn stress_tensorpool_rapid_slot_churn() {
     let pool_id = 9950 + (std::process::id() % 50) as u32;
     let config = TensorPoolConfig {
         pool_size: 64 * 1024 * 1024, // 64MB — generous for many small allocs
-        max_slots: 32,                // few slots, high reuse
+        max_slots: 32,               // few slots, high reuse
         slot_alignment: 64,
         ..Default::default()
     };
@@ -480,7 +485,10 @@ fn stress_tensorpool_rapid_slot_churn() {
     }
 
     let completed = alloc_times_ns.len();
-    eprintln!("[churn] Completed {}/{} alloc+release cycles", completed, churn_count);
+    eprintln!(
+        "[churn] Completed {}/{} alloc+release cycles",
+        completed, churn_count
+    );
 
     if completed > 100 {
         alloc_times_ns.sort();
@@ -504,12 +512,16 @@ fn stress_tensorpool_rapid_slot_churn() {
 
         // Verify no dramatic latency spikes in late allocations
         // (would indicate free-stack degradation as pool fills)
-        let first_quarter_avg: f64 =
-            alloc_times_ns[..completed / 4].iter().map(|&x| x as f64).sum::<f64>()
-                / (completed / 4) as f64;
-        let last_quarter_avg: f64 =
-            alloc_times_ns[completed * 3 / 4..].iter().map(|&x| x as f64).sum::<f64>()
-                / (completed / 4) as f64;
+        let first_quarter_avg: f64 = alloc_times_ns[..completed / 4]
+            .iter()
+            .map(|&x| x as f64)
+            .sum::<f64>()
+            / (completed / 4) as f64;
+        let last_quarter_avg: f64 = alloc_times_ns[completed * 3 / 4..]
+            .iter()
+            .map(|&x| x as f64)
+            .sum::<f64>()
+            / (completed / 4) as f64;
 
         if first_quarter_avg > 0.0 {
             let ratio = last_quarter_avg / first_quarter_avg;

@@ -9,8 +9,6 @@ use std::sync::{LazyLock, Mutex};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use horus_core::drivers::NodeParams;
-
 use crate::driver_params::PyDriverParams;
 
 // ── Python driver class registry ───────────────────────────────────────
@@ -30,10 +28,13 @@ static PY_DRIVERS: LazyLock<Mutex<HashMap<String, Py<PyAny>>>> =
 /// the config without instantiating the node.
 #[pyfunction]
 pub fn load(py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
-    let path = horus_core::drivers::find_manifest()
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let path =
+        horus_core::drivers::find_manifest().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     let path_str = path.to_str().ok_or_else(|| {
-        PyRuntimeError::new_err(format!("horus.toml path contains non-UTF8 characters: {:?}", path))
+        PyRuntimeError::new_err(format!(
+            "horus.toml path contains non-UTF8 characters: {:?}",
+            path
+        ))
     })?;
     load_from(py, path_str)
 }

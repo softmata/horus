@@ -149,9 +149,7 @@ pub fn run_env_init() -> Result<()> {
     add_source_line_if_missing()?;
 
     println!();
-    println!(
-        "Shell integration installed. Restart your shell or run:"
-    );
+    println!("Shell integration installed. Restart your shell or run:");
     println!("  source {}", sh_path.display());
 
     Ok(())

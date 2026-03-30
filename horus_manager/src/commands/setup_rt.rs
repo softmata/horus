@@ -87,11 +87,7 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
     if caps.preempt_rt {
         println!("  {} PREEMPT_RT: {}", "✓".green(), "active".green().bold());
     } else {
-        println!(
-            "  {} PREEMPT_RT: {}",
-            "⚠".yellow(),
-            "not detected".yellow()
-        );
+        println!("  {} PREEMPT_RT: {}", "⚠".yellow(), "not detected".yellow());
     }
 
     if caps.max_priority > 0 {
@@ -121,11 +117,7 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
     if isolated.is_empty() {
         println!("  {} Isolated CPUs: {}", "ℹ".dimmed(), "none");
     } else {
-        println!(
-            "  {} Isolated CPUs: {:?}",
-            "✓".green(),
-            isolated
-        );
+        println!("  {} Isolated CPUs: {:?}", "✓".green(), isolated);
     }
 
     println!(
@@ -181,10 +173,7 @@ fn install_rt_debian() -> anyhow::Result<()> {
 
 /// Install RT kernel on Fedora.
 fn install_rt_fedora() -> anyhow::Result<()> {
-    println!(
-        "  {} Installing kernel-rt ...",
-        "→".cyan()
-    );
+    println!("  {} Installing kernel-rt ...", "→".cyan());
 
     let status = Command::new("sudo")
         .args(["dnf", "install", "-y", "kernel-rt", "kernel-rt-core"])
@@ -204,13 +193,16 @@ fn install_rt_fedora() -> anyhow::Result<()> {
 
 /// Install RT kernel on Arch Linux.
 fn install_rt_arch() -> anyhow::Result<()> {
-    println!(
-        "  {} Installing linux-rt ...",
-        "→".cyan()
-    );
+    println!("  {} Installing linux-rt ...", "→".cyan());
 
     let status = Command::new("sudo")
-        .args(["pacman", "-S", "--noconfirm", "linux-rt", "linux-rt-headers"])
+        .args([
+            "pacman",
+            "-S",
+            "--noconfirm",
+            "linux-rt",
+            "linux-rt-headers",
+        ])
         .status()?;
 
     if status.success() {
@@ -239,10 +231,7 @@ fn ensure_memlock_limits() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "  {} Configuring memory lock limits ...",
-        "→".cyan()
-    );
+    println!("  {} Configuring memory lock limits ...", "→".cyan());
 
     let status = Command::new("sudo")
         .args(["tee", limits_path])
@@ -267,7 +256,10 @@ fn ensure_memlock_limits() -> anyhow::Result<()> {
                 "⚠".yellow(),
                 limits_path
             );
-            println!("    echo '* - memlock unlimited' | sudo tee {}", limits_path);
+            println!(
+                "    echo '* - memlock unlimited' | sudo tee {}",
+                limits_path
+            );
         }
     }
 
@@ -329,15 +321,27 @@ fn run_undo() -> anyhow::Result<()> {
         let _ = Command::new("sudo").args(["rm", limits_path]).status();
         println!("  {} Removed", "✓".green());
     } else {
-        println!("  {} {} not found (nothing to remove)", "ℹ".dimmed(), limits_path);
+        println!(
+            "  {} {} not found (nothing to remove)",
+            "ℹ".dimmed(),
+            limits_path
+        );
     }
 
     println!();
-    println!("  {} RT kernel package not removed (manual action).", "ℹ".dimmed());
+    println!(
+        "  {} RT kernel package not removed (manual action).",
+        "ℹ".dimmed()
+    );
     println!("    To remove: sudo apt remove linux-image-rt-*");
     println!();
-    println!("  {} CPU isolation not removed (manual action).", "ℹ".dimmed());
-    println!("    Edit /etc/default/grub, remove isolcpus/nohz_full/rcu_nocbs, run sudo update-grub.");
+    println!(
+        "  {} CPU isolation not removed (manual action).",
+        "ℹ".dimmed()
+    );
+    println!(
+        "    Edit /etc/default/grub, remove isolcpus/nohz_full/rcu_nocbs, run sudo update-grub."
+    );
 
     Ok(())
 }

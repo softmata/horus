@@ -401,22 +401,27 @@ impl PyImage {
     fn to_gpu(&self, device: Option<&str>) -> PyResult<Self> {
         let dev = match device {
             Some(s) => horus_core::types::Device::parse(s).ok_or_else(|| {
-                PyValueError::new_err(format!("Invalid device: '{}'. Use 'cuda:0', 'cuda:1', etc.", s))
+                PyValueError::new_err(format!(
+                    "Invalid device: '{}'. Use 'cuda:0', 'cuda:1', etc.",
+                    s
+                ))
             })?,
             None => horus_core::types::Device::cuda(0),
         };
-        self.inner.to_gpu(dev).map(|img| PyImage { inner: img }).map_err(|e| {
-            PyRuntimeError::new_err(format!("to_gpu failed: {}", e))
-        })
+        self.inner
+            .to_gpu(dev)
+            .map(|img| PyImage { inner: img })
+            .map_err(|e| PyRuntimeError::new_err(format!("to_gpu failed: {}", e)))
     }
 
     /// Copy image to CPU, returning a new CPU-backed Image.
     ///
     /// If already on CPU, returns a clone (no copy).
     fn to_cpu(&self) -> PyResult<Self> {
-        self.inner.to_cpu().map(|img| PyImage { inner: img }).map_err(|e| {
-            PyRuntimeError::new_err(format!("to_cpu failed: {}", e))
-        })
+        self.inner
+            .to_cpu()
+            .map(|img| PyImage { inner: img })
+            .map_err(|e| PyRuntimeError::new_err(format!("to_cpu failed: {}", e)))
     }
 
     // =================================================================
@@ -440,11 +445,17 @@ impl PyImage {
         let pool = std::sync::Arc::clone(self.inner.pool());
         // TensorHandle::new() calls pool.retain() internally — do NOT retain here
         let handle = TensorHandle::new(tensor, pool);
-        Ok(PyTensorHandle { handle: Some(handle) })
+        Ok(PyTensorHandle {
+            handle: Some(handle),
+        })
     }
 
     /// Indexing: img[y, x] or img[y, x, c]
-    fn __getitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    fn __getitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let inner = slf.borrow();
         let np = py.import("numpy")?;
         let arr = inner.to_numpy_internal(slf, py, &np)?;
@@ -452,7 +463,12 @@ impl PyImage {
     }
 
     /// Assignment: img[y, x] = value
-    fn __setitem__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, key: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+    fn __setitem__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<()> {
         let inner = slf.borrow();
         let np = py.import("numpy")?;
         let arr = inner.to_numpy_internal(slf, py, &np)?;
@@ -460,7 +476,11 @@ impl PyImage {
     }
 
     /// img + other (brightness adjustment, etc.)
-    fn __add__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+    fn __add__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<PyTensorHandle> {
         let np = py.import("numpy")?;
         let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
         let result = np.call_method1("add", (&a, other))?;
@@ -468,7 +488,11 @@ impl PyImage {
     }
 
     /// img - other
-    fn __sub__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+    fn __sub__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<PyTensorHandle> {
         let np = py.import("numpy")?;
         let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
         let result = np.call_method1("subtract", (&a, other))?;
@@ -476,7 +500,11 @@ impl PyImage {
     }
 
     /// img * other
-    fn __mul__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+    fn __mul__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<PyTensorHandle> {
         let np = py.import("numpy")?;
         let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
         let result = np.call_method1("multiply", (&a, other))?;
@@ -484,7 +512,11 @@ impl PyImage {
     }
 
     /// img / other
-    fn __truediv__<'py>(slf: &Bound<'py, Self>, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<PyTensorHandle> {
+    fn __truediv__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+    ) -> PyResult<PyTensorHandle> {
         let np = py.import("numpy")?;
         let a = slf.borrow().to_numpy_internal(slf, py, &np)?;
         let result = np.call_method1("divide", (&a, other))?;

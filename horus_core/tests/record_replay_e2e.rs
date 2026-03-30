@@ -404,7 +404,11 @@ fn test_large_recording_1000_ticks() {
     rec.save(&path).expect("Saving large recording failed");
 
     let replayer = NodeReplayer::load(&path).expect("Loading large recording failed");
-    assert_eq!(replayer.total_ticks(), 1000, "Large recording should have 1000 ticks");
+    assert_eq!(
+        replayer.total_ticks(),
+        1000,
+        "Large recording should have 1000 ticks"
+    );
 
     // Seek to middle
     let mut replayer = replayer;
@@ -494,10 +498,7 @@ fn test_load_partial_magic_returns_error() {
     std::fs::write(&path, b"HOR").unwrap();
 
     let result = NodeRecording::load(&path);
-    assert!(
-        result.is_err(),
-        "Partial magic (3 bytes) must return Err"
-    );
+    assert!(result.is_err(), "Partial magic (3 bytes) must return Err");
 }
 
 #[test]
@@ -511,10 +512,7 @@ fn test_load_truncated_after_version_returns_error() {
     std::fs::write(&path, &data).unwrap();
 
     let result = NodeRecording::load(&path);
-    assert!(
-        result.is_err(),
-        "Header with no payload must return Err"
-    );
+    assert!(result.is_err(), "Header with no payload must return Err");
 }
 
 // ============================================================================
@@ -545,7 +543,9 @@ fn test_10k_ticks_cmdvel_roundtrip() {
 
     // Verify last tick data
     replayer.seek(9999);
-    let output = replayer.output("cmd_vel").expect("tick 9999 must have cmd_vel");
+    let output = replayer
+        .output("cmd_vel")
+        .expect("tick 9999 must have cmd_vel");
     let linear = u64::from_le_bytes(output[..8].try_into().unwrap());
     assert_eq!(linear, 9999, "last tick linear must be 9999");
 }
@@ -575,7 +575,9 @@ fn test_1k_ticks_laserscan_4kb_roundtrip() {
 
     // Verify mid-recording data integrity
     replayer.seek(500);
-    let output = replayer.output("laser_scan").expect("tick 500 must have laser_scan");
+    let output = replayer
+        .output("laser_scan")
+        .expect("tick 500 must have laser_scan");
     assert_eq!(output.len(), 4096, "scan data must be 4KB");
     let tick_val = u64::from_le_bytes(output[..8].try_into().unwrap());
     assert_eq!(tick_val, 500, "data at tick 500 must contain 500");
@@ -823,9 +825,14 @@ fn test_save_overwrites_existing_file() {
 
     // Load must return the second recording
     let replayer = NodeReplayer::load(&path).unwrap();
-    assert_eq!(replayer.total_ticks(), 10, "overwritten file should have 10 ticks");
     assert_eq!(
-        replayer.recording().node_name, "node_v2",
+        replayer.total_ticks(),
+        10,
+        "overwritten file should have 10 ticks"
+    );
+    assert_eq!(
+        replayer.recording().node_name,
+        "node_v2",
         "overwritten file should contain v2 recording"
     );
 }
@@ -848,7 +855,10 @@ fn test_manager_list_empty_dir_ok() {
     let manager = RecordingManager::with_base_dir(tmp.path().to_path_buf());
 
     let sessions = manager.list_sessions().unwrap();
-    assert!(sessions.is_empty(), "empty base dir should return no sessions");
+    assert!(
+        sessions.is_empty(),
+        "empty base dir should return no sessions"
+    );
 }
 
 #[test]
@@ -1056,8 +1066,14 @@ fn test_with_capacity_and_timestamp_preserves_values() {
     let snapshot = NodeTickSnapshot::with_capacity_and_timestamp(42, 5, 123456789);
     assert_eq!(snapshot.tick, 42);
     assert_eq!(snapshot.timestamp_us, 123456789);
-    assert!(snapshot.inputs.capacity() >= 5, "inputs capacity should be >= 5");
-    assert!(snapshot.outputs.capacity() >= 5, "outputs capacity should be >= 5");
+    assert!(
+        snapshot.inputs.capacity() >= 5,
+        "inputs capacity should be >= 5"
+    );
+    assert!(
+        snapshot.outputs.capacity() >= 5,
+        "outputs capacity should be >= 5"
+    );
     assert_eq!(snapshot.duration_ns, 0);
     assert!(snapshot.state.is_none());
 }
@@ -1099,7 +1115,10 @@ fn test_scheduler_with_recording_produces_files() {
     println!(
         "Recording saved {} files: {:?}",
         saved.len(),
-        saved.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
+        saved
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
     );
 
     // Verify at least the scheduler recording was created
@@ -1175,7 +1194,9 @@ fn test_100kb_image_payload_roundtrip() {
 
     // Verify mid-recording data integrity
     replayer.seek(50);
-    let img = replayer.output("image").expect("tick 50 must have image output");
+    let img = replayer
+        .output("image")
+        .expect("tick 50 must have image output");
     assert_eq!(img.len(), 102_400, "image must be 100KB");
     let tag = u64::from_le_bytes(img[..8].try_into().unwrap());
     assert_eq!(tag, 50, "image data at tick 50 must be intact");
@@ -1226,7 +1247,11 @@ fn test_large_payload_max_size_cutoff() {
             .with_duration(1000);
 
         let snapshot_size: u64 = 64
-            + snapshot.outputs.values().map(|v| v.len() as u64).sum::<u64>();
+            + snapshot
+                .outputs
+                .values()
+                .map(|v| v.len() as u64)
+                .sum::<u64>();
         estimated_size += snapshot_size;
 
         if estimated_size > max_size {
@@ -1266,9 +1291,7 @@ fn test_compression_fallback_saves_valid_file() {
 
     let mut rec = NodeRecording::new("comp_node", "c001", "comp_session");
     for tick in 0..50u64 {
-        rec.add_snapshot(
-            NodeTickSnapshot::new(tick).with_output("data", vec![tick as u8; 100]),
-        );
+        rec.add_snapshot(NodeTickSnapshot::new(tick).with_output("data", vec![tick as u8; 100]));
     }
     rec.finish();
 
@@ -1292,9 +1315,7 @@ fn test_uncompressed_save_explicit() {
 
     let mut rec = NodeRecording::new("uncomp_node", "u001", "uncomp_session");
     for tick in 0..20u64 {
-        rec.add_snapshot(
-            NodeTickSnapshot::new(tick).with_output("data", vec![tick as u8; 50]),
-        );
+        rec.add_snapshot(NodeTickSnapshot::new(tick).with_output("data", vec![tick as u8; 50]));
     }
     rec.finish();
 
@@ -1350,7 +1371,10 @@ fn test_json_export_format_correctness() {
     // Verify serialization produces valid JSON string
     let json_str = serde_json::to_string_pretty(&json).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-    assert_eq!(parsed["snapshot_count"], 10, "JSON round-trip must preserve data");
+    assert_eq!(
+        parsed["snapshot_count"], 10,
+        "JSON round-trip must preserve data"
+    );
 }
 
 #[test]
@@ -1415,7 +1439,7 @@ fn test_100k_ticks_save_load_time() {
     let mut recording = NodeRecording::new("stress_node", "stress_001", "stress_session");
     for t in 0..100_000u64 {
         let snap = NodeTickSnapshot::new(t)
-            .with_input("imu", vec![(t & 0xFF) as u8; 64])      // 64-byte Imu
+            .with_input("imu", vec![(t & 0xFF) as u8; 64]) // 64-byte Imu
             .with_output("cmd_vel", vec![(t & 0xFF) as u8; 16]); // 16-byte CmdVel
         recording.add_snapshot(snap);
     }
@@ -1451,7 +1475,9 @@ fn test_100k_ticks_save_load_time() {
         "100k stress: save={:?}, load={:?}, file_size={}KB",
         save_time,
         load_time,
-        std::fs::metadata(&save_path).map(|m| m.len() / 1024).unwrap_or(0)
+        std::fs::metadata(&save_path)
+            .map(|m| m.len() / 1024)
+            .unwrap_or(0)
     );
 }
 
@@ -1460,25 +1486,19 @@ fn test_100k_seek_performance() {
     // Create 100k-tick recording
     let mut recording = NodeRecording::new("seek_stress", "s001", "seek_session");
     for t in 0..100_000u64 {
-        recording.add_snapshot(
-            NodeTickSnapshot::new(t)
-                .with_output("out", vec![t as u8; 8]),
-        );
+        recording.add_snapshot(NodeTickSnapshot::new(t).with_output("out", vec![t as u8; 8]));
     }
 
     let mut replayer = NodeReplayer::from_recording(recording);
 
     // Seek to various positions — measure total time
-    let targets = [0u64, 25_000, 50_000, 75_000, 99_999, 50_000, 0, 99_999, 12_345, 87_654];
+    let targets = [
+        0u64, 25_000, 50_000, 75_000, 99_999, 50_000, 0, 99_999, 12_345, 87_654,
+    ];
     let start = std::time::Instant::now();
     for &target in &targets {
         replayer.seek(target);
-        assert_eq!(
-            replayer.current_tick(),
-            target,
-            "seek to {} failed",
-            target
-        );
+        assert_eq!(replayer.current_tick(), target, "seek to {} failed", target);
     }
     let elapsed = start.elapsed();
 
@@ -1497,10 +1517,7 @@ fn test_max_snapshots_eviction_at_100k() {
 
     // Record 100k ticks with manual eviction (mirrors NodeRecorder logic)
     for t in 0..100_000u64 {
-        recording.add_snapshot(
-            NodeTickSnapshot::new(t)
-                .with_output("data", vec![t as u8; 4]),
-        );
+        recording.add_snapshot(NodeTickSnapshot::new(t).with_output("data", vec![t as u8; 4]));
         if recording.snapshots.len() > max_snapshots {
             let excess = recording.snapshots.len() - max_snapshots;
             recording.snapshots.drain(..excess);
@@ -1602,9 +1619,7 @@ print(f"CHILD_SENT:{sent}")
     while start.elapsed() < std::time::Duration::from_secs(3) {
         if let Some(msg) = topic.recv() {
             let data = bincode::serialize(&msg).unwrap_or_default();
-            recording.add_snapshot(
-                NodeTickSnapshot::new(tick).with_input("imu", data),
-            );
+            recording.add_snapshot(NodeTickSnapshot::new(tick).with_input("imu", data));
             tick += 1;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1661,9 +1676,7 @@ while time.time() < deadline:
     while start.elapsed() < std::time::Duration::from_secs(3) {
         if let Some(msg) = topic.recv() {
             let data = bincode::serialize(&msg).unwrap_or_default();
-            recording.add_snapshot(
-                NodeTickSnapshot::new(tick).with_input("imu", data),
-            );
+            recording.add_snapshot(NodeTickSnapshot::new(tick).with_input("imu", data));
             tick += 1;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1712,9 +1725,7 @@ fn test_add_replay_loads_and_ticks() {
     rec.save(&rec_path).expect("save recording");
 
     // Load into scheduler via add_replay
-    let mut sched = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut sched = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
     sched
         .add_replay(rec_path, 0)
@@ -1744,13 +1755,9 @@ fn test_with_override_stores_data() {
     let rec_path = tmp.path().join("override_node@on001.horus");
     rec.save(&rec_path).expect("save recording");
 
-    let mut sched = Scheduler::new()
-        .deterministic(true)
-        .tick_rate(100_u64.hz());
+    let mut sched = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-    sched
-        .add_replay(rec_path, 0)
-        .expect("add_replay");
+    sched.add_replay(rec_path, 0).expect("add_replay");
 
     // Apply what-if override — should not panic
     let mut sched = sched.with_override("override_node", "cmd_vel", vec![0, 0, 0, 1]);
@@ -1782,19 +1789,17 @@ fn test_replay_from_loads_scheduler_recording() {
 
     // Create a scheduler recording that references the node recording
     use horus_core::scheduling::SchedulerRecording;
-    let mut sched_rec =
-        SchedulerRecording::new("sched001", "replay_from_session");
+    let mut sched_rec = SchedulerRecording::new("sched001", "replay_from_session");
     sched_rec.total_ticks = 5;
-    sched_rec.node_recordings.insert(
-        "sensor".to_string(),
-        "sensor@s001.horus".to_string(),
-    );
     sched_rec
-        .execution_order
-        .push(vec!["sensor".to_string()]);
+        .node_recordings
+        .insert("sensor".to_string(), "sensor@s001.horus".to_string());
+    sched_rec.execution_order.push(vec!["sensor".to_string()]);
 
     let sched_path = tmp.path().join("scheduler@sched001.horus");
-    sched_rec.save(&sched_path).expect("save scheduler recording");
+    sched_rec
+        .save(&sched_path)
+        .expect("save scheduler recording");
 
     // Load via replay_from
     let sched = Scheduler::replay_from(sched_path);

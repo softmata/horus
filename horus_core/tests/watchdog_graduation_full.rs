@@ -240,7 +240,8 @@ fn test_killed_node_not_ticked_again() {
         healthy_after_phase2 > healthy_after_phase1,
         "Healthy node should keep ticking after sibling is killed. \
          Phase 1: {}, Phase 2: {}",
-        healthy_after_phase1, healthy_after_phase2
+        healthy_after_phase1,
+        healthy_after_phase2
     );
 }
 
@@ -314,11 +315,7 @@ fn test_kill_calls_shutdown() {
         .build()
         .unwrap();
 
-    scheduler
-        .add(HealthySiblingC)
-        .order(1)
-        .build()
-        .unwrap();
+    scheduler.add(HealthySiblingC).order(1).build().unwrap();
 
     // Run long enough for graduated degradation to reach kill stage
     scheduler.run_for(3_u64.secs()).unwrap();

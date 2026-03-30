@@ -22,6 +22,7 @@
 // construction on recv — ~8x faster send, ~3x faster recv vs the old approach.
 
 use horus::communication::Topic;
+use horus::memory::TensorHandle;
 use horus_core::memory::{DepthImage, Image, PointCloud};
 use horus_library::messages::audio::AudioFrame;
 use horus_library::messages::clock::{Clock, TimeReference};
@@ -57,7 +58,6 @@ use horus_library::messages::sensor::{
 use horus_library::messages::tracking::{TrackedObject, TrackingHeader};
 use horus_library::messages::vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
 use horus_library::messages::GenericMessage;
-use horus::memory::TensorHandle;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
@@ -240,38 +240,81 @@ macro_rules! pod_topic_types {
 }
 
 pod_topic_types!(
-    (CmdVel, PyCmdVel), (Pose2D, PyPose2D), (Pose3D, PyPose3D),
-    (Imu, PyImu), (Odometry, PyOdometry), (LaserScan, PyLaserScan),
-    (JointState, PyJointState), (Clock, PyClock), (TimeReference, PyTimeReference),
-    (Twist, PyTwist), (Vector3, PyVector3), (Point3, PyPoint3),
-    (Quaternion, PyQuaternion), (TransformStamped, PyTransformStamped),
-    (PoseStamped, PyPoseStamped), (PoseWithCovariance, PyPoseWithCovariance),
-    (TwistWithCovariance, PyTwistWithCovariance), (Accel, PyAccel), (AccelStamped, PyAccelStamped),
-    (MotorCommand, PyMotorCommand), (ServoCommand, PyServoCommand),
-    (DifferentialDriveCommand, PyDifferentialDriveCommand), (PidConfig, PyPidConfig),
-    (TrajectoryPoint, PyTrajectoryPoint), (JointCommand, PyJointCommand),
-    (RangeSensor, PyRangeSensor), (BatteryState, PyBatteryState), (NavSatFix, PyNavSatFix),
-    (MagneticField, PyMagneticField), (Temperature, PyTemperature),
-    (FluidPressure, PyFluidPressure), (Illuminance, PyIlluminance),
-    (Heartbeat, PyHeartbeat), (DiagnosticStatus, PyDiagnosticStatus),
-    (EmergencyStop, PyEmergencyStop), (ResourceUsage, PyResourceUsage),
-    (WrenchStamped, PyWrenchStamped), (ForceCommand, PyForceCommand), (ContactInfo, PyContactInfo),
-    (NavGoal, PyNavGoal), (GoalResult, PyGoalResult), (PathPlan, PyPathPlan),
-    (JoystickInput, PyJoystickInput), (KeyboardInput, PyKeyboardInput),
-    (BoundingBox2D, PyBoundingBox2DMsg), (BoundingBox3D, PyBoundingBox3D),
-    (Detection, PyDetectionMsg), (Detection3D, PyDetection3D),
-    (SegmentationMask, PySegmentationMask), (TrackedObject, PyTrackedObjectMsg),
-    (TrackingHeader, PyTrackingHeader), (Landmark, PyLandmarkMsg),
-    (Landmark3D, PyLandmark3D), (LandmarkArray, PyLandmarkArray),
-    (PointField, PyPointField), (PlaneDetection, PyPlaneDetection), (PlaneArray, PyPlaneArray),
-    (CompressedImage, PyCompressedImage), (CameraInfo, PyCameraInfo),
-    (RegionOfInterest, PyRegionOfInterest), (StereoInfo, PyStereoInfo),
-    (ImpedanceParameters, PyImpedanceParameters), (HapticFeedback, PyHapticFeedback),
-    (TactileArray, PyTactileArray), (DiagnosticValue, PyDiagnosticValue),
-    (DiagnosticReport, PyDiagnosticReport), (NodeHeartbeat, PyNodeHeartbeat),
-    (SafetyStatus, PySafetyStatus), (Waypoint, PyWaypoint), (NavPath, PyNavPath),
-    (VelocityObstacle, PyVelocityObstacle), (VelocityObstacles, PyVelocityObstacles),
-    (OccupancyGrid, PyOccupancyGrid), (CostMap, PyCostMap), (AudioFrame, PyAudioFrame),
+    (CmdVel, PyCmdVel),
+    (Pose2D, PyPose2D),
+    (Pose3D, PyPose3D),
+    (Imu, PyImu),
+    (Odometry, PyOdometry),
+    (LaserScan, PyLaserScan),
+    (JointState, PyJointState),
+    (Clock, PyClock),
+    (TimeReference, PyTimeReference),
+    (Twist, PyTwist),
+    (Vector3, PyVector3),
+    (Point3, PyPoint3),
+    (Quaternion, PyQuaternion),
+    (TransformStamped, PyTransformStamped),
+    (PoseStamped, PyPoseStamped),
+    (PoseWithCovariance, PyPoseWithCovariance),
+    (TwistWithCovariance, PyTwistWithCovariance),
+    (Accel, PyAccel),
+    (AccelStamped, PyAccelStamped),
+    (MotorCommand, PyMotorCommand),
+    (ServoCommand, PyServoCommand),
+    (DifferentialDriveCommand, PyDifferentialDriveCommand),
+    (PidConfig, PyPidConfig),
+    (TrajectoryPoint, PyTrajectoryPoint),
+    (JointCommand, PyJointCommand),
+    (RangeSensor, PyRangeSensor),
+    (BatteryState, PyBatteryState),
+    (NavSatFix, PyNavSatFix),
+    (MagneticField, PyMagneticField),
+    (Temperature, PyTemperature),
+    (FluidPressure, PyFluidPressure),
+    (Illuminance, PyIlluminance),
+    (Heartbeat, PyHeartbeat),
+    (DiagnosticStatus, PyDiagnosticStatus),
+    (EmergencyStop, PyEmergencyStop),
+    (ResourceUsage, PyResourceUsage),
+    (WrenchStamped, PyWrenchStamped),
+    (ForceCommand, PyForceCommand),
+    (ContactInfo, PyContactInfo),
+    (NavGoal, PyNavGoal),
+    (GoalResult, PyGoalResult),
+    (PathPlan, PyPathPlan),
+    (JoystickInput, PyJoystickInput),
+    (KeyboardInput, PyKeyboardInput),
+    (BoundingBox2D, PyBoundingBox2DMsg),
+    (BoundingBox3D, PyBoundingBox3D),
+    (Detection, PyDetectionMsg),
+    (Detection3D, PyDetection3D),
+    (SegmentationMask, PySegmentationMask),
+    (TrackedObject, PyTrackedObjectMsg),
+    (TrackingHeader, PyTrackingHeader),
+    (Landmark, PyLandmarkMsg),
+    (Landmark3D, PyLandmark3D),
+    (LandmarkArray, PyLandmarkArray),
+    (PointField, PyPointField),
+    (PlaneDetection, PyPlaneDetection),
+    (PlaneArray, PyPlaneArray),
+    (CompressedImage, PyCompressedImage),
+    (CameraInfo, PyCameraInfo),
+    (RegionOfInterest, PyRegionOfInterest),
+    (StereoInfo, PyStereoInfo),
+    (ImpedanceParameters, PyImpedanceParameters),
+    (HapticFeedback, PyHapticFeedback),
+    (TactileArray, PyTactileArray),
+    (DiagnosticValue, PyDiagnosticValue),
+    (DiagnosticReport, PyDiagnosticReport),
+    (NodeHeartbeat, PyNodeHeartbeat),
+    (SafetyStatus, PySafetyStatus),
+    (Waypoint, PyWaypoint),
+    (NavPath, PyNavPath),
+    (VelocityObstacle, PyVelocityObstacle),
+    (VelocityObstacles, PyVelocityObstacles),
+    (OccupancyGrid, PyOccupancyGrid),
+    (CostMap, PyCostMap),
+    (AudioFrame, PyAudioFrame),
 );
 
 // ============================================================================
@@ -359,7 +402,9 @@ impl PyTopic {
         let cap = capacity.unwrap_or(1024);
 
         // Create typed Topic. POD types are handled by macro-generated create_pod_topic().
-        let topic_type = if let Some(tt) = Self::create_pod_topic(&type_name, &effective_endpoint, cap)? {
+        let topic_type = if let Some(tt) =
+            Self::create_pod_topic(&type_name, &effective_endpoint, cap)?
+        {
             tt
         } else {
             // Special types: pool-backed + generic
@@ -377,7 +422,8 @@ impl PyTopic {
                     TopicType::DepthImage(Arc::new(RwLock::new(topic)))
                 }
                 "Tensor" | "TensorHandle" => {
-                    let topic = create_pool_topic::<horus_core::types::Tensor>(&effective_endpoint, cap)?;
+                    let topic =
+                        create_pool_topic::<horus_core::types::Tensor>(&effective_endpoint, cap)?;
                     TopicType::Tensor(Arc::new(RwLock::new(topic)))
                 }
                 _ => {
@@ -428,9 +474,14 @@ impl PyTopic {
                     true
                 });
                 if node.is_some() {
-                    log_ipc_event(py, &node, &self.name,
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
                         format!("Image({}x{})", img.height(), img.width()),
-                        start.elapsed().as_nanos() as u64, "log_pub");
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
                 }
                 success
             }
@@ -443,9 +494,14 @@ impl PyTopic {
                     true
                 });
                 if node.is_some() {
-                    log_ipc_event(py, &node, &self.name,
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
                         format!("PointCloud({} pts)", pc.point_count()),
-                        start.elapsed().as_nanos() as u64, "log_pub");
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
                 }
                 success
             }
@@ -458,37 +514,63 @@ impl PyTopic {
                     true
                 });
                 if node.is_some() {
-                    log_ipc_event(py, &node, &self.name,
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
                         format!("DepthImage({}x{})", depth.height(), depth.width()),
-                        start.elapsed().as_nanos() as u64, "log_pub");
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
                 }
                 success
             }
             TopicType::Tensor(topic) => {
                 let py_tensor: PyRef<PyTensorHandle> = message.extract(py)?;
-                let handle = py_tensor.handle.as_ref()
+                let handle = py_tensor
+                    .handle
+                    .as_ref()
                     .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
                 handle.pool().retain(handle.tensor());
                 let descriptor = *handle.tensor();
-                let log_msg = format!("Tensor(shape={:?}, dtype={})", handle.shape(), handle.dtype());
+                let log_msg = format!(
+                    "Tensor(shape={:?}, dtype={})",
+                    handle.shape(),
+                    handle.dtype()
+                );
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(descriptor);
+                    topic_ref
+                        .write()
+                        .expect("topic lock poisoned")
+                        .send(descriptor);
                     true
                 });
                 if node.is_some() {
-                    log_ipc_event(py, &node, &self.name, log_msg,
-                        start.elapsed().as_nanos() as u64, "log_pub");
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
                 }
                 success
             }
             TopicType::Generic(topic) => {
                 let bound = message.bind(py);
                 let value: serde_json::Value = pythonize::depythonize(bound).map_err(|e| {
-                    pyo3::exceptions::PyTypeError::new_err(format!("Failed to convert Python object: {}", e))
+                    pyo3::exceptions::PyTypeError::new_err(format!(
+                        "Failed to convert Python object: {}",
+                        e
+                    ))
                 })?;
                 let msgpack_bytes = rmp_serde::to_vec(&value).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to serialize to MessagePack: {}", e))
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "Failed to serialize to MessagePack: {}",
+                        e
+                    ))
                 })?;
                 let msg = GenericMessage::new(msgpack_bytes)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -500,8 +582,14 @@ impl PyTopic {
                     true
                 });
                 if node.is_some() {
-                    log_ipc_event(py, &node, &self.name, log_summary,
-                        start.elapsed().as_nanos() as u64, "log_pub");
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_summary,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
                 }
                 success
             }
@@ -539,39 +627,60 @@ impl PyTopic {
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
                 if let Some(img) = msg_opt {
                     if node.is_some() {
-                        log_ipc_event(py, &node, &self.name,
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
                             format!("Image({}x{})", img.height(), img.width()),
-                            start.elapsed().as_nanos() as u64, "log_sub");
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
                     }
                     let py_img = PyImage::from_inner(img);
                     Ok(Some(py_img.into_pyobject(py)?.into_any().unbind()))
-                } else { Ok(None) }
+                } else {
+                    Ok(None)
+                }
             }
             TopicType::PointCloud(topic) => {
                 let topic_ref = topic.clone();
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
                 if let Some(pc) = msg_opt {
                     if node.is_some() {
-                        log_ipc_event(py, &node, &self.name,
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
                             format!("PointCloud({} pts)", pc.point_count()),
-                            start.elapsed().as_nanos() as u64, "log_sub");
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
                     }
                     let py_pc = PyPointCloud::from_inner(pc);
                     Ok(Some(py_pc.into_pyobject(py)?.into_any().unbind()))
-                } else { Ok(None) }
+                } else {
+                    Ok(None)
+                }
             }
             TopicType::DepthImage(topic) => {
                 let topic_ref = topic.clone();
                 let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
                 if let Some(depth) = msg_opt {
                     if node.is_some() {
-                        log_ipc_event(py, &node, &self.name,
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
                             format!("DepthImage({}x{})", depth.height(), depth.width()),
-                            start.elapsed().as_nanos() as u64, "log_sub");
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
                     }
                     let py_depth = PyDepthImage::from_inner(depth);
                     Ok(Some(py_depth.into_pyobject(py)?.into_any().unbind()))
-                } else { Ok(None) }
+                } else {
+                    Ok(None)
+                }
             }
             TopicType::Tensor(topic) => {
                 let topic_ref = topic.clone();
@@ -580,12 +689,27 @@ impl PyTopic {
                     let pool = { topic_ref.read().expect("topic lock").pool() };
                     let handle = TensorHandle::new(descriptor, pool);
                     if node.is_some() {
-                        log_ipc_event(py, &node, &self.name,
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
                             format!("Tensor(shape={:?})", handle.shape()),
-                            start.elapsed().as_nanos() as u64, "log_sub");
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
                     }
-                    Ok(Some(Py::new(py, PyTensorHandle { handle: Some(handle) })?.into_any()))
-                } else { Ok(None) }
+                    Ok(Some(
+                        Py::new(
+                            py,
+                            PyTensorHandle {
+                                handle: Some(handle),
+                            },
+                        )?
+                        .into_any(),
+                    ))
+                } else {
+                    Ok(None)
+                }
             }
             TopicType::Generic(topic) => {
                 let topic_ref = topic.clone();
@@ -593,18 +717,28 @@ impl PyTopic {
                 if let Some(msg) = msg_opt {
                     if node.is_some() {
                         use horus::core::LogSummary;
-                        log_ipc_event(py, &node, &self.name, msg.log_summary(),
-                            start.elapsed().as_nanos() as u64, "log_sub");
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
+                            msg.log_summary(),
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
                     }
                     let data = msg.data();
                     let value: serde_json::Value = rmp_serde::from_slice(&data).map_err(|e| {
                         PyRuntimeError::new_err(format!("Failed to deserialize MessagePack: {}", e))
                     })?;
                     let py_obj = pythonize::pythonize(py, &value)
-                        .map_err(|e| PyRuntimeError::new_err(format!("Failed to convert to Python: {}", e)))?
+                        .map_err(|e| {
+                            PyRuntimeError::new_err(format!("Failed to convert to Python: {}", e))
+                        })?
                         .into();
                     Ok(Some(py_obj))
-                } else { Ok(None) }
+                } else {
+                    Ok(None)
+                }
             }
             _ => unreachable!("recv_pod handles all POD types"),
         }

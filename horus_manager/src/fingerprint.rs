@@ -127,7 +127,10 @@ impl SyncLock {
             }
         }
 
-        log::warn!("Could not acquire sync lock after {:?}, proceeding without lock", timeout);
+        log::warn!(
+            "Could not acquire sync lock after {:?}, proceeding without lock",
+            timeout
+        );
         None
     }
 }
@@ -171,10 +174,7 @@ mod tests {
         fp.save(tmp.path()).unwrap();
 
         let loaded = Fingerprints::load(tmp.path()).unwrap();
-        assert_eq!(
-            loaded.files["Cargo.toml"].hash,
-            fp.files["Cargo.toml"].hash
-        );
+        assert_eq!(loaded.files["Cargo.toml"].hash, fp.files["Cargo.toml"].hash);
     }
 
     #[test]
@@ -202,7 +202,11 @@ mod tests {
         // Hashes match exactly
         for (key, original_fp) in &fp.files {
             let loaded_fp = &loaded.files[key];
-            assert_eq!(loaded_fp.hash, original_fp.hash, "Hash mismatch for {}", key);
+            assert_eq!(
+                loaded_fp.hash, original_fp.hash,
+                "Hash mismatch for {}",
+                key
+            );
             assert_eq!(
                 loaded_fp.generated_at, original_fp.generated_at,
                 "Timestamp mismatch for {}",

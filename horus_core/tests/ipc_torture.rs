@@ -19,7 +19,7 @@
 
 use horus_core::communication::topic::Topic;
 use horus_core::core::DurationExt;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -74,23 +74,36 @@ unsafe impl bytemuck::Zeroable for JointState8 {}
 /// Large message that should trigger TensorPool spill (>4KB)
 #[derive(Clone, Serialize, Deserialize)]
 struct PointCloud {
-    points: Vec<[f32; 3]>,  // NOT Pod — serde path, forces serialization
+    points: Vec<[f32; 3]>, // NOT Pod — serde path, forces serialization
     seq: u64,
     checksum: u64,
 }
 
 fn imu_checksum(imu: &ImuCompact) -> u64 {
     let mut sum = 0u64;
-    for &v in &imu.accel { sum = sum.wrapping_add(v.to_bits()); }
-    for &v in &imu.gyro { sum = sum.wrapping_add(v.to_bits()); }
+    for &v in &imu.accel {
+        sum = sum.wrapping_add(v.to_bits());
+    }
+    for &v in &imu.gyro {
+        sum = sum.wrapping_add(v.to_bits());
+    }
     sum
 }
 
 fn pc_checksum(points: &[[f32; 3]]) -> u64 {
-    points.iter().map(|p| p[0].to_bits() as u64 + p[1].to_bits() as u64 + p[2].to_bits() as u64).sum()
+    points
+        .iter()
+        .map(|p| p[0].to_bits() as u64 + p[1].to_bits() as u64 + p[2].to_bits() as u64)
+        .sum()
 }
 
-fn spawn_child(test_name: &str, topic: &str, role: &str, count: u64, id: u64) -> std::process::Child {
+fn spawn_child(
+    test_name: &str,
+    topic: &str,
+    role: &str,
+    count: u64,
+    id: u64,
+) -> std::process::Child {
     let exe = std::env::current_exe().unwrap();
     Command::new(exe)
         .args([test_name, "--exact", "--nocapture", "--ignored"])
@@ -141,9 +154,14 @@ fn child_imu_producer() {
         imu.checksum = imu_checksum(&imu);
         t.send(imu);
         // Simulate 1kHz rate
-        if i % 100 == 0 { std::thread::yield_now(); }
+        if i % 100 == 0 {
+            std::thread::yield_now();
+        }
     }
-    t.send(ImuCompact { seq: SENTINEL, ..Default::default() });
+    t.send(ImuCompact {
+        seq: SENTINEL,
+        ..Default::default()
+    });
     std::thread::sleep(Duration::from_millis(200));
 }
 
@@ -164,8 +182,12 @@ fn child_imu_consumer() {
             Some(imu) => {
                 received += 1;
                 let expected = imu_checksum(&imu);
-                if imu.checksum != expected { corrupted += 1; }
-                if imu.seq <= last_seq && last_seq > 0 { out_of_order += 1; }
+                if imu.checksum != expected {
+                    corrupted += 1;
+                }
+                if imu.seq <= last_seq && last_seq > 0 {
+                    out_of_order += 1;
+                }
                 last_seq = imu.seq;
             }
             None => std::thread::yield_now(),
@@ -193,11 +215,23 @@ fn ipc_pod_integrity_5000_msgs() {
     let count = 5000u64;
 
     // Spawn consumer first (waits for data)
-    let mut consumer = spawn_child("ipc_pod_integrity_5000_msgs", &topic, "imu_consumer", count, 0);
+    let mut consumer = spawn_child(
+        "ipc_pod_integrity_5000_msgs",
+        &topic,
+        "imu_consumer",
+        count,
+        0,
+    );
     std::thread::sleep(Duration::from_millis(200));
 
     // Spawn producer
-    let mut producer = spawn_child("ipc_pod_integrity_5000_msgs", &topic, "imu_producer", count, 0);
+    let mut producer = spawn_child(
+        "ipc_pod_integrity_5000_msgs",
+        &topic,
+        "imu_producer",
+        count,
+        0,
+    );
 
     let prod_status = producer.wait().unwrap();
     assert!(prod_status.success(), "producer failed");
@@ -205,22 +239,44 @@ fn ipc_pod_integrity_5000_msgs() {
     let output = consumer.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let received: u64 = parse_child_output(&output.stdout, "RECV:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(0);
-    let corrupted: u64 = parse_child_output(&output.stdout, "CORRUPT:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(999);
-    let ooo: u64 = parse_child_output(&output.stdout, "OOO:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(999);
+    let received: u64 = parse_child_output(&output.stdout, "RECV:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let corrupted: u64 = parse_child_output(&output.stdout, "CORRUPT:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(999);
+    let ooo: u64 = parse_child_output(&output.stdout, "OOO:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(999);
 
     println!("=== IPC POD INTEGRITY ({} msgs) ===", count);
-    println!("Received: {}/{} ({:.1}%)", received, count, received as f64/count as f64*100.0);
+    println!(
+        "Received: {}/{} ({:.1}%)",
+        received,
+        count,
+        received as f64 / count as f64 * 100.0
+    );
     println!("Corrupted: {}", corrupted);
     println!("Out-of-order: {}", ooo);
     println!("Stdout: {}", stdout.trim());
 
-    assert_eq!(corrupted, 0, "DATA CORRUPTION detected in cross-process IPC!");
-    assert_eq!(ooo, 0, "Messages arrived out of order in cross-process IPC!");
-    assert!(received > count / 2, "Received less than 50% of messages: {}/{}", received, count);
+    assert_eq!(
+        corrupted, 0,
+        "DATA CORRUPTION detected in cross-process IPC!"
+    );
+    assert_eq!(
+        ooo, 0,
+        "Messages arrived out of order in cross-process IPC!"
+    );
+    assert!(
+        received > count / 2,
+        "Received less than 50% of messages: {}/{}",
+        received,
+        count
+    );
     println!("IPC POD INTEGRITY PASSED ✓");
 }
 
@@ -236,7 +292,9 @@ fn child_late_producer() {
 
     for i in 1..=count {
         t.send(i);
-        if i % 100 == 0 { std::thread::sleep(Duration::from_millis(1)); }
+        if i % 100 == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     t.send(SENTINEL);
     std::thread::sleep(Duration::from_millis(500));
@@ -256,8 +314,12 @@ fn child_late_consumer() {
             Some(0) => continue,
             Some(v) => {
                 received += 1;
-                if v < min_seq { min_seq = v; }
-                if v > max_seq { max_seq = v; }
+                if v < min_seq {
+                    min_seq = v;
+                }
+                if v > max_seq {
+                    max_seq = v;
+                }
             }
             None => std::thread::yield_now(),
         }
@@ -283,23 +345,41 @@ fn ipc_late_joiner_misses_early_messages() {
     let total_msgs = 3000u64;
 
     // Start producer first — it sends 3000 msgs over ~30ms
-    let mut producer = spawn_child("ipc_late_joiner_misses_early_messages", &topic, "late_producer", total_msgs, 0);
+    let mut producer = spawn_child(
+        "ipc_late_joiner_misses_early_messages",
+        &topic,
+        "late_producer",
+        total_msgs,
+        0,
+    );
 
     // Wait for producer to send ~1000 messages
     std::thread::sleep(Duration::from_millis(15));
 
     // NOW start consumer (late joiner)
-    let mut consumer = spawn_child("ipc_late_joiner_misses_early_messages", &topic, "late_consumer", total_msgs, 0);
+    let mut consumer = spawn_child(
+        "ipc_late_joiner_misses_early_messages",
+        &topic,
+        "late_consumer",
+        total_msgs,
+        0,
+    );
 
     let _ = producer.wait();
     let output = consumer.wait_with_output().unwrap();
 
-    let received: u64 = parse_child_output(&output.stdout, "RECV:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(0);
-    let min_seq: u64 = parse_child_output(&output.stdout, "MIN:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(0);
-    let max_seq: u64 = parse_child_output(&output.stdout, "MAX:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(0);
+    let received: u64 = parse_child_output(&output.stdout, "RECV:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let min_seq: u64 = parse_child_output(&output.stdout, "MIN:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let max_seq: u64 = parse_child_output(&output.stdout, "MAX:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     println!("=== LATE JOINER TEST ===");
     println!("Total sent: {}", total_msgs);
@@ -309,10 +389,21 @@ fn ipc_late_joiner_misses_early_messages() {
 
     // Late joiner should miss early messages (that's expected)
     // But should receive the LATER messages without corruption
-    assert!(received > 0, "Late joiner received ZERO messages — IPC not working");
-    assert!(max_seq == total_msgs, "Late joiner missed the final messages (max_seq={}, expected {})", max_seq, total_msgs);
+    assert!(
+        received > 0,
+        "Late joiner received ZERO messages — IPC not working"
+    );
+    assert!(
+        max_seq == total_msgs,
+        "Late joiner missed the final messages (max_seq={}, expected {})",
+        max_seq,
+        total_msgs
+    );
     // The first message should be > 1 (missed early ones)
-    println!("Missed first {} messages (expected — ring buffer overwrites old data)", min_seq - 1);
+    println!(
+        "Missed first {} messages (expected — ring buffer overwrites old data)",
+        min_seq - 1
+    );
     println!("LATE JOINER TEST PASSED ✓");
 }
 
@@ -359,12 +450,24 @@ fn ipc_fanout_1pub_4sub_processes() {
     // Spawn 4 subscriber processes
     let mut subs = vec![];
     for i in 0..4u64 {
-        subs.push(spawn_child("ipc_fanout_1pub_4sub_processes", &topic, "fanout_sub", count, i));
+        subs.push(spawn_child(
+            "ipc_fanout_1pub_4sub_processes",
+            &topic,
+            "fanout_sub",
+            count,
+            i,
+        ));
     }
     std::thread::sleep(Duration::from_millis(500));
 
     // Spawn 1 publisher process
-    let mut pub_child = spawn_child("ipc_fanout_1pub_4sub_processes", &topic, "late_producer", count, 0);
+    let mut pub_child = spawn_child(
+        "ipc_fanout_1pub_4sub_processes",
+        &topic,
+        "late_producer",
+        count,
+        0,
+    );
     let _ = pub_child.wait();
 
     println!("=== CROSS-PROCESS FAN-OUT (1P → 4S) ===");
@@ -372,9 +475,16 @@ fn ipc_fanout_1pub_4sub_processes() {
     for (i, mut sub) in subs.into_iter().enumerate() {
         let output = sub.wait_with_output().unwrap();
         let received: u64 = parse_child_output(&output.stdout, &format!("SUB:{}:", i))
-            .first().and_then(|s| s.parse().ok()).unwrap_or(0);
-        println!("  Subscriber {}: received {}/{} ({:.0}%)", i, received, count,
-                 received as f64/count as f64*100.0);
+            .first()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        println!(
+            "  Subscriber {}: received {}/{} ({:.0}%)",
+            i,
+            received,
+            count,
+            received as f64 / count as f64 * 100.0
+        );
         totals.push(received);
     }
 
@@ -382,8 +492,11 @@ fn ipc_fanout_1pub_4sub_processes() {
     println!("Subscribers with >25% data: {}/4", subs_with_data);
 
     // At least 2/4 should get significant data
-    assert!(subs_with_data >= 2,
-        "Fan-out broken: only {}/4 subscribers got data", subs_with_data);
+    assert!(
+        subs_with_data >= 2,
+        "Fan-out broken: only {}/4 subscribers got data",
+        subs_with_data
+    );
     println!("CROSS-PROCESS FAN-OUT PASSED ✓");
 }
 
@@ -425,9 +538,13 @@ fn child_bidir() {
             sent += 1;
         }
         if let Some(v) = receiver.recv() {
-            if v > 0 && v != SENTINEL { received += 1; }
+            if v > 0 && v != SENTINEL {
+                received += 1;
+            }
         }
-        if sent % 100 == 0 { std::thread::yield_now(); }
+        if sent % 100 == 0 {
+            std::thread::yield_now();
+        }
     }
 
     sender.send(SENTINEL);
@@ -448,15 +565,29 @@ fn child_bidir() {
 #[ignore]
 fn ipc_bidirectional_both_send_and_recv() {
     if std::env::var(CHILD_FLAG).is_ok() {
-        if child_env(ROLE_ENV) == "bidir" { child_bidir(); }
+        if child_env(ROLE_ENV) == "bidir" {
+            child_bidir();
+        }
         return;
     }
     cleanup_stale_shm();
     let topic = unique("ipc_bidir");
     let count = 1000u64;
 
-    let mut child_a = spawn_child("ipc_bidirectional_both_send_and_recv", &topic, "bidir", count, 0);
-    let mut child_b = spawn_child("ipc_bidirectional_both_send_and_recv", &topic, "bidir", count, 1);
+    let mut child_a = spawn_child(
+        "ipc_bidirectional_both_send_and_recv",
+        &topic,
+        "bidir",
+        count,
+        0,
+    );
+    let mut child_b = spawn_child(
+        "ipc_bidirectional_both_send_and_recv",
+        &topic,
+        "bidir",
+        count,
+        1,
+    );
 
     let out_a = child_a.wait_with_output().unwrap();
     let out_b = child_b.wait_with_output().unwrap();
@@ -465,16 +596,26 @@ fn ipc_bidirectional_both_send_and_recv() {
     let b_lines = parse_child_output(&out_b.stdout, "BIDIR:1:");
 
     println!("=== BIDIRECTIONAL IPC ===");
-    println!("Process A: {}", a_lines.first().unwrap_or(&"(no output)".into()));
-    println!("Process B: {}", b_lines.first().unwrap_or(&"(no output)".into()));
+    println!(
+        "Process A: {}",
+        a_lines.first().unwrap_or(&"(no output)".into())
+    );
+    println!(
+        "Process B: {}",
+        b_lines.first().unwrap_or(&"(no output)".into())
+    );
 
     // Both should have sent and received
-    let a_recv: u64 = a_lines.first()
+    let a_recv: u64 = a_lines
+        .first()
         .and_then(|l| l.split("recv=").nth(1))
-        .and_then(|s| s.parse().ok()).unwrap_or(0);
-    let b_recv: u64 = b_lines.first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let b_recv: u64 = b_lines
+        .first()
         .and_then(|l| l.split("recv=").nth(1))
-        .and_then(|s| s.parse().ok()).unwrap_or(0);
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     assert!(a_recv > 0, "Process A received ZERO messages from B");
     assert!(b_recv > 0, "Process B received ZERO messages from A");
@@ -500,7 +641,9 @@ fn child_churn_worker() {
     }
     // Count what we received
     let mut received = 0u64;
-    while let Some(_) = t.recv() { received += 1; }
+    while let Some(_) = t.recv() {
+        received += 1;
+    }
     println!("CHURN:{}:{}", id, received);
 }
 
@@ -508,7 +651,9 @@ fn child_churn_worker() {
 #[ignore]
 fn ipc_rapid_process_churn() {
     if std::env::var(CHILD_FLAG).is_ok() {
-        if child_env(ROLE_ENV) == "churn" { child_churn_worker(); }
+        if child_env(ROLE_ENV) == "churn" {
+            child_churn_worker();
+        }
         return;
     }
     cleanup_stale_shm();
@@ -525,7 +670,13 @@ fn ipc_rapid_process_churn() {
     for wave in 0..5u64 {
         for j in 0..3u64 {
             let id = wave * 3 + j;
-            all_children.push(spawn_child("ipc_rapid_process_churn", &topic, "churn", 0, id));
+            all_children.push(spawn_child(
+                "ipc_rapid_process_churn",
+                &topic,
+                "churn",
+                0,
+                id,
+            ));
         }
         // Overlap: don't wait for previous wave to finish
         std::thread::sleep(Duration::from_millis(50));
@@ -537,7 +688,9 @@ fn ipc_rapid_process_churn() {
     for _ in 0..500 {
         parent_topic.send(99999u64);
         parent_sent += 1;
-        while let Some(_) = parent_topic.recv() { parent_recv += 1; }
+        while let Some(_) = parent_topic.recv() {
+            parent_recv += 1;
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
 
@@ -552,22 +705,33 @@ fn ipc_rapid_process_churn() {
             if parts.len() == 2 {
                 let recv: u64 = parts[1].parse().unwrap_or(0);
                 total_child_recv += recv;
-                if recv > 0 { children_with_data += 1; }
+                if recv > 0 {
+                    children_with_data += 1;
+                }
             }
         }
     }
 
     println!("Parent: sent={}, received={}", parent_sent, parent_recv);
-    println!("Children: {} total received, {}/15 got data", total_child_recv, children_with_data);
+    println!(
+        "Children: {} total received, {}/15 got data",
+        total_child_recv, children_with_data
+    );
 
     // The key assertion: parent's topic should still work after 15 processes churned
     parent_topic.send(42u64);
     std::thread::sleep(Duration::from_millis(50));
 
     println!("Parent topic still functional after churn: ✓");
-    assert!(parent_sent > 100, "Parent should have sent messages during churn");
+    assert!(
+        parent_sent > 100,
+        "Parent should have sent messages during churn"
+    );
     // At least some children should have received data
-    assert!(children_with_data > 0, "No children received any data — IPC broken during churn");
+    assert!(
+        children_with_data > 0,
+        "No children received any data — IPC broken during churn"
+    );
     println!("RAPID PROCESS CHURN PASSED ✓");
 }
 
@@ -583,7 +747,11 @@ fn child_pointcloud_producer() {
     let t: Topic<PointCloud> = Topic::new(&topic_name).unwrap();
 
     // Init
-    t.send(PointCloud { points: vec![], seq: 0, checksum: 0 });
+    t.send(PointCloud {
+        points: vec![],
+        seq: 0,
+        checksum: 0,
+    });
     std::thread::sleep(Duration::from_millis(100));
 
     for i in 1..=count {
@@ -597,10 +765,20 @@ fn child_pointcloud_producer() {
             ]);
         }
         let checksum = pc_checksum(&points);
-        t.send(PointCloud { points, seq: i, checksum });
-        if i % 10 == 0 { std::thread::sleep(Duration::from_millis(1)); }
+        t.send(PointCloud {
+            points,
+            seq: i,
+            checksum,
+        });
+        if i % 10 == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
-    t.send(PointCloud { points: vec![], seq: SENTINEL, checksum: 0 });
+    t.send(PointCloud {
+        points: vec![],
+        seq: SENTINEL,
+        checksum: 0,
+    });
     std::thread::sleep(Duration::from_millis(500));
 }
 
@@ -619,8 +797,12 @@ fn child_pointcloud_consumer() {
             Some(pc) => {
                 received += 1;
                 let expected = pc_checksum(&pc.points);
-                if pc.checksum != expected { corrupted += 1; }
-                if pc.points.len() != 100 { corrupted += 1; }
+                if pc.checksum != expected {
+                    corrupted += 1;
+                }
+                if pc.points.len() != 100 {
+                    corrupted += 1;
+                }
             }
             None => std::thread::yield_now(),
         }
@@ -644,24 +826,53 @@ fn ipc_serde_pointcloud_cross_process() {
     let topic = unique("ipc_pointcloud");
     let count = 500u64;
 
-    let mut consumer = spawn_child("ipc_serde_pointcloud_cross_process", &topic, "pc_consumer", count, 0);
+    let mut consumer = spawn_child(
+        "ipc_serde_pointcloud_cross_process",
+        &topic,
+        "pc_consumer",
+        count,
+        0,
+    );
     std::thread::sleep(Duration::from_millis(200));
-    let mut producer = spawn_child("ipc_serde_pointcloud_cross_process", &topic, "pc_producer", count, 0);
+    let mut producer = spawn_child(
+        "ipc_serde_pointcloud_cross_process",
+        &topic,
+        "pc_producer",
+        count,
+        0,
+    );
 
     let _ = producer.wait();
     let output = consumer.wait_with_output().unwrap();
 
-    let received: u64 = parse_child_output(&output.stdout, "PC_RECV:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(0);
-    let corrupted: u64 = parse_child_output(&output.stdout, "PC_CORRUPT:").first()
-        .and_then(|s| s.parse().ok()).unwrap_or(999);
+    let received: u64 = parse_child_output(&output.stdout, "PC_RECV:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let corrupted: u64 = parse_child_output(&output.stdout, "PC_CORRUPT:")
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(999);
 
     println!("=== SERDE POINTCLOUD CROSS-PROCESS ===");
     println!("Sent: {} clouds (100 points × 12B each)", count);
-    println!("Received: {}/{} ({:.0}%)", received, count, received as f64/count as f64*100.0);
+    println!(
+        "Received: {}/{} ({:.0}%)",
+        received,
+        count,
+        received as f64 / count as f64 * 100.0
+    );
     println!("Corrupted: {}", corrupted);
 
-    assert_eq!(corrupted, 0, "PointCloud data CORRUPTED in cross-process serde path!");
-    assert!(received > count / 4, "Received too few pointclouds: {}/{}", received, count);
+    assert_eq!(
+        corrupted, 0,
+        "PointCloud data CORRUPTED in cross-process serde path!"
+    );
+    assert!(
+        received > count / 4,
+        "Received too few pointclouds: {}/{}",
+        received,
+        count
+    );
     println!("SERDE POINTCLOUD PASSED ✓ (zero corruption)");
 }

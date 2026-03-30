@@ -48,7 +48,10 @@ impl Node for LifecycleTracker {
     }
 
     fn shutdown(&mut self) -> HorusResult<()> {
-        self.transitions.lock().unwrap().push("shutdown".to_string());
+        self.transitions
+            .lock()
+            .unwrap()
+            .push("shutdown".to_string());
         Ok(())
     }
 }
@@ -117,10 +120,7 @@ struct ErrorTriggerNode {
 }
 
 impl ErrorTriggerNode {
-    fn new(
-        name: &str,
-        panic_at: u64,
-    ) -> (Self, Arc<AtomicU64>, Arc<Mutex<Vec<String>>>) {
+    fn new(name: &str, panic_at: u64) -> (Self, Arc<AtomicU64>, Arc<Mutex<Vec<String>>>) {
         let tick_count = Arc::new(AtomicU64::new(0));
         let errors = Arc::new(Mutex::new(Vec::new()));
         (
@@ -149,10 +149,7 @@ impl Node for ErrorTriggerNode {
     }
 
     fn on_error(&mut self, error: &str) {
-        self.errors_received
-            .lock()
-            .unwrap()
-            .push(error.to_string());
+        self.errors_received.lock().unwrap().push(error.to_string());
     }
 }
 
@@ -189,7 +186,8 @@ fn test_node_error_triggers_on_error() {
     );
     // The error message should reference the panic.
     assert!(
-        errs.iter().any(|e| e.contains("panic") || e.contains("intentional")),
+        errs.iter()
+            .any(|e| e.contains("panic") || e.contains("intentional")),
         "error should mention panic; got: {:?}",
         *errs
     );
@@ -208,12 +206,7 @@ struct SafeStateNode {
 }
 
 impl SafeStateNode {
-    fn new(name: &str) -> (
-        Self,
-        Arc<AtomicU64>,
-        Arc<Mutex<bool>>,
-        Arc<Mutex<bool>>,
-    ) {
+    fn new(name: &str) -> (Self, Arc<AtomicU64>, Arc<Mutex<bool>>, Arc<Mutex<bool>>) {
         let ticks = Arc::new(AtomicU64::new(0));
         let entered = Arc::new(Mutex::new(false));
         let reported = Arc::new(Mutex::new(false));

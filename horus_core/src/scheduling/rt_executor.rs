@@ -375,7 +375,9 @@ impl RtExecutor {
         let mut deadline_active = false;
         if use_deadline {
             // Derive kernel params from the fastest node's budget/rate
-            if let Some(node) = nodes.iter().find(|n| n.tick_budget.is_some() && n.rate_hz.is_some())
+            if let Some(node) = nodes
+                .iter()
+                .find(|n| n.tick_budget.is_some() && n.rate_hz.is_some())
             {
                 let runtime_ns = node.tick_budget.unwrap().as_nanos() as u64;
                 let period_ns = (1_000_000_000.0 / node.rate_hz.unwrap()) as u64;
@@ -476,10 +478,7 @@ impl RtExecutor {
             match horus_sys::rt::move_irqs_off_cpus(&rt_cpus) {
                 Ok(n) if n > 0 => {
                     if monitors.verbose {
-                        print_line(&format!(
-                            "[RT] Moved {} IRQs off core(s) {:?}",
-                            n, rt_cpus
-                        ));
+                        print_line(&format!("[RT] Moved {} IRQs off core(s) {:?}", n, rt_cpus));
                     }
                 }
                 Err(e) => {
@@ -551,7 +550,10 @@ impl RtExecutor {
                     Err(_) => {
                         if monitors.verbose {
                             // Avoid format!() heap allocation in RT path — write directly to stderr
-                            eprintln!("[RT-thread] Infrastructure panic for '{}' — node stopped", node.name);
+                            eprintln!(
+                                "[RT-thread] Infrastructure panic for '{}' — node stopped",
+                                node.name
+                            );
                         }
                         node.is_stopped = true;
                     }
@@ -679,7 +681,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Let it run for a bit
         std::thread::sleep(50_u64.ms());
@@ -704,7 +707,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Stop immediately
         running.store(false, Ordering::SeqCst);
@@ -730,7 +734,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -792,7 +797,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // The panic node should log errors and continue (no longer stops scheduler)
         std::thread::sleep(50_u64.ms());
@@ -847,7 +853,8 @@ mod tests {
             10_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Run for 200ms
         std::thread::sleep(200_u64.ms());
@@ -900,7 +907,8 @@ mod tests {
             10_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Run for 200ms
         std::thread::sleep(200_u64.ms());
@@ -958,7 +966,8 @@ mod tests {
             1_u64.ms(),
             monitors,
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Background thread holds profiler lock for 50ms
         let lock_thread = std::thread::spawn(move || {
@@ -1053,7 +1062,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1101,7 +1111,8 @@ mod tests {
             1_u64.ms(),
             monitors,
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1175,7 +1186,8 @@ mod tests {
             1_u64.ms(),
             monitors,
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1209,7 +1221,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
         running.store(false, Ordering::SeqCst);
@@ -1228,8 +1241,12 @@ mod tests {
         // Chain 0 has a panicking node. Chain 1 must still tick.
         struct PanicNode;
         impl Node for PanicNode {
-            fn name(&self) -> &str { "panic_node" }
-            fn tick(&mut self) { panic!("intentional panic in chain 0"); }
+            fn name(&self) -> &str {
+                "panic_node"
+            }
+            fn tick(&mut self) {
+                panic!("intentional panic in chain 0");
+            }
         }
 
         let healthy_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1272,7 +1289,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
         running.store(false, Ordering::SeqCst);
@@ -1305,7 +1323,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
         running.store(false, Ordering::SeqCst);
@@ -1403,7 +1422,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
         running.store(false, Ordering::SeqCst);
@@ -1444,7 +1464,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
         running.store(false, Ordering::SeqCst);
@@ -1478,7 +1499,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Give it enough time to detect and e-stop
         std::thread::sleep(Duration::from_millis(50));
@@ -1510,7 +1532,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
@@ -1528,7 +1551,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Let the empty RT thread loop briefly
         std::thread::sleep(20_u64.ms());
@@ -1550,7 +1574,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(30_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1584,7 +1609,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1593,7 +1619,12 @@ mod tests {
         assert_eq!(returned.len(), 12, "all 12 nodes returned");
         for (i, c) in counts.iter().enumerate() {
             let ticks = c.load(std::sync::atomic::Ordering::Relaxed);
-            assert!(ticks > 0, "node_{} must tick at least once, got {}", i, ticks);
+            assert!(
+                ticks > 0,
+                "node_{} must tick at least once, got {}",
+                i,
+                ticks
+            );
         }
     }
 
@@ -1648,7 +1679,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(30_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1722,9 +1754,9 @@ mod tests {
                 node_watchdog: None,
                 failure_handler: None,
                 budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
-            subscription_freshness: Vec::new(),
-            use_sched_deadline: false,
-            no_alloc: false,
+                subscription_freshness: Vec::new(),
+                use_sched_deadline: false,
+                no_alloc: false,
             }
         };
 
@@ -1742,7 +1774,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(30_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1792,7 +1825,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1851,7 +1885,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1861,13 +1896,16 @@ mod tests {
         let tick_count = count.load(std::sync::atomic::Ordering::Relaxed);
 
         assert_eq!(
-            stats.sampled_ticks(), tick_count,
+            stats.sampled_ticks(),
+            tick_count,
             "sampled_ticks should match actual tick count"
         );
-        assert!(stats.sampled_ticks() > 0, "must have recorded at least one tick");
         assert!(
-            stats.worst_execution() >= stats.last_execution()
-                || stats.sampled_ticks() == 1,
+            stats.sampled_ticks() > 0,
+            "must have recorded at least one tick"
+        );
+        assert!(
+            stats.worst_execution() >= stats.last_execution() || stats.sampled_ticks() == 1,
             "worst >= last (or only one sample)"
         );
         assert_eq!(stats.deadline_misses(), 0, "no deadline set → 0 misses");
@@ -1894,7 +1932,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1902,7 +1941,8 @@ mod tests {
 
         assert_eq!(returned.len(), 2);
         assert_eq!(
-            stopped_count.load(std::sync::atomic::Ordering::Relaxed), 0,
+            stopped_count.load(std::sync::atomic::Ordering::Relaxed),
+            0,
             "stopped node must never tick"
         );
         assert!(
@@ -1929,7 +1969,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -1937,7 +1978,8 @@ mod tests {
 
         assert_eq!(returned.len(), 2);
         assert_eq!(
-            uninit_count.load(std::sync::atomic::Ordering::Relaxed), 0,
+            uninit_count.load(std::sync::atomic::Ordering::Relaxed),
+            0,
             "uninitialized node must never tick"
         );
         assert!(
@@ -1962,7 +2004,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Let it run — first cycle skips (unpause), subsequent cycles tick normally
         std::thread::sleep(50_u64.ms());
@@ -1995,7 +2038,8 @@ mod tests {
             10_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(100_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -2026,14 +2070,18 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(30_u64.ms());
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 
         assert_eq!(returned.len(), 1);
-        assert!(returned[0].rt_stats.is_none(), "rt_stats should remain None");
+        assert!(
+            returned[0].rt_stats.is_none(),
+            "rt_stats should remain None"
+        );
         assert!(
             count.load(std::sync::atomic::Ordering::Relaxed) > 0,
             "node without rt_stats must still tick"
@@ -2059,7 +2107,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             vec![0, 1],
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(30_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -2092,10 +2141,15 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let returned = executor.stop();
-        assert_eq!(returned.len(), 4, "all nodes returned even with immediate stop");
+        assert_eq!(
+            returned.len(),
+            4,
+            "all nodes returned even with immediate stop"
+        );
     }
 
     /// Mixed stopped/uninitialized/paused/healthy in one chain — only healthy ones tick.
@@ -2124,7 +2178,8 @@ mod tests {
             1_u64.ms(),
             test_monitors(),
             Vec::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         std::thread::sleep(50_u64.ms());
         running.store(false, Ordering::SeqCst);
@@ -2132,11 +2187,13 @@ mod tests {
 
         assert_eq!(returned.len(), 4);
         assert_eq!(
-            count_stopped.load(std::sync::atomic::Ordering::Relaxed), 0,
+            count_stopped.load(std::sync::atomic::Ordering::Relaxed),
+            0,
             "stopped node must not tick"
         );
         assert_eq!(
-            count_uninit.load(std::sync::atomic::Ordering::Relaxed), 0,
+            count_uninit.load(std::sync::atomic::Ordering::Relaxed),
+            0,
             "uninitialized node must not tick"
         );
         // Paused node skips one cycle then resumes

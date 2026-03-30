@@ -220,8 +220,8 @@ pub fn run_clean(max_age_days: Option<u64>, dry_run: bool, force: bool) -> Horus
                 if let Some(ts_str) = s.strip_prefix("recording_") {
                     if let Some(ts_part) = ts_str.split('_').next() {
                         if let Ok(ts) = ts_part.parse::<f64>() {
-                            let created = std::time::UNIX_EPOCH
-                                + std::time::Duration::from_secs_f64(ts);
+                            let created =
+                                std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(ts);
                             if let Ok(age) = now.duration_since(created) {
                                 return age > max_age;
                             }
@@ -1412,7 +1412,7 @@ mod tests {
 
     #[test]
     fn override_value_float_format() {
-        let value_str = "3.14";
+        let value_str = "2.75";
         let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
             parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
         } else if let Ok(num) = value_str.parse::<i64>() {
@@ -1422,7 +1422,7 @@ mod tests {
         } else {
             value_str.as_bytes().to_vec()
         };
-        assert_eq!(value_bytes, 3.14f64.to_le_bytes().to_vec());
+        assert_eq!(value_bytes, 2.75f64.to_le_bytes().to_vec());
     }
 
     #[test]

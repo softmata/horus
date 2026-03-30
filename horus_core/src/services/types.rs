@@ -220,10 +220,7 @@ mod tests {
     #[test]
     fn service_error_transport_display() {
         let err = ServiceError::Transport("shm segment unavailable".to_string());
-        assert_eq!(
-            err.to_string(),
-            "transport error: shm segment unavailable"
-        );
+        assert_eq!(err.to_string(), "transport error: shm segment unavailable");
     }
 
     #[test]
@@ -271,10 +268,7 @@ mod tests {
             msg.contains("Service call failed"),
             "expected 'Service call failed' in: {msg}"
         );
-        assert!(
-            msg.contains("timed out"),
-            "expected 'timed out' in: {msg}"
-        );
+        assert!(msg.contains("timed out"), "expected 'timed out' in: {msg}");
     }
 
     #[test]
@@ -297,7 +291,10 @@ mod tests {
     fn service_error_debug_format() {
         let err = ServiceError::Timeout;
         let dbg = format!("{:?}", err);
-        assert!(dbg.contains("Timeout"), "Debug output should mention variant: {dbg}");
+        assert!(
+            dbg.contains("Timeout"),
+            "Debug output should mention variant: {dbg}"
+        );
     }
 
     // ── ServiceResponse ──────────────────────────────────────────────────
@@ -361,10 +358,7 @@ mod tests {
         };
         assert_eq!(req.request_id, 7);
         assert_eq!(req.payload, "hello");
-        assert_eq!(
-            req.response_topic.as_deref(),
-            Some("my_svc.response.42")
-        );
+        assert_eq!(req.response_topic.as_deref(), Some("my_svc.response.42"));
     }
 
     #[test]

@@ -417,7 +417,14 @@ mod tests {
     #[test]
     fn test_fixed_message_satisfies_topic_bounds() {
         fn assert_topic_message_bounds<
-            T: Clone + Copy + Default + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+            T: Clone
+                + Copy
+                + Default
+                + Send
+                + Sync
+                + serde::Serialize
+                + serde::de::DeserializeOwned
+                + 'static,
         >() {
         }
         assert_topic_message_bounds::<TestFixedCmd>();
@@ -450,7 +457,7 @@ mod tests {
     fn test_mixed_block_flex_is_not_copy() {
         let a = TestMixedFlex {
             name: "hello".to_string(),
-            value: 3.14,
+            value: 2.75,
         };
         let b = a.clone(); // Must clone, not copy
         assert_eq!(b.name, "hello");

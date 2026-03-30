@@ -2989,12 +2989,18 @@ fn test_scheduler_add_node_after_stop() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler
-        .add(CounterNode::with_counter("node_a", Arc::new(AtomicUsize::new(0))))
+        .add(CounterNode::with_counter(
+            "node_a",
+            Arc::new(AtomicUsize::new(0)),
+        ))
         .build();
     scheduler.stop();
     // Adding after stop should still work (for next run)
     scheduler
-        .add(CounterNode::with_counter("node_b", Arc::new(AtomicUsize::new(0))))
+        .add(CounterNode::with_counter(
+            "node_b",
+            Arc::new(AtomicUsize::new(0)),
+        ))
         .build();
 }
 
@@ -3004,7 +3010,10 @@ fn test_scheduler_metrics_before_any_run() {
     let scheduler = Scheduler::new();
     let metrics = scheduler.metrics();
     // No nodes added — metrics should be empty
-    assert!(metrics.is_empty(), "metrics should be empty before adding nodes");
+    assert!(
+        metrics.is_empty(),
+        "metrics should be empty before adding nodes"
+    );
 }
 
 #[test]
@@ -3012,10 +3021,13 @@ fn test_node_builder_rate_then_budget_same_as_budget_then_rate() {
     let _guard = lock_scheduler();
     // Order 1: rate then budget
     let mut s1 = Scheduler::new();
-    s1.add(CounterNode::with_counter("order1", Arc::new(AtomicUsize::new(0))))
-        .rate(100.hz())
-        .budget(500.us())
-        .build();
+    s1.add(CounterNode::with_counter(
+        "order1",
+        Arc::new(AtomicUsize::new(0)),
+    ))
+    .rate(100.hz())
+    .budget(500.us())
+    .build();
     let node1 = &s1.nodes[0];
     let rate1 = node1.rate_hz;
     let budget1 = node1.tick_budget;
@@ -3023,15 +3035,27 @@ fn test_node_builder_rate_then_budget_same_as_budget_then_rate() {
 
     // Order 2: budget then rate
     let mut s2 = Scheduler::new();
-    s2.add(CounterNode::with_counter("order2", Arc::new(AtomicUsize::new(0))))
-        .budget(500.us())
-        .rate(100.hz())
-        .build();
+    s2.add(CounterNode::with_counter(
+        "order2",
+        Arc::new(AtomicUsize::new(0)),
+    ))
+    .budget(500.us())
+    .rate(100.hz())
+    .build();
     let node2 = &s2.nodes[0];
 
-    assert_eq!(rate1, node2.rate_hz, "rate must be same regardless of call order");
-    assert_eq!(budget1, node2.tick_budget, "budget must be same regardless of call order");
-    assert_eq!(class1, node2.execution_class, "execution class must be same regardless of call order");
+    assert_eq!(
+        rate1, node2.rate_hz,
+        "rate must be same regardless of call order"
+    );
+    assert_eq!(
+        budget1, node2.tick_budget,
+        "budget must be same regardless of call order"
+    );
+    assert_eq!(
+        class1, node2.execution_class,
+        "execution class must be same regardless of call order"
+    );
 }
 
 #[test]
@@ -3039,13 +3063,19 @@ fn test_node_builder_compute_then_rate_stays_compute() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler
-        .add(CounterNode::with_counter("compute_rate", Arc::new(AtomicUsize::new(0))))
+        .add(CounterNode::with_counter(
+            "compute_rate",
+            Arc::new(AtomicUsize::new(0)),
+        ))
         .compute()
         .rate(100.hz())
         .build();
     let node = &scheduler.nodes[0];
     // Compute with rate should stay Compute (rate doesn't auto-promote to Rt when compute is explicit)
-    assert_eq!(node.execution_class, crate::scheduling::types::ExecutionClass::Compute);
+    assert_eq!(
+        node.execution_class,
+        crate::scheduling::types::ExecutionClass::Compute
+    );
 }
 
 #[test]
@@ -3053,7 +3083,10 @@ fn test_node_builder_deadline_without_rate() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler
-        .add(CounterNode::with_counter("deadline_only", Arc::new(AtomicUsize::new(0))))
+        .add(CounterNode::with_counter(
+            "deadline_only",
+            Arc::new(AtomicUsize::new(0)),
+        ))
         .deadline(1.ms())
         .build();
     // Deadline without rate should work (deadline checked on each tick)
@@ -3074,16 +3107,17 @@ fn test_e2e_sensor_controller_motor_pipeline() {
     let controller_count = Arc::new(AtomicUsize::new(0));
     let motor_count = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(100.hz())
-        .deterministic(true); // Deterministic for reproducible ordering
+    let mut scheduler = Scheduler::new().tick_rate(100.hz()).deterministic(true); // Deterministic for reproducible ordering
 
     scheduler
         .add(CounterNode::with_counter("sensor", sensor_count.clone()))
         .order(0)
         .build();
     scheduler
-        .add(CounterNode::with_counter("controller", controller_count.clone()))
+        .add(CounterNode::with_counter(
+            "controller",
+            controller_count.clone(),
+        ))
         .order(1)
         .build();
     scheduler
@@ -3122,21 +3156,23 @@ fn test_e2e_graceful_shutdown_all_nodes_cleanup() {
     }
 
     impl Node for LifecycleNode {
-        fn name(&self) -> &str { self.name }
+        fn name(&self) -> &str {
+            self.name
+        }
         fn init(&mut self) -> crate::error::HorusResult<()> {
             self.init_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
-        fn tick(&mut self) { self.tick_count.fetch_add(1, Ordering::Relaxed); }
+        fn tick(&mut self) {
+            self.tick_count.fetch_add(1, Ordering::Relaxed);
+        }
         fn shutdown(&mut self) -> crate::error::HorusResult<()> {
             self.shutdown_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
 
-    let mut scheduler = Scheduler::new()
-        .tick_rate(100.hz())
-        .deterministic(true);
+    let mut scheduler = Scheduler::new().tick_rate(100.hz()).deterministic(true);
 
     for i in 0..5 {
         let node = LifecycleNode {
@@ -3170,7 +3206,10 @@ fn test_e2e_graceful_shutdown_all_nodes_cleanup() {
 fn test_network_enabled_by_default() {
     let _lock = lock_scheduler();
     let scheduler = Scheduler::new();
-    assert!(scheduler.network_enabled(), "network should be on by default");
+    assert!(
+        scheduler.network_enabled(),
+        "network should be on by default"
+    );
 }
 
 #[test]
@@ -3202,13 +3241,18 @@ fn test_lifecycle_hook_invoked_on_run() {
         started_clone.store(true, Ordering::SeqCst);
         None
     });
-    scheduler.add(CounterNode {
-        name: "lifecycle_test",
-        tick_count: Arc::new(AtomicUsize::new(0)),
-    }).build();
+    scheduler
+        .add(CounterNode {
+            name: "lifecycle_test",
+            tick_count: Arc::new(AtomicUsize::new(0)),
+        })
+        .build();
 
     scheduler.run_for(Duration::from_millis(50)).unwrap();
-    assert!(started.load(Ordering::SeqCst), "lifecycle hook should have been invoked");
+    assert!(
+        started.load(Ordering::SeqCst),
+        "lifecycle hook should have been invoked"
+    );
 }
 
 #[test]
@@ -3225,16 +3269,19 @@ fn test_lifecycle_hook_handle_dropped_on_shutdown() {
     }
 
     let mut scheduler = Scheduler::new().deterministic(true);
-    scheduler.on_start(move || {
-        Some(Box::new(DropTracker(dropped_clone)))
-    });
-    scheduler.add(CounterNode {
-        name: "drop_test",
-        tick_count: Arc::new(AtomicUsize::new(0)),
-    }).build();
+    scheduler.on_start(move || Some(Box::new(DropTracker(dropped_clone))));
+    scheduler
+        .add(CounterNode {
+            name: "drop_test",
+            tick_count: Arc::new(AtomicUsize::new(0)),
+        })
+        .build();
 
     scheduler.run_for(Duration::from_millis(50)).unwrap();
-    assert!(dropped.load(Ordering::SeqCst), "lifecycle handle should have been dropped on shutdown");
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "lifecycle handle should have been dropped on shutdown"
+    );
 }
 
 #[test]
@@ -3257,18 +3304,27 @@ fn test_lifecycle_hooks_dropped_lifo() {
     for id in 0..3 {
         let order_clone = order.clone();
         scheduler.on_start(move || {
-            Some(Box::new(OrderTracker { id, order: order_clone }))
+            Some(Box::new(OrderTracker {
+                id,
+                order: order_clone,
+            }))
         });
     }
 
-    scheduler.add(CounterNode {
-        name: "lifo_test",
-        tick_count: Arc::new(AtomicUsize::new(0)),
-    }).build();
+    scheduler
+        .add(CounterNode {
+            name: "lifo_test",
+            tick_count: Arc::new(AtomicUsize::new(0)),
+        })
+        .build();
 
     scheduler.run_for(Duration::from_millis(50)).unwrap();
     let drop_order = order.lock().unwrap().clone();
-    assert_eq!(drop_order, vec![2, 1, 0], "hooks should be dropped in LIFO order");
+    assert_eq!(
+        drop_order,
+        vec![2, 1, 0],
+        "hooks should be dropped in LIFO order"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -3281,10 +3337,13 @@ fn test_require_rt_fails_on_non_root() {
     // On a non-root CI/dev machine, require_rt should detect degradations
     // after apply and set rt_require_failed = true.
     let mut scheduler = Scheduler::new().require_rt().tick_rate(10_u64.hz());
-    scheduler.add(CounterNode {
-        name: "rt_fail_test",
-        tick_count: Arc::new(AtomicUsize::new(0)),
-    }).build().ok();
+    scheduler
+        .add(CounterNode {
+            name: "rt_fail_test",
+            tick_count: Arc::new(AtomicUsize::new(0)),
+        })
+        .build()
+        .ok();
 
     let result = scheduler.run_for(Duration::from_millis(50));
 
@@ -3310,10 +3369,13 @@ fn test_prefer_rt_succeeds_on_non_root() {
     let _guard = lock_scheduler();
     // prefer_rt should always succeed — degradations are warnings, not errors
     let mut scheduler = Scheduler::new().prefer_rt().tick_rate(10_u64.hz());
-    scheduler.add(CounterNode {
-        name: "rt_prefer_test",
-        tick_count: Arc::new(AtomicUsize::new(0)),
-    }).build().ok();
+    scheduler
+        .add(CounterNode {
+            name: "rt_prefer_test",
+            tick_count: Arc::new(AtomicUsize::new(0)),
+        })
+        .build()
+        .ok();
 
     let result = scheduler.run_for(Duration::from_millis(50));
     assert!(
@@ -3327,10 +3389,13 @@ fn test_prefer_rt_succeeds_on_non_root() {
 fn test_prefer_rt_stores_degradations() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new().prefer_rt().tick_rate(10_u64.hz());
-    scheduler.add(CounterNode {
-        name: "degrad_test",
-        tick_count: Arc::new(AtomicUsize::new(0)),
-    }).build().ok();
+    scheduler
+        .add(CounterNode {
+            name: "degrad_test",
+            tick_count: Arc::new(AtomicUsize::new(0)),
+        })
+        .build()
+        .ok();
 
     // Force finalization
     let _ = scheduler.run_for(Duration::from_millis(10));
@@ -3344,7 +3409,8 @@ fn test_prefer_rt_stores_degradations() {
         );
         // Should include SchedulerDegraded (SCHED_FIFO failed)
         assert!(
-            degs.iter().any(|d| matches!(d.feature, RtFeature::RtPriority)),
+            degs.iter()
+                .any(|d| matches!(d.feature, RtFeature::RtPriority)),
             "Should have RtPriority degradation"
         );
         assert!(
@@ -3358,12 +3424,10 @@ fn test_prefer_rt_stores_degradations() {
 fn test_deadline_scheduler_flag_propagates() {
     let _guard = lock_scheduler();
     // Verify .deadline_scheduler() flag reaches the RT executor
-    let config = super::super::node_builder::NodeRegistration::new(
-        Box::new(CounterNode {
-            name: "deadline_flag_test",
-            tick_count: Arc::new(AtomicUsize::new(0)),
-        }),
-    )
+    let config = super::super::node_builder::NodeRegistration::new(Box::new(CounterNode {
+        name: "deadline_flag_test",
+        tick_count: Arc::new(AtomicUsize::new(0)),
+    }))
     .rate(100_u64.hz())
     .budget(500_u64.us())
     .deadline_scheduler();
@@ -3377,19 +3441,14 @@ fn test_deadline_scheduler_flag_propagates() {
 #[test]
 fn test_no_alloc_flag_propagates() {
     let _guard = lock_scheduler();
-    let config = super::super::node_builder::NodeRegistration::new(
-        Box::new(CounterNode {
-            name: "no_alloc_flag_test",
-            tick_count: Arc::new(AtomicUsize::new(0)),
-        }),
-    )
+    let config = super::super::node_builder::NodeRegistration::new(Box::new(CounterNode {
+        name: "no_alloc_flag_test",
+        tick_count: Arc::new(AtomicUsize::new(0)),
+    }))
     .rate(100_u64.hz())
     .no_alloc();
 
-    assert!(
-        config.no_alloc,
-        ".no_alloc() should set no_alloc = true"
-    );
+    assert!(config.no_alloc, ".no_alloc() should set no_alloc = true");
 }
 
 #[test]

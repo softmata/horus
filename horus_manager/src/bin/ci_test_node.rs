@@ -11,7 +11,6 @@
 //! - `HORUS_CI_READY_FILE` — Path to write when node is ready (default: none)
 
 use horus_core::communication::Topic;
-use horus_core::core::node::TopicMetadata;
 use horus_core::core::DurationExt;
 use horus_core::{Node, Scheduler};
 
@@ -78,13 +77,6 @@ impl Node for CiTestNode {
             let _ = std::fs::remove_file(path);
         }
         Ok(())
-    }
-
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: self.topic_name.clone(),
-            type_name: "u64".to_string(),
-        }]
     }
 }
 

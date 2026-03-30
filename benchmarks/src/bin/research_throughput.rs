@@ -15,26 +15,40 @@ use std::time::{Duration, Instant};
 
 #[repr(C)]
 #[derive(Copy, Clone, Serialize, Deserialize)]
-struct Msg8 { data: [u8; 8] }
+struct Msg8 {
+    data: [u8; 8],
+}
 unsafe impl Send for Msg8 {}
 unsafe impl Sync for Msg8 {}
 
 fn unique(prefix: &str) -> String {
     static C: AtomicU64 = AtomicU64::new(0);
-    format!("{}_{}_{}",prefix,std::process::id(),C.fetch_add(1,Ordering::Relaxed))
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        C.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn cleanup_shm() {
     let _ = std::fs::remove_dir_all(horus_core::memory::shm_topics_dir());
-    let mut n = horus_core::memory::shm_base_dir(); n.push("nodes");
+    let mut n = horus_core::memory::shm_base_dir();
+    n.push("nodes");
     let _ = std::fs::remove_dir_all(n);
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let duration: u64 = args.iter().position(|a| a == "--duration")
-        .map(|i| args[i+1].parse().unwrap_or(10)).unwrap_or(10);
-    let csv_path = args.iter().position(|a| a == "--csv").map(|i| args[i+1].clone());
+    let duration: u64 = args
+        .iter()
+        .position(|a| a == "--duration")
+        .map(|i| args[i + 1].parse().unwrap_or(10))
+        .unwrap_or(10);
+    let csv_path = args
+        .iter()
+        .position(|a| a == "--csv")
+        .map(|i| args[i + 1].clone());
 
     let platform = detect_platform();
     cleanup_shm();
@@ -43,7 +57,10 @@ fn main() {
     println!("║          Research Throughput — Sustained                    ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
-    println!("Platform: {}, {} cores", platform.cpu.model, platform.cpu.logical_cores);
+    println!(
+        "Platform: {}, {} cores",
+        platform.cpu.model, platform.cpu.logical_cores
+    );
     println!("Duration: {}s", duration);
     println!();
 
@@ -90,15 +107,25 @@ fn main() {
     let min_mps = rates.iter().copied().min().unwrap_or(0);
     let max_mps = rates.iter().copied().max().unwrap_or(0);
 
-    println!("{:<12} {:>14} {:>14} {:>14} {:>14}", "Metric", "Total", "Mean/sec", "Min/sec", "Max/sec");
-    println!("{:<12} {:>14} {:>13.0} {:>14} {:>14}",
-        "8B msg", total, mean_mps, min_mps, max_mps);
+    println!(
+        "{:<12} {:>14} {:>14} {:>14} {:>14}",
+        "Metric", "Total", "Mean/sec", "Min/sec", "Max/sec"
+    );
+    println!(
+        "{:<12} {:>14} {:>13.0} {:>14} {:>14}",
+        "8B msg", total, mean_mps, min_mps, max_mps
+    );
     println!();
 
     println!("Per-second throughput:");
     for (sec, count) in &per_second {
         let bar_len = (*count as f64 / max_mps as f64 * 40.0) as usize;
-        println!("  {:>3}s: {:>12} msgs/s {}", sec, count, "█".repeat(bar_len));
+        println!(
+            "  {:>3}s: {:>12} msgs/s {}",
+            sec,
+            count,
+            "█".repeat(bar_len)
+        );
     }
 
     if let Some(path) = csv_path {

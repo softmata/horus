@@ -91,7 +91,9 @@ pub use sensor::{
 };
 
 // Clock & Time
-pub use clock::{Clock, RateRequest, SimSync, TimeReference, SOURCE_REPLAY, SOURCE_SIM, SOURCE_WALL};
+pub use clock::{
+    Clock, RateRequest, SimSync, TimeReference, SOURCE_REPLAY, SOURCE_SIM, SOURCE_WALL,
+};
 
 // Control
 pub use control::{

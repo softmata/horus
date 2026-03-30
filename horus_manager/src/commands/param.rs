@@ -508,11 +508,11 @@ mod tests {
 
     #[test]
     fn format_value_compact_negative_float() {
-        let val = Value::Number(serde_json::Number::from_f64(-3.14).unwrap());
+        let val = Value::Number(serde_json::Number::from_f64(-2.75).unwrap());
         let result = format_value_compact(&val);
         assert!(
-            result.contains("-3.14"),
-            "Should contain -3.14, got: '{}'",
+            result.contains("-2.75"),
+            "Should contain -2.75, got: '{}'",
             result
         );
     }
@@ -582,11 +582,11 @@ mod tests {
 
     #[test]
     fn infer_value_float() {
-        let result = infer_value("3.14");
+        let result = infer_value("2.75");
         match result {
             Value::Number(n) => {
                 let f = n.as_f64().unwrap();
-                assert!((f - 3.14).abs() < 1e-10, "Expected 3.14, got {}", f);
+                assert!((f - 2.75).abs() < 1e-10, "Expected 2.75, got {}", f);
             }
             other => panic!("Expected Number, got {:?}", other),
         }

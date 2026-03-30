@@ -536,24 +536,14 @@ mod tests {
             .iter()
             .find(|p| p.source == "registry")
             .unwrap();
-        assert_eq!(
-            registry_pkg.checksum,
-            Some("sha256:reg_check".to_string())
-        );
+        assert_eq!(registry_pkg.checksum, Some("sha256:reg_check".to_string()));
         let crates_pkg = loaded
             .packages
             .iter()
             .find(|p| p.source == "crates.io")
             .unwrap();
-        assert_eq!(
-            crates_pkg.checksum,
-            Some("sha256:crate_check".to_string())
-        );
-        let pypi_pkg = loaded
-            .packages
-            .iter()
-            .find(|p| p.source == "pypi")
-            .unwrap();
+        assert_eq!(crates_pkg.checksum, Some("sha256:crate_check".to_string()));
+        let pypi_pkg = loaded.packages.iter().find(|p| p.source == "pypi").unwrap();
         assert!(pypi_pkg.checksum.is_none());
 
         // Toolchain preserved

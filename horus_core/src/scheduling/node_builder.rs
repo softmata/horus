@@ -865,8 +865,9 @@ impl<'a> NodeBuilder<'a> {
         timeout: Duration,
         policy: super::types::StalePolicy,
     ) -> Self {
-        self.config.subscription_freshness.push(
-            super::types::SubscriptionFreshness {
+        self.config
+            .subscription_freshness
+            .push(super::types::SubscriptionFreshness {
                 topic: topic.to_string(),
                 timeout,
                 policy,
@@ -876,8 +877,7 @@ impl<'a> NodeBuilder<'a> {
                         .unwrap_or_default()
                         .as_nanos() as u64,
                 ),
-            },
-        );
+            });
         self
     }
 
@@ -1766,8 +1766,11 @@ mod tests {
             .build()
             .unwrap();
         let node = &scheduler.nodes[0];
-        assert_eq!(node.execution_class, crate::scheduling::types::ExecutionClass::Compute,
-            "explicit compute() should override rate's auto-RT");
+        assert_eq!(
+            node.execution_class,
+            crate::scheduling::types::ExecutionClass::Compute,
+            "explicit compute() should override rate's auto-RT"
+        );
     }
 
     #[test]
@@ -1779,7 +1782,10 @@ mod tests {
             .build()
             .unwrap();
         let node = &scheduler.nodes[0];
-        assert_eq!(node.execution_class, crate::scheduling::types::ExecutionClass::AsyncIo);
+        assert_eq!(
+            node.execution_class,
+            crate::scheduling::types::ExecutionClass::AsyncIo
+        );
     }
 
     #[test]
@@ -1790,16 +1796,31 @@ mod tests {
             .build()
             .unwrap();
         let node = &scheduler.nodes[0];
-        assert_eq!(node.execution_class, crate::scheduling::types::ExecutionClass::BestEffort);
+        assert_eq!(
+            node.execution_class,
+            crate::scheduling::types::ExecutionClass::BestEffort
+        );
         assert!(!node.is_rt_node);
     }
 
     #[test]
     fn test_order_preserved() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(StubNode("z_last".to_string())).order(99).build().unwrap();
-        scheduler.add(StubNode("a_first".to_string())).order(0).build().unwrap();
-        scheduler.add(StubNode("m_middle".to_string())).order(50).build().unwrap();
+        scheduler
+            .add(StubNode("z_last".to_string()))
+            .order(99)
+            .build()
+            .unwrap();
+        scheduler
+            .add(StubNode("a_first".to_string()))
+            .order(0)
+            .build()
+            .unwrap();
+        scheduler
+            .add(StubNode("m_middle".to_string()))
+            .order(50)
+            .build()
+            .unwrap();
 
         // Priority/order should match what was set
         assert_eq!(scheduler.nodes[0].priority, 99);
@@ -1931,9 +1952,7 @@ mod tests {
 
     #[test]
     fn order_set_twice_last_wins() {
-        let reg = NodeRegistration::new(stub("n"))
-            .order(5)
-            .order(42);
+        let reg = NodeRegistration::new(stub("n")).order(5).order(42);
         assert_eq!(reg.order, 42);
     }
 
@@ -1957,20 +1976,22 @@ mod tests {
 
     #[test]
     fn async_io_with_budget_rejected() {
-        let mut reg = NodeRegistration::new(stub("n"))
-            .async_io()
-            .budget(500.us());
+        let mut reg = NodeRegistration::new(stub("n")).async_io().budget(500.us());
         let result = reg.validate();
-        assert!(result.is_err(), "budget on async_io node should be rejected");
+        assert!(
+            result.is_err(),
+            "budget on async_io node should be rejected"
+        );
     }
 
     #[test]
     fn async_io_with_deadline_rejected() {
-        let mut reg = NodeRegistration::new(stub("n"))
-            .async_io()
-            .deadline(1.ms());
+        let mut reg = NodeRegistration::new(stub("n")).async_io().deadline(1.ms());
         let result = reg.validate();
-        assert!(result.is_err(), "deadline on async_io node should be rejected");
+        assert!(
+            result.is_err(),
+            "deadline on async_io node should be rejected"
+        );
     }
 
     #[test]
@@ -1993,11 +2014,12 @@ mod tests {
 
     #[test]
     fn compute_with_deadline_rejected() {
-        let mut reg = NodeRegistration::new(stub("n"))
-            .compute()
-            .deadline(1.ms());
+        let mut reg = NodeRegistration::new(stub("n")).compute().deadline(1.ms());
         let result = reg.validate();
-        assert!(result.is_err(), "deadline on compute node should be rejected");
+        assert!(
+            result.is_err(),
+            "deadline on compute node should be rejected"
+        );
     }
 
     // ── All ExecutionClass variants via NodeRegistration ──
@@ -2058,15 +2080,13 @@ mod tests {
 
     #[test]
     fn budget_policy_enforce() {
-        let reg = NodeRegistration::new(stub("n"))
-            .budget_policy(BudgetPolicy::Enforce);
+        let reg = NodeRegistration::new(stub("n")).budget_policy(BudgetPolicy::Enforce);
         assert_eq!(reg.budget_policy, BudgetPolicy::Enforce);
     }
 
     #[test]
     fn budget_policy_emergency_stop() {
-        let reg = NodeRegistration::new(stub("n"))
-            .budget_policy(BudgetPolicy::EmergencyStop);
+        let reg = NodeRegistration::new(stub("n")).budget_policy(BudgetPolicy::EmergencyStop);
         assert_eq!(reg.budget_policy, BudgetPolicy::EmergencyStop);
     }
 
@@ -2095,7 +2115,10 @@ mod tests {
         assert_eq!(reg.budget_policy, BudgetPolicy::Enforce);
         assert!(matches!(
             reg.failure_policy,
-            Some(FailurePolicy::Restart { max_restarts: 5, .. })
+            Some(FailurePolicy::Restart {
+                max_restarts: 5,
+                ..
+            })
         ));
         assert_eq!(reg.os_priority, Some(80));
         assert_eq!(reg.pinned_core, Some(0));
@@ -2352,10 +2375,7 @@ mod tests {
         let long_topic = "a".repeat(1000);
         let mut reg = NodeRegistration::new(stub("n")).on(&long_topic);
         reg.validate().unwrap();
-        assert_eq!(
-            reg.execution_class,
-            ExecutionClass::Event(long_topic)
-        );
+        assert_eq!(reg.execution_class, ExecutionClass::Event(long_topic));
     }
 
     // ── Priority and core edge values ──
@@ -2492,9 +2512,7 @@ mod tests {
 
     #[test]
     fn compute_budget_conflict_error_mentions_both() {
-        let mut reg = NodeRegistration::new(stub("n"))
-            .compute()
-            .budget(500.us());
+        let mut reg = NodeRegistration::new(stub("n")).compute().budget(500.us());
         let err = reg.validate().unwrap_err();
         let msg = format!("{}", err);
         assert!(

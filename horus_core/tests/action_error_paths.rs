@@ -143,10 +143,7 @@ fn test_goal_rejected_by_server() {
             // the client didn't map; timeout is also acceptable evidence the
             // server didn't produce a successful result.
         }
-        other => panic!(
-            "Expected GoalRejected (or GoalTimeout), got: {:?}",
-            other
-        ),
+        other => panic!("Expected GoalRejected (or GoalTimeout), got: {:?}", other),
     }
 }
 
@@ -262,10 +259,7 @@ fn test_multiple_sequential_goals_all_succeed() {
 
     // Send 5 goals sequentially
     for i in 1..=5 {
-        let result = client.send_goal_and_wait(
-            EpSeqGoal { value: i },
-            Duration::from_secs(5),
-        );
+        let result = client.send_goal_and_wait(EpSeqGoal { value: i }, Duration::from_secs(5));
         match result {
             Ok(r) => assert_eq!(
                 r.code,

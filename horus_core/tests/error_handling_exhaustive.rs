@@ -257,11 +257,7 @@ fn test_error_severity_classification() {
     let err = HorusError::Node(NodeError::InitPanic {
         node: "motor".to_string(),
     });
-    assert_eq!(
-        err.severity(),
-        Severity::Fatal,
-        "InitPanic should be Fatal"
-    );
+    assert_eq!(err.severity(), Severity::Fatal, "InitPanic should be Fatal");
 
     let err = HorusError::Node(NodeError::ReInitPanic {
         node: "motor".to_string(),

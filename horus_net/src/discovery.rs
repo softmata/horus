@@ -130,7 +130,7 @@ impl WireTopicEntry {
 pub struct AnnouncementHeader {
     pub magic: u32,
     pub version: u8,
-    pub flags: u8,        // bit 0: has_secret_hash
+    pub flags: u8, // bit 0: has_secret_hash
     pub peer_id: [u8; 16],
     pub data_port: u16,
     pub secret_hash: [u8; 4], // First 4 bytes of hash (compact)
@@ -453,7 +453,7 @@ mod tests {
             type_size: 64,
             role: TopicRole::Publisher,
             is_pod: true,
-        is_system: false,
+            is_system: false,
         }];
         let remote = vec![WireTopicEntry {
             name: "imu".into(),
@@ -479,7 +479,7 @@ mod tests {
             type_size: 16,
             role: TopicRole::Subscriber,
             is_pod: true,
-        is_system: false,
+            is_system: false,
         }];
         let remote = vec![WireTopicEntry {
             name: "cmd".into(),
@@ -504,7 +504,7 @@ mod tests {
             type_size: 64,
             role: TopicRole::Publisher,
             is_pod: true,
-        is_system: false,
+            is_system: false,
         }];
         let remote = vec![WireTopicEntry {
             name: "imu".into(),
@@ -529,7 +529,7 @@ mod tests {
             type_size: 64,
             role: TopicRole::Publisher,
             is_pod: true,
-        is_system: false,
+            is_system: false,
         }];
         let remote = vec![WireTopicEntry {
             name: "odom".into(), // Different topic
@@ -553,7 +553,7 @@ mod tests {
             type_size: 32,
             role: TopicRole::Both,
             is_pod: true,
-        is_system: false,
+            is_system: false,
         }];
         let remote = vec![WireTopicEntry {
             name: "data".into(),

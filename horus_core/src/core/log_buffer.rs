@@ -500,8 +500,7 @@ pub fn start_log_file_drain() -> Option<std::thread::JoinHandle<()>> {
         return None;
     }
 
-    let log_dir = std::env::var("HORUS_LOG_DIR")
-        .unwrap_or_else(|_| ".horus/logs".to_string());
+    let log_dir = std::env::var("HORUS_LOG_DIR").unwrap_or_else(|_| ".horus/logs".to_string());
     let max_size: u64 = std::env::var("HORUS_LOG_MAX_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())

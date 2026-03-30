@@ -832,11 +832,26 @@ where
         // Create communication links with proper TopicKind for discovery.
         // TopicKind allows `horus action list` to identify action topics
         // without relying solely on naming conventions.
-        self.goal_link = Some(Topic::new_with_kind(A::goal_topic(), TopicKind::ActionGoal as u8)?);
-        self.cancel_link = Some(Topic::new_with_kind(A::cancel_topic(), TopicKind::ActionCancel as u8)?);
-        self.result_link = Some(Topic::new_with_kind(A::result_topic(), TopicKind::ActionResult as u8)?);
-        *self.feedback_link.write() = Some(Topic::new_with_kind(A::feedback_topic(), TopicKind::ActionFeedback as u8)?);
-        self.status_link = Some(Topic::new_with_kind(A::status_topic(), TopicKind::ActionStatus as u8)?);
+        self.goal_link = Some(Topic::new_with_kind(
+            A::goal_topic(),
+            TopicKind::ActionGoal as u8,
+        )?);
+        self.cancel_link = Some(Topic::new_with_kind(
+            A::cancel_topic(),
+            TopicKind::ActionCancel as u8,
+        )?);
+        self.result_link = Some(Topic::new_with_kind(
+            A::result_topic(),
+            TopicKind::ActionResult as u8,
+        )?);
+        *self.feedback_link.write() = Some(Topic::new_with_kind(
+            A::feedback_topic(),
+            TopicKind::ActionFeedback as u8,
+        )?);
+        self.status_link = Some(Topic::new_with_kind(
+            A::status_topic(),
+            TopicKind::ActionStatus as u8,
+        )?);
 
         log::info!(
             "ActionServer '{}': Initialized with topics: {}.{{goal,cancel,result,feedback,status}}",
@@ -857,11 +872,13 @@ where
                 let _ = std::fs::remove_file(&goal_file);
                 if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&data) {
                     // Extract fields from the JSON goal request
-                    let goal_id_str = json_val.get("goal_id")
+                    let goal_id_str = json_val
+                        .get("goal_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("cli-goal")
                         .to_string();
-                    let priority = json_val.get("priority")
+                    let priority = json_val
+                        .get("priority")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(128) as u8;
                     if let Some(payload) = json_val.get("payload").cloned() {
@@ -1235,10 +1252,7 @@ mod tests {
             preemption_policy: PreemptionPolicy::PreemptOld,
             result_history_size: 100,
         };
-        assert_eq!(
-            config.goal_timeout,
-            Some(Duration::from_secs(86400 * 365))
-        );
+        assert_eq!(config.goal_timeout, Some(Duration::from_secs(86400 * 365)));
     }
 
     #[test]
@@ -1500,16 +1514,14 @@ mod tests {
 
     #[test]
     fn test_goal_outcome_into_result_aborted() {
-        let outcome: GoalOutcome<TestAction> =
-            GoalOutcome::Aborted(TestResult { success: false });
+        let outcome: GoalOutcome<TestAction> = GoalOutcome::Aborted(TestResult { success: false });
         let result = outcome.into_result();
         assert!(!result.success);
     }
 
     #[test]
     fn test_goal_outcome_into_result_canceled() {
-        let outcome: GoalOutcome<TestAction> =
-            GoalOutcome::Canceled(TestResult { success: false });
+        let outcome: GoalOutcome<TestAction> = GoalOutcome::Canceled(TestResult { success: false });
         let result = outcome.into_result();
         assert!(!result.success);
     }
@@ -1761,8 +1773,7 @@ mod tests {
 
     #[test]
     fn test_goal_request_with_priority() {
-        let req =
-            GoalRequest::with_priority(TestGoal { target: 5.0 }, GoalPriority::HIGHEST);
+        let req = GoalRequest::with_priority(TestGoal { target: 5.0 }, GoalPriority::HIGHEST);
         assert_eq!(req.priority, GoalPriority::HIGHEST);
         assert_eq!(req.goal.target, 5.0);
     }

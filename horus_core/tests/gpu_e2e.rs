@@ -201,7 +201,11 @@ fn test_gpu_ops_zero_dimension_rejected() {
     let result = GpuImageOps::resize(
         std::ptr::null(),
         std::ptr::null_mut(),
-        0, 0, 0, 0, 3,
+        0,
+        0,
+        0,
+        0,
+        3,
         std::ptr::null_mut(),
     );
     assert!(result.is_err());
@@ -209,7 +213,10 @@ fn test_gpu_ops_zero_dimension_rejected() {
     let result = GpuImageOps::preprocess_fused(
         std::ptr::null(),
         std::ptr::null_mut(),
-        0, 0, 640, 480,
+        0,
+        0,
+        640,
+        480,
         ColorFormat::Rgb,
         &[0.0; 3],
         &[1.0; 3],

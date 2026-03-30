@@ -121,9 +121,9 @@ pub(crate) mod dispatch;
 /// Contention-free MPMC via fan-out SPSC matrix.
 pub mod fanout;
 pub(crate) mod mpsc_intra;
+pub(crate) mod registry;
 /// Cross-process contention-free MPMC via SHM-backed SPSC matrix.
 pub(crate) mod shm_fanout;
-pub(crate) mod registry;
 pub(crate) mod spmc_intra;
 pub(crate) mod spsc_intra;
 
@@ -248,7 +248,13 @@ impl TopicNodeRegistry {
         self.register_with_type(topic_name, node_name, role, "");
     }
 
-    pub fn register_with_type(&self, topic_name: &str, node_name: &str, role: NodeTopicRole, type_name: &str) {
+    pub fn register_with_type(
+        &self,
+        topic_name: &str,
+        node_name: &str,
+        role: NodeTopicRole,
+        type_name: &str,
+    ) {
         let mut topics = self.topics.write().unwrap_or_else(|e| e.into_inner());
         let entries = topics.entry(topic_name.to_string()).or_default();
 
@@ -354,10 +360,7 @@ impl TopicNodeRegistry {
     /// Get all registered topics with their associations.
     pub fn all_topics(&self) -> Vec<(String, Vec<TopicAssociation>)> {
         let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
-        topics
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        topics.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 }
 
@@ -389,9 +392,8 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
 pub use header::{
-    read_latest_slot_bytes, read_topic_header_info, read_topic_messages_total,
-    read_topic_sequence, set_topic_verbose, TopicHeaderInfo, TopicKind, TopicSlotRead,
-    TOPIC_VERBOSE_OFFSET,
+    read_latest_slot_bytes, read_topic_header_info, read_topic_messages_total, read_topic_sequence,
+    set_topic_verbose, TopicHeaderInfo, TopicKind, TopicSlotRead, TOPIC_VERBOSE_OFFSET,
 };
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
@@ -1361,13 +1363,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             let is_pod = crate::communication::pod::is_pod::<T>();
             let type_size = mem::size_of::<T>();
             let capacity = self.header().capacity;
-            let total_size = shm_fanout::ShmFanoutRing::required_file_size(
-                type_size,
-                is_pod,
-                capacity as usize,
-            );
+            let total_size =
+                shm_fanout::ShmFanoutRing::required_file_size(type_size, is_pod, capacity as usize);
             let fanout_name = format!("{}_fanout", self.name);
-            if let Ok(fanout_storage) = crate::memory::shm_region::ShmRegion::new(&fanout_name, total_size) {
+            if let Ok(fanout_storage) =
+                crate::memory::shm_region::ShmRegion::new(&fanout_name, total_size)
+            {
                 let is_owner = fanout_storage.is_owner();
                 let shm_base = fanout_storage.as_ptr() as *mut u8;
                 let ring = unsafe {
@@ -1493,9 +1494,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
             BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
-            BackendMode::MpscShm if colo => {
-                dispatch::send_shm_mp_pod_colo::<T>
-            }
+            BackendMode::MpscShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
             BackendMode::MpscShm if is_pod => dispatch::send_shm_mp_pod::<T>,
             BackendMode::MpscShm => dispatch::send_shm_mp_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM serde (handles any topology/type).
@@ -1822,8 +1821,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     let base = self.storage.as_ptr().add(data_off) as *mut T;
                     simd_aware_write(base.add(index), msg);
                     // Set per-slot ready flag (used by MPSC consumers; harmless for SPSC)
-                    let ready_ptr = &*(seq_array_ptr.add(index * 8)
-                        as *const std::sync::atomic::AtomicU64);
+                    let ready_ptr =
+                        &*(seq_array_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
                     ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                 }
                 // Publish sequence AFTER data — Release ensures data visibility
@@ -1846,11 +1845,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                             let len_ptr = slot_ptr.add(8) as *mut u64;
                             std::ptr::write_volatile(len_ptr, bytes.len() as u64);
                             let data_ptr = slot_ptr.add(16) as *mut u8;
-                            std::ptr::copy_nonoverlapping(
-                                bytes.as_ptr(),
-                                data_ptr,
-                                bytes.len(),
-                            );
+                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
                             // Per-slot ready flag for MPSC consumers
                             let ready_ptr = &*(seq_array_ptr.add(index * 8)
                                 as *const std::sync::atomic::AtomicU64);
@@ -1974,16 +1969,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         // Re-derive ALL cached pointers from the (possibly moved) mmap.
         local.cached_header_ptr = new_header_ptr;
-        local.cached_seq_ptr =
-            unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        local.cached_data_ptr =
-            unsafe { self.storage.as_ptr().add(Self::data_region_offset(capacity)) as *mut u8 };
+        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_data_ptr = unsafe {
+            self.storage
+                .as_ptr()
+                .add(Self::data_region_offset(capacity)) as *mut u8
+        };
 
         self.initialize_backend();
 
         log::info!(
             "Topic '{}': auto-grew slot_size {} → {} bytes ({} total SHM)",
-            self.name, old_slot_size, new_slot_size, new_total,
+            self.name,
+            old_slot_size,
+            new_slot_size,
+            new_total,
         );
         true
     }
@@ -2088,8 +2088,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let new_slot_size = local.slot_size;
         let capacity = local.cached_capacity as usize;
         if capacity > 0 && new_slot_size > 0 {
-            let needed_total =
-                Self::HEADER_SIZE + capacity * std::mem::size_of::<u64>() + capacity * new_slot_size;
+            let needed_total = Self::HEADER_SIZE
+                + capacity * std::mem::size_of::<u64>()
+                + capacity * new_slot_size;
             if needed_total > self.storage.len() {
                 // SAFETY: single-thread ownership, no concurrent reads on the mmap.
                 if unsafe { self.storage.grow_unchecked(needed_total) }.is_ok() {
@@ -2102,7 +2103,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     local.cached_data_ptr = unsafe {
                         self.storage
                             .as_ptr()
-                            .add(Self::data_region_offset(capacity)) as *mut u8
+                            .add(Self::data_region_offset(capacity))
+                            as *mut u8
                     };
                 }
             }
@@ -2980,7 +2982,10 @@ where
                 let type_name = std::any::type_name::<T>();
                 let short = type_name.rsplit("::").next().unwrap_or(type_name);
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Publisher, short,
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Publisher,
+                    short,
                 );
             }
             self.registered_pub.set(true);
@@ -2997,7 +3002,10 @@ where
                 let type_name = std::any::type_name::<T>();
                 let short = type_name.rsplit("::").next().unwrap_or(type_name);
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Subscriber, short,
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Subscriber,
+                    short,
                 );
             }
             self.registered_sub.set(true);
@@ -3076,7 +3084,10 @@ impl Topic<Image> {
         if !self.registered_pub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Publisher, "Image",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Publisher,
+                    "Image",
                 );
             }
             self.registered_pub.set(true);
@@ -3098,7 +3109,10 @@ impl Topic<Image> {
         if !self.registered_sub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Subscriber, "Image",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Subscriber,
+                    "Image",
                 );
             }
             self.registered_sub.set(true);
@@ -3120,7 +3134,10 @@ impl Topic<PointCloud> {
         if !self.registered_pub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Publisher, "PointCloud",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Publisher,
+                    "PointCloud",
                 );
             }
             self.registered_pub.set(true);
@@ -3142,7 +3159,10 @@ impl Topic<PointCloud> {
         if !self.registered_sub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Subscriber, "PointCloud",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Subscriber,
+                    "PointCloud",
                 );
             }
             self.registered_sub.set(true);
@@ -3164,7 +3184,10 @@ impl Topic<DepthImage> {
         if !self.registered_pub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Publisher, "DepthImage",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Publisher,
+                    "DepthImage",
                 );
             }
             self.registered_pub.set(true);
@@ -3186,7 +3209,10 @@ impl Topic<DepthImage> {
         if !self.registered_sub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Subscriber, "DepthImage",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Subscriber,
+                    "DepthImage",
                 );
             }
             self.registered_sub.set(true);
@@ -3225,7 +3251,10 @@ impl Topic<Tensor> {
         if !self.registered_pub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Publisher, "Tensor",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Publisher,
+                    "Tensor",
                 );
             }
             self.registered_pub.set(true);
@@ -3240,7 +3269,10 @@ impl Topic<Tensor> {
         if !self.registered_sub.get() {
             if let Some(ref node) = self.owner_node {
                 topic_node_registry().register_with_type(
-                    self.ring.name(), node, NodeTopicRole::Subscriber, "Tensor",
+                    self.ring.name(),
+                    node,
+                    NodeTopicRole::Subscriber,
+                    "Tensor",
                 );
             }
             self.registered_sub.set(true);

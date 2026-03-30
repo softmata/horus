@@ -23,14 +23,14 @@ const TOPIC_MAGIC: u64 = 0x4144415054495645; // "ADAPTIVE"
 const TOPIC_HEADER_SIZE: usize = 640;
 
 // Field offsets within TopicHeader (from header.rs layout analysis):
-const OFF_MAGIC: usize = 0;          // u64
-const OFF_TYPE_SIZE: usize = 12;     // u32
-const OFF_IS_POD: usize = 20;        // u8 (1=no, 2=yes)
-const OFF_HEAD: usize = 64;          // u64 (sequence_or_head)
-const OFF_CAPACITY: usize = 72;      // u32
-const OFF_CAP_MASK: usize = 76;      // u32
-const OFF_SLOT_SIZE: usize = 80;     // u32
-const OFF_MSG_TOTAL: usize = 48;     // u64 (messages_total)
+const OFF_MAGIC: usize = 0; // u64
+const OFF_TYPE_SIZE: usize = 12; // u32
+const OFF_IS_POD: usize = 20; // u8 (1=no, 2=yes)
+const OFF_HEAD: usize = 64; // u64 (sequence_or_head)
+const OFF_CAPACITY: usize = 72; // u32
+const OFF_CAP_MASK: usize = 76; // u32
+const OFF_SLOT_SIZE: usize = 80; // u32
+const OFF_MSG_TOTAL: usize = 48; // u64 (messages_total)
 
 const POD_YES: u8 = 2;
 
@@ -77,19 +77,15 @@ impl ShmRingWriter {
         }
 
         // Read stable header fields
-        let type_size = u32::from_ne_bytes(
-            mmap[OFF_TYPE_SIZE..OFF_TYPE_SIZE + 4].try_into().ok()?,
-        ) as usize;
+        let type_size =
+            u32::from_ne_bytes(mmap[OFF_TYPE_SIZE..OFF_TYPE_SIZE + 4].try_into().ok()?) as usize;
         let is_pod = mmap[OFF_IS_POD] == POD_YES;
-        let capacity = u32::from_ne_bytes(
-            mmap[OFF_CAPACITY..OFF_CAPACITY + 4].try_into().ok()?,
-        ) as usize;
-        let cap_mask = u32::from_ne_bytes(
-            mmap[OFF_CAP_MASK..OFF_CAP_MASK + 4].try_into().ok()?,
-        ) as usize;
-        let slot_size = u32::from_ne_bytes(
-            mmap[OFF_SLOT_SIZE..OFF_SLOT_SIZE + 4].try_into().ok()?,
-        ) as usize;
+        let capacity =
+            u32::from_ne_bytes(mmap[OFF_CAPACITY..OFF_CAPACITY + 4].try_into().ok()?) as usize;
+        let cap_mask =
+            u32::from_ne_bytes(mmap[OFF_CAP_MASK..OFF_CAP_MASK + 4].try_into().ok()?) as usize;
+        let slot_size =
+            u32::from_ne_bytes(mmap[OFF_SLOT_SIZE..OFF_SLOT_SIZE + 4].try_into().ok()?) as usize;
 
         if capacity == 0 {
             return None;
@@ -183,8 +179,7 @@ impl ShmRingWriter {
         // 8 bytes padding/reserved
         self.mmap[slot_start + 8..slot_start + 16].copy_from_slice(&[0u8; 8]);
         // Payload
-        self.mmap[slot_start + 16..slot_start + 16 + payload.len()]
-            .copy_from_slice(payload);
+        self.mmap[slot_start + 16..slot_start + 16 + payload.len()].copy_from_slice(payload);
 
         // Advance head
         let new_head = head.wrapping_add(1);

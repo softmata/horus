@@ -278,7 +278,10 @@ fn format_event_detail(event: &BlackBoxEvent) -> String {
             tier_summary,
         } => format!("{}ms: {}", duration_ms, tier_summary),
         BlackBoxEvent::EmergencyStop { reason } => reason.clone(),
-        BlackBoxEvent::NetPeerDiscovered { peer_addr, topic_count } => {
+        BlackBoxEvent::NetPeerDiscovered {
+            peer_addr,
+            topic_count,
+        } => {
             format!("Peer {peer_addr} discovered ({topic_count} topics)")
         }
         BlackBoxEvent::NetPeerLost { peer_addr, reason } => {
@@ -497,8 +500,9 @@ fn event_color(event: &BlackBoxEvent) -> EventColor {
         | BlackBoxEvent::NetPeerLost { .. } => EventColor::Red,
 
         BlackBoxEvent::NetImportRejected { .. } => EventColor::Yellow,
-        BlackBoxEvent::NetPeerDiscovered { .. }
-        | BlackBoxEvent::NetReplicationStarted { .. } => EventColor::Green,
+        BlackBoxEvent::NetPeerDiscovered { .. } | BlackBoxEvent::NetReplicationStarted { .. } => {
+            EventColor::Green
+        }
 
         _ => EventColor::White,
     }

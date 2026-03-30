@@ -1,15 +1,12 @@
-/// QA Test: Services + TransformFrame (runs indefinitely)
+/// QA Test: Services + TransformStamped broadcasting (runs indefinitely)
 ///
 /// - Service: "AddTwoInts" — adds two i64s
-/// - TF: publishes world→base→shoulder→elbow→wrist on "tf" topic at 50Hz
+/// - TF: publishes TransformStamped messages on "tf" topic at 50Hz
+///   representing a kinematic chain: world->base->shoulder->elbow->wrist
 ///
 /// Terminal 1: cargo run --no-default-features --example qa_services_tf
-/// Terminal 2: horus service list, horus frame list, etc.
-
+/// Terminal 2: horus service list, horus topic echo tf, etc.
 use horus::prelude::*;
-use horus_tf::{
-    Transform, TransformFrame, TFMessage, TransformStamped, string_to_frame_id,
-};
 
 // --- Service definition ---
 
@@ -26,43 +23,47 @@ service! {
     }
 }
 
+// --- Local TF message type ---
+// horus_tf is only available as a dev-dependency in horus_core, not in the
+// horus umbrella crate examples. We define a local fixed-size TF message
+// for broadcasting transforms over a topic.
+
+message! {
+    /// A bundle of up to 8 named transforms for broadcasting.
+    TfBundle {
+        count: u32,
+        // Flat arrays — index i corresponds to one transform entry.
+        // Frame name stored as first 31 bytes of a [u8; 32] (null-terminated).
+        parent_names: [[u8; 32]; 8],
+        child_names:  [[u8; 32]; 8],
+        translations: [[f64; 3]; 8],
+        rotations:    [[f64; 4]; 8],
+        timestamps:   [u64; 8],
+    }
+}
+
+fn set_name(buf: &mut [u8; 32], name: &str) {
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(31);
+    buf[..len].copy_from_slice(&bytes[..len]);
+    buf[len..].fill(0);
+}
+
 // --- TF broadcaster node ---
-// Publishes TFMessage on the "tf" topic so `horus frame list/tree/echo` can see it.
-// Also maintains a local TransformFrame for in-process lookups.
+// Publishes a TfBundle on the "tf" topic so tools can observe the kinematic chain.
 
 struct TfBroadcaster {
-    tf: TransformFrame,
-    tf_topic: Topic<TFMessage>,
+    tf_topic: Topic<TfBundle>,
     tick_count: u64,
 }
 
 impl TfBroadcaster {
     fn new() -> Result<Self> {
-        let tf = TransformFrame::new();
-
-        // Register frame hierarchy: world → base → shoulder → elbow → wrist
-        tf.register_frame("world", None)?;
-        tf.register_frame("base", Some("world"))?;
-        tf.register_frame("shoulder", Some("base"))?;
-        tf.register_frame("elbow", Some("shoulder"))?;
-        tf.register_frame("wrist", Some("elbow"))?;
-
         let tf_topic = Topic::new("tf")?;
-
         Ok(Self {
-            tf,
             tf_topic,
             tick_count: 0,
         })
-    }
-
-    fn make_stamped(parent: &str, child: &str, transform: &Transform, timestamp_ns: u64) -> TransformStamped {
-        let mut stamped = TransformStamped::default();
-        string_to_frame_id(parent, &mut stamped.parent_frame);
-        string_to_frame_id(child, &mut stamped.child_frame);
-        stamped.timestamp_ns = timestamp_ns;
-        stamped.transform = *transform;
-        stamped
     }
 }
 
@@ -79,27 +80,48 @@ impl Node for TfBroadcaster {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        // Build transforms
-        let base_tf = Transform::from_translation([0.0, 0.0, 1.0]);
-        let shoulder_tf = Transform::from_translation([0.0, 0.0, 0.3]);
+        // Kinematic chain: world -> base -> shoulder -> elbow -> wrist
+        let identity_rot = [0.0, 0.0, 0.0, 1.0];
+
+        let mut msg = TfBundle {
+            count: 4,
+            parent_names: Default::default(),
+            child_names: Default::default(),
+            translations: Default::default(),
+            rotations: Default::default(),
+            timestamps: Default::default(),
+        };
+
+        // world -> base (fixed, 1m up)
+        set_name(&mut msg.parent_names[0], "world");
+        set_name(&mut msg.child_names[0], "base");
+        msg.translations[0] = [0.0, 0.0, 1.0];
+        msg.rotations[0] = identity_rot;
+        msg.timestamps[0] = now_ns;
+
+        // base -> shoulder (fixed, 0.3m up)
+        set_name(&mut msg.parent_names[1], "base");
+        set_name(&mut msg.child_names[1], "shoulder");
+        msg.translations[1] = [0.0, 0.0, 0.3];
+        msg.rotations[1] = identity_rot;
+        msg.timestamps[1] = now_ns;
+
+        // shoulder -> elbow (oscillating)
         let x = 0.4 * t.cos();
         let z = 0.4 * t.sin();
-        let elbow_tf = Transform::from_translation([x, 0.0, z]);
-        let wrist_tf = Transform::from_translation([0.2, 0.0, 0.0]);
+        set_name(&mut msg.parent_names[2], "shoulder");
+        set_name(&mut msg.child_names[2], "elbow");
+        msg.translations[2] = [x, 0.0, z];
+        msg.rotations[2] = identity_rot;
+        msg.timestamps[2] = now_ns;
 
-        // Update local TransformFrame (for in-process lookups)
-        let _ = self.tf.update_transform("base", &base_tf, now_ns);
-        let _ = self.tf.update_transform("shoulder", &shoulder_tf, now_ns);
-        let _ = self.tf.update_transform("elbow", &elbow_tf, now_ns);
-        let _ = self.tf.update_transform("wrist", &wrist_tf, now_ns);
+        // elbow -> wrist (fixed, 0.2m forward)
+        set_name(&mut msg.parent_names[3], "elbow");
+        set_name(&mut msg.child_names[3], "wrist");
+        msg.translations[3] = [0.2, 0.0, 0.0];
+        msg.rotations[3] = identity_rot;
+        msg.timestamps[3] = now_ns;
 
-        // Publish to SHM topic (for `horus frame list/tree/echo`)
-        let mut msg = TFMessage::default();
-        msg.transforms[0] = Self::make_stamped("world", "base", &base_tf, now_ns);
-        msg.transforms[1] = Self::make_stamped("base", "shoulder", &shoulder_tf, now_ns);
-        msg.transforms[2] = Self::make_stamped("shoulder", "elbow", &elbow_tf, now_ns);
-        msg.transforms[3] = Self::make_stamped("elbow", "wrist", &wrist_tf, now_ns);
-        msg.count = 4;
         self.tf_topic.send(msg);
     }
 }

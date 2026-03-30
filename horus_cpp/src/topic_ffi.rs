@@ -97,7 +97,11 @@ macro_rules! impl_topic_ffi {
 // ─── Concrete Type Implementations ───────────────────────────────────────────
 
 // ─── Wire Format (JSON transport) ────────────────────────────────────────────
-impl_topic_ffi!(json_wire, JsonWireMessage, crate::types_ffi::JsonWireMessage);
+impl_topic_ffi!(
+    json_wire,
+    JsonWireMessage,
+    crate::types_ffi::JsonWireMessage
+);
 
 // ─── Core Message Types (11 total) ───────────────────────────────────────────
 
@@ -113,7 +117,11 @@ impl_topic_ffi!(joint_state, JointState, horus_library::JointState);
 // Geometry
 impl_topic_ffi!(twist, Twist, horus_library::Twist);
 impl_topic_ffi!(pose2d, Pose2D, horus_library::Pose2D);
-impl_topic_ffi!(transform_stamped, TransformStamped, horus_library::TransformStamped);
+impl_topic_ffi!(
+    transform_stamped,
+    TransformStamped,
+    horus_library::TransformStamped
+);
 
 // Navigation
 impl_topic_ffi!(nav_goal, NavGoal, horus_library::NavGoal);
@@ -219,7 +227,11 @@ mod tests {
 
         // Direct Rust path
         let direct_topic = Topic::<CmdVel>::new(&format!("{}.direct", topic_name)).unwrap();
-        let msg = CmdVel { timestamp_ns: 1, linear: 0.5, angular: 0.1 };
+        let msg = CmdVel {
+            timestamp_ns: 1,
+            linear: 0.5,
+            angular: 0.1,
+        };
 
         let start = Instant::now();
         for _ in 0..iterations {
@@ -241,11 +253,20 @@ mod tests {
         let overhead_ns = ffi_ns - direct_ns;
 
         eprintln!("\n╔══════════════════════════════════════════════════╗");
-        eprintln!("║  FFI Overhead Benchmark (CmdVel, {} iters)  ║", iterations);
+        eprintln!(
+            "║  FFI Overhead Benchmark (CmdVel, {} iters)  ║",
+            iterations
+        );
         eprintln!("╠══════════════════════════════════════════════════╣");
-        eprintln!("║  Direct Rust:  {:>8.1} ns/send                 ║", direct_ns);
+        eprintln!(
+            "║  Direct Rust:  {:>8.1} ns/send                 ║",
+            direct_ns
+        );
         eprintln!("║  FFI wrapper:  {:>8.1} ns/send                 ║", ffi_ns);
-        eprintln!("║  FFI overhead: {:>8.1} ns/send                 ║", overhead_ns);
+        eprintln!(
+            "║  FFI overhead: {:>8.1} ns/send                 ║",
+            overhead_ns
+        );
         eprintln!("╚══════════════════════════════════════════════════╝\n");
 
         // The FFI wrapper is a thin inline function call — overhead should be minimal.

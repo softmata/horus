@@ -225,7 +225,11 @@ fn test_dlpack_f16_bf16_dtypes() {
         let ptr = data.as_mut_ptr() as *mut c_void;
         let managed = to_dlpack(ptr, &[3], &[1], TensorDtype::F16, Device::cpu());
         let desc = unsafe { from_dlpack(&*managed) }.unwrap();
-        assert_eq!(desc.dtype, TensorDtype::F16, "F16 dtype should survive roundtrip");
+        assert_eq!(
+            desc.dtype,
+            TensorDtype::F16,
+            "F16 dtype should survive roundtrip"
+        );
         assert_eq!(desc.shape, &[3u64]);
         unsafe {
             if let Some(d) = managed.deleter {
@@ -240,7 +244,11 @@ fn test_dlpack_f16_bf16_dtypes() {
         let ptr = data.as_mut_ptr() as *mut c_void;
         let managed = to_dlpack(ptr, &[2], &[1], TensorDtype::BF16, Device::cpu());
         let desc = unsafe { from_dlpack(&*managed) }.unwrap();
-        assert_eq!(desc.dtype, TensorDtype::BF16, "BF16 dtype should survive roundtrip");
+        assert_eq!(
+            desc.dtype,
+            TensorDtype::BF16,
+            "BF16 dtype should survive roundtrip"
+        );
         assert_eq!(desc.shape, &[2u64]);
         unsafe {
             if let Some(d) = managed.deleter {

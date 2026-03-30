@@ -270,9 +270,7 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
             let v = i32::from_le_bytes(data[..4].try_into().ok()?);
             Some(format!("{}", v))
         }
-        "bool" if data.len() == 1 => {
-            Some(if data[0] != 0 { "true" } else { "false" }.to_string())
-        }
+        "bool" if data.len() == 1 => Some(if data[0] != 0 { "true" } else { "false" }.to_string()),
 
         // ══════════════════════════════════════════════════════════════════
         // Standard horus_library message types — Pod layout
@@ -281,25 +279,31 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
 
         // CmdVel (16B): { timestamp_ns: u64@0, linear: f32@8, angular: f32@12 }
         "CmdVel" if data.len() >= 16 => {
-            let linear = f32::from_le_bytes(data[8..12].try_into().unwrap_or([0;4]));
-            let angular = f32::from_le_bytes(data[12..16].try_into().unwrap_or([0;4]));
+            let linear = f32::from_le_bytes(data[8..12].try_into().unwrap_or([0; 4]));
+            let angular = f32::from_le_bytes(data[12..16].try_into().unwrap_or([0; 4]));
             Some(format!("linear: {:.3}, angular: {:.3}", linear, angular))
         }
 
         // Pose2D (32B): { x: f64@0, y: f64@8, theta: f64@16, timestamp_ns: u64@24 }
         "Pose2D" if data.len() >= 32 => {
-            let x = f64::from_le_bytes(data[0..8].try_into().unwrap_or([0;8]));
-            let y = f64::from_le_bytes(data[8..16].try_into().unwrap_or([0;8]));
-            let theta = f64::from_le_bytes(data[16..24].try_into().unwrap_or([0;8]));
+            let x = f64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+            let y = f64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+            let theta = f64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
             Some(format!("x: {:.3}, y: {:.3}, theta: {:.3}", x, y, theta))
         }
 
         // Imu (304B): orientation[4]@0, orient_cov[9]@32, angular_vel[3]@104,
         //             ang_cov[9]@128, linear_accel[3]@200, lin_cov[9]@224, timestamp_ns@296
         "Imu" if data.len() >= 304 => {
-            let rd = |off: usize| -> f64 { f64::from_le_bytes(data[off..off+8].try_into().unwrap_or([0;8])) };
-            let gx = rd(104); let gy = rd(112); let gz = rd(120); // angular_velocity
-            let ax = rd(200); let ay = rd(208); let az = rd(216); // linear_acceleration
+            let rd = |off: usize| -> f64 {
+                f64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+            };
+            let gx = rd(104);
+            let gy = rd(112);
+            let gz = rd(120); // angular_velocity
+            let ax = rd(200);
+            let ay = rd(208);
+            let az = rd(216); // linear_acceleration
             Some(format!(
                 "accel: [{:.3}, {:.3}, {:.3}], gyro: [{:.3}, {:.3}, {:.3}]",
                 ax, ay, az, gx, gy, gz
@@ -309,16 +313,20 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
         // LaserScan (1476B): ranges[360]@0, angle_min@1440, angle_max@1444,
         //                    range_min@1448, range_max@1452, angle_inc@1456, timestamp_ns@1468
         "LaserScan" if data.len() >= 1476 => {
-            let rf = |off: usize| -> f32 { f32::from_le_bytes(data[off..off+4].try_into().unwrap_or([0;4])) };
+            let rf = |off: usize| -> f32 {
+                f32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]))
+            };
             let angle_min = rf(1440);
             let angle_max = rf(1444);
             let range_min = rf(1448);
             let range_max = rf(1452);
             // Count valid (non-zero) ranges
-            let valid = (0..360).filter(|&i| {
-                let r = rf(i * 4);
-                r > 0.0 && r < 100.0
-            }).count();
+            let valid = (0..360)
+                .filter(|&i| {
+                    let r = rf(i * 4);
+                    r > 0.0 && r < 100.0
+                })
+                .count();
             Some(format!(
                 "ranges: {}/360 valid, angle: [{:.2}, {:.2}] rad, range: [{:.1}, {:.1}] m",
                 valid, angle_min, angle_max, range_min, range_max
@@ -328,11 +336,18 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
         // Odometry (736B): pose(Pose2D 32B)@0, twist(Twist 56B)@32,
         //                  pose_cov[36]@88, twist_cov[36]@376, frame_id[32]@664, child_frame[32]@696, ts@728
         "Odometry" if data.len() >= 736 => {
-            let rd = |off: usize| -> f64 { f64::from_le_bytes(data[off..off+8].try_into().unwrap_or([0;8])) };
-            let x = rd(0); let y = rd(8); let theta = rd(16); // from embedded Pose2D
+            let rd = |off: usize| -> f64 {
+                f64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+            };
+            let x = rd(0);
+            let y = rd(8);
+            let theta = rd(16); // from embedded Pose2D
             let frame_end = data[664..696].iter().position(|&b| b == 0).unwrap_or(32);
-            let frame_id = std::str::from_utf8(&data[664..664+frame_end]).unwrap_or("?");
-            Some(format!("pos: ({:.3}, {:.3}), yaw: {:.3}, frame: {}", x, y, theta, frame_id))
+            let frame_id = std::str::from_utf8(&data[664..664 + frame_end]).unwrap_or("?");
+            Some(format!(
+                "pos: ({:.3}, {:.3}), yaw: {:.3}, frame: {}",
+                x, y, theta, frame_id
+            ))
         }
 
         // JointState (912B): names[[u8;32];16]@0, joint_count(u8)@512,
@@ -340,7 +355,9 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
         "JointState" if data.len() >= 912 => {
             let n_joints = data[512] as usize;
             let n = n_joints.min(16);
-            let rd = |off: usize| -> f64 { f64::from_le_bytes(data[off..off+8].try_into().unwrap_or([0;8])) };
+            let rd = |off: usize| -> f64 {
+                f64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+            };
             let pos: Vec<String> = (0..n).map(|i| format!("{:.3}", rd(520 + i * 8))).collect();
             Some(format!("joints: {}, pos: [{}]", n, pos.join(", ")))
         }
@@ -348,29 +365,52 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
         // NavSatFix (128B): lat@0, lon@8, alt@16, pos_cov[9]@24, cov_type@96, status@97,
         //                   sats@98, hdop@100, vdop@104, speed@108, heading@112, ts@120
         "NavSatFix" if data.len() >= 128 => {
-            let rd = |off: usize| -> f64 { f64::from_le_bytes(data[off..off+8].try_into().unwrap_or([0;8])) };
-            let rf = |off: usize| -> f32 { f32::from_le_bytes(data[off..off+4].try_into().unwrap_or([0;4])) };
-            let lat = rd(0); let lon = rd(8); let alt = rd(16);
-            let sats = u16::from_le_bytes(data[98..100].try_into().unwrap_or([0;2]));
+            let rd = |off: usize| -> f64 {
+                f64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+            };
+            let rf = |off: usize| -> f32 {
+                f32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]))
+            };
+            let lat = rd(0);
+            let lon = rd(8);
+            let alt = rd(16);
+            let sats = u16::from_le_bytes(data[98..100].try_into().unwrap_or([0; 2]));
             let hdop = rf(100);
-            Some(format!("lat: {:.6}, lon: {:.6}, alt: {:.1}m, sats: {}, hdop: {:.1}", lat, lon, alt, sats, hdop))
+            Some(format!(
+                "lat: {:.6}, lon: {:.6}, alt: {:.1}m, sats: {}, hdop: {:.1}",
+                lat, lon, alt, sats, hdop
+            ))
         }
 
         // BatteryState (104B): voltage@0, current@4, charge@8, capacity@12, pct@16,
         //                      status@20, [pad 3], temp@24, cells[16]@28, cell_count@92, [pad 3], ts@96
         "BatteryState" if data.len() >= 104 => {
-            let rf = |off: usize| -> f32 { f32::from_le_bytes(data[off..off+4].try_into().unwrap_or([0;4])) };
-            let voltage = rf(0); let current = rf(4); let pct = rf(16); let temp = rf(24);
-            Some(format!("voltage: {:.2}V, current: {:.2}A, charge: {:.0}%, temp: {:.1}°C", voltage, current, pct * 100.0, temp))
+            let rf = |off: usize| -> f32 {
+                f32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]))
+            };
+            let voltage = rf(0);
+            let current = rf(4);
+            let pct = rf(16);
+            let temp = rf(24);
+            Some(format!(
+                "voltage: {:.2}V, current: {:.2}A, charge: {:.0}%, temp: {:.1}°C",
+                voltage,
+                current,
+                pct * 100.0,
+                temp
+            ))
         }
 
         // Temperature (56B): temperature(f64)@0, variance(f64)@8, frame_id[32]@16, ts@48
         "Temperature" if data.len() >= 56 => {
-            let temp = f64::from_le_bytes(data[0..8].try_into().unwrap_or([0;8]));
-            let var = f64::from_le_bytes(data[8..16].try_into().unwrap_or([0;8]));
+            let temp = f64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+            let var = f64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
             let frame_end = data[16..48].iter().position(|&b| b == 0).unwrap_or(32);
-            let frame_id = std::str::from_utf8(&data[16..16+frame_end]).unwrap_or("?");
-            Some(format!("temp: {:.2}°C (var: {:.4}), frame: {}", temp, var, frame_id))
+            let frame_id = std::str::from_utf8(&data[16..16 + frame_end]).unwrap_or("?");
+            Some(format!(
+                "temp: {:.2}°C (var: {:.4}), frame: {}",
+                temp, var, frame_id
+            ))
         }
 
         // ImageDescriptor: Tensor (inner) + timestamp_ns + step + encoding
@@ -380,13 +420,13 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
         //         timestamp_ns(u64@168) + step(u32@176) + encoding(u8@180)
         // Full size: 224 bytes
         "ImageDescriptor" if data.len() >= 184 => {
-            let pool_id = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0;4]));
+            let pool_id = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4]));
             let ndim = data[33];
-            let size = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0;8]));
-            let h = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0;8]));
-            let w = u64::from_le_bytes(data[48..56].try_into().unwrap_or([0;8]));
-            let c = u64::from_le_bytes(data[56..64].try_into().unwrap_or([0;8]));
-            let step = u32::from_le_bytes(data[176..180].try_into().unwrap_or([0;4]));
+            let size = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+            let h = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
+            let w = u64::from_le_bytes(data[48..56].try_into().unwrap_or([0; 8]));
+            let c = u64::from_le_bytes(data[56..64].try_into().unwrap_or([0; 8]));
+            let step = u32::from_le_bytes(data[176..180].try_into().unwrap_or([0; 4]));
             let encoding_raw = data[180];
             // Validate: pool_id=0 means empty/default descriptor, ndim should be 2-3 for images,
             // dimensions should be reasonable (< 65536 for real cameras)
@@ -394,28 +434,46 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
                 Some("Image (empty — no data in pool)".to_string())
             } else if ndim < 2 || h > 65536 || w > 65536 || c > 256 {
                 // Likely stale or corrupt descriptor
-                Some(format!("Image (stale descriptor, pool_id={}, ndim={})", pool_id, ndim))
+                Some(format!(
+                    "Image (stale descriptor, pool_id={}, ndim={})",
+                    pool_id, ndim
+                ))
             } else {
                 // Match ImageEncoding repr(u8) discriminants from image_encoding.rs
                 let enc_name = match encoding_raw {
-                    0 => "mono8", 1 => "mono16", 2 => "rgb8", 3 => "bgr8",
-                    4 => "rgba8", 5 => "bgra8", 6 => "yuv422", 7 => "mono32f",
-                    8 => "rgb32f", 9 => "bayer_rggb8", 10 => "depth16", _ => "unknown",
+                    0 => "mono8",
+                    1 => "mono16",
+                    2 => "rgb8",
+                    3 => "bgr8",
+                    4 => "rgba8",
+                    5 => "bgra8",
+                    6 => "yuv422",
+                    7 => "mono32f",
+                    8 => "rgb32f",
+                    9 => "bayer_rggb8",
+                    10 => "depth16",
+                    _ => "unknown",
                 };
-                Some(format!("Image {}x{} {}ch {} (step={}, {} bytes)", w, h, c, enc_name, step, size))
+                Some(format!(
+                    "Image {}x{} {}ch {} (step={}, {} bytes)",
+                    w, h, c, enc_name, step, size
+                ))
             }
         }
 
         // PointCloudDescriptor: similar layout, shape[0]=N points
         "PointCloudDescriptor" if data.len() >= 80 => {
-            let pool_id = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0;4]));
+            let pool_id = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4]));
             let ndim = data[33];
-            let size = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0;8]));
-            let n = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0;8]));
+            let size = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+            let n = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
             if pool_id == 0 && n == 0 {
                 Some("PointCloud (empty — no data in pool)".to_string())
             } else if ndim == 0 || n > 100_000_000 {
-                Some(format!("PointCloud (stale descriptor, pool_id={})", pool_id))
+                Some(format!(
+                    "PointCloud (stale descriptor, pool_id={})",
+                    pool_id
+                ))
             } else {
                 Some(format!("PointCloud {} points ({} bytes)", n, size))
             }
@@ -423,15 +481,18 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
 
         // DepthImageDescriptor: shape[0]=H, shape[1]=W (single channel depth)
         "DepthImageDescriptor" if data.len() >= 80 => {
-            let pool_id = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0;4]));
+            let pool_id = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4]));
             let ndim = data[33];
-            let size = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0;8]));
-            let h = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0;8]));
-            let w = u64::from_le_bytes(data[48..56].try_into().unwrap_or([0;8]));
+            let size = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+            let h = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
+            let w = u64::from_le_bytes(data[48..56].try_into().unwrap_or([0; 8]));
             if pool_id == 0 && h == 0 && w == 0 {
                 Some("DepthImage (empty — no data in pool)".to_string())
             } else if ndim < 2 || h > 65536 || w > 65536 {
-                Some(format!("DepthImage (stale descriptor, pool_id={})", pool_id))
+                Some(format!(
+                    "DepthImage (stale descriptor, pool_id={})",
+                    pool_id
+                ))
             } else {
                 Some(format!("DepthImage {}x{} ({} bytes)", w, h, size))
             }
@@ -483,7 +544,11 @@ fn print_message(data: &[u8], seq: usize, is_pod: bool, type_name: &str) {
                 timestamp.to_string().dimmed(),
                 seq,
                 data.len(),
-                if type_name.is_empty() { "POD" } else { type_name }
+                if type_name.is_empty() {
+                    "POD"
+                } else {
+                    type_name
+                }
             );
             print_hex_dump(data, 64);
         }
@@ -825,16 +890,22 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
                         if last_line_print.elapsed().as_secs_f64() >= 1.0 {
                             println!(
                                 "\r  {:.2} {} ({:.1} msgs/s, avg {}/msg, window: {})    ",
-                                bw_val, bw_unit, msgs_per_sec,
-                                format_bytes(avg_bytes as u64), samples.len()
+                                bw_val,
+                                bw_unit,
+                                msgs_per_sec,
+                                format_bytes(avg_bytes as u64),
+                                samples.len()
                             );
                             last_line_print = Instant::now();
                         } else {
                             print!(
                                 "\r  {} {:.2} {} ({:.1} msgs/s, avg {}/msg, window: {})    ",
                                 "Bandwidth:".cyan(),
-                                bw_val, bw_unit, msgs_per_sec,
-                                format_bytes(avg_bytes as u64), samples.len()
+                                bw_val,
+                                bw_unit,
+                                msgs_per_sec,
+                                format_bytes(avg_bytes as u64),
+                                samples.len()
                             );
                             std::io::stdout().flush().ok();
                         }
@@ -843,8 +914,11 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
                         if last_line_print.elapsed().as_secs_f64() >= 1.0 {
                             println!(
                                 "  {:.2} {} ({:.1} msgs/s, avg {}/msg, window: {})",
-                                bw_val, bw_unit, msgs_per_sec,
-                                format_bytes(avg_bytes as u64), samples.len()
+                                bw_val,
+                                bw_unit,
+                                msgs_per_sec,
+                                format_bytes(avg_bytes as u64),
+                                samples.len()
                             );
                             last_line_print = Instant::now();
                         }

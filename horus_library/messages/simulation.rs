@@ -179,12 +179,18 @@ pub struct SimOk {
 impl SimOk {
     /// Create a success response.
     pub fn ok() -> Self {
-        Self { success: true, message: String::new() }
+        Self {
+            success: true,
+            message: String::new(),
+        }
     }
 
     /// Create an error response.
     pub fn err(msg: impl Into<String>) -> Self {
-        Self { success: false, message: msg.into() }
+        Self {
+            success: false,
+            message: msg.into(),
+        }
     }
 }
 

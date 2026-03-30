@@ -1,18 +1,20 @@
 /// QA Test Project: 3-node pub/sub pipeline (runs indefinitely)
 ///
-/// sensor_node:     publishes CmdVel at 50Hz
-/// controller_node: subscribes CmdVel, publishes CmdVel at 100Hz
-/// motor_node:      subscribes CmdVel at 10Hz
+/// sensor_node:     publishes Twist at 50Hz
+/// controller_node: subscribes Twist, publishes Twist at 100Hz
+/// motor_node:      subscribes Twist at 10Hz
+///
+/// Uses Twist from horus_types (available via prelude) instead of CmdVel
+/// which lives in horus-robotics (only a dev-dependency, not available for examples).
 ///
 /// Terminal 1: cargo run --no-default-features --example qa_pubsub
 /// Terminal 2: horus topic list, horus node list, etc.
-
 use horus::prelude::*;
 
-// --- Sensor Node: publishes CmdVel at 50Hz ---
+// --- Sensor Node: publishes Twist at 50Hz ---
 
 struct SensorNode {
-    cmd_pub: Topic<CmdVel>,
+    cmd_pub: Topic<Twist>,
     tick_count: u64,
 }
 
@@ -32,17 +34,17 @@ impl Node for SensorNode {
 
     fn tick(&mut self) {
         self.tick_count += 1;
-        let linear = 0.3 * (self.tick_count as f32 * 0.02).sin();
-        let angular = 0.1 * (self.tick_count as f32 * 0.05).cos();
-        self.cmd_pub.send(CmdVel::new(linear, angular));
+        let linear = 0.3 * (self.tick_count as f64 * 0.02).sin();
+        let angular = 0.1 * (self.tick_count as f64 * 0.05).cos();
+        self.cmd_pub.send(Twist::new_2d(linear, angular));
     }
 }
 
 // --- Controller Node: subscribes + republishes at 100Hz ---
 
 struct ControllerNode {
-    input_sub: Topic<CmdVel>,
-    output_pub: Topic<CmdVel>,
+    input_sub: Topic<Twist>,
+    output_pub: Topic<Twist>,
     tick_count: u64,
 }
 
@@ -64,8 +66,8 @@ impl Node for ControllerNode {
     fn tick(&mut self) {
         self.tick_count += 1;
         if let Some(cmd) = self.input_sub.recv() {
-            // Simple scaling
-            let scaled = CmdVel::new(cmd.linear * 0.8, cmd.angular * 0.8);
+            // Simple scaling — Twist stores linear/angular as [f64; 3]
+            let scaled = Twist::new_2d(cmd.linear[0] * 0.8, cmd.angular[2] * 0.8);
             self.output_pub.send(scaled);
         }
     }
@@ -74,7 +76,7 @@ impl Node for ControllerNode {
 // --- Motor Node: subscribes at 10Hz ---
 
 struct MotorNode {
-    cmd_sub: Topic<CmdVel>,
+    cmd_sub: Topic<Twist>,
     tick_count: u64,
 }
 

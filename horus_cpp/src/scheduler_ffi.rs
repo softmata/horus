@@ -207,7 +207,7 @@ mod tests {
         scheduler_deterministic(&mut sched, true);
         scheduler_verbose(&mut sched, false);
         scheduler_watchdog(&mut sched, 5_000_000); // 5 seconds
-        // No panic = success
+                                                   // No panic = success
     }
 
     #[test]

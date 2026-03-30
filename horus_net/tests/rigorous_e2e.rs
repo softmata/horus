@@ -13,13 +13,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use horus_core::communication::{read_latest_slot_bytes, write_topic_slot_bytes, Topic};
-use horus_robotics::CmdVel;
 use horus_net::config::NetConfig;
 use horus_net::fragment::{Fragmenter, Reassembler};
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::registry::TopicRole;
 use horus_net::reliability::ReliabilityLayer;
 use horus_net::wire::*;
+use horus_robotics::CmdVel;
 
 use horus_sys::shm::shm_topics_dir;
 
@@ -44,7 +44,10 @@ fn topic_creates_valid_shm_file() {
     let _topic: Topic<CmdVel> = Topic::new(&name).expect("create topic");
     let path = shm_path_for(&name);
     assert!(path.exists(), "SHM file should exist at {path:?}");
-    assert!(path.metadata().unwrap().len() >= 640, "SHM file should be at least header size");
+    assert!(
+        path.metadata().unwrap().len() >= 640,
+        "SHM file should be at least header size"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -58,14 +61,17 @@ fn raw_shm_write_read_roundtrip() {
     let path = shm_path_for(&name);
 
     // Write raw CmdVel bytes into SHM (simulates cross-process publisher)
-    let cmd = CmdVel::new(42.0, -3.14);
+    let cmd = CmdVel::new(42.0, -2.75);
     let bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(
             &cmd as *const CmdVel as *const u8,
             std::mem::size_of::<CmdVel>(),
         )
     };
-    assert!(write_topic_slot_bytes(&path, bytes), "raw SHM write should succeed");
+    assert!(
+        write_topic_slot_bytes(&path, bytes),
+        "raw SHM write should succeed"
+    );
 
     // Read back (simulates cross-process subscriber or horus_net ShmRingReader)
     let slot = read_latest_slot_bytes(&path, 0).unwrap();
@@ -74,9 +80,10 @@ fn raw_shm_write_read_roundtrip() {
     assert_eq!(slot.write_idx, 1);
 
     // Decode
-    let decoded: CmdVel = unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const CmdVel) };
+    let decoded: CmdVel =
+        unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const CmdVel) };
     assert_eq!(decoded.linear, 42.0);
-    assert!((decoded.angular - (-3.14)).abs() < 0.01);
+    assert!((decoded.angular - (-2.75)).abs() < 0.01);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -104,7 +111,8 @@ fn raw_shm_multiple_writes_incremental_read() {
         last_idx = slot.write_idx;
         assert_eq!(slot.write_idx, (i + 1) as u64);
 
-        let decoded: CmdVel = unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const CmdVel) };
+        let decoded: CmdVel =
+            unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const CmdVel) };
         assert!((decoded.linear - i as f32).abs() < 0.01);
     }
 }
@@ -126,7 +134,10 @@ fn shm_ring_reader_with_raw_writes() {
     // Write first message
     let cmd1 = CmdVel::new(1.0, 0.0);
     let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(&cmd1 as *const _ as *const u8, std::mem::size_of::<CmdVel>())
+        std::slice::from_raw_parts(
+            &cmd1 as *const _ as *const u8,
+            std::mem::size_of::<CmdVel>(),
+        )
     };
     write_topic_slot_bytes(&path, bytes);
 
@@ -140,7 +151,10 @@ fn shm_ring_reader_with_raw_writes() {
     // Write second
     let cmd2 = CmdVel::new(2.0, 0.0);
     let bytes2: &[u8] = unsafe {
-        std::slice::from_raw_parts(&cmd2 as *const _ as *const u8, std::mem::size_of::<CmdVel>())
+        std::slice::from_raw_parts(
+            &cmd2 as *const _ as *const u8,
+            std::mem::size_of::<CmdVel>(),
+        )
     };
     write_topic_slot_bytes(&path, bytes2);
     assert!(reader.try_read_latest().is_some());
@@ -191,8 +205,12 @@ fn full_pipeline_shm_udp_shm() {
     // Step 4: Send over UDP loopback
     let sock_a = UdpSocket::bind("127.0.0.1:0").unwrap();
     let sock_b = UdpSocket::bind("127.0.0.1:0").unwrap();
-    sock_b.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
-    sock_a.send_to(&send_buf[..len], sock_b.local_addr().unwrap()).unwrap();
+    sock_b
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    sock_a
+        .send_to(&send_buf[..len], sock_b.local_addr().unwrap())
+        .unwrap();
 
     // Step 5: Receive and decode
     let mut recv_buf = [0u8; 4096];
@@ -206,9 +224,8 @@ fn full_pipeline_shm_udp_shm() {
 
     // Step 7: Read from B's SHM (local subscriber on machine B)
     let slot_b = read_latest_slot_bytes(&path_b, 0).unwrap();
-    let received: CmdVel = unsafe {
-        std::ptr::read_unaligned(slot_b.payload.as_ptr() as *const CmdVel)
-    };
+    let received: CmdVel =
+        unsafe { std::ptr::read_unaligned(slot_b.payload.as_ptr() as *const CmdVel) };
     assert_eq!(received.linear, 3.0);
     assert_eq!(received.angular, 1.5);
 }
@@ -228,7 +245,9 @@ fn stress_1000_messages() {
 
     let sock_a = UdpSocket::bind("127.0.0.1:0").unwrap();
     let sock_b = UdpSocket::bind("127.0.0.1:0").unwrap();
-    sock_b.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+    sock_b
+        .set_read_timeout(Some(Duration::from_millis(10)))
+        .unwrap();
     let addr_b = sock_b.local_addr().unwrap();
 
     let mut sent = 0u32;
@@ -304,7 +323,10 @@ fn concurrent_raw_shm_access() {
         for i in 0..500u32 {
             let cmd = CmdVel::new(i as f32, 0.0);
             let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(&cmd as *const _ as *const u8, std::mem::size_of::<CmdVel>())
+                std::slice::from_raw_parts(
+                    &cmd as *const _ as *const u8,
+                    std::mem::size_of::<CmdVel>(),
+                )
             };
             write_topic_slot_bytes(&path_w, bytes);
             std::thread::sleep(Duration::from_micros(50));
@@ -327,7 +349,10 @@ fn concurrent_raw_shm_access() {
     reader.join().unwrap();
 
     let reads = read_count.load(std::sync::atomic::Ordering::Relaxed);
-    assert!(reads > 100, "reader should have caught many messages, got {reads}");
+    assert!(
+        reads > 100,
+        "reader should have caught many messages, got {reads}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -405,7 +430,8 @@ fn fragment_reassemble_real_payload() {
     let reassembled = reassembler.feed(frags.into_iter().next().unwrap()).unwrap();
     assert_eq!(reassembled.payload, slot.payload);
 
-    let decoded: CmdVel = unsafe { std::ptr::read_unaligned(reassembled.payload.as_ptr() as *const CmdVel) };
+    let decoded: CmdVel =
+        unsafe { std::ptr::read_unaligned(reassembled.payload.as_ptr() as *const CmdVel) };
     assert_eq!(decoded.linear, 99.0);
     assert_eq!(decoded.angular, -1.0);
 }

@@ -340,9 +340,7 @@ mod tests {
         let _ctx = cuda_ffi::CudaContext::new(0).unwrap();
 
         // Create 4 streams (simulating 4 GPU nodes)
-        let streams: Vec<CudaStream> = (0..4)
-            .map(|_| CudaStream::new().unwrap())
-            .collect();
+        let streams: Vec<CudaStream> = (0..4).map(|_| CudaStream::new().unwrap()).collect();
 
         // Each stream does independent work
         for stream in &streams {

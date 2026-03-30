@@ -10,8 +10,8 @@
 use horus_core::communication::topic::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
-use horus_robotics::CmdVel;
 use horus_robotics::messages::sensor::Imu;
+use horus_robotics::CmdVel;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +31,9 @@ struct ImuPubNode {
 }
 
 impl Node for ImuPubNode {
-    fn name(&self) -> &str { "imu_pub" }
+    fn name(&self) -> &str {
+        "imu_pub"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -58,7 +60,9 @@ struct ImuSubNode {
 }
 
 impl Node for ImuSubNode {
-    fn name(&self) -> &str { &self.node_name }
+    fn name(&self) -> &str {
+        &self.node_name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -68,14 +72,15 @@ impl Node for ImuSubNode {
             while let Some(imu) = t.recv() {
                 self.received.fetch_add(1, Ordering::Relaxed);
                 // Integrity: accel_z should be ~9.81, angular_velocity[2] should be finite
-                if !imu.angular_velocity[2].is_finite() || (imu.linear_acceleration[2] - 9.81).abs() > 0.01 {
+                if !imu.angular_velocity[2].is_finite()
+                    || (imu.linear_acceleration[2] - 9.81).abs() > 0.01
+                {
                     self.corrupted.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
     }
 }
-
 
 // ════════════════════════════════════════════════════════════════════════
 // TEST 1: 3 schedulers at 1kHz/100Hz/10Hz sharing IMU topic
@@ -104,13 +109,27 @@ fn three_schedulers_1khz_100hz_10hz_shared_imu() {
     let run1 = running.clone();
     let h1 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(1000_u64.hz()).name("sched_1khz");
-        let _ = sched.add(ImuPubNode {
-            topic_name: t1.clone(), topic: None, seq: 0, published: p1,
-        }).rate(1000_u64.hz()).order(0).build();
-        let _ = sched.add(ImuSubNode {
-            topic_name: t1, node_name: "sub_1khz".into(), topic: None,
-            received: r1, corrupted: c1,
-        }).rate(1000_u64.hz()).order(1).build();
+        let _ = sched
+            .add(ImuPubNode {
+                topic_name: t1.clone(),
+                topic: None,
+                seq: 0,
+                published: p1,
+            })
+            .rate(1000_u64.hz())
+            .order(0)
+            .build();
+        let _ = sched
+            .add(ImuSubNode {
+                topic_name: t1,
+                node_name: "sub_1khz".into(),
+                topic: None,
+                received: r1,
+                corrupted: c1,
+            })
+            .rate(1000_u64.hz())
+            .order(1)
+            .build();
         while run1.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_micros(500));
@@ -124,10 +143,17 @@ fn three_schedulers_1khz_100hz_10hz_shared_imu() {
     let run2 = running.clone();
     let h2 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz()).name("sched_100hz");
-        let _ = sched.add(ImuSubNode {
-            topic_name: t2, node_name: "sub_100hz".into(), topic: None,
-            received: r2, corrupted: c2,
-        }).rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuSubNode {
+                topic_name: t2,
+                node_name: "sub_100hz".into(),
+                topic: None,
+                received: r2,
+                corrupted: c2,
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
         while run2.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -141,10 +167,17 @@ fn three_schedulers_1khz_100hz_10hz_shared_imu() {
     let run3 = running.clone();
     let h3 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(10_u64.hz()).name("sched_10hz");
-        let _ = sched.add(ImuSubNode {
-            topic_name: t3, node_name: "sub_10hz".into(), topic: None,
-            received: r3, corrupted: c3,
-        }).rate(10_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuSubNode {
+                topic_name: t3,
+                node_name: "sub_10hz".into(),
+                topic: None,
+                received: r3,
+                corrupted: c3,
+            })
+            .rate(10_u64.hz())
+            .order(0)
+            .build();
         while run3.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(90));
@@ -168,16 +201,43 @@ fn three_schedulers_1khz_100hz_10hz_shared_imu() {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  3 SCHEDULERS SHARING IMU TOPIC (5s)                    ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║  Published (1kHz):  {:6}                               ║", p);
-    println!("║  Sched1 recv (1kHz):  {:6} ({:5.1}%) corrupt: {}         ║", r1v, r1v as f64/p.max(1) as f64*100.0, c1v);
-    println!("║  Sched2 recv (100Hz): {:6} ({:5.1}%) corrupt: {}         ║", r2v, r2v as f64/p.max(1) as f64*100.0, c2v);
-    println!("║  Sched3 recv (10Hz):  {:6} ({:5.1}%) corrupt: {}         ║", r3v, r3v as f64/p.max(1) as f64*100.0, c3v);
+    println!(
+        "║  Published (1kHz):  {:6}                               ║",
+        p
+    );
+    println!(
+        "║  Sched1 recv (1kHz):  {:6} ({:5.1}%) corrupt: {}         ║",
+        r1v,
+        r1v as f64 / p.max(1) as f64 * 100.0,
+        c1v
+    );
+    println!(
+        "║  Sched2 recv (100Hz): {:6} ({:5.1}%) corrupt: {}         ║",
+        r2v,
+        r2v as f64 / p.max(1) as f64 * 100.0,
+        c2v
+    );
+    println!(
+        "║  Sched3 recv (10Hz):  {:6} ({:5.1}%) corrupt: {}         ║",
+        r3v,
+        r3v as f64 / p.max(1) as f64 * 100.0,
+        c3v
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     assert_eq!(c1v + c2v + c3v, 0, "DATA CORRUPTION detected!");
-    assert!(r1v > p / 2, "Sched1 (same scheduler as pub) should get >50% of msgs");
-    assert!(r2v > 0, "Sched2 (100Hz) received ZERO messages — starvation!");
-    assert!(r3v > 0, "Sched3 (10Hz) received ZERO messages — starvation!");
+    assert!(
+        r1v > p / 2,
+        "Sched1 (same scheduler as pub) should get >50% of msgs"
+    );
+    assert!(
+        r2v > 0,
+        "Sched2 (100Hz) received ZERO messages — starvation!"
+    );
+    assert!(
+        r3v > 0,
+        "Sched3 (10Hz) received ZERO messages — starvation!"
+    );
     println!("✓ [1/20] three_schedulers_1khz_100hz_10hz_shared_imu — PASSED");
 }
 
@@ -196,7 +256,9 @@ struct ControllerNode {
 }
 
 impl Node for ControllerNode {
-    fn name(&self) -> &str { "controller" }
+    fn name(&self) -> &str {
+        "controller"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu_topic = Some(Topic::new(&self.imu_name)?);
         self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
@@ -232,7 +294,9 @@ struct SimMotorNode {
 }
 
 impl Node for SimMotorNode {
-    fn name(&self) -> &str { "sim_motor" }
+    fn name(&self) -> &str {
+        "sim_motor"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
         self.imu_topic = Some(Topic::new(&self.imu_name)?);
@@ -284,11 +348,19 @@ fn bidirectional_cmdvel_imu_feedback_loop() {
     let r1 = running.clone();
     let h1 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz()).name("ctrl_sched");
-        let _ = sched.add(ControllerNode {
-            imu_name: it1, cmd_name: ct1,
-            imu_topic: None, cmd_topic: None,
-            imu_received: ir, cmd_sent: cs, target: 1.0,
-        }).rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ControllerNode {
+                imu_name: it1,
+                cmd_name: ct1,
+                imu_topic: None,
+                cmd_topic: None,
+                imu_received: ir,
+                cmd_sent: cs,
+                target: 1.0,
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
         while r1.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -303,12 +375,20 @@ fn bidirectional_cmdvel_imu_feedback_loop() {
     let r2 = running.clone();
     let h2 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(200_u64.hz()).name("motor_sched");
-        let _ = sched.add(SimMotorNode {
-            cmd_name: ct2, imu_name: it2,
-            cmd_topic: None, imu_topic: None,
-            cmd_received: cr, imu_sent: is,
-            position: 0.0, velocity: 0.0,
-        }).rate(200_u64.hz()).order(0).build();
+        let _ = sched
+            .add(SimMotorNode {
+                cmd_name: ct2,
+                imu_name: it2,
+                cmd_topic: None,
+                imu_topic: None,
+                cmd_received: cr,
+                imu_sent: is,
+                position: 0.0,
+                velocity: 0.0,
+            })
+            .rate(200_u64.hz())
+            .order(0)
+            .build();
         while r2.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(4));
@@ -328,12 +408,24 @@ fn bidirectional_cmdvel_imu_feedback_loop() {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  BIDIRECTIONAL: Controller ↔ SimMotor (5s)              ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║  Controller: sent {:5} CmdVel, recv {:5} Imu          ║", csv, irv);
-    println!("║  SimMotor:   sent {:5} Imu,    recv {:5} CmdVel       ║", isv, crv);
+    println!(
+        "║  Controller: sent {:5} CmdVel, recv {:5} Imu          ║",
+        csv, irv
+    );
+    println!(
+        "║  SimMotor:   sent {:5} Imu,    recv {:5} CmdVel       ║",
+        isv, crv
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
-    assert!(irv > 0, "Controller received ZERO IMU — motor→ctrl path broken");
-    assert!(crv > 0, "Motor received ZERO CmdVel — ctrl→motor path broken");
+    assert!(
+        irv > 0,
+        "Controller received ZERO IMU — motor→ctrl path broken"
+    );
+    assert!(
+        crv > 0,
+        "Motor received ZERO CmdVel — ctrl→motor path broken"
+    );
     assert!(csv > 50, "Controller should send >50 commands in 5s");
     assert!(isv > 100, "Motor should send >100 IMU msgs in 5s");
     println!("✓ [2/20] bidirectional_cmdvel_imu_feedback_loop — PASSED");
@@ -358,9 +450,16 @@ fn scheduler_stop_topics_survive() {
     let s1 = stop1.clone();
     let h_pub1 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz()).name("pub_sched_1");
-        let _ = sched.add(ImuPubNode {
-            topic_name: t1, topic: None, seq: 0, published: Arc::new(AtomicU64::new(0)),
-        }).rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuPubNode {
+                topic_name: t1,
+                topic: None,
+                seq: 0,
+                published: Arc::new(AtomicU64::new(0)),
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
         while s1.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -377,10 +476,17 @@ fn scheduler_stop_topics_survive() {
         let p1 = p1r;
         let p4 = p4r;
         // Long-running subscriber — uses one counter for each phase
-        let _ = sched.add(ImuSubNode {
-            topic_name: t2, node_name: "long_sub".into(), topic: None,
-            received: p1.clone(), corrupted: Arc::new(AtomicU64::new(0)),
-        }).rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuSubNode {
+                topic_name: t2,
+                node_name: "long_sub".into(),
+                topic: None,
+                received: p1.clone(),
+                corrupted: Arc::new(AtomicU64::new(0)),
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
         while ss.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -407,9 +513,16 @@ fn scheduler_stop_topics_survive() {
     let s4 = stop4.clone();
     let h_pub2 = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz()).name("pub_sched_2");
-        let _ = sched.add(ImuPubNode {
-            topic_name: t4, topic: None, seq: 10000, published: Arc::new(AtomicU64::new(0)),
-        }).rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuPubNode {
+                topic_name: t4,
+                topic: None,
+                seq: 10000,
+                published: Arc::new(AtomicU64::new(0)),
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
         while s4.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -419,7 +532,10 @@ fn scheduler_stop_topics_survive() {
     std::thread::sleep(Duration::from_secs(2));
     let total_recv = phase1_recv.load(Ordering::Relaxed);
     let phase4_count = total_recv - p1_count;
-    println!("Phase 4 (new pub): subscriber received {} new msgs", phase4_count);
+    println!(
+        "Phase 4 (new pub): subscriber received {} new msgs",
+        phase4_count
+    );
 
     stop4.store(false, Ordering::Relaxed);
     stop_sub.store(false, Ordering::Relaxed);
@@ -429,13 +545,22 @@ fn scheduler_stop_topics_survive() {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  SCHEDULER STOP + RECONNECT                             ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║  Phase 1 (pub alive):    {} msgs received               ║", p1_count);
+    println!(
+        "║  Phase 1 (pub alive):    {} msgs received               ║",
+        p1_count
+    );
     println!("║  Phase 2-3 (pub dead):   subscriber survived ✓          ║");
-    println!("║  Phase 4 (new pub):      {} new msgs received           ║", phase4_count);
+    println!(
+        "║  Phase 4 (new pub):      {} new msgs received           ║",
+        phase4_count
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     assert!(p1_count > 50, "Phase 1: subscriber should receive >50 msgs");
-    assert!(phase4_count > 0, "Phase 4: new publisher's data should reach existing subscriber");
+    assert!(
+        phase4_count > 0,
+        "Phase 4: new publisher's data should reach existing subscriber"
+    );
     println!("✓ [3/20] scheduler_stop_topics_survive — PASSED");
 }
 
@@ -451,7 +576,9 @@ struct DetCmdVelPubNode {
 }
 
 impl Node for DetCmdVelPubNode {
-    fn name(&self) -> &str { "det_cmdvel_pub" }
+    fn name(&self) -> &str {
+        "det_cmdvel_pub"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -462,7 +589,9 @@ impl Node for DetCmdVelPubNode {
             (self.tick as f32 * 0.05).cos(),
         );
         self.log.lock().unwrap().push((cmd.linear, cmd.angular));
-        if let Some(ref t) = self.topic { t.send(cmd); }
+        if let Some(ref t) = self.topic {
+            t.send(cmd);
+        }
         self.tick += 1;
     }
 }
@@ -488,10 +617,17 @@ fn deterministic_alongside_normal_scheduler() {
         let t2 = topic.clone();
         let h_normal = std::thread::spawn(move || {
             let mut sched = Scheduler::new().tick_rate(50_u64.hz()).name("normal_sched");
-            let _ = sched.add(ImuSubNode {
-                topic_name: t2, node_name: "normal_sub".into(), topic: None,
-                received: nr, corrupted: Arc::new(AtomicU64::new(0)),
-            }).rate(50_u64.hz()).order(0).build();
+            let _ = sched
+                .add(ImuSubNode {
+                    topic_name: t2,
+                    node_name: "normal_sub".into(),
+                    topic: None,
+                    received: nr,
+                    corrupted: Arc::new(AtomicU64::new(0)),
+                })
+                .rate(50_u64.hz())
+                .order(0)
+                .build();
             while r2.load(Ordering::Relaxed) {
                 let _ = sched.tick_once();
                 std::thread::sleep(Duration::from_millis(18));
@@ -503,9 +639,15 @@ fn deterministic_alongside_normal_scheduler() {
             .tick_rate(100_u64.hz())
             .deterministic(true)
             .name("det_sched");
-        let _ = det_sched.add(DetCmdVelPubNode {
-            topic_name: t, topic: None, tick: 0, log: l,
-        }).order(0).build();
+        let _ = det_sched
+            .add(DetCmdVelPubNode {
+                topic_name: t,
+                topic: None,
+                tick: 0,
+                log: l,
+            })
+            .order(0)
+            .build();
         for _ in 0..500 {
             let _ = det_sched.tick_once();
         }
@@ -526,9 +668,15 @@ fn deterministic_alongside_normal_scheduler() {
             .tick_rate(100_u64.hz())
             .deterministic(true)
             .name("det_sched_2");
-        let _ = det_sched.add(DetCmdVelPubNode {
-            topic_name: t, topic: None, tick: 0, log: l,
-        }).order(0).build();
+        let _ = det_sched
+            .add(DetCmdVelPubNode {
+                topic_name: t,
+                topic: None,
+                tick: 0,
+                log: l,
+            })
+            .order(0)
+            .build();
         for _ in 0..500 {
             let _ = det_sched.tick_once();
         }
@@ -540,10 +688,22 @@ fn deterministic_alongside_normal_scheduler() {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  DETERMINISTIC + NORMAL SCHEDULER                       ║");
     println!("╠══════════════════════════════════════════════════════════╣");
-    println!("║  Det run 1: {} CmdVel published                         ║", v1.len());
-    println!("║  Det run 2: {} CmdVel published                         ║", v2.len());
-    println!("║  Identical: {}                                          ║", v1 == v2);
-    println!("║  Normal sched received: {} msgs (from det sched)        ║", nr_count);
+    println!(
+        "║  Det run 1: {} CmdVel published                         ║",
+        v1.len()
+    );
+    println!(
+        "║  Det run 2: {} CmdVel published                         ║",
+        v2.len()
+    );
+    println!(
+        "║  Identical: {}                                          ║",
+        v1 == v2
+    );
+    println!(
+        "║  Normal sched received: {} msgs (from det sched)        ║",
+        nr_count
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     assert_eq!(v1.len(), 500, "Det run 1 should produce 500 msgs");

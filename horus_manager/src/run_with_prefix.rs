@@ -179,8 +179,14 @@ fn run_with_prefix_output(cmd: &PrefixedCommand, colored_label: &str) -> Prefixe
     };
 
     // Read stdout and stderr in separate threads, prefix each line
-    let stdout = child.stdout.take().expect("child process stdout not captured — ensure Stdio::piped() is set");
-    let stderr = child.stderr.take().expect("child process stderr not captured — ensure Stdio::piped() is set");
+    let stdout = child
+        .stdout
+        .take()
+        .expect("child process stdout not captured — ensure Stdio::piped() is set");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("child process stderr not captured — ensure Stdio::piped() is set");
 
     let label_out = colored_label.to_string();
     let label_err = colored_label.to_string();

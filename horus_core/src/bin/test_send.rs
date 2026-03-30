@@ -24,15 +24,17 @@ impl Node for TestSendNode {
 
     fn tick(&mut self) {
         let i = self.frame.fetch_add(1, Ordering::Relaxed);
-        let img =
-            Image::new(self.width, self.height, ImageEncoding::Rgb8).expect("Image::new");
+        let img = Image::new(self.width, self.height, ImageEncoding::Rgb8).expect("Image::new");
         let val = ((i + 1) * 7 % 256) as u8;
         let data = img.data_mut();
         for b in data.iter_mut() {
             *b = val;
         }
         self.topic.send(&img);
-        eprintln!("[send] frame={} val={} size={}x{}", i, val, self.width, self.height);
+        eprintln!(
+            "[send] frame={} val={} size={}x{}",
+            i, val, self.width, self.height
+        );
     }
 }
 

@@ -68,14 +68,21 @@ impl ExecDriver {
     }
 
     /// Create from a path string, args, and NodeParams (parsed from horus.toml).
-    pub fn from_config(path: &str, args: Vec<String>, params: &NodeParams) -> crate::error::Result<Self> {
+    pub fn from_config(
+        path: &str,
+        args: Vec<String>,
+        params: &NodeParams,
+    ) -> crate::error::Result<Self> {
         let max_retries = params.get_or("max_retries", 3u32);
         let restart_delay_ms = params.get_or("restart_delay_ms", 1000u64);
         let shutdown_timeout_ms = params.get_or("shutdown_timeout_ms", 5000u64);
 
         let mut env = HashMap::new();
         for key in params.keys() {
-            if !matches!(key, "max_retries" | "restart_delay_ms" | "shutdown_timeout_ms") {
+            if !matches!(
+                key,
+                "max_retries" | "restart_delay_ms" | "shutdown_timeout_ms"
+            ) {
                 // Convert any TOML value to string for env var
                 let val = if let Ok(s) = params.get::<String>(key) {
                     Some(s)
@@ -101,21 +108,22 @@ impl ExecDriver {
             .unwrap_or("exec_driver")
             .to_string();
 
-        Ok(Self::new(&name, ExecDriverConfig {
-            path: PathBuf::from(path),
-            args,
-            env,
-            max_retries,
-            restart_delay_ms,
-            shutdown_timeout_ms,
-        }))
+        Ok(Self::new(
+            &name,
+            ExecDriverConfig {
+                path: PathBuf::from(path),
+                args,
+                env,
+                max_retries,
+                restart_delay_ms,
+                shutdown_timeout_ms,
+            },
+        ))
     }
 
     /// Create from NodeParams (parsed from horus.toml).
     pub fn from_params(name: &str, path: PathBuf, params: &NodeParams) -> Self {
-        let args: Vec<String> = params
-            .get::<Vec<String>>("args")
-            .unwrap_or_default();
+        let args: Vec<String> = params.get::<Vec<String>>("args").unwrap_or_default();
         let max_retries = params.get_or("max_retries", 3u32);
         let restart_delay_ms = params.get_or("restart_delay_ms", 1000u64);
         let shutdown_timeout_ms = params.get_or("shutdown_timeout_ms", 5000u64);
@@ -124,21 +132,28 @@ impl ExecDriver {
         let mut env = HashMap::new();
         env.insert("HORUS_DRIVER_NAME".to_string(), name.to_string());
         for key in params.keys() {
-            if key != "args" && key != "max_retries" && key != "restart_delay_ms" && key != "shutdown_timeout_ms" {
+            if key != "args"
+                && key != "max_retries"
+                && key != "restart_delay_ms"
+                && key != "shutdown_timeout_ms"
+            {
                 if let Ok(val) = params.get::<String>(key) {
                     env.insert(format!("HORUS_PARAM_{}", key.to_uppercase()), val);
                 }
             }
         }
 
-        Self::new(name, ExecDriverConfig {
-            path,
-            args,
-            env,
-            max_retries,
-            restart_delay_ms,
-            shutdown_timeout_ms,
-        })
+        Self::new(
+            name,
+            ExecDriverConfig {
+                path,
+                args,
+                env,
+                max_retries,
+                restart_delay_ms,
+                shutdown_timeout_ms,
+            },
+        )
     }
 
     /// Launch the subprocess.
@@ -167,21 +182,13 @@ impl ExecDriver {
         if let Some(ref mut child) = self.child {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    tracing::warn!(
-                        "Exec driver '{}' exited with {}",
-                        self.name,
-                        status
-                    );
+                    tracing::warn!("Exec driver '{}' exited with {}", self.name, status);
                     self.child = None;
                     false
                 }
                 Ok(None) => true, // still running
                 Err(e) => {
-                    tracing::error!(
-                        "Exec driver '{}' health check failed: {}",
-                        self.name,
-                        e
-                    );
+                    tracing::error!("Exec driver '{}' health check failed: {}", self.name, e);
                     false
                 }
             }
@@ -229,7 +236,11 @@ impl crate::core::Node for ExecDriver {
 
     fn shutdown(&mut self) -> crate::error::Result<()> {
         if let Some(ref mut child) = self.child {
-            tracing::info!("Shutting down exec driver '{}' (PID: {})...", self.name, child.id());
+            tracing::info!(
+                "Shutting down exec driver '{}' (PID: {})...",
+                self.name,
+                child.id()
+            );
 
             // Send SIGTERM (Unix) or kill (Windows)
             #[cfg(unix)]
@@ -250,7 +261,10 @@ impl crate::core::Node for ExecDriver {
                     Ok(Some(_)) => break,
                     Ok(None) => {
                         if Instant::now() > deadline {
-                            tracing::warn!("Exec driver '{}' didn't exit in time, force killing", self.name);
+                            tracing::warn!(
+                                "Exec driver '{}' didn't exit in time, force killing",
+                                self.name
+                            );
                             let _ = child.kill();
                             let _ = child.wait();
                             break;
@@ -296,7 +310,10 @@ mod tests {
     #[test]
     fn test_exec_driver_from_params() {
         let mut params_map = HashMap::new();
-        params_map.insert("port".to_string(), toml::Value::String("/dev/ttyUSB0".to_string()));
+        params_map.insert(
+            "port".to_string(),
+            toml::Value::String("/dev/ttyUSB0".to_string()),
+        );
         params_map.insert("max_retries".to_string(), toml::Value::Integer(5));
         let params = NodeParams::new(params_map);
 

@@ -32,7 +32,6 @@ impl Node for SensorNode {
         "sensor"
     }
 
-
     fn tick(&mut self) {
         self.counter += 1;
         self.outputs.lock().unwrap().push(self.counter);
@@ -61,8 +60,6 @@ impl Node for ControllerNode {
     fn name(&self) -> &str {
         "controller"
     }
-
-
 
     fn tick(&mut self) {
         // Use framework dt for integration

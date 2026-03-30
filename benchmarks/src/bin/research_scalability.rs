@@ -16,13 +16,16 @@ use std::time::Instant;
 
 #[repr(C)]
 #[derive(Copy, Clone, Serialize, Deserialize)]
-struct Msg8 { data: [u8; 8] }
+struct Msg8 {
+    data: [u8; 8],
+}
 unsafe impl Send for Msg8 {}
 unsafe impl Sync for Msg8 {}
 
 fn cleanup_shm() {
     let _ = std::fs::remove_dir_all(horus_core::memory::shm_topics_dir());
-    let mut n = horus_core::memory::shm_base_dir(); n.push("nodes");
+    let mut n = horus_core::memory::shm_base_dir();
+    n.push("nodes");
     let _ = std::fs::remove_dir_all(n);
 }
 
@@ -35,12 +38,17 @@ struct LoadNode {
 
 impl LoadNode {
     fn new(name: &str) -> Self {
-        Self { name: name.to_string(), counter: Arc::new(AtomicU64::new(0)) }
+        Self {
+            name: name.to_string(),
+            counter: Arc::new(AtomicU64::new(0)),
+        }
     }
 }
 
 impl Node for LoadNode {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     fn tick(&mut self) {
         // Minimal work — just increment counter
         self.counter.fetch_add(1, Ordering::Relaxed);
@@ -51,7 +59,10 @@ use std::sync::Arc;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let csv_path = args.iter().position(|a| a == "--csv").map(|i| args[i+1].clone());
+    let csv_path = args
+        .iter()
+        .position(|a| a == "--csv")
+        .map(|i| args[i + 1].clone());
 
     let platform = detect_platform();
 
@@ -59,7 +70,10 @@ fn main() {
     println!("║          Research Scalability — Nodes + Topics              ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
-    println!("Platform: {}, {} cores", platform.cpu.model, platform.cpu.logical_cores);
+    println!(
+        "Platform: {}, {} cores",
+        platform.cpu.model, platform.cpu.logical_cores
+    );
     println!();
 
     let mut csv_rows: Vec<(String, usize, String, u64)> = Vec::new();
@@ -67,7 +81,10 @@ fn main() {
     // ── Node Scaling ──────────────────────────────────────────────────
 
     println!("── Node Scaling (tick overhead per node) ─────────────────────");
-    println!("{:>6} {:>12} {:>12} {:>12}", "Nodes", "Total (μs)", "Per-Node", "Ticks");
+    println!(
+        "{:>6} {:>12} {:>12} {:>12}",
+        "Nodes", "Total (μs)", "Per-Node", "Ticks"
+    );
 
     for node_count in [1, 2, 5, 10, 20, 50, 100] {
         cleanup_shm();
@@ -90,17 +107,38 @@ fn main() {
         let ticks_per_node = total_ticks / node_count as u64;
         let us_per_tick = if ticks_per_node > 0 {
             elapsed.as_micros() as u64 / ticks_per_node
-        } else { 0 };
+        } else {
+            0
+        };
         let us_per_node_per_tick = if ticks_per_node > 0 && node_count > 0 {
             (elapsed.as_micros() as u64 * node_count as u64) / total_ticks
-        } else { 0 };
+        } else {
+            0
+        };
 
-        println!("{:>6} {:>11}μs {:>11}μs {:>12}",
-            node_count, us_per_tick, us_per_node_per_tick, ticks_per_node);
+        println!(
+            "{:>6} {:>11}μs {:>11}μs {:>12}",
+            node_count, us_per_tick, us_per_node_per_tick, ticks_per_node
+        );
 
-        csv_rows.push(("node_scaling".into(), node_count, "total_tick_us".into(), us_per_tick));
-        csv_rows.push(("node_scaling".into(), node_count, "per_node_us".into(), us_per_node_per_tick));
-        csv_rows.push(("node_scaling".into(), node_count, "ticks_per_node".into(), ticks_per_node));
+        csv_rows.push((
+            "node_scaling".into(),
+            node_count,
+            "total_tick_us".into(),
+            us_per_tick,
+        ));
+        csv_rows.push((
+            "node_scaling".into(),
+            node_count,
+            "per_node_us".into(),
+            us_per_node_per_tick,
+        ));
+        csv_rows.push((
+            "node_scaling".into(),
+            node_count,
+            "ticks_per_node".into(),
+            ticks_per_node,
+        ));
     }
 
     println!();
@@ -108,7 +146,10 @@ fn main() {
     // ── Topic Scaling ─────────────────────────────────────────────────
 
     println!("── Topic Scaling (send+recv latency) ─────────────────────────");
-    println!("{:>6} {:>12} {:>12} {:>12}", "Topics", "p50 (ns)", "p99 (ns)", "Samples");
+    println!(
+        "{:>6} {:>12} {:>12} {:>12}",
+        "Topics", "p50 (ns)", "p99 (ns)", "Samples"
+    );
 
     for topic_count in [1, 10, 50, 100, 500, 1000] {
         cleanup_shm();
@@ -143,12 +184,32 @@ fn main() {
         samples.sort_unstable();
         let n = samples.len();
         if n > 0 {
-            println!("{:>6} {:>11}ns {:>11}ns {:>12}",
-                topic_count, samples[n/2], samples[n*99/100], n);
+            println!(
+                "{:>6} {:>11}ns {:>11}ns {:>12}",
+                topic_count,
+                samples[n / 2],
+                samples[n * 99 / 100],
+                n
+            );
 
-            csv_rows.push(("topic_scaling".into(), topic_count, "p50_ns".into(), samples[n/2]));
-            csv_rows.push(("topic_scaling".into(), topic_count, "p99_ns".into(), samples[n*99/100]));
-            csv_rows.push(("topic_scaling".into(), topic_count, "samples".into(), n as u64));
+            csv_rows.push((
+                "topic_scaling".into(),
+                topic_count,
+                "p50_ns".into(),
+                samples[n / 2],
+            ));
+            csv_rows.push((
+                "topic_scaling".into(),
+                topic_count,
+                "p99_ns".into(),
+                samples[n * 99 / 100],
+            ));
+            csv_rows.push((
+                "topic_scaling".into(),
+                topic_count,
+                "samples".into(),
+                n as u64,
+            ));
         }
     }
 

@@ -100,7 +100,11 @@ pub fn detect_rust_nodes(source: &str) -> HashSet<String> {
 
         // Pattern 1: use horus_robotics::CameraNode;
         // Pattern 2: use horus_library::CameraNode; (legacy)
-        if line.starts_with("use horus_robotics::") || line.starts_with("use horus_tf::") || line.starts_with("use horus_library::") || line.starts_with("use horus::library::") {
+        if line.starts_with("use horus_robotics::")
+            || line.starts_with("use horus_tf::")
+            || line.starts_with("use horus_library::")
+            || line.starts_with("use horus::library::")
+        {
             for node_name in NODE_NAMES {
                 if line.contains(node_name) {
                     nodes.insert(node_name.to_string());

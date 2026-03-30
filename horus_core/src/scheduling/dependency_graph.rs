@@ -262,7 +262,6 @@ mod tests {
     use crate::core::Miss;
     use crate::scheduling::types::{AtomicHealthState, ExecutionClass, NodeKind};
     use std::sync::Arc;
-    
 
     // ── Test helpers ──
 

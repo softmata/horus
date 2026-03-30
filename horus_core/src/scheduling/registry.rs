@@ -131,8 +131,7 @@ impl SchedulerRegistry {
     /// Creates the file at `shm_scheduler_dir()/{scheduler_name}`.
     pub fn open(scheduler_name: &str) -> crate::error::HorusResult<Self> {
         let dir = shm_scheduler_dir();
-        horus_sys::fs::create_dir_secure(&dir)
-            .map_err(std::io::Error::other)?;
+        horus_sys::fs::create_dir_secure(&dir).map_err(std::io::Error::other)?;
 
         let path = dir.join(scheduler_name);
         let file = OpenOptions::new()
@@ -226,7 +225,7 @@ impl SchedulerRegistry {
             (*(slot.add(72) as *const AtomicU32)).store(0, Ordering::Release); // error_count
             (*(slot.add(76) as *const AtomicU32)).store(0, Ordering::Release); // budget_misses
             (*(slot.add(80) as *const AtomicU32)).store(0, Ordering::Release); // deadline_misses
-            (*(slot.add(84) as *const AtomicU8)).store(0, Ordering::Release);  // watchdog_severity
+            (*(slot.add(84) as *const AtomicU8)).store(0, Ordering::Release); // watchdog_severity
 
             // Timing = 0
             (*(slot.add(128) as *const AtomicU64)).store(0, Ordering::Release); // last_tick_ns
@@ -359,7 +358,8 @@ impl SchedulerRegistry {
                 let budget_misses = (*(slot.add(76) as *const AtomicU32)).load(Ordering::Relaxed);
                 let deadline_misses = (*(slot.add(80) as *const AtomicU32)).load(Ordering::Relaxed);
 
-                let watchdog_severity = (*(slot.add(84) as *const AtomicU8)).load(Ordering::Relaxed);
+                let watchdog_severity =
+                    (*(slot.add(84) as *const AtomicU8)).load(Ordering::Relaxed);
 
                 let last_tick_ns = (*(slot.add(128) as *const AtomicU64)).load(Ordering::Relaxed);
                 let avg_tick_ns = (*(slot.add(136) as *const AtomicU64)).load(Ordering::Relaxed);

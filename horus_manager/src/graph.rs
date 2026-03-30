@@ -730,27 +730,64 @@ mod tests {
         ];
 
         let edges = vec![
-            GraphEdge { from: "process_A".into(), to: "topic_1".into(), edge_type: EdgeType::Publish, active: true },
-            GraphEdge { from: "topic_1".into(), to: "process_B".into(), edge_type: EdgeType::Subscribe, active: true },
-            GraphEdge { from: "process_B".into(), to: "topic_2".into(), edge_type: EdgeType::Publish, active: true },
-            GraphEdge { from: "topic_2".into(), to: "process_C".into(), edge_type: EdgeType::Subscribe, active: true },
+            GraphEdge {
+                from: "process_A".into(),
+                to: "topic_1".into(),
+                edge_type: EdgeType::Publish,
+                active: true,
+            },
+            GraphEdge {
+                from: "topic_1".into(),
+                to: "process_B".into(),
+                edge_type: EdgeType::Subscribe,
+                active: true,
+            },
+            GraphEdge {
+                from: "process_B".into(),
+                to: "topic_2".into(),
+                edge_type: EdgeType::Publish,
+                active: true,
+            },
+            GraphEdge {
+                from: "topic_2".into(),
+                to: "process_C".into(),
+                edge_type: EdgeType::Subscribe,
+                active: true,
+            },
         ];
 
         // Verify chain structure: walk from A to C via edges
         // A -> topic_1
-        assert!(edges.iter().any(|e| e.from == "process_A" && e.to == "topic_1" && e.edge_type == EdgeType::Publish));
+        assert!(edges.iter().any(|e| e.from == "process_A"
+            && e.to == "topic_1"
+            && e.edge_type == EdgeType::Publish));
         // topic_1 -> B
-        assert!(edges.iter().any(|e| e.from == "topic_1" && e.to == "process_B" && e.edge_type == EdgeType::Subscribe));
+        assert!(edges.iter().any(|e| e.from == "topic_1"
+            && e.to == "process_B"
+            && e.edge_type == EdgeType::Subscribe));
         // B -> topic_2
-        assert!(edges.iter().any(|e| e.from == "process_B" && e.to == "topic_2" && e.edge_type == EdgeType::Publish));
+        assert!(edges.iter().any(|e| e.from == "process_B"
+            && e.to == "topic_2"
+            && e.edge_type == EdgeType::Publish));
         // topic_2 -> C
-        assert!(edges.iter().any(|e| e.from == "topic_2" && e.to == "process_C" && e.edge_type == EdgeType::Subscribe));
+        assert!(edges.iter().any(|e| e.from == "topic_2"
+            && e.to == "process_C"
+            && e.edge_type == EdgeType::Subscribe));
 
         // All edges reference valid node IDs
-        let node_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        let node_ids: std::collections::HashSet<&str> =
+            nodes.iter().map(|n| n.id.as_str()).collect();
         for edge in &edges {
-            assert!(node_ids.contains(edge.from.as_str()), "edge.from '{}' not in nodes", edge.from);
-            assert!(node_ids.contains(edge.to.as_str()), "edge.to '{}' not in nodes", edge.to);
+            assert!(
+                node_ids.contains(edge.from.as_str()),
+                "edge.from '{}' not in nodes",
+                edge.from
+            );
+            assert!(
+                node_ids.contains(edge.to.as_str()),
+                "edge.to '{}' not in nodes",
+                edge.to
+            );
         }
 
         // Topological ordering: A comes before B, B comes before C
@@ -768,10 +805,30 @@ mod tests {
     fn test_dependency_graph_detects_cycle() {
         // Build a graph where A -> topic -> B -> topic2 -> A (circular data flow)
         let edges = vec![
-            GraphEdge { from: "process_A".into(), to: "topic_1".into(), edge_type: EdgeType::Publish, active: true },
-            GraphEdge { from: "topic_1".into(), to: "process_B".into(), edge_type: EdgeType::Subscribe, active: true },
-            GraphEdge { from: "process_B".into(), to: "topic_2".into(), edge_type: EdgeType::Publish, active: true },
-            GraphEdge { from: "topic_2".into(), to: "process_A".into(), edge_type: EdgeType::Subscribe, active: true },
+            GraphEdge {
+                from: "process_A".into(),
+                to: "topic_1".into(),
+                edge_type: EdgeType::Publish,
+                active: true,
+            },
+            GraphEdge {
+                from: "topic_1".into(),
+                to: "process_B".into(),
+                edge_type: EdgeType::Subscribe,
+                active: true,
+            },
+            GraphEdge {
+                from: "process_B".into(),
+                to: "topic_2".into(),
+                edge_type: EdgeType::Publish,
+                active: true,
+            },
+            GraphEdge {
+                from: "topic_2".into(),
+                to: "process_A".into(),
+                edge_type: EdgeType::Subscribe,
+                active: true,
+            },
         ];
 
         // Detect cycle: check if following edges from any process eventually
@@ -862,9 +919,24 @@ mod tests {
         ];
 
         let edges = vec![
-            GraphEdge { from: "process_X".into(), to: "topic_lidar_data".into(), edge_type: EdgeType::Publish, active: true },
-            GraphEdge { from: "process_Y".into(), to: "topic_camera_data".into(), edge_type: EdgeType::Publish, active: true },
-            GraphEdge { from: "process_Z".into(), to: "topic_imu_data".into(), edge_type: EdgeType::Publish, active: true },
+            GraphEdge {
+                from: "process_X".into(),
+                to: "topic_lidar_data".into(),
+                edge_type: EdgeType::Publish,
+                active: true,
+            },
+            GraphEdge {
+                from: "process_Y".into(),
+                to: "topic_camera_data".into(),
+                edge_type: EdgeType::Publish,
+                active: true,
+            },
+            GraphEdge {
+                from: "process_Z".into(),
+                to: "topic_imu_data".into(),
+                edge_type: EdgeType::Publish,
+                active: true,
+            },
         ];
 
         // All three processes appear in the graph
@@ -876,10 +948,8 @@ mod tests {
 
         // Each process has exactly one outgoing edge
         for proc_node in &process_nodes {
-            let outgoing: Vec<&GraphEdge> = edges
-                .iter()
-                .filter(|e| e.from == proc_node.id)
-                .collect();
+            let outgoing: Vec<&GraphEdge> =
+                edges.iter().filter(|e| e.from == proc_node.id).collect();
             assert_eq!(
                 outgoing.len(),
                 1,
@@ -893,7 +963,8 @@ mod tests {
             process_nodes.iter().map(|n| n.id.as_str()).collect();
         for edge in &edges {
             assert!(
-                !(process_ids.contains(edge.from.as_str()) && process_ids.contains(edge.to.as_str())),
+                !(process_ids.contains(edge.from.as_str())
+                    && process_ids.contains(edge.to.as_str())),
                 "independent graph should have no direct process-to-process edges"
             );
         }

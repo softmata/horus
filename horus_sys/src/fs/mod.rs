@@ -364,7 +364,7 @@ pub struct StdoutGuard {
     #[cfg(unix)]
     saved_fd: i32,
     #[cfg(windows)]
-    _marker: (),
+    saved_handle: *mut std::ffi::c_void,
 }
 
 /// Redirect stdout to the null device. Returns a guard that restores stdout on drop.
@@ -396,9 +396,46 @@ pub fn suppress_stdout() -> anyhow::Result<StdoutGuard> {
     }
     #[cfg(windows)]
     {
-        // Windows: redirect via SetStdHandle
-        // For now, simplified — just suppress via quiet mode
-        Ok(StdoutGuard { _marker: () })
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        };
+        use windows_sys::Win32::System::Console::{GetStdHandle, SetStdHandle, STD_OUTPUT_HANDLE};
+
+        // Save current stdout handle
+        let saved = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+
+        // Open NUL device
+        let nul_name: Vec<u16> = "NUL\0".encode_utf16().collect();
+        let nul_handle = unsafe {
+            CreateFileW(
+                nul_name.as_ptr(),
+                0x40000000, // GENERIC_WRITE
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(), // hTemplateFile = NULL
+            )
+        };
+
+        if nul_handle == INVALID_HANDLE_VALUE {
+            return Err(anyhow::anyhow!(
+                "Failed to open NUL: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        // Redirect stdout to NUL
+        unsafe { SetStdHandle(STD_OUTPUT_HANDLE, nul_handle) };
+
+        // Flush buffered output
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+
+        Ok(StdoutGuard {
+            saved_handle: saved as *mut std::ffi::c_void,
+        })
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -415,8 +452,24 @@ impl Drop for StdoutGuard {
                 libc::close(self.saved_fd);
             }
         }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Console::{SetStdHandle, STD_OUTPUT_HANDLE};
+            // Restore the saved stdout handle
+            // HANDLE in windows_sys is isize; saved_handle stored as *mut c_void
+            if !self.saved_handle.is_null() {
+                unsafe {
+                    SetStdHandle(STD_OUTPUT_HANDLE, self.saved_handle);
+                }
+            }
+        }
     }
 }
+
+// SAFETY: StdoutGuard holds file descriptors (Unix) or HANDLEs (Windows)
+// that are valid for the process lifetime. Not actually shared across threads
+// but needs Send for structured concurrency patterns.
+unsafe impl Send for StdoutGuard {}
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 

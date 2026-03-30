@@ -18,6 +18,7 @@ fn make_entry(name: &str, role: TopicRole) -> TopicEntry {
         type_size: 64,
         role,
         is_pod: true,
+        is_system: false,
     }
 }
 
@@ -26,7 +27,9 @@ fn make_entry(name: &str, role: TopicRole) -> TopicEntry {
 fn announcement_over_udp_loopback() {
     let sock_a = UdpSocket::bind("127.0.0.1:0").unwrap();
     let sock_b = UdpSocket::bind("127.0.0.1:0").unwrap();
-    sock_b.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    sock_b
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     let addr_b = sock_b.local_addr().unwrap();
 
     // Peer A publishes imu
@@ -52,7 +55,9 @@ fn announcement_over_udp_loopback() {
 fn topic_matching_over_udp() {
     let sock_a = UdpSocket::bind("127.0.0.1:0").unwrap();
     let sock_b = UdpSocket::bind("127.0.0.1:0").unwrap();
-    sock_b.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    sock_b
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     let addr_b = sock_b.local_addr().unwrap();
 
     // A publishes imu
@@ -86,6 +91,7 @@ fn type_hash_mismatch_produces_warning() {
         type_size: 64,
         role: TopicRole::Subscriber,
         is_pod: true,
+        is_system: false,
     }];
     let remote = vec![WireTopicEntry {
         name: "imu".into(),
@@ -161,7 +167,13 @@ fn full_discovery_pipeline() {
     // Use topic name as type hash (consistent with make_entry helper)
     let reg_a = TopicRegistry::new();
     reg_a.register("imu", topic_hash("imu"), 64, TopicRole::Publisher, true);
-    reg_a.register("cmd_vel", topic_hash("cmd_vel"), 16, TopicRole::Subscriber, true);
+    reg_a.register(
+        "cmd_vel",
+        topic_hash("cmd_vel"),
+        16,
+        TopicRole::Subscriber,
+        true,
+    );
     let entries_a = reg_a.entries();
 
     // Encode announcement
@@ -172,7 +184,9 @@ fn full_discovery_pipeline() {
     // Send over UDP
     let sock_a = UdpSocket::bind("127.0.0.1:0").unwrap();
     let sock_b = UdpSocket::bind("127.0.0.1:0").unwrap();
-    sock_b.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    sock_b
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
     let addr_b = sock_b.local_addr().unwrap();
     sock_a.send_to(&buf[..len], addr_b).unwrap();
 

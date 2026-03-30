@@ -212,7 +212,9 @@ fn run_server_loop<Req, Res>(
             let req_file = gateway_dir.join(format!("{}.request.json", svc_name));
             if let Ok(data) = std::fs::read(&req_file) {
                 let _ = std::fs::remove_file(&req_file);
-                if let Ok(json_req) = serde_json::from_slice::<ServiceRequest<serde_json::Value>>(&data) {
+                if let Ok(json_req) =
+                    serde_json::from_slice::<ServiceRequest<serde_json::Value>>(&data)
+                {
                     if let Ok(typed_payload) = serde_json::from_value::<Req>(json_req.payload) {
                         let request_id = json_req.request_id;
                         let response = match handler(typed_payload) {
@@ -223,11 +225,8 @@ fn run_server_loop<Req, Res>(
                             }
                             Err(err_msg) => ServiceResponse::failure(request_id, err_msg),
                         };
-                        let res_file = gateway_dir.join(format!(
-                            "{}.response.{}.json",
-                            svc_name,
-                            request_id
-                        ));
+                        let res_file =
+                            gateway_dir.join(format!("{}.response.{}.json", svc_name, request_id));
                         let _ = serde_json::to_vec(&response).map(|bytes| {
                             let _ = std::fs::write(&res_file, &bytes);
                         });
@@ -349,8 +348,7 @@ mod tests {
 
     #[test]
     fn server_builder_zero_poll_interval() {
-        let builder =
-            ServiceServerBuilder::<SrvTestService>::new().poll_interval(Duration::ZERO);
+        let builder = ServiceServerBuilder::<SrvTestService>::new().poll_interval(Duration::ZERO);
         assert_eq!(builder.poll_interval, Duration::ZERO);
     }
 
@@ -405,11 +403,7 @@ mod tests {
     fn server_builder_chained_configuration() {
         let builder = ServiceServerBuilder::<SrvTestService>::new()
             .poll_interval(Duration::from_millis(50))
-            .on_request(|req| {
-                Ok(SrvTestRes {
-                    output: req.input,
-                })
-            });
+            .on_request(|req| Ok(SrvTestRes { output: req.input }));
         assert_eq!(builder.poll_interval, Duration::from_millis(50));
         assert!(builder.handler.is_some());
     }
@@ -429,11 +423,7 @@ mod tests {
     #[test]
     fn server_build_with_handler_succeeds() {
         let server = ServiceServerBuilder::<SrvTestService>::new()
-            .on_request(|req| {
-                Ok(SrvTestRes {
-                    output: req.input,
-                })
-            })
+            .on_request(|req| Ok(SrvTestRes { output: req.input }))
             .build();
         assert!(server.is_ok());
         drop(server);
@@ -442,11 +432,7 @@ mod tests {
     #[test]
     fn server_name_matches_service() {
         let server = ServiceServerBuilder::<SrvTestService>::new()
-            .on_request(|req| {
-                Ok(SrvTestRes {
-                    output: req.input,
-                })
-            })
+            .on_request(|req| Ok(SrvTestRes { output: req.input }))
             .build()
             .unwrap();
         assert_eq!(server.name, "srv_edge_test_svc");
@@ -456,7 +442,11 @@ mod tests {
     #[test]
     fn server_stop_is_idempotent() {
         let server = ServiceServerBuilder::<SrvTestService>::new()
-            .on_request(|_| Ok(SrvTestRes { output: String::new() }))
+            .on_request(|_| {
+                Ok(SrvTestRes {
+                    output: String::new(),
+                })
+            })
             .build()
             .unwrap();
         // Calling stop multiple times should not panic
@@ -469,7 +459,11 @@ mod tests {
     #[test]
     fn server_drop_shuts_down_cleanly() {
         let server = ServiceServerBuilder::<SrvTestService>::new()
-            .on_request(|_| Ok(SrvTestRes { output: String::new() }))
+            .on_request(|_| {
+                Ok(SrvTestRes {
+                    output: String::new(),
+                })
+            })
             .build()
             .unwrap();
         // Drop should not hang or panic
@@ -558,7 +552,11 @@ mod tests {
             .unwrap();
 
         let result = client.call(E2eReq { a: 3, b: 4 }, Duration::from_secs(5));
-        assert!(result.is_ok(), "E2E call should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "E2E call should succeed: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap().sum, 7);
     }
 
@@ -604,10 +602,7 @@ mod tests {
             )
             .unwrap();
 
-        let result = client.call(
-            E2eFailReq { should_fail: true },
-            Duration::from_secs(2),
-        );
+        let result = client.call(E2eFailReq { should_fail: true }, Duration::from_secs(2));
         assert!(result.is_err());
         match result.unwrap_err() {
             ServiceError::ServiceFailed(msg) => {
@@ -643,11 +638,10 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut client =
-            crate::services::client::ServiceClient::<OptService>::with_poll_interval(
-                Duration::from_millis(1),
-            )
-            .unwrap();
+        let mut client = crate::services::client::ServiceClient::<OptService>::with_poll_interval(
+            Duration::from_millis(1),
+        )
+        .unwrap();
 
         let result = client.call_optional(OptReq { v: 5 }, Duration::from_secs(2));
         assert!(result.is_ok());

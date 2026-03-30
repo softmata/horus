@@ -60,7 +60,9 @@ impl JsonWireMessage {
     /// Create from a JSON string. Returns None if too large.
     pub fn from_json(json: &str, msg_id: u64, msg_type: u8) -> Option<Self> {
         let bytes = json.as_bytes();
-        if bytes.len() > 3968 { return None; }
+        if bytes.len() > 3968 {
+            return None;
+        }
         let mut msg = Self::default();
         msg.data[..bytes.len()].copy_from_slice(bytes);
         msg.data_len = bytes.len() as u32;
@@ -72,8 +74,12 @@ impl JsonWireMessage {
     /// Extract JSON string from the message.
     pub fn to_json(&self) -> Option<String> {
         let len = self.data_len as usize;
-        if len > 3968 { return None; }
-        std::str::from_utf8(&self.data[..len]).ok().map(|s| s.to_string())
+        if len > 3968 {
+            return None;
+        }
+        std::str::from_utf8(&self.data[..len])
+            .ok()
+            .map(|s| s.to_string())
     }
 }
 
@@ -83,11 +89,15 @@ impl serde::Serialize for JsonWireMessage {
         // Serialize as raw bytes
         use serde::ser::SerializeTuple;
         let mut tup = serializer.serialize_tuple(3968 + 4 + 8 + 1 + 11)?;
-        for b in &self.data { tup.serialize_element(b)?; }
+        for b in &self.data {
+            tup.serialize_element(b)?;
+        }
         tup.serialize_element(&self.data_len)?;
         tup.serialize_element(&self.msg_id)?;
         tup.serialize_element(&self.msg_type)?;
-        for b in &self._padding { tup.serialize_element(b)?; }
+        for b in &self._padding {
+            tup.serialize_element(b)?;
+        }
         tup.end()
     }
 }
@@ -156,8 +166,8 @@ pub struct NodeConfig {
     pub rate_hz: Option<f64>,
     pub budget_us: Option<u64>,
     pub deadline_us: Option<u64>,
-    pub miss_policy: u8,         // 0=Warn, 1=Skip, 2=SafeMode, 3=Stop
-    pub execution_class: u8,     // 0=BestEffort, 1=Rt, 2=Compute, 3=Event, 4=AsyncIo
+    pub miss_policy: u8,     // 0=Warn, 1=Skip, 2=SafeMode, 3=Stop
+    pub execution_class: u8, // 0=BestEffort, 1=Rt, 2=Compute, 3=Event, 4=AsyncIo
     pub event_topic: Option<String>,
     pub order: u32,
     pub pinned_core: Option<usize>,

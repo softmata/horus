@@ -22,32 +22,32 @@
 //! - `types_ffi` — Shared type definitions (Duration, Frequency, Miss, etc.)
 
 // FFI wrapper modules — each contains opaque types + FFI functions
-mod types_ffi;
-mod scheduler_ffi;
-mod node_ffi;
-mod topic_ffi;
-mod json_service;
-mod service_ffi;
 mod action_ffi;
-mod transform_ffi;
+mod c_api;
+mod json_service;
+mod node_ffi;
 mod params_ffi;
 mod pool_ffi;
-mod c_api;
+mod scheduler_ffi;
+mod service_ffi;
+mod topic_ffi;
+mod transform_ffi;
+mod types_ffi;
 
 #[cfg(test)]
-mod layout_tests;
-#[cfg(test)]
 mod e2e_tests;
+#[cfg(test)]
+mod layout_tests;
 #[cfg(test)]
 mod roundtrip_tests;
 
 // Re-export for build.rs bridge compilation
-pub use types_ffi::*;
-pub use scheduler_ffi::*;
-pub use node_ffi::*;
-pub use topic_ffi::*;
-pub use service_ffi::*;
 pub use action_ffi::*;
-pub use transform_ffi::*;
+pub use node_ffi::*;
 pub use params_ffi::*;
 pub use pool_ffi::*;
+pub use scheduler_ffi::*;
+pub use service_ffi::*;
+pub use topic_ffi::*;
+pub use transform_ffi::*;
+pub use types_ffi::*;

@@ -246,9 +246,9 @@ mod tests {
 
     #[test]
     fn get_f64() {
-        let params = make_params(&[("gain", toml::Value::Float(3.14))]);
+        let params = make_params(&[("gain", toml::Value::Float(2.75))]);
         let gain: f64 = params.get("gain").unwrap();
-        assert!((gain - 3.14).abs() < 1e-10);
+        assert!((gain - 2.75).abs() < 1e-10);
     }
 
     #[test]

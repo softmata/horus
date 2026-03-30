@@ -322,7 +322,10 @@ mod tests {
         // Set trust_proxy via env var, then read it back
         let original_proxy = std::env::var("HORUS_TRUST_PROXY").ok();
         std::env::set_var("HORUS_TRUST_PROXY", "1");
-        assert!(trust_proxy(), "trust_proxy should return true when set to '1'");
+        assert!(
+            trust_proxy(),
+            "trust_proxy should return true when set to '1'"
+        );
 
         std::env::set_var("HORUS_TRUST_PROXY", "true");
         assert!(
@@ -400,10 +403,7 @@ mod tests {
             urls.get("plugin_registry").unwrap().as_str().unwrap(),
             DEFAULT_PLUGIN_REGISTRY_URL
         );
-        assert_eq!(
-            urls.get("pypi").unwrap().as_str().unwrap(),
-            PYPI_API_URL
-        );
+        assert_eq!(urls.get("pypi").unwrap().as_str().unwrap(), PYPI_API_URL);
         assert_eq!(
             urls.get("crates_io").unwrap().as_str().unwrap(),
             CRATES_IO_API_URL
@@ -415,19 +415,35 @@ mod tests {
             AUTH_MAX_ATTEMPTS
         );
         assert_eq!(
-            security.get("min_password_length").unwrap().as_integer().unwrap() as usize,
+            security
+                .get("min_password_length")
+                .unwrap()
+                .as_integer()
+                .unwrap() as usize,
             MIN_PASSWORD_LENGTH
         );
         assert_eq!(
-            security.get("rate_limit_window_secs").unwrap().as_integer().unwrap() as u64,
+            security
+                .get("rate_limit_window_secs")
+                .unwrap()
+                .as_integer()
+                .unwrap() as u64,
             AUTH_RATE_LIMIT_WINDOW_SECS
         );
         assert_eq!(
-            security.get("session_timeout_secs").unwrap().as_integer().unwrap() as u64,
+            security
+                .get("session_timeout_secs")
+                .unwrap()
+                .as_integer()
+                .unwrap() as u64,
             SESSION_TIMEOUT_SECS
         );
         assert_eq!(
-            security.get("session_absolute_timeout_secs").unwrap().as_integer().unwrap() as u64,
+            security
+                .get("session_absolute_timeout_secs")
+                .unwrap()
+                .as_integer()
+                .unwrap() as u64,
             SESSION_ABSOLUTE_TIMEOUT_SECS
         );
     }

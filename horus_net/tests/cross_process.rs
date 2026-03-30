@@ -8,12 +8,12 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use horus_core::communication::{read_latest_slot_bytes, Topic};
-use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
-use horus_robotics::messages::vision::CompressedImage;
-use horus_types::Pose2D;
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::wire::*;
+use horus_robotics::messages::vision::CompressedImage;
+use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
 use horus_sys::shm::shm_topics_dir;
+use horus_types::Pose2D;
 
 fn unique_name(base: &str) -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -42,11 +42,8 @@ fn shm_path(name: &str) -> PathBuf {
 
 /// Run a cross-process write+read test for a given message type.
 /// Creates SHM in this process, spawns writer process, reads back.
-fn cross_process_type_test<T>(
-    msg_type_name: &str,
-    count: u32,
-    validate: impl Fn(&[u8]) -> bool,
-) where
+fn cross_process_type_test<T>(msg_type_name: &str, count: u32, validate: impl Fn(&[u8]) -> bool)
+where
     T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
 {
     let name = unique_name(msg_type_name);
@@ -84,11 +81,8 @@ fn cross_process_type_test<T>(
 }
 
 /// Run a concurrent cross-process test — reader and writer overlap.
-fn cross_process_concurrent_test<T>(
-    msg_type_name: &str,
-    write_count: u32,
-    min_reads: u32,
-) where
+fn cross_process_concurrent_test<T>(msg_type_name: &str, write_count: u32, min_reads: u32)
+where
     T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
 {
     let name = unique_name(&format!("{msg_type_name}_conc"));
@@ -158,8 +152,10 @@ fn xproc_cmdvel_data_integrity() {
 
     let writer = Command::new(&binary)
         .args(["write_raw", &name, "100", "cmdvel"])
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     writer.wait_with_output().unwrap();
 
     let slot = read_latest_slot_bytes(&path, 0).unwrap();
@@ -193,8 +189,10 @@ fn xproc_imu_data_integrity() {
 
     let writer = Command::new(&binary)
         .args(["write_raw", &name, "100", "imu"])
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     writer.wait_with_output().unwrap();
 
     let slot = read_latest_slot_bytes(&path, 0).unwrap();
@@ -228,12 +226,15 @@ fn xproc_jointstate_data_integrity() {
 
     let writer = Command::new(&binary)
         .args(["write_raw", &name, "50", "jointstate"])
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     writer.wait_with_output().unwrap();
 
     let slot = read_latest_slot_bytes(&path, 0).unwrap();
-    let js: JointState = unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const JointState) };
+    let js: JointState =
+        unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const JointState) };
     assert_eq!(js.joint_count, 6);
     assert!((js.positions[0] - 4.9).abs() < 0.01); // i=49, 49*0.1=4.9
 }
@@ -258,8 +259,10 @@ fn xproc_pose2d_data_integrity() {
 
     let writer = Command::new(&binary)
         .args(["write_raw", &name, "100", "pose2d"])
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     writer.wait_with_output().unwrap();
 
     let slot = read_latest_slot_bytes(&path, 0).unwrap();
@@ -288,12 +291,15 @@ fn xproc_laserscan_data_integrity() {
 
     let writer = Command::new(&binary)
         .args(["write_raw", &name, "50", "laserscan"])
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     writer.wait_with_output().unwrap();
 
     let slot = read_latest_slot_bytes(&path, 0).unwrap();
-    let scan: LaserScan = unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const LaserScan) };
+    let scan: LaserScan =
+        unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const LaserScan) };
     assert!((scan.ranges[0] - 4.9).abs() < 0.01); // i=49, 49*0.1=4.9
 }
 
@@ -317,12 +323,15 @@ fn xproc_odometry_data_integrity() {
 
     let writer = Command::new(&binary)
         .args(["write_raw", &name, "100", "odometry"])
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     writer.wait_with_output().unwrap();
 
     let slot = read_latest_slot_bytes(&path, 0).unwrap();
-    let odom: Odometry = unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const Odometry) };
+    let odom: Odometry =
+        unsafe { std::ptr::read_unaligned(slot.payload.as_ptr() as *const Odometry) };
     assert!((odom.pose.x - 0.99).abs() < 0.001);
 }
 
@@ -337,31 +346,43 @@ fn xproc_stress_multi_type_simultaneous() {
     let mut children = Vec::new();
 
     // Create topics in this process
-    let names: Vec<String> = types.iter().map(|t| unique_name(&format!("stress_{t}"))).collect();
-    let _topics: Vec<Box<dyn std::any::Any>> = types.iter().zip(&names).map(|(t, n)| -> Box<dyn std::any::Any> {
-        match *t {
-            "cmdvel" => Box::new(Topic::<CmdVel>::new(n).unwrap()),
-            "imu" => Box::new(Topic::<Imu>::new(n).unwrap()),
-            "jointstate" => Box::new(Topic::<JointState>::new(n).unwrap()),
-            "pose2d" => Box::new(Topic::<Pose2D>::new(n).unwrap()),
-            _ => unreachable!(),
-        }
-    }).collect();
+    let names: Vec<String> = types
+        .iter()
+        .map(|t| unique_name(&format!("stress_{t}")))
+        .collect();
+    let _topics: Vec<Box<dyn std::any::Any>> = types
+        .iter()
+        .zip(&names)
+        .map(|(t, n)| -> Box<dyn std::any::Any> {
+            match *t {
+                "cmdvel" => Box::new(Topic::<CmdVel>::new(n).unwrap()),
+                "imu" => Box::new(Topic::<Imu>::new(n).unwrap()),
+                "jointstate" => Box::new(Topic::<JointState>::new(n).unwrap()),
+                "pose2d" => Box::new(Topic::<Pose2D>::new(n).unwrap()),
+                _ => unreachable!(),
+            }
+        })
+        .collect();
 
     // Spawn 4 writers simultaneously (one per type)
     for (t, n) in types.iter().zip(&names) {
         children.push(
             Command::new(&binary)
                 .args(["write_raw", n, "100", t])
-                .stdout(Stdio::piped()).stderr(Stdio::piped())
-                .spawn().expect("spawn writer"),
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn writer"),
         );
     }
 
     for (child, t) in children.into_iter().zip(&types) {
         let output = child.wait_with_output().expect("wait writer");
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("WROTE_RAW 100"), "{t} writer failed: {stdout}");
+        assert!(
+            stdout.contains("WROTE_RAW 100"),
+            "{t} writer failed: {stdout}"
+        );
     }
 
     // Verify all topics have data
@@ -441,7 +462,8 @@ fn xproc_compressed_image_wire_format() {
     let (sa, sb, addr) = {
         let a = UdpSocket::bind("127.0.0.1:0").unwrap();
         let b = UdpSocket::bind("127.0.0.1:0").unwrap();
-        b.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        b.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
         let addr = b.local_addr().unwrap();
         (a, b, addr)
     };

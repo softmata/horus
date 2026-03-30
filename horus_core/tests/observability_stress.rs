@@ -58,11 +58,7 @@ fn test_50_hosts_presence_discovery() {
     let files: Vec<_> = std::fs::read_dir(&nodes_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("remote_")
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with("remote_"))
         .collect();
     let elapsed = start.elapsed();
 
@@ -116,19 +112,12 @@ fn test_presence_rapid_churn() {
     let files: Vec<_> = std::fs::read_dir(&nodes_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("remote_churn_")
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with("remote_churn_"))
         .collect();
 
     // Some files should exist (not all deleted)
     // Exact count depends on modulo pattern
-    assert!(
-        files.len() <= 20,
-        "At most 20 churn hosts should exist"
-    );
+    assert!(files.len() <= 20, "At most 20 churn hosts should exist");
 
     // Clean up
     for f in files {
@@ -142,7 +131,9 @@ fn test_presence_rapid_churn() {
 
 #[test]
 fn test_remote_log_buffer_isolation() {
-    use horus_core::core::log_buffer::{LogEntry, LogType, GLOBAL_LOG_BUFFER, GLOBAL_REMOTE_LOG_BUFFER};
+    use horus_core::core::log_buffer::{
+        LogEntry, LogType, GLOBAL_LOG_BUFFER, GLOBAL_REMOTE_LOG_BUFFER,
+    };
 
     // Record local buffer state before
     let local_before = GLOBAL_LOG_BUFFER.write_idx();
@@ -178,9 +169,7 @@ fn test_remote_log_buffer_isolation() {
     );
 
     // Verify entries have host-prefixed node names
-    let has_host_prefix = remote_entries
-        .iter()
-        .any(|e| e.node_name.contains("host_"));
+    let has_host_prefix = remote_entries.iter().any(|e| e.node_name.contains("host_"));
     assert!(has_host_prefix, "Remote entries should have host prefix");
 }
 

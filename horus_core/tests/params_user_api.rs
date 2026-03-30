@@ -63,9 +63,12 @@ fn params_get_or_default() {
     assert!((val - 1.0).abs() < 1e-10, "should return default");
 
     // Set it, then get_or should return the set value
-    params.set("nonexistent_kp", 3.14).unwrap();
+    params.set("nonexistent_kp", 2.75).unwrap();
     let val2: f64 = params.get_or("nonexistent_kp", 1.0);
-    assert!((val2 - 3.14).abs() < 1e-10, "should return set value, not default");
+    assert!(
+        (val2 - 2.75).abs() < 1e-10,
+        "should return set value, not default"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -134,7 +137,10 @@ fn params_overwrite() {
     assert!((params.get::<f64>("gain").unwrap() - 1.0).abs() < 1e-10);
 
     params.set("gain", 5.0f64).unwrap();
-    assert!((params.get::<f64>("gain").unwrap() - 5.0).abs() < 1e-10, "should be overwritten to 5.0");
+    assert!(
+        (params.get::<f64>("gain").unwrap() - 5.0).abs() < 1e-10,
+        "should be overwritten to 5.0"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════

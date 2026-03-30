@@ -6,8 +6,7 @@
 // 3. Replaying a recording produces the same sequence
 
 use horus_core::scheduling::{
-    diff_recordings, NodeRecording, NodeReplayer, NodeTickSnapshot, Recording,
-    SchedulerRecording,
+    diff_recordings, NodeRecording, NodeReplayer, NodeTickSnapshot, Recording, SchedulerRecording,
 };
 
 mod common;
@@ -74,7 +73,10 @@ fn test_recording_intent_captures_node_ticks() {
 
     // The data can be played back via NodeReplayer
     let mut replayer = NodeReplayer::from_recording(recording);
-    assert!(!replayer.is_finished(), "Replayer should not be finished at start");
+    assert!(
+        !replayer.is_finished(),
+        "Replayer should not be finished at start"
+    );
 
     let mut replayed_ticks = 1u64; // We start at tick 0 (first snapshot)
     while replayer.advance() {
@@ -121,7 +123,10 @@ fn test_recording_intent_save_load_roundtrip() {
     node_rec
         .save(&node_path)
         .expect("Failed to save node recording");
-    assert!(node_path.exists(), "Node recording file should exist on disk");
+    assert!(
+        node_path.exists(),
+        "Node recording file should exist on disk"
+    );
 
     // Load
     let loaded = NodeRecording::load(&node_path).expect("Failed to load node recording");
@@ -133,7 +138,10 @@ fn test_recording_intent_save_load_roundtrip() {
     assert_eq!(loaded.snapshot_count(), 15);
     assert_eq!(loaded.first_tick, 0);
     assert_eq!(loaded.last_tick, 14);
-    assert!(loaded.ended_at.is_some(), "ended_at should be set after finish()");
+    assert!(
+        loaded.ended_at.is_some(),
+        "ended_at should be set after finish()"
+    );
 
     // Assert topic type metadata survived the roundtrip
     assert_eq!(

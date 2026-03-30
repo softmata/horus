@@ -15,8 +15,8 @@ use horus_core::params::RuntimeParams;
 use horus_core::scheduling::Scheduler;
 use horus_core::service;
 use horus_core::services::*;
-use horus_robotics::CmdVel;
 use horus_robotics::messages::sensor::*;
+use horus_robotics::CmdVel;
 use horus_tf::{Transform, TransformFrame};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -36,7 +36,9 @@ struct LazyTopicNode {
     ticks: Arc<AtomicU64>,
 }
 impl Node for LazyTopicNode {
-    fn name(&self) -> &str { "lazy_topic" }
+    fn name(&self) -> &str {
+        "lazy_topic"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         // Create 5 topics dynamically based on a runtime parameter
         for i in 0..5 {
@@ -60,7 +62,9 @@ struct LazyRecvNode {
     corrupted: Arc<AtomicU64>,
 }
 impl Node for LazyRecvNode {
-    fn name(&self) -> &str { "lazy_recv" }
+    fn name(&self) -> &str {
+        "lazy_recv"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         for i in 0..5 {
             let name = format!("{}.joint_{}", self.base_name, i);
@@ -91,14 +95,27 @@ fn chaos_lazy_topics_in_init() {
     let corrupt = Arc::new(AtomicU64::new(0));
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
-    let _ = sched.add(LazyTopicNode {
-        base_name: base.clone(), topics: vec![], ticks: ticks.clone(),
-    }).order(0).build();
-    let _ = sched.add(LazyRecvNode {
-        base_name: base, topics: vec![], received: recv.clone(), corrupted: corrupt.clone(),
-    }).order(1).build();
+    let _ = sched
+        .add(LazyTopicNode {
+            base_name: base.clone(),
+            topics: vec![],
+            ticks: ticks.clone(),
+        })
+        .order(0)
+        .build();
+    let _ = sched
+        .add(LazyRecvNode {
+            base_name: base,
+            topics: vec![],
+            received: recv.clone(),
+            corrupted: corrupt.clone(),
+        })
+        .order(1)
+        .build();
 
-    for _ in 0..200 { let _ = sched.tick_once(); }
+    for _ in 0..200 {
+        let _ = sched.tick_once();
+    }
 
     let c = corrupt.load(Ordering::Relaxed);
     let r = recv.load(Ordering::Relaxed);
@@ -118,7 +135,9 @@ struct ParamReadingNode {
     values_seen: Arc<std::sync::Mutex<Vec<f64>>>,
 }
 impl Node for ParamReadingNode {
-    fn name(&self) -> &str { "param_reader" }
+    fn name(&self) -> &str {
+        "param_reader"
+    }
     fn tick(&mut self) {
         let kp: f64 = self.params.get_or("chaos.kp", 1.0);
         self.values_seen.lock().unwrap().push(kp);
@@ -140,8 +159,14 @@ fn chaos_params_changed_mid_run() {
     let r = running.clone();
     let h = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz());
-        let _ = sched.add(ParamReadingNode { params: p, values_seen: v })
-            .rate(100_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ParamReadingNode {
+                params: p,
+                values_seen: v,
+            })
+            .rate(100_u64.hz())
+            .order(0)
+            .build();
         while r.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(9));
@@ -163,7 +188,13 @@ fn chaos_params_changed_mid_run() {
     let saw_5 = vals.iter().any(|&v| (v - 5.0).abs() < 0.01);
     let saw_10 = vals.iter().any(|&v| (v - 10.0).abs() < 0.01);
 
-    println!("Params mid-run: {} values, saw 1.0={}, 5.0={}, 10.0={}", vals.len(), saw_1, saw_5, saw_10);
+    println!(
+        "Params mid-run: {} values, saw 1.0={}, 5.0={}, 10.0={}",
+        vals.len(),
+        saw_1,
+        saw_5,
+        saw_10
+    );
     assert!(saw_1, "Should see initial kp=1.0");
     assert!(saw_5 || saw_10, "Should see at least one updated value");
     println!("✓ chaos_params_changed_mid_run — live param tuning works");
@@ -181,7 +212,9 @@ struct TfInTickNode {
     errors: Arc<AtomicU64>,
 }
 impl Node for TfInTickNode {
-    fn name(&self) -> &str { "tf_in_tick" }
+    fn name(&self) -> &str {
+        "tf_in_tick"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu = Some(Topic::new(&self.imu_name)?);
         Ok(())
@@ -205,9 +238,14 @@ impl Node for TfInTickNode {
             Err(_) => {} // frame not yet registered — OK during init
         }
         // Update TF in the same tick
-        let _ = self.tf.update_transform("sensor",
+        let _ = self.tf.update_transform(
+            "sensor",
             &Transform::from_translation([0.1, 0.0, 0.3]),
-            horus_library::transform_frame::timestamp_now());
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        );
     }
 }
 
@@ -218,19 +256,35 @@ fn chaos_tf_in_topic_callback() {
     let tf = Arc::new(TransformFrame::medium());
     tf.register_frame("world", None).unwrap();
     tf.register_frame("sensor", Some("world")).unwrap();
-    tf.update_transform("sensor", &Transform::from_translation([0.1, 0.0, 0.3]),
-        horus_library::transform_frame::timestamp_now()).unwrap();
+    tf.update_transform(
+        "sensor",
+        &Transform::from_translation([0.1, 0.0, 0.3]),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    )
+    .unwrap();
 
     let lookups = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(AtomicU64::new(0));
 
     let mut sched = Scheduler::new().tick_rate(200_u64.hz()).deterministic(true);
-    let _ = sched.add(TfInTickNode {
-        tf: tf.clone(), imu_name: unique("chaos_tf_imu"), imu: None,
-        lookups: lookups.clone(), errors: errors.clone(),
-    }).rate(200_u64.hz()).order(0).build();
+    let _ = sched
+        .add(TfInTickNode {
+            tf: tf.clone(),
+            imu_name: unique("chaos_tf_imu"),
+            imu: None,
+            lookups: lookups.clone(),
+            errors: errors.clone(),
+        })
+        .rate(200_u64.hz())
+        .order(0)
+        .build();
 
-    for _ in 0..500 { let _ = sched.tick_once(); }
+    for _ in 0..500 {
+        let _ = sched.tick_once();
+    }
 
     let l = lookups.load(Ordering::Relaxed);
     let e = errors.load(Ordering::Relaxed);
@@ -254,8 +308,13 @@ fn chaos_service_inside_action() {
 
     // Service server
     let _svc = ServiceServerBuilder::<InnerSvc>::new()
-        .on_request(|req| Ok(InnerSvcResponse { result: req.val * 2 }))
-        .build().unwrap();
+        .on_request(|req| {
+            Ok(InnerSvcResponse {
+                result: req.val * 2,
+            })
+        })
+        .build()
+        .unwrap();
 
     // Action server that calls the service internally
     let svc_called = Arc::new(AtomicU64::new(0));
@@ -268,7 +327,9 @@ fn chaos_service_inside_action() {
             // Call service from inside action execute callback
             if let Ok(mut client) = ServiceClient::<InnerSvc>::new() {
                 if let Ok(resp) = client.call(InnerSvcRequest { val: 42 }, 2_u64.secs()) {
-                    if resp.result == 84 { sc.fetch_add(1, Ordering::Relaxed); }
+                    if resp.result == 84 {
+                        sc.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             handle.succeed(OuterActResult { ok: true })
@@ -295,7 +356,11 @@ fn chaos_service_inside_action() {
     h.join().unwrap();
 
     let calls = svc_called.load(Ordering::Relaxed);
-    println!("Service inside action: {} service calls, result={:?}", calls, result.as_ref().map(|r| r.ok));
+    println!(
+        "Service inside action: {} service calls, result={:?}",
+        calls,
+        result.as_ref().map(|r| r.ok)
+    );
     match result {
         Ok(r) => assert!(r.ok, "Action should succeed"),
         Err(e) => println!("  Action error (acceptable in debug): {:?}", e),
@@ -318,23 +383,33 @@ struct FiftyTopicNode {
     is_pub: bool,
 }
 impl Node for FiftyTopicNode {
-    fn name(&self) -> &str { if self.is_pub { "fifty_pub" } else { "fifty_sub" } }
+    fn name(&self) -> &str {
+        if self.is_pub {
+            "fifty_pub"
+        } else {
+            "fifty_sub"
+        }
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         for i in 0..20 {
-            self.imu_topics.push(Topic::new(&format!("{}.imu_{}", self.prefix, i))?);
+            self.imu_topics
+                .push(Topic::new(&format!("{}.imu_{}", self.prefix, i))?);
         }
         for i in 0..20 {
-            self.cmd_topics.push(Topic::new(&format!("{}.cmd_{}", self.prefix, i))?);
+            self.cmd_topics
+                .push(Topic::new(&format!("{}.cmd_{}", self.prefix, i))?);
         }
         for i in 0..10 {
-            self.bat_topics.push(Topic::new(&format!("{}.bat_{}", self.prefix, i))?);
+            self.bat_topics
+                .push(Topic::new(&format!("{}.bat_{}", self.prefix, i))?);
         }
         Ok(())
     }
     fn tick(&mut self) {
         if self.is_pub {
             for t in &self.imu_topics {
-                let mut imu = Imu::new(); imu.linear_acceleration[2] = 9.81;
+                let mut imu = Imu::new();
+                imu.linear_acceleration[2] = 9.81;
                 t.send(imu);
                 self.sent.fetch_add(1, Ordering::Relaxed);
             }
@@ -343,7 +418,8 @@ impl Node for FiftyTopicNode {
                 self.sent.fetch_add(1, Ordering::Relaxed);
             }
             for t in &self.bat_topics {
-                let mut b = BatteryState::default(); b.voltage = 12.0;
+                let mut b = BatteryState::default();
+                b.voltage = 12.0;
                 t.send(b);
                 self.sent.fetch_add(1, Ordering::Relaxed);
             }
@@ -386,18 +462,36 @@ fn chaos_50_topics_mixed_types() {
     let corrupt = Arc::new(AtomicU64::new(0));
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
-    let _ = sched.add(FiftyTopicNode {
-        prefix: prefix.clone(), imu_topics: vec![], cmd_topics: vec![], bat_topics: vec![],
-        sent: sent.clone(), received: Arc::new(AtomicU64::new(0)),
-        corrupted: Arc::new(AtomicU64::new(0)), is_pub: true,
-    }).order(0).build();
-    let _ = sched.add(FiftyTopicNode {
-        prefix, imu_topics: vec![], cmd_topics: vec![], bat_topics: vec![],
-        sent: Arc::new(AtomicU64::new(0)), received: recv.clone(),
-        corrupted: corrupt.clone(), is_pub: false,
-    }).order(1).build();
+    let _ = sched
+        .add(FiftyTopicNode {
+            prefix: prefix.clone(),
+            imu_topics: vec![],
+            cmd_topics: vec![],
+            bat_topics: vec![],
+            sent: sent.clone(),
+            received: Arc::new(AtomicU64::new(0)),
+            corrupted: Arc::new(AtomicU64::new(0)),
+            is_pub: true,
+        })
+        .order(0)
+        .build();
+    let _ = sched
+        .add(FiftyTopicNode {
+            prefix,
+            imu_topics: vec![],
+            cmd_topics: vec![],
+            bat_topics: vec![],
+            sent: Arc::new(AtomicU64::new(0)),
+            received: recv.clone(),
+            corrupted: corrupt.clone(),
+            is_pub: false,
+        })
+        .order(1)
+        .build();
 
-    for _ in 0..200 { let _ = sched.tick_once(); }
+    for _ in 0..200 {
+        let _ = sched.tick_once();
+    }
 
     let s = sent.load(Ordering::Relaxed);
     let r = recv.load(Ordering::Relaxed);
@@ -406,7 +500,10 @@ fn chaos_50_topics_mixed_types() {
     assert_eq!(c, 0, "DATA CORRUPTION across 50 mixed topics!");
     assert!(s > 5000, "Should send >5000 msgs across 50 topics");
     assert!(r > 2000, "Should receive >2000 msgs");
-    println!("✓ chaos_50_topics_mixed_types — {} msgs, zero corruption", s);
+    println!(
+        "✓ chaos_50_topics_mixed_types — {} msgs, zero corruption",
+        s
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -426,17 +523,29 @@ fn chaos_4_schedulers_one_topic() {
     let r1 = running.clone();
     let h_pub = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(200_u64.hz());
-        struct Pub { t: Option<Topic<CmdVel>>, n: String }
+        struct Pub {
+            t: Option<Topic<CmdVel>>,
+            n: String,
+        }
         impl Node for Pub {
-            fn name(&self) -> &str { "pub4" }
+            fn name(&self) -> &str {
+                "pub4"
+            }
             fn init(&mut self) -> horus_core::error::HorusResult<()> {
-                self.t = Some(Topic::new(&self.n)?); Ok(())
+                self.t = Some(Topic::new(&self.n)?);
+                Ok(())
             }
             fn tick(&mut self) {
-                if let Some(ref t) = self.t { t.send(CmdVel::new(1.0, 0.0)); }
+                if let Some(ref t) = self.t {
+                    t.send(CmdVel::new(1.0, 0.0));
+                }
             }
         }
-        let _ = sched.add(Pub { t: None, n: t1 }).rate(200_u64.hz()).order(0).build();
+        let _ = sched
+            .add(Pub { t: None, n: t1 })
+            .rate(200_u64.hz())
+            .order(0)
+            .build();
         while r1.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(4));
@@ -452,20 +561,36 @@ fn chaos_4_schedulers_one_topic() {
         let hz = *rate;
         sub_handles.push(std::thread::spawn(move || {
             let mut sched = Scheduler::new().tick_rate(hz.hz());
-            struct Sub { t: Option<Topic<CmdVel>>, n: String, r: Arc<AtomicU64> }
+            struct Sub {
+                t: Option<Topic<CmdVel>>,
+                n: String,
+                r: Arc<AtomicU64>,
+            }
             impl Node for Sub {
-                fn name(&self) -> &str { "sub4" }
+                fn name(&self) -> &str {
+                    "sub4"
+                }
                 fn init(&mut self) -> horus_core::error::HorusResult<()> {
-                    self.t = Some(Topic::new(&self.n)?); Ok(())
+                    self.t = Some(Topic::new(&self.n)?);
+                    Ok(())
                 }
                 fn tick(&mut self) {
                     if let Some(ref t) = self.t {
-                        while let Some(_) = t.recv() { self.r.fetch_add(1, Ordering::Relaxed); }
+                        while let Some(_) = t.recv() {
+                            self.r.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
-            let _ = sched.add(Sub { t: None, n: t, r: tr })
-                .rate(hz.hz()).order(0).build();
+            let _ = sched
+                .add(Sub {
+                    t: None,
+                    n: t,
+                    r: tr,
+                })
+                .rate(hz.hz())
+                .order(0)
+                .build();
             while r.load(Ordering::Relaxed) {
                 let _ = sched.tick_once();
                 std::thread::sleep(Duration::from_millis(1000 / hz));
@@ -476,10 +601,15 @@ fn chaos_4_schedulers_one_topic() {
     std::thread::sleep(Duration::from_secs(5));
     running.store(false, Ordering::Relaxed);
     h_pub.join().unwrap();
-    for h in sub_handles { h.join().unwrap(); }
+    for h in sub_handles {
+        h.join().unwrap();
+    }
 
     let r = total_recv.load(Ordering::Relaxed);
-    println!("4 schedulers, 1 topic: {} total received across 3 subscribers", r);
+    println!(
+        "4 schedulers, 1 topic: {} total received across 3 subscribers",
+        r
+    );
     assert!(r > 100, "Subscribers should receive data from publisher");
     println!("✓ chaos_4_schedulers_one_topic — 4 schedulers share 1 topic");
 }
@@ -494,9 +624,12 @@ struct SelfTalkNode {
     echoed: Arc<AtomicU64>,
 }
 impl Node for SelfTalkNode {
-    fn name(&self) -> &str { "self_talk" }
+    fn name(&self) -> &str {
+        "self_talk"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
-        self.topic = Some(Topic::new(&self.name_str)?); Ok(())
+        self.topic = Some(Topic::new(&self.name_str)?);
+        Ok(())
     }
     fn tick(&mut self) {
         if let Some(ref t) = self.topic {
@@ -517,11 +650,18 @@ fn chaos_self_send_recv_same_tick() {
     let echoed = Arc::new(AtomicU64::new(0));
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
-    let _ = sched.add(SelfTalkNode {
-        topic: None, name_str: unique("chaos_self"), echoed: echoed.clone(),
-    }).order(0).build();
+    let _ = sched
+        .add(SelfTalkNode {
+            topic: None,
+            name_str: unique("chaos_self"),
+            echoed: echoed.clone(),
+        })
+        .order(0)
+        .build();
 
-    for _ in 0..100 { let _ = sched.tick_once(); }
+    for _ in 0..100 {
+        let _ = sched.tick_once();
+    }
 
     let e = echoed.load(Ordering::Relaxed);
     println!("Self send/recv: {} echoed in same tick", e);
@@ -551,7 +691,8 @@ fn chaos_everything_at_once() {
 
     let _svc = ServiceServerBuilder::<ChaosSvc>::new()
         .on_request(|req| Ok(ChaosSvcResponse { n2: req.n + 1 }))
-        .build().unwrap();
+        .build()
+        .unwrap();
 
     let imu_topic = unique("chaos_all_imu");
     let cmd_topic = unique("chaos_all_cmd");
@@ -570,13 +711,20 @@ fn chaos_everything_at_once() {
     let r1 = running.clone();
     let h1 = std::thread::spawn(move || {
         struct ChaosNode1 {
-            tf: Arc<TransformFrame>, params: Arc<RuntimeParams>,
-            imu: Option<Topic<Imu>>, cmd: Option<Topic<CmdVel>>,
-            imu_n: String, cmd_n: String,
-            corrupt: Arc<AtomicU64>, ops: Arc<AtomicU64>, tick: u64,
+            tf: Arc<TransformFrame>,
+            params: Arc<RuntimeParams>,
+            imu: Option<Topic<Imu>>,
+            cmd: Option<Topic<CmdVel>>,
+            imu_n: String,
+            cmd_n: String,
+            corrupt: Arc<AtomicU64>,
+            ops: Arc<AtomicU64>,
+            tick: u64,
         }
         impl Node for ChaosNode1 {
-            fn name(&self) -> &str { "chaos1" }
+            fn name(&self) -> &str {
+                "chaos1"
+            }
             fn init(&mut self) -> horus_core::error::HorusResult<()> {
                 self.imu = Some(Topic::new(&self.imu_n)?);
                 self.cmd = Some(Topic::new(&self.cmd_n)?);
@@ -584,32 +732,56 @@ fn chaos_everything_at_once() {
             }
             fn tick(&mut self) {
                 // Publish IMU
-                let mut imu = Imu::new(); imu.linear_acceleration[2] = 9.81;
-                if let Some(ref t) = self.imu { t.send(imu); }
+                let mut imu = Imu::new();
+                imu.linear_acceleration[2] = 9.81;
+                if let Some(ref t) = self.imu {
+                    t.send(imu);
+                }
                 // Read params
                 let speed: f64 = self.params.get_or("chaos.speed", 1.0);
                 // Update TF
-                let _ = self.tf.update_transform("base",
+                let _ = self.tf.update_transform(
+                    "base",
                     &Transform::from_translation([self.tick as f64 * 0.001, 0.0, 0.0]),
-                    horus_library::transform_frame::timestamp_now());
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos() as u64,
+                );
                 // Publish CmdVel based on param
-                if let Some(ref t) = self.cmd { t.send(CmdVel::new(speed as f32, 0.0)); }
+                if let Some(ref t) = self.cmd {
+                    t.send(CmdVel::new(speed as f32, 0.0));
+                }
                 // Self-recv CmdVel (echo check)
                 if let Some(ref t) = self.cmd {
                     if let Some(cmd) = t.recv() {
-                        if !cmd.linear.is_finite() { self.corrupt.fetch_add(1, Ordering::Relaxed); }
+                        if !cmd.linear.is_finite() {
+                            self.corrupt.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
                 self.ops.fetch_add(5, Ordering::Relaxed); // 5 ops per tick
                 self.tick += 1;
             }
         }
-        let mut sched = Scheduler::new().tick_rate(200_u64.hz()).name("chaos_sched1");
-        let _ = sched.add(ChaosNode1 {
-            tf: tf1, params: p1, imu: None, cmd: None,
-            imu_n: it, cmd_n: ct,
-            corrupt: c1, ops: o1, tick: 0,
-        }).rate(200_u64.hz()).order(0).build();
+        let mut sched = Scheduler::new()
+            .tick_rate(200_u64.hz())
+            .name("chaos_sched1");
+        let _ = sched
+            .add(ChaosNode1 {
+                tf: tf1,
+                params: p1,
+                imu: None,
+                cmd: None,
+                imu_n: it,
+                cmd_n: ct,
+                corrupt: c1,
+                ops: o1,
+                tick: 0,
+            })
+            .rate(200_u64.hz())
+            .order(0)
+            .build();
         while r1.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(4));
@@ -625,13 +797,18 @@ fn chaos_everything_at_once() {
     let h2 = std::thread::spawn(move || {
         struct ChaosNode2 {
             tf: Arc<TransformFrame>,
-            imu: Option<Topic<Imu>>, imu_n: String,
-            corrupt: Arc<AtomicU64>, ops: Arc<AtomicU64>,
+            imu: Option<Topic<Imu>>,
+            imu_n: String,
+            corrupt: Arc<AtomicU64>,
+            ops: Arc<AtomicU64>,
         }
         impl Node for ChaosNode2 {
-            fn name(&self) -> &str { "chaos2" }
+            fn name(&self) -> &str {
+                "chaos2"
+            }
             fn init(&mut self) -> horus_core::error::HorusResult<()> {
-                self.imu = Some(Topic::new(&self.imu_n)?); Ok(())
+                self.imu = Some(Topic::new(&self.imu_n)?);
+                Ok(())
             }
             fn tick(&mut self) {
                 if let Some(ref t) = self.imu {
@@ -651,10 +828,17 @@ fn chaos_everything_at_once() {
             }
         }
         let mut sched = Scheduler::new().tick_rate(50_u64.hz()).name("chaos_sched2");
-        let _ = sched.add(ChaosNode2 {
-            tf: tf2, imu: None, imu_n: it2,
-            corrupt: c2, ops: o2,
-        }).rate(50_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ChaosNode2 {
+                tf: tf2,
+                imu: None,
+                imu_n: it2,
+                corrupt: c2,
+                ops: o2,
+            })
+            .rate(50_u64.hz())
+            .order(0)
+            .build();
         while r2.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
             std::thread::sleep(Duration::from_millis(18));
@@ -681,8 +865,14 @@ fn chaos_everything_at_once() {
     let o = total_ops.load(Ordering::Relaxed);
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║  CHAOS: EVERYTHING AT ONCE (5s)                             ║");
-    println!("║  Total operations: {:6}                                    ║", o);
-    println!("║  Corrupted:        {:6}                                    ║", c);
+    println!(
+        "║  Total operations: {:6}                                    ║",
+        o
+    );
+    println!(
+        "║  Corrupted:        {:6}                                    ║",
+        c
+    );
     println!("║  Features active: topics + service + TF + params + 2 sched  ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
     assert_eq!(c, 0, "CHAOS TEST FOUND CORRUPTION!");

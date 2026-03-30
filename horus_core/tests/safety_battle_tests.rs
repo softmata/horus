@@ -437,9 +437,7 @@ fn test_all_degradation_stages_halt_on_estop() {
 fn test_10_simultaneous_budget_violations() {
     cleanup_stale_shm();
 
-    let counts: Vec<_> = (0..10)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let counts: Vec<_> = (0..10).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new()
         .tick_rate(100_u64.hz())
@@ -482,9 +480,7 @@ fn test_10_simultaneous_budget_violations() {
 fn test_20_sequential_degradation_kills() {
     cleanup_stale_shm();
 
-    let counts: Vec<_> = (0..20)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let counts: Vec<_> = (0..20).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new()
         .tick_rate(100_u64.hz())
@@ -548,12 +544,8 @@ fn test_20_sequential_degradation_kills() {
 fn test_cascade_kill_healthy_survivors() {
     cleanup_stale_shm();
 
-    let stall_counts: Vec<_> = (0..5)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
-    let healthy_counts: Vec<_> = (0..5)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let stall_counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
+    let healthy_counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new()
         .tick_rate(100_u64.hz())
@@ -632,9 +624,7 @@ fn test_staggered_stall_different_kill_times() {
     cleanup_stale_shm();
 
     let stall_points = [1u64, 10, 20, 30, 40];
-    let counts: Vec<_> = (0..5)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new()
         .tick_rate(100_u64.hz())
@@ -726,9 +716,7 @@ fn test_50_rapid_kill_cycles() {
 fn test_scheduler_survives_all_nodes_killed() {
     cleanup_stale_shm();
 
-    let counts: Vec<_> = (0..5)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new()
         .tick_rate(100_u64.hz())
@@ -751,7 +739,10 @@ fn test_scheduler_survives_all_nodes_killed() {
 
     // Should complete without hanging — all nodes killed, tick loop is all skips
     let result = scheduler.run_for(5_u64.secs());
-    assert!(result.is_ok(), "Scheduler should complete even with all nodes killed");
+    assert!(
+        result.is_ok(),
+        "Scheduler should complete even with all nodes killed"
+    );
 }
 
 // ============================================================================
@@ -850,9 +841,7 @@ fn test_oscillating_node_degradation_stability() {
 fn test_extreme_budget_values_no_panic() {
     cleanup_stale_shm();
 
-    let counts: Vec<_> = (0..3)
-        .map(|_| Arc::new(AtomicU64::new(0)))
-        .collect();
+    let counts: Vec<_> = (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new()
         .tick_rate(100_u64.hz())
@@ -905,15 +894,27 @@ fn test_extreme_budget_values_no_panic() {
 
     // Tiny budget with Enforce: stopped quickly (any tick > 2ns triggers)
     let tiny_ticks = counts[0].load(Ordering::SeqCst);
-    assert!(tiny_ticks < 5, "Tiny budget node should be stopped, got {}", tiny_ticks);
+    assert!(
+        tiny_ticks < 5,
+        "Tiny budget node should be stopped, got {}",
+        tiny_ticks
+    );
 
     // Huge budget: keeps running
     let huge_ticks = counts[1].load(Ordering::SeqCst);
-    assert!(huge_ticks >= 5, "Huge budget node should keep running, got {}", huge_ticks);
+    assert!(
+        huge_ticks >= 5,
+        "Huge budget node should keep running, got {}",
+        huge_ticks
+    );
 
     // Warn policy: keeps running despite violations
     let warn_ticks = counts[2].load(Ordering::SeqCst);
-    assert!(warn_ticks >= 5, "Warn policy node should keep running, got {}", warn_ticks);
+    assert!(
+        warn_ticks >= 5,
+        "Warn policy node should keep running, got {}",
+        warn_ticks
+    );
 }
 
 /// INTENT: "Budget enforcement uses strict > (not >=) for the 2x threshold.
@@ -969,6 +970,14 @@ fn test_budget_enforce_threshold_is_strict_greater_than() {
     let over_ticks = over_count.load(Ordering::SeqCst);
     let under_ticks = under_count.load(Ordering::SeqCst);
 
-    assert!(over_ticks < 5, "5x budget node should be stopped, got {} ticks", over_ticks);
-    assert!(under_ticks > 20, "0.5x budget node should NOT be stopped, got {} ticks", under_ticks);
+    assert!(
+        over_ticks < 5,
+        "5x budget node should be stopped, got {} ticks",
+        over_ticks
+    );
+    assert!(
+        under_ticks > 20,
+        "0.5x budget node should NOT be stopped, got {} ticks",
+        under_ticks
+    );
 }

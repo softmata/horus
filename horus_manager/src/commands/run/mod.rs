@@ -222,15 +222,10 @@ fn execute_workspace(
     // If a specific package was requested, run it
     if let Some(ref member) = package {
         let profile = if release { "release" } else { "debug" };
-        let binary = project_dir
-            .join(".horus/target")
-            .join(profile)
-            .join(member);
+        let binary = project_dir.join(".horus/target").join(profile).join(member);
         if binary.exists() {
             cli_output::success(&format!("Running {}", member));
-            let status = std::process::Command::new(&binary)
-                .args(&args)
-                .status()?;
+            let status = std::process::Command::new(&binary).args(&args).status()?;
             if !status.success() {
                 let code = status.code().unwrap_or(1);
                 return Err(anyhow!("Process exited with code {}", code));

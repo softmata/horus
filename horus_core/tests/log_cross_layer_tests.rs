@@ -9,8 +9,8 @@
 use horus_core::core::hlog::{
     clear_node_context, current_node_name, log_with_context, set_node_context,
 };
-use horus_core::core::log_buffer::{LogType, GLOBAL_ERROR_BUFFER, GLOBAL_LOG_BUFFER};
 use horus_core::core::log_bridge::try_init_log_bridge;
+use horus_core::core::log_buffer::{LogType, GLOBAL_ERROR_BUFFER, GLOBAL_LOG_BUFFER};
 use std::sync::Arc;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -198,10 +198,7 @@ fn multi_node_concurrent_logging_all_entries_present() {
                 b.wait(); // All threads start simultaneously
                 for j in 0..msgs_per_node {
                     set_node_context(&node_name, j as u64);
-                    log_with_context(
-                        LogType::Info,
-                        format!("{}_msg_{}_{}", base_c, i, j),
-                    );
+                    log_with_context(LogType::Info, format!("{}_msg_{}_{}", base_c, i, j));
                     clear_node_context();
                 }
             })
@@ -217,10 +214,7 @@ fn multi_node_concurrent_logging_all_entries_present() {
     // Verify entries from ALL nodes are present
     for i in 0..node_count {
         let node_name = format!("{}_node_{}", base, i);
-        let node_entries: Vec<_> = all
-            .iter()
-            .filter(|e| e.node_name == node_name)
-            .collect();
+        let node_entries: Vec<_> = all.iter().filter(|e| e.node_name == node_name).collect();
 
         assert!(
             node_entries.len() >= msgs_per_node,
@@ -243,10 +237,7 @@ fn concurrent_logging_no_entry_corruption() {
             std::thread::spawn(move || {
                 for j in 0..50u64 {
                     set_node_context(&node_name, j);
-                    log_with_context(
-                        LogType::Info,
-                        format!("integrity_{}_{}", i, j),
-                    );
+                    log_with_context(LogType::Info, format!("integrity_{}_{}", i, j));
                     clear_node_context();
                 }
             })
@@ -315,7 +306,8 @@ fn all_log_types_flow_through_hlog_to_buffer() {
             marker
         );
         assert_eq!(
-            &entry.unwrap().log_type, lt,
+            &entry.unwrap().log_type,
+            lt,
             "LogType must match for {}",
             label
         );
@@ -408,7 +400,9 @@ fn for_topic_returns_only_matching_topic() {
 
     let filtered = GLOBAL_LOG_BUFFER.for_topic(&target_topic);
     assert!(
-        filtered.iter().all(|e| e.topic.as_ref() == Some(&target_topic)),
+        filtered
+            .iter()
+            .all(|e| e.topic.as_ref() == Some(&target_topic)),
         "for_topic must return only entries with matching topic"
     );
     assert!(
@@ -464,10 +458,7 @@ fn for_type_returns_only_matching_log_type() {
     clear_node_context();
 
     let errors = GLOBAL_LOG_BUFFER.for_type(&LogType::Error);
-    let our_errors: Vec<_> = errors
-        .iter()
-        .filter(|e| e.node_name == node)
-        .collect();
+    let our_errors: Vec<_> = errors.iter().filter(|e| e.node_name == node).collect();
     assert!(
         our_errors.iter().all(|e| e.log_type == LogType::Error),
         "for_type(Error) must return only Error entries"
@@ -737,7 +728,11 @@ fn realistic_sensor_rate_error_survival_window() {
     // We document the theoretical survival window instead of asserting survival.
     println!(
         "SENSOR RATE: error {} after {} sensor entries from this test",
-        if error_survives { "SURVIVES" } else { "EVICTED (shared buffer overflow from parallel tests)" },
+        if error_survives {
+            "SURVIVES"
+        } else {
+            "EVICTED (shared buffer overflow from parallel tests)"
+        },
         sensor_entries
     );
 
@@ -824,7 +819,10 @@ fn log_bridge_error_reaches_error_buffer() {
         .get_all()
         .iter()
         .any(|e| e.message.contains(&marker));
-    assert!(found, "log::error!() via bridge must reach GLOBAL_ERROR_BUFFER");
+    assert!(
+        found,
+        "log::error!() via bridge must reach GLOBAL_ERROR_BUFFER"
+    );
 }
 
 #[test]
@@ -839,7 +837,10 @@ fn log_bridge_warn_reaches_error_buffer() {
         .get_all()
         .iter()
         .any(|e| e.message.contains(&marker));
-    assert!(found, "log::warn!() via bridge must reach GLOBAL_ERROR_BUFFER");
+    assert!(
+        found,
+        "log::warn!() via bridge must reach GLOBAL_ERROR_BUFFER"
+    );
 }
 
 #[test]
@@ -854,5 +855,8 @@ fn log_bridge_info_does_not_reach_error_buffer() {
         .get_all()
         .iter()
         .any(|e| e.message.contains(&marker));
-    assert!(!found, "log::info!() via bridge must NOT reach GLOBAL_ERROR_BUFFER");
+    assert!(
+        !found,
+        "log::info!() via bridge must NOT reach GLOBAL_ERROR_BUFFER"
+    );
 }

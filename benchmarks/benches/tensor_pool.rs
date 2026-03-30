@@ -106,9 +106,7 @@ fn bench_data_access(c: &mut Criterion) {
     let pool = make_pool(pool_id, 128, 64);
 
     // Pre-allocate tensors of various sizes
-    let small = pool
-        .alloc(&[256], TensorDtype::F32, Device::cpu())
-        .unwrap();
+    let small = pool.alloc(&[256], TensorDtype::F32, Device::cpu()).unwrap();
     let medium = pool
         .alloc(&[256, 256], TensorDtype::F32, Device::cpu())
         .unwrap();

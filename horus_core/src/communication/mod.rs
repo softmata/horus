@@ -43,15 +43,15 @@ pub use topic::{set_topic_verbose, TOPIC_VERBOSE_OFFSET};
 // Ring-buffer inspector for CLI tools (`horus topic echo`)
 #[doc(hidden)]
 pub use topic::{
-    read_latest_slot_bytes, read_topic_header_info, read_topic_messages_total,
-    read_topic_sequence, TopicHeaderInfo, TopicSlotRead,
+    read_latest_slot_bytes, read_topic_header_info, read_topic_messages_total, read_topic_sequence,
+    TopicHeaderInfo, TopicSlotRead,
 };
 
 // Topic lifecycle hook for horus_net network replication
 pub use topic::{set_topic_lifecycle_hook, TopicLifecycleEvent};
 
 // Topic-Node automatic association registry
-pub use topic::{topic_node_registry, TopicNodeRegistry, TopicAssociation, NodeTopicRole};
+pub use topic::{topic_node_registry, NodeTopicRole, TopicAssociation, TopicNodeRegistry};
 
 /// Write raw bytes into the latest slot of a topic SHM file (used by replay).
 ///

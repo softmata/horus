@@ -18,14 +18,16 @@ pub fn params_new() -> Box<FfiParams> {
 
 /// Get a parameter value as JSON string. Returns None if not found.
 pub fn params_get(params: &FfiParams, key: &str) -> Option<String> {
-    params.inner.get::<serde_json::Value>(key)
+    params
+        .inner
+        .get::<serde_json::Value>(key)
         .map(|v| v.to_string())
 }
 
 /// Set a parameter from a JSON value string.
 pub fn params_set(params: &FfiParams, key: &str, json_value: &str) -> Result<(), String> {
-    let value: serde_json::Value = serde_json::from_str(json_value)
-        .map_err(|e| format!("Invalid JSON value: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_str(json_value).map_err(|e| format!("Invalid JSON value: {}", e))?;
     params.inner.set(key, value).map_err(|e| e.to_string())
 }
 
@@ -66,7 +68,10 @@ pub fn params_set_bool(params: &FfiParams, key: &str, value: bool) -> Result<(),
 
 /// Set a parameter as string (convenience).
 pub fn params_set_string(params: &FfiParams, key: &str, value: &str) -> Result<(), String> {
-    params.inner.set(key, value.to_string()).map_err(|e| e.to_string())
+    params
+        .inner
+        .set(key, value.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Check if a parameter exists.

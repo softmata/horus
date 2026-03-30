@@ -21,7 +21,7 @@
 use horus_benchmarks::detect_platform;
 use horus_core::communication::Topic;
 use horus_core::core::DurationExt;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -42,7 +42,9 @@ macro_rules! define_msg {
         unsafe impl Send for $name {}
         unsafe impl Sync for $name {}
         impl $name {
-            fn zeroed() -> Self { Self { data: [0u8; $size] } }
+            fn zeroed() -> Self {
+                Self { data: [0u8; $size] }
+            }
         }
     };
 }
@@ -202,7 +204,9 @@ fn measure_mpsc<T: Copy + Send + Sync + Serialize + serde::de::DeserializeOwned 
     }
 
     running.store(false, Ordering::SeqCst);
-    for h in producers { let _ = h.join(); }
+    for h in producers {
+        let _ = h.join();
+    }
     samples
 }
 
@@ -247,7 +251,9 @@ fn measure_spmc<T: Copy + Send + Sync + Serialize + serde::de::DeserializeOwned 
     }
 
     running.store(false, Ordering::SeqCst);
-    for h in consumers { let _ = h.join(); }
+    for h in consumers {
+        let _ = h.join();
+    }
     samples
 }
 
@@ -306,8 +312,12 @@ fn measure_mpmc<T: Copy + Send + Sync + Serialize + serde::de::DeserializeOwned 
     }
 
     running.store(false, Ordering::SeqCst);
-    for h in consumers { let _ = h.join(); }
-    for h in bg_producers { let _ = h.join(); }
+    for h in consumers {
+        let _ = h.join();
+    }
+    for h in bg_producers {
+        let _ = h.join();
+    }
     samples
 }
 
@@ -331,13 +341,28 @@ fn compute_stats(samples: &mut [u64]) -> Stats {
     samples.sort_unstable();
     let n = samples.len();
     if n == 0 {
-        return Stats { count: 0, p50: 0, p95: 0, p99: 0, p999: 0, p9999: 0, max: 0, mean: 0, stddev: 0 };
+        return Stats {
+            count: 0,
+            p50: 0,
+            p95: 0,
+            p99: 0,
+            p999: 0,
+            p9999: 0,
+            max: 0,
+            mean: 0,
+            stddev: 0,
+        };
     }
     let sum: u64 = samples.iter().sum();
     let mean = sum / n as u64;
-    let variance: f64 = samples.iter()
-        .map(|&s| { let d = s as f64 - mean as f64; d * d })
-        .sum::<f64>() / n as f64;
+    let variance: f64 = samples
+        .iter()
+        .map(|&s| {
+            let d = s as f64 - mean as f64;
+            d * d
+        })
+        .sum::<f64>()
+        / n as f64;
 
     Stats {
         count: n,
@@ -353,9 +378,18 @@ fn compute_stats(samples: &mut [u64]) -> Stats {
 }
 
 fn print_stats(label: &str, size: &str, stats: &Stats) {
-    println!("{:<20} {:<6} {:>8} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-        label, size, format!("{}K", stats.count / 1000),
-        stats.p50, stats.p95, stats.p99, stats.p999, stats.p9999, stats.max);
+    println!(
+        "{:<20} {:<6} {:>8} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
+        label,
+        size,
+        format!("{}K", stats.count / 1000),
+        stats.p50,
+        stats.p95,
+        stats.p99,
+        stats.p999,
+        stats.p9999,
+        stats.max
+    );
 }
 
 // ============================================================================
@@ -364,14 +398,17 @@ fn print_stats(label: &str, size: &str, stats: &Stats) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let duration: u64 = args.iter()
+    let duration: u64 = args
+        .iter()
         .position(|a| a == "--duration")
         .map(|i| args[i + 1].parse().unwrap_or(10))
         .unwrap_or(10);
-    let csv_path = args.iter()
+    let csv_path = args
+        .iter()
         .position(|a| a == "--csv")
         .map(|i| args[i + 1].clone());
-    let json_path = args.iter()
+    let json_path = args
+        .iter()
         .position(|a| a == "--json")
         .map(|i| args[i + 1].clone());
 
@@ -381,7 +418,10 @@ fn main() {
     println!("║        Research Latency — Sustained + Size Sweep           ║");
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
-    println!("Platform: {}, {} cores", platform.cpu.model, platform.cpu.logical_cores);
+    println!(
+        "Platform: {}, {} cores",
+        platform.cpu.model, platform.cpu.logical_cores
+    );
     println!("Duration: {}s per backend×size", duration);
     println!();
 
@@ -394,8 +434,10 @@ fn main() {
 
     let mut all_results = Vec::new();
 
-    println!("{:<20} {:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Backend", "Size", "Samples", "p50", "p95", "p99", "p999", "p9999", "max");
+    println!(
+        "{:<20} {:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Backend", "Size", "Samples", "p50", "p95", "p99", "p999", "p9999", "max"
+    );
     println!("{}", "─".repeat(95));
 
     // ── Same-thread (DirectChannel) — size sweep ──────────────────────
@@ -406,7 +448,9 @@ fn main() {
             let stats = compute_stats(&mut samples);
             print_stats("DirectChannel", $label, &stats);
             if let Some(ref mut w) = csv_writer {
-                for &s in &samples { writeln!(w, "DirectChannel,same_thread,{},{}", $size, s).unwrap(); }
+                for &s in &samples {
+                    writeln!(w, "DirectChannel,same_thread,{},{}", $size, s).unwrap();
+                }
             }
             all_results.push(($label, "DirectChannel", $size, stats));
         }};
@@ -428,7 +472,9 @@ fn main() {
             let stats = compute_stats(&mut samples);
             print_stats("SpscIntra", $label, &stats);
             if let Some(ref mut w) = csv_writer {
-                for &s in &samples { writeln!(w, "SpscIntra,cross_thread,{},{}", $size, s).unwrap(); }
+                for &s in &samples {
+                    writeln!(w, "SpscIntra,cross_thread,{},{}", $size, s).unwrap();
+                }
             }
             all_results.push(($label, "SpscIntra", $size, stats));
         }};
@@ -450,7 +496,9 @@ fn main() {
             let stats = compute_stats(&mut samples);
             print_stats("MPSC (3P:1C)", $label, &stats);
             if let Some(ref mut w) = csv_writer {
-                for &s in &samples { writeln!(w, "MPSC,3pub_1sub,{},{}", $size, s).unwrap(); }
+                for &s in &samples {
+                    writeln!(w, "MPSC,3pub_1sub,{},{}", $size, s).unwrap();
+                }
             }
             all_results.push(($label, "MPSC (3P:1C)", $size, stats));
         }};
@@ -470,7 +518,9 @@ fn main() {
             let stats = compute_stats(&mut samples);
             print_stats("SPMC (1P:3C)", $label, &stats);
             if let Some(ref mut w) = csv_writer {
-                for &s in &samples { writeln!(w, "SPMC,1pub_3sub,{},{}", $size, s).unwrap(); }
+                for &s in &samples {
+                    writeln!(w, "SPMC,1pub_3sub,{},{}", $size, s).unwrap();
+                }
             }
             all_results.push(($label, "SPMC (1P:3C)", $size, stats));
         }};
@@ -490,7 +540,9 @@ fn main() {
             let stats = compute_stats(&mut samples);
             print_stats("MPMC (3P:3C)", $label, &stats);
             if let Some(ref mut w) = csv_writer {
-                for &s in &samples { writeln!(w, "MPMC,3pub_3sub,{},{}", $size, s).unwrap(); }
+                for &s in &samples {
+                    writeln!(w, "MPMC,3pub_3sub,{},{}", $size, s).unwrap();
+                }
             }
             all_results.push(($label, "MPMC (3P:3C)", $size, stats));
         }};

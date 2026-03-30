@@ -146,7 +146,12 @@ fn child_recv_images() {
                 }
                 if !found_match && !data.is_empty() {
                     // Print actual pixel[0] for debugging
-                    println!("PIXEL_DEBUG:frame={},pixel0={},data_len={}", received_count, data[0], data.len());
+                    println!(
+                        "PIXEL_DEBUG:frame={},pixel0={},data_len={}",
+                        received_count,
+                        data[0],
+                        data.len()
+                    );
                 }
 
                 received_count += 1;

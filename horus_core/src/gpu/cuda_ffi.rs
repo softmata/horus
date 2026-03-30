@@ -201,7 +201,10 @@ fn api() -> CudaResult<&'static CudaApi> {
 ///
 /// `HORUS_GPU=0` disables all GPU support. Any other value (or unset) allows GPU.
 fn is_gpu_disabled() -> bool {
-    matches!(std::env::var("HORUS_GPU").as_deref(), Ok("0") | Ok("false") | Ok("off"))
+    matches!(
+        std::env::var("HORUS_GPU").as_deref(),
+        Ok("0") | Ok("false") | Ok("off")
+    )
 }
 
 /// Initialize the CUDA driver. Must be called before any other function.

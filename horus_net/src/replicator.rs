@@ -98,9 +98,7 @@ impl Replicator {
         let import_mode = match &config.import {
             crate::config::ImportConfig::Deny => ImportMode::Deny,
             crate::config::ImportConfig::Auto => ImportMode::Auto,
-            crate::config::ImportConfig::AllowList(list) => {
-                ImportMode::AllowList(list.clone())
-            }
+            crate::config::ImportConfig::AllowList(list) => ImportMode::AllowList(list.clone()),
         };
         let export_mode = if config.deny_export.is_empty() {
             ExportMode::All
@@ -230,9 +228,7 @@ impl Replicator {
             if ann.peer_id == self.peer_id {
                 return;
             }
-            if self.secret_hash != [0u8; 4]
-                && ann.has_secret
-                && ann.secret_hash != self.secret_hash
+            if self.secret_hash != [0u8; 4] && ann.has_secret && ann.secret_hash != self.secret_hash
             {
                 return;
             }
@@ -526,11 +522,8 @@ impl Replicator {
 
             // Start latch tracking for latched messages
             if msg.reliability == Reliability::Latched {
-                self.reliability.start_latch(
-                    msg.topic_hash,
-                    msg.sequence,
-                    msg.payload.clone(),
-                );
+                self.reliability
+                    .start_latch(msg.topic_hash, msg.sequence, msg.payload.clone());
             }
         }
     }
@@ -543,11 +536,9 @@ impl Replicator {
         let now = Instant::now();
 
         // Safety heartbeat: send to matched peers + check for link loss
-        let link_lost = self.heartbeat.tick(
-            &self.transport,
-            self.peer_id_hash,
-            &mut self.packet_seq,
-        );
+        let link_lost =
+            self.heartbeat
+                .tick(&self.transport, self.peer_id_hash, &mut self.packet_seq);
         for (peer_id, action) in link_lost {
             match action {
                 LinkLostAction::Warn => {
@@ -626,19 +617,13 @@ impl Replicator {
 
             // Presence broadcast (same 1s interval as discovery)
             if let Some(payload) = crate::presence::build_local_presence(self.peer_id_hash) {
-                self.send_system_topic(
-                    crate::registry::SYSTEM_TOPIC_PRESENCE,
-                    &payload,
-                );
+                self.send_system_topic(crate::registry::SYSTEM_TOPIC_PRESENCE, &payload);
             }
         }
 
         // Log drain (every timer tick — batching handled internally)
         if let Some(payload) = self.log_drain.poll() {
-            self.send_system_topic(
-                crate::registry::SYSTEM_TOPIC_LOGS,
-                &payload,
-            );
+            self.send_system_topic(crate::registry::SYSTEM_TOPIC_LOGS, &payload);
         }
 
         // E-stop retry processing
@@ -649,7 +634,8 @@ impl Replicator {
             .map(|p| p.data_addr())
             .collect();
         let mcast = self.multicast_addr();
-        self.estop_broadcaster.tick(&self.transport, mcast, &peer_addrs);
+        self.estop_broadcaster
+            .tick(&self.transport, mcast, &peer_addrs);
 
         // Presence cleanup (every 5s)
         if now.duration_since(self.last_presence_cleanup) >= Duration::from_secs(5) {
@@ -668,11 +654,7 @@ impl Replicator {
         let priority = Priority::for_system_topic(topic_name);
         let reliability = Reliability::for_system_topic(topic_name);
 
-        let header = PacketHeader::new(
-            PacketFlags::empty(),
-            self.peer_id_hash,
-            self.packet_seq,
-        );
+        let header = PacketHeader::new(PacketFlags::empty(), self.peer_id_hash, self.packet_seq);
         let msg = wire::MessageHeader {
             topic_hash,
             payload_len: payload.len() as u32,
@@ -708,9 +690,7 @@ impl Replicator {
     fn multicast_addr(&self) -> Option<SocketAddr> {
         match self.config.discovery_mode() {
             DiscoveryMode::Multicast { ref group } => {
-                format!("{group}:{}", self.config.port)
-                    .parse()
-                    .ok()
+                format!("{group}:{}", self.config.port).parse().ok()
             }
             _ => None,
         }

@@ -59,7 +59,9 @@ impl ImageEncoding {
         if v <= Self::MAX_DISCRIMINANT {
             // SAFETY: v is in the valid discriminant range 0..=10
             #[allow(clippy::missing_transmute_annotations)]
-            unsafe { std::mem::transmute(v) }
+            unsafe {
+                std::mem::transmute(v)
+            }
         } else {
             Self::Rgb8
         }

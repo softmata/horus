@@ -27,7 +27,7 @@ use std::ffi::c_void;
 /// dangerous control decisions.
 #[test]
 fn test_dlpack_intent_roundtrip_preserves_data() {
-    let original_data: Vec<f32> = vec![1.0, 2.5, -3.14, 42.0, 0.0, 99.9];
+    let original_data: Vec<f32> = vec![1.0, 2.5, -2.75, 42.0, 0.0, 99.9];
     let shape = [2i64, 3];
     let strides = [3i64, 1]; // Row-major element strides
 
@@ -51,7 +51,8 @@ fn test_dlpack_intent_roundtrip_preserves_data() {
     let roundtripped: &[f32] = unsafe { std::slice::from_raw_parts(data_ptr, 6) };
 
     assert_eq!(
-        roundtripped, &original_data[..],
+        roundtripped,
+        &original_data[..],
         "Roundtripped data must be byte-for-byte identical to original"
     );
 
@@ -229,11 +230,9 @@ fn test_dlpack_intent_zero_copy_verified() {
     let descriptor = unsafe { from_dlpack(managed_ptr).unwrap() };
 
     assert_eq!(
-        descriptor.data_ptr,
-        original_ptr as u64,
+        descriptor.data_ptr, original_ptr as u64,
         "Imported data_ptr ({}) must match original ({}) — zero-copy violated",
-        descriptor.data_ptr,
-        original_ptr as u64
+        descriptor.data_ptr, original_ptr as u64
     );
 
     // Clean up

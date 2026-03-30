@@ -377,8 +377,8 @@ fn test_pod_f64_send_recv() {
     cleanup_stale_shm();
     let name = unique("pod_f64");
     let topic: Topic<f64> = Topic::new(&name).unwrap();
-    topic.send(3.14159f64);
-    assert_eq!(topic.recv(), Some(3.14159f64));
+    topic.send(1.23456f64);
+    assert_eq!(topic.recv(), Some(1.23456f64));
 }
 
 #[test]

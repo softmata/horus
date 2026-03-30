@@ -42,6 +42,19 @@
 // Message types
 #include "messages.hpp"
 
+// Pool-backed types (Image, PointCloud, Tensor)
+#include "pool.hpp"
+
+// Runtime parameters
+#include "params.hpp"
+
+// RPC: Services and Actions
+#include "service.hpp"
+#include "action.hpp"
+
+// Coordinate transforms
+#include "transform.hpp"
+
 // Implementations (header-only, inline)
 #include "impl/scheduler_impl.hpp"
 #include "impl/topic_impl.hpp"

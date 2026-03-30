@@ -40,7 +40,10 @@ fn main() {
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
     println!("Platform: {}", platform.cpu.model);
-    println!("Cores: {} logical, Kernel: {}", platform.cpu.logical_cores, platform.kernel);
+    println!(
+        "Cores: {} logical, Kernel: {}",
+        platform.cpu.logical_cores, platform.kernel
+    );
     println!("Iterations: {} (warmup: {})", ITERATIONS, WARMUP);
     println!();
 
@@ -49,8 +52,10 @@ fn main() {
     // ── memcpy baselines ──────────────────────────────────────────────
 
     println!("── memcpy ──────────────────────────────────────────────────");
-    println!("{:<10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Size", "p50", "p95", "p99", "p999", "max", "mean");
+    println!(
+        "{:<10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Size", "p50", "p95", "p99", "p999", "max", "mean"
+    );
 
     for &(size, label) in MSG_SIZES {
         let mut src = vec![0xABu8; size];
@@ -77,8 +82,10 @@ fn main() {
         }
 
         let stats = compute_stats(&mut samples);
-        println!("{:<10} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-            label, stats.p50, stats.p95, stats.p99, stats.p999, stats.max, stats.mean);
+        println!(
+            "{:<10} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
+            label, stats.p50, stats.p95, stats.p99, stats.p999, stats.max, stats.mean
+        );
 
         all_results.push(ResultEntry {
             test: "memcpy".into(),
@@ -109,10 +116,14 @@ fn main() {
     }
 
     let stats = compute_stats(&mut samples);
-    println!("{:<10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Size", "p50", "p95", "p99", "p999", "max", "mean");
-    println!("{:<10} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-        "8B (u64)", stats.p50, stats.p95, stats.p99, stats.p999, stats.max, stats.mean);
+    println!(
+        "{:<10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Size", "p50", "p95", "p99", "p999", "max", "mean"
+    );
+    println!(
+        "{:<10} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
+        "8B (u64)", stats.p50, stats.p95, stats.p99, stats.p999, stats.max, stats.mean
+    );
 
     all_results.push(ResultEntry {
         test: "atomic_store_load".into(),
@@ -125,8 +136,10 @@ fn main() {
 
     println!();
     println!("── mmap anonymous write + read ─────────────────────────────");
-    println!("{:<10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Size", "p50", "p95", "p99", "p999", "max", "mean");
+    println!(
+        "{:<10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Size", "p50", "p95", "p99", "p999", "max", "mean"
+    );
 
     for &(size, label) in &MSG_SIZES[..4] {
         // Only test up to 1KB for mmap (larger sizes are memcpy-dominated)
@@ -162,8 +175,10 @@ fn main() {
         unsafe { std::alloc::dealloc(mmap_ptr, layout) };
 
         let stats = compute_stats(&mut samples);
-        println!("{:<10} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-            label, stats.p50, stats.p95, stats.p99, stats.p999, stats.max, stats.mean);
+        println!(
+            "{:<10} {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
+            label, stats.p50, stats.p95, stats.p99, stats.p999, stats.max, stats.mean
+        );
 
         all_results.push(ResultEntry {
             test: "mmap_write_read".into(),
@@ -209,9 +224,11 @@ fn main() {
         println!("\nJSON written: {path}");
     }
 
-    println!("\nDone. {} measurements across {} configurations.",
+    println!(
+        "\nDone. {} measurements across {} configurations.",
         all_results.iter().map(|r| r.stats.count).sum::<usize>(),
-        all_results.len());
+        all_results.len()
+    );
 }
 
 struct ResultEntry {
@@ -237,12 +254,14 @@ fn compute_stats(samples: &mut Vec<u64>) -> SimpleStats {
     let n = samples.len();
     let sum: u64 = samples.iter().sum();
     let mean = sum / n as u64;
-    let variance: f64 = samples.iter()
+    let variance: f64 = samples
+        .iter()
         .map(|&s| {
             let diff = s as f64 - mean as f64;
             diff * diff
         })
-        .sum::<f64>() / n as f64;
+        .sum::<f64>()
+        / n as f64;
     let stddev = variance.sqrt() as u64;
 
     SimpleStats {

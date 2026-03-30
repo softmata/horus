@@ -396,10 +396,7 @@ fn test_action_canceled_outcome() {
 
     match result {
         Err(ActionError::GoalCanceled) => {} // Expected
-        other => panic!(
-            "Expected GoalCanceled error, got: {:?}",
-            other
-        ),
+        other => panic!("Expected GoalCanceled error, got: {:?}", other),
     }
 }
 
@@ -441,10 +438,7 @@ fn test_action_preempted_outcome() {
 
     match result {
         Err(ActionError::GoalPreempted) => {} // Expected
-        other => panic!(
-            "Expected GoalPreempted error, got: {:?}",
-            other
-        ),
+        other => panic!("Expected GoalPreempted error, got: {:?}", other),
     }
 }
 
@@ -459,9 +453,7 @@ fn test_action_cancel_after_completion_is_harmless() {
     let server = ActionServerBuilder::<RtNav>::new()
         .on_goal(|_goal| GoalResponse::Accept)
         .on_cancel(|_id| CancelResponse::Accept)
-        .on_execute(|handle| {
-            handle.succeed(RtNavResult { done: true })
-        })
+        .on_execute(|handle| handle.succeed(RtNavResult { done: true }))
         .build();
 
     let running = Arc::new(AtomicBool::new(true));
@@ -487,7 +479,11 @@ fn test_action_cancel_after_completion_is_harmless() {
     // (cancel_goal uses GoalId internally, but we can't access it from send_goal_and_wait)
     // Instead, verify the server processes a second goal cleanly after the first
     let result2 = client.send_goal_and_wait(RtNavGoal { target: 2.0 }, Duration::from_secs(3));
-    assert!(result2.is_ok(), "Second goal should also succeed: {:?}", result2);
+    assert!(
+        result2.is_ok(),
+        "Second goal should also succeed: {:?}",
+        result2
+    );
 
     running.store(false, Ordering::Relaxed);
     server_thread.join().unwrap();
@@ -518,14 +514,12 @@ fn test_action_mixed_outcomes_sequential() {
             }
         })
         .on_cancel(|_id| CancelResponse::Accept)
-        .on_execute(|handle| {
-            match handle.goal().mode {
-                1 => handle.succeed(RtMixedResult { outcome_code: 1 }),
-                2 => handle.abort(RtMixedResult { outcome_code: 2 }),
-                3 => handle.canceled(RtMixedResult { outcome_code: 3 }),
-                4 => handle.preempted(RtMixedResult { outcome_code: 4 }),
-                _ => handle.succeed(RtMixedResult { outcome_code: 0 }),
-            }
+        .on_execute(|handle| match handle.goal().mode {
+            1 => handle.succeed(RtMixedResult { outcome_code: 1 }),
+            2 => handle.abort(RtMixedResult { outcome_code: 2 }),
+            3 => handle.canceled(RtMixedResult { outcome_code: 3 }),
+            4 => handle.preempted(RtMixedResult { outcome_code: 4 }),
+            _ => handle.succeed(RtMixedResult { outcome_code: 0 }),
         })
         .build();
 
@@ -644,10 +638,8 @@ fn test_action_server_panic_during_execute() {
 
     // 1. Send a crashing goal — server panics during execute_callback
     let ticks_before_crash = sibling_ticks.load(Ordering::SeqCst);
-    let crash_result = client.send_goal_and_wait(
-        RtCrashGoal { should_crash: true },
-        Duration::from_secs(2),
-    );
+    let crash_result =
+        client.send_goal_and_wait(RtCrashGoal { should_crash: true }, Duration::from_secs(2));
 
     // Client should get an error (timeout or execution error — panic doesn't
     // produce a result/status message, so client times out)

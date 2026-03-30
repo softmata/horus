@@ -42,10 +42,7 @@ impl LogReplicationLevel {
             Self::None => false,
             Self::Error => matches!(log_type, LogType::Error),
             Self::Warning => matches!(log_type, LogType::Error | LogType::Warning),
-            Self::Info => matches!(
-                log_type,
-                LogType::Error | LogType::Warning | LogType::Info
-            ),
+            Self::Info => matches!(log_type, LogType::Error | LogType::Warning | LogType::Info),
             Self::Debug => true,
         }
     }

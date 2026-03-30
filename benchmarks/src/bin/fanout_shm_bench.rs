@@ -110,7 +110,9 @@ fn bench_fanout_shm_mpmc(num_pubs: usize, num_subs: usize) {
 
     // Wait for all children
     for pid in pub_pids.iter().chain(sub_pids.iter()) {
-        unsafe { libc::waitpid(*pid, std::ptr::null_mut(), 0); }
+        unsafe {
+            libc::waitpid(*pid, std::ptr::null_mut(), 0);
+        }
     }
 
     if !latencies.is_empty() {
@@ -119,8 +121,10 @@ fn bench_fanout_shm_mpmc(num_pubs: usize, num_subs: usize) {
         let avg = latencies.iter().sum::<u64>() / n as u64;
         let med = latencies[n / 2];
         let p99 = latencies[(n as f64 * 0.99) as usize];
-        println!("  {}P/{}S  recv={}/{}  avg={}ns  med={}ns  p99={}ns  min={}ns\n",
-            num_pubs, num_subs, n, total_expected, avg, med, p99, latencies[0]);
+        println!(
+            "  {}P/{}S  recv={}/{}  avg={}ns  med={}ns  p99={}ns  min={}ns\n",
+            num_pubs, num_subs, n, total_expected, avg, med, p99, latencies[0]
+        );
     } else {
         println!("  {}P/{}S  No messages received\n", num_pubs, num_subs);
     }
@@ -162,10 +166,18 @@ fn bench_fanout_shm_spmc(num_pubs: usize, num_subs: usize) {
     let elapsed = start.elapsed();
 
     for pid in child_pids {
-        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0); }
+        unsafe {
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
     }
 
     let throughput = ITERATIONS as f64 / elapsed.as_secs_f64();
-    println!("  {}P/{}S  sent={}  time={:.1}ms  throughput={:.2}M/s\n",
-        num_pubs, num_subs, ITERATIONS, elapsed.as_millis(), throughput / 1e6);
+    println!(
+        "  {}P/{}S  sent={}  time={:.1}ms  throughput={:.2}M/s\n",
+        num_pubs,
+        num_subs,
+        ITERATIONS,
+        elapsed.as_millis(),
+        throughput / 1e6
+    );
 }

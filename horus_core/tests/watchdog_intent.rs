@@ -192,8 +192,7 @@ fn test_watchdog_intent_slow_node_detected() {
     // are tracked in per-node RtStats (not the global SafetyMonitor).
     // Check the per-node stats to verify the slow node was detected.
     if let Some(rt_stats) = scheduler.rt_stats("slow_node") {
-        let has_violations = rt_stats.budget_violations() > 0
-            || rt_stats.deadline_misses() > 0;
+        let has_violations = rt_stats.budget_violations() > 0 || rt_stats.deadline_misses() > 0;
         assert!(
             has_violations,
             "RT stats should show violations for a node sleeping 50ms with 1ms budget. \

@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use horus_core::communication::Topic;
 use horus_core::core::duration_ext::DurationExt;
-use horus_core::services::{Service, ServiceClient, ServiceError, ServiceResult};
 use horus_core::services::types::{ServiceRequest, ServiceResponse};
+use horus_core::services::{Service, ServiceClient, ServiceError, ServiceResult};
 use serde::{Deserialize, Serialize};
 
 /// A JSON value service — uses serde_json::Value as both Request and Response.
@@ -142,7 +142,9 @@ impl DynamicServiceServer {
 
             // Send response to the client's response topic
             if let Some(ref resp_topic_name) = req.response_topic {
-                if let Ok(resp_topic) = Topic::<ServiceResponse<serde_json::Value>>::new(resp_topic_name) {
+                if let Ok(resp_topic) =
+                    Topic::<ServiceResponse<serde_json::Value>>::new(resp_topic_name)
+                {
                     resp_topic.send(ServiceResponse {
                         request_id: req.request_id,
                         ok: true,
@@ -207,10 +209,7 @@ mod tests {
         let mut client = DynamicServiceClient::new(&svc_name).unwrap();
 
         // No server running — should timeout
-        let result = client.call(
-            serde_json::json!({"x": 1}),
-            Duration::from_millis(100),
-        );
+        let result = client.call(serde_json::json!({"x": 1}), Duration::from_millis(100));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("timed out"));
     }

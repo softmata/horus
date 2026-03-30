@@ -99,18 +99,13 @@ fn extract_attr(tag: &str, attr_name: &str) -> Option<String> {
 ///
 /// Returns a list of warnings for driver keys that don't match any URDF sensor.
 /// Empty return means all driver keys are valid (or no URDF is available).
-pub fn validate_driver_keys(
-    driver_keys: &[&str],
-    urdf_sensors: &[UrdfSensor],
-) -> Vec<String> {
+pub fn validate_driver_keys(driver_keys: &[&str], urdf_sensors: &[UrdfSensor]) -> Vec<String> {
     if urdf_sensors.is_empty() {
         return Vec::new();
     }
 
-    let sensor_names: std::collections::HashSet<&str> = urdf_sensors
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect();
+    let sensor_names: std::collections::HashSet<&str> =
+        urdf_sensors.iter().map(|s| s.name.as_str()).collect();
 
     let mut warnings = Vec::new();
     for key in driver_keys {
@@ -223,8 +218,16 @@ mod tests {
     #[test]
     fn validate_driver_keys_all_match() {
         let sensors = vec![
-            UrdfSensor { name: "front_lidar".into(), sensor_type: "ray".into(), link_name: "lidar_link".into() },
-            UrdfSensor { name: "imu_sensor".into(), sensor_type: "imu".into(), link_name: "base_link".into() },
+            UrdfSensor {
+                name: "front_lidar".into(),
+                sensor_type: "ray".into(),
+                link_name: "lidar_link".into(),
+            },
+            UrdfSensor {
+                name: "imu_sensor".into(),
+                sensor_type: "imu".into(),
+                link_name: "base_link".into(),
+            },
         ];
         let warnings = validate_driver_keys(&["front_lidar", "imu_sensor"], &sensors);
         assert!(warnings.is_empty());
@@ -232,9 +235,11 @@ mod tests {
 
     #[test]
     fn validate_driver_keys_mismatch() {
-        let sensors = vec![
-            UrdfSensor { name: "front_lidar".into(), sensor_type: "ray".into(), link_name: "lidar_link".into() },
-        ];
+        let sensors = vec![UrdfSensor {
+            name: "front_lidar".into(),
+            sensor_type: "ray".into(),
+            link_name: "lidar_link".into(),
+        }];
         let warnings = validate_driver_keys(&["frnt_lidar"], &sensors);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("frnt_lidar"));
@@ -249,8 +254,14 @@ mod tests {
 
     #[test]
     fn extract_attr_basic() {
-        assert_eq!(extract_attr(r#"<sensor name="foo" type="bar">"#, "name"), Some("foo".into()));
-        assert_eq!(extract_attr(r#"<sensor name="foo" type="bar">"#, "type"), Some("bar".into()));
+        assert_eq!(
+            extract_attr(r#"<sensor name="foo" type="bar">"#, "name"),
+            Some("foo".into())
+        );
+        assert_eq!(
+            extract_attr(r#"<sensor name="foo" type="bar">"#, "type"),
+            Some("bar".into())
+        );
         assert_eq!(extract_attr(r#"<sensor name="foo">"#, "missing"), None);
     }
 
@@ -290,7 +301,11 @@ mod tests {
 
         // Close misspelling should find a match
         let result = find_closest_match("frnt_lidar", &candidates);
-        assert_eq!(result, Some("front_lidar"), "should suggest front_lidar for frnt_lidar");
+        assert_eq!(
+            result,
+            Some("front_lidar"),
+            "should suggest front_lidar for frnt_lidar"
+        );
 
         // Completely unrelated string should return None
         let result = find_closest_match("xyz", &candidates);
@@ -298,6 +313,10 @@ mod tests {
 
         // Exact match is its own closest
         let result = find_closest_match("imu_sensor", &candidates);
-        assert_eq!(result, Some("imu_sensor"), "exact match should return itself");
+        assert_eq!(
+            result,
+            Some("imu_sensor"),
+            "exact match should return itself"
+        );
     }
 }

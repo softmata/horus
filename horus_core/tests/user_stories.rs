@@ -16,8 +16,8 @@
 use horus_core::communication::topic::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
-use horus_robotics::CmdVel;
 use horus_robotics::messages::sensor::Imu;
+use horus_robotics::CmdVel;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,7 +38,9 @@ struct ImuDriverNode {
     published: Arc<AtomicU64>,
 }
 impl Node for ImuDriverNode {
-    fn name(&self) -> &str { "imu_driver" }
+    fn name(&self) -> &str {
+        "imu_driver"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -65,7 +67,9 @@ struct ControllerNode {
     cmd_sent: Arc<AtomicU64>,
 }
 impl Node for ControllerNode {
-    fn name(&self) -> &str { "controller" }
+    fn name(&self) -> &str {
+        "controller"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.imu_topic = Some(Topic::new(&self.imu_name)?);
         self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
@@ -83,7 +87,7 @@ impl Node for ControllerNode {
         // Compute control output
         if let Some(imu) = latest {
             let cmd = CmdVel::new(
-                0.5,                              // forward at 0.5 m/s
+                0.5,                                   // forward at 0.5 m/s
                 -imu.angular_velocity[0] as f32 * 2.0, // P-controller on yaw
             );
             if let Some(ref t) = self.cmd_topic {
@@ -102,7 +106,9 @@ struct MotorDriverNode {
     last_angular: std::sync::Mutex<f32>,
 }
 impl Node for MotorDriverNode {
-    fn name(&self) -> &str { "motor_driver" }
+    fn name(&self) -> &str {
+        "motor_driver"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.cmd_topic = Some(Topic::new(&self.cmd_name)?);
         Ok(())
@@ -141,22 +147,41 @@ fn story_imu_to_controller_to_motor() {
     let handle = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(200_u64.hz());
 
-        let _ = sched.add(ImuDriverNode {
-            topic_name: imu_topic.clone(), topic: None, seq: 0, published: ip,
-        }).rate(200_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuDriverNode {
+                topic_name: imu_topic.clone(),
+                topic: None,
+                seq: 0,
+                published: ip,
+            })
+            .rate(200_u64.hz())
+            .order(0)
+            .build();
 
-        let _ = sched.add(ControllerNode {
-            imu_name: imu_topic, cmd_name: cmd_topic.clone(),
-            imu_topic: None, cmd_topic: None,
-            imu_received: ir, cmd_sent: cs,
-        }).rate(100_u64.hz()).order(1).build();
+        let _ = sched
+            .add(ControllerNode {
+                imu_name: imu_topic,
+                cmd_name: cmd_topic.clone(),
+                imu_topic: None,
+                cmd_topic: None,
+                imu_received: ir,
+                cmd_sent: cs,
+            })
+            .rate(100_u64.hz())
+            .order(1)
+            .build();
 
-        let _ = sched.add(MotorDriverNode {
-            cmd_name: cmd_topic, cmd_topic: None,
-            commands_applied: ca,
-            last_linear: std::sync::Mutex::new(0.0),
-            last_angular: std::sync::Mutex::new(0.0),
-        }).rate(100_u64.hz()).order(2).build();
+        let _ = sched
+            .add(MotorDriverNode {
+                cmd_name: cmd_topic,
+                cmd_topic: None,
+                commands_applied: ca,
+                last_linear: std::sync::Mutex::new(0.0),
+                last_angular: std::sync::Mutex::new(0.0),
+            })
+            .rate(100_u64.hz())
+            .order(2)
+            .build();
 
         while rc.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
@@ -175,16 +200,27 @@ fn story_imu_to_controller_to_motor() {
 
     println!("=== STORY: IMU → Controller → Motor (5s) ===");
     println!("IMU published:      {} ({:.0} Hz)", ip, ip as f64 / 5.0);
-    println!("IMU received by ctrl: {} ({:.0}%)", ir, ir as f64 / ip.max(1) as f64 * 100.0);
+    println!(
+        "IMU received by ctrl: {} ({:.0}%)",
+        ir,
+        ir as f64 / ip.max(1) as f64 * 100.0
+    );
     println!("Commands sent:      {} ({:.0} Hz)", cs, cs as f64 / 5.0);
-    println!("Commands applied:   {} ({:.0}%)", ca, ca as f64 / cs.max(1) as f64 * 100.0);
+    println!(
+        "Commands applied:   {} ({:.0}%)",
+        ca,
+        ca as f64 / cs.max(1) as f64 * 100.0
+    );
 
     assert!(ip > 100, "IMU should publish >100 messages in 5s");
     assert!(ir > 50, "Controller should receive >50 IMU messages");
     assert!(cs > 50, "Controller should send >50 commands");
     assert!(ca > 25, "Motor should apply >25 commands");
     // Pipeline must flow: every stage receives from the previous
-    assert!(ir > 0 && cs > 0 && ca > 0, "Pipeline broken — data not flowing");
+    assert!(
+        ir > 0 && cs > 0 && ca > 0,
+        "Pipeline broken — data not flowing"
+    );
     println!("STORY 1 PASSED ✓\n");
 }
 
@@ -201,14 +237,16 @@ struct CountingRecvNode {
     count: Arc<AtomicU64>,
 }
 impl Node for CountingRecvNode {
-    fn name(&self) -> &str { &self.node_name }
+    fn name(&self) -> &str {
+        &self.node_name
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
     }
     fn tick(&mut self) {
         if let Some(ref t) = self.topic {
-            while let Some(_) = t.recv() {
+            while t.recv().is_some() {
                 self.count.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -237,14 +275,27 @@ fn story_two_schedulers_shared_topic() {
             .tick_rate(500_u64.hz())
             .name("control_sched");
 
-        let _ = sched.add(ImuDriverNode {
-            topic_name: t1.clone(), topic: None, seq: 0, published: p1,
-        }).rate(500_u64.hz()).order(0).build();
+        let _ = sched
+            .add(ImuDriverNode {
+                topic_name: t1.clone(),
+                topic: None,
+                seq: 0,
+                published: p1,
+            })
+            .rate(500_u64.hz())
+            .order(0)
+            .build();
 
-        let _ = sched.add(CountingRecvNode {
-            topic_name: t1, node_name: "ctrl_consumer".into(),
-            topic: None, count: c1,
-        }).rate(500_u64.hz()).order(1).build();
+        let _ = sched
+            .add(CountingRecvNode {
+                topic_name: t1,
+                node_name: "ctrl_consumer".into(),
+                topic: None,
+                count: c1,
+            })
+            .rate(500_u64.hz())
+            .order(1)
+            .build();
 
         while r1.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
@@ -261,10 +312,16 @@ fn story_two_schedulers_shared_topic() {
             .tick_rate(30_u64.hz())
             .name("perception_sched");
 
-        let _ = sched.add(CountingRecvNode {
-            topic_name: t2, node_name: "perception_consumer".into(),
-            topic: None, count: p2,
-        }).rate(30_u64.hz()).order(0).build();
+        let _ = sched
+            .add(CountingRecvNode {
+                topic_name: t2,
+                node_name: "perception_consumer".into(),
+                topic: None,
+                count: p2,
+            })
+            .rate(30_u64.hz())
+            .order(0)
+            .build();
 
         while r2.load(Ordering::Relaxed) {
             let _ = sched.tick_once();
@@ -282,13 +339,28 @@ fn story_two_schedulers_shared_topic() {
     let pr = percept_recv.load(Ordering::Relaxed);
 
     println!("=== STORY: Two Schedulers, One Topic (5s) ===");
-    println!("IMU published (sched1):        {} ({:.0} Hz)", p, p as f64 / 5.0);
-    println!("Control recv (sched1, 500Hz):  {} ({:.0}%)", c, c as f64 / p.max(1) as f64 * 100.0);
-    println!("Perception recv (sched2, 30Hz): {} ({:.0}%)", pr, pr as f64 / p.max(1) as f64 * 100.0);
+    println!(
+        "IMU published (sched1):        {} ({:.0} Hz)",
+        p,
+        p as f64 / 5.0
+    );
+    println!(
+        "Control recv (sched1, 500Hz):  {} ({:.0}%)",
+        c,
+        c as f64 / p.max(1) as f64 * 100.0
+    );
+    println!(
+        "Perception recv (sched2, 30Hz): {} ({:.0}%)",
+        pr,
+        pr as f64 / p.max(1) as f64 * 100.0
+    );
 
     assert!(p > 100, "IMU should publish >100 msgs");
     assert!(c > 50, "Control scheduler should receive IMU data");
-    assert!(pr > 0, "Perception scheduler should receive IMU data from other scheduler");
+    assert!(
+        pr > 0,
+        "Perception scheduler should receive IMU data from other scheduler"
+    );
     println!("STORY 2 PASSED ✓\n");
 }
 
@@ -302,7 +374,9 @@ struct OrderTrackerNode {
     order_log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 impl Node for OrderTrackerNode {
-    fn name(&self) -> &str { &self.node_name }
+    fn name(&self) -> &str {
+        &self.node_name
+    }
     fn tick(&mut self) {
         self.order_log.lock().unwrap().push(self.node_name.clone());
     }
@@ -315,22 +389,32 @@ fn story_execution_order_respected() {
 
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    let mut sched = Scheduler::new()
-        .tick_rate(100_u64.hz())
-        .deterministic(true);
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
 
     // Add in REVERSE order to verify ordering isn't just insertion order
-    let _ = sched.add(OrderTrackerNode {
-        node_name: "C_order2".into(), order_log: log.clone(),
-    }).order(2).build();
+    let _ = sched
+        .add(OrderTrackerNode {
+            node_name: "C_order2".into(),
+            order_log: log.clone(),
+        })
+        .order(2)
+        .build();
 
-    let _ = sched.add(OrderTrackerNode {
-        node_name: "A_order0".into(), order_log: log.clone(),
-    }).order(0).build();
+    let _ = sched
+        .add(OrderTrackerNode {
+            node_name: "A_order0".into(),
+            order_log: log.clone(),
+        })
+        .order(0)
+        .build();
 
-    let _ = sched.add(OrderTrackerNode {
-        node_name: "B_order1".into(), order_log: log.clone(),
-    }).order(1).build();
+    let _ = sched
+        .add(OrderTrackerNode {
+            node_name: "B_order1".into(),
+            order_log: log.clone(),
+        })
+        .order(1)
+        .build();
 
     // Run 100 ticks
     for _ in 0..100 {
@@ -354,8 +438,15 @@ fn story_execution_order_respected() {
         }
     }
 
-    println!("Order violations: {}/{} ticks", violations, entries.len() / 3);
-    assert_eq!(violations, 0, "Execution order violated! .order() not respected");
+    println!(
+        "Order violations: {}/{} ticks",
+        violations,
+        entries.len() / 3
+    );
+    assert_eq!(
+        violations, 0,
+        "Execution order violated! .order() not respected"
+    );
     println!("STORY 3 PASSED ✓\n");
 }
 
@@ -369,7 +460,9 @@ struct SlowNode {
     tick_count: u64,
 }
 impl Node for SlowNode {
-    fn name(&self) -> &str { "slow_node" }
+    fn name(&self) -> &str {
+        "slow_node"
+    }
     fn tick(&mut self) {
         self.tick_count += 1;
         // Every 10th tick, exceed budget by sleeping 5ms
@@ -383,7 +476,9 @@ struct HealthyNode {
     tick_count: Arc<AtomicU64>,
 }
 impl Node for HealthyNode {
-    fn name(&self) -> &str { "healthy_node" }
+    fn name(&self) -> &str {
+        "healthy_node"
+    }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -397,18 +492,19 @@ fn story_budget_violation_degrades_not_crashes() {
     let healthy_ticks = Arc::new(AtomicU64::new(0));
     let hc = healthy_ticks.clone();
 
-    let mut sched = Scheduler::new()
-        .tick_rate(100_u64.hz());
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz());
 
     // Slow node with tight budget
-    let _ = sched.add(SlowNode { tick_count: 0 })
+    let _ = sched
+        .add(SlowNode { tick_count: 0 })
         .rate(100_u64.hz())
         .budget(1_u64.ms())
         .order(0)
         .build();
 
     // Healthy node should keep running even when slow node violates budget
-    let _ = sched.add(HealthyNode { tick_count: hc })
+    let _ = sched
+        .add(HealthyNode { tick_count: hc })
         .rate(100_u64.hz())
         .order(1)
         .build();
@@ -433,7 +529,11 @@ fn story_budget_violation_degrades_not_crashes() {
     println!("(Slow node violates 1ms budget every 10th tick with 5ms sleep)");
 
     // Healthy node MUST keep running (scheduler didn't crash)
-    assert!(ht > 50, "Healthy node should keep running despite slow node's budget violation, got {} ticks", ht);
+    assert!(
+        ht > 50,
+        "Healthy node should keep running despite slow node's budget violation, got {} ticks",
+        ht
+    );
     println!("STORY 4 PASSED ✓ (scheduler survived budget violations)\n");
 }
 
@@ -448,7 +548,9 @@ struct DeterministicPubNode {
     tick: u64,
 }
 impl Node for DeterministicPubNode {
-    fn name(&self) -> &str { "det_pub" }
+    fn name(&self) -> &str {
+        "det_pub"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -458,7 +560,9 @@ impl Node for DeterministicPubNode {
             (self.tick as f32 * 0.1).sin(),
             (self.tick as f32 * 0.05).cos(),
         );
-        if let Some(ref t) = self.topic { t.send(cmd); }
+        if let Some(ref t) = self.topic {
+            t.send(cmd);
+        }
         self.tick += 1;
     }
 }
@@ -469,7 +573,9 @@ struct DeterministicSubNode {
     log: Arc<std::sync::Mutex<Vec<(f32, f32)>>>,
 }
 impl Node for DeterministicSubNode {
-    fn name(&self) -> &str { "det_sub" }
+    fn name(&self) -> &str {
+        "det_sub"
+    }
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         self.topic = Some(Topic::new(&self.topic_name)?);
         Ok(())
@@ -490,17 +596,25 @@ fn run_deterministic_cmdvel(n_ticks: usize) -> Vec<(f32, f32)> {
 
     // Scope the scheduler so it's dropped before we read the log
     {
-        let mut sched = Scheduler::new()
-            .tick_rate(100_u64.hz())
-            .deterministic(true);
+        let mut sched = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
 
-        let _ = sched.add(DeterministicPubNode {
-            topic_name: name.clone(), topic: None, tick: 0,
-        }).order(0).build();
+        let _ = sched
+            .add(DeterministicPubNode {
+                topic_name: name.clone(),
+                topic: None,
+                tick: 0,
+            })
+            .order(0)
+            .build();
 
-        let _ = sched.add(DeterministicSubNode {
-            topic_name: name, topic: None, log: log_clone,
-        }).order(1).build();
+        let _ = sched
+            .add(DeterministicSubNode {
+                topic_name: name,
+                topic: None,
+                log: log_clone,
+            })
+            .order(1)
+            .build();
 
         for _ in 0..n_ticks {
             let _ = sched.tick_once();
@@ -523,7 +637,13 @@ fn story_deterministic_mode_with_real_cmdvel() {
     println!("Run 1: {} messages", run1.len());
     println!("Run 2: {} messages", run2.len());
 
-    assert_eq!(run1.len(), run2.len(), "Message counts differ: {} vs {}", run1.len(), run2.len());
+    assert_eq!(
+        run1.len(),
+        run2.len(),
+        "Message counts differ: {} vs {}",
+        run1.len(),
+        run2.len()
+    );
     assert_eq!(run1, run2, "CmdVel sequences differ between runs!");
     println!("STORY 5 PASSED ✓ (identical CmdVel across 2 runs)\n");
 }
@@ -536,7 +656,9 @@ struct PanickingNode {
     tick_count: u64,
 }
 impl Node for PanickingNode {
-    fn name(&self) -> &str { "panicking_node" }
+    fn name(&self) -> &str {
+        "panicking_node"
+    }
     fn tick(&mut self) {
         self.tick_count += 1;
         if self.tick_count == 5 {
@@ -553,14 +675,11 @@ fn story_node_panic_doesnt_kill_scheduler() {
     let healthy_ticks = Arc::new(AtomicU64::new(0));
     let hc = healthy_ticks.clone();
 
-    let mut sched = Scheduler::new()
-        .tick_rate(100_u64.hz());
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz());
 
-    let _ = sched.add(PanickingNode { tick_count: 0 })
-        .order(0).build();
+    let _ = sched.add(PanickingNode { tick_count: 0 }).order(0).build();
 
-    let _ = sched.add(HealthyNode { tick_count: hc })
-        .order(1).build();
+    let _ = sched.add(HealthyNode { tick_count: hc }).order(1).build();
 
     // Run 50 ticks — panicking node dies at tick 5, healthy continues
     for _ in 0..50 {
@@ -571,7 +690,11 @@ fn story_node_panic_doesnt_kill_scheduler() {
     println!("=== STORY: Node Panic Isolation ===");
     println!("Healthy node ticks after panic: {}", ht);
 
-    assert!(ht >= 45, "Healthy node should keep running after panic, got {} ticks", ht);
+    assert!(
+        ht >= 45,
+        "Healthy node should keep running after panic, got {} ticks",
+        ht
+    );
     println!("STORY 6 PASSED ✓\n");
 }
 
@@ -580,15 +703,25 @@ fn story_node_panic_doesnt_kill_scheduler() {
 // ════════════════════════════════════════════════════════════════════════
 // RT node at 500Hz, Compute node, BestEffort node — all in one scheduler.
 
-struct RtSensorNode { ticks: Arc<AtomicU64> }
+struct RtSensorNode {
+    ticks: Arc<AtomicU64>,
+}
 impl Node for RtSensorNode {
-    fn name(&self) -> &str { "rt_sensor" }
-    fn tick(&mut self) { self.ticks.fetch_add(1, Ordering::Relaxed); }
+    fn name(&self) -> &str {
+        "rt_sensor"
+    }
+    fn tick(&mut self) {
+        self.ticks.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
-struct ComputeVisionNode { ticks: Arc<AtomicU64> }
+struct ComputeVisionNode {
+    ticks: Arc<AtomicU64>,
+}
 impl Node for ComputeVisionNode {
-    fn name(&self) -> &str { "compute_vision" }
+    fn name(&self) -> &str {
+        "compute_vision"
+    }
     fn tick(&mut self) {
         // Simulate 2ms compute
         let start = Instant::now();
@@ -599,10 +732,16 @@ impl Node for ComputeVisionNode {
     }
 }
 
-struct BestEffortLoggerNode { ticks: Arc<AtomicU64> }
+struct BestEffortLoggerNode {
+    ticks: Arc<AtomicU64>,
+}
 impl Node for BestEffortLoggerNode {
-    fn name(&self) -> &str { "logger" }
-    fn tick(&mut self) { self.ticks.fetch_add(1, Ordering::Relaxed); }
+    fn name(&self) -> &str {
+        "logger"
+    }
+    fn tick(&mut self) {
+        self.ticks.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[test]
@@ -625,20 +764,23 @@ fn story_mixed_execution_classes() {
         let mut sched = Scheduler::new().tick_rate(500_u64.hz());
 
         // RT sensor at 500Hz (auto-detected from rate)
-        let _ = sched.add(RtSensorNode { ticks: rt })
+        let _ = sched
+            .add(RtSensorNode { ticks: rt })
             .rate(500_u64.hz())
             .order(0)
             .build();
 
         // Compute node (explicitly marked)
-        let _ = sched.add(ComputeVisionNode { ticks: cp })
+        let _ = sched
+            .add(ComputeVisionNode { ticks: cp })
             .compute()
             .rate(30_u64.hz())
             .order(1)
             .build();
 
         // BestEffort logger
-        let _ = sched.add(BestEffortLoggerNode { ticks: be })
+        let _ = sched
+            .add(BestEffortLoggerNode { ticks: be })
             .rate(10_u64.hz())
             .order(2)
             .build();
@@ -658,9 +800,21 @@ fn story_mixed_execution_classes() {
     let be = be_ticks.load(Ordering::Relaxed);
 
     println!("=== STORY: Mixed Execution Classes (5s) ===");
-    println!("RT sensor (500Hz):    {} ticks ({:.0} Hz)", rt, rt as f64 / 5.0);
-    println!("Compute vision (30Hz): {} ticks ({:.0} Hz)", cp, cp as f64 / 5.0);
-    println!("BestEffort log (10Hz): {} ticks ({:.0} Hz)", be, be as f64 / 5.0);
+    println!(
+        "RT sensor (500Hz):    {} ticks ({:.0} Hz)",
+        rt,
+        rt as f64 / 5.0
+    );
+    println!(
+        "Compute vision (30Hz): {} ticks ({:.0} Hz)",
+        cp,
+        cp as f64 / 5.0
+    );
+    println!(
+        "BestEffort log (10Hz): {} ticks ({:.0} Hz)",
+        be,
+        be as f64 / 5.0
+    );
 
     assert!(rt > 100, "RT node should run >100 ticks");
     assert!(cp > 10, "Compute node should run >10 ticks");
