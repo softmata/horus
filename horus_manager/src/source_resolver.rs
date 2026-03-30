@@ -875,7 +875,7 @@ pub fn fetch_latest_version(name: &str, source: &DepSource) -> Option<String> {
 fn fetch_crates_io_version(name: &str) -> Option<String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
-        .user_agent("horus-pkg-manager (https://github.com/softmata/horus)")
+        .user_agent("horus-pkg-manager (https://gitlab.com/softmata/horus)")
         .build()
         .ok()?;
 

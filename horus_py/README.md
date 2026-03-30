@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/horus-robotics)](https://pypi.org/project/horus-robotics/)
 [![Python](https://img.shields.io/pypi/pyversions/horus-robotics)](https://pypi.org/project/horus-robotics/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](https://github.com/softmata/horus/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](https://gitlab.com/softmata/horus/-/blob/main/LICENSE)
 
 Python bindings for the HORUS robotics framework. Sub-microsecond messaging with a simple Python API.
 
@@ -94,10 +94,10 @@ Rust and Python nodes communicate seamlessly through shared topics. Use Rust for
 
 ## License
 
-Apache-2.0 - see [LICENSE](https://github.com/softmata/horus/blob/main/LICENSE)
+Apache-2.0 - see [LICENSE](https://gitlab.com/softmata/horus/-/blob/main/LICENSE)
 
 ## Links
 
-- [GitHub](https://github.com/softmata/horus)
+- [GitLab](https://gitlab.com/softmata/horus)
 - [Discord](https://discord.gg/hEZC3ev2Nf)
 - [Documentation](https://docs.horusrobotics.dev)

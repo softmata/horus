@@ -1010,7 +1010,7 @@ fn inject_horus_path_overrides(package_dir: &Path) -> Result<()> {
                 .unwrap_or("this package");
             return Err(anyhow!(
                 "Cannot find horus source installation. Building {} from source requires horus source code.\n\
-                 Install horus from source: curl -fsSL https://raw.githubusercontent.com/softmata/horus/release/install.sh | bash\n\
+                 Install horus from source: curl -fsSL https://gitlab.com/softmata/horus/-/raw/release/install.sh | bash\n\
                  Or install a pre-built binary: horus install {}",
                 pkg_name,
                 pkg_name

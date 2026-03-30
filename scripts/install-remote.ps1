@@ -2,7 +2,7 @@
 #
 # Usage:
 #   irm https://horus.dev/install.ps1 | iex
-#   irm https://raw.githubusercontent.com/softmata/horus/main/scripts/install-remote.ps1 | iex
+#   irm https://gitlab.com/softmata/horus/-/raw/main/scripts/install-remote.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 $Repo = "softmata/horus"

@@ -46,8 +46,8 @@ Ten complete robotics applications covering every workflow a ROS2 developer need
 
 ## Prerequisites
 
-- [Horus](https://github.com/softmata/horus) installed (`horus` CLI available)
-- [sim3d](https://github.com/softmata/horus-sim3d) installed (for physics simulation)
+- [Horus](https://gitlab.com/softmata/horus) installed (`horus` CLI available)
+- [sim3d](https://gitlab.com/softmata/horus-sim3d) installed (for physics simulation)
 - Python 3.9+ (for `python_robot` example)
 
 ## Quick start

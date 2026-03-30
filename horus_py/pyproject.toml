@@ -35,10 +35,10 @@ classifiers = [
 keywords = ["robotics", "real-time", "distributed", "ipc", "horus", "shared-memory", "low-latency"]
 
 [project.urls]
-Homepage = "https://github.com/softmata/horus"
+Homepage = "https://gitlab.com/softmata/horus"
 Documentation = "https://docs.horusrobotics.dev"
-Repository = "https://github.com/softmata/horus"
-Issues = "https://github.com/softmata/horus/issues"
+Repository = "https://gitlab.com/softmata/horus"
+Issues = "https://gitlab.com/softmata/horus/-/issues"
 
 [project.optional-dependencies]
 test = [

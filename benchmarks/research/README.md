@@ -109,7 +109,7 @@ HORUS auto-detects the optimal IPC backend:
 - Python 3.9+ with matplotlib, numpy, pandas (for analysis)
 
 ### Steps
-1. Clone: `git clone https://github.com/softmata/horus.git && cd horus`
+1. Clone: `git clone https://gitlab.com/softmata/horus.git && cd horus`
 2. Setup: `sudo benchmarks/research/setup.sh`
 3. Build: `cargo build --release -p horus_benchmarks`
 4. Run: `benchmarks/research/run_all.sh`

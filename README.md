@@ -2,9 +2,8 @@
 
 **Real-time distributed middleware for Rust, Python, and C++. 575x faster than ROS2.**
 
-[![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/v0.2.0-blue.svg)](https://github.com/softmata/horus/releases)
-[![Stars](https://img.shields.io/github/stars/softmata/horus?style=flat)](https://github.com/softmata/horus/stargazers)
+[![CI](https://gitlab.com/softmata/horus/badges/main/pipeline.svg)](https://gitlab.com/softmata/horus/-/pipelines)
+[![Version](https://img.shields.io/badge/v0.2.0-blue.svg)](https://gitlab.com/softmata/horus/-/releases)
 [![Rust](https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus&logoColor=white)](https://isocpp.org/)
@@ -22,14 +21,14 @@
 ## Get Started
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/softmata/horus/release/install.sh | bash
+curl -fsSL https://gitlab.com/softmata/horus/-/raw/release/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
 Or install manually:
 
 ```bash
-git clone https://github.com/softmata/horus.git && cd horus && ./install.sh
+git clone https://gitlab.com/softmata/horus.git && cd horus && ./install.sh
 ```
 
 Python: `pip install horus-robotics` · C++: link against `libhorus_cpp` and `#include <horus/horus.hpp>`
@@ -240,7 +239,7 @@ action!  { Navigate { goal { x: f64, y: f64 } feedback { dist: f64 } result { ok
 
 ### Hardware Drivers
 
-Declare hardware in `horus.toml`, access typed handles in code. 30+ [Terra HAL](https://github.com/softmata/terra) drivers — Dynamixel, RPLiDAR, RealSense, CAN, EtherCAT, and more.
+Declare hardware in `horus.toml`, access typed handles in code. 30+ [Terra HAL](https://gitlab.com/softmata/terra) drivers — Dynamixel, RPLiDAR, RealSense, CAN, EtherCAT, and more.
 
 ```toml
 [drivers.arm]
@@ -338,7 +337,7 @@ benchmarks/     Performance suite — latency, throughput, jitter, comparisons
 
 We'd love to hear from you. HORUS is validated in simulation — if you're running it on a real robot, your experience helps us improve.
 
-Tell us (via [GitHub Discussions](https://github.com/softmata/horus/discussions), [Discord](https://discord.gg/hEZC3ev2Nf), or [email](mailto:contact@softmata.dev)):
+Tell us (via [GitLab Issues](https://gitlab.com/softmata/horus/-/issues), [Discord](https://discord.gg/hEZC3ev2Nf), or [email](mailto:contact@softmata.dev)):
 - **What robot** — platform, actuators, sensors
 - **What control rate** you're achieving on real hardware
 - **What worked** out of the box
@@ -350,7 +349,7 @@ We'll add validated hardware to the docs and credit contributors.
 ---
 
 <p align="center">
-  <a href="https://github.com/softmata/horus/issues">Report a Bug</a> &middot;
+  <a href="https://gitlab.com/softmata/horus/-/issues">Report a Bug</a> &middot;
   <a href="CONTRIBUTING.md">Contributing</a> &middot;
   <a href="https://discord.gg/hEZC3ev2Nf">Discord</a> &middot;
   <a href="LICENSE">Apache-2.0</a>

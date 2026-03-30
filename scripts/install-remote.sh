@@ -3,16 +3,16 @@
 #
 # Usage:
 #   curl -fsSL https://horus.dev/install | bash
-#   curl -fsSL https://raw.githubusercontent.com/softmata/horus/main/scripts/install-remote.sh | bash
+#   curl -fsSL https://gitlab.com/softmata/horus/-/raw/main/scripts/install-remote.sh | bash
 #
 # What this does:
 #   1. Detects your OS and architecture
-#   2. Downloads the latest pre-built binary from GitHub Releases
+#   2. Downloads the latest pre-built binary from GitLab Releases
 #   3. Installs to ~/.cargo/bin/horus (or ~/.local/bin/horus if no cargo)
 #   4. Verifies the installation
 #
 # For a full source build with all features, use:
-#   git clone https://github.com/softmata/horus && cd horus && ./install.sh
+#   git clone https://gitlab.com/softmata/horus && cd horus && ./install.sh
 
 set -e
 
@@ -133,7 +133,7 @@ else
     fi
 
     echo -e "${CYAN}[1/3]${NC} Building from source (this takes a few minutes)..."
-    cargo install --git "https://github.com/${REPO}" horus_manager --no-default-features --locked 2>&1 | tail -3
+    cargo install --git "https://gitlab.com/${REPO}" horus_manager --no-default-features --locked 2>&1 | tail -3
 fi
 
 # Verify installation
