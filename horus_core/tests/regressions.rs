@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Regression test suite for known HORUS issues.
 //!
 //! Each test documents a previously-found bug and verifies the fix remains

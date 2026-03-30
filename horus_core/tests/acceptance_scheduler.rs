@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Acceptance tests for Node Lifecycle
 //! Tests node init/tick/shutdown lifecycle directly without the Scheduler loop
 //! The Scheduler's infinite loop design makes it unsuitable for unit testing,

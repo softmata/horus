@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Concurrent goal handling and feedback rate limiting tests for ActionServer.
 //
 // These tests exercise:

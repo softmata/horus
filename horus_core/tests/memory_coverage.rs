@@ -2,6 +2,7 @@
 //!
 //! Run with:
 //!   cargo test --no-default-features -p horus_core --test memory_coverage
+#![allow(clippy::field_reassign_with_default)]
 
 use horus_core::memory::tensor_pool::{TensorPool, TensorPoolConfig, TensorPoolStats};
 use horus_core::memory::{DepthImage, Image, PointCloud};

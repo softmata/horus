@@ -447,7 +447,7 @@ mod tests {
         let count = after - before;
         // At 200ms interval over 500ms: expect 2-4 entries (not 100+)
         assert!(
-            count >= 2 && count <= 6,
+            (2..=6).contains(&count),
             "hlog_every!(200ms) over 500ms should produce 2-6 entries, got {count}"
         );
     }

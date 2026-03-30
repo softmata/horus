@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn service_name_matching_exact() {
-        let services = vec![
+        let services = [
             make_test_service("add_two_ints"),
             make_test_service("multiply"),
         ];
@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn service_name_matching_by_suffix() {
-        let services = vec![make_test_service("robot/arm/move")];
+        let services = [make_test_service("robot/arm/move")];
         let name = "move";
         let found = services.iter().find(|s| {
             s.name == name
@@ -768,7 +768,7 @@ mod tests {
 
     #[test]
     fn service_name_matching_no_match() {
-        let services = vec![make_test_service("robot/arm/move")];
+        let services = [make_test_service("robot/arm/move")];
         let name = "nonexistent_service";
         let found = services.iter().find(|s| {
             s.name == name
@@ -786,7 +786,7 @@ mod tests {
 
     #[test]
     fn find_filter_case_insensitive() {
-        let services = vec![
+        let services = [
             make_test_service("RobotArm"),
             make_test_service("sensor_hub"),
         ];
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn find_filter_partial_match() {
-        let services = vec![
+        let services = [
             make_test_service("robot/arm/move"),
             make_test_service("robot/arm/grip"),
             make_test_service("sensor/lidar"),
@@ -816,7 +816,7 @@ mod tests {
 
     #[test]
     fn find_filter_empty_matches_all() {
-        let services = vec![make_test_service("svc_a"), make_test_service("svc_b")];
+        let services = [make_test_service("svc_a"), make_test_service("svc_b")];
         let filter = "";
         let matched: Vec<_> = services
             .iter()
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn find_filter_no_match_returns_empty() {
-        let services = vec![make_test_service("svc_a")];
+        let services = [make_test_service("svc_a")];
         let filter = "zzz_nonexistent";
         let matched: Vec<_> = services
             .iter()

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared memory tensor pool for zero-copy tensor communication
 //!
 //! This module provides a high-performance memory pool for allocating tensors
@@ -1600,6 +1601,7 @@ impl TensorPool {
     ///
     /// `ptr..ptr+len` must be a valid, exclusively-owned, writable region.
     #[inline]
+    #[allow(dead_code)]
     fn volatile_zero(ptr: *mut u8, len: usize) {
         for i in 0..len {
             // SAFETY: caller guarantees ptr..ptr+len is valid and exclusively owned;
@@ -1608,6 +1610,7 @@ impl TensorPool {
         }
     }
 
+    #[allow(dead_code)]
     fn allocate_data(&self, size: usize) -> HorusResult<usize> {
         let header = self.header();
 
@@ -3406,7 +3409,8 @@ mod tests {
         assert_eq!(stats.max_slots, 8);
 
         // Pool should be full
-        assert!(pool.alloc(&[8], TensorDtype::U8, Device::cpu()).is_err());
+        pool.alloc(&[8], TensorDtype::U8, Device::cpu())
+            .unwrap_err();
 
         // Release first 4 slots
         for t in &tensors[..4] {
@@ -3435,7 +3439,8 @@ mod tests {
         );
 
         // Pool should be full again
-        assert!(pool.alloc(&[8], TensorDtype::U8, Device::cpu()).is_err());
+        pool.alloc(&[8], TensorDtype::U8, Device::cpu())
+            .unwrap_err();
 
         // Cleanup
         for t in &tensors[4..] {
@@ -3485,7 +3490,7 @@ mod tests {
         assert_eq!(stats.allocated_slots, 1);
 
         // Data should still be accessible
-        assert!(pool.data_slice(&tensor).is_ok());
+        pool.data_slice(&tensor).unwrap();
 
         // Final release frees the slot
         pool.release(&tensor);
@@ -3612,7 +3617,7 @@ mod tests {
         use std::sync::Arc;
 
         // Clean stale SHM from previous runs
-        let _ = std::fs::remove_file(format!("/dev/shm/horus_tensor_pool_8805"));
+        let _ = std::fs::remove_file("/dev/shm/horus_tensor_pool_8805");
 
         let config = TensorPoolConfig {
             pool_size: 4 * 1024 * 1024,
@@ -3779,7 +3784,8 @@ mod tests {
         assert_eq!(pool.stats().allocated_slots, 1);
 
         // Second alloc should fail
-        assert!(pool.alloc(&[8], TensorDtype::U8, Device::cpu()).is_err());
+        pool.alloc(&[8], TensorDtype::U8, Device::cpu())
+            .unwrap_err();
 
         // Release and realloc
         pool.release(&t1);

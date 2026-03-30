@@ -635,7 +635,7 @@ mod tests {
     fn read_invalid_magic_returns_none() {
         let path =
             std::env::temp_dir().join(format!("horus_reg_bad_magic_{}.bin", std::process::id()));
-        std::fs::write(&path, &[0u8; REGISTRY_FILE_SIZE]).expect("write");
+        std::fs::write(&path, [0u8; REGISTRY_FILE_SIZE]).expect("write");
         assert!(
             SchedulerRegistry::read_all_slots_from_path(&path).is_none(),
             "should return None for invalid magic"

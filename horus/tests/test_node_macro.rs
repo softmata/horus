@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![cfg(feature = "macros")]
 //! Integration tests for the `node!` macro.
 //!
@@ -319,7 +320,7 @@ node! {
 
         impl {
             fn clamp_value(&self, v: f64) -> f64 {
-                v.min(10.0).max(0.0)
+                v.clamp(0.0, 10.0)
             }
 
             fn reset(&mut self) {

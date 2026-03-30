@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Level 7 Intent Tests — Scheduler
 //!
 //! These tests verify **behavioral intent**, not implementation details.

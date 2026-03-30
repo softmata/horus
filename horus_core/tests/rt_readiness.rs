@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! RT Readiness Report test — generates the customer-facing RT report.
 //!
 //! Run: cargo test --no-default-features -p horus_core \

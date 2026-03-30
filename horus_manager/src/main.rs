@@ -1999,10 +1999,8 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 "python"
             } else if cpp {
                 "cpp"
-            } else if rust || use_macro {
+            } else if rust || use_macro || workspace {
                 "rust"
-            } else if workspace {
-                "rust" // Default workspace language
             } else {
                 "" // Will use interactive prompt
             };
@@ -2504,7 +2502,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 robot_poses,
                 sensor_poses,
             } => commands::tf::hand_eye_calibration(&robot_poses, &sensor_poses)
-                .map_err(|e| horus_core::error::HorusError::Config(e)),
+                .map_err(horus_core::error::HorusError::Config),
         },
 
         Commands::Clean {

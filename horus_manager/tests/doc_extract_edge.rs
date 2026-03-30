@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Edge-case tests for the doc extraction system.
 //!
 //! These tests exercise `extract_rust_file()` — the pure function that parses

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Replay Fidelity Tests — timing accuracy, missing topics, speed, injection.
 //!
 //! These tests verify that replay delivers messages with correct timing,
@@ -6,11 +7,9 @@
 //!
 //! Run: `cargo test --no-default-features -p horus_core --test replay_fidelity`
 
-use horus_core::scheduling::{NodeRecording, NodeReplayer, NodeTickSnapshot, Recording};
-use std::time::Instant;
+use horus_core::scheduling::{NodeRecording, NodeReplayer, NodeTickSnapshot};
 
 mod common;
-use common::TestTempDir;
 
 // ============================================================================
 // Test 1: Replay at 1x — verify timestamp spacing is correct

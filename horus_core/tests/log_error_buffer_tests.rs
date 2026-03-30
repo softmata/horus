@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Comprehensive tests for the dedicated error ring buffer.
 //!
 //! Proves: dual-write routing, error buffer isolation, volume survival,

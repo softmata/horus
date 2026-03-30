@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Core types for the HORUS service system.
 //!
 //! Services provide synchronous request/response communication — the HORUS

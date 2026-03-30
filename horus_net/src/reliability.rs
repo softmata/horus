@@ -6,11 +6,11 @@
 //!
 //! See blueprint section 8.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::priority::{Priority, Reliability};
-use crate::wire::{AckPayload, OutMessage};
+use crate::wire::AckPayload;
 
 /// Maximum resend attempts for latched messages before giving up.
 const MAX_LATCH_RESENDS: u32 = 100;

@@ -859,6 +859,6 @@ mod tests {
         let config = TFBridgeConfig::new("test_pub");
         let pub_result = TFBridgePublisher::new(config);
         // Should succeed on most systems (just binding a UDP socket)
-        assert!(pub_result.is_ok());
+        pub_result.unwrap();
     }
 }

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Determinism proof: verify bit-identical outputs across multiple runs.
 //!
 //! This is the ultimate test for the determinism blueprint. A multi-node system
@@ -5,7 +6,7 @@
 //! every run in deterministic mode.
 
 use horus_core::core::duration_ext::DurationExt;
-use horus_core::core::node::{Node, TopicMetadata};
+use horus_core::core::node::Node;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Edge-case tests for CLI introspection commands (msg list, msg info, msg hash).
 //!
 //! These tests exercise the `horus msg` subcommand family through the compiled

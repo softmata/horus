@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! TensorPool zero-copy integration tests.
 //!
 //! Tests Image, PointCloud, DepthImage through Topic<T> using
@@ -115,7 +116,7 @@ fn pointcloud_roundtrip_1000_points() {
     let topic: Topic<PointCloud> = Topic::new(&name).expect("create pointcloud topic");
 
     // Create pointcloud with 1000 points, 3 floats per point (XYZ)
-    let mut pc = PointCloud::new(1000, 3, TensorDtype::F32).expect("create pointcloud");
+    let pc = PointCloud::new(1000, 3, TensorDtype::F32).expect("create pointcloud");
     assert_eq!(pc.point_count(), 1000);
 
     // Fill with known pattern: point[i] = (i*0.01, sin(i), cos(i))
@@ -184,7 +185,7 @@ fn depthimage_roundtrip_320x240() {
 
     let topic: Topic<DepthImage> = Topic::new(&name).expect("create depth topic");
 
-    let mut depth = DepthImage::new(320, 240, TensorDtype::F32).expect("create depth image");
+    let depth = DepthImage::new(320, 240, TensorDtype::F32).expect("create depth image");
     assert_eq!(depth.width(), 320);
     assert_eq!(depth.height(), 240);
 
@@ -314,7 +315,7 @@ fn mixed_tensor_and_pod_topics() {
         fn tick(&mut self) {
             if let Some(ref t) = self.img_topic {
                 while let Some(img) = t.recv() {
-                    if img.pixel(0, 0).unwrap_or(&[0, 0, 0]) != &[42, 0, 0] {
+                    if img.pixel(0, 0).unwrap_or(&[0, 0, 0]) != [42, 0, 0] {
                         self.corrupted.fetch_add(1, Ordering::Relaxed);
                     }
                     self.img_recv.fetch_add(1, Ordering::Relaxed);
@@ -382,8 +383,8 @@ fn mixed_tensor_and_pod_topics() {
             .build();
         let _ = sched
             .add(MixSubNode {
-                img_name: img_name,
-                cmd_name: cmd_name,
+                img_name,
+                cmd_name,
                 img_topic: None,
                 cmd_topic: None,
                 img_recv: ir,

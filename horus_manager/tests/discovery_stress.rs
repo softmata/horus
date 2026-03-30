@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Discovery system stress tests — mass node creation, rapid churn,
 //! stale SHM cleanup, namespace isolation.
 //!

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! CLI Runtime Integration Tests
 //!
 //! Tests every CLI introspection command against a LIVE running scheduler.
@@ -149,7 +150,7 @@ fn run_and_capture(cmd: &mut Command) -> (String, bool) {
 fn runtime_topic_list() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_topic_list");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["topic", "list"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["topic", "list"]));
     println!("topic list output:\n{}", output);
 
     assert!(ok, "topic list should exit 0");
@@ -165,13 +166,12 @@ fn runtime_topic_list() {
 fn runtime_topic_echo() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_topic_echo");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args([
-        "topic",
-        "echo",
-        "sensor.cmd_vel",
-        "--count",
-        "3",
-    ]));
+    let (output, ok) =
+        run_and_capture(
+            sched
+                .horus()
+                .args(["topic", "echo", "sensor.cmd_vel", "--count", "3"]),
+        );
     println!("topic echo output:\n{}", output);
 
     assert!(ok, "topic echo should exit 0");
@@ -192,13 +192,12 @@ fn runtime_topic_hz() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_topic_hz");
 
     // topic hz needs a few seconds to measure
-    let (output, _ok) = run_and_capture(&mut sched.horus().args([
-        "topic",
-        "hz",
-        "sensor.cmd_vel",
-        "--window",
-        "10",
-    ]));
+    let (output, _ok) =
+        run_and_capture(
+            sched
+                .horus()
+                .args(["topic", "hz", "sensor.cmd_vel", "--window", "10"]),
+        );
     println!("topic hz output:\n{}", output);
 
     // May timeout or show Hz — either is acceptable for test
@@ -221,7 +220,7 @@ fn runtime_topic_hz() {
 fn runtime_node_list() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_node_list");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["node", "list"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["node", "list"]));
     println!("node list output:\n{}", output);
 
     assert!(ok, "node list should exit 0");
@@ -247,7 +246,7 @@ fn runtime_node_list() {
 fn runtime_node_info() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_node_info");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["node", "info", "sensor_node"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["node", "info", "sensor_node"]));
     println!("node info output:\n{}", output);
 
     assert!(ok, "node info should exit 0");
@@ -267,7 +266,7 @@ fn runtime_node_info() {
 fn runtime_service_list() {
     let sched = BackgroundScheduler::start("qa_services_tf", "cli_rt_svc_list");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["service", "list"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["service", "list"]));
     println!("service list output:\n{}", output);
 
     assert!(ok, "service list should exit 0");
@@ -284,7 +283,7 @@ fn runtime_service_list() {
 fn runtime_action_list() {
     let sched = BackgroundScheduler::start("qa_action_server", "cli_rt_action_list");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["action", "list"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["action", "list"]));
     println!("action list output:\n{}", output);
 
     assert!(ok, "action list should exit 0");
@@ -300,7 +299,7 @@ fn runtime_action_list() {
 fn runtime_action_info() {
     let sched = BackgroundScheduler::start("qa_action_server", "cli_rt_action_info");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["action", "info", "pick_object"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["action", "info", "pick_object"]));
     println!("action info output:\n{}", output);
 
     assert!(ok, "action info should exit 0");
@@ -321,13 +320,12 @@ fn runtime_param_crud() {
     let sched = BackgroundScheduler::start("qa_pubsub", "cli_rt_param_crud");
 
     // Set a parameter
-    let (output, ok) =
-        run_and_capture(&mut sched.horus().args(["param", "set", "test.speed", "2.5"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["param", "set", "test.speed", "2.5"]));
     println!("param set output: {}", output);
     assert!(ok, "param set should exit 0");
 
     // Get it back
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["param", "get", "test.speed"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["param", "get", "test.speed"]));
     println!("param get output: {}", output);
     assert!(ok, "param get should exit 0");
     assert!(
@@ -337,12 +335,12 @@ fn runtime_param_crud() {
     );
 
     // List params
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["param", "list"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["param", "list"]));
     println!("param list output: {}", output);
     assert!(ok, "param list should exit 0");
 
     // Delete
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["param", "delete", "test.speed"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["param", "delete", "test.speed"]));
     println!("param delete output: {}", output);
     assert!(ok, "param delete should exit 0");
 
@@ -358,7 +356,7 @@ fn runtime_param_crud() {
 fn runtime_frame_list() {
     let sched = BackgroundScheduler::start("qa_services_tf", "cli_rt_frame_list");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["frame", "list"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["frame", "list"]));
     println!("frame list output:\n{}", output);
 
     assert!(ok, "frame list should exit 0");
@@ -371,7 +369,7 @@ fn runtime_frame_list() {
 fn runtime_frame_tree() {
     let sched = BackgroundScheduler::start("qa_services_tf", "cli_rt_frame_tree");
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["frame", "tree"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["frame", "tree"]));
     println!("frame tree output:\n{}", output);
 
     assert!(ok, "frame tree should exit 0");
@@ -390,7 +388,7 @@ fn runtime_log() {
     // Give scheduler time to generate log entries
     std::thread::sleep(Duration::from_secs(2));
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["log"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["log"]));
     println!("log output:\n{}", output);
 
     // log may show entries or "no recent logs" — both are valid
@@ -410,13 +408,13 @@ fn runtime_blackbox() {
     // Give time for events to accumulate
     std::thread::sleep(Duration::from_secs(2));
 
-    let (output, ok) = run_and_capture(&mut sched.horus().args(["blackbox"]));
+    let (output, ok) = run_and_capture(sched.horus().args(["blackbox"]));
     println!("blackbox output:\n{}", output);
 
     assert!(ok, "blackbox should exit 0");
 
     // Also test --anomalies filter
-    let (output2, ok2) = run_and_capture(&mut sched.horus().args(["blackbox", "--anomalies"]));
+    let (output2, ok2) = run_and_capture(sched.horus().args(["blackbox", "--anomalies"]));
     println!("blackbox --anomalies output:\n{}", output2);
     assert!(ok2, "blackbox --anomalies should exit 0");
 
@@ -451,7 +449,7 @@ fn runtime_recording_pipeline() {
     std::thread::sleep(Duration::from_millis(500));
 
     // record list — should show our session
-    let (output, ok) = run_and_capture(&mut horus_cmd().args(["record", "list"]));
+    let (output, ok) = run_and_capture(horus_cmd().args(["record", "list"]));
     println!("record list:\n{}", output);
     assert!(ok, "record list should exit 0");
     assert!(
@@ -462,7 +460,7 @@ fn runtime_recording_pipeline() {
     );
 
     // record info — should show node recordings
-    let (output, ok) = run_and_capture(&mut horus_cmd().args(["record", "info", session]));
+    let (output, ok) = run_and_capture(horus_cmd().args(["record", "info", session]));
     println!("record info:\n{}", output);
     assert!(ok, "record info should exit 0");
     assert!(
@@ -473,7 +471,7 @@ fn runtime_recording_pipeline() {
 
     // record replay — replay first 5 ticks
     let (output, ok) =
-        run_and_capture(&mut horus_cmd().args(["record", "replay", session, "--stop-tick", "5"]));
+        run_and_capture(horus_cmd().args(["record", "replay", session, "--stop-tick", "5"]));
     println!("record replay:\n{}", output);
     assert!(ok, "record replay should exit 0");
     assert!(
@@ -484,7 +482,7 @@ fn runtime_recording_pipeline() {
 
     // record export — JSON
     let export_path = format!("/tmp/horus_rt_test_{}.json", std::process::id());
-    let (output, ok) = run_and_capture(&mut horus_cmd().args([
+    let (output, ok) = run_and_capture(horus_cmd().args([
         "record",
         "export",
         session,
@@ -544,8 +542,7 @@ session: test_launch
     let launch_file = tmpdir.path().join("robot.yaml");
     std::fs::write(&launch_file, yaml).unwrap();
 
-    let (output, ok) =
-        run_and_capture(&mut horus_cmd().args(["launch", "--dry-run"]).arg(&launch_file));
+    let (output, ok) = run_and_capture(horus_cmd().args(["launch", "--dry-run"]).arg(&launch_file));
     println!("launch dry-run:\n{}", output);
 
     assert!(ok, "dry-run should exit 0");
@@ -572,7 +569,7 @@ session: test_launch
 #[test]
 #[ignore]
 fn runtime_doctor() {
-    let (output, _ok) = run_and_capture(&mut horus_cmd().args(["doctor"]));
+    let (output, _ok) = run_and_capture(horus_cmd().args(["doctor"]));
     println!("doctor output:\n{}", output);
 
     // Doctor exits non-zero if it finds issues (e.g., missing horus.toml).
@@ -593,7 +590,7 @@ fn runtime_clean_shm() {
     drop(sched); // Stop and cleanup
 
     // clean --shm should succeed even with nothing to clean
-    let (output, ok) = run_and_capture(&mut horus_cmd().args(["clean", "--shm", "--force"]));
+    let (output, ok) = run_and_capture(horus_cmd().args(["clean", "--shm", "--force"]));
     println!("clean --shm output:\n{}", output);
 
     assert!(ok, "clean --shm should exit 0");
@@ -607,7 +604,7 @@ fn runtime_clean_shm() {
 #[test]
 #[ignore]
 fn runtime_msg_list() {
-    let (output, ok) = run_and_capture(&mut horus_cmd().args(["msg", "list"]));
+    let (output, ok) = run_and_capture(horus_cmd().args(["msg", "list"]));
     println!("msg list output (first 20 lines):");
     for line in output.lines().take(20) {
         println!("  {}", line);

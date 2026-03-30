@@ -38,7 +38,7 @@ impl Node for NetTestNode {
                 .send(Twist::new_2d(self.tick_count as f64 * 0.01, 0.0));
         }
         if let Some(msg) = self.sub_topic.recv() {
-            if self.tick_count % 50 == 0 {
+            if self.tick_count.is_multiple_of(50) {
                 println!(
                     "[{}] tick={} recv: linear_x={:.3}",
                     self.role, self.tick_count, msg.linear[0]

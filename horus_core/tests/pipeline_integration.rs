@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for multi-node scheduler pipelines.
 //!
 //! Verifies the most common real-world usage pattern: sensor → processor →
@@ -131,7 +132,7 @@ fn three_node_pipeline_data_flows_end_to_end() {
 
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
-    scheduler
+    let _ = scheduler
         .add(SensorNode {
             name: "sensor",
             counter: sensor_count.clone(),
@@ -141,7 +142,7 @@ fn three_node_pipeline_data_flows_end_to_end() {
         .order(0)
         .build();
 
-    scheduler
+    let _ = scheduler
         .add(ProcessorNode {
             name: "processor",
             processed: processor_count.clone(),
@@ -153,7 +154,7 @@ fn three_node_pipeline_data_flows_end_to_end() {
         .order(1)
         .build();
 
-    scheduler
+    let _ = scheduler
         .add(ControllerNode {
             name: "controller",
             latest_value: controller_latest.clone(),
@@ -212,7 +213,7 @@ fn pipeline_ordering_ensures_sensor_before_processor() {
     let mut scheduler = Scheduler::new().tick_rate(50_u64.hz());
 
     // Sensor at order 0 runs before processor at order 1
-    scheduler
+    let _ = scheduler
         .add(SensorNode {
             name: "ordered_sensor",
             counter: sensor_count.clone(),
@@ -222,7 +223,7 @@ fn pipeline_ordering_ensures_sensor_before_processor() {
         .order(0)
         .build();
 
-    scheduler
+    let _ = scheduler
         .add(ProcessorNode {
             name: "ordered_processor",
             processed: processor_count.clone(),
@@ -260,7 +261,7 @@ fn tick_once_processes_pipeline_synchronously() {
 
     let mut scheduler = Scheduler::new();
 
-    scheduler
+    let _ = scheduler
         .add(SensorNode {
             name: "sync_sensor",
             counter: sensor_count.clone(),
@@ -270,7 +271,7 @@ fn tick_once_processes_pipeline_synchronously() {
         .order(0)
         .build();
 
-    scheduler
+    let _ = scheduler
         .add(ProcessorNode {
             name: "sync_processor",
             processed: processor_count.clone(),
@@ -282,7 +283,7 @@ fn tick_once_processes_pipeline_synchronously() {
         .order(1)
         .build();
 
-    scheduler
+    let _ = scheduler
         .add(ControllerNode {
             name: "sync_controller",
             latest_value: Arc::new(AtomicU64::new(0)),
@@ -321,7 +322,7 @@ fn pipeline_with_watchdog_completes() {
         .tick_rate(50_u64.hz())
         .watchdog(1_u64.secs());
 
-    scheduler
+    let _ = scheduler
         .add(SensorNode {
             name: "wd_sensor",
             counter: sensor_count.clone(),

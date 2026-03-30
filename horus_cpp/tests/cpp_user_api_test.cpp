@@ -427,6 +427,115 @@ void test_moves() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 12. Struct-Based Node (like Rust `impl Node`)
+// ═══════════════════════════════════════════════════════════════════════════
+
+class MotorController : public horus::Node {
+public:
+    MotorController() : Node("motor_ctrl") {
+        cmd_sub_ = subscribe<horus::msg::CmdVel>("node_test.cmd");
+        motor_pub_ = advertise<horus::msg::CmdVel>("node_test.motor");
+    }
+
+    void tick() override {
+        tick_count_++;
+        auto msg = cmd_sub_->recv();
+        if (msg) {
+            recv_count_++;
+            horus::msg::CmdVel out{};
+            out.linear = msg->get()->linear * 0.5f;
+            motor_pub_->send(out);
+        }
+    }
+
+    void init() override { init_called_ = true; }
+    void enter_safe_state() override { safe_called_ = true; }
+
+    int tick_count_ = 0;
+    int recv_count_ = 0;
+    bool init_called_ = false;
+    bool safe_called_ = false;
+
+private:
+    horus::Subscriber<horus::msg::CmdVel>* cmd_sub_;
+    horus::Publisher<horus::msg::CmdVel>*  motor_pub_;
+};
+
+void test_struct_node() {
+    std::printf("\n=== 12. Struct-Based Node ===\n");
+
+    horus::Scheduler sched;
+
+    // Create node with built-in pub/sub
+    MotorController ctrl;
+    CHECK_EQ(ctrl.name(), std::string("motor_ctrl"), "node name");
+    CHECK_EQ(ctrl.publishers().size(), (size_t)1, "1 publisher");
+    CHECK_EQ(ctrl.subscriptions().size(), (size_t)1, "1 subscription");
+
+    // Publish to the node's input
+    horus::Publisher<horus::msg::CmdVel> cmd_pub("node_test.cmd");
+    horus::msg::CmdVel cmd{}; cmd.linear = 2.0f;
+    cmd_pub.send(cmd);
+
+    // Add to scheduler with scheduling config
+    sched.add(ctrl).order(0).build();
+
+    // Tick
+    for (int i = 0; i < 5; i++) sched.tick_once();
+
+    CHECK(ctrl.tick_count_ >= 5, "node ticked >= 5");
+    CHECK(ctrl.recv_count_ >= 1, "node received >= 1 message");
+
+    // Lifecycle
+    ctrl.init();
+    CHECK(ctrl.init_called_, "init() called");
+    ctrl.enter_safe_state();
+    CHECK(ctrl.safe_called_, "enter_safe_state() called");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 13. LambdaNode (like Python's horus.Node())
+// ═══════════════════════════════════════════════════════════════════════════
+
+void test_lambda_node() {
+    std::printf("\n=== 13. LambdaNode (Python-style) ===\n");
+
+    horus::Scheduler sched;
+
+    static int lambda_ticks = 0;
+    static int lambda_recvs = 0;
+
+    horus::LambdaNode sensor("lambda_sensor");
+    sensor.pub<horus::msg::CmdVel>("lambda.data")
+          .on_tick([](horus::LambdaNode& self) {
+              lambda_ticks++;
+              self.send<horus::msg::CmdVel>("lambda.data", horus::msg::CmdVel{0, 1.0f, 0.0f});
+          });
+
+    horus::LambdaNode processor("lambda_processor");
+    processor.sub<horus::msg::CmdVel>("lambda.data")
+             .on_tick([](horus::LambdaNode& self) {
+                 auto msg = self.recv<horus::msg::CmdVel>("lambda.data");
+                 if (msg) lambda_recvs++;
+             });
+
+    CHECK_EQ(sensor.name(), std::string("lambda_sensor"), "sensor name");
+    CHECK_EQ(sensor.publishers().size(), (size_t)1, "sensor has 1 pub");
+    CHECK_EQ(processor.subscriptions().size(), (size_t)1, "processor has 1 sub");
+
+    lambda_ticks = 0;
+    lambda_recvs = 0;
+
+    sched.add(sensor).order(0).build();
+    sched.add(processor).order(10).build();
+
+    for (int i = 0; i < 5; i++) sched.tick_once();
+
+    CHECK(lambda_ticks >= 5, "lambda sensor ticked >= 5");
+    CHECK(lambda_recvs >= 1, "lambda processor received >= 1");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 int main() {
     std::printf("╔══════════════════════════════════════════════════╗\n");
@@ -444,6 +553,8 @@ int main() {
     test_two_schedulers();
     test_literals();
     test_moves();
+    test_struct_node();
+    test_lambda_node();
 
     std::printf("\n╔══════════════════════════════════════════════════╗\n");
     std::printf("║  Results: %3d passed, %d failed                  ║\n", pass_count, fail_count);

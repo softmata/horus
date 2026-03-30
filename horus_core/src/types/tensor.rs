@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Zero-copy tensor descriptor for shared memory communication
 //!
 //! [`Tensor`] is a lightweight 168-byte descriptor that flows through Topic

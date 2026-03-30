@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Logging system stress tests — concurrent writers, buffer overflow,
 //! cross-process timestamp ordering, write throughput.
 //!
@@ -7,7 +8,6 @@
 //! Run: `cargo test --no-default-features -p horus_core --test logging_stress -- --test-threads=1`
 
 use horus_core::core::log_buffer::{LogEntry, LogType, SharedLogBuffer};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -123,7 +123,7 @@ fn test_ring_buffer_overflow_oldest_evicted() {
     // After 6000 writes into 5000 slots, slots 0-999 were overwritten by 5000-5999
     // So we should see tick_numbers >= 1000 (approximately)
     if !entries.is_empty() {
-        let min_tick = entries.iter().map(|e| e.tick_number).min().unwrap();
+        let _min_tick = entries.iter().map(|e| e.tick_number).min().unwrap();
         let max_tick = entries.iter().map(|e| e.tick_number).max().unwrap();
 
         // Newest entry should be close to 5999

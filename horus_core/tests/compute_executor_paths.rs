@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for compute executor code paths.
 //!
 //! Covers: single-node optimization (no crossbeam), parallel execution,

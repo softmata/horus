@@ -7,10 +7,7 @@
 //! as horus_core's Topic<T>.send(). It's a "virtual publisher" that feeds
 //! network-received data into the local topic system.
 
-use std::fs::{File, OpenOptions};
-use std::io;
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::fs::OpenOptions;
 
 use memmap2::MmapMut;
 
@@ -35,6 +32,7 @@ const OFF_MSG_TOTAL: usize = 48; // u64 (messages_total)
 const POD_YES: u8 = 2;
 
 /// Writer that pushes network-received data into a local SHM ring buffer.
+#[allow(dead_code)]
 pub struct ShmRingWriter {
     /// Memory-mapped SHM file (read-write).
     mmap: MmapMut,
@@ -54,7 +52,7 @@ impl ShmRingWriter {
     /// The SHM file must already exist (created by a local subscriber's Topic<T>::new()).
     /// Returns `None` if the file doesn't exist or the header is invalid.
     pub fn open(topic_name: &str) -> Option<Self> {
-        let sanitized = topic_name.replace('.', "_").replace('/', "_");
+        let sanitized = topic_name.replace(['.', '/'], "_");
         let path = shm_topics_dir().join(format!("horus_{sanitized}"));
         Self::open_path(topic_name, &path)
     }

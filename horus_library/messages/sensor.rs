@@ -942,6 +942,7 @@ crate::messages::impl_pod_message!(
 );
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use softmata_core::sensor::{

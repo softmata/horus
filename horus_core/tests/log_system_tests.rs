@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Phases 11–12: Logging core and features integration tests.
 //!
 //! Covers ring buffer overflow at 5000 boundary, cross-process concurrent writes,
@@ -1378,7 +1379,7 @@ fn hlog_ignores_log_bridge_level() {
     let unique = format!("hlog_nolvl_{}", std::process::id());
 
     let idx_before = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
-    log_with_context(LogType::Debug, format!("{}", unique));
+    log_with_context(LogType::Debug, unique.to_string());
     let idx_after = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
 
     // hlog!() always writes, regardless of log::max_level
@@ -1469,7 +1470,7 @@ fn perf_concurrent_push_throughput() {
     );
 
     // Verify no slot corruption
-    assert_eq!(buf.write_idx(), (threads * per_thread) as u64);
+    assert_eq!(buf.write_idx(), (threads * per_thread));
 
     let _ = std::fs::remove_file(path);
 }

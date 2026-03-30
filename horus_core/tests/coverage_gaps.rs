@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Coverage gap tests for presence and service resilient calls.
 //!
 //! Tests untested accessors on NodePresence (health_status, tick_count,

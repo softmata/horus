@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Service system stress tests.
 //
 // Pushes the RPC system beyond normal usage:

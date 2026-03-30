@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Integration tests for watchdog graduated severity behavioral verification.
 //
 // Tests PROVE that the watchdog system actually transitions node health

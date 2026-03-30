@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process infrastructure tests.
 //!
 //! Tests that BlackBox WAL files and SchedulerRegistry SHM files are

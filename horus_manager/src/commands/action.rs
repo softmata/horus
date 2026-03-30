@@ -459,7 +459,7 @@ pub fn send_goal(
 
     // Action topics use a wrapper: GoalRequest<G> which has uuid + priority + payload
     // We use serde_json::Value as the payload.
-    let goal_topic_name = format!("{}.goal", name);
+    let _goal_topic_name = format!("{}.goal", name);
     let status_topic_name = format!("{}.status", name);
     let feedback_topic_name = format!("{}.feedback", name);
     let result_topic_name = format!("{}.result", name);
@@ -1077,10 +1077,9 @@ mod tests {
 
     #[test]
     fn cancel_goal_json_structure_with_id() {
-        let goal_id = Some("abc-123");
         let cancel_request = serde_json::json!({
-            "goal_id": goal_id.unwrap_or(""),
-            "cancel_all": goal_id.is_none(),
+            "goal_id": "abc-123",
+            "cancel_all": false,
         });
         assert_eq!(cancel_request["goal_id"], "abc-123");
         assert_eq!(cancel_request["cancel_all"], false);
@@ -1088,10 +1087,9 @@ mod tests {
 
     #[test]
     fn cancel_goal_json_structure_cancel_all() {
-        let goal_id: Option<&str> = None;
         let cancel_request = serde_json::json!({
-            "goal_id": goal_id.unwrap_or(""),
-            "cancel_all": goal_id.is_none(),
+            "goal_id": "",
+            "cancel_all": true,
         });
         assert_eq!(cancel_request["goal_id"], "");
         assert_eq!(cancel_request["cancel_all"], true);
@@ -1134,14 +1132,14 @@ mod tests {
     #[test]
     fn goal_id_short_display() {
         let goal_id = "abcdefgh-1234-5678";
-        let short = goal_id.get(..8).unwrap_or(&goal_id);
+        let short = goal_id.get(..8).unwrap_or(goal_id);
         assert_eq!(short, "abcdefgh");
     }
 
     #[test]
     fn goal_id_short_display_very_short() {
         let goal_id = "abc";
-        let short = goal_id.get(..8).unwrap_or(&goal_id);
+        let short = goal_id.get(..8).unwrap_or(goal_id);
         // get(..8) on a 3-char string returns None -> falls back to full string
         assert_eq!(short, "abc");
     }
@@ -1149,7 +1147,7 @@ mod tests {
     #[test]
     fn goal_id_short_display_empty() {
         let goal_id = "";
-        let short = goal_id.get(..8).unwrap_or(&goal_id);
+        let short = goal_id.get(..8).unwrap_or(goal_id);
         assert_eq!(short, "");
     }
 

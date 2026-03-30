@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! GPU End-to-End Tests — User-Facing API Only
 //!
 //! These tests exercise the PUBLIC API that users interact with.
@@ -46,7 +47,7 @@ fn test_image_to_gpu_to_cpu_roundtrip() {
     }
 
     // Create CPU image with known gradient
-    let mut cpu_img = Image::new(64, 48, ImageEncoding::Rgb8).unwrap();
+    let cpu_img = Image::new(64, 48, ImageEncoding::Rgb8).unwrap();
     {
         let data = cpu_img.data_mut();
         for i in 0..data.len() {
@@ -155,7 +156,7 @@ fn test_gpu_image_ops_available() {
 
 #[test]
 fn test_cpu_path_unaffected() {
-    let mut img = Image::new(320, 240, ImageEncoding::Rgb8).unwrap();
+    let img = Image::new(320, 240, ImageEncoding::Rgb8).unwrap();
     assert!(img.is_cpu());
     assert!(!img.is_cuda());
 

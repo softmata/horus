@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process action tests.
 //!
 //! Proves that SyncActionClient in one process can send goals to an

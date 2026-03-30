@@ -178,6 +178,7 @@ impl NodePresence {
     }
 
     /// Set RT state fields (called by scheduler when writing presence).
+    #[allow(clippy::too_many_arguments)]
     pub fn set_rt_state(
         &mut self,
         priority: Option<i32>,
@@ -748,10 +749,10 @@ mod tests {
 
     #[test]
     fn test_validate_node_name_valid_chars() {
-        assert!(validate_node_name("my_node").is_ok());
-        assert!(validate_node_name("sensor-1").is_ok());
-        assert!(validate_node_name("arm.joint0").is_ok());
-        assert!(validate_node_name("A").is_ok());
+        validate_node_name("my_node").unwrap();
+        validate_node_name("sensor-1").unwrap();
+        validate_node_name("arm.joint0").unwrap();
+        validate_node_name("A").unwrap();
     }
 
     #[test]

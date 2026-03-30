@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for Scheduler DX (Developer Experience) API
 
 use horus_core::core::Node;

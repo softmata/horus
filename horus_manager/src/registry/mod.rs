@@ -335,7 +335,7 @@ mod dispatch_tests {
 
     #[test]
     fn validate_name_exact_min_length() {
-        assert!(validate_package_name("ab").is_ok());
+        validate_package_name("ab").unwrap();
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod dispatch_tests {
     #[test]
     fn validate_name_exact_max_length() {
         let name = "a".repeat(64);
-        assert!(validate_package_name(&name).is_ok());
+        validate_package_name(&name).unwrap();
     }
 
     #[test]
@@ -372,19 +372,19 @@ mod dispatch_tests {
 
     #[test]
     fn validate_name_valid_with_hyphens_underscores() {
-        assert!(validate_package_name("my-cool_package").is_ok());
+        validate_package_name("my-cool_package").unwrap();
     }
 
     #[test]
     fn validate_name_valid_with_digits() {
-        assert!(validate_package_name("horus-driver-v2").is_ok());
+        validate_package_name("horus-driver-v2").unwrap();
     }
 
     // ── scoped package names ────────────────────────────────────────────
 
     #[test]
     fn validate_scoped_name_valid() {
-        assert!(validate_package_name("@myorg/my-package").is_ok());
+        validate_package_name("@myorg/my-package").unwrap();
     }
 
     #[test]

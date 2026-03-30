@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! IPC torture tests — cross-process edge cases that break real robots.
 //!
 //! These tests target the EXACT failure modes found in the backend switching
@@ -18,7 +19,6 @@
 //!        --test ipc_torture -- --ignored --nocapture
 
 use horus_core::communication::topic::Topic;
-use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -41,6 +41,7 @@ const SENTINEL: u64 = u64::MAX;
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[repr(C)]
+#[allow(dead_code)]
 struct CmdVel {
     linear_x: f64,
     linear_y: f64,
@@ -63,6 +64,7 @@ unsafe impl bytemuck::Zeroable for ImuCompact {}
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[repr(C)]
+#[allow(dead_code)]
 struct JointState8 {
     positions: [f64; 8],
     velocities: [f64; 8],
@@ -215,7 +217,7 @@ fn ipc_pod_integrity_5000_msgs() {
     let count = 5000u64;
 
     // Spawn consumer first (waits for data)
-    let mut consumer = spawn_child(
+    let consumer = spawn_child(
         "ipc_pod_integrity_5000_msgs",
         &topic,
         "imu_consumer",
@@ -357,7 +359,7 @@ fn ipc_late_joiner_misses_early_messages() {
     std::thread::sleep(Duration::from_millis(15));
 
     // NOW start consumer (late joiner)
-    let mut consumer = spawn_child(
+    let consumer = spawn_child(
         "ipc_late_joiner_misses_early_messages",
         &topic,
         "late_consumer",
@@ -472,7 +474,7 @@ fn ipc_fanout_1pub_4sub_processes() {
 
     println!("=== CROSS-PROCESS FAN-OUT (1P → 4S) ===");
     let mut totals = vec![];
-    for (i, mut sub) in subs.into_iter().enumerate() {
+    for (i, sub) in subs.into_iter().enumerate() {
         let output = sub.wait_with_output().unwrap();
         let received: u64 = parse_child_output(&output.stdout, &format!("SUB:{}:", i))
             .first()
@@ -542,7 +544,7 @@ fn child_bidir() {
                 received += 1;
             }
         }
-        if sent % 100 == 0 {
+        if sent.is_multiple_of(100) {
             std::thread::yield_now();
         }
     }
@@ -574,14 +576,14 @@ fn ipc_bidirectional_both_send_and_recv() {
     let topic = unique("ipc_bidir");
     let count = 1000u64;
 
-    let mut child_a = spawn_child(
+    let child_a = spawn_child(
         "ipc_bidirectional_both_send_and_recv",
         &topic,
         "bidir",
         count,
         0,
     );
-    let mut child_b = spawn_child(
+    let child_b = spawn_child(
         "ipc_bidirectional_both_send_and_recv",
         &topic,
         "bidir",
@@ -636,12 +638,12 @@ fn child_churn_worker() {
     // Send some messages, receive some, then exit
     for i in 0..200 {
         t.send(id * 10000 + i);
-        if let Some(_) = t.recv() {}
+        t.recv().is_some();
         std::thread::sleep(Duration::from_millis(1));
     }
     // Count what we received
     let mut received = 0u64;
-    while let Some(_) = t.recv() {
+    while t.recv().is_some() {
         received += 1;
     }
     println!("CHURN:{}:{}", id, received);
@@ -688,7 +690,7 @@ fn ipc_rapid_process_churn() {
     for _ in 0..500 {
         parent_topic.send(99999u64);
         parent_sent += 1;
-        while let Some(_) = parent_topic.recv() {
+        while parent_topic.recv().is_some() {
             parent_recv += 1;
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -697,7 +699,7 @@ fn ipc_rapid_process_churn() {
     // Wait for all children
     let mut total_child_recv = 0u64;
     let mut children_with_data = 0;
-    for mut child in all_children {
+    for child in all_children {
         let output = child.wait_with_output().unwrap();
         let lines = parse_child_output(&output.stdout, "CHURN:");
         for line in lines {
@@ -826,7 +828,7 @@ fn ipc_serde_pointcloud_cross_process() {
     let topic = unique("ipc_pointcloud");
     let count = 500u64;
 
-    let mut consumer = spawn_child(
+    let consumer = spawn_child(
         "ipc_serde_pointcloud_cross_process",
         &topic,
         "pc_consumer",

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Level 7 Intent Tests — BlackBox Flight Recorder
 //!
 //! These tests verify **behavioral intent** of the BlackBox flight recorder,

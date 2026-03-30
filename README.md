@@ -125,29 +125,44 @@ horus.run(
 #include <horus/horus.hpp>
 using namespace horus::literals;
 
+// Struct-based node with built-in pub/sub (like Rust's impl Node)
+class Controller : public horus::Node {
+public:
+    Controller() : Node("controller") {
+        sensor_ = subscribe<horus::msg::CmdVel>("sensor.data");
+        motor_  = advertise<horus::msg::CmdVel>("motor.cmd");
+    }
+
+    void tick() override {
+        auto s = sensor_->recv();
+        if (!s) return;
+        horus::msg::CmdVel cmd{};
+        cmd.linear = (1.0f - s->get()->linear) * 0.5f;
+        motor_->send(cmd);
+    }
+
+    void enter_safe_state() override { /* stop motors */ }
+
+private:
+    horus::Subscriber<horus::msg::CmdVel>* sensor_;
+    horus::Publisher<horus::msg::CmdVel>*  motor_;
+};
+
 int main() {
-    auto sched = horus::Scheduler().tick_rate(1000_hz);
+    horus::Scheduler sched;
+    sched.tick_rate(1000_hz);
 
-    auto sensor_pub = sched.advertise<horus::msg::CmdVel>("sensor.data");
-    auto sensor_sub = sched.subscribe<horus::msg::CmdVel>("sensor.data");
-    auto motor_pub  = sched.advertise<horus::msg::CmdVel>("motor.cmd");
+    horus::Publisher<horus::msg::CmdVel> sensor_pub("sensor.data");
 
-    sched.add("sensor").order(0).rate(1000_hz)
+    sched.add("sensor").order(0)
         .tick([&] {
             auto out = sensor_pub.loan();
             out->linear = 0.5f;
             sensor_pub.publish(std::move(out));
         }).build();
 
-    sched.add("controller").order(1).rate(1000_hz)
-        .on_miss(horus::Miss::SafeMode)
-        .tick([&] {
-            auto s = sensor_sub.recv();
-            if (!s) return;
-            auto cmd = motor_pub.loan();
-            cmd->linear = (1.0f - s->linear) * 0.5f;
-            motor_pub.publish(std::move(cmd));
-        }).build();
+    Controller ctrl;
+    sched.add(ctrl).order(1).on_miss(horus::Miss::SafeMode).build();
 
     sched.spin();
 }

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Safety Monitor Runtime Torture Tests
 //!
 //! These tests verify safety monitoring under real runtime conditions:
@@ -154,7 +155,7 @@ fn test_watchdog_under_cpu_contention() {
     contention_running.store(false, Ordering::Relaxed);
     contention_thread.join().unwrap();
 
-    let stall_ticks = stall_count.load(Ordering::SeqCst);
+    let _stall_ticks = stall_count.load(Ordering::SeqCst);
     let healthy_ticks = healthy_count.load(Ordering::SeqCst);
 
     // Stalling node should have been killed (ticks stop increasing)
@@ -539,7 +540,7 @@ fn test_estop_propagation_latency() {
     }
 
     let start = Instant::now();
-    let result = scheduler.run_for(10_u64.secs());
+    let _result = scheduler.run_for(10_u64.secs());
     let elapsed = start.elapsed();
 
     // Scheduler should have stopped due to e-stop (not run full 10 seconds)
@@ -731,7 +732,7 @@ fn test_concurrent_safety_queries() {
     cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
-    let running = Arc::new(AtomicBool::new(true));
+    let _running = Arc::new(AtomicBool::new(true));
 
     // Build scheduler in Arc for sharing
     let mut scheduler = Scheduler::new()
@@ -769,7 +770,7 @@ fn test_concurrent_safety_queries() {
     for _ in 0..10 {
         let qc = query_count.clone();
         let dm = deadline_misses;
-        let da = degrade_acts;
+        let _da = degrade_acts;
         handles.push(std::thread::spawn(move || {
             // Each thread verifies the stats are consistent
             assert!(dm > 0, "Should have deadline misses");

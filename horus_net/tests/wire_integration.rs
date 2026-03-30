@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for wire format + transport.
 //!
 //! Tests the full path: encode → send over UDP loopback → recv → decode.

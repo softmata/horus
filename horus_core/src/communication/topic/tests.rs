@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Comprehensive tests for the topic system.
 //!
 //! Coverage:
@@ -3440,14 +3441,11 @@ fn auto_grow_sp_serde_try_send_triggers_grow() {
     t.send("init".to_string());
     let _ = t.recv();
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            // 41 chars → bincode 49 bytes > max_data_len 48
-            let result = t.try_send("A".repeat(41));
-            assert!(result.is_err(), "try_send should Err after auto-grow");
-        }
-        _ => {}
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
+        // 41 chars → bincode 49 bytes > max_data_len 48
+        let result = t.try_send("A".repeat(41));
+        assert!(result.is_err(), "try_send should Err after auto-grow");
     }
 }
 
@@ -3459,13 +3457,10 @@ fn auto_grow_mp_serde_try_send_triggers_grow() {
     t.send("init".to_string());
     let _ = t.recv();
 
-    match t.force_migrate(BackendMode::FanoutShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            let result = t.try_send("B".repeat(41));
-            assert!(result.is_err(), "MP try_send should Err after auto-grow");
-        }
-        _ => {}
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::FanoutShm) {
+        trigger_shm_dispatch(&name);
+        let result = t.try_send("B".repeat(41));
+        assert!(result.is_err(), "MP try_send should Err after auto-grow");
     }
 }
 
@@ -3481,31 +3476,28 @@ fn auto_grow_increases_slot_size_in_header() {
     let old_slot_size = t.header().slot_size;
     assert_eq!(old_slot_size, 64, "Initial slot_size should be 64");
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            // Trigger auto-grow: 100-char string → ~108 bytes serialized > 48 max
-            let _ = t.try_send("C".repeat(100));
-            let new_slot_size = t.header().slot_size;
-            assert!(
-                new_slot_size > old_slot_size,
-                "slot_size should have grown: {} → {}",
-                old_slot_size,
-                new_slot_size
-            );
-            // New slot_size should be a power of 2 and accommodate 108 bytes + 16 overhead
-            assert!(
-                new_slot_size.is_power_of_two(),
-                "New slot_size {} should be power of 2",
-                new_slot_size
-            );
-            assert!(
-                (new_slot_size as usize) >= 108 + 16,
-                "New slot_size {} should fit 108+16 byte message",
-                new_slot_size
-            );
-        }
-        _ => {}
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
+        // Trigger auto-grow: 100-char string → ~108 bytes serialized > 48 max
+        let _ = t.try_send("C".repeat(100));
+        let new_slot_size = t.header().slot_size;
+        assert!(
+            new_slot_size > old_slot_size,
+            "slot_size should have grown: {} → {}",
+            old_slot_size,
+            new_slot_size
+        );
+        // New slot_size should be a power of 2 and accommodate 108 bytes + 16 overhead
+        assert!(
+            new_slot_size.is_power_of_two(),
+            "New slot_size {} should be power of 2",
+            new_slot_size
+        );
+        assert!(
+            (new_slot_size as usize) >= 108 + 16,
+            "New slot_size {} should fit 108+16 byte message",
+            new_slot_size
+        );
     }
 }
 
@@ -3520,19 +3512,16 @@ fn auto_grow_shm_region_len_increases() {
 
     let old_len = t.storage.len();
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            let _ = t.try_send("D".repeat(200)); // 208 bytes → definitely needs grow
-            let new_len = t.storage.len();
-            assert!(
-                new_len > old_len,
-                "SHM region should have grown: {} → {}",
-                old_len,
-                new_len
-            );
-        }
-        _ => {}
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
+        let _ = t.try_send("D".repeat(200)); // 208 bytes → definitely needs grow
+        let new_len = t.storage.len();
+        assert!(
+            new_len > old_len,
+            "SHM region should have grown: {} → {}",
+            old_len,
+            new_len
+        );
     }
 }
 
@@ -3588,25 +3577,22 @@ fn auto_grow_small_messages_still_work_after_grow() {
     t.send("init".to_string());
     let _ = t.recv();
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
 
-            // Trigger grow
-            let _ = t.try_send("E".repeat(100));
+        // Trigger grow
+        let _ = t.try_send("E".repeat(100));
 
-            // Force back to SpscShm with new slot_size
-            trigger_shm_dispatch(&name);
+        // Force back to SpscShm with new slot_size
+        trigger_shm_dispatch(&name);
 
-            // Small messages should still work
-            assert!(
-                t.try_send("hi".to_string()).is_ok(),
-                "Small send after grow"
-            );
-            let got = t.try_recv();
-            assert_eq!(got, Some("hi".to_string()), "Small recv after grow");
-        }
-        _ => {}
+        // Small messages should still work
+        assert!(
+            t.try_send("hi".to_string()).is_ok(),
+            "Small send after grow"
+        );
+        let got = t.try_recv();
+        assert_eq!(got, Some("hi".to_string()), "Small recv after grow");
     }
 }
 
@@ -3619,24 +3605,21 @@ fn auto_grow_boundary_exact_fit() {
     t.send("x".to_string());
     let _ = t.recv();
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            let old_slot = t.header().slot_size;
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
+        let old_slot = t.header().slot_size;
 
-            // 40 chars → bincode 48 bytes = max_data_len (64 - 16). Exact fit.
-            let result = t.try_send("F".repeat(40));
-            assert!(
-                result.is_ok(),
-                "Exact-fit message should succeed without grow"
-            );
-            assert_eq!(
-                t.header().slot_size,
-                old_slot,
-                "Slot size should NOT change for exact-fit message"
-            );
-        }
-        _ => {}
+        // 40 chars → bincode 48 bytes = max_data_len (64 - 16). Exact fit.
+        let result = t.try_send("F".repeat(40));
+        assert!(
+            result.is_ok(),
+            "Exact-fit message should succeed without grow"
+        );
+        assert_eq!(
+            t.header().slot_size,
+            old_slot,
+            "Slot size should NOT change for exact-fit message"
+        );
     }
 }
 
@@ -3649,19 +3632,16 @@ fn auto_grow_one_byte_over() {
     t.send("x".to_string());
     let _ = t.recv();
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            let old_slot = t.header().slot_size;
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
+        let old_slot = t.header().slot_size;
 
-            // 41 chars → bincode 49 bytes > max_data_len 48. One byte over.
-            let _ = t.try_send("G".repeat(41));
-            assert!(
-                t.header().slot_size > old_slot,
-                "One-byte-over should trigger grow"
-            );
-        }
-        _ => {}
+        // 41 chars → bincode 49 bytes > max_data_len 48. One byte over.
+        let _ = t.try_send("G".repeat(41));
+        assert!(
+            t.header().slot_size > old_slot,
+            "One-byte-over should trigger grow"
+        );
     }
 }
 
@@ -3674,21 +3654,18 @@ fn auto_grow_migration_epoch_incremented() {
     t.send("x".to_string());
     let _ = t.recv();
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            let old_epoch = t.header().migration_epoch.load(Ordering::Relaxed);
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
+        let old_epoch = t.header().migration_epoch.load(Ordering::Relaxed);
 
-            let _ = t.try_send("H".repeat(100));
-            let new_epoch = t.header().migration_epoch.load(Ordering::Relaxed);
-            assert!(
-                new_epoch > old_epoch,
-                "Migration epoch should increment after grow: {} → {}",
-                old_epoch,
-                new_epoch
-            );
-        }
-        _ => {}
+        let _ = t.try_send("H".repeat(100));
+        let new_epoch = t.header().migration_epoch.load(Ordering::Relaxed);
+        assert!(
+            new_epoch > old_epoch,
+            "Migration epoch should increment after grow: {} → {}",
+            old_epoch,
+            new_epoch
+        );
     }
 }
 
@@ -3705,39 +3682,36 @@ fn auto_grow_vec_u8_large_payload() {
     t.send(vec![1u8; 8]);
     let _ = t.recv();
 
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            let old_slot = t.header().slot_size;
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
+        let old_slot = t.header().slot_size;
 
-            // 16KB payload → spills to TensorPool (above 4KB threshold)
-            let large_msg = vec![0xAB_u8; 16384];
-            // Send with retry — spill path may need one retry cycle
-            let mut sent = false;
-            for _ in 0..5 {
-                match t.try_send(large_msg.clone()) {
-                    Ok(()) => {
-                        sent = true;
-                        break;
-                    }
-                    Err(_) => continue,
+        // 16KB payload → spills to TensorPool (above 4KB threshold)
+        let large_msg = vec![0xAB_u8; 16384];
+        // Send with retry — spill path may need one retry cycle
+        let mut sent = false;
+        for _ in 0..5 {
+            match t.try_send(large_msg.clone()) {
+                Ok(()) => {
+                    sent = true;
+                    break;
                 }
+                Err(_) => continue,
             }
-
-            let new_slot = t.header().slot_size;
-            // With auto-spill, slot size should NOT grow for large messages.
-            // The message is spilled to TensorPool, keeping ring buffer compact.
-            // Note: if spill fails (pool unavailable), auto-grow kicks in as fallback.
-            if sent {
-                assert_eq!(
-                    new_slot, old_slot,
-                    "16KB Vec<u8> should spill to pool, not grow slot: {} → {}",
-                    old_slot, new_slot
-                );
-            }
-            // If send failed after retries, auto-grow may have triggered — that's OK
         }
-        _ => {}
+
+        let new_slot = t.header().slot_size;
+        // With auto-spill, slot size should NOT grow for large messages.
+        // The message is spilled to TensorPool, keeping ring buffer compact.
+        // Note: if spill fails (pool unavailable), auto-grow kicks in as fallback.
+        if sent {
+            assert_eq!(
+                new_slot, old_slot,
+                "16KB Vec<u8> should spill to pool, not grow slot: {} → {}",
+                old_slot, new_slot
+            );
+        }
+        // If send failed after retries, auto-grow may have triggered — that's OK
     }
 }
 
@@ -7995,7 +7969,7 @@ fn crash_concurrent_send_recv_no_corruption() {
         barrier_c.wait();
         let deadline = Instant::now() + 5_u64.secs();
         loop {
-            if let Some(_) = sub_t.recv() {
+            if sub_t.recv().is_some() {
                 recv_count.fetch_add(1, Ordering::Relaxed);
             } else if done_check.load(Ordering::Acquire) || Instant::now() > deadline {
                 break;
@@ -10716,7 +10690,7 @@ fn test_read_header_truncated_file() {
     use crate::communication::read_topic_header_info;
     // Create a file smaller than TopicHeader (640 bytes)
     let path = std::env::temp_dir().join("horus_test_truncated_header");
-    std::fs::write(&path, &[0u8; 100]).unwrap();
+    std::fs::write(&path, [0u8; 100]).unwrap();
     let result = read_topic_header_info(&path);
     assert!(result.is_none(), "truncated file should return None");
     let _ = std::fs::remove_file(&path);
@@ -10740,7 +10714,7 @@ fn test_read_header_bad_magic() {
 fn test_read_header_empty_file() {
     use crate::communication::read_topic_header_info;
     let path = std::env::temp_dir().join("horus_test_empty_header");
-    std::fs::write(&path, &[]).unwrap();
+    std::fs::write(&path, []).unwrap();
     let result = read_topic_header_info(&path);
     assert!(result.is_none(), "empty file should return None");
     let _ = std::fs::remove_file(&path);

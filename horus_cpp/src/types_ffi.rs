@@ -103,7 +103,7 @@ impl serde::Serialize for JsonWireMessage {
 }
 
 impl<'de> serde::Deserialize<'de> for JsonWireMessage {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
         // Just use bytemuck-style: treat as Default + copy
         Ok(Self::default())
     }
@@ -161,6 +161,7 @@ pub struct FfiNodeBuilder {
 }
 
 /// Accumulated node configuration (FFI-safe, no lifetime references).
+#[derive(Default)]
 pub struct NodeConfig {
     pub name: String,
     pub rate_hz: Option<f64>,
@@ -176,25 +177,12 @@ pub struct NodeConfig {
     /// C++ tick callback — extern "C" function pointer set via node_builder_set_tick.
     /// None = no-op tick (placeholder node).
     pub tick_callback: Option<extern "C" fn()>,
-}
-
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            rate_hz: None,
-            budget_us: None,
-            deadline_us: None,
-            miss_policy: 0,
-            execution_class: 0,
-            event_topic: None,
-            order: 0,
-            pinned_core: None,
-            os_priority: None,
-            watchdog_us: None,
-            tick_callback: None,
-        }
-    }
+    /// C++ init callback — called once before first tick.
+    pub init_callback: Option<extern "C" fn()>,
+    /// C++ enter_safe_state callback — called by safety monitor.
+    pub safe_state_callback: Option<extern "C" fn()>,
+    /// C++ on_shutdown callback — called when scheduler stops.
+    pub shutdown_callback: Option<extern "C" fn()>,
 }
 
 /// FFI-safe miss policy enum.

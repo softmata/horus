@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Multi-ecosystem `horus add` / `horus remove` tests.
 //!
 //! Tests all 6 dependency sources (crates.io, pypi, system, registry, git, path)
@@ -205,7 +206,7 @@ fn test_add_system_dep() {
         .unwrap();
     assert_no_panic(&output, "add system dep");
     // May fail to install (fake package) but should write to toml
-    let toml = read_toml(&proj);
+    let _toml = read_toml(&proj);
     // System deps are attempted to install via apt — the toml entry may or may not
     // be written depending on whether install succeeded. Just verify no panic.
 }
@@ -464,7 +465,7 @@ fn test_remove_preserves_other_deps() {
 fn test_add_remove_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let proj = new_rust_project(&tmp, "rt1");
-    let toml_before = read_toml(&proj);
+    let _toml_before = read_toml(&proj);
 
     // Add and remove same dep
     horus_cmd()

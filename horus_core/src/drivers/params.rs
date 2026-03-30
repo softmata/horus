@@ -398,6 +398,6 @@ mod tests {
     fn negative_u32_errors() {
         let params = make_params(&[("val", toml::Value::Integer(-1))]);
         let result = params.get::<u32>("val");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 }

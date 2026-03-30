@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::priority::{Encoding, Priority, Reliability};
-use crate::wire::{FragmentHeader, MessageHeader, OutMessage};
+use crate::wire::OutMessage;
 
 /// Maximum payload per fragment (leave room for UDP/IP headers + our headers).
 pub const MAX_FRAGMENT_PAYLOAD: usize = 1400;
@@ -202,10 +202,8 @@ impl Reassembler {
             // All fragments received — concatenate
             let pending = self.pending.remove(&key).unwrap();
             let mut payload = Vec::with_capacity(pending.total_len as usize);
-            for part in pending.fragments {
-                if let Some(data) = part {
-                    payload.extend_from_slice(&data);
-                }
+            for data in pending.fragments.into_iter().flatten() {
+                payload.extend_from_slice(&data);
             }
             Some(ReassembledMessage {
                 topic_hash: pending.topic_hash,

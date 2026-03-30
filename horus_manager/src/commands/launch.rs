@@ -624,8 +624,7 @@ pub fn run_launch(
                         println!("{} RestartNode '{}' received", "ctl".cyan(), name);
                         if let Some(proc_entry) = processes.iter_mut().find(|e| e.name == *name) {
                             // Send GracefulShutdown via Scheduler control topic first
-                            if let Some(ref se) = session.processes.iter().find(|e| &e.name == name)
-                            {
+                            if let Some(se) = session.processes.iter().find(|e| &e.name == name) {
                                 if let Some(ref ctl_name) = se.control_topic {
                                     if let Ok(ctl) =
                                         horus_core::communication::Topic::<
@@ -1619,7 +1618,7 @@ env:
     fn launch_config_invalid_yaml_type_mismatch() {
         let yaml = "nodes: \"not a list\"";
         let result = serde_yaml::from_str::<LaunchConfig>(yaml);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -1728,7 +1727,7 @@ another: "hello"
             },
         ];
         let result = sort_by_dependencies(&nodes);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -1843,7 +1842,7 @@ nodes:
         let path = dir.path().join("empty.yaml");
         std::fs::write(&path, "nodes: []").unwrap();
         let result = list_launch_nodes(&path);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1961,11 +1960,9 @@ nodes:
 
     #[test]
     fn max_restarts_constant_is_reasonable() {
-        assert!(MAX_RESTARTS > 0, "must allow at least one restart");
-        assert!(
-            MAX_RESTARTS <= 100,
-            "unreasonable max restarts would delay shutdown"
-        );
+        let max = MAX_RESTARTS;
+        assert!(max > 0, "must allow at least one restart");
+        assert!(max <= 100, "unreasonable max restarts would delay shutdown");
     }
 
     #[test]
@@ -1999,7 +1996,7 @@ nodes: []
 "#;
         std::fs::write(&path, yaml).unwrap();
         let result = run_launch(&path, true, None, 5);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -2374,6 +2371,6 @@ nodes:
     fn test_show_launch_status_no_sessions() {
         // Should succeed with no active sessions (not panic)
         let result = show_launch_status();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }

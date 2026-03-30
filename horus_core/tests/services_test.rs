@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Comprehensive tests for the HORUS service system.
 //!
 //! Covers: service!() macro, ServiceRequest/ServiceResponse types,

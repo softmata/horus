@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Cross-process IPC integration tests.
 //!
 //! These tests verify that HORUS Topics correctly communicate across process
@@ -320,7 +321,7 @@ fn cross_process_reversed_roles_u64() {
         msg_count
     );
     assert!(
-        received.len() > 0,
+        !received.is_empty(),
         "Parent received 0 messages in reversed-role test (parent=consumer, child=producer). \
          This pattern is used by horus-mujoco (binary=producer, test=consumer)."
     );
@@ -451,7 +452,7 @@ fn cross_process_reversed_roles_large_pod() {
         std::mem::size_of::<LargePod>()
     );
     assert!(
-        received.len() > 0,
+        !received.is_empty(),
         "Parent received 0 large POD messages (736B, same as Odometry)"
     );
 }
@@ -885,9 +886,8 @@ fn cross_process_crash_recovery() {
     // Phase 2: consumer keeps polling (should NOT crash on stale producer)
     let mut stale_reads = 0u64;
     for _ in 0..100 {
-        match t.recv() {
-            Some(_) => stale_reads += 1,
-            None => {}
+        if t.recv().is_some() {
+            stale_reads += 1
         }
         std::thread::yield_now();
     }

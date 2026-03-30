@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Intent Tests — RuntimeParams
 //!
 //! These tests verify **behavioral intent** of the RuntimeParams system,

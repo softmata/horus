@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Chaos monkey — tests what happens when users combine APIs in unexpected ways.
 //!
 //! These are NOT clean patterns. They are the messy, creative, "why would anyone
@@ -393,15 +394,15 @@ impl Node for FiftyTopicNode {
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         for i in 0..20 {
             self.imu_topics
-                .push(Topic::new(&format!("{}.imu_{}", self.prefix, i))?);
+                .push(Topic::new(format!("{}.imu_{}", self.prefix, i))?);
         }
         for i in 0..20 {
             self.cmd_topics
-                .push(Topic::new(&format!("{}.cmd_{}", self.prefix, i))?);
+                .push(Topic::new(format!("{}.cmd_{}", self.prefix, i))?);
         }
         for i in 0..10 {
             self.bat_topics
-                .push(Topic::new(&format!("{}.bat_{}", self.prefix, i))?);
+                .push(Topic::new(format!("{}.bat_{}", self.prefix, i))?);
         }
         Ok(())
     }
@@ -554,7 +555,7 @@ fn chaos_4_schedulers_one_topic() {
 
     // 3 subscriber schedulers at different rates
     let mut sub_handles = vec![];
-    for (i, rate) in [100u64, 50, 10].iter().enumerate() {
+    for rate in [100u64, 50, 10].iter() {
         let t = topic.clone();
         let tr = total_recv.clone();
         let r = running.clone();
@@ -576,7 +577,7 @@ fn chaos_4_schedulers_one_topic() {
                 }
                 fn tick(&mut self) {
                     if let Some(ref t) = self.t {
-                        while let Some(_) = t.recv() {
+                        while t.recv().is_some() {
                             self.r.fetch_add(1, Ordering::Relaxed);
                         }
                     }

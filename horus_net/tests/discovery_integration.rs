@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for discovery — simulates two peers exchanging announcements
 //! over UDP loopback and verifying topic matching.
 

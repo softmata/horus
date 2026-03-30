@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Mock GPU tests — run on every CI machine, no GPU required.
 //!
 //! Uses only PUBLIC API. No internal modules accessed.

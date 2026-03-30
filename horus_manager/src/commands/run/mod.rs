@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn resolve_target_nonexistent_fails() {
         let result = resolve_execution_target(PathBuf::from("/tmp/definitely_not_exist_abc123"));
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -1060,7 +1060,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1074,7 +1074,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -1088,7 +1088,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(tmp.path().join(".horus").is_dir());
         assert!(tmp.path().join(".horus/packages").is_dir());
         assert!(tmp.path().join(".horus/bin").is_dir());
@@ -1185,7 +1185,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1204,7 +1204,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1220,7 +1220,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1240,7 +1240,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1257,7 +1257,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1291,7 +1291,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Battle tests: params.yaml loading behavior ──────────────────────
@@ -1677,7 +1677,7 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // Verify all 4 subdirectories
         for subdir in &["packages", "bin", "lib", "cache"] {
             assert!(

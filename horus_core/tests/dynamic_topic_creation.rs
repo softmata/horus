@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for dynamic Topic creation during scheduler execution.
 //!
 //! Validates that Topic::new() can be called from within Node::tick() while

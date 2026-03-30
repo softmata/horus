@@ -10,6 +10,7 @@ use horus_sys::platform;
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn test_detect_returns_valid_os() {
     let info = platform::detect();
     // OS should match compile-time target
@@ -21,6 +22,7 @@ fn test_detect_returns_valid_os() {
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn test_detect_returns_valid_arch() {
     let info = platform::detect();
     match info.arch {

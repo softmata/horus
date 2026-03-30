@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn needs_rebuild_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        assert!(needs_rebuild(&tmp.path().to_path_buf()));
+        assert!(needs_rebuild(tmp.path()));
     }
 
     #[test]

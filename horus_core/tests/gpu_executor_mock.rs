@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Mock GPU executor tests — verify context injection and stream lifecycle.
 //!
 //! Tests run on any machine (GPU or CPU-only).

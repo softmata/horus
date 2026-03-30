@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Acceptance tests for Topic Communication (Pub/Sub)
 //! Tests lock-free, zero-copy shared memory communication between nodes
 

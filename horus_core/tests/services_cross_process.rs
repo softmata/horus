@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process service tests.
 //!
 //! Proves that ServiceClient in one process can call ServiceServer in

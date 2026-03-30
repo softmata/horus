@@ -936,7 +936,7 @@ requires = ["setuptools"]
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -965,7 +965,7 @@ serde = "1.0"
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // Cargo.toml should NOT be moved
         assert!(tmp.path().join("Cargo.toml").exists());
         // horus.toml should NOT have deps added
@@ -1008,7 +1008,7 @@ tokio = "1.35"
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // Cargo.toml should be moved to backup
         assert!(!tmp.path().join("Cargo.toml").exists());
         assert!(tmp.path().join(".horus/backup/Cargo.toml").exists());
@@ -1050,7 +1050,7 @@ dependencies = ["numpy>=1.24", "requests"]
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(!tmp.path().join("pyproject.toml").exists());
         assert!(tmp.path().join(".horus/backup/pyproject.toml").exists());
         let horus = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
@@ -1089,7 +1089,7 @@ dependencies = ["numpy>=1.24", "requests"]
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // main.rs moved to root
         assert!(tmp.path().join("main.rs").exists());
         assert!(!tmp.path().join("src/main.rs").exists());
@@ -1120,7 +1120,7 @@ dependencies = ["numpy>=1.24", "requests"]
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // main.rs should NOT be moved — src/ has multiple files
         assert!(tmp.path().join("src/main.rs").exists());
         assert!(!tmp.path().join("main.rs").exists());
@@ -1261,7 +1261,7 @@ pkg_check_modules(GLIB REQUIRED glib-2.0)
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // Neither moved — root main.rs already exists
         assert!(tmp.path().join("src/main.rs").exists());
         let content = fs::read_to_string(tmp.path().join("main.rs")).unwrap();

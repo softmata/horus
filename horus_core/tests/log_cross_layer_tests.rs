@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-layer integration tests for the logging system.
 //!
 //! Verifies the full path from source to sink:
@@ -603,8 +604,8 @@ fn hlog_latency_under_contention_4_threads() {
                     clear_node_context();
                 }
                 latencies.sort();
-                let p99 = latencies[per_thread * 99 / 100];
-                p99
+
+                latencies[per_thread * 99 / 100]
             })
         })
         .collect();

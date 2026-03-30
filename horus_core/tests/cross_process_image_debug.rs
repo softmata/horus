@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Focused debug test for cross-process Image pub/sub.
 //! Reproduces GitHub issue #37 — no workarounds (no dummy, no check_migration_now).
 

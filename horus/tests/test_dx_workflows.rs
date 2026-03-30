@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! DX integration tests — verify that beginner workflows compile and work.
 //!
 //! These tests exercise the user-facing API surface to ensure that common

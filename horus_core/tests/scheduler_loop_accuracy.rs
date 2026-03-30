@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Scheduler loop accuracy tests.
 //
 // Verifies that the scheduler's tick rate and run_for duration are
@@ -134,7 +135,7 @@ fn test_set_node_rate() {
 
     // 10Hz for 500ms ≈ 5 ticks (with generous tolerance for RT scheduling)
     assert!(
-        final_ticks >= 1 && final_ticks <= 30,
+        (1..=30).contains(&final_ticks),
         "Node at 10Hz for 500ms should tick ~5 times, got {}",
         final_ticks
     );

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Scheduler chaos tests — push the system to its limits.
 //
 // Verifies stability under extreme conditions:

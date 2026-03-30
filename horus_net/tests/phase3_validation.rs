@@ -1,22 +1,16 @@
+#![allow(dead_code)]
 //! Phase 3 production-ready validation — final acceptance tests.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use horus_net::config::NetConfig;
 use horus_net::discovery::*;
-use horus_net::flow_control::{FlowController, SendRate};
-use horus_net::fragment::{Fragmenter, Reassembler, MAX_REASSEMBLY_SIZE};
-use horus_net::guard::{ExportMode, ImportExportGuard, ImportMode};
+use horus_net::flow_control::SendRate;
 use horus_net::heartbeat::{LinkLostAction, SafetyHeartbeat};
 use horus_net::optimize::delta::DeltaOptimizer;
-use horus_net::optimize::fusion::FusionOptimizer;
-use horus_net::optimize::predict::PredictOptimizer;
 use horus_net::optimize::spatial::SpatialOptimizer;
 use horus_net::optimize::{Optimizer, OptimizerChain};
 use horus_net::priority::{Encoding, Priority, Reliability};
-use horus_net::registry::{TopicEntry, TopicRegistry, TopicRole};
-use horus_net::reliability::ReliabilityLayer;
+use horus_net::registry::{TopicRegistry, TopicRole};
 use horus_net::wire::*;
 
 // ─── Phase 3 SC1: RTT estimation ────────────────────────────────────────────
@@ -347,5 +341,4 @@ fn horus_net_production_ready() {
     // - Adaptive flow control
     // - RTT estimation
     // - Secret peer filtering
-    assert!(true);
 }

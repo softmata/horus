@@ -1034,34 +1034,29 @@ fn run_extract_watch(config: ExtractConfig) -> Result<()> {
     let debounce = Duration::from_millis(200);
     let mut last_rebuild = Instant::now();
 
-    loop {
-        match rx.recv() {
-            Ok(event) => {
-                if !is_source_file_event(&event) {
-                    continue;
-                }
-
-                // Debounce
-                if last_rebuild.elapsed() < debounce {
-                    std::thread::sleep(debounce.saturating_sub(last_rebuild.elapsed()));
-                }
-                // Drain queued events
-                while rx.try_recv().is_ok() {}
-
-                eprintln!("Changes detected, regenerating...");
-                match extract_project(&project_dir, &config) {
-                    Ok(doc) => {
-                        let output = format_output(&doc, &config);
-                        if let Err(e) = write_output_atomic(&output, &config) {
-                            eprintln!("Write error: {e}");
-                        }
-                    }
-                    Err(e) => eprintln!("Extraction error: {e}"),
-                }
-                last_rebuild = Instant::now();
-            }
-            Err(_) => break, // Channel closed (Ctrl+C)
+    while let Ok(event) = rx.recv() {
+        if !is_source_file_event(&event) {
+            continue;
         }
+
+        // Debounce
+        if last_rebuild.elapsed() < debounce {
+            std::thread::sleep(debounce.saturating_sub(last_rebuild.elapsed()));
+        }
+        // Drain queued events
+        while rx.try_recv().is_ok() {}
+
+        eprintln!("Changes detected, regenerating...");
+        match extract_project(&project_dir, &config) {
+            Ok(doc) => {
+                let output = format_output(&doc, &config);
+                if let Err(e) = write_output_atomic(&output, &config) {
+                    eprintln!("Write error: {e}");
+                }
+            }
+            Err(e) => eprintln!("Extraction error: {e}"),
+        }
+        last_rebuild = Instant::now();
     }
 
     Ok(())

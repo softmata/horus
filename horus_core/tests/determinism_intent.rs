@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Level 7 Intent Tests — Determinism
 //!
 //! These tests verify **behavioral intent**, not implementation details.
@@ -396,7 +397,7 @@ fn test_determinism_intent_no_data_race_in_topic() {
     // Values must be from the expected range [1, 100]
     for &v in values.iter() {
         assert!(
-            v >= 1 && v <= 100,
+            (1..=100).contains(&v),
             "Value {} is outside expected range [1, 100] (indicates corruption)",
             v
         );

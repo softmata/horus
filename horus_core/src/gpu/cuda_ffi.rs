@@ -14,6 +14,8 @@
 //! All FFI calls are wrapped in safe Rust functions. Raw pointers from
 //! CUDA are never exposed to callers — they're wrapped in typed structs.
 
+#![allow(dead_code)]
+
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::sync::OnceLock;
 

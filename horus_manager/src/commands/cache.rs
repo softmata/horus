@@ -356,13 +356,13 @@ mod tests {
     #[test]
     fn run_info_succeeds() {
         let result = run_info(false);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn run_info_json_succeeds() {
         let result = run_info(true);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── run_list ─────────────────────────────────────────────────────────
@@ -370,13 +370,13 @@ mod tests {
     #[test]
     fn run_list_succeeds() {
         let result = run_list(false);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn run_list_json_succeeds() {
         let result = run_list(true);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── run_purge ────────────────────────────────────────────────────────
@@ -395,7 +395,7 @@ mod tests {
     fn run_clean_dry_run_succeeds() {
         // Dry run should never delete anything
         let result = run_clean(true);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Cache size on empty dir ─────────────────────────────────────────

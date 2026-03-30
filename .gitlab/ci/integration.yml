@@ -48,3 +48,81 @@ cli-integration:
     - $HORUS node list --help
     - $HORUS launch --help
     - $HORUS doctor || true
+
+# ─── C++ Bindings Integration ─────────────────────────────────────────────
+cpp-bindings:
+  extends: [.rust-base, .shm-setup]
+  stage: integration
+  needs: [test]
+  timeout: 20m
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config g++ > /dev/null
+    - mkdir -p "/dev/shm/horus_ci_cpp_${CI_PIPELINE_ID}"/{topics,nodes,control,network,scheduler,tensors}
+    - chmod -R 777 "/dev/shm/horus_ci_cpp_${CI_PIPELINE_ID}"
+  variables:
+    HORUS_NAMESPACE: ci_cpp_${CI_PIPELINE_ID}
+  script:
+    # 1. Rust FFI tests (139 tests)
+    - cargo test --no-default-features -p horus_cpp -- --test-threads=1
+
+    # 2. Build shared library
+    - cargo build --no-default-features -p horus_cpp
+
+    # 3. Compile all C++ test binaries
+    - mkdir -p target/cpp_tests
+    - |
+      for src in horus_cpp/tests/*.cpp; do
+        name=$(basename "$src" .cpp)
+        echo "Compiling $name..."
+        g++ -std=c++17 -fext-numeric-literals -I horus_cpp/include \
+            -o "target/cpp_tests/$name" "$src" \
+            -L target/debug -lhorus_cpp -lpthread -ldl -lm
+      done
+
+    # 4. Run C++ unit tests
+    - LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_e2e_test
+    - LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_ergonomic_e2e
+    - LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_full_api_test
+    - LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_user_api_test
+    - LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_stress_test
+
+    # 5. Cross-process IPC
+    - |
+      export LD_LIBRARY_PATH=target/debug
+      TOPIC="ci.cmdvel"
+      target/cpp_tests/cross_process_ipc_test sub "$TOPIC" > /tmp/sub.log 2>&1 &
+      sleep 0.5
+      target/cpp_tests/cross_process_ipc_test pub "$TOPIC"
+      wait
+      grep -q "SUB_DONE" /tmp/sub.log && echo "CmdVel IPC: PASS"
+
+    # 6. Cross-process service
+    - |
+      export LD_LIBRARY_PATH=target/debug
+      SVC="ci.svc" && CID="$$"
+      target/cpp_tests/cross_process_svc_server "$SVC" "$CID" > /tmp/srv.log 2>&1 &
+      sleep 0.5
+      target/cpp_tests/cross_process_svc_client "$SVC" "$CID" > /tmp/cli.log 2>&1
+      wait
+      grep -q "RESPONSE" /tmp/cli.log && echo "Service IPC: PASS"
+
+    # 7. Cross-process action
+    - |
+      export LD_LIBRARY_PATH=target/debug
+      ACTION="ci.action"
+      target/cpp_tests/cross_process_action_server "$ACTION" > /tmp/asrv.log 2>&1 &
+      sleep 0.5
+      target/cpp_tests/cross_process_action_client "$ACTION" > /tmp/acli.log 2>&1
+      wait
+      grep -q "GOT_RESULT:1" /tmp/acli.log && echo "Action IPC: PASS"
+
+    # 8. ASAN
+    - |
+      g++ -std=c++17 -fsanitize=address -fno-omit-frame-pointer \
+          -I horus_cpp/include -o target/cpp_asan \
+          horus_cpp/tests/cpp_stress_test.cpp \
+          -L target/debug -lhorus_cpp -lpthread -ldl -lm
+      LD_LIBRARY_PATH=target/debug ASAN_OPTIONS=detect_leaks=0 target/cpp_asan

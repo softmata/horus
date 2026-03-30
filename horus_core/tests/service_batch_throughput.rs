@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Service batch throughput test.
 //
 // Proves the server's batch drain improvement: multiple requests queued
@@ -34,13 +35,10 @@ fn test_batch_drain_processes_multiple_requests_per_cycle() {
     let mut successes = 0;
 
     for i in 0..20 {
-        match client.call(BatchAddRequest { a: i, b: i + 1 }, 3_u64.secs()) {
-            Ok(resp) => {
-                assert_eq!(resp.sum, i + i + 1, "Response sum mismatch at i={}", i);
-                successes += 1;
-            }
-            Err(_) => {} // timeout acceptable under contention
-        }
+        if let Ok(resp) = client.call(BatchAddRequest { a: i, b: i + 1 }, 3_u64.secs()) {
+            assert_eq!(resp.sum, i + i + 1, "Response sum mismatch at i={}", i);
+            successes += 1;
+        } // timeout acceptable under contention
     }
 
     let elapsed = start.elapsed();

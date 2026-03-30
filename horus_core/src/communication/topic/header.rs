@@ -2032,7 +2032,7 @@ mod tests {
             std::env::temp_dir().join(format!("horus_hdr_bad_magic_{}.bin", std::process::id()));
 
         // Write garbage
-        std::fs::write(&path, &[0u8; 640]).expect("write garbage file");
+        std::fs::write(&path, [0u8; 640]).expect("write garbage file");
         assert!(
             read_topic_header_info(&path).is_none(),
             "should return None for invalid magic"
@@ -2045,7 +2045,7 @@ mod tests {
     fn read_topic_header_info_file_too_small() {
         let path = std::env::temp_dir().join(format!("horus_hdr_small_{}.bin", std::process::id()));
 
-        std::fs::write(&path, &[0u8; 100]).expect("write small file");
+        std::fs::write(&path, [0u8; 100]).expect("write small file");
         assert!(
             read_topic_header_info(&path).is_none(),
             "should return None for file smaller than header"

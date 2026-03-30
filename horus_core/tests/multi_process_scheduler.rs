@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for multi-process scheduler coordination via SHM topics.
 //!
 //! Validates that two separate processes, each running their own Scheduler with

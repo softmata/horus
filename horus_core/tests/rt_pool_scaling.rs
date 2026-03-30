@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! RT thread pool scaling and per-node configuration tests.
 //!
 //! Tests the RT executor pool via the Scheduler public API.

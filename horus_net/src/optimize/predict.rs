@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 
 use crate::optimize::Optimizer;
-use crate::priority::Priority;
 use crate::wire::{InMessage, OutMessage};
 
 /// Default prediction error threshold (normalized).
@@ -37,6 +36,12 @@ pub struct PredictOptimizer {
     /// Metrics.
     messages_in: u64,
     messages_suppressed: u64,
+}
+
+impl Default for PredictOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PredictOptimizer {
@@ -173,7 +178,7 @@ impl Optimizer for PredictOptimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priority::{Encoding, Reliability};
+    use crate::priority::{Encoding, Priority, Reliability};
     use crate::wire::topic_hash;
 
     fn make_msg(name: &str, payload: Vec<u8>) -> OutMessage {

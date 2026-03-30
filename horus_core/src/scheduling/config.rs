@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Scheduler configuration data structs
 
 /// Timing configuration

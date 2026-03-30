@@ -30,13 +30,13 @@ fn test_process_info_current_has_memory() {
 fn test_process_info_dead_pid() {
     let result = process_info(99_999_999);
     // Dead PID should either error or return empty defaults
-    match result {
-        Ok(info) => assert!(
+    if let Ok(info) = result {
+        assert!(
             info.cmdline.is_empty(),
             "dead PID should have empty cmdline"
-        ),
-        Err(_) => {} // error is also acceptable
+        );
     }
+    // Err is also acceptable for dead PID
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

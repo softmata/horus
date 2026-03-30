@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Combinatorial matrix sweep — systematically tests every critical
 //! backend × message-type × topology × process-model combination.
 //!
@@ -18,7 +19,6 @@
 //!        --test matrix_sweep -- --ignored --nocapture
 
 use horus_core::communication::topic::Topic;
-use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -489,7 +489,7 @@ fn test_cross_process(
 
     let mut total_recv = 0u64;
     let mut total_corrupt = 0u64;
-    for mut s in subs {
+    for s in subs {
         let output = s.wait_with_output().unwrap();
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             if line.starts_with("RESULT:") {

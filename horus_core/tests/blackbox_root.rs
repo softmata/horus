@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Blackbox Flight Recorder Root Tests
 //!
 //! Requires `blackbox` feature: cargo test -p horus_core --test blackbox_root

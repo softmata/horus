@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn battle_detect_horus_usage_nonexistent_file() {
         let result = detect_horus_usage_python(Path::new("/tmp/nonexistent_file_12345.py"));
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     // ── Battle-testing: validate_node_path ──────────────────────────────
@@ -457,7 +457,7 @@ mod tests {
     #[test]
     fn battle_validate_node_path_nonexistent() {
         let result = validate_node_path(Path::new("/tmp/this_does_not_exist_99999.py"));
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -468,7 +468,7 @@ mod tests {
         // This should succeed since the directory exists — but the important
         // thing is that it doesn't panic. The caller checks it's a file.
         // So we just verify it doesn't return an error for an existing path.
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -524,7 +524,7 @@ mod tests {
         // No horus.toml — should succeed (no-op)
         let result = generate_pyproject_if_needed();
         std::env::set_current_dir(&prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -545,7 +545,7 @@ serde = "1.0"
 
         let result = generate_pyproject_if_needed();
         std::env::set_current_dir(&prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
         // No .horus/pyproject.toml should be generated for Rust-only deps
         assert!(!tmp.path().join(".horus/pyproject.toml").exists());
     }

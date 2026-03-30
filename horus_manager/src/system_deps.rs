@@ -903,7 +903,7 @@ mod tests {
         // The `groups` command typically includes the username as a group
         // At minimum, the set should be non-empty (already tested above)
         // We just verify it's a valid HashSet
-        assert!(groups.len() >= 1);
+        assert!(!groups.is_empty());
     }
 
     // --- SystemDependency Clone/Debug ---

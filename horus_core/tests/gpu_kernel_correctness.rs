@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Comprehensive kernel correctness tests — PUBLIC API ONLY.
 //!
 //! Tests each kernel via GpuImageOps (public) with known inputs and expected outputs.
@@ -17,7 +18,7 @@ fn test_color_convert_rgb_bgr_roundtrip() {
         return;
     }
 
-    let mut img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
+    let img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
     {
         let data = img.data_mut();
         for i in 0..(16 * 16) {
@@ -29,14 +30,14 @@ fn test_color_convert_rgb_bgr_roundtrip() {
 
     let gpu_img = img.to_gpu(Device::cuda(0)).unwrap();
     let src = gpu_img.data().as_ptr();
-    let size = 16 * 16 * 3;
+    let _size = 16 * 16 * 3;
 
     // Allocate GPU output buffers using to_gpu on a blank image
-    let mut mid_img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
+    let mid_img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
     let mid_gpu = mid_img.to_gpu(Device::cuda(0)).unwrap();
     let mid = mid_gpu.data().as_ptr() as *mut u8;
 
-    let mut dst_img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
+    let dst_img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
     let dst_gpu = dst_img.to_gpu(Device::cuda(0)).unwrap();
     let dst = dst_gpu.data().as_ptr() as *mut u8;
 
@@ -89,11 +90,11 @@ fn test_resize_uniform_preserved() {
         return;
     }
 
-    let mut img = Image::new(32, 32, ImageEncoding::Rgb8).unwrap();
+    let img = Image::new(32, 32, ImageEncoding::Rgb8).unwrap();
     img.data_mut().fill(128);
     let gpu_img = img.to_gpu(Device::cuda(0)).unwrap();
 
-    let mut out = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
+    let out = Image::new(16, 16, ImageEncoding::Rgb8).unwrap();
     let out_gpu = out.to_gpu(Device::cuda(0)).unwrap();
 
     GpuImageOps::resize(
@@ -131,7 +132,7 @@ fn test_normalize_known_values() {
     }
 
     // 2x2 RGB: [0, 128, 255] per pixel
-    let mut img = Image::new(2, 2, ImageEncoding::Rgb8).unwrap();
+    let img = Image::new(2, 2, ImageEncoding::Rgb8).unwrap();
     {
         let data = img.data_mut();
         for i in 0..4 {
@@ -142,10 +143,10 @@ fn test_normalize_known_values() {
     }
     let gpu_img = img.to_gpu(Device::cuda(0)).unwrap();
 
-    let out_size = 2 * 2 * 3 * 4; // f32 HWC
-                                  // Use a raw managed alloc for f32 output since Image is u8 only
-                                  // Just test via the fused kernel which outputs f32 CHW
-                                  // (individual normalize kernel needs raw f32 pointer — tested via fused)
+    let _out_size = 2 * 2 * 3 * 4; // f32 HWC
+                                   // Use a raw managed alloc for f32 output since Image is u8 only
+                                   // Just test via the fused kernel which outputs f32 CHW
+                                   // (individual normalize kernel needs raw f32 pointer — tested via fused)
 
     // Test via preprocess_fused with 2x2→2x2 (no resize effect)
     let mean = [0.485f32, 0.456, 0.406];
@@ -167,9 +168,9 @@ fn test_normalize_known_values() {
     let src_ptr = gpu_img.data().as_ptr();
 
     // For the f32 output, we need a GPU buffer. Use a second GPU image as raw storage.
-    let mut out_img = Image::new(6, 2, ImageEncoding::Rgb8).unwrap(); // 6*2*3=36 bytes ≥ 3*2*2*4=48... not enough
-                                                                      // Just use a bigger buffer
-    let mut out_img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap(); // 768 bytes >> 48
+    let _out_img = Image::new(6, 2, ImageEncoding::Rgb8).unwrap(); // 6*2*3=36 bytes ≥ 3*2*2*4=48... not enough
+                                                                   // Just use a bigger buffer
+    let out_img = Image::new(16, 16, ImageEncoding::Rgb8).unwrap(); // 768 bytes >> 48
     let out_gpu = out_img.to_gpu(Device::cuda(0)).unwrap();
 
     GpuImageOps::preprocess_fused(
@@ -220,7 +221,7 @@ fn test_fused_bgr_swaps_channels() {
     }
 
     // BGR input: B=50, G=100, R=200
-    let mut img = Image::new(8, 8, ImageEncoding::Bgr8).unwrap();
+    let img = Image::new(8, 8, ImageEncoding::Bgr8).unwrap();
     {
         let data = img.data_mut();
         for i in 0..(8 * 8) {
@@ -232,7 +233,7 @@ fn test_fused_bgr_swaps_channels() {
     let gpu_img = img.to_gpu(Device::cuda(0)).unwrap();
 
     // Output buffer (4x4 CHW f32)
-    let mut out = Image::new(16, 16, ImageEncoding::Rgb8).unwrap(); // big enough for f32 data
+    let out = Image::new(16, 16, ImageEncoding::Rgb8).unwrap(); // big enough for f32 data
     let out_gpu = out.to_gpu(Device::cuda(0)).unwrap();
 
     let mean = [0.485f32, 0.456, 0.406];
@@ -287,7 +288,7 @@ fn test_crop_extracts_correct_region() {
     }
 
     // 8x8 grayscale: value = y*8 + x
-    let mut src = Image::new(8, 8, ImageEncoding::Mono8).unwrap();
+    let src = Image::new(8, 8, ImageEncoding::Mono8).unwrap();
     {
         let data = src.data_mut();
         for y in 0..8u32 {
@@ -298,7 +299,7 @@ fn test_crop_extracts_correct_region() {
     }
     let src_gpu = src.to_gpu(Device::cuda(0)).unwrap();
 
-    let mut dst = Image::new(4, 4, ImageEncoding::Mono8).unwrap();
+    let dst = Image::new(4, 4, ImageEncoding::Mono8).unwrap();
     let dst_gpu = dst.to_gpu(Device::cuda(0)).unwrap();
 
     GpuImageOps::crop_pad(

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Action system behavioral tests — GoalStatus, GoalPriority, GoalId,
 // PreemptionPolicy, GoalResponse, CancelResponse, ActionError, and builder APIs.
 //
@@ -43,7 +44,7 @@ fn test_goal_status_non_terminal_variants() {
 
 #[test]
 fn test_goal_status_all_variants_are_distinct() {
-    let statuses = vec![
+    let statuses = [
         GoalStatus::Pending,
         GoalStatus::Active,
         GoalStatus::Succeeded,

@@ -10,7 +10,6 @@
 use std::time::{Duration, Instant};
 
 use crate::optimize::Optimizer;
-use crate::priority::Priority;
 use crate::wire::{InMessage, OutMessage};
 
 /// Default fusion window: 500µs.
@@ -25,6 +24,12 @@ pub struct FusionOptimizer {
     messages_in: u64,
     /// Metrics: batches out (each batch = 1 packet).
     batches_out: u64,
+}
+
+impl Default for FusionOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FusionOptimizer {
@@ -112,7 +117,7 @@ impl FusionOptimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priority::{Encoding, Reliability};
+    use crate::priority::{Encoding, Priority, Reliability};
     use crate::wire::topic_hash;
 
     fn make_msg(name: &str) -> OutMessage {

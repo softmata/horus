@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Multi-scheduler integration tests.
 //!
 //! Tests that multiple schedulers can share topics, survive stop/restart,
@@ -474,7 +475,7 @@ fn scheduler_stop_topics_survive() {
     let h_sub = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(100_u64.hz()).name("sub_sched");
         let p1 = p1r;
-        let p4 = p4r;
+        let _p4 = p4r;
         // Long-running subscriber — uses one counter for each phase
         let _ = sched
             .add(ImuSubNode {

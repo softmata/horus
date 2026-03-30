@@ -30,20 +30,15 @@ pub struct NetConfig {
 }
 
 /// Import control configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ImportConfig {
     /// Deny all imports.
     Deny,
     /// Auto: import topics we subscribe to but don't publish.
+    #[default]
     Auto,
     /// Explicit list of allowed topic patterns.
     AllowList(Vec<String>),
-}
-
-impl Default for ImportConfig {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Safety heartbeat configuration.

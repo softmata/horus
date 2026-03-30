@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Level 7 Intent Tests — Topics
 //!
 //! These tests verify **behavioral intent**, not implementation details.

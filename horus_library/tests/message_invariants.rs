@@ -1,6 +1,8 @@
 //! Property-based invariant tests for domain message types.
 //!
 //! Unlike roundtrip tests (which verify serialize/deserialize fidelity),
+
+#![allow(clippy::field_reassign_with_default)]
 //! these tests verify **domain invariants** — mathematical and semantic
 //! properties that must hold for any valid message instance.
 //!

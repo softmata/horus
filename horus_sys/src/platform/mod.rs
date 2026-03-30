@@ -792,6 +792,7 @@ mod tests {
     // ── OsInfo intent tests ─────────────────────────────────────────
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn detect_returns_consistent_os() {
         let info = detect();
         match info.os {
@@ -802,6 +803,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn detect_returns_consistent_arch() {
         let info = detect();
         match info.arch {
@@ -818,7 +820,7 @@ mod tests {
     fn all_standard_dirs_are_distinct() {
         let config = config_dir();
         let cache = cache_dir();
-        let data = data_dir();
+        let _data = data_dir();
         let temp = temp_dir();
         // config, cache, data should be different paths
         assert_ne!(config, cache, "config and cache dirs should differ");

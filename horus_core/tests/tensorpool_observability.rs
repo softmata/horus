@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! TensorPool-backed topic observability test.
 //!
 //! Verifies that Topic<Image>, Topic<PointCloud>, Topic<DepthImage>

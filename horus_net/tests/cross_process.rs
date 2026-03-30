@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process E2E tests — spawns real peer_process binaries.
 //!
 //! Verifies data integrity across process boundaries for ALL message types.
@@ -10,7 +11,6 @@ use std::time::Duration;
 use horus_core::communication::{read_latest_slot_bytes, Topic};
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::wire::*;
-use horus_robotics::messages::vision::CompressedImage;
 use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
 use horus_sys::shm::shm_topics_dir;
 use horus_types::Pose2D;
@@ -91,7 +91,7 @@ where
     let _topic: Topic<T> = Topic::new(&name).expect("create topic");
 
     // Start reader first (3s timeout)
-    let mut reader = Command::new(&binary)
+    let reader = Command::new(&binary)
         .args(["read_raw", &name, "3"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -113,7 +113,7 @@ where
     let stdout = String::from_utf8_lossy(&reader_out.stdout);
 
     // Parse "READ_RAW N CORRUPT M"
-    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
     let read_count: u32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let corrupt: u32 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
 
@@ -408,7 +408,7 @@ fn xproc_compressed_image_publish_subscribe() {
     // Both processes share the same SHM topic.
 
     // Start subscriber first (creates topic, waits)
-    let mut subscriber = Command::new(&binary)
+    let subscriber = Command::new(&binary)
         .args(["subscribe", &name, "3", "compressed_image"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -438,7 +438,6 @@ fn xproc_compressed_image_publish_subscribe() {
 
     // Subscriber should have received some images
     let count: u32 = sub_stdout
-        .trim()
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
@@ -536,7 +535,6 @@ fn user_api_cross_process(msg_type: &str, publish_count: u32, min_recv: u32) {
     let sub_stderr = String::from_utf8_lossy(&sub_out.stderr);
 
     let recv_count: u32 = sub_stdout
-        .trim()
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())

@@ -4,6 +4,8 @@
 //! and `#[cpp(...)]` hints, which is then consumed by the CXX bridge generator
 //! and C++ header generator.
 
+#![allow(dead_code)]
+
 use proc_macro2::Ident;
 use syn::{Generics, Type, Visibility};
 

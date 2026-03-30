@@ -970,6 +970,7 @@ const COMMON_PYTHON_PACKAGES: &[&str] = &[
 ];
 
 /// Compute Levenshtein edit distance between two strings.
+#[allow(clippy::needless_range_loop)]
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();

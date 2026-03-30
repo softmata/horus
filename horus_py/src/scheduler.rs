@@ -765,6 +765,7 @@ impl PyScheduler {
 
     /// Add a node to the scheduler.
     #[pyo3(signature = (node, order=100, rate=None, rt=false, failure_policy=None, on_miss=None, budget=None, deadline=None))]
+    #[allow(clippy::too_many_arguments)]
     fn add(
         &self,
         py: Python,
@@ -1227,7 +1228,7 @@ impl PyScheduler {
     ///     sched.set_replay_speed(0.5)   # Half speed
     ///     sched.set_replay_speed(2.0)   # Double speed
     fn set_replay_speed(&self, speed: f64) -> PyResult<()> {
-        if speed < 0.01 || speed > 100.0 || !speed.is_finite() {
+        if !(0.01..=100.0).contains(&speed) || !speed.is_finite() {
             return Err(PyRuntimeError::new_err(
                 "Replay speed must be between 0.01 and 100.0",
             ));
@@ -1593,7 +1594,7 @@ mod tests {
             Miss::SafeMode
         ));
         assert!(matches!(parse_miss_policy("stop").unwrap(), Miss::Stop));
-        assert!(parse_miss_policy("invalid").is_err());
+        parse_miss_policy("invalid").unwrap_err();
     }
 
     #[test]

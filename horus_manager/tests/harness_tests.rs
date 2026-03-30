@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Acceptance tests for the HORUS monitor using the live test harness.
 //!
 //! These tests create real presence files, SHM topic files, and blackbox WAL

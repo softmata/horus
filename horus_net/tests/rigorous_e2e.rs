@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Rigorous E2E tests — real SHM, real data, full encode→UDP→decode→SHM pipeline.
 //!
 //! Architecture note: horus_core Topic<T> uses in-process backends (not SHM) when

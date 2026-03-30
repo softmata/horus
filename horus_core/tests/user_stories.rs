@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! User story tests — the exact code patterns a robotics developer writes.
 //!
 //! These are NOT backend tests. Each test is a real scenario that a developer
@@ -428,12 +429,12 @@ fn story_execution_order_respected() {
     // Check that within each tick, order is A→B→C
     let mut violations = 0;
     for chunk in entries.chunks(3) {
-        if chunk.len() == 3 {
-            if chunk[0] != "A_order0" || chunk[1] != "B_order1" || chunk[2] != "C_order2" {
-                violations += 1;
-                if violations <= 3 {
-                    println!("  Violation: {:?}", chunk);
-                }
+        if chunk.len() == 3
+            && (chunk[0] != "A_order0" || chunk[1] != "B_order1" || chunk[2] != "C_order2")
+        {
+            violations += 1;
+            if violations <= 3 {
+                println!("  Violation: {:?}", chunk);
             }
         }
     }
@@ -466,7 +467,7 @@ impl Node for SlowNode {
     fn tick(&mut self) {
         self.tick_count += 1;
         // Every 10th tick, exceed budget by sleeping 5ms
-        if self.tick_count % 10 == 0 {
+        if self.tick_count.is_multiple_of(10) {
             std::thread::sleep(Duration::from_millis(5));
         }
     }

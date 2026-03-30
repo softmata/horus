@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Observability integration tests for horus_net modules.
 //!
 //! Tests e-stop encode/decode, presence broadcast, and log replication

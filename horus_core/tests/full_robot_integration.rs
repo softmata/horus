@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! CAPSTONE: Full robot integration — every horus feature simultaneously.
 //!
 //! 3 schedulers + services + actions + real message types + TransformFrame

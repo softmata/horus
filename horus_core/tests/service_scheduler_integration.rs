@@ -1,3 +1,8 @@
+#![allow(
+    unused_must_use,
+    clippy::needless_range_loop,
+    clippy::field_reassign_with_default
+)]
 //! Integration tests for Services running inside Scheduler-managed nodes.
 //!
 //! Verifies that ServiceServer and ServiceClient work correctly when hosted

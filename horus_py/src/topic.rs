@@ -229,6 +229,7 @@ macro_rules! pod_topic_types {
             }
 
             /// Get the Rust type name for this topic type (POD types only).
+            #[allow(dead_code)]
             fn pod_type_name(&self) -> Option<&'static str> {
                 match &self.topic_type {
                     $( TopicType::$rust_ty(_) => Some(stringify!($rust_ty)), )*

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process logging integration tests.
 //!
 //! Verifies that log entries written by one process are visible to another

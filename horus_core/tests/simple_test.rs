@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #[cfg(test)]
 mod tests {
     use horus_core::core::{Node, NodeInfo, NodeState};

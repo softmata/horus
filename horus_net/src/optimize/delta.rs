@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 
 use crate::optimize::Optimizer;
-use crate::priority::Priority;
 use crate::wire::{InMessage, OutMessage};
 
 /// Default keyframe interval (send full payload every N messages).
@@ -28,6 +27,12 @@ pub struct DeltaOptimizer {
     /// Metrics.
     bytes_saved: u64,
     bytes_total: u64,
+}
+
+impl Default for DeltaOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DeltaOptimizer {
@@ -158,7 +163,7 @@ fn compute_delta(old: &[u8], new: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priority::{Encoding, Reliability};
+    use crate::priority::{Encoding, Priority, Reliability};
     use crate::wire::topic_hash;
 
     fn make_msg(name: &str, payload: Vec<u8>) -> OutMessage {

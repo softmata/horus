@@ -108,6 +108,7 @@ impl ImportExportGuard {
 /// - Wildcard suffix: "camera.*" matches "camera.rgb", "camera.depth"
 /// - Wildcard prefix: "*.scan" matches "front.scan", "rear.scan"
 /// - Full wildcard: "*" matches everything
+///
 /// Exposed for config.rs topic_config() glob matching.
 pub fn glob_match_topic(topic: &str, pattern: &str) -> bool {
     glob_match(topic, pattern)

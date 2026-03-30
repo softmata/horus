@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Error-path tests for the HORUS action system.
 //
 // These tests verify that error conditions in the action system are handled

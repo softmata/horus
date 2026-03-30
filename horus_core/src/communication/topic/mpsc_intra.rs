@@ -116,6 +116,12 @@ impl<T> MpscRing<T> {
     }
 }
 
+impl<T> Drop for MpscRing<T> {
+    fn drop(&mut self) {
+        mp_drop_ring!(self);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,11 +170,5 @@ mod tests {
         ring.try_send(1).unwrap();
         ring.try_send(2).unwrap();
         assert_eq!(ring.pending_count(), 2);
-    }
-}
-
-impl<T> Drop for MpscRing<T> {
-    fn drop(&mut self) {
-        mp_drop_ring!(self);
     }
 }

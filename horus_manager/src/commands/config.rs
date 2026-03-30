@@ -301,7 +301,7 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::Get("package.name".to_string()));
         std::env::set_current_dir(prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
         ));
         std::env::set_current_dir(prev).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
         let content = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
         assert!(content.contains("2.0.0"));
         assert!(content.contains("old")); // Old name preserved
@@ -367,7 +367,7 @@ mod tests {
         ));
         std::env::set_current_dir(prev).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
         let content = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
         assert!(content.contains("description"));
         assert!(content.contains("My robot project"));
@@ -387,7 +387,7 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::List);
         std::env::set_current_dir(prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Battle tests: edge cases ─────────────────────────────────────────
@@ -427,7 +427,7 @@ mod tests {
         ));
         std::env::set_current_dir(prev).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
         let content = fs::read_to_string(tmp.path().join(HORUS_TOML)).unwrap();
         assert!(content.contains("deep_value"));
     }
@@ -447,7 +447,7 @@ mod tests {
         // Getting a section (table) should succeed
         let result = run_config(ConfigAction::Get("package".to_string()));
         std::env::set_current_dir(prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -528,6 +528,6 @@ sim = "echo sim"
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = run_config(ConfigAction::List);
         std::env::set_current_dir(prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }

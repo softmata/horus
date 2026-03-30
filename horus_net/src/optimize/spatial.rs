@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 
 use crate::optimize::Optimizer;
-use crate::priority::Priority;
 use crate::wire::{InMessage, OutMessage};
 
 /// Spatial optimizer — distance-based fleet filtering.
@@ -26,6 +25,12 @@ pub struct SpatialOptimizer {
     /// Metrics.
     messages_in: u64,
     messages_out: u64,
+}
+
+impl Default for SpatialOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpatialOptimizer {

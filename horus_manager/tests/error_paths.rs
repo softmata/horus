@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Error path and destructive safety tests.
 //!
 //! Systematically tests that every error condition produces:

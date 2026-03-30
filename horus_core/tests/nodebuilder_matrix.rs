@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! NodeBuilder API combinatorial tests.
 //!
 //! Tests every critical combination of .rate(), .budget(), .deadline(),
@@ -10,11 +11,10 @@
 use horus_core::communication::topic::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
-use horus_robotics::messages::sensor::Imu;
 use horus_robotics::CmdVel;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod common;
 use common::{cleanup_stale_shm, unique};
@@ -50,7 +50,7 @@ impl Node for SlowCounterNode {
     fn tick(&mut self) {
         self.count += 1;
         self.ticks.fetch_add(1, Ordering::Relaxed);
-        if self.slow_every_n > 0 && self.count % self.slow_every_n == 0 {
+        if self.slow_every_n > 0 && self.count.is_multiple_of(self.slow_every_n) {
             std::thread::sleep(Duration::from_millis(self.slow_duration_ms));
         }
     }
@@ -97,7 +97,7 @@ impl Node for EventRecvNode {
     }
     fn tick(&mut self) {
         if let Some(ref t) = self.topic {
-            while let Some(_) = t.recv() {}
+            while t.recv().is_some() {}
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
     }
@@ -420,11 +420,11 @@ fn order_fairness_20_nodes() {
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
 
-    for i in 0..20 {
+    for (i, counter) in counters.iter().enumerate() {
         let _ = sched
             .add(CounterNode {
                 node_name: format!("node_{}", i),
-                ticks: counters[i].clone(),
+                ticks: counter.clone(),
             })
             .order(0)
             .build();
@@ -576,10 +576,10 @@ fn execution_order_deterministic() {
     let entries = log.lock().unwrap();
     let mut violations = 0;
     for chunk in entries.chunks(3) {
-        if chunk.len() == 3 {
-            if chunk[0] != "A_order0" || chunk[1] != "B_order1" || chunk[2] != "C_order2" {
-                violations += 1;
-            }
+        if chunk.len() == 3
+            && (chunk[0] != "A_order0" || chunk[1] != "B_order1" || chunk[2] != "C_order2")
+        {
+            violations += 1;
         }
     }
 

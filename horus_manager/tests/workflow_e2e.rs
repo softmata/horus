@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! End-to-end workflow tests for horus CLI.
 //!
 //! These test the full user experience: horus new → add → build → run.

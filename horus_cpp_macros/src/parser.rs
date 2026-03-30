@@ -7,10 +7,12 @@
 //! In both cases, the original Rust code is passed through unchanged
 //! (with `#[cpp(...)]` attributes stripped to avoid confusing rustc).
 
+#![allow(dead_code)]
+
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
+use quote::ToTokens;
 use syn::{
-    parse2, Attribute, FnArg, GenericArgument, ImplItem, Item, ItemImpl, ItemStruct, Meta, Pat,
+    parse2, Attribute, FnArg, GenericArgument, ImplItem, Item, ItemImpl, ItemStruct, Pat,
     PathArguments, Result, ReturnType, Type, TypePath,
 };
 
@@ -363,6 +365,7 @@ fn merge_hints(target: &mut CppHints, other: &CppHints) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quote::quote;
     use syn::parse_quote;
 
     // ─── Struct Parsing ──────────────────────────────────────────────────
@@ -393,7 +396,7 @@ mod tests {
     #[test]
     fn parse_tuple_struct_rejected() {
         let item: ItemStruct = parse_quote! { pub struct Wrapper(u32, u32); };
-        assert!(parse_struct(&item).is_err());
+        parse_struct(&item).unwrap_err();
     }
 
     #[test]
@@ -659,12 +662,12 @@ mod tests {
     #[test]
     fn rejects_non_struct_non_impl() {
         let input: TokenStream = quote! { pub fn standalone() {} };
-        assert!(parse_horus_api(TokenStream::new(), input).is_err());
+        parse_horus_api(TokenStream::new(), input).unwrap_err();
     }
 
     #[test]
     fn rejects_enum() {
         let input: TokenStream = quote! { pub enum Foo { A, B } };
-        assert!(parse_horus_api(TokenStream::new(), input).is_err());
+        parse_horus_api(TokenStream::new(), input).unwrap_err();
     }
 }

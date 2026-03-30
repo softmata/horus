@@ -22,6 +22,7 @@ pub enum TargetArch {
 
 impl TargetArch {
     /// Parse a target architecture from a string. Accepts common aliases.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "aarch64" | "arm64" | "jetson" | "pi4" | "pi5" => Some(TargetArch::Aarch64),
@@ -392,7 +393,7 @@ mod tests {
     fn write_toolchain_unknown_errors() {
         let dir = tempfile::tempdir().unwrap();
         let result = write_toolchain_file("riscv", dir.path());
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     // ── Toolchain detection (system probing) ────────────────────────────

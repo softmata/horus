@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Wiring verification tests — ensure recently-wired features actually work end-to-end.
 //!
 //! These tests guard against regressions in:
@@ -104,6 +105,7 @@ fn ignore_policy_continues_after_panic() {
 // 2. is_safe_state() recovery from Isolated
 // ============================================================================
 
+#[allow(dead_code)]
 struct RecoverableNode {
     tick_count: AtomicU32,
     safe_after: u32,

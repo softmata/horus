@@ -645,6 +645,7 @@ impl DetailedDependency {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum DependencyValue {
     /// Version string only (e.g., `"1.0"`, `">=1.24"`, `"^2.0"`).
     /// Defaults to horus registry source.
@@ -714,6 +715,7 @@ impl DependencyValue {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum DriverValue {
     /// Config table: `[drivers.arm]` with terra/package/node key + params.
     Config(DriverTableConfig),
@@ -1751,7 +1753,7 @@ version = "0.1.0"
     #[test]
     fn load_from_nonexistent_fails() {
         let result = HorusManifest::load_from(Path::new("/tmp/nonexistent_horus_toml_xyz.toml"));
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -1760,7 +1762,7 @@ version = "0.1.0"
         let path = dir.path().join(HORUS_TOML);
         fs::write(&path, "this is not valid toml {{{{").unwrap();
         let result = HorusManifest::load_from(&path);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -1827,7 +1829,7 @@ version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml).unwrap();
         // 2-char name should pass
-        assert!(manifest.validate().is_ok());
+        manifest.validate().unwrap();
     }
 
     #[test]
@@ -2023,7 +2025,7 @@ name = "my-Robot"
 version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
-        assert!(manifest.validate().is_err());
+        manifest.validate().unwrap_err();
     }
 
     /// 3. Validate rejects names with dots, spaces, or special characters.
@@ -2035,7 +2037,7 @@ name = "my.robot"
 version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
-        assert!(manifest.validate().is_err());
+        manifest.validate().unwrap_err();
     }
 
     #[test]
@@ -2046,7 +2048,7 @@ name = "my robot"
 version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
-        assert!(manifest.validate().is_err());
+        manifest.validate().unwrap_err();
     }
 
     #[test]
@@ -2876,7 +2878,7 @@ name = "@softmata/my-robot"
 version = "0.1.0"
 "#;
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
-        assert!(manifest.validate().is_ok());
+        manifest.validate().unwrap();
     }
 
     /// Name at maximum length (64 chars).
@@ -2893,7 +2895,7 @@ version = "0.1.0"
             name
         );
         let manifest: HorusManifest = toml::from_str(&toml_str).unwrap();
-        assert!(manifest.validate().is_ok());
+        manifest.validate().unwrap();
     }
 
     /// Name exceeding maximum length (65 chars).
@@ -2909,7 +2911,7 @@ version = "0.1.0"
             name
         );
         let manifest: HorusManifest = toml::from_str(&toml_str).unwrap();
-        assert!(manifest.validate().is_err());
+        manifest.validate().unwrap_err();
     }
 
     /// Git dep with version + features together.

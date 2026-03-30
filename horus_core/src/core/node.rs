@@ -611,7 +611,7 @@ pub trait Node: Send {
         Ok(())
     }
 
-    /// **DEPRECATED**: Topic associations are now automatic.
+    // **DEPRECATED**: Topic associations are now automatic.
     // publishers() and subscribers() removed — topics are auto-detected
     // via TopicNodeRegistry when Topic::new() is called during tick.
 

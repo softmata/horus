@@ -61,6 +61,7 @@ impl<T> SpscChannel<T> {
     /// Send a value (single producer, no contention).
     /// Returns Err if the channel is full.
     #[inline(always)]
+    #[allow(dead_code)]
     fn try_send(&self, msg: T) -> Result<(), T> {
         let head = self.head.0.load(Ordering::Relaxed);
 
@@ -764,7 +765,7 @@ mod tests {
                     .copied()
                     .collect();
                 assert!(
-                    from_pub.len() > 0,
+                    !from_pub.is_empty(),
                     "sub {} got 0 msgs from pub {}",
                     sid,
                     pub_id

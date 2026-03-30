@@ -21,8 +21,6 @@
 //! generate typed FFI per service (like `impl_topic_ffi!` does for topics).
 //! This is planned for a future phase.
 
-use std::time::Duration;
-
 use crate::types_ffi::JsonWireMessage;
 use horus_core::communication::Topic;
 
@@ -35,6 +33,7 @@ pub struct FfiServiceClient {
 }
 
 /// Opaque service server using Pod-based JsonWireMessage transport.
+#[allow(dead_code, clippy::type_complexity)]
 pub struct FfiServiceServer {
     name: String,
     req_topic: Option<Topic<JsonWireMessage>>,
@@ -49,9 +48,9 @@ pub struct FfiServiceServer {
 ///   - `{name}.request` — publishes requests
 ///   - `{name}.response.{client_id}` — receives responses
 pub fn service_client_new(name: &str) -> Box<FfiServiceClient> {
-    let req_topic = Topic::<JsonWireMessage>::new(&format!("{}.request", name)).ok();
+    let req_topic = Topic::<JsonWireMessage>::new(format!("{}.request", name)).ok();
     let client_id = std::process::id();
-    let res_topic = Topic::<JsonWireMessage>::new(&format!("{}.response.{}", name, client_id)).ok();
+    let res_topic = Topic::<JsonWireMessage>::new(format!("{}.response.{}", name, client_id)).ok();
     Box::new(FfiServiceClient {
         name: name.to_string(),
         req_topic,
@@ -128,7 +127,7 @@ pub fn service_client_call(
 
 /// Create a new service server for the given service name.
 pub fn service_server_new(name: &str) -> Box<FfiServiceServer> {
-    let req_topic = Topic::<JsonWireMessage>::new(&format!("{}.request", name)).ok();
+    let req_topic = Topic::<JsonWireMessage>::new(format!("{}.request", name)).ok();
     Box::new(FfiServiceServer {
         name: name.to_string(),
         req_topic,
@@ -212,10 +211,10 @@ mod tests {
 
         // Create server-side req topic and client-side topics
         let server_req =
-            horus_core::communication::Topic::<JsonWireMessage>::new(&format!("{}.request", svc))
+            horus_core::communication::Topic::<JsonWireMessage>::new(format!("{}.request", svc))
                 .unwrap();
         let client_id = std::process::id();
-        let client_res = horus_core::communication::Topic::<JsonWireMessage>::new(&format!(
+        let client_res = horus_core::communication::Topic::<JsonWireMessage>::new(format!(
             "{}.response.{}",
             svc, client_id
         ))
@@ -224,7 +223,7 @@ mod tests {
         // Client sends request
         let req = JsonWireMessage::from_json(r#"{"a":3,"b":4}"#, 1, 0).unwrap();
         let client_req =
-            horus_core::communication::Topic::<JsonWireMessage>::new(&format!("{}.request", svc))
+            horus_core::communication::Topic::<JsonWireMessage>::new(format!("{}.request", svc))
                 .unwrap();
         client_req.send(req);
 
@@ -238,7 +237,7 @@ mod tests {
         // Server sends response
         let resp =
             JsonWireMessage::from_json(&serde_json::json!({"sum": sum}).to_string(), 1, 1).unwrap();
-        let server_res = horus_core::communication::Topic::<JsonWireMessage>::new(&format!(
+        let server_res = horus_core::communication::Topic::<JsonWireMessage>::new(format!(
             "{}.response.{}",
             svc, client_id
         ))

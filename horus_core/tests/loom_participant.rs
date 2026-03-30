@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Loom-based exhaustive concurrency tests for participant registration.
 //!
 //! These tests verify that the participant slot registration protocol —

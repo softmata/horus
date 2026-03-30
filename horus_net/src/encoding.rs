@@ -52,11 +52,11 @@ pub fn byte_swap_words(payload: &mut [u8], word_size: usize) {
 /// If divisible by 4, assume 4-byte words (f32/u32).
 /// Otherwise, assume 1 (no swap needed — single bytes).
 pub fn infer_word_size(type_size: usize) -> usize {
-    if type_size % 8 == 0 {
+    if type_size.is_multiple_of(8) {
         8
-    } else if type_size % 4 == 0 {
+    } else if type_size.is_multiple_of(4) {
         4
-    } else if type_size % 2 == 0 {
+    } else if type_size.is_multiple_of(2) {
         2
     } else {
         1

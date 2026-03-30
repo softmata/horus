@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Stress tests for TensorPool with GPU and CPU backends.
 //! Uses only PUBLIC API.
 
@@ -82,7 +83,7 @@ fn test_gpu_image_transfer_stress() {
         return;
     }
 
-    let mut cpu_img = Image::new(64, 64, ImageEncoding::Rgb8).unwrap();
+    let cpu_img = Image::new(64, 64, ImageEncoding::Rgb8).unwrap();
     cpu_img.data_mut().fill(42);
     let expected: Vec<u8> = cpu_img.data().to_vec();
 

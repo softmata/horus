@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Edge-case tests for the build pipeline generators (cargo_gen, pyproject_gen, cmake_gen).
 //!
 //! These tests exercise the pure-function file generators that transform a

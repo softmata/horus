@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process multi-participant IPC tests.
 //!
 //! Tests the SHM backends that handle multiple publishers/subscribers across
@@ -84,6 +85,7 @@ fn child_mpsc_publisher() {
 }
 
 /// MPMC child: subscribe to topic from multiple parent publishers
+#[allow(dead_code)]
 fn child_mpmc_subscriber() {
     let topic_name = std::env::var(TOPIC_ENV).expect("TOPIC_ENV");
     let topic: Topic<u64> = Topic::new(&topic_name).expect("child: Topic::new");
@@ -319,7 +321,7 @@ fn cross_process_mpsc_3_pub_1_sub() {
     );
 
     assert!(
-        received.len() > 0,
+        !received.is_empty(),
         "MPSC: parent should receive messages from children"
     );
     assert!(

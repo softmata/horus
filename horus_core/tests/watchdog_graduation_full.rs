@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Level 7 Intent Tests — Full Graduated Degradation Path (Kill Stage)
 //!
 //! These tests verify the **complete graduated degradation pipeline** from

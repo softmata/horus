@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Reproduction of GitHub issue #37: cross-process Image pub/sub crash.
 //!
 //! Faithfully replicates the user's scenario:

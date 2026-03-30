@@ -8,11 +8,7 @@
 //! Usage from CLI:
 //!   horus doctor --rt   (detailed RT audit)
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use crate::core::DurationExt;
 
 /// Complete RT readiness assessment.
 #[derive(Debug)]

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Topic lifecycle integration tests
 //!
 //! Tests topic creation/drop/recreation, multi-type pub/sub, FIFO ordering,

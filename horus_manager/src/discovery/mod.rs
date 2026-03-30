@@ -187,6 +187,7 @@ lazy_static::lazy_static! {
 
 /// Process information — delegated to [`horus_sys::discover::ProcessInfo`].
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) type ProcessInfo = horus_sys::discover::ProcessInfo;
 
 pub fn discover_nodes() -> HorusResult<Vec<NodeStatus>> {
@@ -341,13 +342,13 @@ mod dispatch_tests {
     fn discover_nodes_returns_ok() {
         // On a clean system (no running HORUS), should return Ok
         let result = discover_nodes();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn discover_shared_memory_returns_ok() {
         let result = discover_shared_memory();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Multi-machine observability stress tests.
 //!
 //! Simulates remote hosts by writing presence files and log entries directly,

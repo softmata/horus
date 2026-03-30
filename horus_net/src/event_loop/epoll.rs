@@ -80,7 +80,7 @@ impl EpollLoop {
             return Err(io::Error::last_os_error());
         }
 
-        let mut loop_inst = Self {
+        let loop_inst = Self {
             epoll_fd,
             event_fd,
             timer_fd,
@@ -144,8 +144,8 @@ impl EpollLoop {
         }
 
         let mut events = Vec::with_capacity(n as usize);
-        for i in 0..n as usize {
-            let source = match raw_events[i].u64 {
+        for raw_event in raw_events.iter().take(n as usize) {
+            let source = match raw_event.u64 {
                 TOKEN_UDP => EventSource::UdpSocket,
                 TOKEN_SHM => {
                     // Consume the eventfd counter to re-arm it

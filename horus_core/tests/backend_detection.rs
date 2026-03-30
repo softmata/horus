@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Integration tests for Topic backend auto-detection behavior.
 //
 // The detection algorithm (detect_optimal_backend) is already unit-tested

@@ -716,7 +716,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No horus.toml — should succeed without doing anything
         let result = ensure_system_deps(dir.path());
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -765,7 +765,7 @@ mod tests {
 
         // Should succeed — serde is not a C++ system dep
         let result = ensure_system_deps(dir.path());
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Battle tests: generate_cmake_if_needed integration ───────────────
@@ -1028,7 +1028,7 @@ mod tests {
     fn boundary_find_binary_name_with_dots() {
         let dir = tempfile::tempdir().unwrap();
         // Project name "v2.0.1" should search for "v2_0_1" (hyphens AND dots replaced)
-        let target_name = "v2.0.1".replace('-', "_");
+        let _target_name = "v2.0.1".replace('-', "_");
         // find_cpp_binary only replaces hyphens with underscores
         let binary_name = "v2.0.1".replace('-', "_");
         let binary = dir.path().join(&binary_name);

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Rust↔Python FULL MATRIX — multiple schedulers, ALL message types.
 //!
 //! 3 Rust schedulers + 2 Python schedulers, 31 message types flowing
@@ -19,8 +20,6 @@ use horus_robotics::messages::sensor::{
     Odometry, RangeSensor, Temperature,
 };
 use horus_robotics::CmdVel;
-use horus_types::*;
-use horus_types::*;
 use horus_types::*;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -202,11 +201,10 @@ fn full_matrix_3_rust_2_python_all_types() {
     ];
 
     // Python subscriber for ALL types
-    let py_sub_code = format!(
-        r#"
+    let py_sub_code = r#"
 import horus, os
 
-type_map = {{
+type_map = {
     "imu": horus.Imu, "cmdvel": horus.CmdVel, "odometry": horus.Odometry,
     "laserscan": horus.LaserScan, "jointstate": horus.JointState,
     "battery": horus.BatteryState, "pose2d": horus.Pose2D, "pose3d": horus.Pose3D,
@@ -221,29 +219,29 @@ type_map = {{
     "wrench": horus.WrenchStamped, "clock": horus.Clock,
     "pid": horus.PidConfig, "trajectory": horus.TrajectoryPoint,
     "jointcmd": horus.JointCommand,
-}}
+}
 
-counts = {{k: 0 for k in type_map}}
-subs_dict = {{f"fm.{{k}}": v for k, v in type_map.items()}}
+counts = {k: 0 for k in type_map}
+subs_dict = {f"fm.{k}": v for k, v in type_map.items()}
 
 def tick(node):
     for k in type_map:
-        msg = node.recv(f"fm.{{k}}")
+        msg = node.recv(f"fm.{k}")
         while msg is not None:
             counts[k] += 1
-            msg = node.recv(f"fm.{{k}}")
+            msg = node.recv(f"fm.{k}")
 
 def shutdown(node):
     d = os.environ.get("RESULT_DIR", "/tmp/horus_rp_full")
     os.makedirs(d, exist_ok=True)
     for k, v in counts.items():
-        with open(os.path.join(d, f"py1_{{k}}"), "w") as f:
+        with open(os.path.join(d, f"py1_{k}"), "w") as f:
             f.write(str(v))
 
 sub = horus.Node("py_all_sub1", tick=tick, subs=subs_dict, rate=200, shutdown=shutdown)
 horus.run(sub, duration=6.0, tick_rate=200)
 "#
-    );
+    .to_string();
 
     // Second Python subscriber (different rate — tests multi-Python-scheduler)
     let py_sub2_code = py_sub_code

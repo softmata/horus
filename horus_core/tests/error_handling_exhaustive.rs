@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Exhaustive error handling tests for HorusError.
 //!
 //! Tests all 11+ variants for Display, Severity classification,

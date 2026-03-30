@@ -215,7 +215,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join(HORUS_TOML), "").unwrap();
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── List (name = None) ───────────────────────────────────────────────────
@@ -225,7 +225,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "");
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -236,7 +236,7 @@ mod tests {
             "\n[scripts]\nsim = \"echo sim\"\ntest-hw = \"echo hw\"\n",
         );
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -244,7 +244,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nonly = \"echo only\"\n");
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -256,7 +256,7 @@ mod tests {
         }
         write_manifest(tmp.path(), &scripts);
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\na = \"echo a\"\n");
         let result = in_tmp(&tmp, || run_scripts(None, vec!["extra".to_string()]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Run named script (success) ───────────────────────────────────────────
@@ -275,7 +275,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nhello = \"echo hello\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("hello".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -285,7 +285,7 @@ mod tests {
         let result = in_tmp(&tmp, || {
             run_scripts(Some("greet".to_string()), vec!["world".to_string()])
         });
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -298,7 +298,7 @@ mod tests {
                 vec!["hello".to_string(), "world".to_string(), "!".to_string()],
             )
         });
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -306,7 +306,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nok = \"true\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("ok".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
             "\n[scripts]\nmulti = \"echo one && echo two\"\n",
         );
         let result = in_tmp(&tmp, || run_scripts(Some("multi".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -325,7 +325,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\npipe = \"echo hello | cat\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("pipe".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         let toml = format!("\n[scripts]\ncreate = \"{}\"\n", cmd);
         write_manifest(tmp.path(), &toml);
         let result = in_tmp(&tmp, || run_scripts(Some("create".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(marker.exists(), "Script should have created marker file");
     }
 
@@ -348,7 +348,7 @@ mod tests {
             "\n[scripts]\nalpha = \"echo a\"\nbeta = \"echo b\"\ngamma = \"echo c\"\n",
         );
         let result = in_tmp(&tmp, || run_scripts(Some("alpha".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod tests {
             "\n[scripts]\nalpha = \"echo a\"\nbeta = \"echo b\"\ngamma = \"echo c\"\n",
         );
         let result = in_tmp(&tmp, || run_scripts(Some("gamma".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Missing / not found script ───────────────────────────────────────────
@@ -488,7 +488,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\ntest-hw = \"echo hw\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("test-hw".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\ntest_hw = \"echo hw\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("test_hw".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -504,7 +504,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\n\"run.fast\" = \"echo fast\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("run.fast".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\n\"123\" = \"echo num\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("123".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -535,7 +535,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nempty = \"\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("empty".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -543,7 +543,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nenv = \"echo $HOME\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("env".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nquoted = \"echo 'hello world'\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("quoted".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
         let toml = format!("\n[scripts]\nredir = \"{}\"\n", cmd);
         write_manifest(tmp.path(), &toml);
         let result = in_tmp(&tmp, || run_scripts(Some("redir".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(output_file.exists(), "Redirect should have created file");
         let content = fs::read_to_string(&output_file).unwrap();
         assert!(content.contains("redirected"));
@@ -577,7 +577,7 @@ mod tests {
         let result = in_tmp(&tmp, || {
             run_scripts(Some("greet".to_string()), vec!["hello world".to_string()])
         });
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -587,7 +587,7 @@ mod tests {
         let result = in_tmp(&tmp, || {
             run_scripts(Some("ls".to_string()), vec!["-la".to_string()])
         });
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -601,7 +601,7 @@ mod tests {
         // The extra arg "extra_token" gets appended after the redirect,
         // but the command still runs via sh -c
         let result = in_tmp(&tmp, || run_scripts(Some("log".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Battle tests ─────────────────────────────────────────────────────────
@@ -644,7 +644,7 @@ enable = ["cuda"]
 "#;
         fs::write(tmp.path().join(HORUS_TOML), content).unwrap();
         let result = in_tmp(&tmp, || run_scripts(Some("deploy".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -672,7 +672,7 @@ enable = ["cuda", "editor"]
 "#;
         fs::write(tmp.path().join(HORUS_TOML), content).unwrap();
         let result = in_tmp(&tmp, || run_scripts(None, vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -693,7 +693,7 @@ enable = ["cuda", "editor"]
         let toml = format!("\n[scripts]\nlong = \"{}\"\n", long_cmd);
         write_manifest(tmp.path(), &toml);
         let result = in_tmp(&tmp, || run_scripts(Some("long".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -701,7 +701,7 @@ enable = ["cuda", "editor"]
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nspec = \"echo 'a&b|c;d'\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("spec".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -709,7 +709,7 @@ enable = ["cuda", "editor"]
         let tmp = tempfile::TempDir::new().unwrap();
         write_manifest(tmp.path(), "\n[scripts]\nuni = \"echo 'hello 世界'\"\n");
         let result = in_tmp(&tmp, || run_scripts(Some("uni".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -721,7 +721,7 @@ enable = ["cuda", "editor"]
         let toml = format!("\n[scripts]\npwd = \"{}\"\n", cmd);
         write_manifest(tmp.path(), &toml);
         let result = in_tmp(&tmp, || run_scripts(Some("pwd".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
         let pwd_output = fs::read_to_string(&marker).unwrap();
         let pwd_path = PathBuf::from(pwd_output.trim());
         // On some systems tmp is a symlink; canonicalize both
@@ -748,7 +748,7 @@ enable = ["cuda", "editor"]
             "\n[scripts]\nself-read = \"cat horus.toml > /dev/null\"\n",
         );
         let result = in_tmp(&tmp, || run_scripts(Some("self-read".to_string()), vec![]));
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Intent tests: manifest script parsing ──────────────────────────────

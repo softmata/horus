@@ -7,7 +7,6 @@
 //! - Mix recordings from different runs
 //! - Time travel to specific ticks
 
-use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};

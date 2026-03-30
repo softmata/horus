@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Loom-based exhaustive concurrency tests for Watchdog primitives.
 //!
 //! These tests complement the ring-buffer tests in `loom_ring_buffers.rs`.

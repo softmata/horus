@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for the `horus log` CLI command.
 //!
 //! Tests `view_logs()` and `clear_logs()` end-to-end with pre-filled
@@ -89,11 +90,11 @@ fn view_logs_node_filter_returns_ok() {
 
     // Filter for node_a only — should succeed
     let result = view_logs(Some(&node_a), None, None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Filter for node_b only — should succeed
     let result = view_logs(Some(&node_b), None, None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -104,7 +105,7 @@ fn view_logs_node_filter_logic_matches_contains() {
 
     // Partial match: "sensor" should match "partial_match_sensor_node"
     let result = view_logs(Some("sensor"), None, None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -121,11 +122,11 @@ fn view_logs_level_filter_returns_ok() {
 
     // Filter for error level — should succeed
     let result = view_logs(Some(&node), Some("error"), None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Filter for info level — should succeed
     let result = view_logs(Some(&node), Some("info"), None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -150,10 +151,10 @@ fn view_logs_since_filter_valid_formats_return_ok() {
     let node = uid("since_valid");
     push_entry(&node, LogType::Info, "recent", "12:00:00.000");
 
-    assert!(view_logs(Some(&node), None, Some("5s"), false, None).is_ok());
-    assert!(view_logs(Some(&node), None, Some("10m"), false, None).is_ok());
-    assert!(view_logs(Some(&node), None, Some("1h"), false, None).is_ok());
-    assert!(view_logs(Some(&node), None, Some("1d"), false, None).is_ok());
+    view_logs(Some(&node), None, Some("5s"), false, None).unwrap();
+    view_logs(Some(&node), None, Some("10m"), false, None).unwrap();
+    view_logs(Some(&node), None, Some("1h"), false, None).unwrap();
+    view_logs(Some(&node), None, Some("1d"), false, None).unwrap();
 }
 
 #[test]
@@ -180,11 +181,11 @@ fn view_logs_count_limit_returns_ok() {
 
     // Limit to 5 entries
     let result = view_logs(Some(&node), None, None, false, Some(5));
-    assert!(result.is_ok());
+    result.unwrap();
 
     // Limit to 1 entry
     let result = view_logs(Some(&node), None, None, false, Some(1));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -200,7 +201,7 @@ fn view_logs_combined_node_and_level_filter() {
 
     // Node + level filter
     let result = view_logs(Some(&node), Some("warn"), None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]
@@ -210,7 +211,7 @@ fn view_logs_combined_all_filters() {
 
     // Node + level + since + count — all filters active
     let result = view_logs(Some(&node), Some("error"), Some("5m"), false, Some(10));
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -315,7 +316,7 @@ fn view_logs_with_topic_entries_returns_ok() {
     );
 
     let result = view_logs(Some(&node), None, None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -347,7 +348,7 @@ fn view_logs_all_log_types_no_panic() {
 
     // All 6 LogType variants, at trace level (show all)
     let result = view_logs(Some(&node), Some("trace"), None, false, None);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[test]

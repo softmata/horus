@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process FanoutShm integration tests.
 //!
 //! Tests the SHM fanout MPMC backend across real process boundaries:

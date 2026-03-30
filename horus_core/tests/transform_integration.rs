@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! TransformFrame integration tests.
 //!
 //! Run: cargo test --no-default-features -p horus_core \
@@ -139,7 +140,7 @@ fn concurrent_writers_no_corruption() {
     .unwrap();
 
     let running = Arc::new(AtomicBool::new(true));
-    let mut corrupted = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let _corrupted = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // Writer 1: updates left_wheel rapidly
     let tf1 = tf.clone();

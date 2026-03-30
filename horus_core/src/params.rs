@@ -1258,9 +1258,7 @@ mod tests {
         // Set 1000 params
         let start = std::time::Instant::now();
         for i in 0..1000 {
-            params
-                .set(&format!("scale_key_{}", i), &(i as f64))
-                .unwrap();
+            params.set(&format!("scale_key_{}", i), i as f64).unwrap();
         }
         let set_elapsed = start.elapsed();
 
@@ -1318,7 +1316,7 @@ mod tests {
                 std::thread::spawn(move || {
                     b.wait();
                     for i in 0..100 {
-                        p.set(&format!("thread_{}_key_{}", t, i), &(t * 100 + i))
+                        p.set(&format!("thread_{}_key_{}", t, i), t * 100 + i)
                             .unwrap();
                     }
                 })
@@ -1348,10 +1346,10 @@ mod tests {
         let params = create_test_params();
 
         // Set some diverse params
-        params.set("string_param", &"hello world").unwrap();
-        params.set("int_param", &42).unwrap();
-        params.set("float_param", &2.75).unwrap();
-        params.set("bool_param", &true).unwrap();
+        params.set("string_param", "hello world").unwrap();
+        params.set("int_param", 42).unwrap();
+        params.set("float_param", 2.75).unwrap();
+        params.set("bool_param", true).unwrap();
 
         // Use save_to_disk which writes to the configured path
         // For a round-trip test, we use load_from_disk with a temp file
@@ -1382,7 +1380,7 @@ mod tests {
     #[test]
     fn version_advances_under_concurrent_writes() {
         let params = create_test_params();
-        params.set("conflict_key", &"initial").unwrap();
+        params.set("conflict_key", "initial").unwrap();
 
         let v1 = params.get_version("conflict_key");
 
@@ -1393,12 +1391,12 @@ mod tests {
 
         let h1 = std::thread::spawn(move || {
             for i in 0..50 {
-                let _ = p1.set("conflict_key", &format!("t1_{}", i));
+                let _ = p1.set("conflict_key", format!("t1_{}", i));
             }
         });
         let h2 = std::thread::spawn(move || {
             for i in 0..50 {
-                let _ = p2.set("conflict_key", &format!("t2_{}", i));
+                let _ = p2.set("conflict_key", format!("t2_{}", i));
             }
         });
 

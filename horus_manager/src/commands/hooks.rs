@@ -98,39 +98,39 @@ mod tests {
     #[test]
     fn empty_hooks_pre_run_is_noop() {
         let m = empty_manifest();
-        assert!(run_hooks("pre_run", &m).is_ok());
+        run_hooks("pre_run", &m).unwrap();
     }
 
     #[test]
     fn empty_hooks_pre_build_is_noop() {
         let m = empty_manifest();
-        assert!(run_hooks("pre_build", &m).is_ok());
+        run_hooks("pre_build", &m).unwrap();
     }
 
     #[test]
     fn empty_hooks_pre_test_is_noop() {
         let m = empty_manifest();
-        assert!(run_hooks("pre_test", &m).is_ok());
+        run_hooks("pre_test", &m).unwrap();
     }
 
     #[test]
     fn empty_hooks_post_test_is_noop() {
         let m = empty_manifest();
-        assert!(run_hooks("post_test", &m).is_ok());
+        run_hooks("post_test", &m).unwrap();
     }
 
     #[test]
     fn unknown_phase_returns_ok() {
         // Unknown phase is NOT an error — it returns Ok(()) with no hooks
         let m = empty_manifest();
-        assert!(run_hooks("nonexistent_phase", &m).is_ok());
+        run_hooks("nonexistent_phase", &m).unwrap();
     }
 
     #[test]
     fn unknown_phase_with_hooks_still_ok() {
         // Even with hooks configured, unknown phase skips them
         let m = manifest_with_hooks("pre_run", vec!["fmt"]);
-        assert!(run_hooks("unknown", &m).is_ok());
+        run_hooks("unknown", &m).unwrap();
     }
 
     #[test]
@@ -191,8 +191,10 @@ mod tests {
 
     #[test]
     fn hooks_config_is_not_empty_with_pre_run() {
-        let mut h = HooksConfig::default();
-        h.pre_run = vec!["fmt".to_string()];
+        let h = HooksConfig {
+            pre_run: vec!["fmt".to_string()],
+            ..HooksConfig::default()
+        };
         assert!(!h.is_empty());
     }
 }

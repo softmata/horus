@@ -515,14 +515,14 @@ mod tests {
     #[test]
     fn async_service_client_new_succeeds() {
         let client = AsyncServiceClient::<CliTestService>::new();
-        assert!(client.is_ok());
+        client.unwrap();
     }
 
     #[test]
     fn async_service_client_custom_poll_interval() {
         let client =
             AsyncServiceClient::<CliTestService>::with_poll_interval(Duration::from_millis(100));
-        assert!(client.is_ok());
+        client.unwrap();
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! End-to-end runtime introspection tests for horus CLI.
 //!
 //! Each test simulates a live robot system using HorusTestRuntime (writes

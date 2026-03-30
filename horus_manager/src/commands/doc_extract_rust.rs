@@ -608,7 +608,7 @@ fn parse_action_blocks(
 
 // ─── Association ────────────────────────────────────────────────────────────
 
-fn associate_impl_methods(symbols: &mut Vec<SymbolDoc>, impls: &[ImplRecord]) {
+fn associate_impl_methods(symbols: &mut [SymbolDoc], impls: &[ImplRecord]) {
     for imp in impls {
         // Find matching struct/enum and add methods + trait_impls
         for sym in symbols.iter_mut() {
@@ -1938,7 +1938,7 @@ message! {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("binary.rs");
         // Write bytes that are not valid UTF-8
-        std::fs::write(&file, &[0xFF, 0xFE, 0x00, 0x01, 0x80, 0x81, 0xCC, 0xDD]).unwrap();
+        std::fs::write(&file, [0xFF, 0xFE, 0x00, 0x01, 0x80, 0x81, 0xCC, 0xDD]).unwrap();
         let result = extract_rust_file(&file, false);
         assert!(
             result.is_err(),

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Complete Autonomous Mobile Robot Application
 /// Demonstrates the enhanced HORUS scheduler with a real robotics system
 ///
@@ -9,7 +10,7 @@
 /// - Path planning and navigation
 /// - Obstacle avoidance
 /// - Battery monitoring with fault tolerance
-use horus_core::{error::Result, Node, Scheduler, Topic, TopicMetadata};
+use horus_core::{error::Result, Node, Scheduler, Topic};
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

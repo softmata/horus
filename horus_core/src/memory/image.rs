@@ -31,7 +31,7 @@ use crate::types::{Device, ImageDescriptor, ImageEncoding};
 
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::{get_or_create_pool_for_device, global_pool};
-use crate::error::{HorusError, HorusResult};
+use crate::error::HorusResult;
 
 /// Image with zero-copy shared memory backing.
 ///

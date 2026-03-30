@@ -240,7 +240,6 @@ pub mod image;
 pub mod occupancy_grid;
 pub mod pointcloud;
 
-pub(crate) use backend::MmapBackend;
 pub use backend::{BackendAllocation, PoolBackend};
 #[doc(hidden)]
 pub use tensor_handle::TensorHandle;

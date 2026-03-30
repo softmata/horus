@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Dedicated RT thread executor.
 //!
 //! Runs all RT nodes on an isolated OS thread with its own tick loop.
@@ -2048,7 +2049,7 @@ mod tests {
         let ticks = count.load(std::sync::atomic::Ordering::Relaxed);
         // At 10ms fallback period over 100ms, expect roughly 10 ticks (wide margin)
         assert!(
-            ticks >= 3 && ticks <= 50,
+            (3..=50).contains(&ticks),
             "with 10ms fallback period over 100ms, expected 3-50 ticks, got {}",
             ticks
         );

@@ -331,14 +331,14 @@ mod tests {
     fn run_upgrade_check_only_succeeds() {
         // check_only=true should always succeed even without network
         let result = run_upgrade(true);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn run_upgrade_full_succeeds() {
         // check_only=false should also succeed — network failure is handled gracefully
         let result = run_upgrade(false);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -361,7 +361,7 @@ mod tests {
         // In test environment without network access to horusrobotics.dev,
         // should return Ok(None) rather than Err
         let result = check_latest_version();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
         let result = upgrade_horus("99.99.99");
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -403,7 +403,7 @@ mod tests {
         let result = upgrade_horus("");
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -417,7 +417,7 @@ mod tests {
         let result = upgrade_horus("0.2.0");
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── list_installed_plugins ──────────────────────────────────────────
@@ -565,7 +565,7 @@ mod tests {
         let result = run_upgrade(true);
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -582,7 +582,7 @@ mod tests {
         let result = run_upgrade(false);
         std::env::set_current_dir(original).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── Edge cases ──────────────────────────────────────────────────────
@@ -668,7 +668,7 @@ mod tests {
         // (basic smoke test for robustness)
         let result1 = run_upgrade(true);
         let result2 = run_upgrade(true);
-        assert!(result1.is_ok());
-        assert!(result2.is_ok());
+        result1.unwrap();
+        result2.unwrap();
     }
 }

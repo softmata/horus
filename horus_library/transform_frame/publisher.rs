@@ -299,7 +299,7 @@ mod tests {
         .unwrap();
 
         let publisher = TransformFramePublisher::new(&tf);
-        assert!(publisher.is_ok());
+        publisher.unwrap();
     }
 
     #[test]
@@ -321,19 +321,19 @@ mod tests {
         .unwrap();
 
         let publisher = TransformFramePublisher::new(&tf).unwrap();
-        assert!(publisher.publish().is_ok());
+        publisher.publish().unwrap();
 
         // Read back from the SHM topics
         let static_topic = Topic::<TFMessage>::new(TF_STATIC_TOPIC).unwrap();
         if let Some(msg) = static_topic.read_latest() {
-            assert!(msg.len() > 0);
+            assert!(!msg.is_empty());
             let names: Vec<String> = msg.iter().map(|t| t.child_frame_id()).collect();
             assert!(names.contains(&"base_link".to_string()));
         }
 
         let dynamic_topic = Topic::<TFMessage>::new(TF_TOPIC).unwrap();
         if let Some(msg) = dynamic_topic.read_latest() {
-            assert!(msg.len() > 0);
+            assert!(!msg.is_empty());
             let names: Vec<String> = msg.iter().map(|t| t.child_frame_id()).collect();
             assert!(names.contains(&"camera".to_string()));
         }
@@ -351,7 +351,7 @@ mod tests {
         .unwrap();
 
         let publisher = TransformFramePublisher::new(&tf).unwrap();
-        assert!(publisher.publish_static().is_ok());
+        publisher.publish_static().unwrap();
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
             .unwrap();
 
         let publisher = TransformFramePublisher::new(&tf).unwrap();
-        assert!(publisher.publish_dynamic().is_ok());
+        publisher.publish_dynamic().unwrap();
     }
 
     #[test]
@@ -389,6 +389,6 @@ mod tests {
         let tf = TransformFrame::new();
         let publisher = TransformFramePublisher::new(&tf).unwrap();
         // Publishing an empty tree should succeed without error
-        assert!(publisher.publish().is_ok());
+        publisher.publish().unwrap();
     }
 }

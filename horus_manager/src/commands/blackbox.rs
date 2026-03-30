@@ -1456,7 +1456,7 @@ mod tests {
     #[test]
     fn load_wal_nonexistent_file_errors() {
         let result = load_wal(Path::new("/nonexistent/blackbox.wal"));
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

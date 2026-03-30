@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for async I/O executor code paths.
 //!
 //! Covers: panic handling, mixed success/failure, skip policy,

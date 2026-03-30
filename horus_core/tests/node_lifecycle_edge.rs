@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Edge-case tests for node lifecycle: state transitions, error handling,
 //! and safe-state entry.
 
@@ -206,6 +207,7 @@ struct SafeStateNode {
 }
 
 impl SafeStateNode {
+    #[allow(clippy::type_complexity)]
     fn new(name: &str) -> (Self, Arc<AtomicU64>, Arc<Mutex<bool>>, Arc<Mutex<bool>>) {
         let ticks = Arc::new(AtomicU64::new(0));
         let entered = Arc::new(Mutex::new(false));

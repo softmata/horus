@@ -49,6 +49,7 @@ pub enum FfiGoalResponse {
 }
 
 /// Opaque action client — wired to real Pod topics for goal/feedback/result.
+#[allow(dead_code)]
 pub struct FfiActionClient {
     name: String,
     next_goal_id: AtomicU64,
@@ -58,6 +59,7 @@ pub struct FfiActionClient {
 }
 
 /// Opaque action server — subscribes to goal, publishes feedback/result.
+#[allow(dead_code, clippy::type_complexity)]
 pub struct FfiActionServer {
     name: String,
     goal_topic: Option<Topic<JsonWireMessage>>,
@@ -68,6 +70,7 @@ pub struct FfiActionServer {
 }
 
 /// Goal handle for tracking a sent goal.
+#[allow(dead_code)]
 pub struct FfiGoalHandle {
     goal_id: u64,
     action_name: String,
@@ -78,9 +81,9 @@ pub struct FfiGoalHandle {
 
 /// Create a new action client with Pod-based topic wiring.
 pub fn action_client_new(name: &str) -> Box<FfiActionClient> {
-    let goal_topic = Topic::<JsonWireMessage>::new(&format!("{}.goal", name)).ok();
-    let feedback_topic = Topic::<JsonWireMessage>::new(&format!("{}.feedback", name)).ok();
-    let result_topic = Topic::<JsonWireMessage>::new(&format!("{}.result", name)).ok();
+    let goal_topic = Topic::<JsonWireMessage>::new(format!("{}.goal", name)).ok();
+    let feedback_topic = Topic::<JsonWireMessage>::new(format!("{}.feedback", name)).ok();
+    let result_topic = Topic::<JsonWireMessage>::new(format!("{}.result", name)).ok();
     Box::new(FfiActionClient {
         name: name.to_string(),
         next_goal_id: AtomicU64::new(1),
@@ -145,9 +148,9 @@ pub fn goal_handle_is_active(handle: &FfiGoalHandle) -> bool {
 
 /// Create a new action server with Pod-based topic wiring.
 pub fn action_server_new(name: &str) -> Box<FfiActionServer> {
-    let goal_topic = Topic::<JsonWireMessage>::new(&format!("{}.goal", name)).ok();
-    let feedback_topic = Topic::<JsonWireMessage>::new(&format!("{}.feedback", name)).ok();
-    let result_topic = Topic::<JsonWireMessage>::new(&format!("{}.result", name)).ok();
+    let goal_topic = Topic::<JsonWireMessage>::new(format!("{}.goal", name)).ok();
+    let feedback_topic = Topic::<JsonWireMessage>::new(format!("{}.feedback", name)).ok();
+    let result_topic = Topic::<JsonWireMessage>::new(format!("{}.result", name)).ok();
     Box::new(FfiActionServer {
         name: name.to_string(),
         goal_topic,
@@ -355,7 +358,6 @@ mod tests {
     #[test]
     fn server_execute_handler() {
         use std::sync::atomic::AtomicU64;
-        use std::sync::Arc;
 
         let mut server = action_server_new("nav");
         static EXECUTED_GOAL_ID: AtomicU64 = AtomicU64::new(0);

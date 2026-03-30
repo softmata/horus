@@ -99,7 +99,7 @@ fn bench_latency_by_node_count(c: &mut Criterion) {
                     for i in 0..n {
                         let name = format!("load_{i}");
                         let name_static: &'static str = Box::leak(name.into_boxed_str());
-                        scheduler
+                        let _ = scheduler
                             .add(LoadNode::new(name_static, 100))
                             .order(i as u32)
                             .build();
@@ -230,7 +230,7 @@ fn bench_production_load(c: &mut Criterion) {
             for i in 0..10 {
                 let name = format!("prod_node_{i}");
                 let name_static: &'static str = Box::leak(name.into_boxed_str());
-                scheduler
+                let _ = scheduler
                     .add(LoadNode::new(name_static, 200))
                     .order(i)
                     .build();

@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop, unused_must_use)]
 //! Stress tests for the HORUS scheduling system.
 //!
 //! Tests scale, sustained operation, cascading failures, and

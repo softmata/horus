@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Deterministic mode integration tests.
 //!
 //! Verifies that deterministic mode preserves execution class behavior,
@@ -5,7 +6,7 @@
 //! grouped while dependent nodes are correctly ordered.
 
 use horus_core::core::duration_ext::DurationExt;
-use horus_core::core::node::{Node, TopicMetadata};
+use horus_core::core::node::Node;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

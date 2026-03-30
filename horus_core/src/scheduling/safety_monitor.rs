@@ -1379,14 +1379,14 @@ mod tests {
         enforcer.set_budget("motor".to_string(), 100_u64.us());
 
         // Under budget
-        assert!(enforcer.check_budget("motor", 80_u64.us()).is_ok());
+        enforcer.check_budget("motor", 80_u64.us()).unwrap();
 
         // Over budget
         assert!(enforcer.check_budget("motor", 150_u64.us()).is_err());
         assert_eq!(enforcer.get_overrun_count(), 1);
 
         // No budget set — should always succeed
-        assert!(enforcer.check_budget("planner", 9999_u64.us()).is_ok());
+        enforcer.check_budget("planner", 9999_u64.us()).unwrap();
     }
 
     // ── Graduated degradation tests ──────────────────────────────────────
@@ -1990,7 +1990,7 @@ mod tests {
             let tick = Duration::from_micros((i + 1) * 50);
             for _ in 0..100 {
                 let result = enforcer.check_budget(&format!("node_{:02}", i), tick);
-                assert!(result.is_ok());
+                result.unwrap();
             }
         }
 
@@ -2537,7 +2537,7 @@ mod tests {
         // Node has no budget — any execution time should pass
         for i in 0..10 {
             let result = monitor.check_tick_budget("unbounded", Duration::from_millis(i * 100));
-            assert!(result.is_ok());
+            result.unwrap();
         }
 
         // But timing data should still be recorded

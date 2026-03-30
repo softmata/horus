@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Stress tests for the topic system.
 //!
 //! These run in their own binary to avoid thread/resource contention with unit tests.

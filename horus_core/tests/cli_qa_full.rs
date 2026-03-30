@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Quick 20s test for frame can retry fix
 use horus_core::communication::Topic;
 use horus_core::core::{DurationExt, Node};

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Root tests for the Actions module.
 //!
 //! Tests ActionServerBuilder, ActionClientNode, SyncActionClient,

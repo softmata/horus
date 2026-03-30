@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Runtime integration tests for the event executor.
 //
 // Tests event-driven execution class behavior through the Scheduler:

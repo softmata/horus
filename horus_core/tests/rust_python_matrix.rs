@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Rust↔Python full matrix — multiple schedulers, all message types,
 //! bidirectional, mixed rates.
 //!
@@ -29,6 +30,7 @@ fn result_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("horus_rp_matrix")
 }
 
+#[allow(dead_code)]
 fn write_result(key: &str, val: &str) {
     let d = result_dir();
     let _ = std::fs::create_dir_all(&d);
@@ -306,7 +308,7 @@ horus.run(pub, duration=3.0, tick_rate=100)
     let cr = cmd_recv.clone();
     let br = bat_recv.clone();
     let co = corrupt.clone();
-    let r = running.clone();
+    let _r = running.clone();
 
     // Rust subscriber scheduler in thread
     let rust_handle = std::thread::spawn(move || {

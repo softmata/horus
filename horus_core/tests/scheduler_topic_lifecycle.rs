@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Scheduler + Topic + Node full lifecycle integration test.
 //
 // Proves the complete wired-together flow that every real user hits:

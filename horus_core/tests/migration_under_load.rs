@@ -1,3 +1,4 @@
+#![allow(unused_must_use, clippy::needless_range_loop)]
 //! Integration tests for topic backend migration during active scheduler execution.
 //!
 //! Validates that backend upgrades (DirectChannel→SpscIntra, SpscIntra→MpscIntra)

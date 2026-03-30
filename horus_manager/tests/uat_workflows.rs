@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! UAT: End-to-end CLI workflow tests.
 //!
 //! Each test exercises a complete user journey — multiple CLI commands in sequence,

@@ -20,7 +20,6 @@ pub mod platform;
 
 // Internal re-exports (used by pool_registry, gpu_executor, etc.)
 pub(crate) use backends::{CudaDeviceBackend, CudaManagedBackend, CudaPinnedBackend};
-pub(crate) use stream::{CudaEvent, CudaStream};
 
 // Public re-exports — user-facing
 pub use image_ops::{ColorFormat, GpuImageOps};
@@ -84,8 +83,6 @@ pub fn gpu_platform() -> Option<&'static GpuPlatform> {
 pub(crate) fn auto_backend_for_device(
     device: crate::types::Device,
 ) -> Box<dyn crate::memory::backend::PoolBackend> {
-    use crate::types::Device;
-
     if device.is_cpu() {
         // CPU — cannot create MmapBackend standalone (needs mmap pointers).
         // Callers should use TensorPool::new() for CPU pools, which creates

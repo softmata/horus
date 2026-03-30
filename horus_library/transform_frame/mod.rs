@@ -1557,7 +1557,8 @@ pub fn timestamp_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horus_core::core::duration_ext::DurationExt;
+    #[allow(unused_imports)]
+    use horus_core::core::DurationExt;
     use horus_core::error::TransformError;
 
     #[test]
@@ -2391,7 +2392,6 @@ mod tests {
     fn test_wait_for_transform_wakes_on_update() {
         use std::sync::Arc;
         use std::thread;
-        use std::time::Duration;
 
         let tf = Arc::new(TransformFrame::new());
         tf.register_frame("world", None).unwrap();
@@ -2426,7 +2426,6 @@ mod tests {
     fn test_wait_for_transform_wakes_on_register() {
         use std::sync::Arc;
         use std::thread;
-        use std::time::Duration;
 
         let tf = Arc::new(TransformFrame::new());
         tf.register_frame("world", None).unwrap();
@@ -2457,7 +2456,6 @@ mod tests {
     fn test_wait_for_transform_at_wakes_when_timestamp_covered() {
         use std::sync::Arc;
         use std::thread;
-        use std::time::Duration;
 
         let tf = Arc::new(TransformFrame::new());
         tf.register_frame("world", None).unwrap();

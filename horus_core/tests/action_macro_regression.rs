@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Regression test for action! macro with 3+ result fields.
 //
 // The action! macro previously failed with "expected token: ," when the

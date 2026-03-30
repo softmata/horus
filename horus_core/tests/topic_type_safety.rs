@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Topic type safety integration tests
 //!
 //! Verifies that the POD type size check at topic/mod.rs:449 works correctly:

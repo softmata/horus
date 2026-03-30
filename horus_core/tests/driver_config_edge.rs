@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Edge-case tests for hardware configuration: type coercion, empty configs,
 //! and unknown node types.
 
@@ -83,10 +84,10 @@ fn test_empty_node_params() {
 #[test]
 fn test_empty_params_get_errors() {
     let params = NodeParams::empty();
-    assert!(params.get::<String>("port").is_err());
-    assert!(params.get::<u32>("baudrate").is_err());
-    assert!(params.get::<f64>("rate").is_err());
-    assert!(params.get::<bool>("enabled").is_err());
+    params.get::<String>("port").unwrap_err();
+    params.get::<u32>("baudrate").unwrap_err();
+    params.get::<f64>("rate").unwrap_err();
+    params.get::<bool>("enabled").unwrap_err();
 }
 
 #[test]
@@ -94,7 +95,7 @@ fn test_empty_params_get_or_defaults() {
     let params = NodeParams::empty();
     assert_eq!(params.get_or("port", "default".to_string()), "default");
     assert_eq!(params.get_or("baud", 115200u32), 115200);
-    assert_eq!(params.get_or("enabled", true), true);
+    assert!(params.get_or("enabled", true));
 }
 
 // ============================================================================
@@ -120,7 +121,7 @@ fn test_u8_overflow() {
 fn test_u32_negative() {
     let params = make_params(&[("val", toml::Value::Integer(-1))]);
     let result = params.get::<u32>("val");
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]

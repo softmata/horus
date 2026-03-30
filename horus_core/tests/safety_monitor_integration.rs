@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for the safety monitor.
 //!
 //! Covers: multiple watchdog expiry, concurrent safety monitor checks.

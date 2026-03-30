@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for event executor code paths.
 //!
 //! Covers: burst notifications, paused event node, fatal policy stops scheduler,

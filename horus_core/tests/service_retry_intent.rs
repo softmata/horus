@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Service retry behavior and error handling intent tests.
 //!
 //! Tests: correct request-response mapping, rapid call handling, state

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-Crate Integration Parity Tests
 //!
 //! Verifies data flows correctly across crate boundaries:

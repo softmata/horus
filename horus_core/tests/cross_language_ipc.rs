@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-language IPC tests: Rust ↔ Python cross-process communication.
 //!
 //! Tests the production deployment pattern where Python ML nodes and Rust motor

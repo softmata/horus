@@ -3755,7 +3755,7 @@ my-pkg = "1.0.0"
 
         // Re-install with path source replaces the existing entry
         let result = run_add_dep("./my-pkg".to_string(), None, None, None, None, false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("my-pkg"));
@@ -4179,7 +4179,7 @@ name = "minimal"
 
         let result = run_add("rplidar".to_string(), None, false, false, None);
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("rplidar"));
@@ -4216,7 +4216,7 @@ name = "minimal"
             None,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.drivers.contains_key("camera"));
@@ -4242,7 +4242,7 @@ name = "minimal"
         // No version for driver = boolean true form
         let result = run_add("gps".to_string(), None, true, false, None);
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.drivers.contains_key("gps"));
@@ -4269,7 +4269,7 @@ name = "minimal"
             None,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["my-sensor"].version(), Some("2.0.0"));
@@ -4305,7 +4305,7 @@ name = "minimal"
 
         let result = run_remove_dep("my-sensor".to_string());
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
@@ -4333,7 +4333,7 @@ name = "minimal"
 
         let result = run_remove_dep("criterion".to_string());
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dev_dependencies.contains_key("criterion"));
@@ -4354,7 +4354,7 @@ name = "minimal"
 
         let result = run_remove_dep("camera".to_string());
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.drivers.contains_key("camera"));
@@ -4380,7 +4380,7 @@ name = "minimal"
         // Should succeed (warn but not error) when dep doesn't exist
         let result = run_remove_dep("nonexistent-pkg".to_string());
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -4962,7 +4962,7 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("curl"));
@@ -5033,7 +5033,7 @@ lidar = "rplidar-a2"
             true,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("pytest"));
@@ -5063,7 +5063,7 @@ lidar = "rplidar-a2"
             true,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("valgrind"));
@@ -5170,7 +5170,7 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("torch"));
@@ -5201,7 +5201,7 @@ lidar = "rplidar-a2"
             true, // dev
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("tokio"));
@@ -5236,7 +5236,7 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["serde"].version(), Some("^1.0"));
@@ -5264,7 +5264,7 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["tokio"].version(), Some("~1.25"));
@@ -5292,7 +5292,7 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(
@@ -5323,7 +5323,7 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert_eq!(manifest.dependencies["rapier3d"].version(), Some("=0.22.0"));
@@ -5547,7 +5547,7 @@ lidar = "rplidar-a2"
 
         let result = run_remove_dep("camera".to_string());
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(
@@ -5576,7 +5576,7 @@ lidar = "rplidar-a2"
 
         let result = run_remove_dep("tokio".to_string());
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("tokio"));
@@ -5660,7 +5660,7 @@ lidar = "rplidar-a2"
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("sensor-fusion"));
@@ -6009,7 +6009,7 @@ exact-lib = { git = "https://github.com/org/exact", rev = "abc123def" }
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies["my-lib"].is_path());
@@ -6080,7 +6080,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
 
         let result = run_remove_dep("camera".to_string());
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(!manifest.dependencies.contains_key("camera"));
@@ -6168,7 +6168,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
             true, // dev
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dev_dependencies.contains_key("mock-hw"));
@@ -6199,7 +6199,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest
@@ -6229,7 +6229,7 @@ cuda-support = { version = "1.0", source = "crates.io", optional = true }
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("horus_library"));
@@ -6418,7 +6418,7 @@ serde = { version = "1.0", source = "crates.io" }
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         let stored_feats = manifest.dependencies["serde"].features();
@@ -6453,7 +6453,7 @@ serde = { version = "1.0", source = "crates.io" }
             false,
         );
         std::env::set_current_dir(&original_dir).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
 
         let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
         assert!(manifest.dependencies.contains_key("log"));
@@ -7087,7 +7087,7 @@ tokio = "1.0"
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // Verify serde removed from manifest
         let content = std::fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
         assert!(!content.contains("serde"));
@@ -7154,7 +7154,7 @@ edition = "1"
         std::env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         let content = std::fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
         assert!(content.contains("serde"));
     }

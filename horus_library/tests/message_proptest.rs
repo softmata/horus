@@ -3,6 +3,8 @@
 //! Verifies that all standard HORUS message types survive serialize→deserialize
 //! roundtrips via bincode and MessagePack (rmp-serde). Uses proptest to generate
 //! thousands of random message instances.
+
+#![allow(clippy::field_reassign_with_default)]
 //!
 //! Comparison is done via POD byte equality (bytemuck::bytes_of) since most
 //! message types don't derive PartialEq.

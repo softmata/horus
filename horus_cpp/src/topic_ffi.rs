@@ -130,6 +130,138 @@ impl_topic_ffi!(nav_goal, NavGoal, horus_library::NavGoal);
 impl_topic_ffi!(heartbeat, Heartbeat, horus_library::Heartbeat);
 impl_topic_ffi!(emergency_stop, EmergencyStop, horus_library::EmergencyStop);
 
+// ─── Sensor Types (7) ───────────────────────────────────────────────────────
+impl_topic_ffi!(range_sensor, RangeSensor, horus_library::RangeSensor);
+impl_topic_ffi!(battery_state, BatteryState, horus_library::BatteryState);
+impl_topic_ffi!(nav_sat_fix, NavSatFix, horus_library::NavSatFix);
+impl_topic_ffi!(magnetic_field, MagneticField, horus_library::MagneticField);
+impl_topic_ffi!(temperature, Temperature, horus_library::Temperature);
+impl_topic_ffi!(fluid_pressure, FluidPressure, horus_library::FluidPressure);
+impl_topic_ffi!(illuminance, Illuminance, horus_library::Illuminance);
+
+// ─── Control Types (6) ──────────────────────────────────────────────────────
+impl_topic_ffi!(motor_command, MotorCommand, horus_library::MotorCommand);
+impl_topic_ffi!(
+    differential_drive_command,
+    DifferentialDriveCommand,
+    horus_library::DifferentialDriveCommand
+);
+impl_topic_ffi!(servo_command, ServoCommand, horus_library::ServoCommand);
+impl_topic_ffi!(pid_config, PidConfig, horus_library::PidConfig);
+impl_topic_ffi!(
+    trajectory_point,
+    TrajectoryPoint,
+    horus_library::TrajectoryPoint
+);
+impl_topic_ffi!(joint_command, JointCommand, horus_library::JointCommand);
+
+// ─── Geometry Types (9) ─────────────────────────────────────────────────────
+impl_topic_ffi!(point3, Point3, horus_library::Point3);
+impl_topic_ffi!(vector3, Vector3, horus_library::Vector3);
+impl_topic_ffi!(quaternion, Quaternion, horus_library::Quaternion);
+impl_topic_ffi!(pose3d, Pose3D, horus_library::Pose3D);
+impl_topic_ffi!(pose_stamped, PoseStamped, horus_library::PoseStamped);
+impl_topic_ffi!(
+    pose_with_covariance,
+    PoseWithCovariance,
+    horus_library::PoseWithCovariance
+);
+impl_topic_ffi!(
+    twist_with_covariance,
+    TwistWithCovariance,
+    horus_library::TwistWithCovariance
+);
+impl_topic_ffi!(accel, Accel, horus_library::Accel);
+impl_topic_ffi!(accel_stamped, AccelStamped, horus_library::AccelStamped);
+
+// ─── Detection Types (4) ────────────────────────────────────────────────────
+impl_topic_ffi!(bounding_box_2d, BoundingBox2D, horus_library::BoundingBox2D);
+impl_topic_ffi!(bounding_box_3d, BoundingBox3D, horus_library::BoundingBox3D);
+impl_topic_ffi!(detection, Detection, horus_library::Detection);
+impl_topic_ffi!(detection_3d, Detection3D, horus_library::Detection3D);
+
+// ─── Vision Types (3 — CompressedImage skipped: contains Vec) ───────────────
+impl_topic_ffi!(camera_info, CameraInfo, horus_library::CameraInfo);
+impl_topic_ffi!(
+    region_of_interest,
+    RegionOfInterest,
+    horus_library::RegionOfInterest
+);
+impl_topic_ffi!(stereo_info, StereoInfo, horus_library::StereoInfo);
+
+// ─── Navigation Types (5 — OccupancyGrid/CostMap skipped: contain Vec) ──────
+impl_topic_ffi!(goal_result, GoalResult, horus_library::GoalResult);
+impl_topic_ffi!(waypoint, Waypoint, horus_library::Waypoint);
+impl_topic_ffi!(nav_path, NavPath, horus_library::NavPath);
+impl_topic_ffi!(
+    velocity_obstacle,
+    VelocityObstacle,
+    horus_library::VelocityObstacle
+);
+impl_topic_ffi!(path_plan, PathPlan, horus_library::PathPlan);
+
+// ─── Diagnostics Types (4) ──────────────────────────────────────────────────
+impl_topic_ffi!(
+    diagnostic_status,
+    DiagnosticStatus,
+    horus_library::DiagnosticStatus
+);
+impl_topic_ffi!(resource_usage, ResourceUsage, horus_library::ResourceUsage);
+impl_topic_ffi!(node_heartbeat, NodeHeartbeat, horus_library::NodeHeartbeat);
+impl_topic_ffi!(safety_status, SafetyStatus, horus_library::SafetyStatus);
+
+// ─── Force/Tactile Types (5 — TactileArray skipped: contains Vec) ───────────
+impl_topic_ffi!(wrench_stamped, WrenchStamped, horus_library::WrenchStamped);
+impl_topic_ffi!(force_command, ForceCommand, horus_library::ForceCommand);
+impl_topic_ffi!(contact_info, ContactInfo, horus_library::ContactInfo);
+impl_topic_ffi!(
+    haptic_feedback,
+    HapticFeedback,
+    horus_library::HapticFeedback
+);
+impl_topic_ffi!(
+    impedance_parameters,
+    ImpedanceParameters,
+    horus_library::ImpedanceParameters
+);
+
+// ─── Tracking/Segmentation Types (3) ────────────────────────────────────────
+impl_topic_ffi!(tracked_object, TrackedObject, horus_library::TrackedObject);
+impl_topic_ffi!(
+    tracking_header,
+    TrackingHeader,
+    horus_library::TrackingHeader
+);
+impl_topic_ffi!(
+    segmentation_mask,
+    SegmentationMask,
+    horus_library::SegmentationMask
+);
+
+// ─── Landmark Types (3) ─────────────────────────────────────────────────────
+impl_topic_ffi!(landmark, Landmark, horus_library::Landmark);
+impl_topic_ffi!(landmark_3d, Landmark3D, horus_library::Landmark3D);
+impl_topic_ffi!(landmark_array, LandmarkArray, horus_library::LandmarkArray);
+
+// ─── Input Types (2) ────────────────────────────────────────────────────────
+impl_topic_ffi!(keyboard_input, KeyboardInput, horus_library::KeyboardInput);
+impl_topic_ffi!(joystick_input, JoystickInput, horus_library::JoystickInput);
+
+// ─── Audio Type (1) ─────────────────────────────────────────────────────────
+impl_topic_ffi!(audio_frame, AudioFrame, horus_library::AudioFrame);
+
+// ─── Clock Types (2) ────────────────────────────────────────────────────────
+impl_topic_ffi!(clock, Clock, horus_library::Clock);
+impl_topic_ffi!(time_reference, TimeReference, horus_library::TimeReference);
+
+// ─── Perception Types (2) ───────────────────────────────────────────────────
+impl_topic_ffi!(point_field, PointField, horus_library::PointField);
+impl_topic_ffi!(
+    plane_detection,
+    PlaneDetection,
+    horus_library::PlaneDetection
+);
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -226,7 +358,7 @@ mod tests {
         let topic_name = format!("bench.ffi.send.{}", std::process::id());
 
         // Direct Rust path
-        let direct_topic = Topic::<CmdVel>::new(&format!("{}.direct", topic_name)).unwrap();
+        let direct_topic = Topic::<CmdVel>::new(format!("{}.direct", topic_name)).unwrap();
         let msg = CmdVel {
             timestamp_ns: 1,
             linear: 0.5,

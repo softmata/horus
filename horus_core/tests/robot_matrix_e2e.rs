@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Robot configuration matrix E2E test.
 //!
 //! Spawns 4 different scheduler configurations simultaneously (11 nodes total),
@@ -333,7 +334,7 @@ fn test_mixed_rt_and_besteffort_coexistence() {
         .max_deadline_misses(10000);
 
     // RT node with tight deadline
-    let (rt_node, _) = counter("rt_motor", 0);
+    let (_rt_node, _) = counter("rt_motor", 0);
     sched
         .add(CounterNode {
             name: "rt_motor".into(),

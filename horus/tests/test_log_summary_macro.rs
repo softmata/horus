@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![cfg(feature = "macros")]
 //! Integration tests for the `#[derive(LogSummary)]` proc macro.
 //!

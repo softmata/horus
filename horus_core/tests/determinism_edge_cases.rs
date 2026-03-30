@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Edge case and stress tests for determinism.
 //!
 //! Tests scenarios that could break determinism: empty schedulers, single-tick,
@@ -5,7 +6,7 @@
 //! zero-duration budget, nodes added in random order, cycle detection error.
 
 use horus_core::core::duration_ext::DurationExt;
-use horus_core::core::node::{Node, TopicMetadata};
+use horus_core::core::node::Node;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

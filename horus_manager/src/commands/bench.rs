@@ -247,9 +247,8 @@ mod tests {
         let mut args = vec!["bench".to_string()];
 
         if let Some(ref f) = filter {
-            match bin {
-                "cargo" => args.push(f.clone()),
-                _ => {}
+            if bin == "cargo" {
+                args.push(f.clone())
             }
         }
 

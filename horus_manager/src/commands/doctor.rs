@@ -51,34 +51,17 @@ pub(crate) struct CheckResult {
 /// Run `horus doctor`.
 pub fn run_doctor(verbose: bool, json: bool, fix: bool) -> Result<()> {
     let ctx = dispatch::detect_context(&std::env::current_dir()?);
-    let mut results = Vec::new();
-
-    // ── 1. Toolchains ────────────────────────────────────────────────────
-    results.push(check_toolchains());
-
-    // ── 2. Horus manifest ────────────────────────────────────────────────
-    results.push(check_manifest(&ctx));
-
-    // ── 3. Real-time capabilities ──────────────────────────────────────
-    results.push(check_rt());
-
-    // ── 4. Shared memory ─────────────────────────────────────────────────
-    results.push(check_shm());
-
-    // ── 4. Plugins ───────────────────────────────────────────────────────
-    results.push(check_plugins());
-
-    // ── 5. Disk usage ────────────────────────────────────────────────────
-    results.push(check_disk());
-
-    // ── 6. Project languages ─────────────────────────────────────────────
-    results.push(check_languages(&ctx));
-
-    // ── 7. Dependency sources ─────────────────────────────────────────────
-    results.push(check_dep_sources(&ctx));
-
-    // ── 8. Driver device reachability ────────────────────────────────────
-    results.push(check_drivers());
+    let mut results = vec![
+        check_toolchains(),
+        check_manifest(&ctx),
+        check_rt(),
+        check_shm(),
+        check_plugins(),
+        check_disk(),
+        check_languages(&ctx),
+        check_dep_sources(&ctx),
+        check_drivers(),
+    ];
 
     // ── 9. System dependencies (Python, C++, system libs) ────────────────
     if let Some(manifest) = &ctx.manifest {
@@ -847,6 +830,91 @@ fn check_hardware_device(name: &str, params: &NodeParams, use_name: &str) -> (St
     )
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Network check — `horus doctor` (always runs)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn check_network() -> CheckResult {
+    let mut details = Vec::new();
+    let mut health = Health::Ok;
+
+    // Check 1: remote presence files exist (peers discovered)
+    let nodes_dir = horus_sys::shm::shm_nodes_dir();
+    let remote_count = std::fs::read_dir(&nodes_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("remote_"))
+                .count()
+        })
+        .unwrap_or(0);
+
+    if remote_count > 0 {
+        details.push(format!("{} remote host(s) discovered", remote_count));
+    } else {
+        details.push("No remote peers (single-machine mode)".to_string());
+    }
+
+    // Check 2: HORUS_NAMESPACE
+    let namespace = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    details.push(format!("Namespace: {}", namespace));
+
+    // Check 3: horus_net enabled check
+    let net_enabled = std::env::var("HORUS_NET")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    let no_net = std::env::var("HORUS_NO_NETWORK")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+
+    if no_net {
+        details.push("horus_net: DISABLED (HORUS_NO_NETWORK=1)".to_string());
+    } else if net_enabled {
+        details.push("horus_net: enabled".to_string());
+    } else {
+        details.push("horus_net: available (use --net or HORUS_NET=1 to enable)".to_string());
+    }
+
+    // Check 4: multicast reachability (basic socket test)
+    match std::net::UdpSocket::bind("0.0.0.0:0") {
+        Ok(_) => {
+            details.push("UDP sockets: available".to_string());
+        }
+        Err(e) => {
+            details.push(format!("UDP sockets: FAILED ({})", e));
+            health = Health::Warn;
+        }
+    }
+
+    let summary = if remote_count > 0 {
+        format!("{} remote peer(s)", remote_count)
+    } else {
+        "Single-machine mode".to_string()
+    };
+
+    CheckResult {
+        category: "Network".to_string(),
+        health,
+        summary,
+        details,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RT Readiness Report — `horus doctor --rt`
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Run the RT readiness report: system audit + jitter benchmark + IPC benchmark.
+pub fn run_rt_report() -> Result<()> {
+    println!(
+        "{}",
+        "Running RT Readiness Report (3-second benchmark)...\n".bold()
+    );
+    let report = horus_core::scheduling::rt_report::RtReport::generate(Duration::from_secs(3));
+    report.print();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1547,7 +1615,7 @@ mod tests {
         ] {
             let ctx = dispatch::ProjectContext {
                 root: PathBuf::from("/tmp/fake"),
-                languages: vec![lang.clone()],
+                languages: vec![*lang],
                 has_horus_toml: false,
                 manifest: None,
             };
@@ -1704,7 +1772,7 @@ mod tests {
         // We cannot call check_dep_sources/check_manifest without a real context,
         // but the categories are deterministic string literals, so we gather
         // the ones we can call plus the known constant categories.
-        let callable_results = vec![check_toolchains(), check_shm(), check_plugins()];
+        let callable_results = [check_toolchains(), check_shm(), check_plugins()];
 
         // Known categories from code inspection (check_manifest, check_languages,
         // check_dep_sources, check_disk, check_drivers, check_system_deps):
@@ -1765,89 +1833,4 @@ mod tests {
             HORUS_LOCK
         );
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Network check — `horus doctor` (always runs)
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn check_network() -> CheckResult {
-    let mut details = Vec::new();
-    let mut health = Health::Ok;
-
-    // Check 1: remote presence files exist (peers discovered)
-    let nodes_dir = horus_sys::shm::shm_nodes_dir();
-    let remote_count = std::fs::read_dir(&nodes_dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_name().to_string_lossy().starts_with("remote_"))
-                .count()
-        })
-        .unwrap_or(0);
-
-    if remote_count > 0 {
-        details.push(format!("{} remote host(s) discovered", remote_count));
-    } else {
-        details.push("No remote peers (single-machine mode)".to_string());
-    }
-
-    // Check 2: HORUS_NAMESPACE
-    let namespace = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
-    details.push(format!("Namespace: {}", namespace));
-
-    // Check 3: horus_net enabled check
-    let net_enabled = std::env::var("HORUS_NET")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-    let no_net = std::env::var("HORUS_NO_NETWORK")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-
-    if no_net {
-        details.push("horus_net: DISABLED (HORUS_NO_NETWORK=1)".to_string());
-    } else if net_enabled {
-        details.push("horus_net: enabled".to_string());
-    } else {
-        details.push("horus_net: available (use --net or HORUS_NET=1 to enable)".to_string());
-    }
-
-    // Check 4: multicast reachability (basic socket test)
-    match std::net::UdpSocket::bind("0.0.0.0:0") {
-        Ok(_) => {
-            details.push("UDP sockets: available".to_string());
-        }
-        Err(e) => {
-            details.push(format!("UDP sockets: FAILED ({})", e));
-            health = Health::Warn;
-        }
-    }
-
-    let summary = if remote_count > 0 {
-        format!("{} remote peer(s)", remote_count)
-    } else {
-        "Single-machine mode".to_string()
-    };
-
-    CheckResult {
-        category: "Network".to_string(),
-        health,
-        summary,
-        details,
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// RT Readiness Report — `horus doctor --rt`
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Run the RT readiness report: system audit + jitter benchmark + IPC benchmark.
-pub fn run_rt_report() -> Result<()> {
-    println!(
-        "{}",
-        "Running RT Readiness Report (3-second benchmark)...\n".bold()
-    );
-    let report = horus_core::scheduling::rt_report::RtReport::generate(Duration::from_secs(3));
-    report.print();
-    Ok(())
 }

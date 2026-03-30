@@ -554,6 +554,7 @@ fn test_parse_memory_from_stat_invalid() {
 // =====================
 
 /// Helper to create test topic file
+#[allow(dead_code)]
 fn create_test_topic(topic_name: &str) -> Option<std::path::PathBuf> {
     let topics_dir = shm_topics_dir();
     if std::fs::create_dir_all(&topics_dir).is_err() {
@@ -575,6 +576,7 @@ fn create_test_topic(topic_name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Cleanup helper
+#[allow(dead_code)]
 fn cleanup_test_file(path: Option<std::path::PathBuf>) {
     if let Some(p) = path {
         let _ = std::fs::remove_file(p);
@@ -597,7 +599,7 @@ fn test_discover_shared_memory_with_real_topic() {
     let topic = topic.unwrap();
 
     // Send a message to ensure the topic file is fully initialized
-    let _ = topic.send(42u64);
+    topic.send(42u64);
 
     // Force cache refresh
     let cache_refreshed = DISCOVERY_CACHE
@@ -931,7 +933,7 @@ fn test_health_status_variants() {
         let node = NodeStatus {
             name: "h".to_string(),
             status: String::new(),
-            health: variant.clone(),
+            health: *variant,
             priority: 0,
             process_id: 0,
             command_line: String::new(),
@@ -1452,11 +1454,11 @@ fn test_parse_stat_fields_nothing_after_paren() {
 #[test]
 fn test_validate_node_name_valid() {
     use horus_core::core::validate_node_name;
-    assert!(validate_node_name("my_node").is_ok());
-    assert!(validate_node_name("sensor-1").is_ok());
-    assert!(validate_node_name("robot.arm.left").is_ok());
-    assert!(validate_node_name("A").is_ok());
-    assert!(validate_node_name("node123").is_ok());
+    validate_node_name("my_node").unwrap();
+    validate_node_name("sensor-1").unwrap();
+    validate_node_name("robot.arm.left").unwrap();
+    validate_node_name("A").unwrap();
+    validate_node_name("node123").unwrap();
 }
 
 #[test]
@@ -1491,7 +1493,7 @@ fn test_validate_node_name_too_long() {
     let long_name = "a".repeat(256);
     assert!(validate_node_name(&long_name).is_err());
     let max_name = "a".repeat(255);
-    assert!(validate_node_name(&max_name).is_ok());
+    validate_node_name(&max_name).unwrap();
 }
 
 // =====================

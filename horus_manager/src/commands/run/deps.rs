@@ -384,6 +384,152 @@ pub(crate) fn is_cargo_package(package_name: &str) -> bool {
     common_cli_tools.contains(&package_name)
 }
 
+/// Separate HORUS packages, pip packages, and cargo packages
+///
+/// # Arguments
+/// * `deps` - Set of dependency strings
+/// * `context_language` - Optional language context ("rust", "python", "cpp") to guide auto-detection
+pub(crate) fn split_dependencies_with_context(
+    deps: HashSet<String>,
+    context_language: Option<&str>,
+) -> (Vec<String>, Vec<PipPackage>, Vec<CargoPackage>) {
+    let mut horus_packages = Vec::new();
+    let mut pip_packages = Vec::new();
+    let mut cargo_packages = Vec::new();
+
+    for dep in deps {
+        let dep = dep.trim();
+
+        // Check for explicit prefixes
+        if let Some(pkg_str) = dep.strip_prefix("pip:") {
+            match PipPackage::from_string(pkg_str) {
+                Ok(pkg) => pip_packages.push(pkg),
+                Err(e) => {
+                    log::warn!("Failed to parse pip dependency '{}': {}", dep, e);
+                    eprintln!(
+                        "  {} Failed to parse pip dependency '{}': {}",
+                        "".yellow(),
+                        dep,
+                        e
+                    );
+                    eprintln!("     Syntax: pip:PACKAGE@VERSION or pip:PACKAGE");
+                    eprintln!("     Example: pip:numpy@1.24.0");
+                }
+            }
+            continue;
+        }
+
+        if let Some(pkg_str) = dep.strip_prefix("cargo:") {
+            match CargoPackage::from_string(pkg_str) {
+                Ok(pkg) => cargo_packages.push(pkg),
+                Err(e) => {
+                    log::warn!("Failed to parse cargo dependency '{}': {}", dep, e);
+                    eprintln!(
+                        "  {} Failed to parse cargo dependency '{}': {}",
+                        "".yellow(),
+                        dep,
+                        e
+                    );
+                    eprintln!("     Syntax: cargo:PACKAGE@VERSION:features=FEAT1,FEAT2");
+                    eprintln!("     Examples:");
+                    eprintln!("       - 'cargo:serde@1.0:features=derive'");
+                    eprintln!("       - 'cargo:tokio@1.35:features=full,macros'");
+                    eprintln!("       - cargo:rand@0.8");
+                }
+            }
+            continue;
+        }
+
+        // Auto-detect: if starts with "horus"  HORUS registry
+        if dep.starts_with("horus") {
+            // Special handling for horus_py: ALWAYS map to 'horus-robotics' pip package
+            // This is because horus_py is not a HORUS registry package - it's the Python bindings
+            // installed via pip as 'horus-robotics'. This fixes Issue #25.
+            if dep == "horus_py" || dep.starts_with("horus_py@") {
+                pip_packages.push(PipPackage {
+                    name: "horus-robotics".to_string(),
+                    version: None,
+                });
+                continue;
+            }
+
+            // For bare "horus" in Python context, also map to horus-robotics pip package
+            if context_language == Some("python") && dep == "horus" {
+                pip_packages.push(PipPackage {
+                    name: "horus-robotics".to_string(),
+                    version: None,
+                });
+                continue;
+            }
+
+            horus_packages.push(dep.to_string());
+            continue;
+        }
+
+        // Check if it's a known HORUS package using registry
+        if is_horus_package(dep) {
+            horus_packages.push(dep.to_string());
+            continue;
+        }
+
+        // For unprefixed dependencies, use language context to determine type
+        if let Some(lang) = context_language {
+            match lang {
+                "rust" => {
+                    // Rust context: unprefixed deps are cargo packages
+                    if let Ok(pkg) = CargoPackage::from_string(dep) {
+                        cargo_packages.push(pkg);
+                    }
+                }
+                "python" => {
+                    // Python context: all non-horus deps are pip packages.
+                    // We intentionally do NOT call is_cargo_package() here —
+                    // many Python packages (numpy, requests, flask, etc.) have
+                    // same-named crates on crates.io, which caused false-positive
+                    // skipping. If a user wants a cargo binary, they should use
+                    // the explicit `cargo:` prefix.
+                    if let Ok(pkg) = PipPackage::from_string(dep) {
+                        pip_packages.push(pkg);
+                    }
+                }
+                _ => {
+                    // Unknown context: fall back to old auto-detection
+                    let dep_name = if let Some(at_pos) = dep.find('@') {
+                        &dep[..at_pos]
+                    } else {
+                        dep
+                    };
+
+                    if is_cargo_package(dep_name) {
+                        if let Ok(pkg) = CargoPackage::from_string(dep) {
+                            cargo_packages.push(pkg);
+                        }
+                    } else if let Ok(pkg) = PipPackage::from_string(dep) {
+                        pip_packages.push(pkg);
+                    }
+                }
+            }
+        } else {
+            // No context: use old auto-detection behavior
+            let dep_name = if let Some(at_pos) = dep.find('@') {
+                &dep[..at_pos]
+            } else {
+                dep
+            };
+
+            if is_cargo_package(dep_name) {
+                if let Ok(pkg) = CargoPackage::from_string(dep) {
+                    cargo_packages.push(pkg);
+                }
+            } else if let Ok(pkg) = PipPackage::from_string(dep) {
+                pip_packages.push(pkg);
+            }
+        }
+    }
+
+    (horus_packages, pip_packages, cargo_packages)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,22 +605,22 @@ mod tests {
 
     #[test]
     fn cargo_package_empty_name_fails() {
-        assert!(CargoPackage::from_string("").is_err());
+        CargoPackage::from_string("").unwrap_err();
     }
 
     #[test]
     fn cargo_package_empty_features_fails() {
-        assert!(CargoPackage::from_string("serde@1.0:features=").is_err());
+        CargoPackage::from_string("serde@1.0:features=").unwrap_err();
     }
 
     #[test]
     fn cargo_package_latest_version_fails() {
-        assert!(CargoPackage::from_string("serde@latest").is_err());
+        CargoPackage::from_string("serde@latest").unwrap_err();
     }
 
     #[test]
     fn cargo_package_whitespace_version_fails() {
-        assert!(CargoPackage::from_string("serde@1.0 beta").is_err());
+        CargoPackage::from_string("serde@1.0 beta").unwrap_err();
     }
 
     // ── detect_language ────────────────────────────────────────────────────
@@ -491,9 +637,9 @@ mod tests {
 
     #[test]
     fn detect_language_unsupported() {
-        assert!(detect_language(Path::new("main.cpp")).is_err());
-        assert!(detect_language(Path::new("main.js")).is_err());
-        assert!(detect_language(Path::new("noext")).is_err());
+        detect_language(Path::new("main.cpp")).unwrap_err();
+        detect_language(Path::new("main.js")).unwrap_err();
+        detect_language(Path::new("noext")).unwrap_err();
     }
 
     // ── parse_rust_import ──────────────────────────────────────────────────
@@ -677,150 +823,4 @@ mod tests {
         assert_eq!(horus.len(), 1);
         assert!(pip.is_empty());
     }
-}
-
-/// Separate HORUS packages, pip packages, and cargo packages
-///
-/// # Arguments
-/// * `deps` - Set of dependency strings
-/// * `context_language` - Optional language context ("rust", "python", "cpp") to guide auto-detection
-pub(crate) fn split_dependencies_with_context(
-    deps: HashSet<String>,
-    context_language: Option<&str>,
-) -> (Vec<String>, Vec<PipPackage>, Vec<CargoPackage>) {
-    let mut horus_packages = Vec::new();
-    let mut pip_packages = Vec::new();
-    let mut cargo_packages = Vec::new();
-
-    for dep in deps {
-        let dep = dep.trim();
-
-        // Check for explicit prefixes
-        if let Some(pkg_str) = dep.strip_prefix("pip:") {
-            match PipPackage::from_string(pkg_str) {
-                Ok(pkg) => pip_packages.push(pkg),
-                Err(e) => {
-                    log::warn!("Failed to parse pip dependency '{}': {}", dep, e);
-                    eprintln!(
-                        "  {} Failed to parse pip dependency '{}': {}",
-                        "".yellow(),
-                        dep,
-                        e
-                    );
-                    eprintln!("     Syntax: pip:PACKAGE@VERSION or pip:PACKAGE");
-                    eprintln!("     Example: pip:numpy@1.24.0");
-                }
-            }
-            continue;
-        }
-
-        if let Some(pkg_str) = dep.strip_prefix("cargo:") {
-            match CargoPackage::from_string(pkg_str) {
-                Ok(pkg) => cargo_packages.push(pkg),
-                Err(e) => {
-                    log::warn!("Failed to parse cargo dependency '{}': {}", dep, e);
-                    eprintln!(
-                        "  {} Failed to parse cargo dependency '{}': {}",
-                        "".yellow(),
-                        dep,
-                        e
-                    );
-                    eprintln!("     Syntax: cargo:PACKAGE@VERSION:features=FEAT1,FEAT2");
-                    eprintln!("     Examples:");
-                    eprintln!("       - 'cargo:serde@1.0:features=derive'");
-                    eprintln!("       - 'cargo:tokio@1.35:features=full,macros'");
-                    eprintln!("       - cargo:rand@0.8");
-                }
-            }
-            continue;
-        }
-
-        // Auto-detect: if starts with "horus"  HORUS registry
-        if dep.starts_with("horus") {
-            // Special handling for horus_py: ALWAYS map to 'horus-robotics' pip package
-            // This is because horus_py is not a HORUS registry package - it's the Python bindings
-            // installed via pip as 'horus-robotics'. This fixes Issue #25.
-            if dep == "horus_py" || dep.starts_with("horus_py@") {
-                pip_packages.push(PipPackage {
-                    name: "horus-robotics".to_string(),
-                    version: None,
-                });
-                continue;
-            }
-
-            // For bare "horus" in Python context, also map to horus-robotics pip package
-            if context_language == Some("python") && dep == "horus" {
-                pip_packages.push(PipPackage {
-                    name: "horus-robotics".to_string(),
-                    version: None,
-                });
-                continue;
-            }
-
-            horus_packages.push(dep.to_string());
-            continue;
-        }
-
-        // Check if it's a known HORUS package using registry
-        if is_horus_package(dep) {
-            horus_packages.push(dep.to_string());
-            continue;
-        }
-
-        // For unprefixed dependencies, use language context to determine type
-        if let Some(lang) = context_language {
-            match lang {
-                "rust" => {
-                    // Rust context: unprefixed deps are cargo packages
-                    if let Ok(pkg) = CargoPackage::from_string(dep) {
-                        cargo_packages.push(pkg);
-                    }
-                }
-                "python" => {
-                    // Python context: all non-horus deps are pip packages.
-                    // We intentionally do NOT call is_cargo_package() here —
-                    // many Python packages (numpy, requests, flask, etc.) have
-                    // same-named crates on crates.io, which caused false-positive
-                    // skipping. If a user wants a cargo binary, they should use
-                    // the explicit `cargo:` prefix.
-                    if let Ok(pkg) = PipPackage::from_string(dep) {
-                        pip_packages.push(pkg);
-                    }
-                }
-                _ => {
-                    // Unknown context: fall back to old auto-detection
-                    let dep_name = if let Some(at_pos) = dep.find('@') {
-                        &dep[..at_pos]
-                    } else {
-                        dep
-                    };
-
-                    if is_cargo_package(dep_name) {
-                        if let Ok(pkg) = CargoPackage::from_string(dep) {
-                            cargo_packages.push(pkg);
-                        }
-                    } else if let Ok(pkg) = PipPackage::from_string(dep) {
-                        pip_packages.push(pkg);
-                    }
-                }
-            }
-        } else {
-            // No context: use old auto-detection behavior
-            let dep_name = if let Some(at_pos) = dep.find('@') {
-                &dep[..at_pos]
-            } else {
-                dep
-            };
-
-            if is_cargo_package(dep_name) {
-                if let Ok(pkg) = CargoPackage::from_string(dep) {
-                    cargo_packages.push(pkg);
-                }
-            } else if let Ok(pkg) = PipPackage::from_string(dep) {
-                pip_packages.push(pkg);
-            }
-        }
-    }
-
-    (horus_packages, pip_packages, cargo_packages)
 }

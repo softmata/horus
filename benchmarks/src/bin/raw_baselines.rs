@@ -249,7 +249,7 @@ struct SimpleStats {
     count: usize,
 }
 
-fn compute_stats(samples: &mut Vec<u64>) -> SimpleStats {
+fn compute_stats(samples: &mut [u64]) -> SimpleStats {
     samples.sort_unstable();
     let n = samples.len();
     let sum: u64 = samples.iter().sum();

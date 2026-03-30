@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! CLI user-facing API tests.
 //!
 //! Tests the exact commands a user types in their terminal.
@@ -10,7 +11,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 mod common;
-use common::cleanup_stale_shm;
 
 fn horus_bin() -> PathBuf {
     // Find the compiled horus binary
@@ -235,7 +235,7 @@ fn cli_msg_list() {
     let combined = format!("{}{}", stdout, stderr);
 
     // Should list message types like CmdVel, Imu, etc.
-    let has_messages = combined.contains("CmdVel")
+    let _has_messages = combined.contains("CmdVel")
         || combined.contains("Imu")
         || combined.contains("msg")
         || combined.len() > 50;

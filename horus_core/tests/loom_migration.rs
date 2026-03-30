@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Loom-based exhaustive concurrency tests for the migration protocol.
 //!
 //! These tests verify that the migration protocol — CAS lock acquisition,

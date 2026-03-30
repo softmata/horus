@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Real Robot QA Test — 10-node robot using documented horus APIs.
 //!
 //! This test simulates a realistic robot application with:
@@ -22,9 +23,8 @@
 use horus_core::communication::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 use common::cleanup_stale_shm;

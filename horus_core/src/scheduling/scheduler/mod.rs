@@ -645,7 +645,6 @@ impl Scheduler {
         self
     }
 
-    /// Enable network replication for cross-machine topic/node discovery.
     // enable_network() removed — network is on by default.
     // Use .network(false) to disable.
 
@@ -1863,7 +1862,7 @@ impl Scheduler {
         // Update presence on first tick + every ~1 second after.
         // First update is critical — ensures CLI sees data immediately.
         let ticks_per_sec = (1.0 / self.tick.period.as_secs_f64()).ceil().max(1.0) as u64;
-        if self.tick.current == 1 || self.tick.current % ticks_per_sec == 0 {
+        if self.tick.current == 1 || self.tick.current.is_multiple_of(ticks_per_sec) {
             for node in &self.nodes {
                 if node.initialized && !node.is_stopped {
                     let tick_count = node
@@ -2870,7 +2869,7 @@ impl Scheduler {
         // Presence refresh: update presence files with live tick counts + topic associations.
         // Runs on first tick + every ~1 second after.
         let ticks_per_sec = (1.0 / self.tick.period.as_secs_f64()).ceil().max(1.0) as u64;
-        if self.tick.current == 1 || self.tick.current % ticks_per_sec == 0 {
+        if self.tick.current == 1 || self.tick.current.is_multiple_of(ticks_per_sec) {
             let registry = crate::communication::topic_node_registry();
             for node in &self.nodes {
                 if node.initialized && !node.is_stopped {
@@ -3498,7 +3497,7 @@ impl Scheduler {
             // Capture inputs from subscriber topics (for recording)
             {
                 let RegisteredNode {
-                    ref mut node,
+                    node: _,
                     ref mut recorder,
                     ref name,
                     ..
@@ -3642,7 +3641,7 @@ impl Scheduler {
         // Capture outputs from publisher topics (for recording)
         {
             let RegisteredNode {
-                ref mut node,
+                node: _,
                 ref mut recorder,
                 ref name,
                 ..

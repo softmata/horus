@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Failure injection tests
 //!
 //! Verifies that the scheduler degrades gracefully when nodes crash.
@@ -303,7 +304,7 @@ fn test_crashed_node_recv_returns_none() {
     // All received values should be valid (1..=10)
     for &val in received.iter() {
         assert!(
-            val >= 1 && val <= 10,
+            (1..=10).contains(&val),
             "Consumer received unexpected value {}: should be in range 1..=10",
             val
         );

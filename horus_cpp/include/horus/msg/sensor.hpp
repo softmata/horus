@@ -105,6 +105,16 @@ struct Illuminance {
     uint64_t timestamp_ns;
 };
 
+/// Joint state — positions, velocities, efforts for up to 16 joints
+struct JointState {
+    uint8_t names[16][32];    // null-terminated joint names
+    uint8_t joint_count;
+    double positions[16];     // radians or meters
+    double velocities[16];    // rad/s or m/s
+    double efforts[16];       // Nm or N
+    uint64_t timestamp_ns;
+};
+
 // Layout assertions for critical types
 static_assert(sizeof(Imu) == 304, "Imu size mismatch");
 static_assert(sizeof(Twist) == 56, "Twist size dependency");

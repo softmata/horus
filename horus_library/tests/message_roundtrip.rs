@@ -1,6 +1,8 @@
 //! Message Type Serialization Roundtrip Tests
 //!
 //! Verifies every message type with Default + Serialize + Deserialize
+
+#![allow(clippy::field_reassign_with_default)]
 //! survives a JSON roundtrip without panic or data loss.
 
 use horus_library::messages::*;

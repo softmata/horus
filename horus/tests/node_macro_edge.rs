@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![cfg(feature = "macros")]
 //! Edge-case integration tests for the `node!` macro.
 //!

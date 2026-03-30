@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Test real-time node functionality
 use horus_core::error::Result;
 use horus_core::hlog;

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for the HORUS actions system.
 //!
 //! Tests the full action lifecycle: macro generation, type system,

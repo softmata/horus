@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Service system edge-case tests — covers gaps identified in SLAM analysis.
 //!
 //! Tests: ServiceError transience classification, Display output, timeout

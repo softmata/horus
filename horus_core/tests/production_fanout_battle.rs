@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Production fan-out battle tests.
 //!
 //! These tests verify that horus_core's fan-out paths are correct under
@@ -835,11 +836,9 @@ impl Node for ReceiverNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-        for topic in &self.topics {
-            if let Some(ref t) = topic {
-                while let Some(v) = t.recv() {
-                    self.received.lock().unwrap().push(v);
-                }
+        for t in self.topics.iter().flatten() {
+            while let Some(v) = t.recv() {
+                self.received.lock().unwrap().push(v);
             }
         }
     }
@@ -1213,21 +1212,17 @@ fn surgical_robot_6dof_force_control() {
             self.ticks.fetch_add(1, Ordering::SeqCst);
             let mut sum = 0u64;
             let mut count = 0u64;
-            for sub in &self.subs {
-                if let Some(ref t) = sub {
-                    while let Some(v) = t.recv() {
-                        sum = sum.wrapping_add(v);
-                        count += 1;
-                    }
+            for t in self.subs.iter().flatten() {
+                while let Some(v) = t.recv() {
+                    sum = sum.wrapping_add(v);
+                    count += 1;
                 }
             }
             if count > 0 {
                 self.received.lock().unwrap().push(sum);
                 // Publish to each joint's dedicated command topic
-                for pub_t in &self.pubs {
-                    if let Some(ref t) = pub_t {
-                        t.send(sum);
-                    }
+                for t in self.pubs.iter().flatten() {
+                    t.send(sum);
                 }
             }
         }
@@ -1376,11 +1371,9 @@ fn autonomous_vehicle_full_stack() {
         }
         fn tick(&mut self) {
             let mut total = 0u64;
-            for sub in &self.subs {
-                if let Some(ref t) = sub {
-                    while let Some(v) = t.recv() {
-                        total = total.wrapping_add(v);
-                    }
+            for t in self.subs.iter().flatten() {
+                while let Some(v) = t.recv() {
+                    total = total.wrapping_add(v);
                 }
             }
             if total > 0 {
@@ -1431,10 +1424,8 @@ fn autonomous_vehicle_full_stack() {
             if let Some(ref sub) = self.sub {
                 while let Some(v) = sub.recv() {
                     let out = v.wrapping_add(1);
-                    for pub_t in &self.pubs {
-                        if let Some(ref t) = pub_t {
-                            t.send(out);
-                        }
+                    for t in self.pubs.iter().flatten() {
+                        t.send(out);
                     }
                     self.relayed.fetch_add(1, Ordering::SeqCst);
                 }
@@ -1584,10 +1575,8 @@ fn drone_swarm_bidirectional_fanout() {
         }
         fn tick(&mut self) {
             let v = self.counter.fetch_add(1, Ordering::SeqCst);
-            for pub_t in &self.pubs {
-                if let Some(ref t) = pub_t {
-                    t.send(v);
-                }
+            for t in self.pubs.iter().flatten() {
+                t.send(v);
             }
         }
     }
@@ -1813,10 +1802,8 @@ fn diamond_no_duplicate_at_merge() {
         }
         fn tick(&mut self) {
             let v = self.counter.fetch_add(1, Ordering::SeqCst);
-            for pub_t in &self.pubs {
-                if let Some(ref t) = pub_t {
-                    t.send(v);
-                }
+            for t in self.pubs.iter().flatten() {
+                t.send(v);
             }
         }
     }
@@ -1882,7 +1869,7 @@ fn diamond_no_duplicate_at_merge() {
     assert!(c_count > 0, "C relayed nothing");
 
     // D should receive from both paths
-    let from_b = d_msgs.iter().filter(|&&v| v >= 10 && v < 100).count();
+    let from_b = d_msgs.iter().filter(|&&v| (10..100).contains(&v)).count();
     let from_c = d_msgs.iter().filter(|&&v| v >= 100).count();
 
     assert!(from_b > 0, "D received nothing from B path");

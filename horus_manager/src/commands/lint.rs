@@ -399,13 +399,8 @@ mod tests {
             "warnings".to_string(),
         ];
 
-        if fix {
-            match bin {
-                "cargo" => {
-                    args = vec!["clippy".to_string(), "--fix".to_string()];
-                }
-                _ => {}
-            }
+        if fix && bin == "cargo" {
+            args = vec!["clippy".to_string(), "--fix".to_string()];
         }
 
         assert_eq!(

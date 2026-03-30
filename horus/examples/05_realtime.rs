@@ -58,7 +58,7 @@ impl Node for PidController {
             velocity: output,
         };
 
-        if self.ticks % 50 == 0 {
+        if self.ticks.is_multiple_of(50) {
             println!(
                 "[PID @100Hz] tick {} — pos={:.3}, vel={:.3}, err={:.3}",
                 self.ticks, cmd.position, cmd.velocity, error
@@ -99,7 +99,7 @@ impl Node for SafetyMonitor {
                     "[Safety @10Hz] ALERT: velocity {:.2} exceeds limit {:.2}!",
                     cmd.velocity, self.max_velocity
                 );
-            } else if self.ticks % 5 == 0 {
+            } else if self.ticks.is_multiple_of(5) {
                 println!(
                     "[Safety @10Hz] tick {} — all nominal (vel={:.3})",
                     self.ticks, cmd.velocity

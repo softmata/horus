@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-module integration tests
 //!
 //! Verifies that multiple horus_core subsystems (scheduler, topics, nodes,

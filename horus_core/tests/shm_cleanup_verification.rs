@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // SHM cleanup verification tests.
 //
 // Verifies that stale SHM files from previous processes are actually

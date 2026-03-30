@@ -40,4 +40,12 @@ struct VelocityObstacle {
     double radius;
 };
 
+/// Path plan with fixed waypoint buffer
+struct PathPlan {
+    float waypoint_data[768];     // 256 waypoints x 3 floats (x, y, heading)
+    float goal_pose[3];           // [x, y, theta]
+    uint16_t waypoint_count;
+    uint64_t timestamp_ns;
+};
+
 }} // namespace horus::msg

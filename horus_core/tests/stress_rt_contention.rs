@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Stress test: RT executor under CPU contention.
 //!
 //! Verifies that HORUS RT nodes maintain timing consistency when competing

@@ -1,10 +1,11 @@
+#![allow(dead_code)]
 //! Record/Replay determinism test.
 //!
 //! Verifies that replay_from() uses ReplayClock and deterministic ordering,
 //! and that the replay path sets up the correct infrastructure.
 
 use horus_core::core::duration_ext::DurationExt;
-use horus_core::core::node::{Node, TopicMetadata};
+use horus_core::core::node::Node;
 use horus_core::scheduling::Scheduler;
 use std::sync::{Arc, Mutex};
 

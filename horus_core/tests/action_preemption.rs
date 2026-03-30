@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Preemption policy integration tests for ActionServer.
 //
 // These tests exercise the PreemptionPolicy variants: RejectNew, Priority,

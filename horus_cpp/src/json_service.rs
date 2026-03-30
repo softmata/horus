@@ -5,14 +5,13 @@
 //! unique Service type per name. For the common case, we provide a
 //! pre-defined `GenericJsonService` with a fixed name.
 
-use std::fmt::Debug;
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use horus_core::communication::Topic;
-use horus_core::core::duration_ext::DurationExt;
 use horus_core::services::types::{ServiceRequest, ServiceResponse};
-use horus_core::services::{Service, ServiceClient, ServiceError, ServiceResult};
-use serde::{Deserialize, Serialize};
+use horus_core::services::Service;
 
 /// A JSON value service — uses serde_json::Value as both Request and Response.
 ///

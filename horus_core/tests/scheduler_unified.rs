@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for the unified scheduler redesign.
 //!
 //! These tests verify that RT nodes are fully isolated from compute nodes:

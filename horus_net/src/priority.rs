@@ -73,6 +73,7 @@ impl Priority {
     }
 
     /// Parse from string (for config). Case-insensitive.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "immediate" => Self::Immediate,
@@ -111,11 +112,8 @@ impl Reliability {
         use crate::registry::*;
         if name == SYSTEM_TOPIC_ESTOP {
             Self::Latched // guaranteed delivery, resend until ACK
-        } else if name == SYSTEM_TOPIC_PRESENCE {
-            Self::None // best-effort, latest-value semantics
-        } else if name == SYSTEM_TOPIC_LOGS {
-            Self::None // best-effort, lossy is acceptable
         } else {
+            // best-effort for presence, logs, and all other topics
             Self::None
         }
     }

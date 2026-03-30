@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! E2E integration tests for horus_net replication pipeline.
 //!
 //! Tests the full path: registry → discovery → peer matching → replicator lifecycle.
@@ -15,8 +16,8 @@ use horus_net::config::NetConfig;
 use horus_net::discovery::*;
 use horus_net::peer::PeerTable;
 use horus_net::priority::{Encoding, Priority, Reliability};
-use horus_net::registry::{TopicEntry, TopicRegistry, TopicRole};
-use horus_net::wire::{self, *};
+use horus_net::registry::{TopicRegistry, TopicRole};
+use horus_net::wire::*;
 
 // ─── Replicator Lifecycle Tests ─────────────────────────────────────────────
 

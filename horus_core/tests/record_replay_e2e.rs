@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Record/Replay End-to-End Proof.
 //
 // These tests prove the FULL recording pipeline:
@@ -445,7 +446,7 @@ fn test_load_valid_magic_invalid_version_returns_error() {
 fn test_load_zero_byte_file_returns_error() {
     let tmp = TestTempDir::new("corrupt_zero");
     let path = tmp.path().join("zero.horus");
-    std::fs::write(&path, &[]).unwrap();
+    std::fs::write(&path, []).unwrap();
 
     let result = NodeRecording::load(&path);
     assert!(result.is_err(), "Zero-byte file must return Err");
@@ -1629,7 +1630,7 @@ print(f"CHILD_SENT:{sent}")
     assert!(output.status.success());
 
     assert!(
-        recording.snapshots.len() > 0,
+        !recording.snapshots.is_empty(),
         "Recording should capture cross-process data. Got {} snapshots",
         recording.snapshots.len()
     );

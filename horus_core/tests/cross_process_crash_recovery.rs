@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Cross-process crash recovery tests.
 //
 // Verifies that SHM ring buffers survive producer process crashes:
@@ -99,6 +100,7 @@ fn spawn_child(test_name: &str, topic: &str, count: u64, mode: &str) -> std::pro
         .unwrap()
 }
 
+#[allow(dead_code)]
 fn parse_received(stdout: &str) -> usize {
     for line in stdout.lines() {
         if let Some(n) = line.strip_prefix("RECEIVED:") {
@@ -244,7 +246,7 @@ fn test_parent_consumer_child_producer_crash() {
     // Validate: all received values should be in valid range
     for &v in &received {
         assert!(
-            v >= 1 && v <= 30,
+            (1..=30).contains(&v),
             "Received corrupt value {} after producer crash",
             v
         );
@@ -317,7 +319,7 @@ fn test_multi_producer_kill_one_others_continue() {
     // All values should be in valid range [1..50]
     for &v in &received {
         assert!(
-            v >= 1 && v <= 50,
+            (1..=50).contains(&v),
             "Received corrupt value {} after multi-producer crash",
             v
         );
@@ -365,7 +367,7 @@ fn test_cross_process_high_volume_integrity() {
     // Verify all received values are in valid range [1..1000]
     let mut corrupted = 0u64;
     for &v in &received {
-        if v < 1 || v > 1000 {
+        if !(1..=1000).contains(&v) {
             corrupted += 1;
         }
     }
@@ -429,7 +431,7 @@ fn test_crash_then_new_producer_clean_data() {
     while Instant::now() < deadline {
         match t.recv() {
             Some(SENTINEL) => break,
-            Some(v) if v >= 1 && v <= 50 => received.push(v),
+            Some(v) if (1..=50).contains(&v) => received.push(v),
             Some(v) => panic!("Corrupt value from new producer: {}", v),
             None => std::thread::yield_now(),
         }

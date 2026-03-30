@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! QA Matrix — exhaustive production testing for robotics deployment.
 //!
 //! Tests every combination that matters for safety-critical robots:
@@ -11,13 +12,11 @@
 use std::net::UdpSocket;
 use std::time::Duration;
 
-use horus_core::communication::Topic;
 use horus_net::discovery::*;
-use horus_net::encoding::{byte_swap_words, process_incoming_payload, DecodeResult};
+use horus_net::encoding::{byte_swap_words, process_incoming_payload};
 use horus_net::fragment::{Fragmenter, Reassembler, MAX_FRAGMENT_PAYLOAD, MAX_REASSEMBLY_SIZE};
 use horus_net::guard::{ExportMode, ImportExportGuard, ImportMode};
 use horus_net::optimize::delta::DeltaOptimizer;
-use horus_net::optimize::fusion::FusionOptimizer;
 use horus_net::optimize::{Optimizer, OptimizerChain};
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::registry::{TopicEntry, TopicRegistry, TopicRole};
@@ -496,7 +495,7 @@ fn fragment_boundary_max_size() {
     };
     let frags = f.fragment(&msg);
     assert!(!frags.is_empty());
-    let expected = (MAX_REASSEMBLY_SIZE + MAX_FRAGMENT_PAYLOAD - 1) / MAX_FRAGMENT_PAYLOAD;
+    let expected = MAX_REASSEMBLY_SIZE.div_ceil(MAX_FRAGMENT_PAYLOAD);
     assert_eq!(frags.len(), expected);
 
     let mut r = Reassembler::new();

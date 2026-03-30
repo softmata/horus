@@ -11,6 +11,7 @@ pub struct FfiTensorPool {
 }
 
 /// Opaque Tensor handle for C.
+#[allow(dead_code)]
 pub struct FfiTensor {
     inner: Tensor,
     pool: Arc<TensorPool>,
@@ -43,6 +44,7 @@ pub fn tensor_pool_new(
 }
 
 /// Destroy a TensorPool.
+#[allow(clippy::boxed_local)]
 pub fn tensor_pool_destroy(_pool: Box<FfiTensorPool>) {
     // Drop releases the Arc
 }

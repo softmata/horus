@@ -24,6 +24,12 @@ pub struct PresenceReceiver {
     local_namespace: String,
 }
 
+impl Default for PresenceReceiver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PresenceReceiver {
     pub fn new() -> Self {
         Self {

@@ -235,7 +235,7 @@ pub fn gpu_stream() -> Option<*const std::ffi::c_void> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horus_core::core::clock::{Clock, ClockInstant, SimClock};
+    use horus_core::core::clock::{Clock, SimClock};
     use horus_core::core::duration_ext::DurationExt;
     use horus_core::core::tick_context::{clear_tick_context, set_tick_context};
 

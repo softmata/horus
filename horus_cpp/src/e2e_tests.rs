@@ -6,7 +6,7 @@
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use crate::node_ffi::*;
     use crate::scheduler_ffi::*;
@@ -89,8 +89,6 @@ mod tests {
 
     #[test]
     fn e2e_scheduler_with_publishing_node() {
-        use horus_library::CmdVel;
-
         let topic = format!("e2e.sched_pub.{}", std::process::id());
         // Create subscriber first (to catch the published message)
         let _sub = subscriber_cmd_vel_new(&topic).unwrap();

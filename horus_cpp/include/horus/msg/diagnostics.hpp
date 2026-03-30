@@ -61,4 +61,20 @@ struct SafetyStatus {
     uint64_t timestamp_ns;
 };
 
+/// Single diagnostic key-value pair
+struct DiagnosticValue {
+    uint8_t key[32];
+    uint8_t value[64];
+    uint8_t value_type;      // 0=string, 1=int, 2=float, 3=bool
+};
+
+/// Diagnostic report with multiple values
+struct DiagnosticReport {
+    uint8_t component[32];
+    DiagnosticValue values[16];
+    uint8_t value_count;
+    uint8_t level;           // 0=OK, 1=WARN, 2=ERROR
+    uint64_t timestamp_ns;
+};
+
 }} // namespace horus::msg

@@ -1,4 +1,5 @@
-use horus_core::{error::Result, Node, Scheduler, TopicMetadata};
+#![allow(dead_code)]
+use horus_core::{error::Result, Node, Scheduler};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for the hardware loading API.
 //!
 //! Tests: load_from() with [hardware] config, NodeParams, registry,
@@ -113,7 +114,7 @@ mod tests {
     fn node_params_missing_key_errors() {
         let params = NodeParams::empty();
         let result = params.get::<String>("missing");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     // ── load_from() tests ────────────────────────────────────────────

@@ -3,6 +3,8 @@
 //! Loads `libhorus_kernels.so` via dlopen at runtime and exposes safe
 //! Rust wrappers around each kernel function.
 
+#![allow(dead_code)]
+
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
@@ -213,6 +215,7 @@ pub fn color_convert(
 }
 
 /// Bilinear resize.
+#[allow(clippy::too_many_arguments)]
 pub fn resize(
     src: *const u8,
     dst: *mut u8,
@@ -231,6 +234,7 @@ pub fn resize(
 }
 
 /// Per-channel normalize: u8 HWC -> f32 HWC.
+#[allow(clippy::too_many_arguments)]
 pub fn normalize(
     src: *const u8,
     dst: *mut f32,
@@ -294,6 +298,7 @@ pub fn transpose_chw_to_hwc(
 }
 
 /// Lens undistortion.
+#[allow(clippy::too_many_arguments)]
 pub fn undistort(
     src: *const u8,
     dst: *mut u8,
@@ -323,6 +328,7 @@ pub fn undistort(
 }
 
 /// ROI crop with padding.
+#[allow(clippy::too_many_arguments)]
 pub fn crop_pad(
     src: *const u8,
     dst: *mut u8,
@@ -352,6 +358,7 @@ pub fn crop_pad(
 
 /// Fused preprocessing: color_convert + resize + normalize + HWC->CHW.
 /// Input: u8 HWC, Output: f32 CHW normalized.
+#[allow(clippy::too_many_arguments)]
 pub fn preprocess_fused(
     src: *const u8,
     dst: *mut f32,

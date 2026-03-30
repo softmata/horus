@@ -794,7 +794,7 @@ mod tests {
 
         // run_search should succeed (discovers known plugins and filters)
         let result = run_search("camera".to_string());
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -811,7 +811,7 @@ mod tests {
 
         // Search for something that matches no known plugin
         let result = run_search_with_category("zzz_nonexistent_zzz".to_string(), None, false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -827,7 +827,7 @@ mod tests {
         // Known plugins include "horus-rplidar" in Lidar category
         let result =
             run_search_with_category("rplidar".to_string(), Some("lidar".to_string()), false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -843,7 +843,7 @@ mod tests {
         // Search for rplidar but in camera category — should find nothing
         let result =
             run_search_with_category("rplidar".to_string(), Some("camera".to_string()), false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -862,7 +862,7 @@ mod tests {
             Some("invalid_cat".to_string()),
             false,
         );
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -877,7 +877,7 @@ mod tests {
 
         // JSON output path
         let result = run_search_with_category("realsense".to_string(), None, true);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -892,7 +892,7 @@ mod tests {
 
         let result =
             run_search_with_category("realsense".to_string(), Some("camera".to_string()), true);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -907,7 +907,7 @@ mod tests {
 
         // "pointcloud" is a feature of horus-realsense
         let result = run_search_with_category("pointcloud".to_string(), None, false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -922,7 +922,7 @@ mod tests {
 
         // Uppercase query should still match lowercase plugin names
         let result = run_search_with_category("RPLIDAR".to_string(), None, false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -958,7 +958,7 @@ test-feature = []
         std::env::set_current_dir(temp.path()).unwrap();
 
         let result = run_search_with_category("test-local".to_string(), None, false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -982,7 +982,7 @@ test-feature = []
         // Discovery should have one workspace path added
         // We verify indirectly: discover_local on temp.path() succeeds
         let result = discovery.discover_local(temp.path());
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -1038,7 +1038,7 @@ test-feature = []
 
         // horus-realsense is a known plugin — should succeed and print info
         let result = run_info("horus-realsense".to_string());
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -1053,7 +1053,7 @@ test-feature = []
 
         // Unknown plugin — should still succeed (prints "not found" message)
         let result = run_info("nonexistent-plugin-zzz".to_string());
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -1068,7 +1068,7 @@ test-feature = []
 
         // horus-realsense has system_deps ["librealsense2-dev"]
         let result = run_info("horus-realsense".to_string());
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -1175,7 +1175,7 @@ version = "1.2.3"
         // "my-local-pkg" is not a known plugin; registry is unreachable;
         // but it exists as a local installed package
         let result = run_info_unified("my-local-pkg".to_string(), false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -1200,7 +1200,7 @@ version = "2.0.0"
         std::env::set_current_dir(temp.path()).unwrap();
 
         let result = run_info_unified("local-json-pkg".to_string(), true);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }
@@ -1220,7 +1220,7 @@ version = "2.0.0"
         std::env::set_current_dir(temp.path()).unwrap();
 
         let result = run_info_unified("bare-pkg".to_string(), false);
-        assert!(result.is_ok());
+        result.unwrap();
 
         std::env::set_current_dir(&prev).unwrap();
     }

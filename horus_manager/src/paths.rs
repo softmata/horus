@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_all_leaf_paths_are_distinct() {
-        let paths = vec![
+        let paths = [
             cache_dir().unwrap(),
             recordings_dir().unwrap(),
             keys_dir().unwrap(),

@@ -30,7 +30,7 @@ impl Node for SensorNode {
 
     fn tick(&mut self) {
         self.ticks += 1;
-        if self.ticks % 5 == 0 {
+        if self.ticks.is_multiple_of(5) {
             println!("[Sensor @10Hz] tick {} — reading LiDAR", self.ticks);
         }
     }

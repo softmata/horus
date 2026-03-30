@@ -78,10 +78,12 @@ mod tests {
         let t = unique_topic("imu");
         let pub_ = publisher_imu_new(&t).unwrap();
         let sub = subscriber_imu_new(&t).unwrap();
-        let mut msg = Imu::default();
-        msg.orientation = [0.0, 0.0, 0.707, 0.707];
-        msg.linear_acceleration = [0.0, 0.0, 9.81];
-        msg.timestamp_ns = 123;
+        let msg = Imu {
+            orientation: [0.0, 0.0, 0.707, 0.707],
+            linear_acceleration: [0.0, 0.0, 9.81],
+            timestamp_ns: 123,
+            ..Imu::default()
+        };
         publisher_imu_send(&pub_, msg);
         let r = subscriber_imu_recv(&sub).unwrap();
         assert!((r.orientation[2] - 0.707).abs() < 0.001);
@@ -95,14 +97,16 @@ mod tests {
         let t = unique_topic("nav_goal");
         let pub_ = publisher_nav_goal_new(&t).unwrap();
         let sub = subscriber_nav_goal_new(&t).unwrap();
-        let mut msg = NavGoal::default();
-        msg.target_pose = Pose2D {
-            x: 5.0,
-            y: 10.0,
-            theta: 1.57,
-            timestamp_ns: 55,
+        let msg = NavGoal {
+            target_pose: Pose2D {
+                x: 5.0,
+                y: 10.0,
+                theta: 1.57,
+                timestamp_ns: 55,
+            },
+            tolerance_position: 0.1,
+            ..NavGoal::default()
         };
-        msg.tolerance_position = 0.1;
         publisher_nav_goal_send(&pub_, msg);
         let r = subscriber_nav_goal_recv(&sub).unwrap();
         assert!((r.target_pose.x - 5.0).abs() < f64::EPSILON);
@@ -115,10 +119,12 @@ mod tests {
         let t = unique_topic("heartbeat");
         let pub_ = publisher_heartbeat_new(&t).unwrap();
         let sub = subscriber_heartbeat_new(&t).unwrap();
-        let mut msg = Heartbeat::default();
-        msg.sequence = 42;
-        msg.alive = 1;
-        msg.uptime = 55.5;
+        let msg = Heartbeat {
+            sequence: 42,
+            alive: 1,
+            uptime: 55.5,
+            ..Heartbeat::default()
+        };
         publisher_heartbeat_send(&pub_, msg);
         let r = subscriber_heartbeat_recv(&sub).unwrap();
         assert_eq!(r.sequence, 42);
@@ -132,9 +138,11 @@ mod tests {
         let t = unique_topic("estop");
         let pub_ = publisher_emergency_stop_new(&t).unwrap();
         let sub = subscriber_emergency_stop_new(&t).unwrap();
-        let mut msg = EmergencyStop::default();
-        msg.engaged = 1;
-        msg.auto_reset = 0;
+        let msg = EmergencyStop {
+            engaged: 1,
+            auto_reset: 0,
+            ..EmergencyStop::default()
+        };
         publisher_emergency_stop_send(&pub_, msg);
         let r = subscriber_emergency_stop_recv(&sub).unwrap();
         assert_eq!(r.engaged, 1);

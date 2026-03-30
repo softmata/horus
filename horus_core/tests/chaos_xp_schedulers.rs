@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process chaos WITH SCHEDULERS — the actual production pattern.
 //!
 //! Each child process runs a real Scheduler with real nodes, exactly

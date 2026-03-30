@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Gap coverage tests for determinism blueprint.
 //!
 //! Covers: topic injection via SHM, RT pool parallel execution timing,
@@ -5,7 +6,7 @@
 //! determinism verification.
 
 use horus_core::core::duration_ext::DurationExt;
-use horus_core::core::node::{Node, TopicMetadata};
+use horus_core::core::node::Node;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

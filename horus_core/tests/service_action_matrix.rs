@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Service RPC + Action lifecycle integration tests.
 //!
 //! Tests the service! and action! macros with real request/response patterns,

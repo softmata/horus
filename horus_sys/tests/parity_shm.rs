@@ -10,6 +10,7 @@ use horus_sys::shm;
 use std::path::Path;
 
 /// Generate a unique namespace for test isolation (avoids OnceLock collision).
+#[allow(dead_code)]
 fn test_ns(test_name: &str) -> String {
     format!("parity_shm_{}_{}", test_name, std::process::id())
 }
@@ -18,10 +19,12 @@ fn test_ns(test_name: &str) -> String {
 /// NOTE: Due to OnceLock caching in shm_namespace(), only the FIRST call
 /// in the process takes effect. Tests that need namespace isolation must
 /// use direct path construction instead.
+#[allow(dead_code)]
 fn with_namespace(ns: &str) {
     std::env::set_var("HORUS_NAMESPACE", ns);
 }
 
+#[allow(dead_code)]
 fn cleanup_namespace() {
     let base = shm::shm_base_dir();
     let _ = std::fs::remove_dir_all(&base);

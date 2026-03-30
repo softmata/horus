@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for OccupancyGrid and CostMap tensor-backed operations.
 //!
 //! Run with:

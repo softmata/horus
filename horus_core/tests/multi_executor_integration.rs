@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Integration tests for multi-executor coexistence.
 //
 // Verifies that RT, Compute, Event, and AsyncIo execution classes can all
@@ -274,7 +275,7 @@ fn test_compute_rate_limiting() {
     let final_ticks = ticks.load(Ordering::SeqCst);
     // 10Hz for 500ms ≈ 5 ticks (with tolerance)
     assert!(
-        final_ticks >= 2 && final_ticks <= 20,
+        (2..=20).contains(&final_ticks),
         "Compute at 10Hz for 500ms should tick ~5 times, got {}",
         final_ticks
     );
@@ -307,7 +308,7 @@ fn test_async_rate_limiting() {
 
     let final_ticks = ticks.load(Ordering::SeqCst);
     assert!(
-        final_ticks >= 2 && final_ticks <= 20,
+        (2..=20).contains(&final_ticks),
         "Async at 10Hz for 500ms should tick ~5 times, got {}",
         final_ticks
     );

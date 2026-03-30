@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // DLPack edge case tests.
 //
 // Tests zero-copy verification, large tensors, scalar tensors,

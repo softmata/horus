@@ -57,7 +57,7 @@ pub unsafe extern "C" fn horus_scheduler_stop(sched: *const FfiScheduler) {
 pub unsafe extern "C" fn horus_scheduler_is_running(sched: *const FfiScheduler) -> bool {
     sched
         .as_ref()
-        .map_or(false, |s| scheduler_ffi::scheduler_is_running(s))
+        .is_some_and(scheduler_ffi::scheduler_is_running)
 }
 
 /// Execute a single tick. Returns 0 on success, -1 on error.
@@ -130,6 +130,39 @@ pub unsafe extern "C" fn horus_node_builder_rate(builder: *mut FfiNodeBuilder, h
     }
 }
 
+/// Set init callback (called once before first tick).
+#[no_mangle]
+pub unsafe extern "C" fn horus_node_builder_set_init(
+    builder: *mut FfiNodeBuilder,
+    callback: extern "C" fn(),
+) {
+    if let Some(b) = builder.as_mut() {
+        node_ffi::node_builder_set_init(b, callback);
+    }
+}
+
+/// Set enter_safe_state callback (called by safety monitor).
+#[no_mangle]
+pub unsafe extern "C" fn horus_node_builder_set_safe_state(
+    builder: *mut FfiNodeBuilder,
+    callback: extern "C" fn(),
+) {
+    if let Some(b) = builder.as_mut() {
+        node_ffi::node_builder_set_safe_state(b, callback);
+    }
+}
+
+/// Set on_shutdown callback (called when scheduler stops).
+#[no_mangle]
+pub unsafe extern "C" fn horus_node_builder_set_shutdown(
+    builder: *mut FfiNodeBuilder,
+    callback: extern "C" fn(),
+) {
+    if let Some(b) = builder.as_mut() {
+        node_ffi::node_builder_set_shutdown(b, callback);
+    }
+}
+
 /// Set tick callback.
 #[no_mangle]
 pub unsafe extern "C" fn horus_node_builder_set_tick(
@@ -184,7 +217,7 @@ pub unsafe extern "C" fn horus_scheduler_get_name(
 pub unsafe extern "C" fn horus_scheduler_has_full_rt(sched: *const FfiScheduler) -> bool {
     sched
         .as_ref()
-        .map_or(false, |s| scheduler_ffi::scheduler_has_full_rt(s))
+        .is_some_and(scheduler_ffi::scheduler_has_full_rt)
 }
 
 /// Set blackbox size in MB.
@@ -459,6 +492,181 @@ pub unsafe extern "C" fn horus_subscriber_cmd_vel_has_msg(sub: *const HorusSubsc
     let sub = &*(sub as *const topic_ffi::FfiSubscriber<horus_library::CmdVel>);
     topic_ffi::subscriber_cmd_vel_has_msg(sub)
 }
+
+// ─── Generic Pod Topic C API Macro ───────────────────────────────────────
+//
+// Generates new/destroy/send/recv/has_msg for any #[repr(C)] Pod message type.
+// The C and Rust types must have identical memory layout (both #[repr(C)]).
+
+macro_rules! impl_pod_topic_c_api {
+    ($snake:ident, $rust_type:path) => {
+        paste::paste! {
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_publisher_ $snake _new>](
+                name: *const c_char,
+            ) -> *mut HorusPublisher {
+                let name = match CStr::from_ptr(name).to_str() {
+                    Ok(n) => n,
+                    Err(_) => return std::ptr::null_mut(),
+                };
+                match topic_ffi::[<publisher_ $snake _new>](name) {
+                    Ok(pub_) => Box::into_raw(pub_) as *mut HorusPublisher,
+                    Err(_) => std::ptr::null_mut(),
+                }
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_publisher_ $snake _destroy>](pub_: *mut HorusPublisher) {
+                if !pub_.is_null() {
+                    drop(Box::from_raw(pub_ as *mut topic_ffi::FfiPublisher<$rust_type>));
+                }
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_publisher_ $snake _send>](
+                pub_: *const HorusPublisher,
+                msg: *const std::ffi::c_void,
+            ) {
+                if pub_.is_null() || msg.is_null() { return; }
+                let pub_ = &*(pub_ as *const topic_ffi::FfiPublisher<$rust_type>);
+                let msg: $rust_type = std::ptr::read(msg as *const $rust_type);
+                topic_ffi::[<publisher_ $snake _send>](pub_, msg);
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_subscriber_ $snake _new>](
+                name: *const c_char,
+            ) -> *mut HorusSubscriber {
+                let name = match CStr::from_ptr(name).to_str() {
+                    Ok(n) => n,
+                    Err(_) => return std::ptr::null_mut(),
+                };
+                match topic_ffi::[<subscriber_ $snake _new>](name) {
+                    Ok(sub) => Box::into_raw(sub) as *mut HorusSubscriber,
+                    Err(_) => std::ptr::null_mut(),
+                }
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_subscriber_ $snake _destroy>](sub: *mut HorusSubscriber) {
+                if !sub.is_null() {
+                    drop(Box::from_raw(sub as *mut topic_ffi::FfiSubscriber<$rust_type>));
+                }
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_subscriber_ $snake _recv>](
+                sub: *const HorusSubscriber,
+                out: *mut std::ffi::c_void,
+            ) -> i32 {
+                if sub.is_null() || out.is_null() { return 0; }
+                let sub = &*(sub as *const topic_ffi::FfiSubscriber<$rust_type>);
+                match topic_ffi::[<subscriber_ $snake _recv>](sub) {
+                    Some(msg) => {
+                        std::ptr::write(out as *mut $rust_type, msg);
+                        1
+                    }
+                    None => 0,
+                }
+            }
+
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_subscriber_ $snake _has_msg>](
+                sub: *const HorusSubscriber,
+            ) -> bool {
+                if sub.is_null() { return false; }
+                let sub = &*(sub as *const topic_ffi::FfiSubscriber<$rust_type>);
+                topic_ffi::[<subscriber_ $snake _has_msg>](sub)
+            }
+        }
+    };
+}
+
+// Generate C API for ALL Pod message types (55 total, excluding CmdVel which has hand-written C API)
+// Core 10 (already had Rust FFI)
+impl_pod_topic_c_api!(laser_scan, horus_library::LaserScan);
+impl_pod_topic_c_api!(imu, horus_library::Imu);
+impl_pod_topic_c_api!(odometry, horus_library::Odometry);
+impl_pod_topic_c_api!(joint_state, horus_library::JointState);
+impl_pod_topic_c_api!(twist, horus_library::Twist);
+impl_pod_topic_c_api!(pose2d, horus_library::Pose2D);
+impl_pod_topic_c_api!(transform_stamped, horus_library::TransformStamped);
+impl_pod_topic_c_api!(nav_goal, horus_library::NavGoal);
+impl_pod_topic_c_api!(heartbeat, horus_library::Heartbeat);
+impl_pod_topic_c_api!(emergency_stop, horus_library::EmergencyStop);
+// Sensor (7)
+impl_pod_topic_c_api!(range_sensor, horus_library::RangeSensor);
+impl_pod_topic_c_api!(battery_state, horus_library::BatteryState);
+impl_pod_topic_c_api!(nav_sat_fix, horus_library::NavSatFix);
+impl_pod_topic_c_api!(magnetic_field, horus_library::MagneticField);
+impl_pod_topic_c_api!(temperature, horus_library::Temperature);
+impl_pod_topic_c_api!(fluid_pressure, horus_library::FluidPressure);
+impl_pod_topic_c_api!(illuminance, horus_library::Illuminance);
+// Control (6)
+impl_pod_topic_c_api!(motor_command, horus_library::MotorCommand);
+impl_pod_topic_c_api!(
+    differential_drive_command,
+    horus_library::DifferentialDriveCommand
+);
+impl_pod_topic_c_api!(servo_command, horus_library::ServoCommand);
+impl_pod_topic_c_api!(pid_config, horus_library::PidConfig);
+impl_pod_topic_c_api!(trajectory_point, horus_library::TrajectoryPoint);
+impl_pod_topic_c_api!(joint_command, horus_library::JointCommand);
+// Geometry (9)
+impl_pod_topic_c_api!(point3, horus_library::Point3);
+impl_pod_topic_c_api!(vector3, horus_library::Vector3);
+impl_pod_topic_c_api!(quaternion, horus_library::Quaternion);
+impl_pod_topic_c_api!(pose3d, horus_library::Pose3D);
+impl_pod_topic_c_api!(pose_stamped, horus_library::PoseStamped);
+impl_pod_topic_c_api!(pose_with_covariance, horus_library::PoseWithCovariance);
+impl_pod_topic_c_api!(twist_with_covariance, horus_library::TwistWithCovariance);
+impl_pod_topic_c_api!(accel, horus_library::Accel);
+impl_pod_topic_c_api!(accel_stamped, horus_library::AccelStamped);
+// Detection (4)
+impl_pod_topic_c_api!(bounding_box_2d, horus_library::BoundingBox2D);
+impl_pod_topic_c_api!(bounding_box_3d, horus_library::BoundingBox3D);
+impl_pod_topic_c_api!(detection, horus_library::Detection);
+impl_pod_topic_c_api!(detection_3d, horus_library::Detection3D);
+// Vision (3 — CompressedImage has Vec)
+impl_pod_topic_c_api!(camera_info, horus_library::CameraInfo);
+impl_pod_topic_c_api!(region_of_interest, horus_library::RegionOfInterest);
+impl_pod_topic_c_api!(stereo_info, horus_library::StereoInfo);
+// Navigation (5 — OccupancyGrid/CostMap have Vec)
+impl_pod_topic_c_api!(goal_result, horus_library::GoalResult);
+impl_pod_topic_c_api!(waypoint, horus_library::Waypoint);
+impl_pod_topic_c_api!(nav_path, horus_library::NavPath);
+impl_pod_topic_c_api!(velocity_obstacle, horus_library::VelocityObstacle);
+impl_pod_topic_c_api!(path_plan, horus_library::PathPlan);
+// Diagnostics (4)
+impl_pod_topic_c_api!(diagnostic_status, horus_library::DiagnosticStatus);
+impl_pod_topic_c_api!(resource_usage, horus_library::ResourceUsage);
+impl_pod_topic_c_api!(node_heartbeat, horus_library::NodeHeartbeat);
+impl_pod_topic_c_api!(safety_status, horus_library::SafetyStatus);
+// Force/Tactile (5 — TactileArray has Vec)
+impl_pod_topic_c_api!(wrench_stamped, horus_library::WrenchStamped);
+impl_pod_topic_c_api!(force_command, horus_library::ForceCommand);
+impl_pod_topic_c_api!(contact_info, horus_library::ContactInfo);
+impl_pod_topic_c_api!(haptic_feedback, horus_library::HapticFeedback);
+impl_pod_topic_c_api!(impedance_parameters, horus_library::ImpedanceParameters);
+// Tracking/Segmentation (3)
+impl_pod_topic_c_api!(tracked_object, horus_library::TrackedObject);
+impl_pod_topic_c_api!(tracking_header, horus_library::TrackingHeader);
+impl_pod_topic_c_api!(segmentation_mask, horus_library::SegmentationMask);
+// Landmark (3)
+impl_pod_topic_c_api!(landmark, horus_library::Landmark);
+impl_pod_topic_c_api!(landmark_3d, horus_library::Landmark3D);
+impl_pod_topic_c_api!(landmark_array, horus_library::LandmarkArray);
+// Input (2)
+impl_pod_topic_c_api!(keyboard_input, horus_library::KeyboardInput);
+impl_pod_topic_c_api!(joystick_input, horus_library::JoystickInput);
+// Audio (1)
+impl_pod_topic_c_api!(audio_frame, horus_library::AudioFrame);
+// Clock (2)
+impl_pod_topic_c_api!(clock, horus_library::Clock);
+impl_pod_topic_c_api!(time_reference, horus_library::TimeReference);
+// Perception (2)
+impl_pod_topic_c_api!(point_field, horus_library::PointField);
+impl_pod_topic_c_api!(plane_detection, horus_library::PlaneDetection);
 
 // ─── JsonWireMessage Topic C API ─────────────────────────────────────────────
 
@@ -1387,8 +1595,8 @@ pub unsafe extern "C" fn horus_transform_frame_lookup(
     };
     match transform_ffi::transform_frame_lookup(tf, source, target) {
         Ok(vals) => {
-            for i in 0..7 {
-                *out.add(i) = vals[i];
+            for (i, val) in vals.iter().enumerate().take(7) {
+                *out.add(i) = *val;
             }
             0
         }
@@ -1416,6 +1624,70 @@ pub unsafe extern "C" fn horus_transform_frame_can_transform(
         Err(_) => return false,
     };
     transform_ffi::transform_frame_can_transform(tf, source, target)
+}
+
+// ─── BlackBox C API ──────────────────────────────────────────────────────────
+
+/// Record a custom event visible in `horus log` and `horus blackbox` output.
+/// Uses the log buffer (always available) which feeds into BlackBox when enabled.
+#[no_mangle]
+pub unsafe extern "C" fn horus_blackbox_record(category: *const c_char, message: *const c_char) {
+    let cat = if category.is_null() {
+        "cpp"
+    } else {
+        CStr::from_ptr(category).to_str().unwrap_or("cpp")
+    };
+    let msg = if message.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(message).to_str().unwrap_or("")
+    };
+    // Record as a Warning-level log entry with category as node name
+    let entry = horus_core::core::log_buffer::LogEntry {
+        timestamp: String::new(),
+        tick_number: 0,
+        node_name: cat.to_string(),
+        log_type: horus_core::core::log_buffer::LogType::Warning,
+        topic: None,
+        message: format!("[blackbox] {}", msg),
+        tick_us: 0,
+        ipc_ns: 0,
+    };
+    horus_core::core::log_buffer::publish_log(entry);
+}
+
+// ─── Logging C API ───────────────────────────────────────────────────────────
+
+/// Log a message. level: 0=Info, 1=Warning, 2=Error. node_name and message are C strings.
+#[no_mangle]
+pub unsafe extern "C" fn horus_log(level: u8, node_name: *const c_char, message: *const c_char) {
+    let node = if node_name.is_null() {
+        "cpp"
+    } else {
+        CStr::from_ptr(node_name).to_str().unwrap_or("cpp")
+    };
+    let msg = if message.is_null() {
+        ""
+    } else {
+        CStr::from_ptr(message).to_str().unwrap_or("")
+    };
+    let log_type = match level {
+        0 => horus_core::core::log_buffer::LogType::Info,
+        1 => horus_core::core::log_buffer::LogType::Warning,
+        2 => horus_core::core::log_buffer::LogType::Error,
+        _ => horus_core::core::log_buffer::LogType::Info,
+    };
+    let entry = horus_core::core::log_buffer::LogEntry {
+        timestamp: String::new(), // filled by log_buffer if empty
+        tick_number: 0,
+        node_name: node.to_string(),
+        log_type,
+        topic: None,
+        message: msg.to_string(),
+        tick_us: 0,
+        ipc_ns: 0,
+    };
+    horus_core::core::log_buffer::publish_log(entry);
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Recording system stress tests — extreme conditions.
 //!
 //! Tests the recording infrastructure under high frequency, large messages,
@@ -275,7 +276,7 @@ fn test_record_mixed_20_topics() {
     assert_eq!(replayer.total_ticks(), 500);
 
     // Verify all 20 topics present in first snapshot
-    let mut r = NodeReplayer::load(&path).unwrap();
+    let r = NodeReplayer::load(&path).unwrap();
     let snap = r.current_snapshot().unwrap();
     assert_eq!(
         snap.outputs.len(),
@@ -433,8 +434,8 @@ fn test_two_concurrent_sessions() {
     recording_b.save(&path_b).expect("save session B");
 
     // Load both and verify no cross-contamination
-    let mut replayer_a = NodeReplayer::load(&path_a).expect("load session A");
-    let mut replayer_b = NodeReplayer::load(&path_b).expect("load session B");
+    let replayer_a = NodeReplayer::load(&path_a).expect("load session A");
+    let replayer_b = NodeReplayer::load(&path_b).expect("load session B");
 
     assert_eq!(replayer_a.total_ticks(), 1000);
     assert_eq!(replayer_b.total_ticks(), 1000);

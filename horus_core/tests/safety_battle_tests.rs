@@ -1,3 +1,8 @@
+#![allow(
+    unused_must_use,
+    clippy::needless_range_loop,
+    clippy::field_reassign_with_default
+)]
 //! Safety enforcement battle tests.
 //!
 //! Tests adversarial interactions between safety subsystems:

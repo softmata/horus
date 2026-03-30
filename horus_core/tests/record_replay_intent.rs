@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Record/Replay Intent Tests
 //
 // These tests verify the high-level INTENT of the recording system:

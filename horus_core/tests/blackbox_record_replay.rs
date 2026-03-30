@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for BlackBox and Record/Replay system.
 //!
 //! BlackBox tests: save/load round-trip, legacy array compat, WAL I/O, disabled mode.

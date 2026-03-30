@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! RuntimeParams user-facing API tests.
 //!
 //! Tests the exact API a user calls from their nodes to get/set
@@ -17,7 +18,7 @@ fn params_set_get_bool() {
     let params = RuntimeParams::new().expect("create params");
     params.set("enabled", true).unwrap();
     let val: bool = params.get("enabled").expect("should exist");
-    assert_eq!(val, true);
+    assert!(val);
 }
 
 #[test]

@@ -186,7 +186,7 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
                 format!("[bridged:{}]", node.bridge_protocol)
             } else if node.is_remote {
                 if node.status == "Unreachable" {
-                    format!("[{}:{}]", "unreachable".to_string(), node.host_id)
+                    format!("[{}:{}]", "unreachable", node.host_id)
                 } else {
                     format!("[horus_net:{}]", node.host_id)
                 }

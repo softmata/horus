@@ -1530,6 +1530,7 @@ mod tests {
     // if cmake is not installed.
     // ═══════════════════════════════════════════════════════════════════
 
+    #[allow(dead_code)]
     fn cmake_available() -> bool {
         std::process::Command::new("cmake")
             .arg("--version")

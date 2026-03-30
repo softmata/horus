@@ -498,6 +498,7 @@ impl NodeControlMap {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_stopped(&self, name: &str) {
         if let Some(c) = self
             .inner

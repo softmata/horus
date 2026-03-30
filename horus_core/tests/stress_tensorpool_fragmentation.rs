@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Stress test: TensorPool fragmentation and data region exhaustion.
 //!
 //! The TensorPool uses a **bump allocator** for the data region: `next_alloc_offset`
@@ -93,7 +94,7 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
     let mut all_stats: Vec<CycleStats> = Vec::new();
 
     // Use PID + monotonic counter for unique pool IDs across runs
-    let pid_base = (std::process::id() % 10000) as u32;
+    let pid_base = std::process::id() % 10000;
 
     while start.elapsed() < test_duration {
         // Unique pool ID per cycle — avoids stale SHM file collisions
@@ -246,7 +247,7 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
 fn stress_tensorpool_multithread_exhaust() {
     cleanup_stale_shm();
 
-    let pool_id = 9860 + (std::process::id() % 100) as u32;
+    let pool_id = 9860 + (std::process::id() % 100);
     let config = TensorPoolConfig {
         pool_size: 16 * 1024 * 1024, // 16MB
         max_slots: 64,
@@ -368,7 +369,7 @@ fn stress_tensorpool_multithread_exhaust() {
 fn stress_tensorpool_alternating_free_pattern() {
     cleanup_stale_shm();
 
-    let pool_id = 9900 + (std::process::id() % 100) as u32;
+    let pool_id = 9900 + (std::process::id() % 100);
     let config = TensorPoolConfig {
         pool_size: 32 * 1024 * 1024, // 32MB
         max_slots: 128,
@@ -458,7 +459,7 @@ fn stress_tensorpool_alternating_free_pattern() {
 fn stress_tensorpool_rapid_slot_churn() {
     cleanup_stale_shm();
 
-    let pool_id = 9950 + (std::process::id() % 50) as u32;
+    let pool_id = 9950 + (std::process::id() % 50);
     let config = TensorPoolConfig {
         pool_size: 64 * 1024 * 1024, // 64MB — generous for many small allocs
         max_slots: 32,               // few slots, high reuse

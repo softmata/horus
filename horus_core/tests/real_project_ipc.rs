@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! REAL PROJECT IPC — two separate horus projects communicating.
 //!
 //! This is the ULTIMATE user test. It creates actual horus projects via
@@ -344,7 +345,7 @@ fn real_rust_python_cross_language_ipc() {
 
     // Start Python subscriber first
     println!("Starting Python subscriber...");
-    let mut py_proc = Command::new("python3")
+    let py_proc = Command::new("python3")
         .arg(&py_script)
         .env("HORUS_RESULT_FILE", &result_file)
         .stdout(Stdio::null())
@@ -567,7 +568,7 @@ fn real_python_to_rust_ipc() {
 
     // Start Python publisher
     println!("Starting Python publisher...");
-    let mut py_proc = Command::new("python3")
+    let py_proc = Command::new("python3")
         .arg(&py_script)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

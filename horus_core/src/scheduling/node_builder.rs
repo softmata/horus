@@ -2064,7 +2064,7 @@ mod tests {
         for miss in [Miss::Warn, Miss::Skip, Miss::SafeMode, Miss::Stop] {
             let mut reg = NodeRegistration::new(stub("n"))
                 .rate(100_u64.hz())
-                .on_miss(miss.clone());
+                .on_miss(miss);
             reg.validate().unwrap();
             assert_eq!(reg.miss_policy, miss);
         }

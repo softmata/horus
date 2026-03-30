@@ -3,7 +3,9 @@
 //! Streams allow overlapping GPU kernel execution. Events provide
 //! GPU-side timing and synchronization between streams.
 
-use super::cuda_ffi::{self, CudaError, CudaResult};
+#![allow(dead_code)]
+
+use super::cuda_ffi::{CudaError, CudaResult};
 use std::ffi::{c_int, c_uint, c_void};
 use std::sync::OnceLock;
 use std::time::Duration;

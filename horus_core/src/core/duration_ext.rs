@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn frequency_clone() {
         let freq = 50_u64.hz();
-        let cloned = freq.clone();
+        let cloned = freq;
         assert_eq!(freq, cloned);
     }
 

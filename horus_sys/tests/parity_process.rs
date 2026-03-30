@@ -59,13 +59,13 @@ fn test_signal_kill_to_dead_pid_is_ok() {
 #[test]
 fn test_signal_terminate_to_dead_pid_is_ok() {
     let handle = ProcessHandle::from_pid(99_999_999);
-    assert!(handle.signal(Signal::Terminate).is_ok());
+    handle.signal(Signal::Terminate).unwrap();
 }
 
 #[test]
 fn test_signal_interrupt_to_dead_pid_is_ok() {
     let handle = ProcessHandle::from_pid(99_999_999);
-    assert!(handle.signal(Signal::Interrupt).is_ok());
+    handle.signal(Signal::Interrupt).unwrap();
 }
 
 #[test]

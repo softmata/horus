@@ -22,13 +22,14 @@
 //! | `Option<T>` | Nullable via separate has/get pattern |
 //! | `*mut u8` | `*mut u8` (raw pointer for zero-copy) |
 
+#![allow(dead_code)]
+
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::Type;
 
 use crate::types::{
-    BindingItem, ImplBinding, MethodBinding, MethodSig, MonomorphTarget, ParamBinding, Receiver,
-    StructBinding,
+    BindingItem, ImplBinding, MethodBinding, MethodSig, MonomorphTarget, Receiver, StructBinding,
 };
 
 /// Generate CXX bridge code from binding metadata.

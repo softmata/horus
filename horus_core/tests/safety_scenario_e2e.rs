@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! End-to-end safety scenario: 4-node robot with motor controller stall
 //!
 //! Simulates a realistic robot with four nodes:

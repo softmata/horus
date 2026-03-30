@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// QA Test: Crash and Safety — nodes that deliberately misbehave.
 ///
 /// slow_node:    tick takes 15ms but budget is 5ms (triggers budget violation)

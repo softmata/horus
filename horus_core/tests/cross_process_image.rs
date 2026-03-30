@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process Image pub/sub integration test.
 //!
 //! Reproduces GitHub issue #37: "Pub/Sub crashes across schedulers when

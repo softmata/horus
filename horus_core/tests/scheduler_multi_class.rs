@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for scheduler with multiple execution classes and
 //! selective node filtering via `tick_for`.
 //!

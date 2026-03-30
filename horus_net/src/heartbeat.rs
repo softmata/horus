@@ -25,6 +25,7 @@ pub enum LinkLostAction {
 }
 
 impl LinkLostAction {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "safe_state" | "safestate" => Self::SafeState,
@@ -238,6 +239,12 @@ pub mod tests_support {
 
     pub struct MockTransport {
         sent: std::cell::RefCell<Vec<(Vec<u8>, SocketAddr)>>,
+    }
+
+    impl Default for MockTransport {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl MockTransport {

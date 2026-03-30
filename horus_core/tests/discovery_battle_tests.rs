@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Battle tests for pub/sub count accuracy and SHM namespace isolation.
 //!
 //! Tests cross-process pub/sub counting and HORUS_NAMESPACE isolation.

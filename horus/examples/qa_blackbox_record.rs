@@ -19,7 +19,7 @@ impl Node for SlowNode {
     fn tick(&mut self) {
         self.tick_count += 1;
         // Every 10th tick, sleep 8ms to exceed 5ms budget
-        if self.tick_count % 10 == 0 {
+        if self.tick_count.is_multiple_of(10) {
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
     }
@@ -47,7 +47,7 @@ impl Node for HealthyNode {
         self.tick_count += 1;
         self.pub_topic
             .send(Twist::new_2d(self.tick_count as f64, 0.0));
-        if self.tick_count % 500 == 0 {
+        if self.tick_count.is_multiple_of(500) {
             println!("[healthy] tick {}", self.tick_count);
         }
     }

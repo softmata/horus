@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn test_dependency_graph_simple_chain() {
         // Build a linear pipeline: process_A -> topic_1 -> process_B -> topic_2 -> process_C
-        let nodes = vec![
+        let nodes = [
             GraphNode {
                 id: "process_A".into(),
                 label: "A".into(),
@@ -861,7 +861,7 @@ mod tests {
     fn test_dependency_graph_parallel_independent() {
         // Three independent process nodes, each publishing to their own topic.
         // No shared topics, no dependencies between processes.
-        let nodes = vec![
+        let nodes = [
             GraphNode {
                 id: "process_X".into(),
                 label: "lidar".into(),

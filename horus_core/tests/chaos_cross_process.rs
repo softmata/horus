@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cross-process chaos — the REAL test for production robots.
 //!
 //! Every test spawns REAL child processes. No intra-process shortcuts.
@@ -8,7 +9,6 @@
 //!        --test chaos_cross_process -- --ignored --nocapture --test-threads=1
 
 use horus_core::communication::topic::Topic;
-use horus_core::core::DurationExt;
 use horus_robotics::messages::sensor::Imu;
 use horus_robotics::CmdVel;
 use std::process::{Command, Stdio};
@@ -485,8 +485,8 @@ fn child_multi_publisher() {
     let id: u64 = child_env(ID_ENV).parse().unwrap_or(0);
     let count: u64 = child_env(COUNT_ENV).parse().unwrap_or(500);
 
-    let imu_t: Topic<Imu> = Topic::new(&format!("{}.imu", base)).unwrap();
-    let cmd_t: Topic<CmdVel> = Topic::new(&format!("{}.cmd", base)).unwrap();
+    let imu_t: Topic<Imu> = Topic::new(format!("{}.imu", base)).unwrap();
+    let cmd_t: Topic<CmdVel> = Topic::new(format!("{}.cmd", base)).unwrap();
 
     for i in 0..count {
         let mut imu = Imu::new();
@@ -506,8 +506,8 @@ fn child_multi_subscriber() {
     let base = child_env(TOPIC_ENV);
     let id: u64 = child_env(ID_ENV).parse().unwrap_or(0);
 
-    let imu_t: Topic<Imu> = Topic::new(&format!("{}.imu", base)).unwrap();
-    let cmd_t: Topic<CmdVel> = Topic::new(&format!("{}.cmd", base)).unwrap();
+    let imu_t: Topic<Imu> = Topic::new(format!("{}.imu", base)).unwrap();
+    let cmd_t: Topic<CmdVel> = Topic::new(format!("{}.cmd", base)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
 
     let mut recv = 0u64;

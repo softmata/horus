@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! DLPack coverage tests — comprehensive export/import/error path testing.
 //!
 //! Covers all untested paths in the DLPack module:
@@ -241,7 +242,7 @@ fn from_dlpack_null_shape_with_ndim_returns_error() {
         deleter: None,
     };
     let result = unsafe { from_dlpack(&managed) };
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]
@@ -282,7 +283,7 @@ fn from_dlpack_excessive_ndim_returns_error() {
         deleter: None,
     };
     let result = unsafe { from_dlpack(&managed) };
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]
@@ -378,7 +379,7 @@ fn from_dlpack_unsupported_dtype_returns_error() {
         deleter: None,
     };
     let result = unsafe { from_dlpack(&managed) };
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]

@@ -38,8 +38,7 @@ fn max_log_entries() -> usize {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_LOG_ENTRIES)
-        .max(100)
-        .min(50000)
+        .clamp(100, 50000)
 }
 
 // Keep old name as alias for backward compat in SAFETY comments
@@ -191,8 +190,7 @@ impl SharedLogBuffer {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(ERROR_BUFFER_ENTRIES)
-            .max(50)
-            .min(5000);
+            .clamp(50, 5000);
         Self::open_at_with_capacity(&path, capacity)
     }
 
@@ -203,8 +201,7 @@ impl SharedLogBuffer {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(2000)
-            .max(100) // minimum 100 slots
-            .min(50000); // maximum 50000 slots
+            .clamp(100, 50000);
         let path = horus_sys::shm::shm_remote_logs_path();
         Self::open_at_with_capacity(&path, capacity)
     }
@@ -510,14 +507,12 @@ pub fn start_log_file_drain() -> Option<std::thread::JoinHandle<()>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
 
-    let handle = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("horus-log-drain".into())
         .spawn(move || {
             log_drain_loop(&log_dir, max_size, max_files);
         })
-        .ok();
-
-    handle
+        .ok()
 }
 
 fn log_drain_loop(log_dir: &str, max_size: u64, max_files: usize) {

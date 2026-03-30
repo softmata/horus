@@ -34,7 +34,10 @@ struct HorusNodeBuilder;
 
 namespace horus {
 
+// Forward declarations
 class NodeBuilder;
+template<typename T> class Publisher;
+template<typename T> class Subscriber;
 
 /// Real-time scheduler — creates, configures, and runs nodes.
 ///
@@ -78,8 +81,26 @@ public:
     /// Enable LAN network replication.
     Scheduler& enable_network();
 
+    /// Create a Publisher for the named topic.
+    /// Usage: auto pub = sched.advertise<msg::CmdVel>("cmd_vel");
+    template<typename T>
+    Publisher<T> advertise(std::string_view topic_name);
+
+    /// Create a Subscriber for the named topic.
+    /// Usage: auto sub = sched.subscribe<msg::LaserScan>("lidar.scan");
+    template<typename T>
+    Subscriber<T> subscribe(std::string_view topic_name);
+
     /// Add a node — returns a NodeBuilder for configuration.
     NodeBuilder add(std::string_view name);
+
+    /// Add a struct-based Node (like Rust's `impl Node`).
+    /// Returns a NodeBuilder for scheduling config (rate, budget, order, etc.).
+    NodeBuilder add(class Node& node);
+
+    /// Add a LambdaNode (like Python's `horus.Node()`).
+    /// Returns a NodeBuilder for scheduling config.
+    NodeBuilder add(class LambdaNode& node);
 
     /// Run the scheduler (blocks until stopped or error).
     void spin();
@@ -136,6 +157,12 @@ public:
     /// Set the tick callback — called each scheduler tick.
     NodeBuilder& tick(std::function<void()> callback);
 
+    /// Set the init callback — called once before first tick.
+    NodeBuilder& init(std::function<void()> callback);
+
+    /// Set the enter_safe_state callback — called by safety monitor.
+    NodeBuilder& safe_state(std::function<void()> callback);
+
     /// Finalize and register the node with the scheduler.
     void build();
 
@@ -144,8 +171,10 @@ private:
     NodeBuilder(Scheduler* sched, std::string_view name);
 
     Scheduler* sched_;
-    HorusNodeBuilder* inner_;  // Owned Rust Box (consumed by build())
+    HorusNodeBuilder* inner_;
     std::function<void()> tick_fn_;
+    std::function<void()> init_fn_;
+    std::function<void()> safe_state_fn_;
 };
 
 } // namespace horus

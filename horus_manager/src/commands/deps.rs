@@ -661,14 +661,14 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         // Should succeed without panic (prints message about no horus.toml)
         let result = print_cpp_deps_tree(tmp.path());
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
     fn print_cpp_deps_outdated_no_manifest() {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = print_cpp_deps_outdated(tmp.path());
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -717,10 +717,10 @@ mod tests {
         // This is informational — just check tool_version works for these names
         // The actual test is that run_audit fails in empty dirs (tested above)
         if has_cargo_audit {
-            assert!(tool_version("cargo-audit").unwrap().len() > 0);
+            assert!(!tool_version("cargo-audit").unwrap().is_empty());
         }
         if has_pip_audit {
-            assert!(tool_version("pip-audit").unwrap().len() > 0);
+            assert!(!tool_version("pip-audit").unwrap().is_empty());
         }
     }
 

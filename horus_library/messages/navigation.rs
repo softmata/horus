@@ -733,7 +733,7 @@ mod tests {
         let mut path = NavPath::new();
         for i in 0..256 {
             let wp = Waypoint::new(Pose2D::new(i as f64, 0.0, 0.0));
-            assert!(path.add_waypoint(wp).is_ok());
+            path.add_waypoint(wp).unwrap();
         }
         assert_eq!(path.waypoint_count, 256);
         assert_eq!(path.waypoints().len(), 256);

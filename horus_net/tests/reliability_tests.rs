@@ -1,12 +1,13 @@
+#![allow(dead_code)]
 //! Reliability + fragmentation integration tests.
 
 use std::time::Duration;
 
 use horus_net::flow_control::FlowController;
-use horus_net::fragment::{Fragmenter, Reassembler, MAX_FRAGMENT_PAYLOAD, MAX_REASSEMBLY_SIZE};
+use horus_net::fragment::{Fragmenter, Reassembler, MAX_FRAGMENT_PAYLOAD};
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::reliability::ReliabilityLayer;
-use horus_net::wire::{self, *};
+use horus_net::wire::*;
 
 fn make_out_msg(name: &str, payload: Vec<u8>, priority: Priority) -> OutMessage {
     OutMessage {
@@ -81,7 +82,7 @@ fn fragment_500kb_roundtrip() {
     let msg = make_out_msg("big_data", payload.clone(), Priority::Normal);
 
     let fragments = fragmenter.fragment(&msg);
-    let expected_count = (500_000 + MAX_FRAGMENT_PAYLOAD - 1) / MAX_FRAGMENT_PAYLOAD;
+    let expected_count = 500_000_usize.div_ceil(MAX_FRAGMENT_PAYLOAD);
     assert_eq!(fragments.len(), expected_count);
 
     // Reassemble

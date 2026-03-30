@@ -34,7 +34,6 @@ use crate::gpu::cuda_ffi::{self, CudaContext};
 use crate::gpu::stream::{CudaEvent, CudaStream};
 use crate::terminal::print_line;
 
-use super::primitives::NodeRunner;
 use super::types::{RegisteredNode, SharedMonitors};
 
 /// GPU executor — manages CUDA streams and ticks GPU nodes.

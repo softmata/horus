@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Integration tests for RT deadline enforcement behavioral verification.
 //
 // These tests PROVE that the Miss policies (Warn, Skip, SafeMode, Stop)

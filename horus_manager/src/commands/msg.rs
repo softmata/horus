@@ -1640,7 +1640,7 @@ pub struct Range {
         let result = list_messages(false, Some("twist"), false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1654,7 +1654,7 @@ pub struct Range {
         std::env::remove_var("HORUS_SOURCE_DIR");
 
         // Should succeed (prints "no types found")
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1668,7 +1668,7 @@ pub struct Range {
         let result = list_messages(false, Some("sensor"), false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1682,7 +1682,7 @@ pub struct Range {
         let result = list_messages(false, Some("TWIST"), false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1781,7 +1781,7 @@ pub struct Range {
         let result = show_message("EmptyMsg", false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1865,7 +1865,7 @@ pub struct Range {
         std::env::remove_var("HORUS_SOURCE_DIR");
 
         // No messages found — should print "No message types found." and return Ok
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1880,7 +1880,7 @@ pub struct Range {
         let result = list_messages(false, Some("anything"), false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1893,7 +1893,7 @@ pub struct Range {
         let result = list_messages(false, Some("control"), true);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -1906,7 +1906,7 @@ pub struct Range {
         let result = list_messages(true, Some("sensor"), false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -2099,7 +2099,7 @@ pub struct DocMsg {
         let result = show_message("DocMsg", false);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 
@@ -2129,7 +2129,7 @@ pub struct JsonTest {
         let result = show_message("JsonTest", true);
         std::env::remove_var("HORUS_SOURCE_DIR");
 
-        assert!(result.is_ok());
+        result.unwrap();
         drop(tmp);
     }
 }

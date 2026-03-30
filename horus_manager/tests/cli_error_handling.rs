@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! CLI Error Handling Tests
 //!
 //! Tests for CLI error paths — what happens when commands receive bad input.

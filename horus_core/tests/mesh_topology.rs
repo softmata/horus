@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for complex node topologies (mesh, star, diamond DAG).
 //!
 //! Validates that 10+ nodes with fan-in, fan-out, and multi-path dataflows
@@ -87,12 +88,10 @@ impl Node for FlexNode {
 
         // Read from all subscriptions
         let mut latest_val: Option<u64> = None;
-        for sub in &mut self.subs {
-            if let Some(ref mut topic) = sub {
-                while let Some(val) = topic.recv() {
-                    self.received.fetch_add(1, Ordering::SeqCst);
-                    latest_val = Some(val);
-                }
+        for ref mut topic in self.subs.iter_mut().flatten() {
+            while let Some(val) = topic.recv() {
+                self.received.fetch_add(1, Ordering::SeqCst);
+                latest_val = Some(val);
             }
         }
 
@@ -103,10 +102,8 @@ impl Node for FlexNode {
             self.counter.load(Ordering::SeqCst)
         };
 
-        for pub_topic in &self.pubs {
-            if let Some(ref topic) = pub_topic {
-                topic.send(out_val);
-            }
+        for topic in self.pubs.iter().flatten() {
+            topic.send(out_val);
         }
     }
 }

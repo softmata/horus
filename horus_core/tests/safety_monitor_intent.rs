@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Level 7 Intent Tests — Safety Monitor
 //!
 //! These tests verify **behavioral intent** of the safety monitoring system,

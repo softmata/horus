@@ -482,7 +482,7 @@ mod tests {
         let handle = ProcessHandle::from_pid(99_999_999);
         let result = handle.wait_timeout(Some(Duration::from_millis(100)));
         // Either returns Some(exit_code) immediately or times out
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     // ── PID start time tests ────────────────────────────────────────
@@ -517,13 +517,13 @@ mod tests {
     #[test]
     fn signal_terminate_nonexistent_is_ok() {
         let handle = ProcessHandle::from_pid(99_999_999);
-        assert!(handle.signal(Signal::Terminate).is_ok());
+        handle.signal(Signal::Terminate).unwrap();
     }
 
     #[test]
     fn signal_interrupt_nonexistent_is_ok() {
         let handle = ProcessHandle::from_pid(99_999_999);
-        assert!(handle.signal(Signal::Interrupt).is_ok());
+        handle.signal(Signal::Interrupt).unwrap();
     }
 
     // ── ProcessHandle construction tests ────────────────────────────

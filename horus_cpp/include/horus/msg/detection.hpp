@@ -74,4 +74,45 @@ struct PlaneDetection {
     uint64_t timestamp_ns;
 };
 
+/// Segmentation mask metadata (pixel data handled via Image/TensorPool)
+struct SegmentationMask {
+    uint32_t width;
+    uint32_t height;
+    uint32_t num_classes;
+    uint32_t mask_type;
+    uint64_t timestamp_ns;
+    uint64_t seq;
+    uint8_t frame_id[32];
+};
+
+/// 3D landmark
+struct Landmark3D {
+    float x;
+    float y;
+    float z;
+    float visibility;
+    uint32_t index;
+} __attribute__((packed));
+
+/// Array of landmarks with metadata
+struct LandmarkArray {
+    uint32_t num_landmarks;
+    uint32_t dimension;
+    uint32_t instance_id;
+    float confidence;
+    uint64_t timestamp_ns;
+    float bbox_x;
+    float bbox_y;
+    float bbox_width;
+    float bbox_height;
+};
+
+/// Point field descriptor (for point clouds)
+struct PointField {
+    uint8_t name[16];
+    uint32_t offset;
+    uint8_t datatype;   // 0=f32, 1=f64, 2=u8, 3=i32
+    uint32_t count;
+};
+
 }} // namespace horus::msg

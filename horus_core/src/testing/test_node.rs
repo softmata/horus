@@ -30,7 +30,6 @@
 //!     .build();
 //! ```
 
-use crate::core::DurationExt;
 use crate::core::Node;
 use crate::error::HorusResult;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,6 +59,7 @@ pub enum TickBehavior {
     /// tick() records its name to a shared order tracker
     TrackOrder(Arc<Mutex<Vec<String>>>),
     /// tick() runs a custom closure
+    #[allow(clippy::type_complexity)]
     Custom(Arc<dyn Fn(&str, u32) + Send + Sync>),
 }
 
@@ -290,6 +290,7 @@ impl std::fmt::Debug for TestNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::DurationExt;
 
     #[test]
     fn test_stub_node() {

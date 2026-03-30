@@ -5,9 +5,8 @@
 //   using namespace horus::literals;
 //
 //   int main() {
-//       auto sched = horus::Scheduler()
-//           .tick_rate(100_hz)
-//           .prefer_rt();
+//       horus::Scheduler sched;
+//       sched.tick_rate(100_hz).prefer_rt();
 //
 //       auto lidar = sched.subscribe<horus::msg::LaserScan>("lidar.scan");
 //       auto cmd   = sched.advertise<horus::msg::CmdVel>("cmd_vel");
@@ -20,8 +19,8 @@
 //               auto scan = lidar.recv();
 //               if (!scan) return;
 //               auto out = cmd.loan();
-//               out->linear  = scan->ranges[0] > 0.5f ? 0.3f : 0.0f;
-//               out->angular = scan->ranges[0] > 0.5f ? 0.0f : 0.5f;
+//               out->linear  = scan->get()->ranges[0] > 0.5f ? 0.3f : 0.0f;
+//               out->angular = scan->get()->ranges[0] > 0.5f ? 0.0f : 0.5f;
 //               cmd.publish(std::move(out));
 //           })
 //           .build();
@@ -38,6 +37,7 @@
 #include "error.hpp"
 #include "scheduler.hpp"
 #include "topic.hpp"
+#include "node.hpp"
 
 // Message types
 #include "messages.hpp"
@@ -54,6 +54,10 @@
 
 // Coordinate transforms
 #include "transform.hpp"
+
+// Logging and flight recorder
+#include "log.hpp"
+#include "blackbox.hpp"
 
 // Implementations (header-only, inline)
 #include "impl/scheduler_impl.hpp"

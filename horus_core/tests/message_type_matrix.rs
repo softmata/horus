@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Real message type integration tests.
 //!
 //! Tests every horus_library message type through Topic<T> send/recv,

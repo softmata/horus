@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for RT executor code paths.
 //!
 //! Covers: pre/post conditions, all DeadlineAction variants, panic downcasting

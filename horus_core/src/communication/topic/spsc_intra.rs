@@ -128,6 +128,12 @@ impl<T> SpscRing<T> {
     }
 }
 
+impl<T> Drop for SpscRing<T> {
+    fn drop(&mut self) {
+        sp_drop_ring!(self);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,11 +198,5 @@ mod tests {
         assert_eq!(ring.pending_count(), 2);
         ring.try_recv();
         assert_eq!(ring.pending_count(), 1);
-    }
-}
-
-impl<T> Drop for SpscRing<T> {
-    fn drop(&mut self) {
-        sp_drop_ring!(self);
     }
 }

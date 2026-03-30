@@ -47,7 +47,7 @@ fn bench_alloc_release(c: &mut Criterion) {
     for (name, shape, dtype) in sizes {
         group.bench_function(BenchmarkId::new("alloc_release", name), |b| {
             cleanup_tensor_shm();
-            let pool_id = 9500 + (std::process::id() % 100) as u32;
+            let pool_id = 9500 + (std::process::id() % 100);
             let pool = make_pool(pool_id, 512, 1024);
 
             b.iter(|| {
@@ -73,17 +73,16 @@ fn bench_alloc_only(c: &mut Criterion) {
 
     group.bench_function("1KB_f32", |b| {
         cleanup_tensor_shm();
-        let pool_id = 9510 + (std::process::id() % 100) as u32;
+        let pool_id = 9510 + (std::process::id() % 100);
         // Large pool: each 1KB alloc consumes 1KB permanently,
         // need enough for all benchmark iterations
         let pool = make_pool(pool_id, 512, 65536);
         let mut tensors = Vec::with_capacity(100_000);
 
         b.iter(|| {
-            match pool.alloc(&[256], TensorDtype::F32, Device::cpu()) {
-                Ok(t) => tensors.push(t),
-                Err(_) => {} // data region exhausted, expected
-            }
+            if let Ok(t) = pool.alloc(&[256], TensorDtype::F32, Device::cpu()) {
+                tensors.push(t);
+            } // Err = data region exhausted, expected
         });
 
         // Release all at end
@@ -102,7 +101,7 @@ fn bench_data_access(c: &mut Criterion) {
     group.measurement_time(3_u64.secs());
 
     cleanup_tensor_shm();
-    let pool_id = 9520 + (std::process::id() % 100) as u32;
+    let pool_id = 9520 + (std::process::id() % 100);
     let pool = make_pool(pool_id, 128, 64);
 
     // Pre-allocate tensors of various sizes
@@ -147,7 +146,7 @@ fn bench_concurrent_alloc(c: &mut Criterion) {
 
     group.bench_function("4_thread_alloc_release", |b| {
         cleanup_tensor_shm();
-        let pool_id = 9530 + (std::process::id() % 100) as u32;
+        let pool_id = 9530 + (std::process::id() % 100);
         let pool = std::sync::Arc::new(make_pool(pool_id, 512, 4096));
 
         b.iter(|| {
@@ -178,7 +177,7 @@ fn bench_pool_stats(c: &mut Criterion) {
     let mut group = c.benchmark_group("tensor_stats");
 
     cleanup_tensor_shm();
-    let pool_id = 9540 + (std::process::id() % 100) as u32;
+    let pool_id = 9540 + (std::process::id() % 100);
     let pool = make_pool(pool_id, 64, 256);
 
     // Pre-allocate some tensors so stats has work to do

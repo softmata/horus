@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Topic IPC stress tests
 //!
 //! High-throughput, multi-topic, large-message, and ring buffer overwrite

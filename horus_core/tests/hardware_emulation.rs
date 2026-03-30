@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Hardware emulation tests for HORUS.
 //!
 //! These tests emulate real robotic hardware WITHOUT physical devices,
@@ -23,7 +24,7 @@ use horus_core::scheduling::Scheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod common;
 use common::{cleanup_stale_shm, unique};
@@ -904,7 +905,7 @@ impl Node for AllocationTrackingNode {
         }
         // Recv (should not allocate)
         if let Some(ref t) = self.topic {
-            while let Some(_) = t.recv() {}
+            while t.recv().is_some() {}
         }
         self.tick_count += 1;
     }

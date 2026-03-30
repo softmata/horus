@@ -99,7 +99,7 @@ mod tests {
         let result = run_init(Some("my_custom_robot".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
         assert!(
@@ -184,7 +184,7 @@ mod tests {
         let result = run_init(Some("new_name".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         // Original content should be preserved
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
@@ -211,7 +211,7 @@ mod tests {
         let result = run_init(Some("ws_existing_dir".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         // Marker file should still exist
         assert!(
@@ -238,7 +238,7 @@ mod tests {
         let result = run_init(Some(unique_name.clone()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         // Verify workspace was registered
         let registry = crate::workspace::WorkspaceRegistry::load().unwrap();
@@ -264,7 +264,7 @@ mod tests {
         let result = run_init(Some("my-robot-arm".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
         assert!(content.contains("name = \"my-robot-arm\""));
@@ -281,7 +281,7 @@ mod tests {
         let result = run_init(Some("diff_drive_robot".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
         assert!(content.contains("name = \"diff_drive_robot\""));
@@ -298,7 +298,7 @@ mod tests {
         let result = run_init(Some("x".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
         assert!(content.contains("name = \"x\""));
@@ -318,7 +318,7 @@ mod tests {
         std::env::set_current_dir(&original_dir).unwrap();
 
         // Should still succeed — register_current_workspace does not validate names
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
         std::env::set_current_dir(&original_dir).unwrap();
 
         // register_current_workspace does not reject names with spaces
-        assert!(result.is_ok());
+        result.unwrap();
         let content = fs::read_to_string(tmp.path().join("horus.toml")).unwrap();
         assert!(content.contains("name = \"my robot workspace\""));
     }
@@ -483,7 +483,7 @@ mod tests {
         let result = run_init(Some("existing_files_ws".to_string()));
         std::env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok());
+        result.unwrap();
 
         // Existing files should be untouched
         assert_eq!(

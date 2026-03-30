@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Function-pointer dispatch for Topic<T>.
 //!
 //! Each function here is a **complete** send/recv path — epoch check, ring
@@ -2444,13 +2445,13 @@ mod tests {
         // (the comparison is `bytes.len() > SPILL_THRESHOLD`, strictly greater)
         let at_threshold = SPILL_THRESHOLD;
         assert!(
-            !(at_threshold > SPILL_THRESHOLD),
+            (at_threshold <= SPILL_THRESHOLD),
             "exactly at threshold must NOT spill"
         );
 
         let one_under = SPILL_THRESHOLD - 1;
         assert!(
-            !(one_under > SPILL_THRESHOLD),
+            (one_under <= SPILL_THRESHOLD),
             "one byte under threshold must NOT spill"
         );
     }

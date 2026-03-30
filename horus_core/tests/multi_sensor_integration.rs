@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Multi-sensor integration tests
 //!
 //! Verifies that multiple sensors publishing simultaneously on separate topics
@@ -331,8 +332,8 @@ fn test_sensor_timestamps_monotonic() {
     }
 
     // Verify strict monotonic increase per topic
-    for i in 0..NODE_COUNT {
-        let vals = received[i].lock().unwrap();
+    for (i, recv) in received.iter().enumerate() {
+        let vals = recv.lock().unwrap();
         assert!(
             vals.len() >= 10,
             "Sensor {} should have received at least 10 timestamps, got {}",

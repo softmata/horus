@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn format_with_help_no_hint_returns_plain_message() {
         // Io errors have no specific help() text
-        let err = HorusError::Io(std::io::Error::new(std::io::ErrorKind::Other, "generic io"));
+        let err = HorusError::Io(std::io::Error::other("generic io"));
         let formatted = format_with_help(&err);
         assert!(
             !formatted.contains("hint:"),

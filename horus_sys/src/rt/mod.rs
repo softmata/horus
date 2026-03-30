@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_pin_to_cores_empty_is_ok() {
-        assert!(pin_to_cores(&[]).is_ok());
+        pin_to_cores(&[]).unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn test_pin_to_core_zero_succeeds() {
         // Core 0 should always exist
-        assert!(pin_to_core(0).is_ok());
+        pin_to_core(0).unwrap();
     }
 
     #[test]
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn test_pin_to_cores_first_valid_wins() {
         // First core (99999) doesn't exist, second (0) does
-        assert!(pin_to_cores(&[99999, 0]).is_ok());
+        pin_to_cores(&[99999, 0]).unwrap();
     }
 
     // ── prefault_stack intent test ──────────────────────────────────

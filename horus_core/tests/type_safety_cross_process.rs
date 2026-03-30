@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Type safety test — verifies that opening a topic with the wrong type
 //! is caught and rejected with a clear error message.
 //!

@@ -1258,6 +1258,41 @@ pub fn run_check_full(path: Option<PathBuf>, json: bool) -> HorusResult<()> {
     }
 }
 
+pub fn prompt_missing_system_package(
+    package_name: &str,
+) -> Result<MissingSystemChoice, HorusError> {
+    use std::io::{self, Write};
+
+    println!(
+        "\n  System package '{}' was expected but not found.",
+        package_name
+    );
+    println!("  What would you like to do?");
+    println!("    [1] Install to HORUS global cache (shared across projects)");
+    println!("    [2] Install to HORUS local (this project only)");
+    println!("    [3] Skip (you will install it manually later)");
+
+    print!("\n  Choice [1-3]: ");
+    io::stdout()
+        .flush()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    match input.trim() {
+        "1" => Ok(MissingSystemChoice::InstallGlobal),
+        "2" => Ok(MissingSystemChoice::InstallLocal),
+        "3" => Ok(MissingSystemChoice::Skip),
+        _ => {
+            println!("  Invalid choice, defaulting to Skip");
+            Ok(MissingSystemChoice::Skip)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1770,40 +1805,5 @@ test-hw = "echo hardware test"
             "Build metadata version should pass: {:?}",
             result.err()
         );
-    }
-}
-
-pub fn prompt_missing_system_package(
-    package_name: &str,
-) -> Result<MissingSystemChoice, HorusError> {
-    use std::io::{self, Write};
-
-    println!(
-        "\n  System package '{}' was expected but not found.",
-        package_name
-    );
-    println!("  What would you like to do?");
-    println!("    [1] Install to HORUS global cache (shared across projects)");
-    println!("    [2] Install to HORUS local (this project only)");
-    println!("    [3] Skip (you will install it manually later)");
-
-    print!("\n  Choice [1-3]: ");
-    io::stdout()
-        .flush()
-        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-
-    match input.trim() {
-        "1" => Ok(MissingSystemChoice::InstallGlobal),
-        "2" => Ok(MissingSystemChoice::InstallLocal),
-        "3" => Ok(MissingSystemChoice::Skip),
-        _ => {
-            println!("  Invalid choice, defaulting to Skip");
-            Ok(MissingSystemChoice::Skip)
-        }
     }
 }

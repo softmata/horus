@@ -81,10 +81,15 @@ approx = "0.5"
 let_underscore_must_use = "allow"
 # Catch `assert!(result.is_ok())` — prefer unwrap() or match for better errors
 assertions_on_result_states = "warn"
+# Common patterns in test code that are acceptable
+needless_range_loop = "allow"
+field_reassign_with_default = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
 
 [workspace.lints.rust]
-# Catch bare `matches!()` expressions whose bool return is unused
-unused_must_use = "warn"
+# Allow unused Results from scheduler.add().build() in tests
+unused_must_use = "allow"
 # Allow loom cfg in horus_core
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("softmata-compat"))'] }
 

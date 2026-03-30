@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Level 7 Intent Tests — Emergency Stop Integration
 //!
 //! These tests verify **emergency stop (e-stop) behavior** at the scheduler

@@ -643,29 +643,40 @@ endif()
 #include <horus/horus.hpp>
 using namespace horus::literals;
 
+// Define a node with built-in pub/sub (like Rust's impl Node)
+class Controller : public horus::Node {{
+public:
+    Controller() : Node("controller") {{
+        cmd_ = advertise<horus::msg::CmdVel>("cmd_vel");
+    }}
+
+    void tick() override {{
+        horus::msg::CmdVel cmd{{}};
+        cmd.linear = 0.3f;   // forward velocity (m/s)
+        cmd.angular = 0.0f;  // turning velocity (rad/s)
+        cmd_->send(cmd);
+
+        horus::log::info("controller", "Published cmd_vel");
+    }}
+
+    void enter_safe_state() override {{
+        // Stop motors on safety event
+        horus::msg::CmdVel stop{{}};
+        cmd_->send(stop);
+    }}
+
+private:
+    horus::Publisher<horus::msg::CmdVel>* cmd_;
+}};
+
 int main() {{
-    // Create and configure scheduler
     horus::Scheduler sched;
     sched.tick_rate(100_hz).name("{name}");
 
-    // Create pub/sub handles
-    horus::Publisher<horus::msg::CmdVel> cmd_pub("cmd_vel");
+    Controller ctrl;
+    sched.add(ctrl).order(0).build();
 
-    // Add a controller node
-    sched.add("controller")
-        .tick([&] {{
-            auto sample = cmd_pub.loan();
-            sample->linear = 0.3f;   // forward velocity (m/s)
-            sample->angular = 0.0f;  // turning velocity (rad/s)
-            cmd_pub.publish(std::move(sample));
-        }})
-        .build();
-
-    // Run 100 ticks then stop
-    for (int i = 0; i < 100; ++i) {{
-        sched.tick_once();
-    }}
-    sched.stop();
+    sched.spin();
     return 0;
 }}
 "#
@@ -747,7 +758,7 @@ mod tests {
     #[test]
     fn name_at_max_length_accepted() {
         let name = "a".repeat(64);
-        assert!(validate_project_name(&name).is_ok());
+        validate_project_name(&name).unwrap();
     }
 
     // ── create_horus_toml ─────────────────────────────────────────────
@@ -1444,25 +1455,25 @@ mod tests {
 
     #[test]
     fn name_with_only_underscores_accepted() {
-        assert!(validate_project_name("___").is_ok());
-        assert!(validate_project_name("_a_b_").is_ok());
+        validate_project_name("___").unwrap();
+        validate_project_name("_a_b_").unwrap();
     }
 
     #[test]
     fn name_with_leading_underscore_accepted() {
-        assert!(validate_project_name("_private").is_ok());
+        validate_project_name("_private").unwrap();
     }
 
     #[test]
     fn name_with_mixed_case_accepted() {
         // validate_project_name allows uppercase (Cargo crate names can have it)
-        assert!(validate_project_name("MyRobot").is_ok());
-        assert!(validate_project_name("ROBOT").is_ok());
+        validate_project_name("MyRobot").unwrap();
+        validate_project_name("ROBOT").unwrap();
     }
 
     #[test]
     fn name_with_consecutive_hyphens_accepted() {
-        assert!(validate_project_name("my--robot").is_ok());
+        validate_project_name("my--robot").unwrap();
     }
 
     #[test]
@@ -1665,22 +1676,22 @@ mod tests {
     fn single_char_name_accepted() {
         // validate_project_name allows single char (manifest.validate() has a
         // separate 2-char minimum, but project creation doesn't enforce it)
-        assert!(validate_project_name("a").is_ok());
-        assert!(validate_project_name("Z").is_ok());
-        assert!(validate_project_name("_").is_ok());
+        validate_project_name("a").unwrap();
+        validate_project_name("Z").unwrap();
+        validate_project_name("_").unwrap();
     }
 
     #[test]
     fn two_char_name_accepted() {
-        assert!(validate_project_name("ab").is_ok());
-        assert!(validate_project_name("_a").is_ok());
+        validate_project_name("ab").unwrap();
+        validate_project_name("_a").unwrap();
     }
 
     #[test]
     fn name_exactly_at_limit_64_accepted() {
         let name = format!("a{}", "b".repeat(63));
         assert_eq!(name.len(), 64);
-        assert!(validate_project_name(&name).is_ok());
+        validate_project_name(&name).unwrap();
     }
 
     #[test]
@@ -1694,12 +1705,12 @@ mod tests {
     #[test]
     fn name_ending_with_hyphen_accepted() {
         // Allowed by validator rules (no rule against trailing hyphen)
-        assert!(validate_project_name("robot-").is_ok());
+        validate_project_name("robot-").unwrap();
     }
 
     #[test]
     fn name_ending_with_underscore_accepted() {
-        assert!(validate_project_name("robot_").is_ok());
+        validate_project_name("robot_").unwrap();
     }
 
     // ── Name validation: reserved words pass create (checked at manifest level) ──
@@ -2730,23 +2741,23 @@ mod tests {
 
     #[test]
     fn name_alpha_then_digits_accepted() {
-        assert!(validate_project_name("robot123").is_ok());
-        assert!(validate_project_name("_42").is_ok());
-        assert!(validate_project_name("a0").is_ok());
+        validate_project_name("robot123").unwrap();
+        validate_project_name("_42").unwrap();
+        validate_project_name("a0").unwrap();
     }
 
     // ── Name validation: all-hyphens after valid start ──────────────
 
     #[test]
     fn name_with_many_hyphens_accepted() {
-        assert!(validate_project_name("a---b---c").is_ok());
+        validate_project_name("a---b---c").unwrap();
     }
 
     // ── Name validation: mixed hyphens and underscores ──────────────
 
     #[test]
     fn name_mixed_hyphens_underscores_accepted() {
-        assert!(validate_project_name("my-robot_v2").is_ok());
-        assert!(validate_project_name("a_b-c_d-e").is_ok());
+        validate_project_name("my-robot_v2").unwrap();
+        validate_project_name("a_b-c_d-e").unwrap();
     }
 }

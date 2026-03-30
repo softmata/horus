@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Launch file + developer workflow tests.
 //!
 //! Tests:
@@ -196,7 +197,7 @@ fn full_workflow_new_check_param() {
     let tmpdir = tempfile::TempDir::new().unwrap();
 
     // Step 1: horus new
-    let new_out = horus_cmd()
+    let _new_out = horus_cmd()
         .args(["new", "workflow_test", "-r", "-o"])
         .arg(tmpdir.path())
         .output()

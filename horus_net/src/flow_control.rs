@@ -8,8 +8,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::peer::PeerId;
-
 /// Window duration for loss rate calculation.
 const WINDOW_DURATION: Duration = Duration::from_secs(1);
 
@@ -138,9 +136,9 @@ impl FlowController {
 
         match rate {
             SendRate::Full => true,
-            SendRate::Half => total % 2 == 0,
-            SendRate::Quarter => total % 4 == 0,
-            SendRate::KeyframeOnly => total % 100 == 0,
+            SendRate::Half => total.is_multiple_of(2),
+            SendRate::Quarter => total.is_multiple_of(4),
+            SendRate::KeyframeOnly => total.is_multiple_of(100),
         }
     }
 

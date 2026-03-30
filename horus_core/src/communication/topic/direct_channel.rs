@@ -82,6 +82,22 @@ impl<T> DirectSlot<T> {
     }
 }
 
+impl<T> Drop for DirectSlot<T> {
+    fn drop(&mut self) {
+        let head = *self.head.get_mut();
+        let tail = *self.tail.get_mut();
+        // Drop all initialized but unconsumed messages in [tail, head)
+        for i in tail..head {
+            let index = (i & self.mask) as usize;
+            // SAFETY: we have &mut self (exclusive access). All slots in
+            // [tail, head) were written by the producer and not yet consumed.
+            unsafe {
+                self.buffer[index].get_mut().assume_init_drop();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,7 +105,7 @@ mod tests {
     #[test]
     fn basic_send_recv() {
         let ring = DirectSlot::<u64>::new(16);
-        assert!(ring.try_send(42).is_ok());
+        ring.try_send(42).unwrap();
         assert_eq!(ring.pending_count(), 1);
     }
 
@@ -113,7 +129,7 @@ mod tests {
     fn capacity_fill_returns_err() {
         let ring = DirectSlot::<u64>::new(4); // capacity = 4
         for i in 0..4 {
-            assert!(ring.try_send(i).is_ok());
+            ring.try_send(i).unwrap();
         }
         // Ring is full — next send should fail
         assert!(ring.try_send(99).is_err());
@@ -124,7 +140,7 @@ mod tests {
     fn single_slot_capacity() {
         // Minimum capacity is next_power_of_two(1) = 1
         let ring = DirectSlot::<u64>::new(1);
-        assert!(ring.try_send(42).is_ok());
+        ring.try_send(42).unwrap();
         assert!(ring.try_send(43).is_err()); // full with 1 slot
         assert_eq!(ring.pending_count(), 1);
     }
@@ -145,21 +161,5 @@ mod tests {
         // Drop ring — should not leak the 2 pending Strings
         drop(ring);
         // If this test doesn't leak (checked by miri or valgrind), drop is correct
-    }
-}
-
-impl<T> Drop for DirectSlot<T> {
-    fn drop(&mut self) {
-        let head = *self.head.get_mut();
-        let tail = *self.tail.get_mut();
-        // Drop all initialized but unconsumed messages in [tail, head)
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            // SAFETY: we have &mut self (exclusive access). All slots in
-            // [tail, head) were written by the producer and not yet consumed.
-            unsafe {
-                self.buffer[index].get_mut().assume_init_drop();
-            }
-        }
     }
 }

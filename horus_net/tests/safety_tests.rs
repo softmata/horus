@@ -1,9 +1,10 @@
+#![allow(dead_code)]
 //! Safety layer integration tests — import rejection, heartbeat, safe-state.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use horus_net::config::{ImportConfig, NetConfig, SafetyConfig, TopicNetConfig};
+use horus_net::config::{ImportConfig, NetConfig};
 use horus_net::guard::{ExportMode, ImportExportGuard, ImportMode};
 use horus_net::heartbeat::{LinkLostAction, SafetyHeartbeat};
 use horus_net::registry::{TopicRegistry, TopicRole};

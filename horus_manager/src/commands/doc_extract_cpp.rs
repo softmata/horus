@@ -61,6 +61,7 @@ pub fn extract_cpp_file(path: &Path, include_private: bool) -> Result<CppExtract
 
 // ─── Tree Walking ───────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
 fn walk_node(
     node: tree_sitter::Node,
     source: &[u8],

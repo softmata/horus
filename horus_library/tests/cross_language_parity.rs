@@ -56,7 +56,7 @@ fn assert_json_has_field(json: &serde_json::Value, field: &str, msg_type: &str) 
 #[test]
 fn parity_cmd_vel_field_names() {
     let msg = CmdVel::new(1.5, -0.3);
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "linear", "CmdVel");
     assert_json_has_field(&json, "angular", "CmdVel");
     assert_json_has_field(&json, "timestamp_ns", "CmdVel");
@@ -71,7 +71,7 @@ fn parity_twist_field_names() {
         angular: [0.1, 0.2, 0.3],
         timestamp_ns: 12345,
     };
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "linear", "Twist");
     assert_json_has_field(&json, "angular", "Twist");
     assert_json_has_field(&json, "timestamp_ns", "Twist");
@@ -90,7 +90,7 @@ fn parity_pose2d_field_names() {
         theta: 1.57,
         timestamp_ns: 99,
     };
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_field_f64(&json, "x", 10.0, "Pose2D");
     assert_json_field_f64(&json, "y", 20.0, "Pose2D");
     assert_json_field_f64(&json, "theta", 1.57, "Pose2D");
@@ -100,7 +100,7 @@ fn parity_pose2d_field_names() {
 #[test]
 fn parity_imu_field_names() {
     let msg = Imu::new();
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     // IMU must have these exact field names for Python parity
     assert_json_has_field(&json, "orientation", "Imu");
     assert_json_has_field(&json, "orientation_covariance", "Imu");
@@ -125,7 +125,7 @@ fn parity_imu_field_names() {
 #[test]
 fn parity_laser_scan_field_names() {
     let msg = LaserScan::new();
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "ranges", "LaserScan");
     assert_json_has_field(&json, "angle_min", "LaserScan");
     assert_json_has_field(&json, "angle_max", "LaserScan");
@@ -143,7 +143,7 @@ fn parity_laser_scan_field_names() {
 #[test]
 fn parity_odometry_field_names() {
     let msg = Odometry::new();
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "pose", "Odometry");
     assert_json_has_field(&json, "twist", "Odometry");
     assert_json_has_field(&json, "pose_covariance", "Odometry");
@@ -161,7 +161,7 @@ fn parity_odometry_field_names() {
 #[test]
 fn parity_joint_state_field_names() {
     let msg = JointState::new();
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "names", "JointState");
     assert_json_has_field(&json, "joint_count", "JointState");
     assert_json_has_field(&json, "positions", "JointState");
@@ -173,7 +173,7 @@ fn parity_joint_state_field_names() {
 #[test]
 fn parity_nav_goal_field_names() {
     let msg = NavGoal::new(Pose2D::default(), 0.1, 0.05);
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "target_pose", "NavGoal");
     assert_json_has_field(&json, "tolerance_position", "NavGoal");
     assert_json_has_field(&json, "tolerance_angle", "NavGoal");
@@ -187,7 +187,7 @@ fn parity_nav_goal_field_names() {
 #[test]
 fn parity_detection_field_names() {
     let msg = Detection::new("person", 0.95, 100.0, 200.0, 50.0, 80.0);
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "bbox", "Detection");
     assert_json_has_field(&json, "confidence", "Detection");
     assert_json_has_field(&json, "class_id", "Detection");
@@ -205,7 +205,7 @@ fn parity_detection_field_names() {
 #[test]
 fn parity_heartbeat_field_names() {
     let msg = Heartbeat::new("test_node", 42);
-    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+    let json: serde_json::Value = serde_json::to_value(msg).unwrap();
     assert_json_has_field(&json, "node_name", "Heartbeat");
     assert_json_has_field(&json, "node_id", "Heartbeat");
     assert_json_has_field(&json, "sequence", "Heartbeat");

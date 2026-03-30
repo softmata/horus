@@ -277,7 +277,12 @@ pub fn execute_build_only(
                 let project_dir = env::current_dir()?;
                 let manifest = load_or_default_manifest(&auto_features)?;
                 let binary_name = crate::cargo_gen::sanitize_cargo_name(&manifest.package.name);
-                crate::cargo_gen::generate(&manifest, &project_dir, &[target_file.clone()], false)?;
+                crate::cargo_gen::generate(
+                    &manifest,
+                    &project_dir,
+                    std::slice::from_ref(target_file),
+                    false,
+                )?;
                 cli_output::success("Generated Cargo.toml (no source copying needed)");
 
                 // Run cargo build in .horus directory
@@ -765,7 +770,12 @@ pub(super) fn execute_with_scheduler(
                 let project_dir = env::current_dir()?;
                 let manifest = load_or_default_manifest(&auto_features)?;
                 let binary_name = crate::cargo_gen::sanitize_cargo_name(&manifest.package.name);
-                crate::cargo_gen::generate(&manifest, &project_dir, &[file.clone()], false)?;
+                crate::cargo_gen::generate(
+                    &manifest,
+                    &project_dir,
+                    std::slice::from_ref(&file),
+                    false,
+                )?;
                 cli_output::success("Generated Cargo.toml");
 
                 // Run cargo clean if requested
@@ -1200,7 +1210,7 @@ version = "0.1.0"
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // .horus/cache and .horus/bin directories should still exist (only contents removed)
         assert!(tmp.path().join(".horus/cache").is_dir());
         assert!(tmp.path().join(".horus/bin").is_dir());
@@ -1227,7 +1237,7 @@ version = "0.1.0"
         drop(_guard);
 
         // Should succeed silently, not error
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1244,7 +1254,7 @@ version = "0.1.0"
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(!tmp.path().join("__pycache__").exists());
     }
 
@@ -1262,7 +1272,7 @@ version = "0.1.0"
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // Dirs should still exist
         assert!(tmp.path().join(".horus/cache").is_dir());
         assert!(tmp.path().join(".horus/bin").is_dir());
@@ -1314,8 +1324,8 @@ version = "0.1.0"
 
         // In CI / test env, it might still find the real horus source at a
         // candidate path. If it does, that's fine. If not, we check the error.
-        if result.is_err() {
-            let err_msg = format!("{}", result.unwrap_err());
+        if let Err(e) = result {
+            let err_msg = format!("{}", e);
             assert!(
                 err_msg.contains("HORUS source not found"),
                 "Expected 'HORUS source not found' error, got: {}",
@@ -1333,17 +1343,16 @@ version = "0.1.0"
         let old_val = env::var("HORUS_SOURCE").ok();
         env::remove_var("HORUS_SOURCE");
         let result = find_horus_source_dir();
-        match old_val {
-            Some(v) => env::set_var("HORUS_SOURCE", v),
-            None => {}
+        if let Some(v) = old_val {
+            env::set_var("HORUS_SOURCE", v)
         }
         drop(_guard);
 
         // If running in the real dev workspace, this will succeed (finding
         // ~/softmata/horus). That is correct behavior. We only assert that
         // if it fails, the message is sensible.
-        if result.is_err() {
-            let err_msg = format!("{}", result.unwrap_err());
+        if let Err(e) = result {
+            let err_msg = format!("{}", e);
             assert!(err_msg.contains("HORUS source not found"));
         }
     }
@@ -1548,7 +1557,7 @@ version = "0.1.0"
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_ok());
+        result.unwrap();
         // __pycache__ should have been cleaned by the clean flag
         assert!(!tmp.path().join("__pycache__").exists());
     }
@@ -1603,7 +1612,7 @@ version = "0.1.0"
         drop(_guard);
 
         // release=true should not cause errors for python
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1635,6 +1644,6 @@ version = "0.1.0"
         drop(_guard);
 
         // Single python file should be fine
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }

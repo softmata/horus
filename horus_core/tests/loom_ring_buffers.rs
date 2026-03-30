@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Loom-based exhaustive concurrency tests for ring buffer algorithms.
 //!
 //! These tests use Tokio's `loom` crate to explore all possible thread

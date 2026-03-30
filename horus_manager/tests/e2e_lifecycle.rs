@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! End-to-end lifecycle tests for horus CLI.
 //!
 //! Each test exercises a COMPLETE user workflow — the sequence of commands
@@ -404,7 +405,7 @@ fn test_lock_generate_and_check() {
         );
 
         // Check should pass (lockfile is fresh)
-        let check_result = horus_cmd()
+        let _check_result = horus_cmd()
             .args(["lock", "--check"])
             .current_dir(&proj)
             .output()

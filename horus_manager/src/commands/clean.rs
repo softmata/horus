@@ -566,7 +566,7 @@ mod tests {
         // No target/, no shm — dry run should succeed
         let result = run_clean(false, false, true, false, false);
         std::env::set_current_dir(&prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -583,7 +583,7 @@ mod tests {
         // Dry run should not delete
         let result = run_clean(false, false, true, false, false);
         std::env::set_current_dir(&prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(target.exists(), "dry run should NOT delete target/");
     }
 
@@ -600,7 +600,7 @@ mod tests {
 
         let result = run_clean(false, false, false, false, false);
         std::env::set_current_dir(&prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(!target.exists(), "clean should delete target/");
     }
 
@@ -614,7 +614,7 @@ mod tests {
         // JSON mode with dry_run — should succeed and output valid JSON
         let result = run_clean(false, false, true, false, true);
         std::env::set_current_dir(&prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -631,7 +631,7 @@ mod tests {
         // shm=true means only clean shared memory, not target/
         let result = run_clean(true, false, false, false, false);
         std::env::set_current_dir(&prev).unwrap();
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(target.exists(), "shm-only clean should NOT touch target/");
     }
 

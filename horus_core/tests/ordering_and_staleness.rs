@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Message ordering and staleness detection tests
 //!
 //! Verifies FIFO ordering guarantees and that stale sensor data is detectable.
@@ -168,8 +169,8 @@ fn test_timestamp_monotonic_per_node() {
     }
 
     // Verify monotonicity per topic
-    for i in 0..NODE_COUNT {
-        let vals = received[i].lock().unwrap();
+    for (i, recv) in received.iter().enumerate() {
+        let vals = recv.lock().unwrap();
         assert!(
             vals.len() >= 10,
             "Node {} should have received at least 10 values, got {}",

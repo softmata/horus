@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use horus_core::communication::topic::{read_latest_slot_bytes, TopicSlotRead};
+use horus_core::communication::topic::read_latest_slot_bytes;
 use horus_sys::shm::shm_topics_dir;
 
 use crate::priority::Encoding;
@@ -40,7 +40,7 @@ impl ShmRingReader {
     /// Create a reader for a specific topic.
     pub fn new(topic_name: &str) -> Self {
         // SHM file naming: shm_topics_dir()/horus_{sanitized_name}
-        let sanitized = topic_name.replace('.', "_").replace('/', "_");
+        let sanitized = topic_name.replace(['.', '/'], "_");
         let shm_path = shm_topics_dir().join(format!("horus_{sanitized}"));
 
         Self {

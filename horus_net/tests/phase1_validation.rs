@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Phase 1 MVP validation — verifies all success criteria from blueprint section 21.
 
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use horus_net::discovery::*;
 use horus_net::encoding::{check_encoding, process_incoming_payload, DecodeResult};
 use horus_net::flow_control::FlowController;
 use horus_net::fragment::{Fragmenter, Reassembler, MAX_REASSEMBLY_SIZE};
-use horus_net::guard::{ExportMode, ImportExportGuard, ImportMode};
+use horus_net::guard::ImportExportGuard;
 use horus_net::heartbeat::{LinkLostAction, SafetyHeartbeat};
 use horus_net::priority::{Encoding, Priority, Reliability};
 use horus_net::registry::{TopicEntry, TopicRegistry, TopicRole};

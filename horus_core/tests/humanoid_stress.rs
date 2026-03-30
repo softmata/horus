@@ -1,3 +1,9 @@
+#![allow(dead_code)]
+#![allow(
+    unused_must_use,
+    clippy::needless_range_loop,
+    clippy::field_reassign_with_default
+)]
 //! Humanoid robot stress test.
 //!
 //! Simulates a 20-DOF humanoid with realistic node topology:
@@ -337,7 +343,7 @@ impl Node for GaitGeneratorNode {
     }
     fn tick(&mut self) {
         if let Some(ref t) = self.state_in {
-            while let Some(_) = t.recv() {} // drain
+            while t.recv().is_some() {} // drain
         }
         // Generate walking gait pattern
         let t = self.seq as f64 * 0.01; // 100Hz
@@ -346,7 +352,7 @@ impl Node for GaitGeneratorNode {
         for leg in 0..2 {
             let phase = if leg == 0 { 0.0 } else { std::f64::consts::PI };
             let base = leg * 5; // joints 0-4 left, 5-9 right
-            cmd.targets[base + 0] = (t + phase).sin() * 0.3; // hip pitch
+            cmd.targets[base] = (t + phase).sin() * 0.3; // hip pitch
             cmd.targets[base + 1] = 0.0; // hip roll
             cmd.targets[base + 2] = (t + phase).sin().abs() * 0.5; // knee
             cmd.targets[base + 3] = -(t + phase).sin() * 0.15; // ankle pitch
@@ -380,7 +386,7 @@ impl Node for WbcNode {
     }
     fn tick(&mut self) {
         if let Some(ref t) = self.state_in {
-            while let Some(_) = t.recv() {} // drain
+            while t.recv().is_some() {} // drain
         }
         // Simulate expensive QP solve (~200μs of computation)
         let start = Instant::now();
@@ -414,7 +420,7 @@ impl Node for LoggerNode {
     }
     fn tick(&mut self) {
         if let Some(ref t) = self.state_in {
-            while let Some(_) = t.recv() {
+            while t.recv().is_some() {
                 self.logged.fetch_add(1, Ordering::Relaxed);
             }
         }

@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 //! Final gap coverage: replay_from() end-to-end, topic injection to live
 //! subscribers, and watchdog behavior in deterministic mode.
 
 use horus_core::core::duration_ext::DurationExt;
-use horus_core::core::node::{Node, TopicMetadata};
+use horus_core::core::node::Node;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

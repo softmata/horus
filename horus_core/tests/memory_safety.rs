@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Memory-safety regression tests for the HORUS tensor pool and handle API.
 //!
 //! These tests exercise the critical safety properties fixed during the security

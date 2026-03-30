@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Proves that Topic::send() now triggers event node ticks automatically.
 //
 // This was previously broken — Topic::send() did NOT call notify_event(),

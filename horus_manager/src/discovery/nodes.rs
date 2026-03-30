@@ -14,7 +14,7 @@ pub(super) fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     if let Ok(entries) = std::fs::read_dir(&nodes_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "json") {
+            if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

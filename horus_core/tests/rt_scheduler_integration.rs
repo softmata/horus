@@ -1,3 +1,4 @@
+#![allow(unused_must_use)]
 // Integration test for real-time scheduler features
 use horus_core::error::Result;
 use horus_core::hlog;

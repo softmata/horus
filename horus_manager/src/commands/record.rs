@@ -1358,7 +1358,7 @@ mod tests {
     fn run_diff_same_session_returns_ok() {
         // Same session name -> same (empty) recordings -> no diffs
         let result = run_diff("same_name".to_string(), "same_name".to_string(), None);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1535,12 +1535,11 @@ mod tests {
         let manager = RecordingManager::new();
         let result = manager.session_recordings("this_session_does_not_exist_xyz");
         // Should return Ok(empty) or Err
-        match result {
-            Ok(recordings) => assert!(
+        if let Ok(recordings) = result {
+            assert!(
                 recordings.is_empty(),
                 "nonexistent session should have no recordings"
-            ),
-            Err(_) => {} // Also acceptable
+            );
         }
     }
 }

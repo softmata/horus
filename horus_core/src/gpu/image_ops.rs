@@ -7,6 +7,8 @@
 //! execution. Inside a GPU node's `tick()`, get the stream via `horus::gpu_stream()`.
 //! Outside tick(), pass `std::ptr::null_mut()` for the default stream.
 
+#![allow(clippy::too_many_arguments)]
+
 use std::ffi::c_void;
 
 use super::cuda_ffi::{self, CudaResult};

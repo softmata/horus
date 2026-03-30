@@ -17,7 +17,7 @@ use crate::transport::Transport;
 /// E-stop message wire format (compact, no serde):
 /// [host_id_hash:u16][reason_len:u16][reason:bytes][timestamp_ns:u64]
 /// Total overhead: 12 bytes + reason string.
-
+///
 /// Encode an e-stop message.
 pub fn encode_estop(peer_id_hash: u16, reason: &str) -> Vec<u8> {
     let reason_bytes = reason.as_bytes();
@@ -80,6 +80,12 @@ pub struct EstopBroadcaster {
 
 const RETRY_COUNT: u8 = 3;
 const RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+impl Default for EstopBroadcaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl EstopBroadcaster {
     pub fn new() -> Self {

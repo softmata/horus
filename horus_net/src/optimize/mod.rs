@@ -8,7 +8,6 @@ pub mod fusion;
 pub mod predict;
 pub mod spatial;
 
-use crate::metrics::PeerSnapshot;
 use crate::priority::Priority;
 use crate::wire::{InMessage, OutMessage};
 

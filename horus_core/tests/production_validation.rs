@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Production validation tests for HORUS.
 //!
 //! These tests prove HORUS is ready for real robotics workloads WITHOUT
@@ -628,7 +629,7 @@ fn scale_10_processes_3pub_7sub() {
     let total_expected = msgs_per_pub * 3;
     let mut sub_totals = vec![];
 
-    for (i, mut c) in sub_children.into_iter().enumerate() {
+    for (i, c) in sub_children.into_iter().enumerate() {
         let output = c.wait_with_output().expect("wait sub");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let received: u64 = stdout

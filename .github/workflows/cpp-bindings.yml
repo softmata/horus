@@ -1,0 +1,370 @@
+# HORUS C++ Bindings CI
+# Builds libhorus_cpp, compiles all C++ test binaries, runs them.
+# Tests: unit (Rust FFI), C API, ergonomic headers, cross-process IPC,
+#        services, actions, stress, ASAN, user API, benchmarks.
+
+name: C++ Bindings
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'horus_cpp/**'
+      - 'horus_core/**'
+      - 'horus_types/**'
+      - 'horus_library/**'
+  push:
+    branches: [main, dev]
+    paths:
+      - 'horus_cpp/**'
+      - 'horus_core/**'
+      - 'horus_types/**'
+      - 'horus_library/**'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  HORUS_NAMESPACE: ci_cpp_${{ github.run_id }}
+
+jobs:
+  # ─── Rust FFI Tests ───────────────────────────────────────────────────────
+  rust-ffi-tests:
+    name: Rust FFI Tests (139 tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cpp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cpp-
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_cpp_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Run Rust FFI Tests
+        run: |
+          cargo test --no-default-features -p horus_cpp -- --test-threads=1
+        env:
+          RUST_BACKTRACE: 1
+
+  # ─── C++ Compilation + Unit Tests ─────────────────────────────────────────
+  cpp-compile-test:
+    name: C++ Compile + Test (15 binaries)
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cpp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cpp-
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_cpp_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build libhorus_cpp
+        run: cargo build --no-default-features -p horus_cpp
+
+      - name: Compile all C++ test binaries
+        run: |
+          mkdir -p target/cpp_tests
+          for src in horus_cpp/tests/*.cpp; do
+            name=$(basename "$src" .cpp)
+            echo "Compiling $name..."
+            g++ -std=c++17 -fext-numeric-literals -I horus_cpp/include \
+                -o "target/cpp_tests/$name" "$src" \
+                -L target/debug -lhorus_cpp -lpthread -ldl -lm
+          done
+          echo "All C++ binaries compiled successfully"
+
+      - name: Run cpp_e2e_test (C API smoke test)
+        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_e2e_test
+        env:
+          HORUS_NAMESPACE: ci_cpp_e2e_${{ github.run_id }}
+
+      - name: Run cpp_ergonomic_e2e (C++ header API)
+        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_ergonomic_e2e
+        env:
+          HORUS_NAMESPACE: ci_cpp_ergo_${{ github.run_id }}
+
+      - name: Run cpp_full_api_test (Pool/Params/TF/Service/Action)
+        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_full_api_test
+        env:
+          HORUS_NAMESPACE: ci_cpp_api_${{ github.run_id }}
+
+      - name: Run cpp_user_api_test (full user workflow)
+        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_user_api_test
+        env:
+          HORUS_NAMESPACE: ci_cpp_user_${{ github.run_id }}
+
+      - name: Run cpp_stress_test (stability)
+        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_stress_test
+        env:
+          HORUS_NAMESPACE: ci_cpp_stress_${{ github.run_id }}
+
+  # ─── Cross-Process IPC Tests ──────────────────────────────────────────────
+  cpp-cross-process:
+    name: Cross-Process IPC (CmdVel + JSON + Service + Action)
+    runs-on: ubuntu-latest
+    needs: cpp-compile-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cpp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cpp-
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_cpp_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build and compile
+        run: |
+          cargo build --no-default-features -p horus_cpp
+          mkdir -p target/cpp_tests
+          for src in horus_cpp/tests/*.cpp; do
+            name=$(basename "$src" .cpp)
+            g++ -std=c++17 -fext-numeric-literals -I horus_cpp/include \
+                -o "target/cpp_tests/$name" "$src" \
+                -L target/debug -lhorus_cpp -lpthread -ldl -lm
+          done
+
+      - name: Cross-process CmdVel IPC (100 messages)
+        run: |
+          export LD_LIBRARY_PATH=target/debug
+          export HORUS_NAMESPACE=ci_ipc_cmd_${{ github.run_id }}
+          TOPIC="ci.cmdvel.test"
+          target/cpp_tests/cross_process_ipc_test sub "$TOPIC" > /tmp/sub.log 2>&1 &
+          SUB=$!
+          sleep 0.5
+          target/cpp_tests/cross_process_ipc_test pub "$TOPIC" > /tmp/pub.log 2>&1
+          wait $SUB
+          echo "=== Publisher ===" && cat /tmp/pub.log
+          echo "=== Subscriber ===" && cat /tmp/sub.log
+          # Verify subscriber received messages
+          grep -q "SUB_DONE" /tmp/sub.log
+          COUNT=$(grep "SUB_DONE" /tmp/sub.log | sed 's/SUB_DONE:\([0-9]*\).*/\1/')
+          echo "Received: $COUNT / 100"
+          [ "$COUNT" -ge 50 ] || (echo "FAIL: received < 50" && exit 1)
+
+      - name: Cross-process JSON IPC (50 messages)
+        run: |
+          export LD_LIBRARY_PATH=target/debug
+          export HORUS_NAMESPACE=ci_ipc_json_${{ github.run_id }}
+          TOPIC="ci.json.test"
+          target/cpp_tests/cross_process_json_ipc sub "$TOPIC" > /tmp/jsub.log 2>&1 &
+          SUB=$!
+          sleep 0.5
+          target/cpp_tests/cross_process_json_ipc pub "$TOPIC" > /tmp/jpub.log 2>&1
+          wait $SUB
+          echo "=== Publisher ===" && cat /tmp/jpub.log
+          echo "=== Subscriber ===" && cat /tmp/jsub.log
+          grep -q "SUB_DONE" /tmp/jsub.log
+          COUNT=$(grep "SUB_DONE" /tmp/jsub.log | sed 's/SUB_DONE:\([0-9]*\)/\1/')
+          echo "Received: $COUNT / 50"
+          [ "$COUNT" -ge 25 ] || (echo "FAIL: received < 25" && exit 1)
+
+      - name: Cross-process Service (request/response)
+        run: |
+          export LD_LIBRARY_PATH=target/debug
+          export HORUS_NAMESPACE=ci_svc_${{ github.run_id }}
+          SVC="ci.svc.add"
+          CLIENT_ID="$$"
+          target/cpp_tests/cross_process_svc_server "$SVC" "$CLIENT_ID" > /tmp/srv.log 2>&1 &
+          SRV=$!
+          sleep 0.5
+          target/cpp_tests/cross_process_svc_client "$SVC" "$CLIENT_ID" > /tmp/cli.log 2>&1
+          wait $SRV 2>/dev/null
+          echo "=== Server ===" && cat /tmp/srv.log
+          echo "=== Client ===" && cat /tmp/cli.log
+          grep -q "RESPONSE" /tmp/cli.log || (echo "FAIL: no response received" && exit 1)
+          grep -q '"sum":7' /tmp/cli.log || (echo "FAIL: wrong response" && exit 1)
+
+      - name: Cross-process Action (goal/feedback/result)
+        run: |
+          export LD_LIBRARY_PATH=target/debug
+          export HORUS_NAMESPACE=ci_action_${{ github.run_id }}
+          ACTION="ci.action.nav"
+          target/cpp_tests/cross_process_action_server "$ACTION" > /tmp/asrv.log 2>&1 &
+          SRV=$!
+          sleep 0.5
+          target/cpp_tests/cross_process_action_client "$ACTION" > /tmp/acli.log 2>&1
+          wait $SRV 2>/dev/null
+          echo "=== Server ===" && cat /tmp/asrv.log
+          echo "=== Client ===" && cat /tmp/acli.log
+          grep -q "GOT_RESULT:1" /tmp/acli.log || (echo "FAIL: no result received" && exit 1)
+
+  # ─── ASAN (AddressSanitizer) ──────────────────────────────────────────────
+  cpp-asan:
+    name: AddressSanitizer
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_asan_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build libhorus_cpp
+        run: cargo build --no-default-features -p horus_cpp
+
+      - name: Compile stress test with ASAN
+        run: |
+          g++ -std=c++17 -fsanitize=address -fno-omit-frame-pointer \
+              -I horus_cpp/include -o target/cpp_stress_asan \
+              horus_cpp/tests/cpp_stress_test.cpp \
+              -L target/debug -lhorus_cpp -lpthread -ldl -lm
+
+      - name: Run ASAN stress test
+        run: |
+          LD_LIBRARY_PATH=target/debug ASAN_OPTIONS=detect_leaks=0 \
+            target/cpp_stress_asan
+        env:
+          HORUS_NAMESPACE: ci_asan_${{ github.run_id }}
+
+      - name: Compile full API test with ASAN
+        run: |
+          g++ -std=c++17 -fsanitize=address -fno-omit-frame-pointer \
+              -I horus_cpp/include -o target/cpp_api_asan \
+              horus_cpp/tests/cpp_full_api_test.cpp \
+              -L target/debug -lhorus_cpp -lpthread -ldl -lm
+
+      - name: Run ASAN full API test
+        run: |
+          LD_LIBRARY_PATH=target/debug ASAN_OPTIONS=detect_leaks=0 \
+            target/cpp_api_asan
+        env:
+          HORUS_NAMESPACE: ci_asan_api_${{ github.run_id }}
+
+  # ─── Benchmark (release mode) ─────────────────────────────────────────────
+  cpp-benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_bench_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build release
+        run: cargo build --no-default-features -p horus_cpp --release
+
+      - name: Compile benchmark
+        run: |
+          g++ -std=c++17 -O2 -I horus_cpp/include \
+              -o target/cpp_benchmark \
+              horus_cpp/tests/cpp_benchmark.cpp \
+              -L target/release -lhorus_cpp -lpthread -ldl -lm
+
+      - name: Run benchmark
+        run: LD_LIBRARY_PATH=target/release target/cpp_benchmark
+        env:
+          HORUS_NAMESPACE: ci_bench_${{ github.run_id }}
+
+      - name: Run Criterion benchmarks
+        run: cargo bench --no-default-features -p horus_cpp
+
+  # ─── Final gate ───────────────────────────────────────────────────────────
+  cpp-success:
+    name: C++ Bindings CI Success
+    needs: [rust-ffi-tests, cpp-compile-test, cpp-cross-process, cpp-asan, cpp-benchmark]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check Results
+        run: |
+          if [[ "${{ needs.rust-ffi-tests.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-compile-test.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-cross-process.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-asan.result }}" == "success" ]]; then
+            echo "All C++ binding tests passed!"
+            echo "Benchmark: ${{ needs.cpp-benchmark.result }}"
+            exit 0
+          else
+            echo "C++ binding tests FAILED"
+            echo "rust-ffi: ${{ needs.rust-ffi-tests.result }}"
+            echo "compile-test: ${{ needs.cpp-compile-test.result }}"
+            echo "cross-process: ${{ needs.cpp-cross-process.result }}"
+            echo "asan: ${{ needs.cpp-asan.result }}"
+            echo "benchmark: ${{ needs.cpp-benchmark.result }}"
+            exit 1
+          fi

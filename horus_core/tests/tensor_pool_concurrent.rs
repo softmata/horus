@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Concurrent stress tests for TensorPool.
 //
 // Verifies that TensorPool is safe under multi-thread contention —
@@ -28,7 +29,7 @@ fn small_pool_config() -> TensorPoolConfig {
 fn test_concurrent_alloc_release_no_panic() {
     cleanup_stale_shm();
 
-    let pool_id = 9700 + (std::process::id() % 100) as u32;
+    let pool_id = 9700 + (std::process::id() % 100);
     let pool = Arc::new(TensorPool::new(pool_id, small_pool_config()).unwrap());
 
     let thread_count = 4;
@@ -85,7 +86,7 @@ fn test_concurrent_alloc_release_no_panic() {
 fn test_concurrent_alloc_all_threads_succeed() {
     cleanup_stale_shm();
 
-    let pool_id = 9710 + (std::process::id() % 100) as u32;
+    let pool_id = 9710 + (std::process::id() % 100);
     let pool = Arc::new(TensorPool::new(pool_id, small_pool_config()).unwrap());
 
     let thread_count = 4;
@@ -140,7 +141,7 @@ fn test_concurrent_alloc_all_threads_succeed() {
 fn test_slot_reuse_after_release() {
     cleanup_stale_shm();
 
-    let pool_id = 9720 + (std::process::id() % 100) as u32;
+    let pool_id = 9720 + (std::process::id() % 100);
     let pool = TensorPool::new(pool_id, small_pool_config()).unwrap();
 
     // Alloc and release repeatedly — should reuse slots
@@ -162,7 +163,7 @@ fn test_slot_reuse_after_release() {
 fn test_single_slot_pool() {
     cleanup_stale_shm();
 
-    let pool_id = 9730 + (std::process::id() % 100) as u32;
+    let pool_id = 9730 + (std::process::id() % 100);
     let config = TensorPoolConfig {
         pool_size: 1024 * 1024, // 1MB
         max_slots: 1,           // only 1 slot
@@ -195,7 +196,7 @@ fn test_single_slot_pool() {
 fn test_data_integrity_after_write() {
     cleanup_stale_shm();
 
-    let pool_id = 9740 + (std::process::id() % 100) as u32;
+    let pool_id = 9740 + (std::process::id() % 100);
     let pool = TensorPool::new(pool_id, small_pool_config()).unwrap();
 
     let tensor = pool.alloc(&[1, 4], TensorDtype::U8, Device::cpu()).unwrap();

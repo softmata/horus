@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Service system behavioral tests — concurrent multi-client RPC and edge cases.
 //
 // Extends the existing 74 service tests (services_test.rs, services_root.rs,
@@ -202,14 +203,11 @@ fn test_rapid_sequential_calls_no_mismatch() {
     let mut mismatches = 0;
 
     for i in 0..50 {
-        match client.call(RapidFireRequest { seq: i }, 2_u64.secs()) {
-            Ok(resp) => {
-                if resp.echo != i {
-                    mismatches += 1;
-                }
+        if let Ok(resp) = client.call(RapidFireRequest { seq: i }, 2_u64.secs()) {
+            if resp.echo != i {
+                mismatches += 1;
             }
-            Err(_) => {} // timeout under rapid fire is acceptable
-        }
+        } // timeout under rapid fire is acceptable
     }
 
     assert_eq!(

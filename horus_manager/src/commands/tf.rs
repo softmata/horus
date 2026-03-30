@@ -1895,8 +1895,8 @@ pub fn calibrate_from_points(points_file: &str) -> HorusResult<()> {
             (q_new[0] * q_new[0] + q_new[1] * q_new[1] + q_new[2] * q_new[2] + q_new[3] * q_new[3])
                 .sqrt();
         if norm > 1e-15 {
-            for i in 0..4 {
-                q_new[i] /= norm;
+            for val in &mut q_new {
+                *val /= norm;
             }
         }
         q = q_new;
@@ -2259,6 +2259,7 @@ pub fn hand_eye_calibration(
 
 /// Read poses from CSV file. Each line: x, y, z, qx, qy, qz, qw
 /// Returns Vec of (translation [x,y,z], quaternion [qx,qy,qz,qw])
+#[allow(clippy::type_complexity)]
 fn read_poses_csv(path: &str) -> Result<Vec<([f64; 3], [f64; 4])>, ConfigError> {
     let file = std::fs::File::open(path)
         .map_err(|e| ConfigError::other(format!("Cannot open {}: {}", path, e)))?;
@@ -3051,15 +3052,15 @@ mod tests {
     fn test_rotation_to_matrix_identity_quaternion() {
         let pose = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
         let m = rotation_to_matrix(&pose);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in m.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (m[i][j] - expected).abs() < 1e-10,
+                    (val - expected).abs() < 1e-10,
                     "m[{}][{}] = {}, expected {}",
                     i,
                     j,
-                    m[i][j],
+                    val,
                     expected
                 );
             }
@@ -3484,6 +3485,6 @@ sensor_x,sensor_y,sensor_z,world_x,world_y,world_z
     #[test]
     fn test_read_poses_csv_nonexistent() {
         let result = read_poses_csv("/tmp/no_such_poses_file.csv");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 }

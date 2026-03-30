@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Root tests for the Services RPC module.
 //!
 //! Tests ServiceServerBuilder, ServiceClient, AsyncServiceClient, and the
@@ -103,7 +104,7 @@ fn test_server_builder_with_handler() {
     let server = ServiceServerBuilder::<AddTwoInts>::new()
         .on_request(|req| Ok(AddTwoIntsResponse { sum: req.a + req.b }))
         .build();
-    assert!(server.is_ok());
+    server.unwrap();
 }
 
 #[test]
@@ -112,7 +113,7 @@ fn test_server_builder_custom_poll_interval() {
         .poll_interval(1_u64.ms())
         .on_request(|req| Ok(EchoPollResponse { reply: req.message }))
         .build();
-    assert!(server.is_ok());
+    server.unwrap();
 }
 
 #[test]
@@ -253,7 +254,7 @@ fn test_end_to_end_server_returns_error() {
 #[test]
 fn test_async_client_new_succeeds() {
     let client = AsyncServiceClient::<EchoAsync>::new();
-    assert!(client.is_ok());
+    client.unwrap();
 }
 
 #[test]
@@ -281,5 +282,5 @@ fn test_pending_call_expires_after_timeout() {
     std::thread::sleep(20_u64.ms());
     assert!(pending.is_expired());
     let result = pending.check();
-    assert!(result.is_err());
+    result.unwrap_err();
 }

@@ -186,13 +186,13 @@ mod tests {
     fn detect_system_cargo_binary_returns_ok_always() {
         // Even for garbage input the function should return Ok, never Err
         let result = detect_system_cargo_binary("");
-        assert!(result.is_ok());
+        result.unwrap();
 
         let result = detect_system_cargo_binary("../../etc/passwd");
-        assert!(result.is_ok());
+        result.unwrap();
 
         let result = detect_system_cargo_binary("binary with spaces");
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]

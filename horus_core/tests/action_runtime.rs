@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Runtime integration tests for ActionServer + SyncActionClient.
 //
 // These tests PROVE the action system works end-to-end: goals are sent,

@@ -25,7 +25,6 @@ use std::sync::Mutex;
 
 use crate::communication::topic::metrics::TopicMetrics;
 use crate::communication::SendBlockingError;
-use crate::core::DurationExt;
 
 /// Configuration for MockTopic failure injection.
 #[derive(Debug, Clone, Default)]
@@ -224,6 +223,7 @@ impl<T: Clone> MockTopic<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::DurationExt;
 
     // ── Basic operations ──
 

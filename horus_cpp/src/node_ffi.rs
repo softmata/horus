@@ -8,13 +8,10 @@
 //! `CppNode` implements `horus_core::Node` and delegates `tick()` to a
 //! stored function pointer (set by C++ via `node_builder_set_tick`).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use horus_core::core::duration_ext::DurationExt;
 use horus_core::core::Node;
-use horus_core::error::HorusResult;
 
 use crate::types_ffi::{FfiNodeBuilder, FfiScheduler, NodeConfig};
 
@@ -40,6 +37,9 @@ use crate::types_ffi::{FfiNodeBuilder, FfiScheduler, NodeConfig};
 pub struct CppNode {
     name: String,
     tick_fn: Box<dyn FnMut() + Send>,
+    init_fn: Option<Box<dyn FnMut() + Send>>,
+    safe_state_fn: Option<Box<dyn FnMut() + Send>>,
+    shutdown_fn: Option<Box<dyn FnMut() + Send>>,
     failed: bool,
     fail_count: u32,
 }
@@ -49,9 +49,24 @@ impl CppNode {
         Self {
             name,
             tick_fn,
+            init_fn: None,
+            safe_state_fn: None,
+            shutdown_fn: None,
             failed: false,
             fail_count: 0,
         }
+    }
+
+    pub fn with_lifecycle(
+        mut self,
+        init: Option<Box<dyn FnMut() + Send>>,
+        safe_state: Option<Box<dyn FnMut() + Send>>,
+        shutdown: Option<Box<dyn FnMut() + Send>>,
+    ) -> Self {
+        self.init_fn = init;
+        self.safe_state_fn = safe_state;
+        self.shutdown_fn = shutdown;
+        self
     }
 
     /// Returns true if the node has panicked and is in a failed state.
@@ -65,13 +80,20 @@ impl Node for CppNode {
         &self.name
     }
 
+    fn init(&mut self) -> horus_core::error::HorusResult<()> {
+        if let Some(ref mut init_fn) = self.init_fn {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (init_fn)();
+            }));
+        }
+        Ok(())
+    }
+
     fn tick(&mut self) {
         if self.failed {
-            return; // Skip ticks on failed nodes
+            return;
         }
 
-        // SAFETY: catch_unwind prevents panics from unwinding across FFI.
-        // This is critical — unwinding through extern "C" is UB.
         let tick_fn = &mut self.tick_fn;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (tick_fn)();
@@ -80,8 +102,6 @@ impl Node for CppNode {
         if let Err(panic_info) = result {
             self.failed = true;
             self.fail_count += 1;
-
-            // Extract panic message for logging
             let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
                 s.to_string()
             } else if let Some(s) = panic_info.downcast_ref::<String>() {
@@ -89,12 +109,19 @@ impl Node for CppNode {
             } else {
                 "unknown panic".to_string()
             };
-
             eprintln!(
                 "[horus_cpp] PANIC in C++ node '{}' tick callback: {}. \
                  Node is now disabled (fail_count={}).",
                 self.name, msg, self.fail_count
             );
+        }
+    }
+
+    fn enter_safe_state(&mut self) {
+        if let Some(ref mut safe_fn) = self.safe_state_fn {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (safe_fn)();
+            }));
         }
     }
 }
@@ -103,8 +130,10 @@ impl Node for CppNode {
 
 /// Create a new node builder with the given name.
 pub fn node_builder_new(name: &str) -> Box<FfiNodeBuilder> {
-    let mut config = NodeConfig::default();
-    config.name = name.to_string();
+    let config = NodeConfig {
+        name: name.to_string(),
+        ..NodeConfig::default()
+    };
     Box::new(FfiNodeBuilder { config })
 }
 
@@ -164,6 +193,21 @@ pub fn node_builder_watchdog(builder: &mut FfiNodeBuilder, timeout_us: u64) {
     builder.config.watchdog_us = Some(timeout_us);
 }
 
+/// Set the init callback — called once before first tick.
+pub fn node_builder_set_init(builder: &mut FfiNodeBuilder, callback: extern "C" fn()) {
+    builder.config.init_callback = Some(callback);
+}
+
+/// Set the enter_safe_state callback — called by safety monitor.
+pub fn node_builder_set_safe_state(builder: &mut FfiNodeBuilder, callback: extern "C" fn()) {
+    builder.config.safe_state_callback = Some(callback);
+}
+
+/// Set the on_shutdown callback — called when scheduler stops.
+pub fn node_builder_set_shutdown(builder: &mut FfiNodeBuilder, callback: extern "C" fn()) {
+    builder.config.shutdown_callback = Some(callback);
+}
+
 /// Set the tick callback — an `extern "C" fn()` that the scheduler invokes each tick.
 ///
 /// This is how C++ tick lambdas cross the FFI boundary. The C++ side captures
@@ -183,6 +227,7 @@ pub fn node_builder_set_tick(builder: &mut FfiNodeBuilder, callback: extern "C" 
 ///
 /// For now (Phase 3), uses a no-op tick. Phase 4 (CppNodeAdapter) adds
 /// the real C++ callback mechanism.
+#[allow(clippy::boxed_local)]
 pub fn node_builder_build(
     builder: Box<FfiNodeBuilder>,
     sched: &mut FfiScheduler,
@@ -199,7 +244,16 @@ pub fn node_builder_build(
         Some(cb) => Box::new(move || cb()),
         None => Box::new(|| {}),
     };
-    let node = CppNode::new(node_name, tick_fn);
+    let init_fn = config
+        .init_callback
+        .map(|cb| -> Box<dyn FnMut() + Send> { Box::new(move || cb()) });
+    let safe_fn = config
+        .safe_state_callback
+        .map(|cb| -> Box<dyn FnMut() + Send> { Box::new(move || cb()) });
+    let shutdown_fn = config
+        .shutdown_callback
+        .map(|cb| -> Box<dyn FnMut() + Send> { Box::new(move || cb()) });
+    let node = CppNode::new(node_name, tick_fn).with_lifecycle(init_fn, safe_fn, shutdown_fn);
 
     // Start the builder chain
     let mut nb = sched.inner.add(node);
@@ -259,6 +313,8 @@ pub fn node_builder_build(
 mod tests {
     use super::*;
     use crate::scheduler_ffi::{scheduler_new, scheduler_node_list};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
 
     #[test]
     fn build_adds_node_to_scheduler() {
@@ -301,7 +357,7 @@ mod tests {
     fn builder_minimal_config() {
         let mut sched = scheduler_new();
         let builder = node_builder_new("simple");
-        assert!(node_builder_build(builder, &mut sched).is_ok());
+        node_builder_build(builder, &mut sched).unwrap();
     }
 
     #[test]

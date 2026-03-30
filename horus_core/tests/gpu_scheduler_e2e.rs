@@ -1,13 +1,12 @@
+#![allow(dead_code)]
 //! E2E test: Real scheduler running a GPU node.
 //!
 //! This is the critical missing test — a Scheduler with .gpu() nodes
 //! that actually tick and produce output.
 
-use horus_core::communication::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::gpu::cuda_available;
 use horus_core::scheduling::Scheduler;
-use horus_core::types::Device;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 

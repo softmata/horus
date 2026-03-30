@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Crash recovery integration tests.
 //!
 //! Tests the production hardening features:

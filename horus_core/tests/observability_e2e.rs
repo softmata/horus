@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! End-to-end observability tests — CLI-level verification.
 //!
 //! Tests that the full pipeline works: data written → APIs read correctly.
@@ -329,7 +330,7 @@ fn test_param_on_change_callback_rejection() {
     }));
 
     // Set within range — should succeed
-    assert!(params.set("max_speed", 5.0_f64).is_ok());
+    params.set("max_speed", 5.0_f64).unwrap();
     let val: f64 = params.get("max_speed").unwrap();
     assert_eq!(val, 5.0);
 

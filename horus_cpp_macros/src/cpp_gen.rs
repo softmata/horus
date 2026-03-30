@@ -12,9 +12,9 @@
 //! | `name` | custom class name |
 //! | `namespace` | custom namespace |
 
-use crate::types::{
-    BindingItem, CppHints, ImplBinding, MethodBinding, MethodSig, Receiver, StructBinding,
-};
+#![allow(dead_code)]
+
+use crate::types::{BindingItem, ImplBinding, MethodBinding, Receiver, StructBinding};
 
 /// Generate C++ header content from binding metadata.
 ///
@@ -168,7 +168,7 @@ fn generate_impl_header(binding: &ImplBinding) -> String {
 }
 
 /// Generate a single method declaration.
-fn generate_method_decl(class_name: &str, method: &MethodBinding) -> String {
+fn generate_method_decl(_class_name: &str, method: &MethodBinding) -> String {
     let name = method.name.to_string();
     let sig = &method.sig;
     let hints = &method.hints;

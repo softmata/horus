@@ -102,7 +102,7 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
     }
 
     if caps.memory_locking {
-        println!("  {} Memory locking: {}", "✓".green(), "available");
+        println!("  {} Memory locking: available", "✓".green());
     } else {
         println!(
             "  {} Memory locking: {}",
@@ -115,7 +115,7 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
 
     let isolated = horus_sys::rt::isolated_cores();
     if isolated.is_empty() {
-        println!("  {} Isolated CPUs: {}", "ℹ".dimmed(), "none");
+        println!("  {} Isolated CPUs: none", "ℹ".dimmed());
     } else {
         println!("  {} Isolated CPUs: {:?}", "✓".green(), isolated);
     }
@@ -366,6 +366,6 @@ mod tests {
     fn check_only_mode_succeeds() {
         // --check mode should never modify system state
         let result = run_setup_rt(true, false);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }

@@ -971,7 +971,7 @@ mod tests {
     #[test]
     fn auth_config_rejects_invalid_json() {
         let result = serde_json::from_str::<AuthConfig>("not json at all");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -979,14 +979,14 @@ mod tests {
         // Missing registry_url
         let json = r#"{"api_key":"horus_key_x"}"#;
         let result = serde_json::from_str::<AuthConfig>(json);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
     fn auth_config_rejects_missing_api_key() {
         let json = r#"{"registry_url":"https://example.com"}"#;
         let result = serde_json::from_str::<AuthConfig>(json);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -999,7 +999,7 @@ mod tests {
         }"#;
         // serde default: deny unknown fields is NOT set, so this should work
         let result = serde_json::from_str::<AuthConfig>(json);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1070,7 +1070,7 @@ mod tests {
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = save_auth_config("horus_key_nouser", "https://registry.example.com", None);
-        assert!(result.is_ok());
+        result.unwrap();
 
         let config = load_auth_config().unwrap();
         assert_eq!(config.api_key, "horus_key_nouser");
@@ -1232,7 +1232,7 @@ mod tests {
         fs::write(horus_dir.join("auth.json"), r#"{"api_key":"test"}"#).unwrap();
 
         let result = load_auth_config();
-        assert!(result.is_err());
+        result.unwrap_err();
 
         match original_home {
             Some(val) => std::env::set_var("HOME", val),
@@ -1252,7 +1252,7 @@ mod tests {
         fs::write(horus_dir.join("auth.json"), "").unwrap();
 
         let result = load_auth_config();
-        assert!(result.is_err());
+        result.unwrap_err();
 
         match original_home {
             Some(val) => std::env::set_var("HOME", val),
@@ -1382,7 +1382,7 @@ mod tests {
         assert!(config_path.exists(), "auth.json should exist before logout");
 
         let result = logout();
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(
             !config_path.exists(),
             "auth.json should be removed after logout"
@@ -1429,13 +1429,13 @@ mod tests {
         save_auth_config("horus_key_then_logout", "https://example.com", None).unwrap();
 
         // Verify load works before logout
-        assert!(load_auth_config().is_ok());
+        load_auth_config().unwrap();
 
         logout().unwrap();
 
         // Load should fail after logout
         let result = load_auth_config();
-        assert!(result.is_err());
+        result.unwrap_err();
 
         match original_home {
             Some(val) => std::env::set_var("HOME", val),
@@ -1622,7 +1622,7 @@ mod tests {
 
         // whoami should not error when not logged in, just print guidance
         let result = whoami();
-        assert!(result.is_ok());
+        result.unwrap();
 
         match original_home {
             Some(val) => std::env::set_var("HOME", val),
@@ -1643,7 +1643,7 @@ mod tests {
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = keys_list();
-        assert!(result.is_ok());
+        result.unwrap();
 
         match original_home {
             Some(val) => std::env::set_var("HOME", val),
@@ -1664,7 +1664,7 @@ mod tests {
         fs::create_dir_all(&horus_dir).unwrap();
 
         let result = keys_revoke("some-key-id");
-        assert!(result.is_ok());
+        result.unwrap();
 
         match original_home {
             Some(val) => std::env::set_var("HOME", val),
@@ -1696,7 +1696,7 @@ mod tests {
         logout().unwrap();
 
         // Step 4: verify gone
-        assert!(load_auth_config().is_err());
+        load_auth_config().unwrap_err();
 
         // Step 5: re-save with different user
         save_auth_config("horus_key_cycle2", "https://cycle2.test", Some("cyclist2")).unwrap();
