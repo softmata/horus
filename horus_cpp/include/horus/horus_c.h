@@ -84,6 +84,24 @@ void             horus_subscriber_cmd_vel_destroy(HorusSubscriber* sub);
 int              horus_subscriber_cmd_vel_recv(const HorusSubscriber* sub, HorusCmdVel* out);
 bool             horus_subscriber_cmd_vel_has_msg(const HorusSubscriber* sub);
 
+/* ── JsonWireMessage Topic (for services/actions) ────────────────────────── */
+
+typedef struct {
+    uint8_t  data[3968];
+    uint32_t data_len;
+    uint64_t msg_id;
+    uint8_t  msg_type;  /* 0=request, 1=response_ok, 2=response_err, 3=feedback, 4=goal, 5=result */
+    uint8_t  _padding[11];
+} HorusJsonWireMsg;
+
+HorusPublisher*  horus_publisher_json_wire_new(const char* topic_name);
+void             horus_publisher_json_wire_destroy(HorusPublisher* pub_);
+void             horus_publisher_json_wire_send(const HorusPublisher* pub_, const HorusJsonWireMsg* msg);
+
+HorusSubscriber* horus_subscriber_json_wire_new(const char* topic_name);
+void             horus_subscriber_json_wire_destroy(HorusSubscriber* sub);
+int              horus_subscriber_json_wire_recv(const HorusSubscriber* sub, HorusJsonWireMsg* out);
+
 /* ── Miss Policy Constants ───────────────────────────────────────────────── */
 
 #define HORUS_MISS_WARN      0

@@ -126,6 +126,38 @@ pub fn image_destroy(_img: Box<FfiImage>) {
     // Drop releases
 }
 
+// ─── PointCloud ──────────────────────────────────────────────────────────────
+
+/// Opaque PointCloud handle for C.
+pub struct FfiPointCloud {
+    inner: PointCloud,
+}
+
+/// Allocate a PointCloud from the pool.
+/// fields_per_point: 3=XYZ, 4=XYZI, 6=XYZRGB.
+pub fn pointcloud_new(
+    pool: &FfiTensorPool,
+    num_points: u32,
+    fields_per_point: u32,
+) -> Option<Box<FfiPointCloud>> {
+    PointCloud::new_on(num_points, fields_per_point, TensorDtype::F32, pool.inner.clone())
+        .ok()
+        .map(|pc| Box::new(FfiPointCloud { inner: pc }))
+}
+
+/// Get point count.
+pub fn pointcloud_num_points(pc: &FfiPointCloud) -> u64 {
+    pc.inner.point_count()
+}
+
+/// Get fields per point.
+pub fn pointcloud_fields(pc: &FfiPointCloud) -> u32 {
+    pc.inner.fields_per_point()
+}
+
+/// Destroy a PointCloud.
+pub fn pointcloud_destroy(_pc: Box<FfiPointCloud>) {}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -169,6 +201,16 @@ mod tests {
         assert_eq!(image_width(&img), 320);
         assert_eq!(image_height(&img), 240);
         assert_eq!(image_data_size(&img), 320 * 240 * 3);
+    }
+
+    #[test]
+    fn pointcloud_create() {
+        let pool = tensor_pool_new(next_pool_id(), 4 * 1024 * 1024, 64).unwrap();
+        let pc = pointcloud_new(&pool, 1000, 3); // 1000 XYZ points
+        assert!(pc.is_some());
+        let pc = pc.unwrap();
+        assert_eq!(pointcloud_num_points(&pc), 1000);
+        assert_eq!(pointcloud_fields(&pc), 3u32);
     }
 
     #[test]

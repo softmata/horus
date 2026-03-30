@@ -430,6 +430,90 @@ pub unsafe extern "C" fn horus_subscriber_cmd_vel_has_msg(sub: *const HorusSubsc
     topic_ffi::subscriber_cmd_vel_has_msg(sub)
 }
 
+// ─── JsonWireMessage Topic C API ─────────────────────────────────────────────
+
+/// JsonWireMessage layout for C — matches Rust #[repr(C)].
+#[repr(C)]
+pub struct HorusJsonWireMsg {
+    pub data: [u8; 3968],
+    pub data_len: u32,
+    pub msg_id: u64,
+    pub msg_type: u8,
+    pub _padding: [u8; 11],
+}
+
+/// Create JsonWireMessage publisher.
+#[no_mangle]
+pub unsafe extern "C" fn horus_publisher_json_wire_new(name: *const c_char) -> *mut HorusPublisher {
+    let name = match CStr::from_ptr(name).to_str() {
+        Ok(n) => n,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match topic_ffi::publisher_json_wire_new(name) {
+        Ok(pub_) => Box::into_raw(pub_) as *mut HorusPublisher,
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Destroy JsonWireMessage publisher.
+#[no_mangle]
+pub unsafe extern "C" fn horus_publisher_json_wire_destroy(pub_: *mut HorusPublisher) {
+    if !pub_.is_null() {
+        drop(Box::from_raw(pub_ as *mut topic_ffi::FfiPublisher<crate::types_ffi::JsonWireMessage>));
+    }
+}
+
+/// Send JsonWireMessage.
+#[no_mangle]
+pub unsafe extern "C" fn horus_publisher_json_wire_send(
+    pub_: *const HorusPublisher,
+    msg: *const HorusJsonWireMsg,
+) {
+    if pub_.is_null() || msg.is_null() { return; }
+    let pub_ = &*(pub_ as *const topic_ffi::FfiPublisher<crate::types_ffi::JsonWireMessage>);
+    // Direct memcpy — both are #[repr(C)] with identical layout
+    let wire: crate::types_ffi::JsonWireMessage = std::ptr::read(msg as *const crate::types_ffi::JsonWireMessage);
+    topic_ffi::publisher_json_wire_send(pub_, wire);
+}
+
+/// Create JsonWireMessage subscriber.
+#[no_mangle]
+pub unsafe extern "C" fn horus_subscriber_json_wire_new(name: *const c_char) -> *mut HorusSubscriber {
+    let name = match CStr::from_ptr(name).to_str() {
+        Ok(n) => n,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match topic_ffi::subscriber_json_wire_new(name) {
+        Ok(sub) => Box::into_raw(sub) as *mut HorusSubscriber,
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Destroy JsonWireMessage subscriber.
+#[no_mangle]
+pub unsafe extern "C" fn horus_subscriber_json_wire_destroy(sub: *mut HorusSubscriber) {
+    if !sub.is_null() {
+        drop(Box::from_raw(sub as *mut topic_ffi::FfiSubscriber<crate::types_ffi::JsonWireMessage>));
+    }
+}
+
+/// Receive JsonWireMessage. Returns 1 if received, 0 if empty.
+#[no_mangle]
+pub unsafe extern "C" fn horus_subscriber_json_wire_recv(
+    sub: *const HorusSubscriber,
+    out: *mut HorusJsonWireMsg,
+) -> i32 {
+    if sub.is_null() || out.is_null() { return 0; }
+    let sub = &*(sub as *const topic_ffi::FfiSubscriber<crate::types_ffi::JsonWireMessage>);
+    match topic_ffi::subscriber_json_wire_recv(sub) {
+        Some(msg) => {
+            std::ptr::write(out as *mut crate::types_ffi::JsonWireMessage, msg);
+            1
+        }
+        None => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
