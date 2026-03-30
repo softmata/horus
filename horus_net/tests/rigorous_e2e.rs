@@ -287,9 +287,8 @@ fn stress_1000_messages() {
     while let Ok((n, _)) = sock_b.recv_from(&mut recv_buf) {
         if let Some((_, msgs)) = decode_packet(&recv_buf[..n]) {
             for m in &msgs {
-                let cmd: CmdVel = unsafe {
-                    std::ptr::read_unaligned(m.payload.as_ptr() as *const CmdVel)
-                };
+                let cmd: CmdVel =
+                    unsafe { std::ptr::read_unaligned(m.payload.as_ptr() as *const CmdVel) };
                 assert!(cmd.linear >= 0.0 && cmd.linear < 1000.0);
                 recv += 1;
             }
