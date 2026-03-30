@@ -88,11 +88,13 @@ doc:
   extends: [.rust-base, .on-mr-or-main]
   stage: test
   needs: [check]
-  variables:
-    RUSTDOCFLAGS: >-
-      $( [ "$CI_COMMIT_BRANCH" = "main" ] && echo "-D warnings" || echo "" )
   script:
-    - cargo doc --workspace --no-deps --exclude horus_manager
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --exclude horus_manager
+      else
+        cargo doc --workspace --no-deps --exclude horus_manager
+      fi
 
 security-audit:
   extends: [.rust-base, .on-mr-or-main]

@@ -77,7 +77,7 @@ fn sc5_zero_external_deps() {
     // This test passes if the crate compiles — Cargo.toml only has
     // horus_core + horus_sys + memmap2 + libc (platform)
     // No tokio, no serde (in horus_net itself), no networking crates
-    assert!(true);
+    // Compilation itself is the test
 }
 
 // ─── SC8: E-stop with latched reliability ───────────────────────────────────
@@ -324,5 +324,5 @@ fn dedup_redundant_copies() {
 fn horus_net_compiles_and_runs() {
     // If this test runs, the entire horus_net crate compiled successfully
     // with all modules, all dependencies, all features.
-    assert!(true);
+    // Compilation itself is the test
 }
