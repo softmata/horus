@@ -233,8 +233,8 @@ fn child_pipeline_controller() {
         }
     }
     // Forward sentinel
-    let mut s = Imu::new();
-    s.angular_velocity[0] = f64::MAX;
+    let mut _s = Imu::new();
+    _s.angular_velocity[0] = f64::MAX;
     // Send CmdVel sentinel
     cmd_t.send(CmdVel::new(f32::MAX, f32::MAX));
     std::thread::sleep(Duration::from_millis(200));
