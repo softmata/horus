@@ -1,0 +1,10 @@
+# Namespace isolation test: session with global namespace
+# Launch two instances with different namespaces to test isolation
+session: test_ns
+namespace: robot_a
+nodes:
+  - name: driver
+    command: ./target/debug/examples/launch_test_rust
+    params:
+      max_speed: 2.0
+      robot_id: 10

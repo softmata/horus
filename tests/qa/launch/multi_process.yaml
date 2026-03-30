@@ -1,0 +1,14 @@
+session: qa_multi_process
+nodes:
+  - name: control
+    command: ./target/debug/examples/qa_launch_control
+    restart: on-failure
+
+  - name: vision
+    command: ./target/debug/examples/qa_launch_vision
+    restart: on-failure
+
+  - name: planner
+    command: ./target/debug/examples/qa_launch_planner
+    depends_on: [control, vision]
+    restart: on-failure

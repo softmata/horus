@@ -1,0 +1,155 @@
+//! Shared pool registry for topic tensor extensions
+//!
+//! All topic extensions (`Topic<Image>`, `Topic<PointCloud>`, `Topic<DepthImage>`,
+//! `Topic<Tensor>`) share a single global registry of per-topic tensor pools.
+//! The pool_id is derived deterministically from the topic name using FNV-1a so
+//! that publisher and subscriber processes converge on the same shared memory file.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use lazy_static::lazy_static;
+use parking_lot::Mutex;
+
+use crate::memory::{TensorPool, TensorPoolConfig};
+#[allow(unused_imports)] // Used by get_or_create_pool_for_device (called in R2+)
+use crate::types::Device;
+
+lazy_static! {
+    /// Global registry of per-topic tensor pools.
+    ///
+    /// Keyed by topic name. The pool_id is derived deterministically from the
+    /// name so that different processes converge on the same shared memory file.
+    pub(crate) static ref TOPIC_POOLS: Mutex<HashMap<String, Arc<TensorPool>>> =
+        Mutex::new(HashMap::new());
+}
+
+/// Derive a deterministic pool_id from a topic name using FNV-1a (32-bit).
+///
+/// Consistent across processes so publisher and subscriber open the same pool.
+pub(crate) fn pool_id_from_name(name: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5; // FNV-1a offset basis
+    for byte in name.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193); // FNV-1a prime
+    }
+    // Reserve 0 as sentinel — shift to 1
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
+}
+
+/// Build the `TensorPoolConfig` — currently always mmap-backed.
+fn auto_pool_config() -> TensorPoolConfig {
+    TensorPoolConfig::default()
+}
+
+/// Get or create the auto-managed tensor pool for a topic name.
+///
+/// On first call, opens an existing pool (if another process created it)
+/// or creates a new one backed by shared memory. Subsequent calls return
+/// the cached pool.
+///
+/// When creating a new pool, GPU hardware is auto-detected and the optimal
+/// allocator backend is selected (managed memory on Jetson, pinned memory
+/// on discrete GPU, mmap on CPU-only).
+pub(crate) fn get_or_create_pool(topic_name: &str) -> Arc<TensorPool> {
+    let mut pools = TOPIC_POOLS.lock();
+    if let Some(pool) = pools.get(topic_name) {
+        return Arc::clone(pool);
+    }
+
+    let pid = pool_id_from_name(topic_name);
+
+    let pool = Arc::new(match TensorPool::open(pid) {
+        Ok(p) => p,
+        Err(_) => TensorPool::new(pid, auto_pool_config())
+            .expect("failed to create tensor pool for topic"),
+    });
+
+    pools.insert(topic_name.to_string(), Arc::clone(&pool));
+    pool
+}
+
+/// Get or create a device-specific tensor pool for a topic name.
+///
+/// The pool key includes both the topic name and the device, so the same
+/// topic can have separate CPU and GPU pools. For CPU devices, this is
+/// equivalent to `get_or_create_pool`. For GPU devices, a device-keyed
+/// pool is created.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let gpu_pool = get_or_create_pool_for_device("camera.image", Device::cuda(0));
+/// let cpu_pool = get_or_create_pool_for_device("camera.image", Device::cpu());
+/// // These are different pools — different memory backends.
+/// ```
+pub(crate) fn get_or_create_pool_for_device(
+    topic_name: &str,
+    device: Device,
+) -> Arc<TensorPool> {
+    // CPU devices use the existing pool (backward compatible).
+    if device.is_cpu() {
+        return get_or_create_pool(topic_name);
+    }
+
+    // Device-specific key: "topic_name@cuda:0"
+    let key = format!("{}@{}", topic_name, device);
+
+    let mut pools = TOPIC_POOLS.lock();
+    if let Some(pool) = pools.get(&key) {
+        return Arc::clone(pool);
+    }
+
+    // Create pool with the appropriate GPU backend.
+    let pid = pool_id_from_name(&key);
+    let config = auto_pool_config();
+    let backend = crate::gpu::auto_backend_for_device(device);
+
+    let pool = Arc::new(
+        TensorPool::with_backend(pid, config, backend)
+            .expect("failed to create GPU-backed pool for topic"),
+    );
+
+    pools.insert(key, Arc::clone(&pool));
+    pool
+}
+
+/// Default pool name for standalone type creation (Image::new, PointCloud::new, etc.).
+const GLOBAL_POOL_NAME: &str = "__horus_global__";
+
+/// Get the global pool for standalone type creation.
+///
+/// Used by `Image::new()`, `PointCloud::new()`, `DepthImage::new()` when
+/// creating types outside of a Topic context. Also used by Python bindings.
+pub(crate) fn global_pool() -> Arc<TensorPool> {
+    get_or_create_pool(GLOBAL_POOL_NAME)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pool_id_deterministic() {
+        let id1 = pool_id_from_name("camera.rgb");
+        let id2 = pool_id_from_name("camera.rgb");
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_pool_id_different_names() {
+        let id1 = pool_id_from_name("camera.rgb");
+        let id2 = pool_id_from_name("lidar.points");
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_pool_id_nonzero() {
+        let id = pool_id_from_name("");
+        assert_ne!(id, 0);
+    }
+}

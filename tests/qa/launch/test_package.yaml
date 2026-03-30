@@ -1,0 +1,6 @@
+session: test_package
+nodes:
+  - name: diffbot
+    package: differential_drive
+    params:
+      max_speed: 0.5

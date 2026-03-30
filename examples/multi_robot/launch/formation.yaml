@@ -1,0 +1,41 @@
+nodes:
+  - name: "scout_controller"
+    package: "multi_robot"
+    priority: 0
+    rate_hz: 20
+    namespace: "/scout_1"
+    params:
+      robot_id: 1
+      formation_x: -1.0
+      formation_z: -1.0
+
+  - name: "scout_controller"
+    package: "multi_robot"
+    priority: 0
+    rate_hz: 20
+    namespace: "/scout_2"
+    params:
+      robot_id: 2
+      formation_x: 1.0
+      formation_z: -1.0
+
+  - name: "scout_controller"
+    package: "multi_robot"
+    priority: 0
+    rate_hz: 20
+    namespace: "/scout_3"
+    params:
+      robot_id: 3
+      formation_x: 0.0
+      formation_z: 1.0
+
+  - name: "formation_coordinator"
+    package: "multi_robot"
+    priority: 10
+    rate_hz: 5
+    params:
+      num_robots: 3
+      formation_type: "triangle"
+
+env:
+  HORUS_LOG_LEVEL: "info"

@@ -1,0 +1,48 @@
+name: Good First Issue
+description: Suggest a good first issue for new contributors
+labels: ["good first issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to propose tasks suitable for new contributors.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Task Description
+      description: What needs to be done?
+    validations:
+      required: true
+
+  - type: textarea
+    id: guidance
+    attributes:
+      label: Implementation Guidance
+      description: How should someone approach this?
+      placeholder: |
+        1. Look at file X
+        2. Add/modify Y
+        3. Test with Z
+
+  - type: dropdown
+    id: skills
+    attributes:
+      label: Required Skills
+      multiple: true
+      options:
+        - Rust (beginner)
+        - Rust (intermediate)
+        - Python
+        - C++
+        - Documentation
+        - Testing
+        - CLI tools
+    validations:
+      required: true
+
+  - type: input
+    id: difficulty
+    attributes:
+      label: Estimated Difficulty (1-5)
+      placeholder: "2"

@@ -1,0 +1,1990 @@
+use horus_macros::LogSummary;
+// Geometric and spatial message types for robotics
+//
+// This module provides fundamental geometric primitives used throughout
+// robotics applications for representing position, orientation, and motion.
+
+use std::ops;
+
+use serde::{Deserialize, Serialize};
+use serde_arrays;
+
+macro_rules! impl_pod_message {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            unsafe impl horus_core::bytemuck::Pod for $ty {}
+            unsafe impl horus_core::bytemuck::Zeroable for $ty {}
+            unsafe impl horus_core::communication::PodMessage for $ty {}
+        )+
+    };
+}
+
+macro_rules! impl_with_frame_id {
+    () => {
+        pub fn with_frame_id(mut self, frame_id: &str) -> Self {
+            let bytes = frame_id.as_bytes();
+            let len = bytes.len().min(31);
+            self.frame_id[..len].copy_from_slice(&bytes[..len]);
+            self.frame_id[len..].fill(0);
+            self
+        }
+    };
+}
+
+/// Get current timestamp in nanoseconds since UNIX epoch.
+fn timestamp_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+/// Full 6-DOF velocity (linear + angular) for 3D robots.
+///
+/// Use `Twist` for **drones, manipulators**, or any robot that moves in 3D.
+/// For **2D ground robots**, prefer `CmdVel` from `horus-robotics` —
+/// it's simpler and smaller.
+///
+/// Use [`Twist::new_2d()`] as a convenience for 2D-only motion.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Twist {
+    /// Linear velocity [x, y, z] in m/s
+    pub linear: [f64; 3],
+    /// Angular velocity [roll, pitch, yaw] in rad/s
+    pub angular: [f64; 3],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Twist {
+    /// Create a new Twist message
+    pub fn new(linear: [f64; 3], angular: [f64; 3]) -> Self {
+        Self {
+            linear,
+            angular,
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    /// Create a 2D twist (forward velocity and rotation)
+    pub fn new_2d(linear_x: f64, angular_z: f64) -> Self {
+        Self::new([linear_x, 0.0, 0.0], [0.0, 0.0, angular_z])
+    }
+
+    /// Stop command (all zeros)
+    pub fn stop() -> Self {
+        Self::new([0.0; 3], [0.0; 3])
+    }
+
+    /// Check if all values are finite
+    pub fn is_valid(&self) -> bool {
+        self.linear.iter().all(|v| v.is_finite()) && self.angular.iter().all(|v| v.is_finite())
+    }
+}
+
+/// 2D pose representation (position and orientation)
+///
+/// Commonly used for mobile robots operating in planar environments.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Pose2D {
+    /// X position in meters
+    pub x: f64,
+    /// Y position in meters
+    pub y: f64,
+    /// Orientation angle in radians
+    pub theta: f64,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Pose2D {
+    /// Create a new 2D pose
+    pub fn new(x: f64, y: f64, theta: f64) -> Self {
+        Self {
+            x,
+            y,
+            theta,
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    /// Create pose at origin
+    pub fn origin() -> Self {
+        Self::new(0.0, 0.0, 0.0)
+    }
+
+    /// Calculate euclidean distance to another pose
+    pub fn distance_to(&self, other: &Pose2D) -> f64 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        (dx * dx + dy * dy).sqrt()
+    }
+
+    /// Normalize theta to [-pi, pi]
+    pub fn normalize_angle(&mut self) {
+        while self.theta > std::f64::consts::PI {
+            self.theta -= 2.0 * std::f64::consts::PI;
+        }
+        while self.theta < -std::f64::consts::PI {
+            self.theta += 2.0 * std::f64::consts::PI;
+        }
+    }
+
+    /// Check if values are finite
+    pub fn is_valid(&self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.theta.is_finite()
+    }
+}
+
+/// 3D transformation (translation and rotation)
+///
+/// Represents a full 3D transformation using translation vector and
+/// quaternion rotation. Used for coordinate frame transformations.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct TransformStamped {
+    /// Translation [x, y, z] in meters
+    pub translation: [f64; 3],
+    /// Rotation as quaternion [x, y, z, w]
+    pub rotation: [f64; 4],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl TransformStamped {
+    /// Create a new transform
+    pub fn new(translation: [f64; 3], rotation: [f64; 4]) -> Self {
+        Self {
+            translation,
+            rotation,
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    /// Identity transform (no translation or rotation)
+    pub fn identity() -> Self {
+        Self::new([0.0; 3], [0.0, 0.0, 0.0, 1.0])
+    }
+
+    /// Create from 2D pose (z=0, only yaw rotation)
+    pub fn from_pose_2d(pose: &Pose2D) -> Self {
+        let half_theta = pose.theta / 2.0;
+        Self::new(
+            [pose.x, pose.y, 0.0],
+            [0.0, 0.0, half_theta.sin(), half_theta.cos()],
+        )
+    }
+
+    /// Check if quaternion is normalized and values are finite
+    pub fn is_valid(&self) -> bool {
+        // Check finite values
+        if !self.translation.iter().all(|v| v.is_finite())
+            || !self.rotation.iter().all(|v| v.is_finite())
+        {
+            return false;
+        }
+
+        // Check quaternion normalization
+        let norm = self.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
+        (norm - 1.0).abs() < 1e-6
+    }
+
+    /// Normalize the quaternion component
+    pub fn normalize_rotation(&mut self) {
+        let norm = self.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm > 1e-12 {
+            for v in &mut self.rotation {
+                *v /= norm;
+            }
+        }
+    }
+}
+
+/// 3D point representation
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Point3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Point3 {
+    pub fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn origin() -> Self {
+        Self::new(0.0, 0.0, 0.0)
+    }
+
+    pub fn distance_to(&self, other: &Point3) -> f64 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        let dz = self.z - other.z;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+}
+
+/// 3D vector representation
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Vector3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Vector3 {
+    pub fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn zero() -> Self {
+        Self::new(0.0, 0.0, 0.0)
+    }
+
+    pub fn magnitude(&self) -> f64 {
+        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
+    }
+
+    pub fn normalize(&mut self) -> bool {
+        let mag = self.magnitude();
+        if mag > 1e-12 {
+            self.x /= mag;
+            self.y /= mag;
+            self.z /= mag;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn dot(&self, other: &Vector3) -> f64 {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    pub fn normalized(&self) -> Vector3 {
+        let mag = self.magnitude();
+        if mag > 0.0 {
+            Vector3::new(self.x / mag, self.y / mag, self.z / mag)
+        } else {
+            Vector3::zero()
+        }
+    }
+
+    pub fn cross(&self, other: &Vector3) -> Vector3 {
+        Vector3::new(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+        )
+    }
+}
+
+impl From<Vector3> for Point3 {
+    fn from(v: Vector3) -> Self {
+        Self {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+
+impl From<Point3> for Vector3 {
+    fn from(p: Point3) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
+}
+
+// Point3 - Point3 = Vector3 (displacement between two points)
+impl ops::Sub for Point3 {
+    type Output = Vector3;
+    fn sub(self, rhs: Point3) -> Vector3 {
+        Vector3::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
+// Point3 + Vector3 = Point3 (translate point by vector)
+impl ops::Add<Vector3> for Point3 {
+    type Output = Point3;
+    fn add(self, rhs: Vector3) -> Point3 {
+        Point3::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
+    }
+}
+
+// Point3 - Vector3 = Point3 (translate point by negative vector)
+impl ops::Sub<Vector3> for Point3 {
+    type Output = Point3;
+    fn sub(self, rhs: Vector3) -> Point3 {
+        Point3::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
+// Vector3 + Vector3 = Vector3
+impl ops::Add for Vector3 {
+    type Output = Vector3;
+    fn add(self, rhs: Vector3) -> Vector3 {
+        Vector3::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
+    }
+}
+
+// Vector3 - Vector3 = Vector3
+impl ops::Sub for Vector3 {
+    type Output = Vector3;
+    fn sub(self, rhs: Vector3) -> Vector3 {
+        Vector3::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
+// Vector3 * f64 = Vector3 (scalar multiply)
+impl ops::Mul<f64> for Vector3 {
+    type Output = Vector3;
+    fn mul(self, rhs: f64) -> Vector3 {
+        Vector3::new(self.x * rhs, self.y * rhs, self.z * rhs)
+    }
+}
+
+// f64 * Vector3 = Vector3 (scalar multiply, commutative)
+impl ops::Mul<Vector3> for f64 {
+    type Output = Vector3;
+    fn mul(self, rhs: Vector3) -> Vector3 {
+        Vector3::new(self * rhs.x, self * rhs.y, self * rhs.z)
+    }
+}
+
+// -Vector3 (negate)
+impl ops::Neg for Vector3 {
+    type Output = Vector3;
+    fn neg(self) -> Vector3 {
+        Vector3::new(-self.x, -self.y, -self.z)
+    }
+}
+
+/// Quaternion for 3D rotation representation
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct Quaternion {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub w: f64,
+}
+
+impl Default for Quaternion {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl Quaternion {
+    pub fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
+        Self { x, y, z, w }
+    }
+
+    pub fn identity() -> Self {
+        Self::new(0.0, 0.0, 0.0, 1.0)
+    }
+
+    pub fn from_euler(roll: f64, pitch: f64, yaw: f64) -> Self {
+        let cr = (roll / 2.0).cos();
+        let sr = (roll / 2.0).sin();
+        let cp = (pitch / 2.0).cos();
+        let sp = (pitch / 2.0).sin();
+        let cy = (yaw / 2.0).cos();
+        let sy = (yaw / 2.0).sin();
+
+        Self {
+            x: sr * cp * cy - cr * sp * sy,
+            y: cr * sp * cy + sr * cp * sy,
+            z: cr * cp * sy - sr * sp * cy,
+            w: cr * cp * cy + sr * sp * sy,
+        }
+    }
+
+    pub fn normalize(&mut self) {
+        let norm = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
+        if norm > 0.0 {
+            self.x /= norm;
+            self.y /= norm;
+            self.z /= norm;
+            self.w /= norm;
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.z.is_finite() && self.w.is_finite()
+    }
+}
+
+// =============================================================================
+// 3D Pose Types
+// =============================================================================
+
+/// Full 6DOF pose (position + orientation)
+///
+/// Used for representing robot or object poses in 3D space.
+/// Composes existing `Point3` (position) and `Quaternion` (orientation).
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Pose3D {
+    /// Position in 3D space
+    pub position: Point3,
+    /// Orientation as quaternion
+    pub orientation: Quaternion,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Pose3D {
+    /// Create a new 3D pose
+    pub fn new(position: Point3, orientation: Quaternion) -> Self {
+        Self {
+            position,
+            orientation,
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    /// Identity pose (origin, no rotation)
+    pub fn identity() -> Self {
+        Self::new(Point3::origin(), Quaternion::identity())
+    }
+
+    /// Create from a 2D pose (z=0, yaw-only rotation)
+    pub fn from_pose_2d(pose: &Pose2D) -> Self {
+        let half_theta = pose.theta / 2.0;
+        Self {
+            position: Point3::new(pose.x, pose.y, 0.0),
+            orientation: Quaternion::new(0.0, 0.0, half_theta.sin(), half_theta.cos()),
+            timestamp_ns: pose.timestamp_ns,
+        }
+    }
+
+    /// Calculate euclidean distance to another pose (position only)
+    pub fn distance_to(&self, other: &Pose3D) -> f64 {
+        self.position.distance_to(&other.position)
+    }
+
+    /// Check if all values are finite and quaternion is valid
+    pub fn is_valid(&self) -> bool {
+        self.position.x.is_finite()
+            && self.position.y.is_finite()
+            && self.position.z.is_finite()
+            && self.orientation.is_valid()
+    }
+}
+
+/// 3D pose with frame context
+///
+/// Attaches a coordinate frame ID to a `Pose3D` for unambiguous spatial reference.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct PoseStamped {
+    /// The pose
+    pub pose: Pose3D,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl PoseStamped {
+    /// Create a new PoseStamped
+    pub fn new(pose: Pose3D) -> Self {
+        Self {
+            pose,
+            frame_id: [0; 32],
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    impl_with_frame_id!();
+}
+
+/// 3D pose with 6x6 covariance matrix
+///
+/// Used for localization output (AMCL, EKF) where uncertainty information
+/// is critical for downstream sensor fusion.
+///
+/// Covariance is row-major 6x6: [x, y, z, roll, pitch, yaw].
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct PoseWithCovariance {
+    /// The pose
+    pub pose: Pose3D,
+    /// 6x6 covariance matrix (row-major): x, y, z, roll, pitch, yaw
+    #[serde(with = "serde_arrays")]
+    pub covariance: [f64; 36],
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for PoseWithCovariance {
+    fn default() -> Self {
+        Self {
+            pose: Pose3D::default(),
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl PoseWithCovariance {
+    /// Create a new PoseWithCovariance
+    pub fn new(pose: Pose3D) -> Self {
+        Self {
+            pose,
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    impl_with_frame_id!();
+
+    /// Get position variance [var_x, var_y, var_z] from diagonal
+    pub fn position_variance(&self) -> [f64; 3] {
+        [self.covariance[0], self.covariance[7], self.covariance[14]]
+    }
+
+    /// Get orientation variance [var_roll, var_pitch, var_yaw] from diagonal
+    pub fn orientation_variance(&self) -> [f64; 3] {
+        [
+            self.covariance[21],
+            self.covariance[28],
+            self.covariance[35],
+        ]
+    }
+}
+
+/// 3D twist with 6x6 covariance matrix
+///
+/// Used for sensor fusion velocity input (EKF). Wraps existing `Twist`
+/// with uncertainty information.
+///
+/// Covariance is row-major 6x6: [vx, vy, vz, wx, wy, wz].
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct TwistWithCovariance {
+    /// The twist (linear + angular velocity)
+    pub twist: Twist,
+    /// 6x6 covariance matrix (row-major): vx, vy, vz, wx, wy, wz
+    #[serde(with = "serde_arrays")]
+    pub covariance: [f64; 36],
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for TwistWithCovariance {
+    fn default() -> Self {
+        Self {
+            twist: Twist::default(),
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl TwistWithCovariance {
+    /// Create a new TwistWithCovariance
+    pub fn new(twist: Twist) -> Self {
+        Self {
+            twist,
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    impl_with_frame_id!();
+
+    /// Get linear velocity variance [var_vx, var_vy, var_vz] from diagonal
+    pub fn linear_variance(&self) -> [f64; 3] {
+        [self.covariance[0], self.covariance[7], self.covariance[14]]
+    }
+
+    /// Get angular velocity variance [var_wx, var_wy, var_wz] from diagonal
+    pub fn angular_variance(&self) -> [f64; 3] {
+        [
+            self.covariance[21],
+            self.covariance[28],
+            self.covariance[35],
+        ]
+    }
+}
+
+// =============================================================================
+// Acceleration Types
+// =============================================================================
+
+/// 3D acceleration (linear + angular)
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Accel {
+    /// Linear acceleration [x, y, z] in m/s²
+    pub linear: [f64; 3],
+    /// Angular acceleration [roll, pitch, yaw] in rad/s²
+    pub angular: [f64; 3],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Accel {
+    /// Create a new acceleration message
+    pub fn new(linear: [f64; 3], angular: [f64; 3]) -> Self {
+        Self {
+            linear,
+            angular,
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    /// Check if all values are finite
+    pub fn is_valid(&self) -> bool {
+        self.linear.iter().all(|v| v.is_finite()) && self.angular.iter().all(|v| v.is_finite())
+    }
+}
+
+/// 3D acceleration with frame context
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct AccelStamped {
+    /// The acceleration
+    pub accel: Accel,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl AccelStamped {
+    /// Create a new AccelStamped
+    pub fn new(accel: Accel) -> Self {
+        Self {
+            accel,
+            frame_id: [0; 32],
+            timestamp_ns: timestamp_now(),
+        }
+    }
+
+    impl_with_frame_id!();
+}
+
+// =============================================================================
+// softmata-core Conversions
+// =============================================================================
+// Bidirectional conversions between HORUS IPC types and softmata-core
+// canonical types. HORUS types keep Pod/Zeroable/PodMessage/LogSummary;
+// softmata-core types are the portable, timestamp-free foundation.
+
+// --- Vector3 (exact layout match) ---
+
+impl From<softmata_core::geometry::Vector3> for Vector3 {
+    fn from(v: softmata_core::geometry::Vector3) -> Self {
+        Self {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+
+impl Vector3 {
+    /// Convert to softmata-core Vector3.
+    pub fn to_core(&self) -> softmata_core::geometry::Vector3 {
+        softmata_core::geometry::Vector3::new(self.x, self.y, self.z)
+    }
+}
+
+// --- Point3 (exact layout match) ---
+
+impl From<softmata_core::geometry::Point3> for Point3 {
+    fn from(p: softmata_core::geometry::Point3) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
+}
+
+impl Point3 {
+    /// Convert to softmata-core Point3.
+    pub fn to_core(&self) -> softmata_core::geometry::Point3 {
+        softmata_core::geometry::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+// --- Quaternion (exact layout match) ---
+
+impl From<softmata_core::geometry::Quaternion> for Quaternion {
+    fn from(q: softmata_core::geometry::Quaternion) -> Self {
+        Self {
+            x: q.x,
+            y: q.y,
+            z: q.z,
+            w: q.w,
+        }
+    }
+}
+
+impl Quaternion {
+    /// Convert to softmata-core Quaternion.
+    pub fn to_core(&self) -> softmata_core::geometry::Quaternion {
+        softmata_core::geometry::Quaternion::new(self.x, self.y, self.z, self.w)
+    }
+}
+
+// --- Pose2D (HORUS adds timestamp_ns) ---
+
+impl From<softmata_core::geometry::Pose2D> for Pose2D {
+    fn from(p: softmata_core::geometry::Pose2D) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            theta: p.theta,
+            timestamp_ns: timestamp_now(),
+        }
+    }
+}
+
+impl Pose2D {
+    /// Convert to softmata-core Pose2D (drops timestamp_ns).
+    pub fn to_core(&self) -> softmata_core::geometry::Pose2D {
+        softmata_core::geometry::Pose2D::new(self.x, self.y, self.theta)
+    }
+}
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+// These implementations enable ultra-fast zero-serialization transfer (~50ns)
+// for real-time robotics control loops. Topic automatically uses POD backend.
+
+impl_pod_message!(
+    Twist,
+    Pose2D,
+    TransformStamped,
+    Point3,
+    Vector3,
+    Quaternion,
+    Pose3D,
+    PoseStamped,
+    PoseWithCovariance,
+    TwistWithCovariance,
+    Accel,
+    AccelStamped,
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horus_core::core::LogSummary;
+    use std::f64::consts::PI;
+
+    // ============================================================================
+    // Twist Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_new() {
+        let twist = Twist::new([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
+        assert_eq!(twist.linear[0], 1.0);
+        assert_eq!(twist.linear[1], 2.0);
+        assert_eq!(twist.linear[2], 3.0);
+        assert_eq!(twist.angular[0], 0.1);
+        assert_eq!(twist.angular[1], 0.2);
+        assert_eq!(twist.angular[2], 0.3);
+        assert!(twist.timestamp_ns > 0);
+    }
+
+    #[test]
+    fn test_twist_new_2d() {
+        let twist = Twist::new_2d(1.5, 0.5);
+        assert_eq!(twist.linear[0], 1.5);
+        assert_eq!(twist.linear[1], 0.0);
+        assert_eq!(twist.linear[2], 0.0);
+        assert_eq!(twist.angular[0], 0.0);
+        assert_eq!(twist.angular[1], 0.0);
+        assert_eq!(twist.angular[2], 0.5);
+    }
+
+    #[test]
+    fn test_twist_stop() {
+        let twist = Twist::stop();
+        assert_eq!(twist.linear, [0.0, 0.0, 0.0]);
+        assert_eq!(twist.angular, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_twist_is_valid() {
+        let valid = Twist::new([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
+        assert!(valid.is_valid());
+
+        let invalid = Twist::new([f64::INFINITY, 0.0, 0.0], [0.0; 3]);
+        assert!(!invalid.is_valid());
+
+        let nan = Twist::new([f64::NAN, 0.0, 0.0], [0.0; 3]);
+        assert!(!nan.is_valid());
+    }
+
+    #[test]
+    fn test_twist_serialization() {
+        let twist = Twist::new([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
+        let serialized = serde_json::to_string(&twist).unwrap();
+        let deserialized: Twist = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(twist.linear, deserialized.linear);
+        assert_eq!(twist.angular, deserialized.angular);
+    }
+
+    // ============================================================================
+    // Pose2D Tests
+    // ============================================================================
+
+    #[test]
+    fn test_pose2d_new() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        assert_eq!(pose.x, 1.0);
+        assert_eq!(pose.y, 2.0);
+        assert_eq!(pose.theta, 0.5);
+        assert!(pose.timestamp_ns > 0);
+    }
+
+    #[test]
+    fn test_pose2d_origin() {
+        let pose = Pose2D::origin();
+        assert_eq!(pose.x, 0.0);
+        assert_eq!(pose.y, 0.0);
+        assert_eq!(pose.theta, 0.0);
+    }
+
+    #[test]
+    fn test_pose2d_distance_to() {
+        let p1 = Pose2D::new(0.0, 0.0, 0.0);
+        let p2 = Pose2D::new(3.0, 4.0, 0.0);
+        assert!((p1.distance_to(&p2) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pose2d_normalize_angle() {
+        let mut pose = Pose2D::new(0.0, 0.0, 3.0 * PI);
+        pose.normalize_angle();
+        assert!(pose.theta >= -PI && pose.theta <= PI);
+
+        let mut pose2 = Pose2D::new(0.0, 0.0, -3.0 * PI);
+        pose2.normalize_angle();
+        assert!(pose2.theta >= -PI && pose2.theta <= PI);
+    }
+
+    #[test]
+    fn test_pose2d_is_valid() {
+        let valid = Pose2D::new(1.0, 2.0, 0.5);
+        assert!(valid.is_valid());
+
+        let invalid = Pose2D::new(f64::INFINITY, 0.0, 0.0);
+        assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    fn test_pose2d_serialization() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let serialized = serde_json::to_string(&pose).unwrap();
+        let deserialized: Pose2D = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(pose.x, deserialized.x);
+        assert_eq!(pose.y, deserialized.y);
+        assert_eq!(pose.theta, deserialized.theta);
+    }
+
+    // ============================================================================
+    // Transform Tests
+    // ============================================================================
+
+    #[test]
+    fn test_transform_new() {
+        let tf = TransformStamped::new([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(tf.translation, [1.0, 2.0, 3.0]);
+        assert_eq!(tf.rotation, [0.0, 0.0, 0.0, 1.0]);
+        assert!(tf.timestamp_ns > 0);
+    }
+
+    #[test]
+    fn test_transform_identity() {
+        let tf = TransformStamped::identity();
+        assert_eq!(tf.translation, [0.0, 0.0, 0.0]);
+        assert_eq!(tf.rotation, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_transform_from_pose_2d() {
+        let pose = Pose2D::new(1.0, 2.0, 0.0);
+        let tf = TransformStamped::from_pose_2d(&pose);
+        assert_eq!(tf.translation[0], 1.0);
+        assert_eq!(tf.translation[1], 2.0);
+        assert_eq!(tf.translation[2], 0.0);
+        // Identity quaternion for theta=0
+        assert!((tf.rotation[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_transform_is_valid() {
+        let valid = TransformStamped::identity();
+        assert!(valid.is_valid());
+
+        let invalid_translation =
+            TransformStamped::new([f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(!invalid_translation.is_valid());
+
+        let unnormalized = TransformStamped::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
+        assert!(!unnormalized.is_valid()); // Quaternion not normalized
+    }
+
+    #[test]
+    fn test_transform_normalize_rotation() {
+        let mut tf = TransformStamped::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
+        tf.normalize_rotation();
+        let norm = tf.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_transform_serialization() {
+        let tf = TransformStamped::identity();
+        let serialized = serde_json::to_string(&tf).unwrap();
+        let deserialized: TransformStamped = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(tf.translation, deserialized.translation);
+        assert_eq!(tf.rotation, deserialized.rotation);
+    }
+
+    // ============================================================================
+    // Point3 Tests
+    // ============================================================================
+
+    #[test]
+    fn test_point3_new() {
+        let p = Point3::new(1.0, 2.0, 3.0);
+        assert_eq!(p.x, 1.0);
+        assert_eq!(p.y, 2.0);
+        assert_eq!(p.z, 3.0);
+    }
+
+    #[test]
+    fn test_point3_origin() {
+        let p = Point3::origin();
+        assert_eq!(p.x, 0.0);
+        assert_eq!(p.y, 0.0);
+        assert_eq!(p.z, 0.0);
+    }
+
+    #[test]
+    fn test_point3_distance_to() {
+        let p1 = Point3::origin();
+        let p2 = Point3::new(1.0, 2.0, 2.0);
+        assert!((p1.distance_to(&p2) - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_serialization() {
+        let p = Point3::new(1.0, 2.0, 3.0);
+        let serialized = serde_json::to_string(&p).unwrap();
+        let deserialized: Point3 = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(p.x, deserialized.x);
+        assert_eq!(p.y, deserialized.y);
+        assert_eq!(p.z, deserialized.z);
+    }
+
+    // ============================================================================
+    // Vector3 Tests
+    // ============================================================================
+
+    #[test]
+    fn test_vector3_new() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        assert_eq!(v.x, 1.0);
+        assert_eq!(v.y, 2.0);
+        assert_eq!(v.z, 3.0);
+    }
+
+    #[test]
+    fn test_vector3_zero() {
+        let v = Vector3::zero();
+        assert_eq!(v.x, 0.0);
+        assert_eq!(v.y, 0.0);
+        assert_eq!(v.z, 0.0);
+    }
+
+    #[test]
+    fn test_vector3_magnitude() {
+        let v = Vector3::new(3.0, 4.0, 0.0);
+        assert!((v.magnitude() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_normalize() {
+        let mut v = Vector3::new(3.0, 4.0, 0.0);
+        v.normalize();
+        assert!((v.magnitude() - 1.0).abs() < 1e-10);
+        assert!((v.x - 0.6).abs() < 1e-10);
+        assert!((v.y - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_dot() {
+        let v1 = Vector3::new(1.0, 2.0, 3.0);
+        let v2 = Vector3::new(4.0, 5.0, 6.0);
+        assert!((v1.dot(&v2) - 32.0).abs() < 1e-10); // 1*4 + 2*5 + 3*6 = 32
+    }
+
+    #[test]
+    fn test_vector3_cross() {
+        let i = Vector3::new(1.0, 0.0, 0.0);
+        let j = Vector3::new(0.0, 1.0, 0.0);
+        let k = i.cross(&j);
+        assert!((k.x - 0.0).abs() < 1e-10);
+        assert!((k.y - 0.0).abs() < 1e-10);
+        assert!((k.z - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_normalized() {
+        let v = Vector3::new(3.0, 4.0, 0.0);
+        let n = v.normalized();
+        assert!((n.magnitude() - 1.0).abs() < 1e-10);
+        assert!((n.x - 0.6).abs() < 1e-10);
+        assert!((n.y - 0.8).abs() < 1e-10);
+        // Original unchanged
+        assert!((v.magnitude() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_normalized_zero() {
+        let v = Vector3::zero();
+        let n = v.normalized();
+        assert_eq!(n.x, 0.0);
+        assert_eq!(n.y, 0.0);
+        assert_eq!(n.z, 0.0);
+    }
+
+    #[test]
+    fn test_vector3_serialization() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let serialized = serde_json::to_string(&v).unwrap();
+        let deserialized: Vector3 = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(v.x, deserialized.x);
+        assert_eq!(v.y, deserialized.y);
+        assert_eq!(v.z, deserialized.z);
+    }
+
+    // ============================================================================
+    // Point3 / Vector3 Operator Tests
+    // ============================================================================
+
+    #[test]
+    fn test_point3_sub_point3() {
+        let a = Point3::new(3.0, 5.0, 7.0);
+        let b = Point3::new(1.0, 2.0, 3.0);
+        let v: Vector3 = a - b;
+        assert!((v.x - 2.0).abs() < 1e-10);
+        assert!((v.y - 3.0).abs() < 1e-10);
+        assert!((v.z - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_add_vector3() {
+        let p = Point3::new(1.0, 2.0, 3.0);
+        let v = Vector3::new(10.0, 20.0, 30.0);
+        let result = p + v;
+        assert!((result.x - 11.0).abs() < 1e-10);
+        assert!((result.y - 22.0).abs() < 1e-10);
+        assert!((result.z - 33.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_sub_vector3() {
+        let p = Point3::new(10.0, 20.0, 30.0);
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let result = p - v;
+        assert!((result.x - 9.0).abs() < 1e-10);
+        assert!((result.y - 18.0).abs() < 1e-10);
+        assert!((result.z - 27.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_add() {
+        let a = Vector3::new(1.0, 2.0, 3.0);
+        let b = Vector3::new(4.0, 5.0, 6.0);
+        let c = a + b;
+        assert!((c.x - 5.0).abs() < 1e-10);
+        assert!((c.y - 7.0).abs() < 1e-10);
+        assert!((c.z - 9.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_sub() {
+        let a = Vector3::new(4.0, 5.0, 6.0);
+        let b = Vector3::new(1.0, 2.0, 3.0);
+        let c = a - b;
+        assert!((c.x - 3.0).abs() < 1e-10);
+        assert!((c.y - 3.0).abs() < 1e-10);
+        assert!((c.z - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_scalar_mul() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let scaled = v * 2.0;
+        assert!((scaled.x - 2.0).abs() < 1e-10);
+        assert!((scaled.y - 4.0).abs() < 1e-10);
+        assert!((scaled.z - 6.0).abs() < 1e-10);
+        // Commutative
+        let scaled2 = 2.0 * v;
+        assert!((scaled2.x - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_neg() {
+        let v = Vector3::new(1.0, -2.0, 3.0);
+        let neg = -v;
+        assert!((neg.x - (-1.0)).abs() < 1e-10);
+        assert!((neg.y - 2.0).abs() < 1e-10);
+        assert!((neg.z - (-3.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_distance_via_ops() {
+        let a = Point3::new(1.0, 2.0, 3.0);
+        let b = Point3::new(4.0, 6.0, 3.0);
+        let displacement = b - a;
+        assert!((displacement.magnitude() - 5.0).abs() < 1e-10);
+        assert!((a.distance_to(&b) - displacement.magnitude()).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // Quaternion Tests
+    // ============================================================================
+
+    #[test]
+    fn test_quaternion_new() {
+        let q = Quaternion::new(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(q.x, 0.0);
+        assert_eq!(q.y, 0.0);
+        assert_eq!(q.z, 0.0);
+        assert_eq!(q.w, 1.0);
+    }
+
+    #[test]
+    fn test_quaternion_identity() {
+        let q = Quaternion::identity();
+        assert_eq!(q.x, 0.0);
+        assert_eq!(q.y, 0.0);
+        assert_eq!(q.z, 0.0);
+        assert_eq!(q.w, 1.0);
+    }
+
+    #[test]
+    fn test_quaternion_default() {
+        let q = Quaternion::default();
+        assert_eq!(q.w, 1.0);
+    }
+
+    #[test]
+    fn test_quaternion_from_euler_identity() {
+        let q = Quaternion::from_euler(0.0, 0.0, 0.0);
+        assert!((q.x - 0.0).abs() < 1e-10);
+        assert!((q.y - 0.0).abs() < 1e-10);
+        assert!((q.z - 0.0).abs() < 1e-10);
+        assert!((q.w - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_quaternion_from_euler_yaw_90() {
+        let q = Quaternion::from_euler(0.0, 0.0, PI / 2.0);
+        // 90 degree yaw: qz ≈ sin(45°) ≈ 0.707, qw ≈ cos(45°) ≈ 0.707
+        assert!((q.z - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((q.w - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_quaternion_normalize() {
+        let mut q = Quaternion::new(1.0, 1.0, 1.0, 1.0);
+        q.normalize();
+        let norm = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+        assert!((norm - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_quaternion_is_valid() {
+        let valid = Quaternion::identity();
+        assert!(valid.is_valid());
+
+        let invalid = Quaternion::new(f64::INFINITY, 0.0, 0.0, 1.0);
+        assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    fn test_quaternion_serialization() {
+        let q = Quaternion::identity();
+        let serialized = serde_json::to_string(&q).unwrap();
+        let deserialized: Quaternion = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(q.x, deserialized.x);
+        assert_eq!(q.y, deserialized.y);
+        assert_eq!(q.z, deserialized.z);
+        assert_eq!(q.w, deserialized.w);
+    }
+
+    // ============================================================================
+    // LogSummary Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_log_summary() {
+        let twist = Twist::new_2d(1.0, 0.5);
+        let summary = twist.log_summary();
+        assert!(!summary.is_empty());
+        assert!(summary.contains("linear") || summary.contains("1.0"));
+    }
+
+    #[test]
+    fn test_pose2d_log_summary() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let summary = pose.log_summary();
+        assert!(!summary.is_empty());
+    }
+
+    // ============================================================================
+    // Pod Message (bytemuck) Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_pod_cast() {
+        let twist = Twist::new_2d(1.5, 0.3);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&twist);
+        let reconstructed: &Twist = horus_core::bytemuck::from_bytes(bytes);
+        assert_eq!(twist.linear, reconstructed.linear);
+        assert_eq!(twist.angular, reconstructed.angular);
+    }
+
+    #[test]
+    fn test_pose2d_pod_cast() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&pose);
+        let reconstructed: &Pose2D = horus_core::bytemuck::from_bytes(bytes);
+        assert_eq!(pose.x, reconstructed.x);
+        assert_eq!(pose.y, reconstructed.y);
+        assert_eq!(pose.theta, reconstructed.theta);
+    }
+
+    #[test]
+    fn test_vector3_pod_cast() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&v);
+        let reconstructed: &Vector3 = horus_core::bytemuck::from_bytes(bytes);
+        assert_eq!(v.x, reconstructed.x);
+        assert_eq!(v.y, reconstructed.y);
+        assert_eq!(v.z, reconstructed.z);
+    }
+
+    // ============================================================================
+    // Point3 <-> Vector3 Conversion Tests
+    // ============================================================================
+
+    #[test]
+    fn test_vector3_to_point3() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let p: Point3 = v.into();
+        assert_eq!(p.x, 1.0);
+        assert_eq!(p.y, 2.0);
+        assert_eq!(p.z, 3.0);
+    }
+
+    #[test]
+    fn test_point3_to_vector3() {
+        let p = Point3::new(4.0, 5.0, 6.0);
+        let v: Vector3 = p.into();
+        assert_eq!(v.x, 4.0);
+        assert_eq!(v.y, 5.0);
+        assert_eq!(v.z, 6.0);
+    }
+
+    // ============================================================================
+    // softmata-core Conversion Tests
+    // ============================================================================
+
+    #[test]
+    fn test_vector3_from_core() {
+        let core_v = softmata_core::geometry::Vector3::new(1.0, 2.0, 3.0);
+        let horus_v: Vector3 = core_v.into();
+        assert_eq!(horus_v.x, 1.0);
+        assert_eq!(horus_v.y, 2.0);
+        assert_eq!(horus_v.z, 3.0);
+    }
+
+    #[test]
+    fn test_vector3_to_core() {
+        let horus_v = Vector3::new(4.0, 5.0, 6.0);
+        let core_v = horus_v.to_core();
+        assert_eq!(core_v.x, 4.0);
+        assert_eq!(core_v.y, 5.0);
+        assert_eq!(core_v.z, 6.0);
+    }
+
+    #[test]
+    fn test_point3_from_core() {
+        let core_p = softmata_core::geometry::Point3::new(7.0, 8.0, 9.0);
+        let horus_p: Point3 = core_p.into();
+        assert_eq!(horus_p.x, 7.0);
+        assert_eq!(horus_p.y, 8.0);
+        assert_eq!(horus_p.z, 9.0);
+    }
+
+    #[test]
+    fn test_point3_to_core() {
+        let horus_p = Point3::new(1.5, 2.5, 3.5);
+        let core_p = horus_p.to_core();
+        assert_eq!(core_p.x, 1.5);
+        assert_eq!(core_p.y, 2.5);
+        assert_eq!(core_p.z, 3.5);
+    }
+
+    #[test]
+    fn test_quaternion_from_core() {
+        let core_q = softmata_core::geometry::Quaternion::new(0.1, 0.2, 0.3, 0.9);
+        let horus_q: Quaternion = core_q.into();
+        assert_eq!(horus_q.x, 0.1);
+        assert_eq!(horus_q.y, 0.2);
+        assert_eq!(horus_q.z, 0.3);
+        assert_eq!(horus_q.w, 0.9);
+    }
+
+    #[test]
+    fn test_quaternion_to_core() {
+        let horus_q = Quaternion::new(0.0, 0.0, 0.0, 1.0);
+        let core_q = horus_q.to_core();
+        assert_eq!(core_q.x, 0.0);
+        assert_eq!(core_q.y, 0.0);
+        assert_eq!(core_q.z, 0.0);
+        assert_eq!(core_q.w, 1.0);
+    }
+
+    #[test]
+    fn test_pose2d_from_core() {
+        let core_p = softmata_core::geometry::Pose2D::new(1.0, 2.0, 0.5);
+        let horus_p: Pose2D = core_p.into();
+        assert_eq!(horus_p.x, 1.0);
+        assert_eq!(horus_p.y, 2.0);
+        assert_eq!(horus_p.theta, 0.5);
+        assert!(horus_p.timestamp_ns > 0); // auto-timestamped
+    }
+
+    #[test]
+    fn test_pose2d_to_core() {
+        let horus_p = Pose2D::new(3.0, 4.0, 1.57);
+        let core_p = horus_p.to_core();
+        assert_eq!(core_p.x, 3.0);
+        assert_eq!(core_p.y, 4.0);
+        assert_eq!(core_p.theta, 1.57);
+    }
+
+    #[test]
+    fn test_vector3_roundtrip_core() {
+        let original = Vector3::new(1.0, 2.0, 3.0);
+        let roundtripped: Vector3 = original.to_core().into();
+        assert_eq!(original.x, roundtripped.x);
+        assert_eq!(original.y, roundtripped.y);
+        assert_eq!(original.z, roundtripped.z);
+    }
+
+    // ========================================================================
+    // Pod roundtrip and edge case tests
+    // ========================================================================
+
+    // test_cmd_vel_pod_roundtrip moved to horus-robotics (CmdVel is a robotics type)
+
+    #[test]
+    fn test_pose2d_pod_roundtrip() {
+        let pose = Pose2D::new(10.5, -3.2, 1.57);
+        let bytes: &[u8] = bytemuck::bytes_of(&pose);
+        let recovered: &Pose2D = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.x, 10.5);
+        assert_eq!(recovered.y, -3.2);
+        assert!((recovered.theta - 1.57).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_twist_pod_roundtrip() {
+        let twist = Twist {
+            linear: [1.0, 2.0, 3.0],
+            angular: [0.1, 0.2, 0.3],
+            timestamp_ns: 42,
+        };
+        let bytes: &[u8] = bytemuck::bytes_of(&twist);
+        let recovered: &Twist = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.linear[0], 1.0);
+        assert_eq!(recovered.angular[2], 0.3);
+        assert_eq!(recovered.timestamp_ns, 42);
+    }
+
+    #[test]
+    fn test_quaternion_from_euler_90_yaw_is_unit() {
+        let q = Quaternion::from_euler(0.0, 0.0, std::f64::consts::FRAC_PI_2);
+        let norm = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+        assert!((norm - 1.0).abs() < 1e-10, "from_euler must produce unit quaternion");
+    }
+
+    #[test]
+    fn test_vector3_normalize_zero_returns_false() {
+        let mut v = Vector3::zero();
+        let success = v.normalize();
+        assert!(!success, "normalizing zero vector should return false");
+    }
+
+    #[test]
+    fn test_vector3_cross_orthogonal() {
+        let a = Vector3::new(1.0, 0.0, 0.0);
+        let b = Vector3::new(0.0, 1.0, 0.0);
+        let c = a.cross(&b);
+        assert!((c.z - 1.0).abs() < 1e-10, "x cross y should be z");
+    }
+
+    #[test]
+    fn test_pose2d_distance_3_4_5() {
+        let a = Pose2D::new(0.0, 0.0, 0.0);
+        let b = Pose2D::new(3.0, 4.0, 0.0);
+        assert!((a.distance_to(&b) - 5.0).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // Twist Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_all_zeros_is_valid() {
+        let twist = Twist::new([0.0; 3], [0.0; 3]);
+        assert!(twist.is_valid());
+        assert_eq!(twist.linear, [0.0, 0.0, 0.0]);
+        assert_eq!(twist.angular, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_twist_max_values() {
+        let twist = Twist::new([f64::MAX, f64::MAX, f64::MAX], [f64::MAX, f64::MAX, f64::MAX]);
+        assert!(twist.is_valid());
+    }
+
+    #[test]
+    fn test_twist_min_positive_values() {
+        let twist = Twist::new([f64::MIN_POSITIVE; 3], [f64::MIN_POSITIVE; 3]);
+        assert!(twist.is_valid());
+    }
+
+    #[test]
+    fn test_twist_negative_infinity_invalid() {
+        let twist = Twist::new([f64::NEG_INFINITY, 0.0, 0.0], [0.0; 3]);
+        assert!(!twist.is_valid());
+    }
+
+    #[test]
+    fn test_twist_nan_in_angular_invalid() {
+        let twist = Twist::new([0.0; 3], [0.0, f64::NAN, 0.0]);
+        assert!(!twist.is_valid());
+    }
+
+    #[test]
+    fn test_twist_negative_velocities() {
+        let twist = Twist::new([-1.0, -2.0, -3.0], [-0.1, -0.2, -0.3]);
+        assert!(twist.is_valid());
+        assert_eq!(twist.linear[0], -1.0);
+        assert_eq!(twist.angular[2], -0.3);
+    }
+
+    #[test]
+    fn test_twist_default_is_zero() {
+        let twist = Twist::default();
+        assert_eq!(twist.linear, [0.0; 3]);
+        assert_eq!(twist.angular, [0.0; 3]);
+        assert_eq!(twist.timestamp_ns, 0);
+    }
+
+    #[test]
+    fn test_twist_stop_matches_default_values() {
+        let stop = Twist::stop();
+        assert_eq!(stop.linear, [0.0; 3]);
+        assert_eq!(stop.angular, [0.0; 3]);
+        // stop() should have a valid timestamp, unlike default()
+        assert!(stop.timestamp_ns > 0);
+    }
+
+    #[test]
+    fn test_twist_2d_zero_forward_with_rotation() {
+        let twist = Twist::new_2d(0.0, 1.0);
+        assert_eq!(twist.linear[0], 0.0);
+        assert_eq!(twist.angular[2], 1.0);
+        // Other components should be zero
+        assert_eq!(twist.linear[1], 0.0);
+        assert_eq!(twist.linear[2], 0.0);
+        assert_eq!(twist.angular[0], 0.0);
+        assert_eq!(twist.angular[1], 0.0);
+    }
+
+    #[test]
+    fn test_twist_serialization_preserves_negative_values() {
+        let twist = Twist::new([-1.5, -2.5, -3.5], [-0.1, -0.2, -0.3]);
+        let json = serde_json::to_string(&twist).unwrap();
+        let recovered: Twist = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.linear, [-1.5, -2.5, -3.5]);
+        assert_eq!(recovered.angular, [-0.1, -0.2, -0.3]);
+    }
+
+    // ============================================================================
+    // Accel Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_accel_new() {
+        let accel = Accel::new([9.81, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        assert_eq!(accel.linear[0], 9.81);
+        assert_eq!(accel.angular[2], 1.0);
+        assert!(accel.timestamp_ns > 0);
+    }
+
+    #[test]
+    fn test_accel_default_is_zero() {
+        let accel = Accel::default();
+        assert_eq!(accel.linear, [0.0; 3]);
+        assert_eq!(accel.angular, [0.0; 3]);
+    }
+
+    #[test]
+    fn test_accel_gravity_only() {
+        let accel = Accel::new([0.0, 0.0, -9.81], [0.0; 3]);
+        assert!(accel.is_valid());
+        assert_eq!(accel.linear[2], -9.81);
+    }
+
+    #[test]
+    fn test_accel_nan_invalid() {
+        let accel = Accel::new([f64::NAN, 0.0, 0.0], [0.0; 3]);
+        assert!(!accel.is_valid());
+    }
+
+    #[test]
+    fn test_accel_infinity_in_angular_invalid() {
+        let accel = Accel::new([0.0; 3], [0.0, f64::INFINITY, 0.0]);
+        assert!(!accel.is_valid());
+    }
+
+    #[test]
+    fn test_accel_serialization() {
+        let accel = Accel::new([1.0, -2.0, 9.81], [0.01, -0.02, 0.03]);
+        let json = serde_json::to_string(&accel).unwrap();
+        let recovered: Accel = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.linear, [1.0, -2.0, 9.81]);
+        assert_eq!(recovered.angular, [0.01, -0.02, 0.03]);
+    }
+
+    #[test]
+    fn test_accel_pod_roundtrip() {
+        let accel = Accel::new([1.0, 2.0, 3.0], [0.4, 0.5, 0.6]);
+        let bytes: &[u8] = bytemuck::bytes_of(&accel);
+        let recovered: &Accel = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.linear, [1.0, 2.0, 3.0]);
+        assert_eq!(recovered.angular, [0.4, 0.5, 0.6]);
+    }
+
+    #[test]
+    fn test_accel_stamped_with_frame_id() {
+        let accel = Accel::new([0.0, 0.0, -9.81], [0.0; 3]);
+        let stamped = AccelStamped::new(accel).with_frame_id("imu_link");
+        assert_eq!(stamped.accel.linear[2], -9.81);
+        let frame_str = std::str::from_utf8(
+            &stamped.frame_id[..stamped.frame_id.iter().position(|&b| b == 0).unwrap_or(32)],
+        )
+        .unwrap();
+        assert_eq!(frame_str, "imu_link");
+    }
+
+    // ============================================================================
+    // TransformStamped Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_transform_stamped_serialization_with_rotation() {
+        let tf = TransformStamped::new(
+            [1.0, 2.0, 3.0],
+            [0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2],
+        );
+        let json = serde_json::to_string(&tf).unwrap();
+        let recovered: TransformStamped = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.translation, [1.0, 2.0, 3.0]);
+        assert!((recovered.rotation[2] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-10);
+        assert!((recovered.rotation[3] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_transform_stamped_from_pose_2d_90_degrees() {
+        let pose = Pose2D::new(5.0, 10.0, PI / 2.0);
+        let tf = TransformStamped::from_pose_2d(&pose);
+        assert_eq!(tf.translation[0], 5.0);
+        assert_eq!(tf.translation[1], 10.0);
+        assert_eq!(tf.translation[2], 0.0);
+        // Quaternion for 90 degree yaw: qz = sin(45) = 0.707, qw = cos(45) = 0.707
+        assert!((tf.rotation[2] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((tf.rotation[3] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!(tf.is_valid());
+    }
+
+    #[test]
+    fn test_transform_stamped_from_pose_2d_180_degrees() {
+        let pose = Pose2D::new(0.0, 0.0, PI);
+        let tf = TransformStamped::from_pose_2d(&pose);
+        // Quaternion for 180 degree yaw: qz = sin(90) = 1.0, qw = cos(90) ≈ 0.0
+        assert!((tf.rotation[2] - 1.0).abs() < 1e-6);
+        assert!(tf.rotation[3].abs() < 1e-6);
+        assert!(tf.is_valid());
+    }
+
+    #[test]
+    fn test_transform_stamped_zero_quaternion_invalid() {
+        let tf = TransformStamped::new([0.0; 3], [0.0, 0.0, 0.0, 0.0]);
+        assert!(!tf.is_valid()); // Zero quaternion is not normalized
+    }
+
+    #[test]
+    fn test_transform_stamped_normalize_near_zero_quaternion() {
+        let mut tf = TransformStamped::new([0.0; 3], [1e-15, 1e-15, 1e-15, 1e-15]);
+        tf.normalize_rotation();
+        // Near-zero quaternion: norm < 1e-12, so it should not be normalized (division by near-zero)
+        // The guard in normalize_rotation checks norm > 1e-12
+        let norm = tf.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
+        // The original values are ~4e-15 norm, which is below 1e-12, so unchanged
+        assert!(norm < 1e-12);
+    }
+
+    #[test]
+    fn test_transform_stamped_pod_roundtrip() {
+        let tf = TransformStamped::new([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        let bytes: &[u8] = bytemuck::bytes_of(&tf);
+        let recovered: &TransformStamped = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.translation, [1.0, 2.0, 3.0]);
+        assert_eq!(recovered.rotation, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_transform_stamped_nan_translation_invalid() {
+        let tf = TransformStamped::new([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(!tf.is_valid());
+    }
+
+    #[test]
+    fn test_transform_stamped_nan_rotation_invalid() {
+        let tf = TransformStamped::new([0.0; 3], [f64::NAN, 0.0, 0.0, 1.0]);
+        assert!(!tf.is_valid());
+    }
+
+    // WrenchStamped tests moved to horus-robotics (WrenchStamped is a robotics type)
+
+    // ============================================================================
+    // Pose3D Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_pose3d_identity() {
+        let pose = Pose3D::identity();
+        assert_eq!(pose.position.x, 0.0);
+        assert_eq!(pose.position.y, 0.0);
+        assert_eq!(pose.position.z, 0.0);
+        assert_eq!(pose.orientation.w, 1.0);
+        assert!(pose.is_valid());
+    }
+
+    #[test]
+    fn test_pose3d_from_pose_2d() {
+        let pose2d = Pose2D::new(3.0, 4.0, PI / 4.0);
+        let pose3d = Pose3D::from_pose_2d(&pose2d);
+        assert_eq!(pose3d.position.x, 3.0);
+        assert_eq!(pose3d.position.y, 4.0);
+        assert_eq!(pose3d.position.z, 0.0);
+        assert!(pose3d.is_valid());
+    }
+
+    #[test]
+    fn test_pose3d_distance_to() {
+        let a = Pose3D::new(Point3::new(0.0, 0.0, 0.0), Quaternion::identity());
+        let b = Pose3D::new(Point3::new(3.0, 4.0, 0.0), Quaternion::identity());
+        assert!((a.distance_to(&b) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pose3d_invalid_orientation() {
+        let pose = Pose3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Quaternion::new(f64::NAN, 0.0, 0.0, 1.0),
+        );
+        assert!(!pose.is_valid());
+    }
+
+    #[test]
+    fn test_pose3d_invalid_position() {
+        let pose = Pose3D::new(
+            Point3::new(f64::INFINITY, 0.0, 0.0),
+            Quaternion::identity(),
+        );
+        assert!(!pose.is_valid());
+    }
+
+    // ============================================================================
+    // PoseWithCovariance Tests
+    // ============================================================================
+
+    #[test]
+    fn test_pose_with_covariance_diagonal_variance() {
+        let mut pwc = PoseWithCovariance::new(Pose3D::identity());
+        // Set diagonal entries for position variance
+        pwc.covariance[0] = 0.01;  // var_x
+        pwc.covariance[7] = 0.02;  // var_y
+        pwc.covariance[14] = 0.03; // var_z
+        // Set diagonal entries for orientation variance
+        pwc.covariance[21] = 0.001; // var_roll
+        pwc.covariance[28] = 0.002; // var_pitch
+        pwc.covariance[35] = 0.003; // var_yaw
+
+        let pos_var = pwc.position_variance();
+        assert!((pos_var[0] - 0.01).abs() < 1e-10);
+        assert!((pos_var[1] - 0.02).abs() < 1e-10);
+        assert!((pos_var[2] - 0.03).abs() < 1e-10);
+
+        let ori_var = pwc.orientation_variance();
+        assert!((ori_var[0] - 0.001).abs() < 1e-10);
+        assert!((ori_var[1] - 0.002).abs() < 1e-10);
+        assert!((ori_var[2] - 0.003).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pose_with_covariance_serialization() {
+        let mut pwc = PoseWithCovariance::new(Pose3D::identity());
+        pwc.covariance[0] = 0.5;
+        let json = serde_json::to_string(&pwc).unwrap();
+        let recovered: PoseWithCovariance = serde_json::from_str(&json).unwrap();
+        assert!((recovered.covariance[0] - 0.5).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // TwistWithCovariance Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_with_covariance_variance() {
+        let mut twc = TwistWithCovariance::new(Twist::new_2d(1.0, 0.5));
+        twc.covariance[0] = 0.1;  // var_vx
+        twc.covariance[7] = 0.2;  // var_vy
+        twc.covariance[14] = 0.3; // var_vz
+        twc.covariance[21] = 0.01; // var_wx
+        twc.covariance[28] = 0.02; // var_wy
+        twc.covariance[35] = 0.03; // var_wz
+
+        let lin_var = twc.linear_variance();
+        assert!((lin_var[0] - 0.1).abs() < 1e-10);
+        assert!((lin_var[1] - 0.2).abs() < 1e-10);
+        assert!((lin_var[2] - 0.3).abs() < 1e-10);
+
+        let ang_var = twc.angular_variance();
+        assert!((ang_var[0] - 0.01).abs() < 1e-10);
+        assert!((ang_var[1] - 0.02).abs() < 1e-10);
+        assert!((ang_var[2] - 0.03).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_twist_with_covariance_with_frame_id() {
+        let twc = TwistWithCovariance::new(Twist::stop()).with_frame_id("base_link");
+        let frame_str = std::str::from_utf8(
+            &twc.frame_id[..twc.frame_id.iter().position(|&b| b == 0).unwrap_or(32)],
+        )
+        .unwrap();
+        assert_eq!(frame_str, "base_link");
+    }
+
+    // ============================================================================
+    // Pose2D Additional Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_pose2d_normalize_angle_exact_pi() {
+        let mut pose = Pose2D::new(0.0, 0.0, PI);
+        pose.normalize_angle();
+        // PI is already within [-PI, PI], should stay at PI
+        assert!((pose.theta - PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pose2d_normalize_angle_large_positive() {
+        let mut pose = Pose2D::new(0.0, 0.0, 100.0 * PI);
+        pose.normalize_angle();
+        assert!(pose.theta >= -PI && pose.theta <= PI);
+    }
+
+    #[test]
+    fn test_pose2d_normalize_angle_large_negative() {
+        let mut pose = Pose2D::new(0.0, 0.0, -100.0 * PI);
+        pose.normalize_angle();
+        assert!(pose.theta >= -PI && pose.theta <= PI);
+    }
+
+    #[test]
+    fn test_pose2d_distance_to_self_is_zero() {
+        let pose = Pose2D::new(42.0, -17.5, 1.23);
+        assert!((pose.distance_to(&pose) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pose2d_nan_invalid() {
+        let pose = Pose2D {
+            x: 1.0,
+            y: f64::NAN,
+            theta: 0.0,
+            timestamp_ns: 0,
+        };
+        assert!(!pose.is_valid());
+    }
+
+    #[test]
+    fn test_pose2d_theta_nan_invalid() {
+        let pose = Pose2D {
+            x: 0.0,
+            y: 0.0,
+            theta: f64::NAN,
+            timestamp_ns: 0,
+        };
+        assert!(!pose.is_valid());
+    }
+
+    // ============================================================================
+    // Vector3 Additional Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_vector3_cross_parallel_is_zero() {
+        let a = Vector3::new(1.0, 0.0, 0.0);
+        let b = Vector3::new(2.0, 0.0, 0.0);
+        let c = a.cross(&b);
+        assert!(c.magnitude() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_cross_anticommutative() {
+        let a = Vector3::new(1.0, 2.0, 3.0);
+        let b = Vector3::new(4.0, 5.0, 6.0);
+        let ab = a.cross(&b);
+        let ba = b.cross(&a);
+        assert!((ab.x + ba.x).abs() < 1e-10);
+        assert!((ab.y + ba.y).abs() < 1e-10);
+        assert!((ab.z + ba.z).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_dot_orthogonal_is_zero() {
+        let a = Vector3::new(1.0, 0.0, 0.0);
+        let b = Vector3::new(0.0, 1.0, 0.0);
+        assert!(a.dot(&b).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_normalize_returns_true_for_nonzero() {
+        let mut v = Vector3::new(0.0, 0.0, 1e-10);
+        let success = v.normalize();
+        assert!(success);
+    }
+
+    #[test]
+    fn test_vector3_scalar_mul_zero() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let scaled = v * 0.0;
+        assert_eq!(scaled.x, 0.0);
+        assert_eq!(scaled.y, 0.0);
+        assert_eq!(scaled.z, 0.0);
+    }
+
+    #[test]
+    fn test_vector3_neg_double_is_identity() {
+        let v = Vector3::new(1.0, -2.0, 3.0);
+        let double_neg = -(-v);
+        assert!((double_neg.x - v.x).abs() < 1e-10);
+        assert!((double_neg.y - v.y).abs() < 1e-10);
+        assert!((double_neg.z - v.z).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // Quaternion Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_quaternion_from_euler_all_axes() {
+        // 90 degree roll
+        let q = Quaternion::from_euler(PI / 2.0, 0.0, 0.0);
+        let norm = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+        assert!((norm - 1.0).abs() < 1e-10, "euler rotation must produce unit quaternion");
+
+        // 90 degree pitch
+        let q2 = Quaternion::from_euler(0.0, PI / 2.0, 0.0);
+        let norm2 = (q2.x * q2.x + q2.y * q2.y + q2.z * q2.z + q2.w * q2.w).sqrt();
+        assert!((norm2 - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_quaternion_normalize_already_unit() {
+        let mut q = Quaternion::identity();
+        q.normalize();
+        assert!((q.x - 0.0).abs() < 1e-10);
+        assert!((q.y - 0.0).abs() < 1e-10);
+        assert!((q.z - 0.0).abs() < 1e-10);
+        assert!((q.w - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_quaternion_nan_is_invalid() {
+        let q = Quaternion::new(0.0, 0.0, f64::NAN, 1.0);
+        assert!(!q.is_valid());
+    }
+
+    #[test]
+    fn test_quaternion_infinity_is_invalid() {
+        let q = Quaternion::new(0.0, 0.0, 0.0, f64::INFINITY);
+        assert!(!q.is_valid());
+    }
+}

@@ -1,0 +1,89 @@
+[package]
+name = "horus_core"
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["HORUS Team"]
+description = "Core runtime for the HORUS robotics framework — deterministic scheduler, zero-copy IPC topics, real-time node lifecycle, safety monitoring, and shared memory transport"
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+documentation = "https://docs.horusrobotics.dev"
+keywords = ["robotics", "scheduler", "ipc", "real-time", "deterministic"]
+categories = ["science::robotics", "concurrency", "embedded"]
+
+[lib]
+name = "horus_core"
+crate-type = ["rlib"]
+
+[dependencies]
+log = "0.4"
+libc = "0.2"
+memmap2 = "0.9"
+paste = "1.0"  # For macro identifier concatenation
+core_affinity = "0.8"  # CPU core pinning
+crossbeam = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+regex = "1.10"
+toml = "0.8"
+bincode = "1.3"
+bytemuck = { workspace = true }
+softmata-core = "0.1.2"
+ctrlc = "3.4"
+colored = "2.0"
+tokio = { version = "1.0", features = ["rt", "time"] }
+tracing = "0.1"
+parking_lot = "0.12"
+chrono = { workspace = true }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+dirs = "5.0"
+lazy_static = "1.4"
+rand = { workspace = true, features = ["small_rng"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Platform abstraction layer
+horus_sys = { path = "../horus_sys" }
+
+# Macros (optional)
+horus_macros = { path = "../horus_macros", optional = true }
+
+# Compression for recordings (optional)
+zstd = { version = "0.13", optional = true }
+
+
+# Platform-specific: Windows shared memory
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Memory", "Win32_Security", "Win32_System_Threading"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3.0"
+loom = "0.7"
+proptest = "1.4"
+horus_types = { path = "../horus_types" }
+horus-robotics = { path = "../../horus-robotics" }
+horus-tf = { path = "../../horus-tf" }
+
+[lints]
+workspace = true
+
+[features]
+default = ["macros", "telemetry", "blackbox"]
+macros = ["horus_macros"]
+
+# Telemetry export for live monitoring (HTTP, UDP, file)
+telemetry = []
+
+# Black box flight recorder for post-mortem crash analysis
+blackbox = []
+
+# Zstd compression for recording files
+recording-compression = ["zstd"]
+
+# Test utilities (MockTopic, etc.) for use in downstream crate tests
+test-utils = []
+

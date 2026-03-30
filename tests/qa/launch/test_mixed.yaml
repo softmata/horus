@@ -1,0 +1,12 @@
+# Mixed Rust + Python launch test
+session: test_mixed
+nodes:
+  - name: rust_node
+    command: ./target/debug/examples/launch_test_rust
+    params:
+      max_speed: 2.0
+      robot_id: 1
+
+  - name: python_node
+    command: python3 tests/qa/pubsub_python/main.py
+    depends_on: [rust_node]

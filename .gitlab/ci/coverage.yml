@@ -1,0 +1,58 @@
+# Code Coverage: llvm-cov + HTML report
+# Replaces: coverage.yml
+
+coverage:
+  extends: [.rust-base, .shm-setup]
+  stage: coverage
+  allow_failure: true  # instrumentation can cause issues with complex workspaces
+  rules:
+    - !reference [.on-mr-or-main, rules]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - rustup component add llvm-tools-preview
+    - cargo install cargo-llvm-cov --locked 2>/dev/null || true
+    - |
+      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
+      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+  script:
+    # Generate LCOV report
+    - |
+      cargo llvm-cov --workspace \
+        --exclude horus_benchmarks \
+        --exclude horus \
+        --exclude horus_library \
+        --exclude horus_py \
+        --lcov --output-path lcov.info \
+        -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
+
+    # Generate HTML report
+    - |
+      cargo llvm-cov --workspace \
+        --exclude horus_benchmarks \
+        --exclude horus \
+        --exclude horus_library \
+        --exclude horus_py \
+        --html --output-dir coverage-html \
+        -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
+
+    # Text summary
+    - |
+      cargo llvm-cov --workspace \
+        --exclude horus_benchmarks \
+        --exclude horus \
+        --exclude horus_library \
+        --exclude horus_py \
+        --text \
+        -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config | tee coverage-summary.txt
+  artifacts:
+    paths:
+      - lcov.info
+      - coverage-html/
+      - coverage-summary.txt
+    expire_in: 30 days
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: lcov.info
+  coverage: '/TOTAL\s+\d+\s+\d+\s+([\d.]+%)/'

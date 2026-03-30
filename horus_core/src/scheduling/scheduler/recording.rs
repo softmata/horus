@@ -1,0 +1,303 @@
+//! Record/Replay System for the Scheduler.
+//!
+//! Provides methods to record node execution for crash investigation and
+//! replay recordings for debugging, time travel, and what-if testing.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::error::{HorusContext, HorusResult};
+use crate::terminal::print_line;
+
+use super::super::record_replay::{
+    NodeReplayer, Recording, RecordingManager, ReplayNode, SchedulerRecording,
+};
+use super::super::types::RegisteredNode;
+use super::{ReplayState, Scheduler};
+
+impl Scheduler {
+    /// Add a replay node from a recording file.
+    ///
+    /// The replay node will output exactly what was recorded, allowing
+    /// mix-and-match debugging with live nodes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::new();
+    /// scheduler.add(live_sensor).order(0).build();  // Live node
+    /// scheduler.add_replay(
+    ///     PathBuf::from("~/.horus/recordings/crash/motor_node@abc123.horus"),
+    ///     1,  // priority
+    /// ).expect("Failed to load recording");
+    /// ```
+    pub fn add_replay(&mut self, recording_path: PathBuf, priority: u32) -> HorusResult<&mut Self> {
+        let replayer = NodeReplayer::load(&recording_path).horus_context_with(|| {
+            format!("loading recording from {}", recording_path.display())
+        })?;
+
+        let node_name = replayer.recording().node_name.clone();
+        let _node_id = replayer.recording().node_id.clone();
+
+        print_line(&format!(
+            "[REPLAY] Loading '{}' from recording (ticks {}-{})",
+            node_name,
+            replayer.recording().first_tick,
+            replayer.recording().last_tick
+        ));
+
+        let replay_node = ReplayNode::new(node_name.clone());
+
+        // Initialize replay state if not already present
+        if self.replay.is_none() {
+            self.replay = Some(ReplayState {
+                nodes: HashMap::new(),
+                overrides: HashMap::new(),
+                stop_tick: None,
+                speed: 1.0,
+            });
+        }
+        // SAFETY: self.replay is guaranteed Some — initialized in the block above.
+        if let Some(ref mut replay) = self.replay {
+            replay.nodes.insert(node_name.clone(), replayer);
+        }
+
+        self.nodes.push(RegisteredNode {
+            node: super::super::types::NodeKind::new(Box::new(replay_node)),
+            name: Arc::from(node_name.as_str()),
+            priority,
+            initialized: false,
+            context: None,
+            rate_hz: None,
+            last_tick: None,
+            is_rt_node: false,
+            tick_budget: None,
+            deadline: None,
+            recorder: None,
+            is_stopped: false,
+            is_paused: false,
+            rt_stats: None,
+            miss_policy: crate::core::Miss::Warn,
+            execution_class: super::super::types::ExecutionClass::BestEffort,
+            health_state: super::super::types::AtomicHealthState::default(),
+            os_priority: None,
+            pinned_core: None,
+            node_watchdog: None,
+            failure_handler: None,
+            budget_policy: super::super::safety_monitor::BudgetPolicy::default(),
+            subscription_freshness: Vec::new(),
+            use_sched_deadline: false,
+            no_alloc: false,
+        });
+
+        self.nodes.sort_by_key(|n| n.priority);
+        Ok(self)
+    }
+
+    /// Replay an entire scheduler recording.
+    ///
+    /// All nodes from the recording will be loaded and replayed.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::replay_from(
+    ///     PathBuf::from("~/.horus/recordings/crash/scheduler@abc123.horus")
+    /// ).expect("Failed to load scheduler recording");
+    /// scheduler.run();
+    /// ```
+    pub fn replay_from(scheduler_path: PathBuf) -> HorusResult<Self> {
+        let scheduler_recording =
+            SchedulerRecording::load(&scheduler_path).horus_context_with(|| {
+                format!(
+                    "loading scheduler recording from {}",
+                    scheduler_path.display()
+                )
+            })?;
+
+        let session_dir = scheduler_path.parent().unwrap_or(&scheduler_path);
+        let mut scheduler = Self::new();
+        scheduler.scheduler_name = format!("Replay({})", scheduler_recording.session_name);
+
+        // Use ReplayClock with timestamps from the recording.
+        // Extract tick timestamps from the recording metadata.
+        let mut timestamps_ns: Vec<u64> = Vec::new();
+        let total_ticks = scheduler_recording.total_ticks;
+        if total_ticks > 0 {
+            // If we have execution_order, create evenly-spaced timestamps
+            // based on the recorded tick count. Each tick gets a 10ms slot.
+            // (Real timestamps from node snapshots would be better, but
+            //  requires loading all node recordings first.)
+            let period_ns = 10_000_000u64; // 10ms default
+            for i in 0..total_ticks {
+                timestamps_ns.push(i * period_ns);
+            }
+        }
+        scheduler.clock = Arc::new(crate::core::clock::ReplayClock::new(timestamps_ns));
+        // Enable deterministic ordering for replay
+        scheduler.pending_config.timing.deterministic_order = true;
+
+        scheduler.replay = Some(ReplayState {
+            nodes: HashMap::new(),
+            overrides: HashMap::new(),
+            stop_tick: None,
+            speed: 1.0,
+        });
+
+        print_line(&format!(
+            "[REPLAY] Loading scheduler recording with {} nodes, {} ticks",
+            scheduler_recording.node_recordings.len(),
+            scheduler_recording.total_ticks
+        ));
+
+        // Build name→priority map from recorded execution order (first tick).
+        // This restores the original scheduling order during replay.
+        let priority_map: HashMap<&str, u32> = scheduler_recording
+            .execution_order
+            .first()
+            .map(|order| {
+                order
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| (name.as_str(), i as u32))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for (node_id, relative_path) in &scheduler_recording.node_recordings {
+            let node_path = session_dir.join(relative_path);
+            if node_path.exists() {
+                let priority = priority_map.get(node_id.as_str()).copied().unwrap_or(0);
+                if let Err(e) = scheduler.add_replay(node_path, priority) {
+                    print_line(&format!(
+                        "Warning: Failed to load node '{}': {}",
+                        node_id, e
+                    ));
+                }
+            }
+        }
+
+        Ok(scheduler)
+    }
+
+    /// Set replay to start at a specific tick (time travel).
+    pub fn start_at_tick(mut self, tick: u64) -> Self {
+        self.tick.current = tick;
+        if let Some(ref mut replay) = self.replay {
+            for replayer in replay.nodes.values_mut() {
+                replayer.seek(tick);
+            }
+        }
+        print_line(&format!("[REPLAY] Starting at tick {}", tick));
+        self
+    }
+
+    /// Set an override value for what-if testing during replay.
+    pub fn with_override(mut self, node_name: &str, output_name: &str, value: Vec<u8>) -> Self {
+        if let Some(ref mut replay) = self.replay {
+            replay
+                .overrides
+                .entry(node_name.to_string())
+                .or_default()
+                .insert(output_name.to_string(), value);
+        }
+        print_line(&format!(
+            "[REPLAY] Override set: {}.{}",
+            node_name, output_name
+        ));
+        self
+    }
+
+    /// Set replay to stop at a specific tick.
+    pub fn stop_at_tick(mut self, tick: u64) -> Self {
+        if let Some(ref mut replay) = self.replay {
+            replay.stop_tick = Some(tick);
+        }
+        print_line(&format!("[REPLAY] Will stop at tick {}", tick));
+        self
+    }
+
+    /// Set replay speed multiplier.
+    pub fn with_replay_speed(mut self, speed: f64) -> Self {
+        if let Some(ref mut replay) = self.replay {
+            replay.speed = speed.clamp(0.01, 100.0);
+        }
+        self
+    }
+
+    /// Check if recording is enabled.
+    pub fn is_recording(&self) -> bool {
+        self.recording.is_some()
+    }
+
+    /// Check if in replay mode.
+    pub fn is_replaying(&self) -> bool {
+        self.replay.is_some()
+    }
+
+    /// Get the current tick number.
+    pub fn current_tick(&self) -> u64 {
+        self.tick.current
+    }
+
+    /// Stop recording and save all data to disk.
+    ///
+    /// Call this before shutting down to ensure recordings are saved.
+    pub fn stop_recording(&mut self) -> HorusResult<Vec<PathBuf>> {
+        let mut saved_paths = Vec::new();
+
+        if let Some(ref mut rec_state) = self.recording {
+            for registered in self.nodes.iter_mut() {
+                if let Some(ref mut recorder) = registered.recorder {
+                    match recorder.finish() {
+                        Ok(path) => {
+                            print_line(&format!("[RECORDING] Saved: {}", path.display()));
+                            saved_paths.push(path);
+                        }
+                        Err(e) => {
+                            print_line(&format!(
+                                "Failed to save recording for '{}': {}",
+                                registered.name, e
+                            ));
+                        }
+                    }
+                }
+            }
+
+            rec_state.scheduler_recording.finish();
+            let path = rec_state
+                .config
+                .scheduler_path(&rec_state.scheduler_recording.scheduler_id);
+            if let Err(e) = rec_state.scheduler_recording.save(&path) {
+                print_line(&format!("Failed to save scheduler recording: {}", e));
+            } else {
+                print_line(&format!("[RECORDING] Saved scheduler: {}", path.display()));
+                saved_paths.push(path);
+            }
+        }
+
+        self.recording = None;
+        Ok(saved_paths)
+    }
+
+    /// List all available recording sessions.
+    pub fn list_recordings() -> HorusResult<Vec<String>> {
+        let manager = RecordingManager::new();
+        manager
+            .list_sessions()
+            .horus_context("listing recording sessions")
+    }
+
+    /// Delete a recording session.
+    pub fn delete_recording(session_name: &str) -> HorusResult<()> {
+        let manager = RecordingManager::new();
+        manager
+            .delete_session(session_name)
+            .horus_context_with(|| format!("deleting recording session '{}'", session_name))
+    }
+}

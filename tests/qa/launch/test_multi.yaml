@@ -1,0 +1,20 @@
+# Multi-process launch test: 2 Rust nodes + 1 bare script
+# Verifies: dependency ordering, multi-process discovery, bare script handling
+session: test_multi
+nodes:
+  - name: sensor
+    command: ./target/debug/examples/launch_test_rust
+    params:
+      max_speed: 0.5
+      robot_id: 1
+
+  - name: controller
+    command: ./target/debug/examples/launch_test_rust
+    depends_on: [sensor]
+    params:
+      max_speed: 1.0
+      robot_id: 2
+
+  - name: logger
+    command: sleep 3600
+    depends_on: [sensor]

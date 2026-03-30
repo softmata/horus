@@ -1,0 +1,10 @@
+# Restart policy test: on-failure restart with blackbox events
+# Verifies: crash detection, restart with backoff, JSONL events
+session: test_restart
+nodes:
+  - name: crasher
+    command: ./target/debug/examples/launch_test_rust
+    restart: on-failure
+    params:
+      max_speed: 0.1
+      robot_id: 99

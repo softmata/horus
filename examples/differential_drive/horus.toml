@@ -1,0 +1,11 @@
+[package]
+name = "differential_drive"
+version = "0.1.0"
+description = "Differential-drive mobile robot — basic CmdVel control with sim3d"
+author = "softmata"
+license = "Apache-2.0"
+language = "rust"
+
+[dependencies]
+horus = "*"
+horus_library = "*"

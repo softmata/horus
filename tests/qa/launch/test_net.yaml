@@ -1,0 +1,16 @@
+# Network replication test: publisher + subscriber in SAME namespace
+# Both processes use horus_net to replicate topics via localhost UDP
+session: test_net
+env:
+  HORUS_NET_ENABLED: "true"
+nodes:
+  - name: publisher
+    command: ./target/debug/examples/launch_test_net
+    params:
+      role: pub
+
+  - name: subscriber
+    command: ./target/debug/examples/launch_test_net
+    depends_on: [publisher]
+    params:
+      role: sub

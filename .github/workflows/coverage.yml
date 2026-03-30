@@ -1,0 +1,112 @@
+# HORUS Code Coverage
+# Measures test coverage and uploads to Codecov
+
+name: Coverage
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Coverage has instrumentation issues with complex workspaces
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-coverage-
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          # Create namespaced SHM directory structure
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+
+      - name: Generate Coverage Report
+        run: |
+          # Exclude crates with workspace linkage issues
+          # Skip flaky tests that depend on shared memory state or timing
+          # test_direct_channel_latency_estimation: flaky due to coverage instrumentation affecting timing
+          cargo llvm-cov --workspace \
+            --exclude horus_benchmarks \
+            --exclude horus \
+            --exclude horus_library \
+            --exclude horus_py \
+            --lcov --output-path lcov.info \
+            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Generate HTML Report
+        run: |
+          cargo llvm-cov --workspace \
+            --exclude horus_benchmarks \
+            --exclude horus \
+            --exclude horus_library \
+            --exclude horus_py \
+            --html --output-dir coverage-html \
+            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
+
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload HTML Report as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-html/
+          retention-days: 30
+
+      - name: Coverage Summary
+        run: |
+          cargo llvm-cov --workspace \
+            --exclude horus_benchmarks \
+            --exclude horus \
+            --exclude horus_library \
+            --exclude horus_py \
+            --text \
+            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config | tee coverage-summary.txt
+          echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+

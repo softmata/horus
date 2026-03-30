@@ -1,0 +1,144 @@
+# HORUS Feature Matrix Testing
+# Tests various feature combinations to ensure orthogonality
+
+name: Feature Matrix
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+  schedule:
+    # Run weekly on Monday at 3 AM UTC
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Test Python bindings feature
+  python:
+    name: Python Bindings Feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config python3-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-python-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-python-
+
+      - name: Check Python bindings compilation
+        run: |
+          if [ -d "horus_py" ]; then
+            cd horus_py && maturin build
+          else
+            echo "horus_py not found, skipping"
+          fi
+        continue-on-error: true
+
+  # Test no default features
+  minimal:
+    name: Minimal Build (No Default Features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-minimal-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-minimal-
+
+      - name: Check minimal build
+        run: cargo check --workspace --no-default-features
+
+  # Test all features combined
+  all-features:
+    name: All Features Combined
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-all-features-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-all-features-
+
+      - name: Check all features build
+        run: cargo check --workspace --all-features
+        continue-on-error: true  # Some features may conflict
+
+  # Summary job
+  feature-matrix-success:
+    name: Feature Matrix Success
+    needs: [python, minimal, all-features]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check Feature Matrix Results
+        run: |
+          echo "Python: ${{ needs.python.result }}"
+          echo "Minimal: ${{ needs.minimal.result }}"
+          echo "All Features: ${{ needs.all-features.result }}"
+
+          # Minimal build must pass
+          if [[ "${{ needs.minimal.result }}" != "success" ]]; then
+            echo "Minimal build failed - this is required"
+            exit 1
+          fi
+
+          echo "Feature matrix checks completed"

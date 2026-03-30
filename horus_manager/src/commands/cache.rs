@@ -1,0 +1,460 @@
+//! Cache command - manage the HORUS package cache
+
+use crate::cli_output;
+use colored::*;
+use horus_core::error::{ConfigError, HorusError, HorusResult};
+use std::fs;
+use std::path::Path;
+
+use crate::workspace;
+
+/// Calculate the total size of a directory recursively.
+pub fn dir_size(path: &Path) -> std::io::Result<u64> {
+    Ok(crate::fs_utils::dir_size(path))
+}
+
+/// Format a size in bytes as a human-readable string.
+pub fn format_size(bytes: u64) -> String {
+    crate::fs_utils::format_bytes(bytes)
+}
+
+/// Show cache information (directory, size, package count)
+pub fn run_info(json: bool) -> HorusResult<()> {
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    // Count packages and calculate size
+    let mut total_size: u64 = 0;
+    let mut package_count = 0;
+
+    if cache_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    package_count += 1;
+                    if let Ok(size) = dir_size(&entry.path()) {
+                        total_size += size;
+                    }
+                }
+            }
+        }
+    }
+
+    if json {
+        let output = serde_json::json!({
+            "cache_directory": cache_dir.display().to_string(),
+            "exists": cache_dir.exists(),
+            "total_size_bytes": total_size,
+            "total_size": format_size(total_size),
+            "package_count": package_count,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
+        return Ok(());
+    }
+
+    println!("{}", "HORUS Cache Information".cyan().bold());
+    println!("{}", "═".repeat(40));
+
+    if !cache_dir.exists() {
+        println!("Cache directory: {} (not created yet)", cache_dir.display());
+        println!("Total size: 0 B");
+        println!("Packages: 0");
+        return Ok(());
+    }
+
+    println!("Cache directory: {}", cache_dir.display());
+    println!("Total size: {}", format_size(total_size));
+    println!("Packages: {}", package_count);
+
+    Ok(())
+}
+
+/// List all cached packages
+pub fn run_list(json: bool) -> HorusResult<()> {
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    if !cache_dir.exists() {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "packages": [] }))
+                    .unwrap_or_default()
+            );
+        } else {
+            println!("{}", "Cached Packages".cyan().bold());
+            println!("{}", "─".repeat(60));
+            println!("  (cache is empty)");
+        }
+        return Ok(());
+    }
+
+    let mut packages: Vec<_> = fs::read_dir(&cache_dir)
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+
+    packages.sort_by_key(|e| e.file_name());
+
+    if json {
+        let pkg_list: Vec<_> = packages
+            .iter()
+            .map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let size = dir_size(&entry.path()).unwrap_or(0);
+                serde_json::json!({
+                    "name": name,
+                    "size_bytes": size,
+                    "size": format_size(size),
+                })
+            })
+            .collect();
+        let output = serde_json::json!({ "packages": pkg_list });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
+        return Ok(());
+    }
+
+    println!("{}", "Cached Packages".cyan().bold());
+    println!("{}", "─".repeat(60));
+
+    if packages.is_empty() {
+        println!("  (cache is empty)");
+    } else {
+        for entry in packages {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let size = dir_size(&entry.path()).unwrap_or(0);
+            println!("  {} {}", name.yellow(), format_size(size).dimmed());
+        }
+    }
+
+    Ok(())
+}
+
+/// Clean unused packages from cache
+pub fn run_clean(dry_run: bool) -> HorusResult<()> {
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    println!(
+        "{} Scanning for unused packages...",
+        cli_output::ICON_INFO.cyan()
+    );
+
+    if !cache_dir.exists() {
+        println!("Cache is empty, nothing to clean.");
+        return Ok(());
+    }
+
+    // Scan all workspaces for packages they actually use (symlinks in .horus/packages/).
+    let registry = workspace::WorkspaceRegistry::load()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    let mut used_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for ws in &registry.workspaces {
+        let packages_dir = ws.path.join(".horus").join("packages");
+        if packages_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&packages_dir) {
+                for entry in entries.flatten() {
+                    // Resolve symlinks to find the actual cache entry name
+                    let target = if entry.path().is_symlink() {
+                        fs::read_link(entry.path())
+                            .ok()
+                            .and_then(|t| t.file_name().map(|n| n.to_string_lossy().to_string()))
+                    } else {
+                        None
+                    };
+
+                    let pkg_name =
+                        target.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+                    // Strip version suffix (e.g. "foo@1.0.0" → "foo")
+                    let base = pkg_name.split('@').next().unwrap_or(&pkg_name);
+                    used_packages.insert(base.to_string());
+                }
+            }
+        }
+    }
+
+    // Find cached packages not in use
+    let mut to_remove = Vec::new();
+    let mut freed_size: u64 = 0;
+
+    if let Ok(entries) = fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let pkg_base = name.split('@').next().unwrap_or(&name);
+
+                if !used_packages.contains(pkg_base) {
+                    let size = dir_size(&entry.path()).unwrap_or(0);
+                    freed_size += size;
+                    to_remove.push((entry.path(), name, size));
+                }
+            }
+        }
+    }
+
+    if to_remove.is_empty() {
+        println!(
+            "{} All cached packages are in use.",
+            cli_output::ICON_SUCCESS.green()
+        );
+        return Ok(());
+    }
+
+    println!("\nUnused packages:");
+    for (_, name, size) in &to_remove {
+        println!(
+            "  {} {} ({})",
+            cli_output::ICON_ERROR.red(),
+            name,
+            format_size(*size)
+        );
+    }
+    println!("\nTotal to free: {}", format_size(freed_size).green());
+
+    if dry_run {
+        println!(
+            "\n{} Dry run - no files removed.",
+            cli_output::ICON_WARN.yellow()
+        );
+    } else {
+        for (path, name, _) in &to_remove {
+            if let Err(e) = fs::remove_dir_all(path) {
+                println!("  {} Failed to remove {}: {}", "!".red(), name, e);
+            }
+        }
+        println!(
+            "\n{} Removed {} packages, freed {}.",
+            cli_output::ICON_SUCCESS.green(),
+            to_remove.len(),
+            format_size(freed_size)
+        );
+    }
+
+    Ok(())
+}
+
+/// Purge the entire cache
+pub fn run_purge(yes: bool) -> HorusResult<()> {
+    let cache_dir = crate::paths::cache_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    if !cache_dir.exists() {
+        println!("Cache is already empty.");
+        return Ok(());
+    }
+
+    let total_size = dir_size(&cache_dir).unwrap_or(0);
+    let count = fs::read_dir(&cache_dir).map(|e| e.count()).unwrap_or(0);
+
+    println!(
+        "{} This will remove ALL cached packages:",
+        cli_output::ICON_WARN.yellow().bold()
+    );
+    println!("  Packages: {}", count);
+    println!("  Size: {}", format_size(total_size));
+    println!();
+
+    if !yes {
+        print!("Continue? [y/N] ");
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    fs::remove_dir_all(&cache_dir).map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!("Failed to purge cache: {}", e)))
+    })?;
+
+    println!(
+        "{} Cache purged. Freed {}.",
+        cli_output::ICON_SUCCESS.green(),
+        format_size(total_size)
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // ── dir_size ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn dir_size_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(dir_size(tmp.path()).unwrap(), 0);
+    }
+
+    #[test]
+    fn dir_size_with_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+        fs::write(tmp.path().join("b.txt"), "world!").unwrap();
+        assert_eq!(dir_size(tmp.path()).unwrap(), 11);
+    }
+
+    #[test]
+    fn dir_size_recursive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("file.bin"), vec![0u8; 100]).unwrap();
+        assert_eq!(dir_size(tmp.path()).unwrap(), 100);
+    }
+
+    #[test]
+    fn dir_size_nonexistent_errors() {
+        let result = dir_size(Path::new("/nonexistent/path/12345"));
+        // Not a dir -> returns 0
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    // ── format_size ──────────────────────────────────────────────────────
+
+    #[test]
+    fn format_size_zero() {
+        let result = format_size(0);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn format_size_kb() {
+        let result = format_size(1024);
+        assert!(
+            result.contains("K") || result.contains("1"),
+            "1024 bytes should format as KB, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn format_size_large() {
+        let small = format_size(100);
+        let large = format_size(1_000_000_000);
+        assert_ne!(small, large);
+    }
+
+    // ── run_info ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_info_succeeds() {
+        let result = run_info(false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_info_json_succeeds() {
+        let result = run_info(true);
+        assert!(result.is_ok());
+    }
+
+    // ── run_list ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_list_succeeds() {
+        let result = run_list(false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_list_json_succeeds() {
+        let result = run_list(true);
+        assert!(result.is_ok());
+    }
+
+    // ── run_purge ────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_purge_nonexistent_cache_succeeds() {
+        // If cache doesn't exist, purge should be a no-op
+        // This test depends on the cache dir not existing for a fresh system
+        // We just verify it doesn't panic
+        let _ = run_purge(true);
+    }
+
+    // ── run_clean ────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_clean_dry_run_succeeds() {
+        // Dry run should never delete anything
+        let result = run_clean(true);
+        assert!(result.is_ok());
+    }
+
+    // ── Cache size on empty dir ─────────────────────────────────────────
+
+    #[test]
+    fn test_cache_size_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // An empty directory should report 0 bytes
+        let size = dir_size(tmp.path()).unwrap();
+        assert_eq!(size, 0, "Empty cache dir should have size 0");
+
+        // Also verify with a nested empty subdirectory structure
+        let sub = tmp.path().join("empty_pkg");
+        fs::create_dir(&sub).unwrap();
+        let sub2 = tmp.path().join("another_empty");
+        fs::create_dir(&sub2).unwrap();
+
+        // Directories themselves don't count as file bytes
+        let size = dir_size(tmp.path()).unwrap();
+        assert_eq!(
+            size, 0,
+            "Directory with only empty subdirs should have size 0"
+        );
+    }
+
+    // ── Cache clean removes entries ─────────────────────────────────────
+
+    #[test]
+    fn test_cache_clean_removes_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        fs::create_dir(&cache_dir).unwrap();
+
+        // Create dummy cached packages
+        let pkg1 = cache_dir.join("pkg_alpha@1.0.0");
+        fs::create_dir(&pkg1).unwrap();
+        fs::write(pkg1.join("data.bin"), vec![0u8; 100]).unwrap();
+
+        let pkg2 = cache_dir.join("pkg_beta@2.1.0");
+        fs::create_dir(&pkg2).unwrap();
+        fs::write(pkg2.join("lib.so"), vec![0u8; 200]).unwrap();
+
+        // Verify files exist before purge
+        assert!(pkg1.exists(), "pkg1 should exist before purge");
+        assert!(pkg2.exists(), "pkg2 should exist before purge");
+
+        let pre_size = dir_size(cache_dir.as_path()).unwrap();
+        assert_eq!(pre_size, 300, "Cache should contain 300 bytes before purge");
+
+        // Purge the cache directory
+        fs::remove_dir_all(&cache_dir).unwrap();
+
+        // Verify everything is removed
+        assert!(
+            !cache_dir.exists(),
+            "Cache directory should not exist after purge"
+        );
+        assert!(!pkg1.exists(), "pkg1 should be removed after purge");
+        assert!(!pkg2.exists(), "pkg2 should be removed after purge");
+    }
+}

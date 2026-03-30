@@ -1,0 +1,9 @@
+# Basic launch test: single node with parameter injection
+# Verifies: session manifest, HORUS_PARAM_*, HORUS_NODE_NAME, topic publishing
+session: test_basic
+nodes:
+  - name: controller
+    command: ./target/debug/examples/launch_test_rust
+    params:
+      max_speed: 1.5
+      robot_id: 42

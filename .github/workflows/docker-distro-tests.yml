@@ -1,0 +1,65 @@
+# HORUS Multi-Distro Docker Tests
+# Tests the full user workflow on different Linux distributions.
+# Catches: glibc vs musl differences, package manager variations,
+# SHM path differences, and distro-specific compilation issues.
+
+name: Docker Distro Tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    # Run weekly on Wednesday at 3 AM UTC
+    - cron: '0 3 * * 3'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  docker-test:
+    name: ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu, debian, fedora, alpine, arch]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -f tests/docker/Dockerfile.${{ matrix.distro }} \
+            -t horus-test-${{ matrix.distro }} \
+            .
+
+      - name: Run horus_sys tests
+        run: |
+          docker run --rm \
+            --tmpfs /dev/shm:rw,nosuid,nodev,exec,size=256m \
+            horus-test-${{ matrix.distro }}
+
+      - name: Run full user workflow
+        run: |
+          docker run --rm \
+            --tmpfs /dev/shm:rw,nosuid,nodev,exec,size=256m \
+            horus-test-${{ matrix.distro }} \
+            bash /horus/tests/docker/test_user_workflow.sh
+
+  docker-success:
+    name: All Distros Pass
+    needs: [docker-test]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.docker-test.result }}" != "success" ]]; then
+            echo "Docker distro tests failed"
+            exit 1
+          fi
+          echo "All distros passed!"

@@ -1,0 +1,4 @@
+[package]
+name = "qa-pubsub"
+version = "0.1.0"
+description = "QA test: 3-node pub/sub pipeline for CLI introspection testing"

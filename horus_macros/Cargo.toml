@@ -1,0 +1,28 @@
+[package]
+name = "horus_macros"
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["HORUS Team"]
+description = "Procedural macros for the HORUS robotics framework — node!, message!, service!, and action! macros for zero-boilerplate robotics development"
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+documentation = "https://docs.horusrobotics.dev/concepts/node-macro"
+keywords = ["robotics", "macros", "horus", "codegen", "proc-macro"]
+categories = ["science::robotics", "development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+trybuild = "1.0"
+serde.workspace = true
+horus_core = { path = "../horus_core" }

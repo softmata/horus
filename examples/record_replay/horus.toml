@@ -1,0 +1,11 @@
+[package]
+name = "record_replay"
+version = "0.1.0"
+description = "Recording and replay — capture sessions for debugging and reproducibility"
+author = "softmata"
+license = "Apache-2.0"
+language = "rust"
+
+[dependencies]
+horus = "*"
+horus_library = "*"

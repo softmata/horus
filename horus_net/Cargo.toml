@@ -1,0 +1,33 @@
+[package]
+name = "horus_net"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Transparent LAN replication for HORUS — zero-config, zero external deps"
+
+[dependencies]
+horus_core = { path = "../horus_core" }
+horus_sys = { path = "../horus_sys" }
+memmap2 = { workspace = true }
+# Minimal deps: horus_core + horus_sys + memmap2 (already used by horus_core).
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+horus_types = { path = "../horus_types" }
+horus-robotics = { path = "../../horus-robotics" }
+serde = { workspace = true }
+bincode = "1.3"
+
+[[test]]
+name = "peer_process"
+path = "tests/helpers/peer_process.rs"
+harness = false
+
+[lints]
+workspace = true

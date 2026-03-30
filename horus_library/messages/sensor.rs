@@ -1,0 +1,1719 @@
+use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
+// Sensor data message types for robotics
+//
+// This module provides standard sensor data formats for common
+// robotics sensors including lidar, IMU, cameras, and odometry.
+
+use crate::messages::geometry::{Pose2D, Quaternion, Twist, Vector3};
+use serde::{Deserialize, Serialize};
+use serde_arrays;
+
+/// Laser scan data from a 2D lidar sensor
+///
+/// Fixed-size array for shared memory safety. Supports up to 360-degree
+/// scanning with 1-degree resolution.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct LaserScan {
+    /// Range measurements in meters (0 = invalid reading)
+    #[serde(with = "serde_arrays")]
+    pub ranges: [f32; 360],
+    /// Start angle of the scan in radians
+    pub angle_min: f32,
+    /// End angle of the scan in radians
+    pub angle_max: f32,
+    /// Minimum valid range in meters
+    pub range_min: f32,
+    /// Maximum valid range in meters
+    pub range_max: f32,
+    /// Angular resolution in radians
+    pub angle_increment: f32,
+    /// Time between measurements in seconds
+    pub time_increment: f32,
+    /// Time to complete full scan in seconds
+    pub scan_time: f32,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for LaserScan {
+    fn default() -> Self {
+        Self {
+            ranges: [0.0; 360],
+            angle_min: -std::f32::consts::PI,
+            angle_max: std::f32::consts::PI,
+            range_min: 0.1,
+            range_max: 30.0,
+            angle_increment: std::f32::consts::PI / 180.0,
+            time_increment: 0.0,
+            scan_time: 0.1,
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl LaserScan {
+    /// Create a new laser scan with default parameters
+    pub fn new() -> Self {
+        Self {
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+            ..Self::default()
+        }
+    }
+
+    /// Get the angle for a specific range index
+    pub fn angle_at(&self, index: usize) -> f32 {
+        if index >= 360 {
+            return 0.0;
+        }
+        self.angle_min + (index as f32) * self.angle_increment
+    }
+
+    /// Check if a range reading is valid
+    pub fn is_range_valid(&self, index: usize) -> bool {
+        if index >= 360 {
+            return false;
+        }
+        let range = self.ranges[index];
+        range >= self.range_min && range <= self.range_max && range.is_finite()
+    }
+
+    /// Count valid range readings
+    pub fn valid_count(&self) -> usize {
+        self.ranges
+            .iter()
+            .filter(|&&r| r >= self.range_min && r <= self.range_max && r.is_finite())
+            .count()
+    }
+
+    /// Get minimum valid range reading
+    pub fn min_range(&self) -> Option<f32> {
+        self.ranges
+            .iter()
+            .filter(|&&r| r >= self.range_min && r <= self.range_max && r.is_finite())
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .copied()
+    }
+}
+
+/// IMU (Inertial Measurement Unit) sensor data
+///
+/// Provides orientation, angular velocity, and linear acceleration
+/// measurements from an IMU sensor.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Imu {
+    /// Orientation as quaternion [x, y, z, w]
+    pub orientation: [f64; 4],
+    /// Orientation covariance matrix (row-major, -1 = no data)
+    pub orientation_covariance: [f64; 9],
+    /// Angular velocity [x, y, z] in rad/s
+    pub angular_velocity: [f64; 3],
+    /// Angular velocity covariance matrix
+    pub angular_velocity_covariance: [f64; 9],
+    /// Linear acceleration [x, y, z] in m/s²
+    pub linear_acceleration: [f64; 3],
+    /// Linear acceleration covariance matrix
+    pub linear_acceleration_covariance: [f64; 9],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Imu {
+    /// Create a new IMU message
+    pub fn new() -> Self {
+        Self {
+            orientation: [0.0, 0.0, 0.0, 1.0], // Identity quaternion
+            orientation_covariance: [-1.0; 9], // No orientation data
+            angular_velocity: [0.0; 3],
+            angular_velocity_covariance: [0.0; 9],
+            linear_acceleration: [0.0; 3],
+            linear_acceleration_covariance: [0.0; 9],
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    /// Set orientation from Euler angles
+    pub fn set_orientation_from_euler(&mut self, roll: f64, pitch: f64, yaw: f64) {
+        let q = Quaternion::from_euler(roll, pitch, yaw);
+        self.orientation = [q.x, q.y, q.z, q.w];
+    }
+
+    /// Check if orientation data is available
+    pub fn has_orientation(&self) -> bool {
+        self.orientation_covariance[0] >= 0.0
+    }
+
+    /// Check if all values are finite
+    pub fn is_valid(&self) -> bool {
+        self.orientation.iter().all(|v| v.is_finite())
+            && self.angular_velocity.iter().all(|v| v.is_finite())
+            && self.linear_acceleration.iter().all(|v| v.is_finite())
+    }
+
+    /// Get angular velocity as Vector3
+    pub fn angular_velocity_vec(&self) -> Vector3 {
+        Vector3::new(
+            self.angular_velocity[0],
+            self.angular_velocity[1],
+            self.angular_velocity[2],
+        )
+    }
+
+    /// Get linear acceleration as Vector3
+    pub fn linear_acceleration_vec(&self) -> Vector3 {
+        Vector3::new(
+            self.linear_acceleration[0],
+            self.linear_acceleration[1],
+            self.linear_acceleration[2],
+        )
+    }
+}
+
+/// Odometry data combining pose and velocity
+///
+/// Typically computed from wheel encoders or visual odometry,
+/// provides the robot's estimated position and velocity.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct Odometry {
+    /// Current pose estimate
+    pub pose: Pose2D,
+    /// Current velocity estimate
+    pub twist: Twist,
+    /// Pose covariance matrix (6x6 row-major)
+    #[serde(with = "serde_arrays")]
+    pub pose_covariance: [f64; 36],
+    /// Twist covariance matrix (6x6 row-major)
+    #[serde(with = "serde_arrays")]
+    pub twist_covariance: [f64; 36],
+    /// Frame ID for the pose (e.g., "odom", "map")
+    pub frame_id: [u8; 32],
+    /// Frame ID for the twist (e.g., "base_link")
+    pub child_frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for Odometry {
+    fn default() -> Self {
+        Self {
+            pose: Pose2D::default(),
+            twist: Twist::default(),
+            pose_covariance: [0.0; 36],
+            twist_covariance: [0.0; 36],
+            frame_id: [0; 32],
+            child_frame_id: [0; 32],
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl Odometry {
+    /// Create a new odometry message
+    pub fn new() -> Self {
+        Self {
+            pose: Pose2D::origin(),
+            twist: Twist::stop(),
+            pose_covariance: [0.0; 36],
+            twist_covariance: [0.0; 36],
+            frame_id: [0; 32],
+            child_frame_id: [0; 32],
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    /// Set frame IDs from strings.
+    ///
+    /// Frame IDs longer than 31 bytes are truncated with a warning.
+    pub fn set_frames(&mut self, frame: &str, child_frame: &str) {
+        // Copy frame_id string
+        let frame_bytes = frame.as_bytes();
+        if frame_bytes.len() > 31 {
+            eprintln!("[WARN] Odometry frame_id '{}' truncated to 31 bytes", frame);
+        }
+        let len = frame_bytes.len().min(31);
+        self.frame_id[..len].copy_from_slice(&frame_bytes[..len]);
+        self.frame_id[len] = 0; // Null terminator
+
+        // Copy child_frame_id string
+        let child_bytes = child_frame.as_bytes();
+        if child_bytes.len() > 31 {
+            eprintln!("[WARN] Odometry child_frame_id '{}' truncated to 31 bytes", child_frame);
+        }
+        let len = child_bytes.len().min(31);
+        self.child_frame_id[..len].copy_from_slice(&child_bytes[..len]);
+        self.child_frame_id[len] = 0; // Null terminator
+    }
+
+    /// Update pose and velocity
+    pub fn update(&mut self, pose: Pose2D, twist: Twist) {
+        self.pose = pose;
+        self.twist = twist;
+        self.timestamp_ns = crate::transform_frame::timestamp_now();
+    }
+
+    /// Check if values are valid
+    pub fn is_valid(&self) -> bool {
+        self.pose.is_valid() && self.twist.is_valid()
+    }
+}
+
+/// Range sensor data (ultrasonic, infrared, etc.)
+///
+/// Single-point distance measurement from sensors like
+/// ultrasonic or infrared rangers.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct RangeSensor {
+    /// Sensor type (0=ultrasonic, 1=infrared)
+    pub sensor_type: u8,
+    /// Field of view in radians
+    pub field_of_view: f32,
+    /// Minimum range in meters
+    pub min_range: f32,
+    /// Maximum range in meters
+    pub max_range: f32,
+    /// Range reading in meters
+    pub range: f32,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl RangeSensor {
+    pub const ULTRASONIC: u8 = 0;
+    pub const INFRARED: u8 = 1;
+
+    /// Create a new range message
+    pub fn new(sensor_type: u8, range: f32) -> Self {
+        Self {
+            sensor_type,
+            field_of_view: 0.1, // ~6 degrees
+            min_range: 0.02,
+            max_range: 4.0,
+            range,
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    /// Check if the range reading is valid
+    pub fn is_valid(&self) -> bool {
+        self.range >= self.min_range && self.range <= self.max_range && self.range.is_finite()
+    }
+}
+
+/// Battery status message
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct BatteryState {
+    /// Voltage in volts
+    pub voltage: f32,
+    /// Current in amperes (negative = discharging)
+    pub current: f32,
+    /// Charge in amp-hours (NaN if unknown)
+    pub charge: f32,
+    /// Capacity in amp-hours (NaN if unknown)
+    pub capacity: f32,
+    /// Percentage charge (0-100)
+    pub percentage: f32,
+    /// Power supply status (0=unknown, 1=charging, 2=discharging, 3=full)
+    pub power_supply_status: u8,
+    /// Temperature in celsius
+    pub temperature: f32,
+    /// Cell voltages if available
+    #[serde(with = "serde_arrays")]
+    pub cell_voltages: [f32; 16],
+    /// Number of valid cell voltage readings
+    pub cell_count: u8,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for BatteryState {
+    fn default() -> Self {
+        Self {
+            voltage: 0.0,
+            current: 0.0,
+            charge: f32::NAN,
+            capacity: f32::NAN,
+            percentage: 0.0,
+            power_supply_status: Self::STATUS_UNKNOWN,
+            temperature: 25.0,
+            cell_voltages: [0.0; 16],
+            cell_count: 0,
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl BatteryState {
+    pub const STATUS_UNKNOWN: u8 = 0;
+    pub const STATUS_CHARGING: u8 = 1;
+    pub const STATUS_DISCHARGING: u8 = 2;
+    pub const STATUS_FULL: u8 = 3;
+
+    /// Create a new battery state message
+    pub fn new(voltage: f32, percentage: f32) -> Self {
+        Self {
+            voltage,
+            current: 0.0,
+            charge: f32::NAN,
+            capacity: f32::NAN,
+            percentage,
+            power_supply_status: Self::STATUS_UNKNOWN,
+            temperature: 25.0,
+            cell_voltages: [0.0; 16],
+            cell_count: 0,
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    /// Check if battery is low (below threshold)
+    pub fn is_low(&self, threshold: f32) -> bool {
+        self.percentage < threshold
+    }
+
+    /// Check if battery is critical (below 10%)
+    pub fn is_critical(&self) -> bool {
+        self.percentage < 10.0
+    }
+
+    /// Estimate remaining time in seconds (negative current only)
+    pub fn time_remaining(&self) -> Option<f32> {
+        if self.current < -1e-9 && !self.charge.is_nan() {
+            Some((self.charge / -self.current) * 3600.0)
+        } else {
+            None
+        }
+    }
+}
+
+/// GPS/GNSS Position Data
+///
+/// Standard GNSS position data from GPS, GLONASS, Galileo, or other
+/// satellite navigation systems. Provides latitude, longitude, altitude,
+/// and accuracy information.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct NavSatFix {
+    /// Latitude in degrees (positive = North, negative = South)
+    pub latitude: f64,
+    /// Longitude in degrees (positive = East, negative = West)
+    pub longitude: f64,
+    /// Altitude in meters above WGS84 ellipsoid
+    pub altitude: f64,
+    /// Position covariance matrix [lat, lon, alt] diagonal
+    pub position_covariance: [f64; 9],
+    /// Covariance type (0=unknown, 1=approximated, 2=diagonal_known, 3=known)
+    pub position_covariance_type: u8,
+    /// Satellite fix status (0=no_fix, 1=fix, 2=sbas_fix, 3=gbas_fix)
+    pub status: u8,
+    /// Number of satellites visible
+    pub satellites_visible: u16,
+    /// HDOP (Horizontal dilution of precision)
+    pub hdop: f32,
+    /// VDOP (Vertical dilution of precision)
+    pub vdop: f32,
+    /// Ground speed in m/s
+    pub speed: f32,
+    /// Course/heading in degrees
+    pub heading: f32,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for NavSatFix {
+    fn default() -> Self {
+        Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            position_covariance: [0.0; 9],
+            position_covariance_type: Self::COVARIANCE_TYPE_UNKNOWN,
+            status: Self::STATUS_NO_FIX,
+            satellites_visible: 0,
+            hdop: 99.9,
+            vdop: 99.9,
+            speed: 0.0,
+            heading: 0.0,
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl NavSatFix {
+    // Status constants
+    pub const STATUS_NO_FIX: u8 = 0;
+    pub const STATUS_FIX: u8 = 1;
+    pub const STATUS_SBAS_FIX: u8 = 2;
+    pub const STATUS_GBAS_FIX: u8 = 3;
+
+    // Covariance type constants
+    pub const COVARIANCE_TYPE_UNKNOWN: u8 = 0;
+    pub const COVARIANCE_TYPE_APPROXIMATED: u8 = 1;
+    pub const COVARIANCE_TYPE_DIAGONAL_KNOWN: u8 = 2;
+    pub const COVARIANCE_TYPE_KNOWN: u8 = 3;
+
+    /// Create a new GPS fix message
+    pub fn new() -> Self {
+        Self {
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+            ..Self::default()
+        }
+    }
+
+    /// Create from lat/lon/alt
+    pub fn from_coordinates(lat: f64, lon: f64, alt: f64) -> Self {
+        let mut fix = Self::new();
+        fix.latitude = lat;
+        fix.longitude = lon;
+        fix.altitude = alt;
+        fix.status = Self::STATUS_FIX;
+        fix
+    }
+
+    /// Check if we have a valid GPS fix
+    pub fn has_fix(&self) -> bool {
+        self.status >= Self::STATUS_FIX
+    }
+
+    /// Check if coordinates are valid
+    pub fn is_valid(&self) -> bool {
+        self.latitude >= -90.0
+            && self.latitude <= 90.0
+            && self.longitude >= -180.0
+            && self.longitude <= 180.0
+            && self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && self.altitude.is_finite()
+    }
+
+    /// Calculate approximate accuracy in meters from HDOP
+    pub fn horizontal_accuracy(&self) -> f32 {
+        // Rough approximation: accuracy ≈ HDOP * 5m
+        self.hdop * 5.0
+    }
+
+    /// Calculate distance to another GPS position in meters (Haversine formula)
+    pub fn distance_to(&self, other: &NavSatFix) -> f64 {
+        const EARTH_RADIUS: f64 = 6371000.0; // meters
+
+        let lat1 = self.latitude.to_radians();
+        let lat2 = other.latitude.to_radians();
+        let delta_lat = (other.latitude - self.latitude).to_radians();
+        let delta_lon = (other.longitude - self.longitude).to_radians();
+
+        let a = ((delta_lat / 2.0).sin().powi(2)
+            + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2))
+        .clamp(0.0, 1.0);
+        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+
+        EARTH_RADIUS * c
+    }
+}
+
+impl LogSummary for NavSatFix {
+    fn log_summary(&self) -> String {
+        format!(
+            "GPS: lat={:.6}, lon={:.6}, alt={:.1}m, sats={}, fix={}",
+            self.latitude, self.longitude, self.altitude, self.satellites_visible, self.status
+        )
+    }
+}
+
+// =============================================================================
+// Joint State
+// =============================================================================
+
+/// Joint state feedback message
+///
+/// Reports positions, velocities, and efforts for up to 16 joints.
+/// Mirrors `JointCommand` layout for consistency (same 16-joint limit,
+/// same name encoding).
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct JointState {
+    /// Joint names (null-terminated strings, max 31 chars each)
+    #[serde(with = "serde_arrays")]
+    pub names: [[u8; 32]; 16],
+    /// Number of valid joints
+    pub joint_count: u8,
+    /// Joint positions in radians (revolute) or meters (prismatic)
+    #[serde(with = "serde_arrays")]
+    pub positions: [f64; 16],
+    /// Joint velocities in rad/s or m/s
+    #[serde(with = "serde_arrays")]
+    pub velocities: [f64; 16],
+    /// Joint efforts (torque in Nm or force in N)
+    #[serde(with = "serde_arrays")]
+    pub efforts: [f64; 16],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for JointState {
+    fn default() -> Self {
+        Self {
+            names: [[0; 32]; 16],
+            joint_count: 0,
+            positions: [0.0; 16],
+            velocities: [0.0; 16],
+            efforts: [0.0; 16],
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl JointState {
+    /// Create a new empty JointState
+    pub fn new() -> Self {
+        Self {
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+            ..Self::default()
+        }
+    }
+
+    /// Add a joint with position, velocity, and effort.
+    /// Returns Err if 16-joint limit is reached.
+    pub fn add_joint(
+        &mut self,
+        name: &str,
+        position: f64,
+        velocity: f64,
+        effort: f64,
+    ) -> Result<(), &'static str> {
+        if self.joint_count >= 16 {
+            return Err("Maximum 16 joints supported");
+        }
+        let idx = self.joint_count as usize;
+        let name_bytes = name.as_bytes();
+        let len = name_bytes.len().min(31);
+        self.names[idx][..len].copy_from_slice(&name_bytes[..len]);
+        self.names[idx][len] = 0;
+        self.positions[idx] = position;
+        self.velocities[idx] = velocity;
+        self.efforts[idx] = effort;
+        self.joint_count += 1;
+        Ok(())
+    }
+
+    /// Get the name of a joint by index
+    pub fn joint_name(&self, index: usize) -> Option<&str> {
+        if index >= self.joint_count as usize {
+            return None;
+        }
+        let bytes = &self.names[index];
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        std::str::from_utf8(&bytes[..end]).ok()
+    }
+
+    /// Find a joint index by name
+    fn find_joint(&self, name: &str) -> Option<usize> {
+        (0..self.joint_count as usize).find(|&i| self.joint_name(i) == Some(name))
+    }
+
+    /// Get position of a joint by name
+    pub fn position(&self, name: &str) -> Option<f64> {
+        self.find_joint(name).map(|i| self.positions[i])
+    }
+
+    /// Get velocity of a joint by name
+    pub fn velocity(&self, name: &str) -> Option<f64> {
+        self.find_joint(name).map(|i| self.velocities[i])
+    }
+
+    /// Get effort of a joint by name
+    pub fn effort(&self, name: &str) -> Option<f64> {
+        self.find_joint(name).map(|i| self.efforts[i])
+    }
+}
+
+impl LogSummary for JointState {
+    fn log_summary(&self) -> String {
+        format!("JointState: {} joints", self.joint_count)
+    }
+}
+
+// =============================================================================
+// Environmental Sensor Types
+// =============================================================================
+
+/// Magnetometer data
+///
+/// Reports 3-axis magnetic field strength with covariance.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct MagneticField {
+    /// Magnetic field vector [x, y, z] in Tesla
+    pub magnetic_field: [f64; 3],
+    /// 3x3 covariance matrix (row-major). Set [0] to -1 if unknown.
+    pub magnetic_field_covariance: [f64; 9],
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl MagneticField {
+    /// Create a new MagneticField message
+    pub fn new(field: [f64; 3]) -> Self {
+        Self {
+            magnetic_field: field,
+            magnetic_field_covariance: [-1.0; 9], // Unknown covariance
+            frame_id: [0; 32],
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+/// Temperature sensor reading
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Temperature {
+    /// Temperature in degrees Celsius
+    pub temperature: f64,
+    /// Variance (0 if exact)
+    pub variance: f64,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Temperature {
+    /// Create a new Temperature message
+    pub fn new(temperature: f64) -> Self {
+        Self {
+            temperature,
+            variance: 0.0,
+            frame_id: [0; 32],
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+/// Fluid pressure sensor reading (barometer, etc.)
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct FluidPressure {
+    /// Pressure in Pascals
+    pub fluid_pressure: f64,
+    /// Variance (0 if exact)
+    pub variance: f64,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl FluidPressure {
+    /// Create a new FluidPressure message
+    pub fn new(pressure: f64) -> Self {
+        Self {
+            fluid_pressure: pressure,
+            variance: 0.0,
+            frame_id: [0; 32],
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+/// Illuminance sensor reading (light level)
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Illuminance {
+    /// Illuminance in Lux
+    pub illuminance: f64,
+    /// Variance (0 if exact)
+    pub variance: f64,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Illuminance {
+    /// Create a new Illuminance message
+    pub fn new(illuminance: f64) -> Self {
+        Self {
+            illuminance,
+            variance: 0.0,
+            frame_id: [0; 32],
+            timestamp_ns: crate::transform_frame::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+// =============================================================================
+// softmata-core Trait Implementations
+// =============================================================================
+// These impls let HORUS Pod messages flow through any algorithm that accepts
+// `impl ScanData`, `impl ImuData`, etc. — zero-copy IPC meets generic traits.
+
+impl softmata_core::sensor::ScanData for LaserScan {
+    fn num_ranges(&self) -> usize {
+        360
+    }
+
+    fn range_at(&self, index: usize) -> f64 {
+        if index < 360 {
+            self.ranges[index] as f64
+        } else {
+            0.0
+        }
+    }
+
+    fn angle_min(&self) -> f64 {
+        self.angle_min as f64
+    }
+
+    fn angle_max(&self) -> f64 {
+        self.angle_max as f64
+    }
+
+    fn angle_increment(&self) -> f64 {
+        self.angle_increment as f64
+    }
+
+    fn range_min(&self) -> f64 {
+        self.range_min as f64
+    }
+
+    fn range_max(&self) -> f64 {
+        self.range_max as f64
+    }
+}
+
+impl softmata_core::sensor::ImuData for Imu {
+    fn orientation(&self) -> [f64; 4] {
+        self.orientation
+    }
+
+    fn angular_velocity(&self) -> [f64; 3] {
+        self.angular_velocity
+    }
+
+    fn linear_acceleration(&self) -> [f64; 3] {
+        self.linear_acceleration
+    }
+
+    fn has_orientation(&self) -> bool {
+        self.orientation_covariance[0] >= 0.0
+    }
+}
+
+impl softmata_core::sensor::OdometryData for Odometry {
+    fn pose(&self) -> softmata_core::geometry::Pose2D {
+        self.pose.to_core()
+    }
+
+    fn linear_velocity(&self) -> f64 {
+        self.twist.linear[0]
+    }
+
+    fn angular_velocity(&self) -> f64 {
+        self.twist.angular[2]
+    }
+}
+
+impl softmata_core::sensor::JointData for JointState {
+    fn num_joints(&self) -> usize {
+        self.joint_count as usize
+    }
+
+    fn position_at(&self, index: usize) -> f64 {
+        if index < self.joint_count as usize {
+            self.positions[index]
+        } else {
+            0.0
+        }
+    }
+
+    fn velocity_at(&self, index: usize) -> f64 {
+        if index < self.joint_count as usize {
+            self.velocities[index]
+        } else {
+            0.0
+        }
+    }
+
+    fn effort_at(&self, index: usize) -> f64 {
+        if index < self.joint_count as usize {
+            self.efforts[index]
+        } else {
+            0.0
+        }
+    }
+
+    fn joint_name(&self, index: usize) -> Option<&str> {
+        if index >= self.joint_count as usize {
+            return None;
+        }
+        let bytes = &self.names[index];
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        std::str::from_utf8(&bytes[..end]).ok()
+    }
+}
+
+impl softmata_core::sensor::BatteryData for BatteryState {
+    fn voltage(&self) -> f32 {
+        self.voltage
+    }
+
+    fn current(&self) -> f32 {
+        self.current
+    }
+
+    fn percentage(&self) -> f32 {
+        self.percentage
+    }
+}
+
+impl softmata_core::sensor::RangeData for RangeSensor {
+    fn range(&self) -> f64 {
+        self.range as f64
+    }
+
+    fn range_min(&self) -> f64 {
+        self.min_range as f64
+    }
+
+    fn range_max(&self) -> f64 {
+        self.max_range as f64
+    }
+}
+
+impl softmata_core::sensor::TemperatureData for Temperature {
+    fn celsius(&self) -> f32 {
+        self.temperature as f32
+    }
+}
+
+impl softmata_core::sensor::MagneticFieldData for MagneticField {
+    fn magnetic_field(&self) -> [f32; 3] {
+        [
+            self.magnetic_field[0] as f32,
+            self.magnetic_field[1] as f32,
+            self.magnetic_field[2] as f32,
+        ]
+    }
+}
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+// These implementations enable ultra-fast zero-serialization transfer (~50ns)
+// for real-time robotics sensor data. Topic automatically uses POD backend.
+
+crate::messages::impl_pod_message!(
+    LaserScan,
+    Imu,
+    Odometry,
+    RangeSensor,
+    BatteryState,
+    NavSatFix,
+    JointState,
+    MagneticField,
+    Temperature,
+    FluidPressure,
+    Illuminance,
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use softmata_core::sensor::{
+        BatteryData, ImuData, JointData, OdometryData, RangeData, ScanData, TemperatureData,
+        WrenchData,
+    };
+
+    // ============================================================================
+    // ScanData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_laser_scan_scan_data_num_ranges() {
+        let scan = LaserScan::new();
+        assert_eq!(ScanData::num_ranges(&scan), 360);
+    }
+
+    #[test]
+    fn test_laser_scan_scan_data_range_at_widens_f32() {
+        let mut scan = LaserScan::new();
+        scan.ranges[42] = 3.5_f32;
+        let val: f64 = ScanData::range_at(&scan, 42);
+        assert!((val - 3.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_laser_scan_scan_data_angles() {
+        let scan = LaserScan::default();
+        let angle_min: f64 = ScanData::angle_min(&scan);
+        let angle_max: f64 = ScanData::angle_max(&scan);
+        assert!((angle_min - (-std::f64::consts::PI)).abs() < 0.01);
+        assert!((angle_max - std::f64::consts::PI).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_laser_scan_scan_data_generic_fn() {
+        fn count_valid<S: ScanData>(s: &S) -> usize {
+            (0..s.num_ranges()).filter(|&i| s.is_range_valid(i)).count()
+        }
+        let mut scan = LaserScan::new();
+        scan.ranges[0] = 1.0;
+        scan.ranges[1] = 2.0;
+        scan.ranges[2] = 0.0; // invalid (below range_min)
+        assert_eq!(count_valid(&scan), 2);
+    }
+
+    // ============================================================================
+    // ImuData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_imu_data_orientation() {
+        let mut imu = Imu::new();
+        imu.orientation = [
+            0.0,
+            0.0,
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+        ];
+        let q = ImuData::orientation(&imu);
+        assert!((q[2] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((q[3] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_imu_data_has_orientation() {
+        let imu = Imu::new();
+        // Default covariance is [-1.0; 9] = no orientation data
+        assert!(!ImuData::has_orientation(&imu));
+
+        let mut imu2 = Imu::new();
+        imu2.orientation_covariance = [0.01; 9];
+        assert!(ImuData::has_orientation(&imu2));
+    }
+
+    #[test]
+    fn test_imu_data_angular_velocity() {
+        let mut imu = Imu::new();
+        imu.angular_velocity = [0.1, 0.2, 0.3];
+        let av = ImuData::angular_velocity(&imu);
+        assert_eq!(av, [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn test_imu_data_generic_fn() {
+        fn max_accel<I: ImuData>(imu: &I) -> f64 {
+            let a = imu.linear_acceleration();
+            a.iter().map(|v| v.abs()).fold(0.0_f64, f64::max)
+        }
+        let mut imu = Imu::new();
+        imu.linear_acceleration = [0.0, 0.0, 9.81];
+        assert!((max_accel(&imu) - 9.81).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // OdometryData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_odometry_data_pose() {
+        let mut odom = Odometry::new();
+        odom.pose = Pose2D::new(1.0, 2.0, 0.5);
+        let pose = OdometryData::pose(&odom);
+        assert!((pose.x - 1.0).abs() < 1e-6);
+        assert!((pose.y - 2.0).abs() < 1e-6);
+        assert!((pose.theta - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_odometry_data_velocities() {
+        let mut odom = Odometry::new();
+        odom.twist = Twist::new_2d(0.5, 0.1);
+        assert!((OdometryData::linear_velocity(&odom) - 0.5).abs() < 1e-6);
+        assert!((OdometryData::angular_velocity(&odom) - 0.1).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // JointData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_joint_data_basic() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder", 1.0, 0.5, 10.0).unwrap();
+        js.add_joint("elbow", 0.5, 0.2, 5.0).unwrap();
+
+        assert_eq!(JointData::num_joints(&js), 2);
+        assert!((JointData::position_at(&js, 0) - 1.0).abs() < 1e-10);
+        assert!((JointData::velocity_at(&js, 1) - 0.2).abs() < 1e-10);
+        assert!((JointData::effort_at(&js, 0) - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_joint_data_names() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder_pan", 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(JointData::joint_name(&js, 0), Some("shoulder_pan"));
+        assert_eq!(JointData::joint_name(&js, 1), None);
+    }
+
+    #[test]
+    fn test_joint_data_out_of_bounds() {
+        let js = JointState::new();
+        assert_eq!(JointData::position_at(&js, 0), 0.0);
+        assert_eq!(JointData::joint_name(&js, 0), None);
+    }
+
+    // ============================================================================
+    // BatteryData / RangeData / TemperatureData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_battery_data() {
+        let bat = BatteryState::new(12.5, 75.0);
+        assert!((BatteryData::voltage(&bat) - 12.5).abs() < 1e-6);
+        assert!((BatteryData::percentage(&bat) - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_range_data() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 1.5);
+        assert!((RangeData::range(&range) - 1.5).abs() < 1e-6);
+        assert!(RangeData::is_valid(&range));
+    }
+
+    #[test]
+    fn test_temperature_data() {
+        let temp = Temperature::new(25.5);
+        assert!((TemperatureData::celsius(&temp) - 25.5).abs() < 0.01);
+        assert!((TemperatureData::fahrenheit(&temp) - 77.9).abs() < 0.1);
+    }
+
+    // ============================================================================
+    // WrenchData trait test (via force.rs import)
+    // ============================================================================
+
+    #[test]
+    fn test_wrench_data() {
+        use crate::messages::force::WrenchStamped;
+        let w = WrenchStamped::new(Vector3::new(1.0, 2.0, 3.0), Vector3::new(0.1, 0.2, 0.3));
+        let f = WrenchData::force(&w);
+        let t = WrenchData::torque(&w);
+        assert_eq!(f, [1.0, 2.0, 3.0]);
+        assert_eq!(t, [0.1, 0.2, 0.3]);
+    }
+
+    // ========================================================================
+    // Pod roundtrip tests — verify bytemuck cast preserves all fields
+    // ========================================================================
+
+    #[test]
+    fn test_imu_pod_roundtrip() {
+        let mut imu = Imu::default();
+        imu.linear_acceleration = [1.0, 2.0, 3.0];
+        imu.angular_velocity = [4.0, 5.0, 6.0];
+        imu.orientation = [0.0, 0.0, 0.0, 1.0];
+        imu.timestamp_ns = 123456789;
+
+        let bytes: &[u8] = bytemuck::bytes_of(&imu);
+        let recovered: &Imu = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.linear_acceleration, [1.0, 2.0, 3.0]);
+        assert_eq!(recovered.angular_velocity, [4.0, 5.0, 6.0]);
+        assert_eq!(recovered.orientation[3], 1.0);
+        assert_eq!(recovered.timestamp_ns, 123456789);
+    }
+
+    #[test]
+    fn test_odometry_pod_roundtrip() {
+        let mut odom = Odometry::default();
+        odom.pose = Pose2D::new(1.5, 2.5, 0.785);
+        odom.set_frames("odom", "base_link");
+
+        let bytes: &[u8] = bytemuck::bytes_of(&odom);
+        let recovered: &Odometry = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.pose.x, 1.5);
+        assert_eq!(recovered.pose.y, 2.5);
+        assert!((recovered.pose.theta - 0.785).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_laser_scan_pod_roundtrip() {
+        let mut scan = LaserScan::default();
+        scan.angle_min = -std::f32::consts::PI;
+        scan.angle_max = std::f32::consts::PI;
+        scan.ranges[0] = 1.5;
+        scan.ranges[359] = 10.0;
+
+        let bytes: &[u8] = bytemuck::bytes_of(&scan);
+        let recovered: &LaserScan = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.angle_min, -std::f32::consts::PI);
+        assert_eq!(recovered.ranges[0], 1.5);
+        assert_eq!(recovered.ranges[359], 10.0);
+    }
+
+    #[test]
+    fn test_range_sensor_pod_roundtrip() {
+        let range = RangeSensor {
+            sensor_type: 0,
+            field_of_view: 0.26,
+            min_range: 0.02,
+            max_range: 4.0,
+            range: 1.5,
+            timestamp_ns: 42,
+        };
+        let bytes: &[u8] = bytemuck::bytes_of(&range);
+        let recovered: &RangeSensor = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.range, 1.5);
+        assert_eq!(recovered.max_range, 4.0);
+        assert_eq!(recovered.timestamp_ns, 42);
+    }
+
+    // ============================================================================
+    // BatteryState Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_battery_state_fully_charged() {
+        let bat = BatteryState::new(12.6, 100.0);
+        assert!(!bat.is_low(20.0));
+        assert!(!bat.is_critical());
+    }
+
+    #[test]
+    fn test_battery_state_empty() {
+        let bat = BatteryState::new(10.0, 0.0);
+        assert!(bat.is_low(20.0));
+        assert!(bat.is_critical());
+    }
+
+    #[test]
+    fn test_battery_state_critical_boundary() {
+        // Exactly 10% should NOT be critical (< 10.0, not <=)
+        let bat_at_10 = BatteryState::new(11.0, 10.0);
+        assert!(!bat_at_10.is_critical());
+
+        let bat_below = BatteryState::new(11.0, 9.99);
+        assert!(bat_below.is_critical());
+    }
+
+    #[test]
+    fn test_battery_state_low_boundary() {
+        let bat = BatteryState::new(11.5, 20.0);
+        // percentage 20.0 < threshold 20.0 is false
+        assert!(!bat.is_low(20.0));
+
+        let bat2 = BatteryState::new(11.5, 19.99);
+        assert!(bat2.is_low(20.0));
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_discharging() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = -2.0; // discharging at 2A
+        bat.charge = 4.0;   // 4Ah remaining
+        let time = bat.time_remaining().unwrap();
+        // 4Ah / 2A = 2 hours = 7200 seconds
+        assert!((time - 7200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_charging() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = 2.0; // charging (positive)
+        bat.charge = 4.0;
+        assert!(bat.time_remaining().is_none());
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_zero_current() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = 0.0;
+        bat.charge = 4.0;
+        assert!(bat.time_remaining().is_none());
+    }
+
+    #[test]
+    fn test_battery_state_time_remaining_nan_charge() {
+        let mut bat = BatteryState::new(12.0, 50.0);
+        bat.current = -1.0;
+        // charge defaults to NaN
+        assert!(bat.time_remaining().is_none());
+    }
+
+    #[test]
+    fn test_battery_state_default_charge_is_nan() {
+        let bat = BatteryState::default();
+        assert!(bat.charge.is_nan());
+        assert!(bat.capacity.is_nan());
+    }
+
+    #[test]
+    fn test_battery_state_status_constants() {
+        assert_eq!(BatteryState::STATUS_UNKNOWN, 0);
+        assert_eq!(BatteryState::STATUS_CHARGING, 1);
+        assert_eq!(BatteryState::STATUS_DISCHARGING, 2);
+        assert_eq!(BatteryState::STATUS_FULL, 3);
+    }
+
+    #[test]
+    fn test_battery_state_with_cell_voltages() {
+        let mut bat = BatteryState::new(12.6, 100.0);
+        bat.cell_count = 3;
+        bat.cell_voltages[0] = 4.2;
+        bat.cell_voltages[1] = 4.2;
+        bat.cell_voltages[2] = 4.2;
+        assert_eq!(bat.cell_count, 3);
+        assert_eq!(bat.cell_voltages[0], 4.2);
+        assert_eq!(bat.cell_voltages[2], 4.2);
+        // Unused cells should be 0.0
+        assert_eq!(bat.cell_voltages[3], 0.0);
+    }
+
+    #[test]
+    fn test_battery_state_all_16_cells() {
+        let mut bat = BatteryState::new(48.0, 95.0);
+        bat.cell_count = 16;
+        for i in 0..16 {
+            bat.cell_voltages[i] = 3.0 + (i as f32) * 0.01;
+        }
+        assert_eq!(bat.cell_count, 16);
+        assert!((bat.cell_voltages[0] - 3.0).abs() < 1e-6);
+        assert!((bat.cell_voltages[15] - 3.15).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_battery_state_serialization() {
+        let mut bat = BatteryState::new(12.0, 75.0);
+        bat.power_supply_status = BatteryState::STATUS_DISCHARGING;
+        bat.temperature = 35.0;
+        // Set charge/capacity to finite values (defaults are NaN, which serialize to null)
+        bat.charge = 4.0;
+        bat.capacity = 5.0;
+        let json = serde_json::to_string(&bat).unwrap();
+        let recovered: BatteryState = serde_json::from_str(&json).unwrap();
+        assert!((recovered.voltage - 12.0).abs() < 1e-6);
+        assert!((recovered.percentage - 75.0).abs() < 1e-6);
+        assert_eq!(recovered.power_supply_status, BatteryState::STATUS_DISCHARGING);
+        assert!((recovered.temperature - 35.0).abs() < 1e-6);
+        assert!((recovered.charge - 4.0).abs() < 1e-6);
+        assert!((recovered.capacity - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_battery_state_pod_roundtrip() {
+        let mut bat = BatteryState::new(12.6, 100.0);
+        bat.current = -0.5;
+        bat.temperature = 22.0;
+        bat.cell_count = 3;
+        bat.cell_voltages[0] = 4.2;
+        let bytes: &[u8] = bytemuck::bytes_of(&bat);
+        let recovered: &BatteryState = bytemuck::from_bytes(bytes);
+        assert!((recovered.voltage - 12.6).abs() < 1e-6);
+        assert!((recovered.current - (-0.5)).abs() < 1e-6);
+        assert_eq!(recovered.cell_count, 3);
+        assert!((recovered.cell_voltages[0] - 4.2).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // JointState Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_joint_state_fill_all_16() {
+        let mut js = JointState::new();
+        for i in 0..16 {
+            let name = format!("joint_{}", i);
+            js.add_joint(&name, i as f64 * 0.1, i as f64 * 0.01, i as f64 * 1.0)
+                .unwrap();
+        }
+        assert_eq!(js.joint_count, 16);
+        assert_eq!(JointData::num_joints(&js), 16);
+
+        // Verify first and last joints
+        assert_eq!(js.joint_name(0), Some("joint_0"));
+        assert_eq!(js.joint_name(15), Some("joint_15"));
+        assert!((js.positions[0] - 0.0).abs() < 1e-10);
+        assert!((js.positions[15] - 1.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_joint_state_17th_joint_fails() {
+        let mut js = JointState::new();
+        for i in 0..16 {
+            js.add_joint(&format!("j{}", i), 0.0, 0.0, 0.0).unwrap();
+        }
+        let result = js.add_joint("j16", 0.0, 0.0, 0.0);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Maximum 16 joints supported");
+    }
+
+    #[test]
+    fn test_joint_state_lookup_by_name() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder", 1.0, 0.5, 10.0).unwrap();
+        js.add_joint("elbow", 0.5, 0.2, 5.0).unwrap();
+        js.add_joint("wrist", 0.3, 0.1, 2.0).unwrap();
+
+        assert_eq!(js.position("shoulder"), Some(1.0));
+        assert_eq!(js.velocity("elbow"), Some(0.2));
+        assert_eq!(js.effort("wrist"), Some(2.0));
+        assert_eq!(js.position("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_joint_state_long_name_truncated() {
+        let mut js = JointState::new();
+        let long_name = "a_very_long_joint_name_that_exceeds_31_characters_limit";
+        js.add_joint(long_name, 0.0, 0.0, 0.0).unwrap();
+        // Name should be truncated to 31 chars
+        let name = js.joint_name(0).unwrap();
+        assert_eq!(name.len(), 31);
+        assert_eq!(name, &long_name[..31]);
+    }
+
+    #[test]
+    fn test_joint_state_negative_values() {
+        let mut js = JointState::new();
+        js.add_joint("revolute", -3.14, -1.0, -50.0).unwrap();
+        assert!((js.positions[0] - (-3.14)).abs() < 1e-10);
+        assert!((js.velocities[0] - (-1.0)).abs() < 1e-10);
+        assert!((js.efforts[0] - (-50.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_joint_state_empty_name() {
+        let mut js = JointState::new();
+        js.add_joint("", 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(js.joint_name(0), Some(""));
+    }
+
+    #[test]
+    fn test_joint_state_pod_roundtrip() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder", 1.5, 0.3, 12.0).unwrap();
+        js.add_joint("elbow", -0.7, -0.1, 5.0).unwrap();
+        let bytes: &[u8] = bytemuck::bytes_of(&js);
+        let recovered: &JointState = bytemuck::from_bytes(bytes);
+        assert_eq!(recovered.joint_count, 2);
+        assert!((recovered.positions[0] - 1.5).abs() < 1e-10);
+        assert!((recovered.positions[1] - (-0.7)).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // Temperature Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_temperature_absolute_zero() {
+        let temp = Temperature::new(-273.15);
+        assert!((temp.temperature - (-273.15)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_boiling_point() {
+        let temp = Temperature::new(100.0);
+        assert!((TemperatureData::celsius(&temp) - 100.0).abs() < 0.01);
+        assert!((TemperatureData::fahrenheit(&temp) - 212.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_temperature_freezing_point() {
+        let temp = Temperature::new(0.0);
+        assert!((TemperatureData::celsius(&temp) - 0.0).abs() < 0.01);
+        assert!((TemperatureData::fahrenheit(&temp) - 32.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_temperature_extreme_hot() {
+        let temp = Temperature::new(1500.0); // e.g., molten metal
+        assert!((temp.temperature - 1500.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_with_variance() {
+        let mut temp = Temperature::new(25.0);
+        temp.variance = 0.5;
+        assert!((temp.variance - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_with_frame_id() {
+        let temp = Temperature::new(25.0).with_frame_id("motor_housing");
+        let frame_str = std::str::from_utf8(
+            &temp.frame_id[..temp.frame_id.iter().position(|&b| b == 0).unwrap_or(32)],
+        )
+        .unwrap();
+        assert_eq!(frame_str, "motor_housing");
+    }
+
+    #[test]
+    fn test_temperature_serialization() {
+        let temp = Temperature::new(-40.0);
+        let json = serde_json::to_string(&temp).unwrap();
+        let recovered: Temperature = serde_json::from_str(&json).unwrap();
+        assert!((recovered.temperature - (-40.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_temperature_pod_roundtrip() {
+        let temp = Temperature::new(36.6);
+        let bytes: &[u8] = bytemuck::bytes_of(&temp);
+        let recovered: &Temperature = bytemuck::from_bytes(bytes);
+        assert!((recovered.temperature - 36.6).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // LaserScan Additional Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_laser_scan_no_valid_ranges() {
+        let scan = LaserScan::new();
+        // All ranges default to 0.0, which is below range_min (0.1)
+        assert_eq!(scan.valid_count(), 0);
+        assert!(scan.min_range().is_none());
+    }
+
+    #[test]
+    fn test_laser_scan_all_ranges_valid() {
+        let mut scan = LaserScan::new();
+        for i in 0..360 {
+            scan.ranges[i] = 1.0; // Within [0.1, 30.0]
+        }
+        assert_eq!(scan.valid_count(), 360);
+    }
+
+    #[test]
+    fn test_laser_scan_angle_at_out_of_bounds() {
+        let scan = LaserScan::new();
+        assert_eq!(scan.angle_at(360), 0.0);
+        assert_eq!(scan.angle_at(1000), 0.0);
+    }
+
+    #[test]
+    fn test_laser_scan_is_range_valid_out_of_bounds() {
+        let scan = LaserScan::new();
+        assert!(!scan.is_range_valid(360));
+        assert!(!scan.is_range_valid(usize::MAX));
+    }
+
+    #[test]
+    fn test_laser_scan_nan_range_invalid() {
+        let mut scan = LaserScan::new();
+        scan.ranges[0] = f32::NAN;
+        assert!(!scan.is_range_valid(0));
+    }
+
+    #[test]
+    fn test_laser_scan_infinity_range_invalid() {
+        let mut scan = LaserScan::new();
+        scan.ranges[0] = f32::INFINITY;
+        assert!(!scan.is_range_valid(0));
+    }
+
+    #[test]
+    fn test_laser_scan_min_range_finds_closest() {
+        let mut scan = LaserScan::new();
+        scan.ranges[10] = 5.0;
+        scan.ranges[20] = 0.5;
+        scan.ranges[30] = 15.0;
+        assert!((scan.min_range().unwrap() - 0.5).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // Odometry Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_odometry_set_frames_long_names() {
+        let mut odom = Odometry::new();
+        let long_frame = "a_very_long_frame_name_that_is_over_31_chars";
+        odom.set_frames(long_frame, "child");
+        // Frame should be truncated to 31 chars
+        let end = odom.frame_id.iter().position(|&b| b == 0).unwrap_or(32);
+        let frame_str = std::str::from_utf8(&odom.frame_id[..end]).unwrap();
+        assert_eq!(frame_str.len(), 31);
+    }
+
+    #[test]
+    fn test_odometry_update() {
+        let mut odom = Odometry::new();
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let twist = Twist::new_2d(0.5, 0.1);
+        odom.update(pose, twist);
+        assert_eq!(odom.pose.x, 1.0);
+        assert_eq!(odom.pose.y, 2.0);
+        assert!((odom.twist.linear[0] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_odometry_is_valid_with_invalid_pose() {
+        let mut odom = Odometry::new();
+        odom.pose = Pose2D {
+            x: f64::INFINITY,
+            y: 0.0,
+            theta: 0.0,
+            timestamp_ns: 0,
+        };
+        assert!(!odom.is_valid());
+    }
+
+    #[test]
+    fn test_odometry_is_valid_with_invalid_twist() {
+        let mut odom = Odometry::new();
+        odom.twist = Twist {
+            linear: [f64::NAN, 0.0, 0.0],
+            angular: [0.0; 3],
+            timestamp_ns: 0,
+        };
+        assert!(!odom.is_valid());
+    }
+
+    // ============================================================================
+    // IMU Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_imu_set_orientation_from_euler() {
+        let mut imu = Imu::new();
+        imu.set_orientation_from_euler(0.0, 0.0, std::f64::consts::FRAC_PI_2);
+        // 90 degree yaw
+        assert!((imu.orientation[2] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((imu.orientation[3] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_imu_invalid_with_nan() {
+        let mut imu = Imu::new();
+        imu.angular_velocity[1] = f64::NAN;
+        assert!(!imu.is_valid());
+    }
+
+    #[test]
+    fn test_imu_invalid_with_inf_acceleration() {
+        let mut imu = Imu::new();
+        imu.linear_acceleration[2] = f64::INFINITY;
+        assert!(!imu.is_valid());
+    }
+
+    #[test]
+    fn test_imu_vector_accessors() {
+        let mut imu = Imu::new();
+        imu.angular_velocity = [0.1, 0.2, 0.3];
+        imu.linear_acceleration = [1.0, 2.0, 9.81];
+        let av = imu.angular_velocity_vec();
+        assert!((av.x - 0.1).abs() < 1e-10);
+        assert!((av.y - 0.2).abs() < 1e-10);
+        assert!((av.z - 0.3).abs() < 1e-10);
+        let la = imu.linear_acceleration_vec();
+        assert!((la.x - 1.0).abs() < 1e-10);
+        assert!((la.z - 9.81).abs() < 1e-10);
+    }
+
+    // ============================================================================
+    // RangeSensor Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_range_sensor_below_min_invalid() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 0.01); // below min_range 0.02
+        assert!(!range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_above_max_invalid() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 5.0); // above max_range 4.0
+        assert!(!range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_nan_invalid() {
+        let range = RangeSensor::new(RangeSensor::INFRARED, f32::NAN);
+        assert!(!range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_at_exact_min() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 0.02);
+        assert!(range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_at_exact_max() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 4.0);
+        assert!(range.is_valid());
+    }
+
+    #[test]
+    fn test_range_sensor_infrared_type() {
+        let range = RangeSensor::new(RangeSensor::INFRARED, 1.0);
+        assert_eq!(range.sensor_type, 1);
+    }
+
+    // ============================================================================
+    // NavSatFix Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn test_navsat_valid_coordinates() {
+        let fix = NavSatFix::from_coordinates(37.7749, -122.4194, 10.0);
+        assert!(fix.is_valid());
+        assert!(fix.has_fix());
+    }
+
+    #[test]
+    fn test_navsat_invalid_latitude() {
+        let mut fix = NavSatFix::new();
+        fix.latitude = 91.0; // out of range
+        assert!(!fix.is_valid());
+    }
+
+    #[test]
+    fn test_navsat_invalid_longitude() {
+        let mut fix = NavSatFix::new();
+        fix.longitude = -181.0; // out of range
+        assert!(!fix.is_valid());
+    }
+
+    #[test]
+    fn test_navsat_no_fix_status() {
+        let fix = NavSatFix::new();
+        assert!(!fix.has_fix());
+        assert_eq!(fix.status, NavSatFix::STATUS_NO_FIX);
+    }
+
+    #[test]
+    fn test_navsat_distance_same_point() {
+        let fix = NavSatFix::from_coordinates(0.0, 0.0, 0.0);
+        assert!(fix.distance_to(&fix) < 1e-6);
+    }
+
+    #[test]
+    fn test_navsat_horizontal_accuracy() {
+        let mut fix = NavSatFix::new();
+        fix.hdop = 1.0;
+        assert!((fix.horizontal_accuracy() - 5.0).abs() < 1e-6);
+    }
+}

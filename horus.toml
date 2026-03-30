@@ -1,0 +1,8 @@
+[package]
+name = "HORUS"
+version = "0.2.0"
+language = "rust"
+
+[dependencies]
+horus = "*"
+requests = "latest"

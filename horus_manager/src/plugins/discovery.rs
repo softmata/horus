@@ -1,0 +1,595 @@
+//! Plugin Discovery - Find and install HORUS plugins
+//!
+//! This module provides discovery of available plugins from:
+//! - Local workspace (horus-* crates in development)
+//! - SOFTMATA registry (published plugins)
+//! - crates.io (community plugins)
+//!
+//! Plugins are runtime-loadable extensions that add hardware support,
+//! new nodes, or CLI commands without recompilation.
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Available plugin from discovery
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailablePlugin {
+    /// Plugin package name (e.g., "horus-realsense")
+    pub name: String,
+    /// Latest version available
+    pub version: String,
+    /// Short description
+    pub description: String,
+    /// Plugin category
+    pub category: PluginCategory,
+    /// Source where plugin is available
+    pub source: PluginSourceType,
+    /// Supported platforms
+    pub platforms: Vec<String>,
+    /// HORUS version compatibility
+    pub horus_compat: String,
+    /// Whether pre-built binaries are available
+    pub has_prebuilt: bool,
+    /// Required system dependencies
+    pub system_deps: Vec<String>,
+    /// Features/capabilities provided
+    pub features: Vec<String>,
+}
+
+/// Plugin category for organization
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginCategory {
+    /// Camera/vision drivers
+    Camera,
+    /// LiDAR/depth sensors
+    Lidar,
+    /// IMU/motion sensors
+    Imu,
+    /// Motor controllers
+    Motor,
+    /// Servo controllers
+    Servo,
+    /// Communication buses
+    Bus,
+    /// GPS/localization
+    Gps,
+    /// Force/torque sensors
+    ForceTorque,
+    /// Simulation backends
+    Simulation,
+    /// CLI extensions
+    Cli,
+    /// Other
+    Other,
+}
+
+impl std::fmt::Display for PluginCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginCategory::Camera => write!(f, "camera"),
+            PluginCategory::Lidar => write!(f, "lidar"),
+            PluginCategory::Imu => write!(f, "imu"),
+            PluginCategory::Motor => write!(f, "motor"),
+            PluginCategory::Servo => write!(f, "servo"),
+            PluginCategory::Bus => write!(f, "bus"),
+            PluginCategory::Gps => write!(f, "gps"),
+            PluginCategory::ForceTorque => write!(f, "force-torque"),
+            PluginCategory::Simulation => write!(f, "simulation"),
+            PluginCategory::Cli => write!(f, "cli"),
+            PluginCategory::Other => write!(f, "other"),
+        }
+    }
+}
+
+/// Source type for plugin
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginSourceType {
+    /// Local workspace (development)
+    Local,
+    /// SOFTMATA registry
+    Registry,
+    /// crates.io
+    CratesIo,
+    /// Git repository
+    Git,
+}
+
+impl std::fmt::Display for PluginSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginSourceType::Local => write!(f, "local"),
+            PluginSourceType::Registry => write!(f, "registry"),
+            PluginSourceType::CratesIo => write!(f, "crates.io"),
+            PluginSourceType::Git => write!(f, "git"),
+        }
+    }
+}
+
+/// Plugin discovery service
+pub struct PluginDiscovery {
+    /// Local workspace paths to scan
+    workspace_paths: Vec<PathBuf>,
+    /// Cached available plugins
+    cache: HashMap<String, AvailablePlugin>,
+    /// Cache timestamp
+    cache_time: Option<std::time::Instant>,
+}
+
+impl Default for PluginDiscovery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PluginDiscovery {
+    /// Create a new plugin discovery service
+    pub fn new() -> Self {
+        Self {
+            workspace_paths: vec![],
+            cache: HashMap::new(),
+            cache_time: None,
+        }
+    }
+
+    /// Add a workspace path to scan for local plugins
+    pub fn add_workspace_path(&mut self, path: PathBuf) {
+        self.workspace_paths.push(path);
+    }
+
+    /// Discover all available plugins
+    pub fn discover_all(&mut self) -> Result<Vec<AvailablePlugin>> {
+        let mut plugins = Vec::new();
+
+        // Discover local workspace plugins
+        for path in &self.workspace_paths.clone() {
+            plugins.extend(self.discover_local(path)?);
+        }
+
+        // Discover from registry (if available)
+        if let Ok(registry_plugins) = self.discover_registry() {
+            plugins.extend(registry_plugins);
+        }
+
+        // Update cache
+        for plugin in &plugins {
+            self.cache.insert(plugin.name.clone(), plugin.clone());
+        }
+        self.cache_time = Some(std::time::Instant::now());
+
+        Ok(plugins)
+    }
+
+    /// Discover plugins in local workspace
+    pub fn discover_local(&self, workspace_root: &Path) -> Result<Vec<AvailablePlugin>> {
+        let mut plugins = Vec::new();
+
+        // Scan for horus-* directories that are Cargo crates
+        if let Ok(entries) = fs::read_dir(workspace_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("horus-") {
+                            if let Some(plugin) = self.parse_local_plugin(&path) {
+                                plugins.push(plugin);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(plugins)
+    }
+
+    /// Parse a local plugin from its Cargo.toml
+    fn parse_local_plugin(&self, plugin_dir: &Path) -> Option<AvailablePlugin> {
+        let cargo_toml = plugin_dir.join("Cargo.toml");
+        if !cargo_toml.exists() {
+            return None;
+        }
+
+        let content = fs::read_to_string(&cargo_toml).ok()?;
+        let toml: toml::Table = content.parse().ok()?;
+
+        let package = toml.get("package")?;
+        let name = package.get("name")?.as_str()?.to_string();
+        let version = package
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0.1.0")
+            .to_string();
+        let description = package
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Local HORUS plugin")
+            .to_string();
+
+        // Detect category from name or keywords
+        let category = self.detect_category(&name, package);
+
+        // Check for plugin metadata
+        let features = self.extract_features(&toml);
+
+        Some(AvailablePlugin {
+            name,
+            version,
+            description,
+            category,
+            source: PluginSourceType::Local,
+            platforms: vec!["linux-x86_64".to_string()],
+            horus_compat: ">=0.1.0".to_string(),
+            has_prebuilt: false,
+            system_deps: vec![],
+            features,
+        })
+    }
+
+    /// Detect plugin category from name and metadata
+    fn detect_category(&self, name: &str, _package: &toml::Value) -> PluginCategory {
+        let name_lower = name.to_lowercase();
+
+        if name_lower.contains("camera")
+            || name_lower.contains("realsense")
+            || name_lower.contains("zed")
+            || name_lower.contains("oak")
+        {
+            PluginCategory::Camera
+        } else if name_lower.contains("lidar") || name_lower.contains("rplidar") {
+            PluginCategory::Lidar
+        } else if name_lower.contains("imu")
+            || name_lower.contains("bno")
+            || name_lower.contains("mpu")
+        {
+            PluginCategory::Imu
+        } else if name_lower.contains("motor") || name_lower.contains("roboclaw") {
+            PluginCategory::Motor
+        } else if name_lower.contains("servo") || name_lower.contains("dynamixel") {
+            PluginCategory::Servo
+        } else if name_lower.contains("can")
+            || name_lower.contains("i2c")
+            || name_lower.contains("spi")
+            || name_lower.contains("modbus")
+        {
+            PluginCategory::Bus
+        } else if name_lower.contains("gps") || name_lower.contains("nmea") {
+            PluginCategory::Gps
+        } else if name_lower.contains("sim") {
+            PluginCategory::Simulation
+        } else if name_lower.contains("sensors") {
+            PluginCategory::Other // sensors is a collection
+        } else if name_lower.contains("actuators") {
+            PluginCategory::Motor // actuators is motor-related
+        } else if name_lower.contains("industrial") {
+            PluginCategory::Bus // industrial is bus-related
+        } else {
+            PluginCategory::Other
+        }
+    }
+
+    /// Extract features from Cargo.toml
+    fn extract_features(&self, toml: &toml::Table) -> Vec<String> {
+        toml.get("features")
+            .and_then(|f| f.as_table())
+            .map(|features| features.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Discover plugins from SOFTMATA registry.
+    ///
+    /// Queries the registry API for packages of type "plugin". Falls back to
+    /// an empty list if the registry is unreachable (offline development).
+    pub fn discover_registry(&self) -> Result<Vec<AvailablePlugin>> {
+        let client = crate::registry::RegistryClient::new();
+
+        let packages = match client.search("", Some("plugin"), None) {
+            Ok(pkgs) => pkgs,
+            Err(_) => return Ok(Vec::new()), // Network error — skip
+        };
+
+        let plugins = packages
+            .into_iter()
+            .map(|pkg| {
+                let category =
+                    self.detect_category(&pkg.name, &toml::Value::Table(toml::Table::new()));
+                AvailablePlugin {
+                    name: pkg.name.clone(),
+                    version: pkg.version,
+                    description: pkg.description.unwrap_or_default(),
+                    category,
+                    source: PluginSourceType::Registry,
+                    platforms: vec!["linux-x86_64".into()],
+                    horus_compat: ">=0.1.0".into(),
+                    has_prebuilt: false,
+                    system_deps: vec![],
+                    features: vec![],
+                }
+            })
+            .collect();
+
+        Ok(plugins)
+    }
+
+    /// Search for plugins matching a query
+    pub fn search(&mut self, query: &str) -> Result<Vec<AvailablePlugin>> {
+        let all = self.discover_all()?;
+        let query_lower = query.to_lowercase();
+
+        Ok(all
+            .into_iter()
+            .filter(|p| {
+                p.name.to_lowercase().contains(&query_lower)
+                    || p.description.to_lowercase().contains(&query_lower)
+                    || p.features
+                        .iter()
+                        .any(|f| f.to_lowercase().contains(&query_lower))
+            })
+            .collect())
+    }
+
+    /// Get plugin by name
+    pub fn get_plugin(&mut self, name: &str) -> Result<Option<AvailablePlugin>> {
+        // Check cache first
+        if let Some(plugin) = self.cache.get(name) {
+            return Ok(Some(plugin.clone()));
+        }
+
+        // Refresh and try again
+        self.discover_all()?;
+        Ok(self.cache.get(name).cloned())
+    }
+
+    /// Check if a plugin is compatible with current HORUS version
+    pub fn is_compatible(&self, plugin: &AvailablePlugin) -> bool {
+        // Parse the compatibility string (e.g., ">=0.1.0")
+        let horus_version = env!("CARGO_PKG_VERSION");
+        let current = match semver::Version::parse(horus_version) {
+            Ok(v) => v,
+            Err(_) => return true, // Assume compatible if version unparseable
+        };
+
+        // Simple compatibility check
+        if plugin.horus_compat.starts_with(">=") {
+            if let Ok(min) = semver::Version::parse(plugin.horus_compat.trim_start_matches(">=")) {
+                return current >= min;
+            }
+        }
+
+        true
+    }
+
+    /// Get installation instructions for a plugin
+    pub fn get_install_instructions(&self, plugin: &AvailablePlugin) -> String {
+        match plugin.source {
+            PluginSourceType::Local => {
+                format!(
+                    "# Local development plugin\ncd {} && cargo build --release",
+                    plugin.name
+                )
+            }
+            PluginSourceType::Registry => {
+                let mut instructions = format!("horus install {}", plugin.name);
+                if !plugin.system_deps.is_empty() {
+                    instructions.push_str(&format!(
+                        "\n\n# System dependencies required:\nsudo apt install {}",
+                        plugin.system_deps.join(" ")
+                    ));
+                }
+                instructions
+            }
+            PluginSourceType::CratesIo => {
+                format!("cargo install {}", plugin.name)
+            }
+            PluginSourceType::Git => "horus install <name> # from git repository".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_discover_local_plugin() {
+        let temp_dir = TempDir::new().unwrap();
+        let plugin_dir = temp_dir.path().join("horus-test");
+        fs::create_dir_all(&plugin_dir).unwrap();
+
+        let cargo_toml = r#"
+[package]
+name = "horus-test"
+version = "0.1.0"
+description = "Test plugin"
+
+[features]
+default = []
+hardware = []
+"#;
+        fs::write(plugin_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+        let discovery = PluginDiscovery::new();
+        let plugins = discovery.discover_local(temp_dir.path()).unwrap();
+
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].name, "horus-test");
+        assert_eq!(plugins[0].source, PluginSourceType::Local);
+    }
+
+    #[test]
+    fn test_category_detection() {
+        let discovery = PluginDiscovery::new();
+        let dummy = toml::Value::Table(toml::Table::new());
+
+        assert_eq!(
+            discovery.detect_category("horus-realsense", &dummy),
+            PluginCategory::Camera
+        );
+        assert_eq!(
+            discovery.detect_category("horus-rplidar", &dummy),
+            PluginCategory::Lidar
+        );
+        assert_eq!(
+            discovery.detect_category("horus-dynamixel", &dummy),
+            PluginCategory::Servo
+        );
+        assert_eq!(
+            discovery.detect_category("horus-sim3d", &dummy),
+            PluginCategory::Simulation
+        );
+    }
+
+    #[test]
+    fn test_search() {
+        let mut discovery = PluginDiscovery::new();
+        let results = discovery.search("camera");
+
+        // search() should succeed without panic — results depend on local/registry state
+        assert!(
+            results.is_ok(),
+            "search should not error: {:?}",
+            results.err()
+        );
+        // Results may be empty if no camera plugins are installed/registered
+    }
+
+    #[test]
+    fn test_discover_registry_returns_empty_when_offline() {
+        // With no registry running, discover_registry should return Ok(empty), not error
+        let discovery = PluginDiscovery::new();
+        let result = discovery.discover_registry();
+        assert!(result.is_ok(), "should gracefully handle offline registry");
+    }
+
+    // ── Additional discovery tests ─────────────────────────────────────
+
+    #[test]
+    fn test_category_more_types() {
+        let discovery = PluginDiscovery::new();
+        let dummy = toml::Value::Table(toml::Table::new());
+
+        assert_eq!(
+            discovery.detect_category("horus-imu-bno055", &dummy),
+            PluginCategory::Imu
+        );
+        assert_eq!(
+            discovery.detect_category("horus-motor-driver", &dummy),
+            PluginCategory::Motor
+        );
+        assert_eq!(
+            discovery.detect_category("horus-gps-ublox", &dummy),
+            PluginCategory::Gps
+        );
+    }
+
+    #[test]
+    fn test_category_unknown_name() {
+        let discovery = PluginDiscovery::new();
+        let dummy = toml::Value::Table(toml::Table::new());
+
+        // Names that don't match known categories should be Other
+        assert_eq!(
+            discovery.detect_category("horus-custom-tool", &dummy),
+            PluginCategory::Other
+        );
+    }
+
+    #[test]
+    fn test_discover_local_non_horus_prefix_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let non_horus = tmp.path().join("my-package");
+        fs::create_dir_all(&non_horus).unwrap();
+        fs::write(
+            non_horus.join("Cargo.toml"),
+            "[package]\nname = \"my-package\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let discovery = PluginDiscovery::new();
+        let plugins = discovery.discover_local(tmp.path()).unwrap();
+
+        // Non-horus-prefixed packages should not be discovered as plugins
+        assert!(
+            plugins.is_empty(),
+            "Non-horus packages should be skipped: {:?}",
+            plugins
+        );
+    }
+
+    #[test]
+    fn test_discover_local_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let discovery = PluginDiscovery::new();
+        let plugins = discovery.discover_local(tmp.path()).unwrap();
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn test_discover_local_multiple_plugins() {
+        let tmp = TempDir::new().unwrap();
+
+        for name in &["horus-camera", "horus-lidar", "horus-sim3d"] {
+            let dir = tmp.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\ndescription = \"Test\"\n",
+                    name
+                ),
+            )
+            .unwrap();
+        }
+
+        let discovery = PluginDiscovery::new();
+        let plugins = discovery.discover_local(tmp.path()).unwrap();
+        assert_eq!(plugins.len(), 3);
+    }
+
+    #[test]
+    fn test_add_workspace_path_accumulates() {
+        let mut discovery = PluginDiscovery::new();
+        let initial_len = discovery.workspace_paths.len();
+        discovery.add_workspace_path(PathBuf::from("/tmp/workspace1"));
+        discovery.add_workspace_path(PathBuf::from("/tmp/workspace2"));
+        assert_eq!(discovery.workspace_paths.len(), initial_len + 2);
+    }
+
+    #[test]
+    fn test_new_discovery_has_empty_cache() {
+        let discovery = PluginDiscovery::new();
+        assert!(discovery.cache.is_empty());
+    }
+
+    #[test]
+    fn test_plugin_source_type_variants() {
+        let _ = PluginSourceType::Local;
+        let _ = PluginSourceType::Registry;
+        let _ = PluginSourceType::CratesIo;
+        let _ = PluginSourceType::Git;
+    }
+
+    #[test]
+    fn test_available_plugin_struct_construction() {
+        let plugin = AvailablePlugin {
+            name: "horus-nav".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Navigation".to_string(),
+            category: PluginCategory::Other,
+            source: PluginSourceType::Registry,
+            platforms: vec!["linux".to_string()],
+            horus_compat: ">=0.1.0".to_string(),
+            has_prebuilt: true,
+            system_deps: vec![],
+            features: vec!["slam".to_string()],
+        };
+        assert_eq!(plugin.name, "horus-nav");
+        assert!(plugin.has_prebuilt);
+        assert_eq!(plugin.features.len(), 1);
+    }
+}

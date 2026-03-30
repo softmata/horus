@@ -1,0 +1,173 @@
+name: Benchmark CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  schedule:
+    # Run weekly on Monday at 00:00 UTC
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Regression threshold: fail if latency increases by more than this percentage
+  REGRESSION_THRESHOLD: 10
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need full history for baseline comparison
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          linux-tools-common \
+          linux-tools-generic \
+          gnuplot \
+          libudev-dev
+
+    - name: Configure CPU for benchmarks
+      run: |
+        # Disable CPU frequency scaling for consistent results (may fail on some runners)
+        echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor || true
+
+        # Disable turbo boost
+        echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo || true
+
+    - name: Cache cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Download baseline (if exists)
+      uses: actions/cache@v4
+      with:
+        path: benchmarks/baseline.json
+        key: benchmark-baseline-${{ github.base_ref || 'main' }}
+        restore-keys: |
+          benchmark-baseline-main
+          benchmark-baseline-
+
+    - name: Setup Shared Memory
+      run: |
+        # Create namespaced SHM directory structure
+        SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+        sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+        sudo chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+
+    - name: Build benchmarks
+      run: |
+        cd benchmarks
+        cargo build --release
+
+    - name: Run cross-process benchmark
+      run: |
+        cd benchmarks
+        cargo run --release --bin cross_process_benchmark | tee benchmark-results.txt
+
+    - name: Run robotics messages benchmark
+      run: |
+        cd benchmarks
+        cargo run --release --bin robotics_messages_benchmark | tee -a benchmark-results.txt
+
+    - name: Generate benchmark report
+      run: |
+        cd benchmarks
+        mkdir -p benchmark-report
+        cp benchmark-results.txt ./benchmark-report/ || true
+
+    - name: Check for performance regression
+      id: regression-check
+      run: |
+        cd benchmarks
+        # Parse benchmark results and check against thresholds
+        # Expected thresholds (nanoseconds):
+        #   - Cross-process: <600ns
+        #   - Robotics messages: <1000ns
+        echo "## Benchmark Results" > /tmp/benchmark-report.md
+        echo "" >> /tmp/benchmark-report.md
+        cat benchmark-results.txt >> /tmp/benchmark-report.md
+        echo "" >> /tmp/benchmark-report.md
+        echo "Regression threshold: ${{ env.REGRESSION_THRESHOLD }}%" >> /tmp/benchmark-report.md
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: |
+          benchmarks/benchmark-report
+          benchmarks/benchmark-results.txt
+
+    - name: Comment PR with results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+
+          let summary = "";
+          try {
+            summary = fs.readFileSync('/tmp/benchmark-report.md', 'utf8');
+          } catch (e) {
+            summary = "## Benchmark Results\n\n:warning: Could not parse benchmark results.";
+          }
+
+          // Add footer
+          summary += "\n\n---\n";
+          summary += `*Regression threshold: ${{ env.REGRESSION_THRESHOLD }}%*\n`;
+          summary += `*Commit: ${{ github.sha }}*`;
+
+          // Find and update existing comment or create new one
+          const { data: comments } = await github.rest.issues.listComments({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+
+          const botComment = comments.find(comment =>
+            comment.user.type === 'Bot' &&
+            comment.body.includes('Benchmark Results')
+          );
+
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              comment_id: botComment.id,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+          } else {
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+          }
+

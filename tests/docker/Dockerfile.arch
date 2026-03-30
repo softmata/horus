@@ -1,0 +1,15 @@
+FROM archlinux:latest
+
+ENV CARGO_HOME=/root/.cargo
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN pacman -Sy --noconfirm \
+    gcc pkg-config openssl systemd alsa-lib \
+    clang git rust cargo
+
+WORKDIR /horus
+COPY . .
+
+RUN cargo build --no-default-features --release -p horus_core -p horus_library -p horus_sys -p horus_manager
+
+CMD ["cargo", "test", "--no-default-features", "-p", "horus_sys", "--", "--test-threads=1"]

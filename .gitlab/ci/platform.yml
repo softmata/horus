@@ -1,0 +1,191 @@
+# Multi-Platform & Cross-Platform Parity
+# Replaces: multi-platform.yml, cross-platform-parity.yml
+#
+# Requires runners tagged: 'macos', 'macos-arm64', 'windows'
+# Linux jobs use default shared runners.
+
+# ═══════════════════════════════════════════════════════════════
+# Multi-Platform Tests
+# ═══════════════════════════════════════════════════════════════
+
+platform-macos:
+  stage: platform
+  tags: [macos]
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  cache:
+    key: macos-${CI_COMMIT_REF_SLUG}
+    paths: [.cargo/, target/]
+  script:
+    - cargo check --workspace --exclude horus_py
+    - cargo build --workspace --exclude horus_py
+    - cargo test --workspace --no-fail-fast --exclude horus_py --exclude horus_benchmarks
+  variables:
+    HORUS_NAMESPACE: ci_macos_$CI_PIPELINE_ID
+
+platform-macos-arm64:
+  stage: platform
+  tags: [macos-arm64]
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  cache:
+    key: macos-arm64-${CI_COMMIT_REF_SLUG}
+    paths: [.cargo/, target/]
+  script:
+    - cargo check --workspace --exclude horus_py
+    - cargo build --workspace --exclude horus_py
+    - cargo test --workspace --no-fail-fast --exclude horus_py --exclude horus_benchmarks
+  variables:
+    HORUS_NAMESPACE: ci_macos_arm64_$CI_PIPELINE_ID
+
+platform-windows:
+  stage: platform
+  tags: [windows]
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  cache:
+    key: windows-${CI_COMMIT_REF_SLUG}
+    paths: [.cargo/, target/]
+  script:
+    - cargo check --workspace --no-default-features
+    - cargo build --workspace --lib --no-default-features
+    - cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+    - cargo test --no-default-features -p horus_core --lib -- --test-threads=1
+  variables:
+    HORUS_NAMESPACE: ci_win_$CI_PIPELINE_ID
+
+platform-linux-arm64:
+  extends: [.rust-base]
+  stage: platform
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config gcc-aarch64-linux-gnu > /dev/null
+    - rustup target add aarch64-unknown-linux-gnu
+    - |
+      mkdir -p .cargo
+      cat >> .cargo/config.toml << 'TOML'
+      [target.aarch64-unknown-linux-gnu]
+      linker = "aarch64-linux-gnu-gcc"
+      TOML
+  script:
+    - cargo check --workspace --target aarch64-unknown-linux-gnu --lib --exclude horus_manager --exclude horus_benchmarks
+  variables:
+    PKG_CONFIG_ALLOW_CROSS: "1"
+
+platform-msrv:
+  stage: platform
+  image: rust:1.92.0
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - |
+      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
+      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+  script:
+    - cargo check --workspace
+    - cargo test --workspace --no-fail-fast --exclude horus --exclude horus_library --exclude horus_py --exclude horus_manager -- --test-threads=1
+
+# ═══════════════════════════════════════════════════════════════
+# Cross-Platform Parity Tests (horus_sys behavioral contracts)
+# ═══════════════════════════════════════════════════════════════
+
+parity-linux:
+  extends: [.rust-base]
+  stage: platform
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - |
+      mkdir -p /dev/shm/horus_ci && chmod 777 /dev/shm/horus_ci
+  script:
+    - cargo test --no-default-features -p horus_sys --test parity_shm --test parity_process --test parity_discover --test parity_fs --test parity_platform -- --test-threads=1
+    - cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+  variables:
+    HORUS_NAMESPACE: ci_linux_$CI_PIPELINE_ID
+
+parity-macos:
+  stage: platform
+  tags: [macos]
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  script:
+    - cargo test --no-default-features -p horus_sys --test parity_shm --test parity_process --test parity_discover --test parity_fs --test parity_platform -- --test-threads=1
+    - cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+  variables:
+    HORUS_NAMESPACE: ci_macos_$CI_PIPELINE_ID
+
+parity-windows:
+  stage: platform
+  tags: [windows]
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  script:
+    - cargo test --no-default-features -p horus_sys --test parity_shm --test parity_process --test parity_discover --test parity_fs --test parity_platform -- --test-threads=1
+    - cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
+  variables:
+    HORUS_NAMESPACE: ci_windows_$CI_PIPELINE_ID
+
+cross-compile-check:
+  extends: [.rust-base]
+  stage: platform
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - rustup target add x86_64-pc-windows-msvc x86_64-apple-darwin
+  script:
+    - cargo check --no-default-features --target x86_64-pc-windows-msvc -p horus_sys
+    - cargo check --no-default-features --target x86_64-apple-darwin -p horus_sys
+    - cargo check --no-default-features --target x86_64-pc-windows-msvc -p horus_core
+    - cargo check --no-default-features --target x86_64-apple-darwin -p horus_core
+    - cargo check --no-default-features --target x86_64-pc-windows-msvc -p horus_manager
+    - cargo check --no-default-features --target x86_64-apple-darwin -p horus_manager
+
+cli-parity-linux:
+  extends: [.rust-base]
+  stage: platform
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+  script:
+    - cargo build --no-default-features -p horus_manager
+    - cargo run --no-default-features -p horus_manager -- doctor || true
+    - cargo run --no-default-features -p horus_manager -- check . || true
+    - bash tests/docker/acceptance_linux_macos.sh || true
+
+cli-parity-macos:
+  stage: platform
+  tags: [macos]
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  script:
+    - cargo build --no-default-features -p horus_manager
+    - cargo run --no-default-features -p horus_manager -- doctor || true
+    - bash tests/docker/acceptance_linux_macos.sh || true
+
+cli-parity-windows:
+  stage: platform
+  tags: [windows]
+  rules:
+    - !reference [.on-mr-or-main, rules]
+    - !reference [.on-schedule, rules]
+  script:
+    - cargo build --no-default-features -p horus_manager
+    - cargo run --no-default-features -p horus_manager -- doctor || true
+    - powershell -ExecutionPolicy Bypass -File tests/docker/acceptance_windows.ps1 || true

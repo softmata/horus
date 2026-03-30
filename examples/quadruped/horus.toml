@@ -1,0 +1,11 @@
+[package]
+name = "quadruped"
+version = "0.1.0"
+description = "Quadruped robot — 12-DOF walking gait with RT joint control"
+author = "softmata"
+license = "Apache-2.0"
+language = "rust"
+
+[dependencies]
+horus = "*"
+horus_library = "*"

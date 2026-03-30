@@ -1,0 +1,109 @@
+[package]
+name = "horus_manager"
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "CLI tool for the HORUS robotics framework — project scaffolding, build/run/test, package management, monitoring, deployment, and 46+ commands for Rust, Python, and C++ robotics projects"
+authors = ["HORUS Team"]
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+documentation = "https://docs.horusrobotics.dev"
+keywords = ["robotics", "cli", "build-tool", "horus", "ros"]
+categories = ["science::robotics", "command-line-utilities", "development-tools"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "horus_manager"
+path = "src/lib.rs"
+
+[[bin]]
+name = "horus"
+path = "src/main.rs"
+
+[[bin]]
+name = "ci_test_node"
+path = "src/bin/ci_test_node.rs"
+
+
+[dependencies]
+horus_core = { path = "../horus_core" }
+horus_types = { path = "../horus_types" }
+horus-tf = { path = "../../horus-tf" }
+horus_sys = { path = "../horus_sys" }
+clap = { version = "4.4", features = ["derive"] }
+clap_complete = "4.4"
+tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+colored = "2.0"
+indicatif = "0.17"
+console = "0.15"
+chrono = { workspace = true }
+ctrlc = "3.4"
+dirs = "5.0"
+anyhow = "1.0"
+thiserror = "1.0"
+toml = "0.8"
+toml_edit = "0.22"
+reqwest = { version = "0.11", features = ["json", "multipart", "blocking"] }
+tempfile = "3.8"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+walkdir = "2.3"
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1.0"
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+regex = "1.10"
+glob = "0.3"
+log = "0.4"
+env_logger = "0.11"
+open = "5.0"
+hostname = "0.4"
+semver = "1.0"
+libc = "0.2"
+lazy_static = "1.4"
+rayon = "1.10"
+syn = { version = "2.0", features = ["full", "visit"] }
+proc-macro2 = "1.0"
+tree-sitter = "0.24"
+tree-sitter-cpp = "0.23"
+notify = "7.0"
+num_cpus = "1.16"
+schemars = { version = "0.8", optional = true }
+
+rand = "0.8"
+memmap2 = "0.9"
+
+# Package signing
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+hex = "0.4"
+
+[features]
+# ============================================================================
+# DEFAULT FEATURES
+# ============================================================================
+# CLI ships minimal by default
+default = []
+
+# ============================================================================
+# OPTIONAL FEATURES
+# ============================================================================
+
+# JSON Schema generation for manifest types
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+assert_cmd = "2.0"
+predicates = "3.0"
+serde_json.workspace = true
+# used by security integration tests
+axum = { version = "0.7", features = ["ws"] }
+horus_core = { path = "../horus_core" }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+futures-util = "0.3"
+tokio-tungstenite = "0.26"
+insta = "1"

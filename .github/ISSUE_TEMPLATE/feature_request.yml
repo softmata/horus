@@ -1,0 +1,121 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for HORUS
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new feature! Please provide as much detail as possible to help us understand your request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Describe the problem or limitation you're experiencing.
+      placeholder: "I'm always frustrated when... / Currently there is no way to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the feature or enhancement you'd like to see.
+      placeholder: "I would like HORUS to support..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any alternative solutions or workarounds you've considered.
+      placeholder: "I've tried... / An alternative approach would be..."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of HORUS does this feature relate to?
+      options:
+        - Core Framework (Hub, Scheduler, Node)
+        - CLI Tool (horus command)
+        - Package Manager
+        - Dashboard / Monitoring
+        - Python Bindings
+        - C Bindings
+        - Documentation
+        - Examples
+        - Build System
+        - Remote Deployment
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Critical - Blocking my use of HORUS
+        - High - Would significantly improve my workflow
+        - Medium - Nice to have
+        - Low - Minor improvement
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use Case
+      description: Describe a concrete use case where this feature would be helpful.
+      placeholder: "In my robotics project, I need to..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example Code or API
+      description: If applicable, show what the API or code might look like.
+      placeholder: |
+        ```rust
+        // Example of how the feature might be used
+        ```
+      render: rust
+    validations:
+      required: false
+
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Breaking Change
+      description: Would this feature require breaking existing HORUS APIs?
+      options:
+        - "No - Fully backward compatible"
+        - "Yes - Would break existing code"
+        - "Unsure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or references about the feature request.
+      placeholder: "Links to similar features in other frameworks, diagrams, etc."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Willingness to Contribute
+      description: Would you be willing to contribute this feature?
+      options:
+        - label: I would be willing to implement this feature and submit a PR
+          required: false

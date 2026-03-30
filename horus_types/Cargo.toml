@@ -1,0 +1,27 @@
+[package]
+name = "horus_types"
+version = "0.2.0"
+edition = "2021"
+authors = ["HORUS Contributors"]
+description = "Universal IPC message types for HORUS — math primitives, diagnostics, time sync, and generic messages. Used by all horus verticals."
+license = "Apache-2.0"
+repository = "https://github.com/softmata/horus"
+keywords = ["middleware", "ipc", "messages", "real-time", "horus"]
+categories = ["data-structures", "concurrency"]
+
+[lints]
+workspace = true
+
+[dependencies]
+horus_core = { path = "../horus_core" }
+horus_macros = { path = "../horus_macros" }
+softmata-core = "0.1.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytemuck = { workspace = true }
+serde_arrays = "0.1"
+rmp-serde = "1.1"
+bincode = "1.3"
+
+[dev-dependencies]
+proptest = "1.4"

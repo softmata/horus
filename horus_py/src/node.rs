@@ -1,0 +1,510 @@
+use horus::core::{NodeInfo as CoreNodeInfo, NodeState as CoreNodeState};
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// Convert a lock `PoisonError` into a descriptive `PyRuntimeError`.
+fn lock_poisoned<T>(_: std::sync::PoisonError<T>) -> PyErr {
+    PyRuntimeError::new_err(
+        "Internal state corrupted: a previous operation panicked while holding a lock. \
+         This typically means a node's tick(), init(), or shutdown() raised an unhandled exception. \
+         Restart the scheduler or Python process to recover.",
+    )
+}
+
+/// Python wrapper for NodeState
+#[pyclass(name = "NodeState", module = "horus._horus")]
+#[derive(Clone, PartialEq, Eq)]
+pub struct PyNodeState {
+    #[pyo3(get)]
+    pub name: String,
+}
+
+#[pymethods]
+impl PyNodeState {
+    #[new]
+    fn new(name: String) -> Self {
+        PyNodeState { name }
+    }
+
+    /// Uninitialized state constant
+    #[classattr]
+    const UNINITIALIZED: &'static str = "uninitialized";
+
+    /// Initializing state constant
+    #[classattr]
+    const INITIALIZING: &'static str = "initializing";
+
+    /// Running state constant
+    #[classattr]
+    const RUNNING: &'static str = "running";
+
+    /// Stopping state constant
+    #[classattr]
+    const STOPPING: &'static str = "stopping";
+
+    /// Stopped state constant
+    #[classattr]
+    const STOPPED: &'static str = "stopped";
+
+    /// Error state constant
+    #[classattr]
+    const ERROR: &'static str = "error";
+
+    /// Crashed state constant
+    #[classattr]
+    const CRASHED: &'static str = "crashed";
+
+    fn __repr__(&self) -> String {
+        format!("NodeState('{}')", self.name)
+    }
+
+    fn __str__(&self) -> String {
+        self.name.clone()
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl From<&CoreNodeState> for PyNodeState {
+    fn from(state: &CoreNodeState) -> Self {
+        let name = match state {
+            CoreNodeState::Uninitialized => "uninitialized",
+            CoreNodeState::Initializing => "initializing",
+            CoreNodeState::Running => "running",
+            CoreNodeState::Stopping => "stopping",
+            CoreNodeState::Stopped => "stopped",
+            CoreNodeState::Error(_) => "error",
+            CoreNodeState::Crashed(_) => "crashed",
+        };
+        PyNodeState::new(name.to_string())
+    }
+}
+
+/// Python wrapper for NodeInfo
+#[pyclass(name = "NodeInfo", module = "horus._horus")]
+#[derive(Clone)]
+pub struct PyNodeInfo {
+    pub inner: Arc<Mutex<CoreNodeInfo>>,
+    pub scheduler_running: Option<Arc<AtomicBool>>,
+}
+
+#[pymethods]
+impl PyNodeInfo {
+    #[new]
+    fn new(name: String) -> Self {
+        PyNodeInfo {
+            inner: Arc::new(Mutex::new(CoreNodeInfo::new(name))),
+            scheduler_running: None,
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> PyResult<String> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.name().to_string())
+    }
+
+    #[getter]
+    fn state(&self) -> PyResult<PyNodeState> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(PyNodeState::from(info.state()))
+    }
+
+    fn log_info(&self, message: String) -> PyResult<()> {
+        // Use hlog!() for logging (thread-local, no NodeInfo needed)
+        horus::hlog!(info, "{}", message);
+        Ok(())
+    }
+
+    fn log_warning(&self, message: String) -> PyResult<()> {
+        // Use hlog!() for logging and track in metrics
+        horus::hlog!(warn, "{}", message);
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
+        info.track_warning(&message);
+        Ok(())
+    }
+
+    fn log_error(&self, message: String) -> PyResult<()> {
+        // Use hlog!() for logging and track in metrics
+        horus::hlog!(error, "{}", message);
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
+        info.track_error(&message);
+        Ok(())
+    }
+
+    fn log_debug(&self, message: String) -> PyResult<()> {
+        // Use hlog!() for logging (thread-local, no NodeInfo needed)
+        horus::hlog!(debug, "{}", message);
+        Ok(())
+    }
+
+    fn set_custom_data(&self, key: String, value: String) -> PyResult<()> {
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
+        info.set_custom_data(key, value);
+        Ok(())
+    }
+
+    fn get_custom_data(&self, key: String) -> PyResult<Option<String>> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.get_custom_data(&key).cloned())
+    }
+
+    fn remove_custom_data(&self, key: String) -> PyResult<Option<String>> {
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.remove_custom_data(&key))
+    }
+
+    fn custom_data_keys(&self) -> PyResult<Vec<String>> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info
+            .custom_data_keys()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect())
+    }
+
+    /// Get total tick count
+    fn tick_count(&self) -> PyResult<u64> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.metrics().total_ticks())
+    }
+
+    /// Get error count
+    fn error_count(&self) -> PyResult<u64> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.metrics().errors_count())
+    }
+
+    /// Transition to error state
+    fn transition_to_error(&self, error_msg: String) -> PyResult<()> {
+        let mut info = self.inner.lock().map_err(lock_poisoned)?;
+        info.transition_to_error(error_msg);
+        Ok(())
+    }
+
+    /// Log a publish operation with IPC timing
+    fn log_pub(&self, topic: String, data_repr: String, ipc_ns: u64) -> PyResult<()> {
+        // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        let node_name = info.name().to_string();
+
+        // Calculate tick_us from tick_start_time
+        let tick_us = info.tick_elapsed_us();
+
+        // Write to global log buffer for monitor
+        use horus::core::log_buffer::{publish_log, LogEntry, LogType};
+        publish_log(LogEntry {
+            timestamp,
+            tick_number: 0,
+            node_name,
+            log_type: LogType::Publish,
+            topic: Some(topic),
+            message: data_repr,
+            tick_us,
+            ipc_ns,
+        });
+
+        Ok(())
+    }
+
+    /// Log a subscribe operation with IPC timing
+    fn log_sub(&self, topic: String, data_repr: String, ipc_ns: u64) -> PyResult<()> {
+        // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        let node_name = info.name().to_string();
+
+        // Calculate tick_us from tick_start_time
+        let tick_us = info.tick_elapsed_us();
+
+        // Write to global log buffer for monitor
+        use horus::core::log_buffer::{publish_log, LogEntry, LogType};
+        publish_log(LogEntry {
+            timestamp,
+            tick_number: 0,
+            node_name,
+            log_type: LogType::Subscribe,
+            topic: Some(topic),
+            message: data_repr,
+            tick_us,
+            ipc_ns,
+        });
+
+        Ok(())
+    }
+
+    /// Get comprehensive metrics dictionary
+    fn get_metrics(&self) -> PyResult<std::collections::HashMap<String, f64>> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+
+        let metrics = info.metrics();
+        let mut result = std::collections::HashMap::new();
+
+        result.insert("total_ticks".to_string(), metrics.total_ticks() as f64);
+        result.insert(
+            "successful_ticks".to_string(),
+            metrics.successful_ticks() as f64,
+        );
+        result.insert("failed_ticks".to_string(), metrics.failed_ticks() as f64);
+        result.insert("errors_count".to_string(), metrics.errors_count() as f64);
+        result.insert(
+            "avg_tick_duration_ms".to_string(),
+            metrics.avg_tick_duration_ms(),
+        );
+        result.insert(
+            "min_tick_duration_ms".to_string(),
+            metrics.min_tick_duration_ms(),
+        );
+        result.insert(
+            "max_tick_duration_ms".to_string(),
+            metrics.max_tick_duration_ms(),
+        );
+        result.insert(
+            "last_tick_duration_ms".to_string(),
+            metrics.last_tick_duration_ms(),
+        );
+
+        Ok(result)
+    }
+
+    /// Get node uptime in seconds
+    fn get_uptime(&self) -> PyResult<f64> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.uptime().as_secs_f64())
+    }
+
+    /// Get average tick duration in milliseconds
+    fn avg_tick_duration_ms(&self) -> PyResult<f64> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.metrics().avg_tick_duration_ms())
+    }
+
+    /// Get number of failed ticks
+    fn failed_ticks(&self) -> PyResult<u64> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.metrics().failed_ticks())
+    }
+
+    /// Get successful ticks
+    fn successful_ticks(&self) -> PyResult<u64> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok(info.metrics().successful_ticks())
+    }
+
+    /// Request the scheduler to stop
+    fn request_stop(&self) -> PyResult<()> {
+        if let Some(ref running_flag) = self.scheduler_running {
+            running_flag.store(false, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        if let Ok(info) = self.inner.lock() {
+            Ok(format!(
+                "NodeInfo(name='{}', state='{}', ticks={}, errors={})",
+                info.name(),
+                info.state(),
+                info.metrics().total_ticks(),
+                info.metrics().errors_count()
+            ))
+        } else {
+            Ok("NodeInfo(locked)".to_string())
+        }
+    }
+
+    /// Pickle support: Provide constructor arguments
+    fn __getnewargs__(&self) -> PyResult<(String,)> {
+        let info = self.inner.lock().map_err(lock_poisoned)?;
+        Ok((info.name().to_string(),))
+    }
+}
+
+/// Python wrapper for HORUS Node
+///
+/// This class allows Python code to implement HORUS nodes
+/// by subclassing and implementing the required methods.
+///
+/// NOTE: PyNode no longer creates its own NodeInfo. The scheduler will provide one.
+#[pyclass(name = "Node", module = "horus._horus", subclass)]
+pub struct PyNode {
+    #[pyo3(get)]
+    pub name: String,
+    pub py_callback: Option<Py<PyAny>>,
+}
+
+#[pymethods]
+impl PyNode {
+    #[new]
+    pub fn new(name: String) -> PyResult<Self> {
+        Ok(PyNode {
+            name: name.clone(),
+            py_callback: None,
+        })
+    }
+
+    /// Initialize the node
+    /// The scheduler passes NodeInfo, which we forward to the Python callback
+    fn init(&mut self, py: Python, info: PyNodeInfo) -> PyResult<()> {
+        if let Some(callback) = &self.py_callback {
+            callback.call_method1(py, "init", (info,))?;
+        }
+        Ok(())
+    }
+
+    /// Main execution tick
+    /// The scheduler passes NodeInfo, which we forward to the Python callback
+    fn tick(&mut self, py: Python, info: PyNodeInfo) -> PyResult<()> {
+        if let Some(callback) = &self.py_callback {
+            callback.call_method1(py, "tick", (info,))?;
+        }
+        Ok(())
+    }
+
+    /// Shutdown the node
+    /// The scheduler passes NodeInfo, which we forward to the Python callback
+    fn shutdown(&mut self, py: Python, info: PyNodeInfo) -> PyResult<()> {
+        if let Some(callback) = &self.py_callback {
+            callback.call_method1(py, "shutdown", (info,))?;
+        }
+        Ok(())
+    }
+
+    /// Set the Python callback object (usually 'self' from Python subclass)
+    fn set_callback(&mut self, callback: Py<PyAny>) -> PyResult<()> {
+        self.py_callback = Some(callback);
+        Ok(())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Node(name='{}')", self.name)
+    }
+
+    /// Pickle support: Provide constructor arguments
+    fn __getnewargs__(&self) -> PyResult<(String,)> {
+        Ok((self.name.clone(),))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horus::core::NodeState as CoreNodeState;
+
+    #[test]
+    fn node_state_from_all_core_variants() {
+        let cases: Vec<(CoreNodeState, &str)> = vec![
+            (CoreNodeState::Uninitialized, "uninitialized"),
+            (CoreNodeState::Initializing, "initializing"),
+            (CoreNodeState::Running, "running"),
+            (CoreNodeState::Stopping, "stopping"),
+            (CoreNodeState::Stopped, "stopped"),
+            (CoreNodeState::Error("oops".into()), "error"),
+            (CoreNodeState::Crashed("bang".into()), "crashed"),
+        ];
+
+        for (state, expected_name) in cases {
+            let py_state = PyNodeState::from(&state);
+            assert_eq!(
+                py_state.name, expected_name,
+                "CoreNodeState::{:?} should map to '{}'",
+                state, expected_name
+            );
+        }
+    }
+
+    #[test]
+    fn node_state_repr() {
+        let state = PyNodeState::new("running".to_string());
+        assert_eq!(state.__repr__(), "NodeState('running')");
+        assert_eq!(state.__str__(), "running");
+    }
+
+    #[test]
+    fn node_state_equality() {
+        let a = PyNodeState::new("running".to_string());
+        let b = PyNodeState::new("running".to_string());
+        let c = PyNodeState::new("stopped".to_string());
+        assert!(a.__eq__(&b));
+        assert!(!a.__eq__(&c));
+    }
+
+    #[test]
+    fn node_info_construction() {
+        let info = PyNodeInfo::new("test_sensor".to_string());
+        assert!(info.scheduler_running.is_none());
+        let inner = info.inner.lock().unwrap();
+        assert_eq!(inner.name(), "test_sensor");
+    }
+
+    #[test]
+    fn node_info_custom_data() {
+        let info = PyNodeInfo::new("test_node".to_string());
+        {
+            let mut inner = info.inner.lock().unwrap();
+            inner.set_custom_data("key".to_string(), "value".to_string());
+        }
+        {
+            let inner = info.inner.lock().unwrap();
+            assert_eq!(inner.get_custom_data("key"), Some(&"value".to_string()));
+            assert_eq!(inner.get_custom_data("missing"), None);
+        }
+    }
+
+    #[test]
+    fn node_construction() {
+        let node = PyNode::new("motor_controller".to_string()).unwrap();
+        assert_eq!(node.name, "motor_controller");
+        assert!(node.py_callback.is_none());
+        assert_eq!(node.__repr__(), "Node(name='motor_controller')");
+    }
+
+    #[test]
+    fn node_info_metrics_initial_values() {
+        let info = PyNodeInfo::new("sensor".to_string());
+        let inner = info.inner.lock().unwrap();
+        let metrics = inner.metrics();
+        assert_eq!(metrics.total_ticks(), 0);
+        assert_eq!(metrics.successful_ticks(), 0);
+        assert_eq!(metrics.failed_ticks(), 0);
+        assert_eq!(metrics.errors_count(), 0);
+    }
+
+    #[test]
+    fn node_info_tick_tracking() {
+        let info = PyNodeInfo::new("tracker".to_string());
+        {
+            let mut inner = info.inner.lock().unwrap();
+            inner.start_tick();
+            inner.record_tick();
+        }
+        let inner = info.inner.lock().unwrap();
+        assert_eq!(inner.metrics().total_ticks(), 1);
+        assert_eq!(inner.metrics().successful_ticks(), 1);
+    }
+
+    #[test]
+    fn node_info_scheduler_running_flag() {
+        let running = Arc::new(AtomicBool::new(true));
+        let info = PyNodeInfo {
+            inner: Arc::new(Mutex::new(CoreNodeInfo::new("test".to_string()))),
+            scheduler_running: Some(running.clone()),
+        };
+
+        assert!(running.load(Ordering::SeqCst));
+        // Simulate request_stop
+        if let Some(ref flag) = info.scheduler_running {
+            flag.store(false, Ordering::SeqCst);
+        }
+        assert!(!running.load(Ordering::SeqCst));
+    }
+}
+
+// Bridge struct to implement the Rust Node trait

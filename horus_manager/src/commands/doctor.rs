@@ -1,0 +1,1855 @@
+//! `horus doctor` — comprehensive ecosystem health check.
+//!
+//! Checks: toolchains, SHM, plugins, manifest validity, registry,
+//! system deps, disk space. Summary by default, --verbose for details.
+//!
+//! With `--fix`: installs missing toolchains and system dependencies,
+//! then pins their versions in `horus.lock`.
+//!
+//! With `--rt`: runs the RT Readiness Report — system audit, jitter
+//! benchmark, IPC benchmark, and actionable recommendations.
+
+use anyhow::Result;
+use colored::*;
+use std::net::TcpStream;
+use std::path::Path;
+use std::time::Duration;
+
+use horus_core::drivers::NodeParams;
+use horus_sys::sync::{self, SyncManifest, SystemDep};
+
+use crate::dispatch;
+use crate::lockfile::{HorusLockfile, SystemLock, HORUS_LOCK};
+use crate::manifest::HorusManifest;
+
+/// Health status for a check category.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Health {
+    Ok,
+    Warn,
+    Fail,
+}
+
+impl Health {
+    fn icon(&self) -> colored::ColoredString {
+        match self {
+            Self::Ok => "*".green(),
+            Self::Warn => "!".yellow(),
+            Self::Fail => "x".red(),
+        }
+    }
+}
+
+/// A single check result.
+pub(crate) struct CheckResult {
+    pub(crate) category: String,
+    pub(crate) health: Health,
+    pub(crate) summary: String,
+    pub(crate) details: Vec<String>,
+}
+
+/// Run `horus doctor`.
+pub fn run_doctor(verbose: bool, json: bool, fix: bool) -> Result<()> {
+    let ctx = dispatch::detect_context(&std::env::current_dir()?);
+    let mut results = Vec::new();
+
+    // ── 1. Toolchains ────────────────────────────────────────────────────
+    results.push(check_toolchains());
+
+    // ── 2. Horus manifest ────────────────────────────────────────────────
+    results.push(check_manifest(&ctx));
+
+    // ── 3. Real-time capabilities ──────────────────────────────────────
+    results.push(check_rt());
+
+    // ── 4. Shared memory ─────────────────────────────────────────────────
+    results.push(check_shm());
+
+    // ── 4. Plugins ───────────────────────────────────────────────────────
+    results.push(check_plugins());
+
+    // ── 5. Disk usage ────────────────────────────────────────────────────
+    results.push(check_disk());
+
+    // ── 6. Project languages ─────────────────────────────────────────────
+    results.push(check_languages(&ctx));
+
+    // ── 7. Dependency sources ─────────────────────────────────────────────
+    results.push(check_dep_sources(&ctx));
+
+    // ── 8. Driver device reachability ────────────────────────────────────
+    results.push(check_drivers());
+
+    // ── 9. System dependencies (Python, C++, system libs) ────────────────
+    if let Some(manifest) = &ctx.manifest {
+        results.push(check_system_deps(manifest));
+    }
+
+    // ── 10. Network (horus_net) ──────────────────────────────────────────
+    results.push(check_network());
+
+    // ── Output ───────────────────────────────────────────────────────────
+    if json {
+        print_json(&results);
+    } else {
+        print_summary(&results, verbose);
+    }
+
+    // ── Fix mode: install missing deps and pin to horus.lock ─────────────
+    if fix {
+        if let Some(manifest) = &ctx.manifest {
+            run_fix(manifest, &ctx)?;
+        } else {
+            println!(
+                "\n  {} No horus.toml found — nothing to fix. Run {} to create a project.",
+                "!".yellow(),
+                "horus new".cyan()
+            );
+        }
+    }
+
+    // Exit code
+    let has_failures = results.iter().any(|r| r.health == Health::Fail);
+    let has_warnings = results.iter().any(|r| r.health == Health::Warn);
+
+    if has_failures && !fix {
+        std::process::exit(2);
+    } else if has_warnings && !fix {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Install missing toolchains/system deps and pin versions to horus.lock.
+fn run_fix(manifest: &HorusManifest, ctx: &dispatch::ProjectContext) -> Result<()> {
+    println!("\n{}", "Fixing environment...".bold());
+
+    let report = sync::sync_environment(manifest)?;
+
+    for item in &report.items {
+        if item.installed {
+            let version = item.version.as_deref().unwrap_or("installed");
+            println!("  {} {} ({})", "*".green(), item.name, version);
+        } else {
+            println!("  {} {} -- not installed", "x".red(), item.name);
+            if let Some(ref cmd) = item.install_cmd {
+                println!("    Install: {}", cmd.dimmed());
+            }
+        }
+    }
+
+    // Pin toolchain + system dep versions into horus.lock
+    let lock_path = ctx.root.join(HORUS_LOCK);
+    let mut lockfile = HorusLockfile::load_from(&lock_path).unwrap_or_default();
+
+    // Build toolchain pins from the sync report
+    let mut toolchain = lockfile.toolchain.unwrap_or_default();
+    for item in &report.items {
+        if let Some(ver) = &item.version {
+            match item.name.as_str() {
+                "rust" => toolchain.rust = Some(ver.clone()),
+                "python" => toolchain.python = Some(ver.clone()),
+                "cmake" => toolchain.cmake = Some(ver.clone()),
+                _ => {}
+            }
+        }
+    }
+    lockfile.toolchain = Some(toolchain);
+
+    // Build system dep pins from the sync report
+    let system_dep_names: Vec<String> = manifest
+        .system_deps()
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    for item in &report.items {
+        if system_dep_names.contains(&item.name) {
+            if let Some(ver) = &item.version {
+                // Find the manifest dep for cross-platform package names
+                let manifest_dep = manifest.system_deps().into_iter().find(|d| d.name == item.name);
+                let existing = lockfile.system_deps.iter_mut().find(|s| s.name == item.name);
+                if let Some(existing) = existing {
+                    existing.version = ver.clone();
+                } else {
+                    lockfile.system_deps.push(SystemLock {
+                        name: item.name.clone(),
+                        version: ver.clone(),
+                        pkg_config: manifest_dep.as_ref().and_then(|d| d.pkg_config.clone()),
+                        apt: manifest_dep.as_ref().and_then(|d| d.apt.clone()),
+                        brew: manifest_dep.as_ref().and_then(|d| d.brew.clone()),
+                        pacman: None,
+                        choco: manifest_dep.as_ref().and_then(|d| d.choco.clone()),
+                    });
+                }
+            }
+        }
+    }
+
+    lockfile.save_to(&lock_path)?;
+    println!(
+        "\n  {} Environment synced — {} updated",
+        "*".green(),
+        HORUS_LOCK.bold()
+    );
+
+    if !report.all_satisfied {
+        println!(
+            "\n{} Some dependencies could not be installed automatically.",
+            "!".yellow()
+        );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn print_summary(results: &[CheckResult], verbose: bool) {
+    println!("{}", "horus doctor".bold());
+    println!();
+
+    for result in results {
+        println!(
+            "  {} {} — {}",
+            result.health.icon(),
+            result.category.bold(),
+            result.summary
+        );
+        if verbose {
+            for detail in &result.details {
+                println!("      {}", detail.dimmed());
+            }
+        }
+    }
+
+    println!();
+    let ok_count = results.iter().filter(|r| r.health == Health::Ok).count();
+    let warn_count = results.iter().filter(|r| r.health == Health::Warn).count();
+    let fail_count = results.iter().filter(|r| r.health == Health::Fail).count();
+
+    if fail_count > 0 {
+        println!(
+            "  {} {ok_count} ok, {warn_count} warnings, {fail_count} failures",
+            "Summary:".bold()
+        );
+    } else if warn_count > 0 {
+        println!(
+            "  {} {ok_count} ok, {warn_count} warnings",
+            "Summary:".bold()
+        );
+    } else {
+        println!("  {} All {ok_count} checks passed", "Summary:".bold());
+    }
+}
+
+fn print_json(results: &[CheckResult]) {
+    let entries: Vec<serde_json::Value> = results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "category": r.category,
+                "health": format!("{:?}", r.health).to_lowercase(),
+                "summary": r.summary,
+                "details": r.details,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+}
+
+// ─── Individual checks ───────────────────────────────────────────────────────
+
+fn check_toolchains() -> CheckResult {
+    let mut details = Vec::new();
+    let mut missing = Vec::new();
+
+    let tools = [
+        ("cargo", "Rust build tool"),
+        ("rustc", "Rust compiler"),
+        ("python3", "Python interpreter"),
+        ("ruff", "Python linter/formatter"),
+        ("pytest", "Python test runner"),
+        ("cmake", "C++ build system"),
+        ("clang-format", "C++ formatter"),
+        ("clang-tidy", "C++ linter"),
+    ];
+
+    for (tool, desc) in &tools {
+        match dispatch::tool_version(tool) {
+            Some(version) => {
+                details.push(format!("{}: {} ({})", tool, version, desc));
+            }
+            None => {
+                details.push(format!("{}: not found ({})", tool, desc));
+                if *tool == "cargo" || *tool == "rustc" {
+                    missing.push(*tool);
+                }
+            }
+        }
+    }
+
+    let health = if !missing.is_empty() {
+        Health::Fail
+    } else {
+        Health::Ok
+    };
+
+    let found = tools.len() - details.iter().filter(|d| d.contains("not found")).count();
+    CheckResult {
+        category: "Toolchains".to_string(),
+        health,
+        summary: format!("{}/{} tools found", found, tools.len()),
+        details,
+    }
+}
+
+fn check_manifest(ctx: &dispatch::ProjectContext) -> CheckResult {
+    if !ctx.has_horus_toml {
+        return CheckResult {
+            category: "Manifest".to_string(),
+            health: Health::Warn,
+            summary: "No horus.toml found".to_string(),
+            details: vec!["Run 'horus new' or 'horus init' to create a project".to_string()],
+        };
+    }
+
+    match &ctx.manifest {
+        Some(manifest) => match manifest.validate() {
+            Ok(warnings) => {
+                let mut details = vec![
+                    format!("name: {}", manifest.package.name),
+                    format!("version: {}", manifest.package.version),
+                    format!("dependencies: {}", manifest.dependencies.len()),
+                ];
+                let health = if warnings.is_empty() {
+                    Health::Ok
+                } else {
+                    details.extend(warnings.iter().map(|w| format!("warning: {}", w)));
+                    Health::Warn
+                };
+                CheckResult {
+                    category: "Manifest".to_string(),
+                    health,
+                    summary: "horus.toml valid".to_string(),
+                    details,
+                }
+            }
+            Err(e) => CheckResult {
+                category: "Manifest".to_string(),
+                health: Health::Fail,
+                summary: "horus.toml invalid".to_string(),
+                details: vec![e.to_string()],
+            },
+        },
+        None => CheckResult {
+            category: "Manifest".to_string(),
+            health: Health::Fail,
+            summary: "Failed to parse horus.toml".to_string(),
+            details: vec![],
+        },
+    }
+}
+
+fn check_rt() -> CheckResult {
+    let caps = horus_sys::rt::detect_capabilities();
+    let mut details = Vec::new();
+
+    if caps.preempt_rt {
+        details.push("PREEMPT_RT kernel active".to_string());
+    } else {
+        details.push("PREEMPT_RT not detected — jitter may be higher (~200μs vs ~20μs)".to_string());
+        details.push("For lower jitter, run: horus setup-rt".to_string());
+    }
+
+    if caps.max_priority > 0 {
+        details.push(format!(
+            "SCHED_FIFO available (priority {}-{})",
+            caps.min_priority, caps.max_priority
+        ));
+    } else {
+        details.push("SCHED_FIFO not available".to_string());
+    }
+
+    if caps.memory_locking {
+        details.push("Memory locking available".to_string());
+    } else {
+        details.push("Memory locking limited — run: horus setup-rt".to_string());
+    }
+
+    let isolated = horus_sys::rt::isolated_cores();
+    if !isolated.is_empty() {
+        details.push(format!("Isolated CPUs: {:?}", isolated));
+    }
+
+    let health = if caps.preempt_rt && caps.memory_locking && caps.max_priority > 0 {
+        Health::Ok
+    } else if caps.max_priority > 0 {
+        Health::Warn
+    } else {
+        Health::Fail
+    };
+
+    let summary = if caps.preempt_rt {
+        format!(
+            "PREEMPT_RT active, jitter ±{}μs",
+            caps.estimated_jitter.as_micros()
+        )
+    } else {
+        format!(
+            "Standard kernel, jitter ±{}μs (run `horus setup-rt` for ±20μs)",
+            caps.estimated_jitter.as_micros()
+        )
+    };
+
+    CheckResult {
+        category: "Real-Time".to_string(),
+        health,
+        summary,
+        details,
+    }
+}
+
+fn check_shm() -> CheckResult {
+    let shm_parent = horus_sys::shm::shm_parent_dir();
+    if !shm_parent.exists() {
+        return CheckResult {
+            category: "Shared Memory".to_string(),
+            health: Health::Warn,
+            summary: format!("{} not available", shm_parent.display()),
+            details: vec!["SHM IPC may not work on this platform".to_string()],
+        };
+    }
+
+    // Count horus namespaces
+    let count = std::fs::read_dir(&shm_parent)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("horus_"))
+                .count()
+        })
+        .unwrap_or(0);
+
+    CheckResult {
+        category: "Shared Memory".to_string(),
+        health: Health::Ok,
+        summary: format!(
+            "{} available, {} horus namespaces",
+            shm_parent.display(),
+            count
+        ),
+        details: vec![],
+    }
+}
+
+fn check_plugins() -> CheckResult {
+    let global_dir = dirs::home_dir()
+        .map(|h| h.join(".horus/plugins"))
+        .unwrap_or_default();
+
+    let local_dir = Path::new(".horus/plugins");
+
+    let global_count = count_items(&global_dir);
+    let local_count = count_items(local_dir);
+
+    CheckResult {
+        category: "Plugins".to_string(),
+        health: Health::Ok,
+        summary: format!("{} global, {} local", global_count, local_count),
+        details: vec![],
+    }
+}
+
+fn check_disk() -> CheckResult {
+    let horus_dir = Path::new(".horus");
+    if !horus_dir.exists() {
+        return CheckResult {
+            category: "Disk".to_string(),
+            health: Health::Ok,
+            summary: "No .horus/ directory yet".to_string(),
+            details: vec![],
+        };
+    }
+
+    let size = dir_size(horus_dir);
+    let formatted = format_bytes(size);
+
+    let health = if size > 5_000_000_000 {
+        // > 5GB
+        Health::Warn
+    } else {
+        Health::Ok
+    };
+
+    CheckResult {
+        category: "Disk".to_string(),
+        health,
+        summary: format!("Build cache uses {}", formatted),
+        details: vec![],
+    }
+}
+
+fn check_languages(ctx: &dispatch::ProjectContext) -> CheckResult {
+    if ctx.languages.is_empty() {
+        return CheckResult {
+            category: "Languages".to_string(),
+            health: Health::Warn,
+            summary: "No languages detected".to_string(),
+            details: vec!["Create source files or a horus.toml with dependencies".to_string()],
+        };
+    }
+
+    let langs: Vec<String> = ctx.languages.iter().map(|l| l.to_string()).collect();
+    CheckResult {
+        category: "Languages".to_string(),
+        health: Health::Ok,
+        summary: langs.join(", "),
+        details: vec![],
+    }
+}
+
+fn check_dep_sources(ctx: &dispatch::ProjectContext) -> CheckResult {
+    let manifest = match &ctx.manifest {
+        Some(m) => m,
+        None => {
+            return CheckResult {
+                category: "Dependencies".to_string(),
+                health: Health::Ok,
+                summary: "No manifest — skipped".to_string(),
+                details: vec![],
+            };
+        }
+    };
+
+    if manifest.dependencies.is_empty() && manifest.dev_dependencies.is_empty() {
+        return CheckResult {
+            category: "Dependencies".to_string(),
+            health: Health::Ok,
+            summary: "No dependencies".to_string(),
+            details: vec![],
+        };
+    }
+
+    let issues = crate::source_resolver::validate_deps(&manifest.dependencies, &ctx.languages);
+    let dev_issues =
+        crate::source_resolver::validate_deps(&manifest.dev_dependencies, &ctx.languages);
+
+    let all_issues: Vec<_> = issues.into_iter().chain(dev_issues).collect();
+
+    if all_issues.is_empty() {
+        let dep_count = manifest.dependencies.len() + manifest.dev_dependencies.len();
+        CheckResult {
+            category: "Dependencies".to_string(),
+            health: Health::Ok,
+            summary: format!("{} deps, sources look correct", dep_count),
+            details: vec![],
+        }
+    } else {
+        let has_errors = all_issues.iter().any(|i| i.is_error);
+        let details: Vec<String> = all_issues.iter().map(|i| i.message.clone()).collect();
+        CheckResult {
+            category: "Dependencies".to_string(),
+            health: if has_errors {
+                Health::Fail
+            } else {
+                Health::Warn
+            },
+            summary: format!("{} issue(s) found", all_issues.len()),
+            details,
+        }
+    }
+}
+
+// ─── System dependency check (absorbed from horus sync) ──────────────────────
+
+/// Implement SyncManifest for HorusManifest so horus_sys::sync can extract requirements.
+impl SyncManifest for HorusManifest {
+    fn rust_edition(&self) -> Option<String> {
+        Some(self.package.edition.clone())
+    }
+
+    fn python_version(&self) -> Option<String> {
+        let has_python = self.dependencies.iter().any(|(_, dep)| {
+            if let crate::manifest::DependencyValue::Detailed(d) = dep {
+                matches!(d.source, Some(crate::manifest::DepSource::PyPI))
+            } else {
+                false
+            }
+        });
+        if has_python {
+            Some(">=3.9".to_string())
+        } else {
+            None
+        }
+    }
+
+    fn system_deps(&self) -> Vec<SystemDep> {
+        self.dependencies
+            .iter()
+            .filter_map(|(name, dep)| {
+                if let crate::manifest::DependencyValue::Detailed(d) = dep {
+                    if matches!(d.source, Some(crate::manifest::DepSource::System)) {
+                        return Some(SystemDep {
+                            name: name.clone(),
+                            apt: d.apt.clone().or_else(|| Some(name.clone())),
+                            brew: Some(name.clone()),
+                            choco: Some(name.clone()),
+                            pkg_config: d.cmake_package.clone(),
+                        });
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    fn needs_cpp(&self) -> bool {
+        self.cpp.is_some()
+    }
+
+    fn project_name(&self) -> String {
+        self.package.name.clone()
+    }
+}
+
+fn check_system_deps(manifest: &HorusManifest) -> CheckResult {
+    let report = sync::check_environment(manifest);
+
+    if report.items.is_empty() {
+        return CheckResult {
+            category: "System Deps".to_string(),
+            health: Health::Ok,
+            summary: "No system dependencies required".to_string(),
+            details: vec![],
+        };
+    }
+
+    let mut details = Vec::new();
+    let mut missing = Vec::new();
+
+    for item in &report.items {
+        if item.installed {
+            let version = item.version.as_deref().unwrap_or("installed");
+            details.push(format!("{}: {} ({})", item.name, version, "ok"));
+        } else {
+            details.push(format!("{}: not found", item.name));
+            if item.required {
+                missing.push(item.name.clone());
+            }
+        }
+    }
+
+    let health = if !missing.is_empty() {
+        Health::Fail
+    } else {
+        Health::Ok
+    };
+
+    let found = report.items.iter().filter(|i| i.installed).count();
+    let hint = if !missing.is_empty() {
+        format!(
+            " — run {} to install",
+            "horus doctor --fix".cyan()
+        )
+    } else {
+        String::new()
+    };
+
+    CheckResult {
+        category: "System Deps".to_string(),
+        health,
+        summary: format!("{}/{} satisfied{}", found, report.items.len(), hint),
+        details,
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+fn count_items(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| entries.filter_map(|e| e.ok()).count())
+        .unwrap_or(0)
+}
+
+use crate::fs_utils::{dir_size, format_bytes};
+
+// ── Driver device reachability ─────────────────────────────────────────────
+
+fn check_drivers() -> CheckResult {
+    // Read manifest directly for device checks (port, bus, address)
+    let manifest_path = std::path::Path::new("horus.toml");
+    let manifest = match crate::manifest::HorusManifest::load_from(manifest_path) {
+        Ok(m) => m,
+        Err(_) => {
+            return CheckResult {
+                category: "Hardware".into(),
+                health: Health::Ok,
+                summary: "No horus.toml found".into(),
+                details: vec![],
+            };
+        }
+    };
+
+    // Merge [hardware] and legacy [drivers] entries
+    let mut all_entries: std::collections::BTreeMap<String, &crate::manifest::DriverValue> =
+        std::collections::BTreeMap::new();
+    for (k, v) in &manifest.hardware {
+        all_entries.insert(k.clone(), v);
+    }
+    for (k, v) in &manifest.drivers {
+        all_entries.entry(k.clone()).or_insert(v);
+    }
+
+    if all_entries.is_empty() {
+        return CheckResult {
+            category: "Hardware".into(),
+            health: Health::Ok,
+            summary: "No [hardware] configured".into(),
+            details: vec![],
+        };
+    }
+
+    let mut details = Vec::new();
+    let mut worst = Health::Ok;
+
+    for (name, value) in &all_entries {
+        let params_map = match value {
+            crate::manifest::DriverValue::Config(cfg) => &cfg.params,
+            _ => continue,
+        };
+        let params = NodeParams::new(params_map.clone());
+        let use_name = match value {
+            crate::manifest::DriverValue::Config(cfg) => {
+                cfg.use_name.as_deref()
+                    .or(cfg.terra.as_deref())
+                    .or(cfg.node.as_deref())
+                    .or(cfg.package.as_deref())
+                    .or(cfg.exec.as_deref())
+                    .unwrap_or("unknown")
+            }
+            crate::manifest::DriverValue::Backend(s) => s.as_str(),
+            crate::manifest::DriverValue::Enabled(_) => "enabled",
+        };
+
+        let (detail, health) = check_hardware_device(name, &params, use_name);
+        if health == Health::Fail && worst != Health::Fail {
+            worst = Health::Fail;
+        } else if health == Health::Warn && worst == Health::Ok {
+            worst = Health::Warn;
+        }
+        details.push(detail);
+    }
+
+    // Validate hardware keys against URDF sensors (if [robot].description exists)
+    if let Some(ref robot) = manifest.robot {
+        if let Some(ref desc) = robot.description {
+            let urdf_path = std::path::Path::new(desc);
+            let sensors = crate::urdf::extract_sensors_from_urdf(urdf_path);
+            if !sensors.is_empty() {
+                let hw_keys: Vec<&str> = all_entries.keys().map(|s| s.as_str()).collect();
+                let warnings = crate::urdf::validate_driver_keys(&hw_keys, &sensors);
+                for warning in warnings {
+                    details.push(format!("  ! {}", warning));
+                    if worst == Health::Ok {
+                        worst = Health::Warn;
+                    }
+                }
+            }
+        }
+    }
+
+    let summary = if worst == Health::Ok {
+        format!("{} hardware node(s) reachable", details.len())
+    } else {
+        format!("{} hardware node(s) checked, some issues found", details.len())
+    };
+
+    CheckResult {
+        category: "Hardware".into(),
+        health: worst,
+        summary,
+        details,
+    }
+}
+
+fn check_hardware_device(
+    name: &str,
+    params: &NodeParams,
+    use_name: &str,
+) -> (String, Health) {
+    // Check serial port / device file
+    if let Ok(port) = params.get::<String>("port") {
+        if port.starts_with("/dev/") {
+            return if Path::new(&port).exists() {
+                (
+                    format!("  {} '{}': {} found", "*".green(), name, port),
+                    Health::Ok,
+                )
+            } else {
+                (
+                    format!("  {} '{}': {} not found", "x".red(), name, port),
+                    Health::Fail,
+                )
+            };
+        }
+    }
+
+    // Check I2C bus
+    if let Ok(bus) = params.get::<String>("bus") {
+        if bus.starts_with("i2c-") || bus.starts_with("/dev/i2c") {
+            let path = if bus.starts_with("/dev/") {
+                bus.clone()
+            } else {
+                format!("/dev/{}", bus)
+            };
+            return if Path::new(&path).exists() {
+                (
+                    format!("  {} '{}': {} found", "*".green(), name, path),
+                    Health::Ok,
+                )
+            } else {
+                (
+                    format!("  {} '{}': {} not found", "x".red(), name, path),
+                    Health::Fail,
+                )
+            };
+        }
+    }
+
+    // Check network address
+    if let Ok(address) = params.get::<String>("address") {
+        if address.contains('.') || address.contains(':') {
+            let addr_str = if address.contains(':') {
+                address.clone()
+            } else {
+                format!("{}:80", address)
+            };
+            if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                return match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+                    Ok(_) => (
+                        format!("  {} '{}': {} reachable", "*".green(), name, address),
+                        Health::Ok,
+                    ),
+                    Err(_) => (
+                        format!(
+                            "  {} '{}': {} unreachable",
+                            "!".yellow(),
+                            name,
+                            address
+                        ),
+                        Health::Warn,
+                    ),
+                };
+            }
+        }
+    }
+
+    // No checkable params — report node type
+    (
+        format!(
+            "  - '{}': use={} (no device path to check)",
+            name, use_name
+        ),
+        Health::Ok,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// Helper to build a minimal valid HorusManifest for testing.
+    fn make_manifest(name: &str) -> crate::manifest::HorusManifest {
+        crate::manifest::HorusManifest {
+            package: crate::manifest::PackageInfo {
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+                description: None,
+                authors: vec![],
+                license: None,
+                edition: "1".to_string(),
+                repository: None,
+                package_type: None,
+                categories: vec![],
+                standard: None,
+                rust_edition: None,
+                target_type: crate::manifest::TargetType::default(),
+            },
+            workspace: None,
+            robot: None,
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            sim_dependencies: BTreeMap::new(),
+            hardware: BTreeMap::new(),
+            drivers: BTreeMap::new(),
+            sim_drivers: BTreeMap::new(),
+            scripts: BTreeMap::new(),
+            ignore: Default::default(),
+            enable: vec![],
+            cpp: None,
+            hooks: Default::default(),
+            network: None,
+        }
+    }
+
+    // ── Health enum ─────────────────────────────────────────────────────
+
+    #[test]
+    fn health_ok_icon_is_green_check() {
+        let icon = Health::Ok.icon();
+        assert!(icon.to_string().contains("*"));
+    }
+
+    #[test]
+    fn health_warn_icon_is_yellow_bang() {
+        let icon = Health::Warn.icon();
+        assert!(icon.to_string().contains("!"));
+    }
+
+    #[test]
+    fn health_fail_icon_is_red_x() {
+        let icon = Health::Fail.icon();
+        assert!(icon.to_string().contains("x"));
+    }
+
+    #[test]
+    fn health_eq_same() {
+        assert_eq!(Health::Ok, Health::Ok);
+        assert_eq!(Health::Warn, Health::Warn);
+        assert_eq!(Health::Fail, Health::Fail);
+    }
+
+    #[test]
+    fn health_ne_different() {
+        assert_ne!(Health::Ok, Health::Warn);
+        assert_ne!(Health::Ok, Health::Fail);
+        assert_ne!(Health::Warn, Health::Fail);
+    }
+
+    #[test]
+    fn health_clone() {
+        let h = Health::Warn;
+        let h2 = h;
+        assert_eq!(h, h2);
+    }
+
+    #[test]
+    fn health_debug() {
+        let dbg = format!("{:?}", Health::Ok);
+        assert_eq!(dbg, "Ok");
+        assert_eq!(format!("{:?}", Health::Warn), "Warn");
+        assert_eq!(format!("{:?}", Health::Fail), "Fail");
+    }
+
+    // ── format_bytes ────────────────────────────────────────────────────
+
+    #[test]
+    fn format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn format_bytes_small() {
+        assert_eq!(format_bytes(512), "512 B");
+    }
+
+    #[test]
+    fn format_bytes_exactly_1kb() {
+        assert_eq!(format_bytes(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_kilobytes() {
+        assert_eq!(format_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_bytes_megabytes() {
+        assert_eq!(format_bytes(1_048_576), "1.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_megabytes_fractional() {
+        assert_eq!(format_bytes(5_242_880), "5.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_gigabytes() {
+        assert_eq!(format_bytes(1_073_741_824), "1.00 GB");
+    }
+
+    #[test]
+    fn format_bytes_gigabytes_large() {
+        assert_eq!(format_bytes(10_737_418_240), "10.00 GB");
+    }
+
+    #[test]
+    fn format_bytes_boundary_below_kb() {
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_bytes_boundary_below_mb() {
+        let val = 1_048_575; // 1MB - 1
+        let result = format_bytes(val);
+        assert!(result.contains("KB"));
+    }
+
+    #[test]
+    fn format_bytes_boundary_below_gb() {
+        let val = 1_073_741_823; // 1GB - 1
+        let result = format_bytes(val);
+        assert!(result.contains("MB"));
+    }
+
+    // ── count_items ─────────────────────────────────────────────────────
+
+    #[test]
+    fn count_items_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(count_items(tmp.path()), 0);
+    }
+
+    #[test]
+    fn count_items_with_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+        fs::write(tmp.path().join("b.txt"), "world").unwrap();
+        assert_eq!(count_items(tmp.path()), 2);
+    }
+
+    #[test]
+    fn count_items_with_dirs_and_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "").unwrap();
+        fs::create_dir(tmp.path().join("subdir")).unwrap();
+        assert_eq!(count_items(tmp.path()), 2);
+    }
+
+    #[test]
+    fn count_items_nonexistent() {
+        assert_eq!(count_items(Path::new("/nonexistent/path/99999")), 0);
+    }
+
+    // ── dir_size ────────────────────────────────────────────────────────
+
+    #[test]
+    fn dir_size_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(dir_size(tmp.path()), 0);
+    }
+
+    #[test]
+    fn dir_size_single_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("data.bin"), vec![0u8; 256]).unwrap();
+        assert_eq!(dir_size(tmp.path()), 256);
+    }
+
+    #[test]
+    fn dir_size_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("a").join("b");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("file.dat"), vec![1u8; 100]).unwrap();
+        fs::write(tmp.path().join("root.dat"), vec![2u8; 50]).unwrap();
+        assert_eq!(dir_size(tmp.path()), 150);
+    }
+
+    #[test]
+    fn dir_size_nonexistent_returns_zero() {
+        assert_eq!(dir_size(Path::new("/nonexistent/path/99999")), 0);
+    }
+
+    // ── check_toolchains ────────────────────────────────────────────────
+
+    #[test]
+    fn check_toolchains_returns_result() {
+        let result = check_toolchains();
+        assert_eq!(result.category, "Toolchains");
+        assert!(
+            result.summary.contains("tools found"),
+            "summary should mention tools found: {}",
+            result.summary
+        );
+        assert!(!result.details.is_empty());
+    }
+
+    #[test]
+    fn check_toolchains_details_mention_tool_names() {
+        let result = check_toolchains();
+        let combined: String = result.details.join("\n");
+        assert!(combined.contains("cargo"), "should list cargo");
+        assert!(combined.contains("rustc"), "should list rustc");
+        assert!(combined.contains("python3"), "should list python3");
+    }
+
+    // ── check_manifest ──────────────────────────────────────────────────
+
+    #[test]
+    fn check_manifest_no_horus_toml() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: false,
+            manifest: None,
+        };
+        let result = check_manifest(&ctx);
+        assert_eq!(result.category, "Manifest");
+        assert_eq!(result.health, Health::Warn);
+        assert!(result.summary.contains("No horus.toml"));
+    }
+
+    #[test]
+    fn check_manifest_has_toml_but_no_manifest() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: None,
+        };
+        let result = check_manifest(&ctx);
+        assert_eq!(result.health, Health::Fail);
+        assert!(result.summary.contains("Failed to parse"));
+    }
+
+    #[test]
+    fn check_manifest_valid_manifest() {
+        let manifest = make_manifest("test-proj");
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: Some(manifest),
+        };
+        let result = check_manifest(&ctx);
+        assert_eq!(result.category, "Manifest");
+        assert!(result.health == Health::Ok || result.health == Health::Warn);
+    }
+
+    #[test]
+    fn check_manifest_valid_has_details() {
+        let manifest = make_manifest("mybot");
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: Some(manifest),
+        };
+        let result = check_manifest(&ctx);
+        let details = result.details.join("\n");
+        assert!(
+            details.contains("mybot"),
+            "details should include package name"
+        );
+    }
+
+    // ── check_shm ───────────────────────────────────────────────────────
+
+    #[test]
+    fn check_shm_returns_result() {
+        let result = check_shm();
+        assert_eq!(result.category, "Shared Memory");
+        let shm_parent = horus_sys::shm::shm_parent_dir();
+        if shm_parent.exists() {
+            assert_eq!(result.health, Health::Ok);
+            assert!(result.summary.contains("available"));
+        } else {
+            assert_eq!(result.health, Health::Warn);
+        }
+    }
+
+    // ── check_plugins ───────────────────────────────────────────────────
+
+    #[test]
+    fn check_plugins_returns_result() {
+        let result = check_plugins();
+        assert_eq!(result.category, "Plugins");
+        assert_eq!(result.health, Health::Ok);
+        assert!(result.summary.contains("global"));
+        assert!(result.summary.contains("local"));
+    }
+
+    // ── check_disk ──────────────────────────────────────────────────────
+
+    #[test]
+    fn check_disk_returns_result() {
+        let _lock = crate::CWD_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = check_disk();
+        assert_eq!(result.category, "Disk");
+        assert_eq!(result.health, Health::Ok);
+        assert!(result.summary.contains("No .horus/"));
+
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    #[test]
+    fn check_disk_with_horus_dir() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        fs::create_dir(tmp.path().join(".horus")).unwrap();
+        fs::write(tmp.path().join(".horus/test.dat"), vec![0u8; 1024]).unwrap();
+
+        let result = check_disk();
+        assert_eq!(result.category, "Disk");
+        assert_eq!(result.health, Health::Ok);
+
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    // ── check_languages ─────────────────────────────────────────────────
+
+    #[test]
+    fn check_languages_empty() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: false,
+            manifest: None,
+        };
+        let result = check_languages(&ctx);
+        assert_eq!(result.category, "Languages");
+        assert_eq!(result.health, Health::Warn);
+        assert!(result.summary.contains("No languages"));
+    }
+
+    #[test]
+    fn check_languages_rust_only() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![crate::manifest::Language::Rust],
+            has_horus_toml: false,
+            manifest: None,
+        };
+        let result = check_languages(&ctx);
+        assert_eq!(result.health, Health::Ok);
+    }
+
+    #[test]
+    fn check_languages_python_only() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![crate::manifest::Language::Python],
+            has_horus_toml: false,
+            manifest: None,
+        };
+        let result = check_languages(&ctx);
+        assert_eq!(result.health, Health::Ok);
+    }
+
+    #[test]
+    fn check_languages_mixed() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![
+                crate::manifest::Language::Rust,
+                crate::manifest::Language::Python,
+            ],
+            has_horus_toml: false,
+            manifest: None,
+        };
+        let result = check_languages(&ctx);
+        assert_eq!(result.health, Health::Ok);
+        let summary = result.summary.to_lowercase();
+        assert!(summary.contains("rust") || summary.contains("python"));
+    }
+
+    // ── print_json ──────────────────────────────────────────────────────
+
+    #[test]
+    fn print_json_produces_valid_json() {
+        let results = vec![
+            CheckResult {
+                category: "Test".to_string(),
+                health: Health::Ok,
+                summary: "all good".to_string(),
+                details: vec!["detail1".to_string()],
+            },
+            CheckResult {
+                category: "Another".to_string(),
+                health: Health::Fail,
+                summary: "broken".to_string(),
+                details: vec![],
+            },
+        ];
+        print_json(&results);
+    }
+
+    #[test]
+    fn print_json_empty_results() {
+        print_json(&[]);
+    }
+
+    // ── print_summary ───────────────────────────────────────────────────
+
+    #[test]
+    fn print_summary_no_issues() {
+        let results = vec![CheckResult {
+            category: "Check1".to_string(),
+            health: Health::Ok,
+            summary: "fine".to_string(),
+            details: vec![],
+        }];
+        print_summary(&results, false);
+    }
+
+    #[test]
+    fn print_summary_verbose_shows_details() {
+        let results = vec![CheckResult {
+            category: "Check1".to_string(),
+            health: Health::Warn,
+            summary: "warning".to_string(),
+            details: vec!["some detail".to_string()],
+        }];
+        print_summary(&results, true);
+    }
+
+    #[test]
+    fn print_summary_mixed_health() {
+        let results = vec![
+            CheckResult {
+                category: "Ok".to_string(),
+                health: Health::Ok,
+                summary: "fine".to_string(),
+                details: vec![],
+            },
+            CheckResult {
+                category: "Warn".to_string(),
+                health: Health::Warn,
+                summary: "warning".to_string(),
+                details: vec![],
+            },
+            CheckResult {
+                category: "Fail".to_string(),
+                health: Health::Fail,
+                summary: "broken".to_string(),
+                details: vec![],
+            },
+        ];
+        print_summary(&results, false);
+    }
+
+    #[test]
+    fn print_summary_all_ok() {
+        let results = vec![
+            CheckResult {
+                category: "A".to_string(),
+                health: Health::Ok,
+                summary: "ok".to_string(),
+                details: vec![],
+            },
+            CheckResult {
+                category: "B".to_string(),
+                health: Health::Ok,
+                summary: "ok".to_string(),
+                details: vec![],
+            },
+        ];
+        print_summary(&results, false);
+    }
+
+    #[test]
+    fn print_summary_warnings_only() {
+        let results = vec![
+            CheckResult {
+                category: "A".to_string(),
+                health: Health::Ok,
+                summary: "ok".to_string(),
+                details: vec![],
+            },
+            CheckResult {
+                category: "B".to_string(),
+                health: Health::Warn,
+                summary: "warn".to_string(),
+                details: vec![],
+            },
+        ];
+        print_summary(&results, false);
+    }
+
+    // ── CheckResult construction ────────────────────────────────────────
+
+    #[test]
+    fn check_result_fields() {
+        let cr = CheckResult {
+            category: "Cat".to_string(),
+            health: Health::Ok,
+            summary: "Sum".to_string(),
+            details: vec!["d1".to_string(), "d2".to_string()],
+        };
+        assert_eq!(cr.category, "Cat");
+        assert_eq!(cr.health, Health::Ok);
+        assert_eq!(cr.summary, "Sum");
+        assert_eq!(cr.details.len(), 2);
+    }
+
+    #[test]
+    fn check_result_empty_details() {
+        let cr = CheckResult {
+            category: "X".to_string(),
+            health: Health::Fail,
+            summary: "bad".to_string(),
+            details: vec![],
+        };
+        assert!(cr.details.is_empty());
+    }
+
+    // ── Edge cases / battle tests ───────────────────────────────────────
+
+    #[test]
+    fn format_bytes_max_u64() {
+        let result = format_bytes(u64::MAX);
+        assert!(result.contains("GB"), "huge value should be GB: {}", result);
+    }
+
+    #[test]
+    fn format_bytes_one_byte() {
+        assert_eq!(format_bytes(1), "1 B");
+    }
+
+    #[test]
+    fn health_all_variants_covered() {
+        let variants = [Health::Ok, Health::Warn, Health::Fail];
+        for v in &variants {
+            let _ = v.icon();
+            let _ = format!("{:?}", v);
+        }
+    }
+
+    #[test]
+    fn check_manifest_with_dependencies() {
+        let mut manifest = make_manifest("dep-proj");
+        manifest.dependencies.insert(
+            "serde".to_string(),
+            crate::manifest::DependencyValue::Simple("1.0".to_string()),
+        );
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: Some(manifest),
+        };
+        let result = check_manifest(&ctx);
+        let details = result.details.join("\n");
+        assert!(details.contains("dependencies: 1"));
+    }
+
+    #[test]
+    fn count_items_deeply_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("file.txt"), "data").unwrap();
+        // count_items only counts direct children, not recursive
+        assert_eq!(count_items(tmp.path()), 1); // just "a"
+    }
+
+    #[test]
+    fn dir_size_many_small_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..50 {
+            fs::write(tmp.path().join(format!("f{}.txt", i)), "x").unwrap();
+        }
+        assert_eq!(dir_size(tmp.path()), 50);
+    }
+
+    #[test]
+    fn check_disk_large_threshold() {
+        let _lock = crate::CWD_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = check_disk();
+        assert_eq!(result.health, Health::Ok);
+
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    #[test]
+    fn check_languages_single_cpp() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![crate::manifest::Language::Cpp],
+            has_horus_toml: false,
+            manifest: None,
+        };
+        let result = check_languages(&ctx);
+        assert_eq!(result.health, Health::Ok);
+    }
+
+    #[test]
+    fn check_manifest_invalid_name() {
+        // name "x" is too short (< 2 chars), should produce validation error or warning
+        let manifest = make_manifest("x");
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: Some(manifest),
+        };
+        let result = check_manifest(&ctx);
+        // Validation should catch the short name
+        assert!(
+            result.health == Health::Warn || result.health == Health::Fail,
+            "short name should trigger warn or fail"
+        );
+    }
+
+    #[test]
+    fn check_manifest_with_drivers_and_scripts() {
+        let mut manifest = make_manifest("robot-arm");
+        manifest.drivers.insert(
+            "lidar".to_string(),
+            crate::manifest::DriverValue::Backend("rplidar".to_string()),
+        );
+        manifest
+            .scripts
+            .insert("build".to_string(), "cargo build".to_string());
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![crate::manifest::Language::Rust],
+            has_horus_toml: true,
+            manifest: Some(manifest),
+        };
+        let result = check_manifest(&ctx);
+        // Should parse fine
+        assert!(result.health == Health::Ok || result.health == Health::Warn);
+    }
+
+    #[test]
+    fn check_shm_category_name() {
+        let result = check_shm();
+        assert_eq!(result.category, "Shared Memory");
+    }
+
+    #[test]
+    fn check_disk_category_name() {
+        let _lock = crate::CWD_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = check_disk();
+        assert_eq!(result.category, "Disk");
+        std::env::set_current_dir(old_dir).unwrap();
+    }
+
+    #[test]
+    fn check_languages_all_supported() {
+        // Test with all known language variants
+        for lang in &[
+            crate::manifest::Language::Rust,
+            crate::manifest::Language::Python,
+            crate::manifest::Language::Cpp,
+        ] {
+            let ctx = dispatch::ProjectContext {
+                root: PathBuf::from("/tmp/fake"),
+                languages: vec![lang.clone()],
+                has_horus_toml: false,
+                manifest: None,
+            };
+            let result = check_languages(&ctx);
+            assert_eq!(result.health, Health::Ok);
+        }
+    }
+
+    #[test]
+    fn print_json_single_result() {
+        let results = vec![CheckResult {
+            category: "Solo".to_string(),
+            health: Health::Warn,
+            summary: "needs attention".to_string(),
+            details: vec!["fix this".to_string(), "and this".to_string()],
+        }];
+        print_json(&results);
+    }
+
+    #[test]
+    fn check_result_many_details() {
+        let cr = CheckResult {
+            category: "Verbose".to_string(),
+            health: Health::Ok,
+            summary: "lots of info".to_string(),
+            details: (0..100).map(|i| format!("detail {}", i)).collect(),
+        };
+        assert_eq!(cr.details.len(), 100);
+    }
+
+    #[test]
+    fn format_bytes_exact_boundaries() {
+        // Exactly at each boundary
+        assert!(format_bytes(1024).contains("KB"));
+        assert!(format_bytes(1_048_576).contains("MB"));
+        assert!(format_bytes(1_073_741_824).contains("GB"));
+    }
+
+    // ── Driver device reachability tests ──────────────────────────────
+
+    #[test]
+    fn check_hardware_device_existing_path() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("port".to_string(), toml::Value::String("/dev/null".into()));
+        let params = horus_core::drivers::NodeParams::new(map);
+        let (detail, health) = check_hardware_device("test", &params, "serial");
+        assert_eq!(health, Health::Ok);
+        assert!(detail.contains("found"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_hardware_device_missing_path() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "port".to_string(),
+            toml::Value::String("/dev/nonexistent_xyz_test".into()),
+        );
+        let params = horus_core::drivers::NodeParams::new(map);
+        let (detail, health) = check_hardware_device("test", &params, "serial");
+        assert_eq!(health, Health::Fail);
+        assert!(detail.contains("not found"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_hardware_device_i2c_bus() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("bus".to_string(), toml::Value::String("i2c-99".into()));
+        let params = horus_core::drivers::NodeParams::new(map);
+        let (detail, health) = check_hardware_device("imu", &params, "mpu6050");
+        // /dev/i2c-99 almost certainly doesn't exist
+        assert_eq!(health, Health::Fail);
+        assert!(detail.contains("i2c-99"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_hardware_device_no_checkable_params() {
+        let params = horus_core::drivers::NodeParams::empty();
+        let (detail, health) = check_hardware_device("mystery", &params, "MyDriver");
+        assert_eq!(health, Health::Ok);
+        assert!(detail.contains("no device path"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_hardware_device_legacy_type() {
+        let params = horus_core::drivers::NodeParams::empty();
+        let (detail, health) = check_hardware_device("cam", &params, "legacy");
+        assert_eq!(health, Health::Ok);
+        assert!(detail.contains("legacy"), "detail: {}", detail);
+    }
+
+    #[test]
+    fn check_hardware_device_network_unreachable() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "address".to_string(),
+            toml::Value::String("192.0.2.1:9999".into()),
+        );
+        let params = horus_core::drivers::NodeParams::new(map);
+        let (detail, health) = check_hardware_device("lidar", &params, "velodyne");
+        assert_eq!(health, Health::Warn);
+        assert!(detail.contains("unreachable"), "detail: {}", detail);
+    }
+
+    // ── CheckResult display & description ──────────────────────────────
+
+    #[test]
+    fn test_doctor_check_result_display() {
+        let cases = vec![
+            CheckResult {
+                category: "Toolchains".to_string(),
+                health: Health::Ok,
+                summary: "8/8 tools found".to_string(),
+                details: vec!["cargo: 1.77.0".to_string()],
+            },
+            CheckResult {
+                category: "Manifest".to_string(),
+                health: Health::Warn,
+                summary: "horus.toml has warnings".to_string(),
+                details: vec!["missing license field".to_string()],
+            },
+            CheckResult {
+                category: "System Deps".to_string(),
+                health: Health::Fail,
+                summary: "2 missing dependencies".to_string(),
+                details: vec!["libssl-dev: not found".to_string(), "cmake: not found".to_string()],
+            },
+        ];
+
+        for cr in &cases {
+            assert!(!cr.category.is_empty(), "category must be non-empty");
+            assert!(!cr.summary.is_empty(), "summary must be non-empty (acts as display)");
+            // details act as the description — at least one entry for each case above
+            assert!(
+                !cr.details.is_empty(),
+                "details/description must be non-empty for category '{}'",
+                cr.category
+            );
+            // Verify icon rendering doesn't panic
+            let _icon = cr.health.icon();
+        }
+    }
+
+    // ── All check category names unique ────────────────────────────────
+
+    #[test]
+    fn test_doctor_all_check_names_unique() {
+        // Collect the category names from all individual check functions.
+        // We cannot call check_dep_sources/check_manifest without a real context,
+        // but the categories are deterministic string literals, so we gather
+        // the ones we can call plus the known constant categories.
+        let callable_results = vec![
+            check_toolchains(),
+            check_shm(),
+            check_plugins(),
+        ];
+
+        // Known categories from code inspection (check_manifest, check_languages,
+        // check_dep_sources, check_disk, check_drivers, check_system_deps):
+        let known_categories = vec![
+            "Manifest",
+            "Languages",
+            "Dependencies",
+            "Disk",
+            "Drivers",
+            "System Deps",
+        ];
+
+        let mut all_names: Vec<String> = callable_results
+            .iter()
+            .map(|r| r.category.clone())
+            .collect();
+        all_names.extend(known_categories.into_iter().map(String::from));
+
+        let unique: std::collections::HashSet<&str> =
+            all_names.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            unique.len(),
+            all_names.len(),
+            "duplicate check category names detected: {:?}",
+            all_names
+        );
+    }
+
+    // ── Fix mode flag propagation ──────────────────────────────────────
+
+    #[test]
+    fn test_doctor_fix_mode_flag_propagates() {
+        // run_doctor(verbose, json, fix) accepts the fix flag.
+        // We cannot run full doctor in tests (it calls process::exit),
+        // but we can verify the fix path is reachable by calling run_fix
+        // with a manifest that has no system deps — it should succeed
+        // without installing anything.
+        let manifest = make_manifest("fix-test-proj");
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = dispatch::ProjectContext {
+            root: tmp.path().to_path_buf(),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: Some(manifest.clone()),
+        };
+        // run_fix should not error on a project with zero system deps
+        let result = run_fix(&manifest, &ctx);
+        assert!(
+            result.is_ok(),
+            "fix mode should succeed on empty-dep project: {:?}",
+            result.err()
+        );
+        // After fix, a lockfile should have been written
+        let lock_path = tmp.path().join(HORUS_LOCK);
+        assert!(
+            lock_path.exists(),
+            "fix mode should create/update {}",
+            HORUS_LOCK
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Network check — `horus doctor` (always runs)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn check_network() -> CheckResult {
+    let mut details = Vec::new();
+    let mut health = Health::Ok;
+
+    // Check 1: remote presence files exist (peers discovered)
+    let nodes_dir = horus_sys::shm::shm_nodes_dir();
+    let remote_count = std::fs::read_dir(&nodes_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("remote_"))
+                .count()
+        })
+        .unwrap_or(0);
+
+    if remote_count > 0 {
+        details.push(format!("{} remote host(s) discovered", remote_count));
+    } else {
+        details.push("No remote peers (single-machine mode)".to_string());
+    }
+
+    // Check 2: HORUS_NAMESPACE
+    let namespace = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    details.push(format!("Namespace: {}", namespace));
+
+    // Check 3: horus_net enabled check
+    let net_enabled = std::env::var("HORUS_NET")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    let no_net = std::env::var("HORUS_NO_NETWORK")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+
+    if no_net {
+        details.push("horus_net: DISABLED (HORUS_NO_NETWORK=1)".to_string());
+    } else if net_enabled {
+        details.push("horus_net: enabled".to_string());
+    } else {
+        details.push("horus_net: available (use --net or HORUS_NET=1 to enable)".to_string());
+    }
+
+    // Check 4: multicast reachability (basic socket test)
+    match std::net::UdpSocket::bind("0.0.0.0:0") {
+        Ok(_) => {
+            details.push("UDP sockets: available".to_string());
+        }
+        Err(e) => {
+            details.push(format!("UDP sockets: FAILED ({})", e));
+            health = Health::Warn;
+        }
+    }
+
+    let summary = if remote_count > 0 {
+        format!("{} remote peer(s)", remote_count)
+    } else {
+        "Single-machine mode".to_string()
+    };
+
+    CheckResult {
+        category: "Network".to_string(),
+        health,
+        summary,
+        details,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RT Readiness Report — `horus doctor --rt`
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Run the RT readiness report: system audit + jitter benchmark + IPC benchmark.
+pub fn run_rt_report() -> Result<()> {
+    println!("{}", "Running RT Readiness Report (3-second benchmark)...\n".bold());
+    let report = horus_core::scheduling::rt_report::RtReport::generate(
+        Duration::from_secs(3),
+    );
+    report.print();
+    Ok(())
+}

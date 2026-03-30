@@ -1,0 +1,69 @@
+# Safety: MIRI, AddressSanitizer, ThreadSanitizer
+# Replaces: safety.yml
+# Runs weekly, on-demand, and on PRs touching unsafe code
+
+.safety-base:
+  image: rustlang/rust:nightly
+  stage: safety
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_MERGE_REQUEST_IID
+      changes:
+        - horus_core/src/memory/**/*
+        - horus_core/src/communication/**/*
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - |
+      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
+      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+
+miri:
+  extends: .safety-base
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - rustup component add miri
+    - cargo miri setup
+    - |
+      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
+      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+  variables:
+    MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+  script:
+    - cargo miri test -p horus_core --lib -- memory::
+    - cargo miri test -p horus_core --test memory_safety
+    - cargo miri test -p horus_core --lib -- communication::
+    - cargo miri test -p horus_library -- landmark:: tracking:: detection:: segmentation::
+
+asan:
+  extends: .safety-base
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - rustup component add rust-src
+    - |
+      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
+      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+  variables:
+    RUSTFLAGS: -Zsanitizer=address
+    RUSTDOCFLAGS: -Zsanitizer=address
+    ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
+  script:
+    - cargo test --workspace --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+
+tsan:
+  extends: .safety-base
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - rustup component add rust-src
+    - |
+      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
+      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+  variables:
+    RUSTFLAGS: -Zsanitizer=thread
+    TSAN_OPTIONS: second_deadlock_stack=1
+  script:
+    - cargo test --workspace --lib -Zbuild-std --target x86_64-unknown-linux-gnu -- --test-threads=1
