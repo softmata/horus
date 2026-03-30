@@ -78,6 +78,7 @@ macro_rules! pub_node {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! sub_node {
     ($name:ident, $type:ty) => {
         struct $name {
