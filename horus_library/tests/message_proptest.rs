@@ -1955,10 +1955,10 @@ fn realistic_imu() -> impl Strategy<Value = Imu> {
 #[allow(clippy::approx_constant)]
 fn realistic_laser_scan() -> impl Strategy<Value = LaserScan> {
     (
-        -3.2f32..0.0f32, // angle_min (negative, approximately -PI)
-        0.01f32..3.2f32, // angle_max (positive, approximately PI)
-        0.05f32..0.5f32,     // range_min (5cm-50cm)
-        1.0f32..100.0f32,    // range_max (1m-100m)
+        -3.2f32..0.0f32,  // angle_min (negative, approximately -PI)
+        0.01f32..3.2f32,  // angle_max (positive, approximately PI)
+        0.05f32..0.5f32,  // range_min (5cm-50cm)
+        1.0f32..100.0f32, // range_max (1m-100m)
         any::<u64>(),
     )
         .prop_map(|(amin, amax, rmin, rmax, ts)| {
@@ -1981,11 +1981,11 @@ fn realistic_laser_scan() -> impl Strategy<Value = LaserScan> {
 #[allow(clippy::approx_constant)]
 fn realistic_odometry() -> impl Strategy<Value = Odometry> {
     (
-        -1000.0f64..1000.0,   // x position (meters)
-        -1000.0f64..1000.0,   // y position
-        -3.2f64..3.2, // theta (radians, approximately -PI..PI)
-        -10.0f64..10.0,       // linear_x velocity (m/s)
-        -5.0f64..5.0,         // angular_z velocity (rad/s)
+        -1000.0f64..1000.0, // x position (meters)
+        -1000.0f64..1000.0, // y position
+        -3.2f64..3.2,       // theta (radians, approximately -PI..PI)
+        -10.0f64..10.0,     // linear_x velocity (m/s)
+        -5.0f64..5.0,       // angular_z velocity (rad/s)
         any::<u64>(),
     )
         .prop_map(|(x, y, theta, lin_x, ang_z, ts)| {
