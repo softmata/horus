@@ -39,16 +39,6 @@ impl Node for CpuNode {
         Ok(())
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: format!("{}.output", self.name),
-            type_name: "std_msgs/Int32".to_string(),
-        }]
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
 }
 
 /// Test node that simulates I/O operations (camera/sensor)
@@ -79,16 +69,6 @@ impl Node for IoNode {
         Ok(())
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: format!("{}.data", self.name),
-            type_name: "sensor_msgs/Image".to_string(),
-        }]
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
 }
 
 /// Test node that occasionally fails (to test skip policy)
@@ -122,16 +102,6 @@ impl Node for FlakyNode {
         Ok(())
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "camera.data".to_string(),
-            type_name: "sensor_msgs/Image".to_string(),
-        }]
-    }
 }
 
 #[test]

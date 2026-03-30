@@ -346,8 +346,7 @@ pub use horus_core::core;
 /// }
 /// ```
 pub use horus_core::drivers as hardware;
-/// Backward-compatibility alias — prefer `hardware`.
-pub use horus_core::drivers;
+// `horus::drivers` removed — use `horus::hardware` instead.
 #[doc(hidden)]
 pub use horus_core::hlog;
 #[doc(hidden)]

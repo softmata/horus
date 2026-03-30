@@ -461,26 +461,6 @@ fn recording_captures_execution_order() {
         fn name(&self) -> &str {
             &self.name
         }
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            if self.name == "producer" {
-                vec![TopicMetadata {
-                    topic_name: "data".into(),
-                    type_name: "T".into(),
-                }]
-            } else {
-                vec![]
-            }
-        }
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            if self.name == "consumer" {
-                vec![TopicMetadata {
-                    topic_name: "data".into(),
-                    type_name: "T".into(),
-                }]
-            } else {
-                vec![]
-            }
-        }
         fn tick(&mut self) {
             self.log.lock().unwrap().push(self.name.clone());
         }

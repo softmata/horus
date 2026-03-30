@@ -1,0 +1,8 @@
+error: #[horus_api] does not support tuple structs.
+       Help: use named fields instead.
+       Change: `pub struct Foo(u32, u32);`
+       To:     `pub struct Foo { pub a: u32, pub b: u32 }`
+ --> tests/fail/tuple_struct.rs:4:1
+  |
+4 | pub struct Wrapper(u32, String);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

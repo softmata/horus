@@ -4,6 +4,8 @@ members = [
     "horus",  # Main unified crate
     "horus_core",
     "horus_macros",
+    "horus_cpp_macros",  # C++ binding codegen (#[horus_api] proc macro)
+    "horus_cpp",         # C++ FFI bridge (CXX, staticlib+cdylib)
     "horus_manager",
     "horus_types",  # Universal IPC types (math, diagnostics, time, generic)
     "horus_net",  # Transparent LAN replication (zero external deps)
@@ -26,6 +28,8 @@ rust-version = "1.92"
 horus = { path = "horus" }
 horus_core = { path = "horus_core" }
 horus_macros = { path = "horus_macros" }
+horus_cpp_macros = { path = "horus_cpp_macros" }
+horus_cpp = { path = "horus_cpp" }
 horus_sys = { path = "horus_sys" }
 horus_types = { path = "horus_types" }
 horus_net = { path = "horus_net" }

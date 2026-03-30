@@ -1,0 +1,21 @@
+# HORUS Multi-Node Launch — C++ Example
+#
+# Run: horus launch examples/launch.yaml
+#
+# Launches 3 C++ nodes in dependency order with restart policies.
+
+nodes:
+  - name: lidar_driver
+    command: ./build/multi_node
+    depends_on: []
+    restart: on-failure
+
+  - name: nav_controller
+    command: ./build/obstacle_avoidance
+    depends_on: [lidar_driver]
+    restart: on-failure
+
+  - name: diagnostics
+    command: ./build/params_demo
+    depends_on: []
+    restart: never

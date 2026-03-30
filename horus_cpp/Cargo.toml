@@ -1,0 +1,38 @@
+[package]
+name = "horus_cpp"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["HORUS Team"]
+description = "C++ bindings for the HORUS robotics framework — zero-copy shared memory IPC, deterministic scheduling, real-time safety via CXX FFI"
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+keywords = ["robotics", "cpp", "ffi", "real-time", "horus"]
+categories = ["science::robotics", "api-bindings"]
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+horus_core = { path = "../horus_core", default-features = false }
+horus_library = { path = "../horus_library" }
+horus_cpp_macros = { path = "../horus_cpp_macros" }
+cxx = "1.0"
+paste = "1.0"
+bytemuck.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+cxx-build = "1.0"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+horus_core = { path = "../horus_core", default-features = false, features = ["test-utils"] }
+criterion = "0.5"
+
+[[bench]]
+name = "ffi_bench"
+harness = false

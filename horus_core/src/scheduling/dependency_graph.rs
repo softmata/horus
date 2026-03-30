@@ -303,12 +303,6 @@ mod tests {
             &self.name
         }
         fn tick(&mut self) {}
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            self.pubs.clone()
-        }
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            self.subs.clone()
-        }
     }
 
     fn make_registered(node: TestNode, order: u32) -> RegisteredNode {

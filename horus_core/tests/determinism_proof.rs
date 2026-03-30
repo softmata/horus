@@ -32,12 +32,6 @@ impl Node for SensorNode {
         "sensor"
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "sensor_data".into(),
-            type_name: "u64".into(),
-        }]
-    }
 
     fn tick(&mut self) {
         self.counter += 1;
@@ -68,19 +62,7 @@ impl Node for ControllerNode {
         "controller"
     }
 
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "sensor_data".into(),
-            type_name: "u64".into(),
-        }]
-    }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "control_output".into(),
-            type_name: "u64".into(),
-        }]
-    }
 
     fn tick(&mut self) {
         // Use framework dt for integration
@@ -293,24 +275,6 @@ fn dependency_ordering_respected() {
     impl Node for OrderNode {
         fn name(&self) -> &str {
             self.id
-        }
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            match self.id {
-                "producer" => vec![TopicMetadata {
-                    topic_name: "data".into(),
-                    type_name: "T".into(),
-                }],
-                _ => vec![],
-            }
-        }
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            match self.id {
-                "consumer" => vec![TopicMetadata {
-                    topic_name: "data".into(),
-                    type_name: "T".into(),
-                }],
-                _ => vec![],
-            }
         }
         fn tick(&mut self) {
             self.log.lock().unwrap().push(self.id.to_string());

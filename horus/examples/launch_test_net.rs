@@ -53,7 +53,7 @@ fn main() -> Result<()> {
 
     let mut sched = Scheduler::new()
         .tick_rate(50_u64.hz())
-        .enable_network();
+        ;
     println!("SCHEDULER: name={} net=enabled", sched.scheduler_name());
 
     sched

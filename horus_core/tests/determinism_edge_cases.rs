@@ -51,24 +51,6 @@ impl Node for PubSubNode {
     fn name(&self) -> &str {
         &self.name
     }
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        self.pubs
-            .iter()
-            .map(|t| TopicMetadata {
-                topic_name: t.clone(),
-                type_name: "T".into(),
-            })
-            .collect()
-    }
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        self.subs
-            .iter()
-            .map(|t| TopicMetadata {
-                topic_name: t.clone(),
-                type_name: "T".into(),
-            })
-            .collect()
-    }
     fn tick(&mut self) {
         self.log.lock().unwrap().push(self.name.clone());
     }

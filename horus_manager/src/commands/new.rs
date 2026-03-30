@@ -620,19 +620,26 @@ if __name__ == "__main__":
 fn create_cpp_project(project_path: &Path, name: &str) -> Result<()> {
     // Create CMakeLists.txt
     let cmake_content = format!(
-        r#"cmake_minimum_required(VERSION 3.16)
+        r#"cmake_minimum_required(VERSION 3.20)
 project({name} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Find HORUS C++ bindings
 find_package(horus QUIET)
 
-add_executable(${{PROJECT_NAME}} src/main.cpp)
+# Collect sources
+file(GLOB_RECURSE SOURCES src/*.cpp src/*.cc src/*.cxx)
+
+add_executable(${{PROJECT_NAME}} ${{SOURCES}})
 
 if(horus_FOUND)
     target_link_libraries(${{PROJECT_NAME}} PRIVATE horus::horus)
+else()
+    message(STATUS "HORUS not found — building without horus bindings.")
+    message(STATUS "Install horus_cpp or use FetchContent to add it.")
 endif()
 "#
     );
@@ -640,22 +647,37 @@ endif()
 
     // Create src/main.cpp
     let cpp_content = format!(
-        r#"// Mobile robot controller
+        r#"// {name} — HORUS C++ robot controller
+//
+// Build: horus build
+// Run:   horus run
 
-#include <cstdio>
-
-// TODO: #include <horus/horus.h> when C++ bindings are available
+#include <horus/horus.hpp>
+using namespace horus::literals;
 
 int main() {{
-    std::printf("[{name}] HORUS C++ node starting\\n");
+    // Create and configure scheduler
+    horus::Scheduler sched;
+    sched.tick_rate(100_hz).name("{name}");
 
-    // Your control logic here
-    // Once C++ bindings are available:
-    //   auto node = horus::Node("{name}");
-    //   node.subscribe("sensors.data");
-    //   node.advertise("motors.cmd_vel");
-    //   node.spin();
+    // Create pub/sub handles
+    horus::Publisher<horus::msg::CmdVel> cmd_pub("cmd_vel");
 
+    // Add a controller node
+    sched.add("controller")
+        .tick([&] {{
+            auto sample = cmd_pub.loan();
+            sample->linear = 0.3f;   // forward velocity (m/s)
+            sample->angular = 0.0f;  // turning velocity (rad/s)
+            cmd_pub.publish(std::move(sample));
+        }})
+        .build();
+
+    // Run 100 ticks then stop
+    for (int i = 0; i < 100; ++i) {{
+        sched.tick_once();
+    }}
+    sched.stop();
     return 0;
 }}
 "#

@@ -642,30 +642,8 @@ impl Scheduler {
     }
 
     /// Enable network replication for cross-machine topic/node discovery.
-    ///
-    /// Network replication is **on by default** (like ROS2 — just works).
-    /// This method is a no-op unless networking was previously disabled
-    /// via `.network(false)` or `HORUS_NET_ENABLED=false`.
-    ///
-    /// When enabled, the scheduler signals to the integration layer (e.g., the `horus`
-    /// umbrella crate) that `horus_net` should start a background replicator thread.
-    /// Topics are then transparently shared with remote horus peers on the LAN.
-    ///
-    /// The scheduler itself does not depend on `horus_net` (to avoid circular deps).
-    /// Instead, the `horus` umbrella crate registers a lifecycle hook that reads this
-    /// flag and starts the replicator.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let mut scheduler = Scheduler::new()
-    ///     .tick_rate(100_u64.hz());
-    /// // Network replicator starts automatically in run() — no .enable_network() needed
-    /// scheduler.run()?;
-    /// ```
-    pub fn enable_network(mut self) -> Self {
-        self.network_enabled = true;
-        self
-    }
+    // enable_network() removed — network is on by default.
+    // Use .network(false) to disable.
 
     /// Set network replication on or off.
     ///

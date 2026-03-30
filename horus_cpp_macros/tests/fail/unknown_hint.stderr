@@ -1,0 +1,5 @@
+error: unknown #[cpp] hint "invalid_hint", expected one of: move_semantics, raii, direct_field_access, returns, name, namespace
+ --> tests/fail/unknown_hint.rs:9:11
+  |
+9 |     #[cpp(invalid_hint)]
+  |           ^^^^^^^^^^^^

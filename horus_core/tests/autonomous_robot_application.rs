@@ -247,25 +247,7 @@ impl Node for MotorControllerNode {
         Ok(())
     }
 
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        vec![
-            TopicMetadata {
-                topic_name: "cmd_vel".to_string(),
-                type_name: "geometry_msgs/Twist".to_string(),
-            },
-            TopicMetadata {
-                topic_name: "odometry".to_string(),
-                type_name: "nav_msgs/Odometry".to_string(),
-            },
-        ]
-    }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "motor_speeds".to_string(),
-            type_name: "std_msgs/Float64MultiArray".to_string(),
-        }]
-    }
 }
 
 // ============ Camera Perception Node (Heavy I/O, will use async tier) ============
@@ -350,16 +332,6 @@ impl Node for CameraPerceptionNode {
         Ok(())
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: format!("camera_{}.compressed", self.camera_id),
-            type_name: "sensor_msgs/CompressedImage".to_string(),
-        }]
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
 }
 
 // ============ Lidar Processing Node (Heavy I/O, will use async tier) ============
@@ -436,16 +408,6 @@ impl Node for LidarProcessingNode {
         Ok(())
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "scan".to_string(),
-            type_name: "sensor_msgs/LaserScan".to_string(),
-        }]
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
 }
 
 // ============ Sensor Fusion Node (Fast execution tier) ============
@@ -547,19 +509,7 @@ impl Node for SensorFusionNode {
         Ok(())
     }
 
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "imu.data".to_string(),
-            type_name: "sensor_msgs/Imu".to_string(),
-        }]
-    }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "odometry".to_string(),
-            type_name: "nav_msgs/Odometry".to_string(),
-        }]
-    }
 }
 
 // ============ Path Planning Node ============
@@ -667,25 +617,7 @@ impl Node for PathPlannerNode {
         Ok(())
     }
 
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        vec![
-            TopicMetadata {
-                topic_name: "odometry".to_string(),
-                type_name: "nav_msgs/Odometry".to_string(),
-            },
-            TopicMetadata {
-                topic_name: "scan".to_string(),
-                type_name: "sensor_msgs/LaserScan".to_string(),
-            },
-        ]
-    }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "path".to_string(),
-            type_name: "nav_msgs/Path".to_string(),
-        }]
-    }
 }
 
 // ============ Navigation Controller Node ============
@@ -797,25 +729,7 @@ impl Node for NavigationControllerNode {
         Ok(())
     }
 
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        vec![
-            TopicMetadata {
-                topic_name: "path".to_string(),
-                type_name: "nav_msgs/Path".to_string(),
-            },
-            TopicMetadata {
-                topic_name: "odometry".to_string(),
-                type_name: "nav_msgs/Odometry".to_string(),
-            },
-        ]
-    }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "cmd_vel".to_string(),
-            type_name: "geometry_msgs/Twist".to_string(),
-        }]
-    }
 }
 
 // ============ Battery Monitor Node (with fault tolerance) ============
@@ -898,16 +812,6 @@ impl Node for BatteryMonitorNode {
         Ok(())
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "battery_status".to_string(),
-            type_name: "sensor_msgs/BatteryState".to_string(),
-        }]
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
 }
 
 // ============ IMU Sensor Node ============
@@ -958,16 +862,6 @@ impl Node for IMUSensorNode {
         Ok(())
     }
 
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: "imu.data".to_string(),
-            type_name: "sensor_msgs/Imu".to_string(),
-        }]
-    }
-
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
 }
 
 // ============ Main Test ============
@@ -1015,12 +909,6 @@ fn test_autonomous_robot_complete_system() {
         }
         fn shutdown(&mut self) -> Result<()> {
             self.inner.shutdown()
-        }
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            self.inner.publishers()
-        }
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            self.inner.subscribers()
         }
     }
 
@@ -1212,12 +1100,6 @@ fn test_robot_performance_metrics() {
         }
         fn shutdown(&mut self) -> Result<()> {
             self.inner.shutdown()
-        }
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            self.inner.publishers()
-        }
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            self.inner.subscribers()
         }
     }
 

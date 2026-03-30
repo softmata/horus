@@ -42,24 +42,6 @@ impl Node for TrackedNode {
     fn name(&self) -> &str {
         self.name
     }
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        self.pubs
-            .iter()
-            .map(|t| TopicMetadata {
-                topic_name: t.to_string(),
-                type_name: "T".to_string(),
-            })
-            .collect()
-    }
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        self.subs
-            .iter()
-            .map(|t| TopicMetadata {
-                topic_name: t.to_string(),
-                type_name: "T".to_string(),
-            })
-            .collect()
-    }
     fn tick(&mut self) {
         self.log.lock().unwrap().push(self.name.to_string());
         self.tick_count.fetch_add(1, Ordering::Relaxed);

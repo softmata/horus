@@ -149,12 +149,6 @@ impl Node for ProducerNode {
     fn name(&self) -> &str {
         &self.name
     }
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: self.topic.clone(),
-            type_name: "T".into(),
-        }]
-    }
     fn tick(&mut self) {
         self.log.lock().unwrap().push(self.name.clone());
     }
@@ -179,12 +173,6 @@ impl ConsumerNode {
 impl Node for ConsumerNode {
     fn name(&self) -> &str {
         &self.name
-    }
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        vec![TopicMetadata {
-            topic_name: self.topic.clone(),
-            type_name: "T".into(),
-        }]
     }
     fn tick(&mut self) {
         self.log.lock().unwrap().push(self.name.clone());

@@ -135,12 +135,6 @@ fn topic_send_recv_between_nodes_in_same_scheduler() {
         fn name(&self) -> &str {
             "producer"
         }
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            vec![TopicMetadata {
-                topic_name: "test_data".into(),
-                type_name: "u64".into(),
-            }]
-        }
         fn tick(&mut self) {
             self.counter += 1;
             self.topic.send(self.counter);
@@ -155,12 +149,6 @@ fn topic_send_recv_between_nodes_in_same_scheduler() {
     impl Node for Consumer {
         fn name(&self) -> &str {
             "consumer"
-        }
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            vec![TopicMetadata {
-                topic_name: "test_data".into(),
-                type_name: "u64".into(),
-            }]
         }
         fn tick(&mut self) {
             if let Some(val) = self.topic.try_recv() {
@@ -232,12 +220,6 @@ fn topic_data_flows_in_dependency_order() {
         fn name(&self) -> &str {
             "seq_producer"
         }
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            vec![TopicMetadata {
-                topic_name: "sequence".into(),
-                type_name: "u64".into(),
-            }]
-        }
         fn tick(&mut self) {
             self.seq += 1;
             self.topic.send(self.seq);
@@ -253,12 +235,6 @@ fn topic_data_flows_in_dependency_order() {
     impl Node for SequenceConsumer {
         fn name(&self) -> &str {
             "seq_consumer"
-        }
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            vec![TopicMetadata {
-                topic_name: "sequence".into(),
-                type_name: "u64".into(),
-            }]
         }
         fn tick(&mut self) {
             if let Some(val) = self.topic.try_recv() {

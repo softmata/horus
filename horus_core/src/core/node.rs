@@ -612,26 +612,8 @@ pub trait Node: Send {
     }
 
     /// **DEPRECATED**: Topic associations are now automatic.
-    ///
-    /// This method is no longer called by the scheduler. Topic-node associations
-    /// are auto-detected when `Topic::new()` is called during a node's tick.
-    /// See `TopicNodeRegistry` in `horus_core::communication::topic`.
-    ///
-    /// Existing overrides are harmless but unnecessary — you can remove them.
-    #[doc(hidden)]
-    #[deprecated(note = "Topics are now auto-detected. This method is no longer used by the scheduler.")]
-    fn publishers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
-
-    /// **DEPRECATED**: Topic associations are now automatic.
-    ///
-    /// See `publishers()` deprecation note.
-    #[doc(hidden)]
-    #[deprecated(note = "Topics are now auto-detected. This method is no longer used by the scheduler.")]
-    fn subscribers(&self) -> Vec<TopicMetadata> {
-        Vec::new()
-    }
+    // publishers() and subscribers() removed — topics are auto-detected
+    // via TopicNodeRegistry when Topic::new() is called during tick.
 
     /// Handle errors (called by the scheduler on tick failure).
     ///

@@ -1,0 +1,25 @@
+[package]
+name = "horus_cpp_macros"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["HORUS Team"]
+description = "Procedural macros for HORUS C++ bindings — #[horus_api] annotation generates CXX bridges and idiomatic C++ headers automatically"
+repository = "https://github.com/softmata/horus"
+homepage = "https://horusrobotics.dev"
+keywords = ["robotics", "cpp", "ffi", "codegen", "proc-macro"]
+categories = ["science::robotics", "development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits", "visit"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+trybuild = "1.0"

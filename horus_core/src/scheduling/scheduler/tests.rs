@@ -3174,9 +3174,10 @@ fn test_network_enabled_by_default() {
 }
 
 #[test]
-fn test_enable_network_builder() {
+fn test_network_default_on() {
     let _lock = lock_scheduler();
-    let scheduler = Scheduler::new().enable_network();
+    // Network is on by default
+    let scheduler = Scheduler::new();
     assert!(scheduler.network_enabled());
 }
 
@@ -3187,10 +3188,6 @@ fn test_network_builder_toggle() {
     assert!(scheduler.network_enabled());
 
     let scheduler = Scheduler::new().network(false);
-    assert!(!scheduler.network_enabled());
-
-    // Can override enable_network() with network(false)
-    let scheduler = Scheduler::new().enable_network().network(false);
     assert!(!scheduler.network_enabled());
 }
 
