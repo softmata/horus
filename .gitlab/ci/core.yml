@@ -71,6 +71,8 @@ test:
   extends: [.rust-base, .shm-setup, .on-mr-or-main]
   stage: test
   needs: [check, fmt, clippy]
+  variables:
+    CARGO_INCREMENTAL: "0"
   before_script:
     - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
     - rustup component add rustfmt clippy
