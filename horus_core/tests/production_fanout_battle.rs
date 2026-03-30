@@ -378,6 +378,7 @@ fn shm_fanout_latency_percentiles_cross_thread() {
                 let measure_barrier = measure_barrier.clone();
                 let store = results[i].clone();
                 let send_times = send_times.clone();
+                #[allow(clippy::redundant_locals)]
                 let epoch = epoch;
                 std::thread::spawn(move || {
                     let sub: Topic<u64> = Topic::new(&name).expect("sub topic");
@@ -2838,8 +2839,10 @@ fn fault_shm_magic_corruption_rejected() {
 /// Recovery after SHM corruption: cleanup + re-creation must produce a working topic.
 ///
 /// Production scenario: after detecting corruption, the recovery sequence is:
+///
 /// 1. Remove corrupted SHM files (cleanup_stale_shm)
 /// 2. Create fresh topics
+///
 /// This must work reliably on every boot.
 #[test]
 fn fault_shm_recovery_after_corruption() {
@@ -2980,6 +2983,7 @@ fn soak_60s_sustained_fanout() {
         let barrier_pub = barrier.clone();
         let barrier_sub = barrier.clone();
         let buf = buffers[pair].clone();
+        #[allow(clippy::redundant_locals)]
         let epoch = epoch;
         let topic_name_sub = topic_name.clone();
 

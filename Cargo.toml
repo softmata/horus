@@ -86,6 +86,9 @@ needless_range_loop = "allow"
 field_reassign_with_default = "allow"
 too_many_arguments = "allow"
 type_complexity = "allow"
+single_match = "allow"
+while_let_loop = "allow"
+unnecessary_get_then_check = "allow"
 
 [workspace.lints.rust]
 # Allow unused Results from scheduler.add().build() in tests

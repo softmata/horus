@@ -213,12 +213,12 @@ fn test_log_file_drain_writes_to_disk() {
     // Check file exists — drain thread polls every 500ms, so may need extra time
     let log_file = tmp.path().join("horus.log");
     // Wait up to 3 seconds for drain to write
-    let mut found = false;
+    let mut _found = false;
     for _ in 0..6 {
         if log_file.exists() {
             let content = std::fs::read_to_string(&log_file).unwrap_or_default();
             if content.contains("drain_test") {
-                found = true;
+                _found = true;
                 break;
             }
         }

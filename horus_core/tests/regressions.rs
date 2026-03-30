@@ -367,10 +367,9 @@ fn regression_recording_manager_missing_session_returns_empty() {
     let manager = RecordingManager::new();
     let recordings = manager.session_recordings("definitely_nonexistent_session_xyz");
 
-    match recordings {
-        Ok(list) => assert!(list.is_empty(), "Missing session should return empty list"),
-        Err(_) => {} // Error is also acceptable
-    }
+    if let Ok(list) = recordings {
+        assert!(list.is_empty(), "Missing session should return empty list");
+    } // Error is also acceptable
 }
 
 /// Regression: RuntimeParams must handle missing params file gracefully.
