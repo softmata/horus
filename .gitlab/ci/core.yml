@@ -21,9 +21,6 @@ fmt:
 clippy:
   extends: [.rust-base, .on-mr-or-main]
   stage: lint
-  variables:
-    RUSTFLAGS: >-
-      $( [ "$CI_COMMIT_BRANCH" = "main" ] && echo "-D warnings" || echo "-W warnings" )
   script:
     - |
       if [ "$CI_COMMIT_BRANCH" = "main" ]; then
