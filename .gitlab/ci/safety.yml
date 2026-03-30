@@ -32,10 +32,10 @@ miri:
   variables:
     MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
   script:
-    - cargo miri test -p horus_core --lib -- memory::
+    - "cargo miri test -p horus_core --lib -- memory::"
     - cargo miri test -p horus_core --test memory_safety
-    - cargo miri test -p horus_core --lib -- communication::
-    - cargo miri test -p horus_library -- landmark:: tracking:: detection:: segmentation::
+    - "cargo miri test -p horus_core --lib -- communication::"
+    - "cargo miri test -p horus_library -- landmark:: tracking:: detection:: segmentation::"
 
 asan:
   extends: .safety-base
