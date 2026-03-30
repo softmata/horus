@@ -1304,6 +1304,11 @@ mod tests {
 
     #[test]
     fn error_generate_readonly_dir() {
+        // Root can bypass filesystem permissions — skip in CI containers
+        if std::env::var("CI").is_ok() || std::env::var("USER").as_deref() == Ok("root") {
+            eprintln!("Skipping readonly test: running as root/CI");
+            return;
+        }
         // generate() when .horus/ can't be created (read-only parent)
         let dir = tempfile::tempdir().unwrap();
         let readonly = dir.path().join("readonly");

@@ -73,8 +73,9 @@ test:
   needs: [check, fmt, clippy]
   variables:
     CARGO_INCREMENTAL: "0"
+    CARGO_PROFILE_TEST_DEBUG: "0"
   before_script:
-    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config cmake > /dev/null
     - rustup component add rustfmt clippy
     - |
       SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
@@ -82,8 +83,14 @@ test:
       chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
   script:
     - cargo clean
-    - cargo build --workspace --exclude horus_py
-    - cargo test --workspace --exclude horus_py --no-fail-fast -- --test-threads=1
+    # Test per-crate to avoid linking all 158+ test binaries simultaneously
+    - cargo test -p horus_sys -- --test-threads=1
+    - cargo test -p horus_core --no-fail-fast -- --test-threads=1
+    - cargo test -p horus_types -- --test-threads=1
+    - cargo test -p horus_macros -- --test-threads=1
+    - cargo test -p horus_net -- --test-threads=1
+    - cargo test -p horus -- --test-threads=1
+    - cargo test -p horus_manager --no-fail-fast -- --test-threads=1
     - cargo test -p horus_py --no-default-features -- --test-threads=1
 
 doc:
@@ -169,7 +176,7 @@ monitor-unit:
         - Cargo.lock
     - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "dev"
   before_script:
-    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
+    - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config cmake g++ > /dev/null
     - rustup component add rustfmt clippy
     - |
       SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
