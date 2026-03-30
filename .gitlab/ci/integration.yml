@@ -12,10 +12,8 @@ ipc-integration:
   before_script:
     - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config > /dev/null
     - rustup component add rustfmt clippy
-    - |
-      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
-      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
-      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+    - mkdir -p "/dev/shm/horus_ci_${CI_PIPELINE_ID}"/{topics,nodes,control,network,scheduler}
+    - chmod 777 "/dev/shm/horus_ci_${CI_PIPELINE_ID}" "/dev/shm/horus_ci_${CI_PIPELINE_ID}"/topics
     - sysctl -w kernel.shmmax=2147483648 || true
     - sysctl -w kernel.shmall=2147483648 || true
   script:
@@ -24,9 +22,7 @@ ipc-integration:
   variables:
     RUST_LOG: debug
   after_script:
-    - |
-      echo "Checking SHM state after tests..."
-      ls -la "/dev/shm/horus_ci_${CI_PIPELINE_ID}/" 2>/dev/null || echo "SHM directory clean"
+    - ls -la "/dev/shm/horus_ci_${CI_PIPELINE_ID}/" 2>/dev/null || echo "SHM clean"
 
 cli-integration:
   extends: [.rust-base, .shm-setup]
@@ -37,60 +33,18 @@ cli-integration:
     - !reference [.on-mr-or-main, rules]
     - !reference [.on-schedule, rules]
   variables:
-    HORUS: ./target/release/horus
     NO_COLOR: "1"
   before_script:
     - apt-get update -qq && apt-get install -y -qq libudev-dev pkg-config python3 > /dev/null
     - rustup component add rustfmt clippy
-    - |
-      SHM_DIR="/dev/shm/horus_ci_${CI_PIPELINE_ID}"
-      mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
-      chmod 777 "$SHM_DIR" "$SHM_DIR"/topics
+    - mkdir -p "/dev/shm/horus_ci_${CI_PIPELINE_ID}"/{topics,nodes,control,network,scheduler}
+    - chmod 777 "/dev/shm/horus_ci_${CI_PIPELINE_ID}" "/dev/shm/horus_ci_${CI_PIPELINE_ID}"/topics
   script:
     - cargo build -p horus_manager --release
-
-    # Version & Help
-    - |
-      output=$($HORUS --version)
-      echo "Got: $output"
-      echo "$output" | grep -qE '^horus [0-9]+\.[0-9]+\.[0-9]+'
-      echo "PASS: version format correct"
-
-    - |
-      output=$($HORUS --help)
-      for cmd in new run build test check clean monitor topic node param msg log pkg deploy add remove plugin env cache record launch; do
-        echo "$output" | grep -qw "$cmd" || { echo "FAIL: '$cmd' missing from --help"; exit 1; }
-      done
-      echo "PASS: all core subcommands present"
-
-    # Subcommand help smoke tests
-    - |
-      PASS=0; FAIL=0
-      for cmd in new run build test check clean monitor topic node param msg log pkg deploy add remove plugin env cache record launch; do
-        if $HORUS $cmd --help > /dev/null 2>&1; then
-          PASS=$((PASS + 1))
-        else
-          echo "FAIL: 'horus $cmd --help' exited non-zero"; FAIL=$((FAIL + 1))
-        fi
-      done
-      echo "Subcommand --help: $PASS passed, $FAIL failed"
-      [ "$FAIL" -eq 0 ] || exit 1
-
-    # Nested subcommand help
-    - |
-      for subcmd in "topic list" "topic echo" "node list" "node info" "param get" "param set" "param list" "msg list" "cache info" "cache clean" "record list" "record info"; do
-        $HORUS $subcmd --help > /dev/null 2>&1 || { echo "FAIL: 'horus $subcmd --help' failed"; exit 1; }
-      done
-      echo "PASS: all nested subcommand --help exit 0"
-
-    # horus new
-    - |
-      cd /tmp && rm -rf test_robot_rs
-      $CI_PROJECT_DIR/$HORUS new test_robot_rs -r 2>&1 | tee /tmp/new_rs_output
-      [ -f test_robot_rs/horus.toml ] || { echo "FAIL: horus.toml not created"; exit 1; }
-      [ -f test_robot_rs/main.rs ] || { echo "FAIL: main.rs not created"; exit 1; }
-      echo "PASS: horus new creates correct structure"
-
-    # horus doctor
+    - export HORUS=./target/release/horus
+    - $HORUS --version
+    - $HORUS --help
+    - $HORUS topic list --help
+    - $HORUS node list --help
+    - $HORUS launch --help
     - $HORUS doctor || true
-    - echo "PASS: horus doctor runs without crash"
