@@ -250,6 +250,61 @@ jobs:
           echo "=== Client ===" && cat /tmp/acli.log
           grep -q "GOT_RESULT:1" /tmp/acli.log || (echo "FAIL: no result received" && exit 1)
 
+  # ─── Cross-Language IPC (C++ ↔ Python) ─────────────────────────────────────
+  cpp-cross-language:
+    name: Cross-Language IPC (C++ ↔ Python)
+    runs-on: ubuntu-latest
+    needs: cpp-compile-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++ python3 python3-pip
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cpp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cpp-
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_xlang_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build C++ lib and binaries
+        run: |
+          cargo build --no-default-features -p horus_cpp
+          mkdir -p target/cpp_tests
+          for src in horus_cpp/tests/*.cpp; do
+            name=$(basename "$src" .cpp)
+            g++ -std=c++17 -fext-numeric-literals -I horus_cpp/include \
+                -o "target/cpp_tests/$name" "$src" \
+                -L target/debug -lhorus_cpp -lpthread -ldl -lm
+          done
+
+      - name: Build Python bindings
+        run: |
+          pip install maturin
+          cd horus_py && maturin develop --no-default-features
+
+      - name: Run cross-language tests
+        run: bash horus_cpp/tests/cross_lang_tri_test.sh
+        env:
+          HORUS_NAMESPACE: ci_xlang_${{ github.run_id }}
+
   # ─── ASAN (AddressSanitizer) ──────────────────────────────────────────────
   cpp-asan:
     name: AddressSanitizer
@@ -346,7 +401,7 @@ jobs:
   # ─── Final gate ───────────────────────────────────────────────────────────
   cpp-success:
     name: C++ Bindings CI Success
-    needs: [rust-ffi-tests, cpp-compile-test, cpp-cross-process, cpp-asan, cpp-benchmark]
+    needs: [rust-ffi-tests, cpp-compile-test, cpp-cross-process, cpp-cross-language, cpp-asan, cpp-benchmark]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -355,6 +410,7 @@ jobs:
           if [[ "${{ needs.rust-ffi-tests.result }}" == "success" ]] && \
              [[ "${{ needs.cpp-compile-test.result }}" == "success" ]] && \
              [[ "${{ needs.cpp-cross-process.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-cross-language.result }}" == "success" ]] && \
              [[ "${{ needs.cpp-asan.result }}" == "success" ]]; then
             echo "All C++ binding tests passed!"
             echo "Benchmark: ${{ needs.cpp-benchmark.result }}"
@@ -364,6 +420,7 @@ jobs:
             echo "rust-ffi: ${{ needs.rust-ffi-tests.result }}"
             echo "compile-test: ${{ needs.cpp-compile-test.result }}"
             echo "cross-process: ${{ needs.cpp-cross-process.result }}"
+            echo "cross-language: ${{ needs.cpp-cross-language.result }}"
             echo "asan: ${{ needs.cpp-asan.result }}"
             echo "benchmark: ${{ needs.cpp-benchmark.result }}"
             exit 1
