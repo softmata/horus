@@ -30,7 +30,7 @@ path = "src/bin/ci_test_node.rs"
 [dependencies]
 horus_core = { path = "../horus_core" }
 horus_types = { path = "../horus_types" }
-horus-tf = { path = "../../horus-tf" }
+horus-tf = { git = "https://gitlab.com/softmata/horus-tf.git" }
 horus_sys = { path = "../horus_sys" }
 clap = { version = "4.4", features = ["derive"] }
 clap_complete = "4.4"

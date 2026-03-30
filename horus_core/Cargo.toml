@@ -65,8 +65,8 @@ tempfile = "3.0"
 loom = "0.7"
 proptest = "1.4"
 horus_types = { path = "../horus_types" }
-horus-robotics = { path = "../../horus-robotics" }
-horus-tf = { path = "../../horus-tf" }
+horus-robotics = { git = "https://gitlab.com/softmata/horus-robotics.git" }
+horus-tf = { git = "https://gitlab.com/softmata/horus-tf.git" }
 
 [lints]
 workspace = true
