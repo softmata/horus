@@ -6369,8 +6369,12 @@ fn colo_layout_selected_for_small_pod_types() {
     struct MaxColo {
         data: [f32; 12], // 48 bytes — exactly 48 + 8 = 56 ≤ 64
     }
-    assert_eq!(std::mem::size_of::<MaxColo>(), 48);
-    assert!(48 + 8 <= 64, "MaxColo should fit co-located layout");
+    let max_colo_size = std::mem::size_of::<MaxColo>();
+    assert_eq!(max_colo_size, 48);
+    assert!(
+        max_colo_size + 8 <= 64,
+        "MaxColo should fit co-located layout"
+    );
 
     let name2 = unique("colo_max");
     let t2: Topic<MaxColo> = Topic::new(&name2).expect("create MaxColo topic");
@@ -6405,8 +6409,12 @@ fn colo_layout_selected_for_small_pod_types() {
     struct BoundaryColo {
         data: [f32; 14], // 56 bytes — exactly 56 + 8 = 64 ≤ 64
     }
-    assert_eq!(std::mem::size_of::<BoundaryColo>(), 56);
-    assert!(56 + 8 <= 64, "BoundaryColo should fit co-located layout");
+    let boundary_colo_size = std::mem::size_of::<BoundaryColo>();
+    assert_eq!(boundary_colo_size, 56);
+    assert!(
+        boundary_colo_size + 8 <= 64,
+        "BoundaryColo should fit co-located layout"
+    );
 
     // [u64; 8]: sizeof = 64, 64 + 8 = 72 > 64 → NOT co-located
     assert!(std::mem::size_of::<[u64; 8]>() + 8 > 64);
@@ -10750,7 +10758,6 @@ fn test_topic_recv_on_empty_returns_none() {
     assert!(t.recv().is_none(), "recv on empty topic should return None");
 }
 
-#[test]
 // ============================================================================
 // Concurrent contention stress tests
 // ============================================================================

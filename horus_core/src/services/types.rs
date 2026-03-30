@@ -552,14 +552,19 @@ mod tests {
     #[test]
     fn service_result_ok_variant() {
         let result: ServiceResult<i32> = Ok(42);
-        assert_eq!(result.unwrap(), 42);
+        let Ok(value) = result else {
+            panic!("expected Ok variant");
+        };
+        assert_eq!(value, 42);
     }
 
     #[test]
     fn service_result_err_variant() {
         let result: ServiceResult<i32> = Err(ServiceError::Timeout);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ServiceError::Timeout));
+        let Err(err) = result else {
+            panic!("expected Err variant");
+        };
+        assert!(matches!(err, ServiceError::Timeout));
     }
 
     // ── Edge: ServiceError with very long messages ───────────────────────

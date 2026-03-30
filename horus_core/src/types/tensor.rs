@@ -576,9 +576,9 @@ mod tests {
     #[test]
     fn test_tensor_clone_independence() {
         let t = Tensor::new(1, 2, 3, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
-        let mut copy = t;
-        copy.pool_id = 99;
-        copy.shape[0] = 1;
+        let mut _copy = t;
+        _copy.pool_id = 99;
+        _copy.shape[0] = 1;
         assert_eq!(t.pool_id, 1, "original must be unaffected by copy mutation");
         assert_eq!(t.shape[0], 480);
     }

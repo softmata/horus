@@ -5,7 +5,7 @@
 //! sim override, exec prefix, unknown node type, and legacy [drivers] fallback.
 
 #[cfg(test)]
-mod tests {
+mod driver_tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};

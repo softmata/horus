@@ -2133,8 +2133,9 @@ mod tests {
     #[test]
     fn test_spill_sentinel_above_max_slot() {
         // SPILL_SENTINEL must be larger than any valid message length (max 1MB)
+        let sentinel = SPILL_SENTINEL;
         assert!(
-            SPILL_SENTINEL > 1024 * 1024,
+            sentinel > 1024 * 1024,
             "sentinel must exceed max slot size to avoid false positives"
         );
     }
@@ -2191,15 +2192,13 @@ mod tests {
 
     #[test]
     fn test_spill_threshold_sane() {
-        assert_eq!(SPILL_THRESHOLD, 4096);
+        let threshold = SPILL_THRESHOLD;
+        assert_eq!(threshold, 4096);
         assert!(
-            SPILL_THRESHOLD >= 1024,
+            threshold >= 1024,
             "threshold too small — would spill tiny messages"
         );
-        assert!(
-            SPILL_THRESHOLD <= 65536,
-            "threshold too large — defeats purpose"
-        );
+        assert!(threshold <= 65536, "threshold too large — defeats purpose");
     }
 
     #[test]
@@ -2280,12 +2279,13 @@ mod tests {
     #[test]
     fn test_spill_sentinel_exact_value() {
         // Pin the sentinel to its documented hex value so accidental edits break loudly
-        assert_eq!(SPILL_SENTINEL, 0xDEAD_5911_CAFE_BABE);
+        let sentinel = SPILL_SENTINEL;
+        assert_eq!(sentinel, 0xDEAD_5911_CAFE_BABE);
 
         // High bits are set (0xDEAD prefix) — ensures it can never be a valid
         // inline message length since max slot size is 1MB (0x100000)
         assert!(
-            SPILL_SENTINEL >> 32 != 0,
+            sentinel >> 32 != 0,
             "sentinel must have high bits set to avoid collisions with valid lengths"
         );
     }

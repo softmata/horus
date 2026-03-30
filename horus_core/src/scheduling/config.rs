@@ -973,9 +973,9 @@ mod tests {
             global_rate_hz: 50.0,
             deterministic_order: true,
         };
-        let mut cloned = config.clone();
-        cloned.deterministic_order = false;
-        cloned.global_rate_hz = 200.0;
+        let mut _cloned = config.clone();
+        _cloned.deterministic_order = false;
+        _cloned.global_rate_hz = 200.0;
         // Original must be unchanged
         assert!(config.deterministic_order);
         assert_eq!(config.global_rate_hz, 50.0);
@@ -1021,9 +1021,9 @@ mod tests {
             rt_scheduling_class: true,
             require_mode: false,
         };
-        let mut cloned = rt.clone();
-        cloned.watchdog_timeout_ms = 999;
-        cloned.memory_locking = false;
+        let mut _cloned = rt.clone();
+        _cloned.watchdog_timeout_ms = 999;
+        _cloned.memory_locking = false;
         // Original preserved
         assert_eq!(rt.watchdog_timeout_ms, 200);
         assert!(rt.memory_locking);
